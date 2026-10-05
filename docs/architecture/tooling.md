@@ -1,53 +1,217 @@
 # Tooling — Deep Dive
 
-Every script, fixture corpus, integration lane, and CI job that wraps
-the workspace. The boundary contract is enforced here; if a script
-rejects, fix the boundary, do not suppress the script.
+Every script, fixture corpus, integration lane, fuzz target, and CI job
+that wraps the workspace. The boundary contract is enforced here; if a
+script rejects, fix the boundary, do not suppress the script.
 
-Paths are relative to the workspace root.
+Paths are relative to the workspace root. The boundary this document
+describes is the same one summarized in
+[overview.md](overview.md) and
+[dependency-graph.md](dependency-graph.md); the harness-level contract
+lives in [interop-apparatus.md](interop-apparatus.md).
 
-## `scripts/` — Guardrail shells
+**Inventory at a glance** (verified against disk):
 
-| Script | What it catches |
+| Surface | Count | Where |
+| --- | --- | --- |
+| Top-level `scripts/` files | 35 | 33 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
+| `check-*` on disk (all classes) | 36 | 33 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 24 | 22 `check-*` + 2 `python3` test discoveries |
+| Integration lane directories | 10 | under `tests/integration/` |
+| Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
+| Fuzz targets | 24 | `fuzz/fuzz_targets/*.rs` (+1 shared `support.rs`) |
+| CI workflows | 10 | 1 ordinary gate + 9 `workflow_dispatch` lanes |
+| Workspace members | 20 | 19 `crates/*` + `tools/i2pr-interop` |
+| Skill bundles | 6 | `.opencode/skills/` |
+
+## `scripts/` — guardrail shells
+
+36 `check-*` files exist on disk, grouped below by what they catch. The
+`Floor` and `CI` columns say whether the script appears in the
+[`AGENTS.md` routine floor](../../AGENTS.md) and in
+`.github/workflows/ci.yml` respectively. The full floor/CI matrix is in
+[Floor and CI coverage](#floor-and-ci-coverage).
+
+### Boundary checkers (static, source-scanning)
+
+| Script | What it catches | Floor | CI |
+| --- | --- | --- | --- |
+| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
+| `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. | yes | yes |
+| `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. | yes | **no** |
+| `scripts/check-m11-transit-boundaries.sh` | Plan 264/265 M11 transit runtime-neutrality and static boundary invariants. | yes | yes |
+| `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the LeaseSet2 type-5 deferred path must not enter server-authority NetDB storage. | **no** | **no** |
+| `scripts/check-m11-per-epoch-composition.sh` | Plan 264 §work-package-A per-epoch fresh-mesh composition gate, extended by Plan 265 into the fixed-budget opportunity-qualified closure composer (three frozen scenario families, exactly eight retained fresh-mesh attempts). | **no** | **no** |
+| `scripts/check-service-anonymity-boundaries.sh` | Plan 307 service-boundary matrix and leak regression checker: rejects `i2pr/<version>`-style product sentinels (`Proxy-Agent: i2pr`, `DEFAULT_QUIT_REASON`, product/build/router/transport/hostname/IP/path/destination-alias/raw-error sentinels) across the service-tunnel HTTP/SOCKS/IRC source set. | **no** | **no** |
+| `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. | **no** | no — `ntcp2-interop-rootless.yml` only |
+| `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. | **no** | **no** |
+| `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). | yes | yes |
+| `scripts/interop/check-m6-java-response-source-lock.sh` | Plan 236 §6 read-only source lock over the exact-pinned Java I2P checkout, binding the `Connection.sendPacket` → `PacketQueue.enqueue` → `I2PSession.sendMessage` response path. Writes only sanitized class/method facts; never patches or builds the reference tree. Consumed by the M6 Java lane. | **no** | **no** |
+| `scripts/interop/check-p243-host-qualified.sh` | Plan 243 §4 host qualification gate for the M6 Java Streaming hosted stock-client-build lane: proves the execution host carries every artifact the frozen Plan 242 lane depends on *before* any counted attempt consumes the three-attempt budget. | **no** | **no** |
+| `scripts/interop/ubuntu/check-host.sh` | Plan 038 Ubuntu host preflight/postflight contract check. Invoked as `check-host.sh --pre-install` before setup and `--post-install` after. It is a host *contract* checker, not a boundary guardrail. | **no** | **no** |
+
+### Fixture and vector checkers
+
+| Script | Corpus | What it catches | Floor | CI |
+| --- | --- | --- | --- | --- |
+| `scripts/check-fixture-manifest.sh` | `tests/fixtures/i2np/` | Manifest IDs, classification (`positive`/`negative`), provenance (`locally-authored`/`independently-produced`), all metadata fields, on-disk file existence, SHA-256 hash match; rejects orphan `.hex` files. Requires bash 4 `declare -A`. | yes | yes |
+| `scripts/check-ntcp2-vectors.sh` | `tests/fixtures/ntcp2/crypto/` | Duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 13 required NTCP2 crypto vector IDs in `vectors.tsv`. Requires bash 4 `declare -A`. | yes | yes |
+| `scripts/check-ssu2-vectors.sh` | `tests/fixtures/ssu2/` | Duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the 5 required Plan 155 fixture IDs, the 6 Plan 156 handshake vectors, and the 2 Plan 157 data-phase vectors. Requires bash 4 `declare -A`. | yes | yes |
+| `scripts/check-i2cp-vectors.sh` | `tests/fixtures/i2cp/` | Duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. Requires bash 4 `declare -A`. | yes | yes |
+
+### Evidence-integrity checkers
+
+Every checker in this class rejects literal unconditional `passed` rows
+and binds each required row to an executed command's exit code and
+evidence key.
+
+| Script | Lane | What it catches | Floor | CI |
+| --- | --- | --- | --- | --- |
+| `scripts/check-sam-acceptance-evidence.sh` | SAM | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers. | yes | yes |
+| `scripts/check-ssu2-acceptance-evidence.sh` | SSU2 | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection. | yes | yes |
+| `scripts/check-i2cp-acceptance-evidence.sh` | I2CP | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins. | yes | yes |
+| `scripts/check-i2pcontrol-acceptance-evidence.sh` | I2PControl | Plan 295 I2PControl differential evidence integrity: the local 28/8/4 corpus derives from the executed Rust corpus with a sanitized shape hash; external rows stay env-gated (`blocked-env-absent` until both target env vars are set); no literal pass rows, no forgiveness, no fake env, no secret-carrying evidence. | yes | yes |
+| `scripts/check-service-tunnel-acceptance-evidence.sh` | service tunnels | Plan 181/199 service-tunnel evidence integrity: 29 command-derived local rows plus two fail-closed remote qualification rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates. | yes | yes |
+| `scripts/check-exploratory-tunnel-evidence.sh` | M6 tunnels | Exploratory tunnel evidence integrity: guarded local build/liveness rows flow through exit-code-gated helpers. | yes | yes |
+| `scripts/check-netdb-tunnel-evidence.sh` | M6 NetDB | NetDB-over-tunnel evidence integrity: guarded lookup/publication rows flow through exit-code-gated helpers. | yes | yes |
+| `scripts/check-destination-tunnel-evidence.sh` | M6 destination | Destination-tunnel evidence integrity: 21 guarded labels across local and mixed-router harnesses. | yes | yes |
+| `scripts/check-streaming-tunnel-evidence.sh` | M6 Streaming | Streaming-tunnel evidence integrity: 33 guarded labels across i2pd + Java harnesses. | yes | yes |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | M6 cross-family | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity: per-layer harnesses + static checkers both pin i2pd 2.61.0 and Java I2P 2.13.0; the cross-family aggregator reuses the four per-layer harnesses and binds every guarded row to a family + a per-layer exit code. Plan 196 requires the out-of-tree `ControlledRouter.java` source as a required artifact and rejects `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), `sed` mutations of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback `i2p.reseedURL` URLs, and `\|\| true` forgiveness of `cargo test` / `cargo fmt` / `cargo check` / `bash [[ ]]` / `javac -cp` / `java -D` calls in the lane. Plan 197 requires `Ssu2RouterAddress::parse` to accept `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regressions present), a `pq_capabilities()` accessor, `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES` re-exports from `crates/i2pr-transport-ssu2/src/lib.rs`, and no `pq` key in any `props.setProperty(...)`-style push or matching branch in `crates/i2pr-transport-ssu2/src/publication.rs` (a literal in a comment is fine). Second-family Java rows stay `failed` with stop provenance until Plan 236 external execution closes `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. | yes | yes |
+| `scripts/check-m6-final-closure-evidence.sh` | M6 closure | Plan 199 evidence-consuming final gate: requires exact-head workflow provenance, exact i2pd/Java pins, all mandatory cross-family rows passed, and exactly one Java public-client ledger with no blocked, failed, or missing mandatory rows. Manual external-workflow only; it is **not** a routine-CI substitute. | **no** | no — `m6-mixed-router-external.yml` only |
+| `scripts/check-m11-transit-qualification-evidence.sh` | M11 transit | Plan 264/265 M11 qualification evidence integrity for per-epoch and frozen-scenario-family rows. | yes | no — `m11-transit-external.yml` only |
+| `scripts/check-m12-floodfill-qualification-evidence.sh` | M12 floodfill | Plan 279 §9 M12 floodfill qualification evidence integrity: guarded i2pd (10 rows, budget 1) and Java (12 rows, budget 3) matrix rows flow through the exit-code-gated `record_guarded`/`driver_row` helpers with per-row evidence-key gates; exact reference pins, loopback bind, frozen per-lane attempt budgets, `--ignored --exact` selection, no `\|\| true` forgiveness, no reference patching. `--self-test` proves the gates against synthetic fixtures. | yes | yes (`--self-test`) |
+| `scripts/check-http-anonymity-evidence.sh` | anonymity | Thin bash wrapper that resolves the evidence root (default `target/interop/anonymity/http-profile-evidence`) and delegates to the Python checker. | **no** | **no** |
+| `scripts/check-http-anonymity-evidence.py` | anonymity | HTTP anonymity profile evidence integrity; takes repo root + evidence root. Invoked by the wrapper above, and runnable directly. | **no** | **no** |
+| `scripts/check-streaming-fingerprint-evidence.sh` | anonymity | Validates a Plan 312 Streaming-fingerprint evidence directory (takes the evidence dir as its single argument; parses CSV rows). | **no** | **no** |
+
+### Source-lock and planning hygiene
+
+| Script | What it catches | Floor | CI |
+| --- | --- | --- | --- |
+| `scripts/check-java-source-lock-gating.sh` | Verifies the Plan 246 Java source-lock test set in `crates/i2pr-daemon/tests/java_tunnel_external.rs`, its driver `scripts/run-java-source-lock-tests.sh`, and the `ci.yml` wiring. Requires bash 4 `mapfile`. | **no** | yes |
+| `scripts/check-global-plan-number-uniqueness.py` | Global plan-number ownership across `plans/` — no duplicate plan numbers across the planning tree. | yes | yes |
+| `tests/planning/test_global_plan_number_uniqueness.py` | unittest coverage for the plan-number checker; run via `python3 -m unittest discover -s tests/planning -p 'test_*.py'`. | yes | yes |
+
+### Opt-in runners (not in the floor, not in CI by design)
+
+| Script | Posture |
 | --- | --- |
-| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. |
-| `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. |
-| `scripts/check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. Validates manifest IDs, classification (`positive`/`negative`), provenance (`locally-authored`/`independently-produced`), all metadata fields, on-disk file existence, and SHA-256 hash matches. Rejects orphan `.hex` files (i.e. unlisted fixtures). |
-| `scripts/check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, and SHA-256 match. Additionally verifies `vectors.tsv` contains all 13 required NTCP2 crypto vector IDs. |
-| `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus under `tests/fixtures/ssu2/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 5 required Plan 155 fixture IDs plus the 6 Plan 156 handshake vectors and the 2 Plan 157 data-phase vectors. |
-| `scripts/check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane. Checks for required disclaimer lines (`network_id`, `public_network = false`, `reseed = false`, etc.), exactly 8 `[[scenario]]` entries, and scans the committed `evidence/` directory for forbidden artifacts (`.pcap`, `.pcapng`, `router.identity`, `ntcp2.static.key`, private key headers). |
-| `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. |
-| `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. |
-| `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
-| `scripts/check-plan095-workflow.sh` | Pruned by the Plan 099 harness reduction; script no longer on disk. Historical references are audit context only. |
-| `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
-| `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
-| `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
-| `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
-| `scripts/check-i2pcontrol-acceptance-evidence.sh` | Plan 295 I2PControl differential evidence integrity: the local 28/8/4 corpus derives from the executed Rust corpus with a sanitized shape hash; external rows stay env-gated (`blocked-env-absent` until both target env vars are set); no literal pass rows, no forgiveness, no fake env, no secret-carrying evidence (CI-enforced). |
-| `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. |
-| `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181/199 service-tunnel evidence integrity: 29 command-derived local rows plus two fail-closed remote qualification rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates (CI-enforced). |
-| `scripts/check-exploratory-tunnel-evidence.sh` | Exploratory tunnel evidence integrity: guarded local build/liveness rows flow through exit-code-gated helpers (CI-enforced). |
-| `scripts/check-netdb-tunnel-evidence.sh` | NetDB-over-tunnel evidence integrity: guarded lookup/publication rows flow through exit-code-gated helpers (CI-enforced). |
-| `scripts/check-destination-tunnel-evidence.sh` | Destination-tunnel evidence integrity: 21 guarded labels across local and mixed-router harnesses (CI-enforced). |
-| `scripts/check-streaming-tunnel-evidence.sh` | Streaming-tunnel evidence integrity: 33 guarded labels across i2pd + Java harnesses (CI-enforced). |
-| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 cross-family M6 mixed-router evidence integrity: per-layer harnesses + static checkers both pin i2pd 2.61.0 and Java I2P 2.13.0; the cross-family aggregator reuses the four per-layer harnesses and binds every guarded row to a family + a per-layer exit code; Plan 196 extends the checker to require the out-of-tree `ControlledRouter.java` source as a required artifact and to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), `sed` mutations of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback `i2p.reseedURL` URLs, and `|| true` forgiveness of `cargo test` / `cargo fmt` / `cargo check` / `bash [[ ]]` / `javac -cp` / `java -D` calls in the lane; second-family Java rows are recorded `failed` with stop provenance until Plan 196 external-execution proves the controlled topology + authenticated SSU2 preflight; Plan 197 extends the checker to require that `Ssu2RouterAddress::parse` accepts `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regression present), that `Ssu2RouterAddress` surfaces a `pq_capabilities()` accessor, that `crates/i2pr-transport-ssu2/src/lib.rs` re-exports `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES`, and that `crates/i2pr-transport-ssu2/src/publication.rs` contains no `pq` key in any `props.setProperty(...)`-style push or matching branch (a literal in a comment is fine); no literal unconditional `passed` rows (CI-enforced). |
-| `scripts/check-m6-final-closure-evidence.sh` | Plan 199 evidence-consuming final gate: requires exact-head workflow provenance, exact i2pd/Java pins, all mandatory cross-family rows passed, and exactly one Java public-client ledger with no blocked, failed, or missing mandatory rows. Manual external-workflow only; it is not a routine-CI substitute. |
-| `scripts/check-m12-floodfill-qualification-evidence.sh` | Plan 279 §9 M12 floodfill qualification evidence integrity: guarded i2pd (10 rows, budget 1) and Java (12 rows, budget 3) matrix rows flow through the exit-code-gated `record_guarded`/`driver_row` helpers with per-row evidence-key gates; exact reference pins, loopback bind, frozen per-lane attempt budgets, `--ignored --exact` selection, no `|| true` forgiveness, no reference patching; `--self-test` proves the gates against synthetic fixtures (CI-enforced). |
-| `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
+| `scripts/fuzz-smoke.sh` | Opt-in smoke run of **all 24 fuzz targets** for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
+| `scripts/run-java-source-lock-tests.sh` | Java source-lock test driver. Fails closed unless `I2PR_M6_JAVA_SOURCE_ROOT` names a Git checkout at the exact Java I2P 2.13.0 pin `9134f808337b401e8e53c73734c81fab04280c9d`. Driven by `scripts/check-java-source-lock-gating.sh`. |
+
+### Pruned / historical (not on disk)
+
+| Script | Status |
+| --- | --- |
+| `scripts/check-plan095-workflow.sh` | **Pruned.** Removed by the Plan 099 harness reduction; the file is not on disk. Only `plans/`, `docs/`, and skill text still mention it, as audit context. It is **not** a live command — do not add it to the floor or CI. |
+
+### `scripts/interop/` — harness apparatus (69 files)
+
+The interop subtree is the Plan 038/040/041/043/045–053 apparatus plus
+the M6/SAM/SSU2/I2CP fetch and evidence helpers. It is documented in
+detail by [interop-apparatus.md](interop-apparatus.md); this is the
+file-level inventory.
+
+- **Reference build and host contract** (10): `build-references.sh`,
+  `build-i2pd.sh`, `build-java-i2p.sh`, `ubuntu/check-host.sh`,
+  `ubuntu/setup-host.sh`, `java-prepare-template.py`,
+  `cache-manifest.py`, `validate-build-contract.py`,
+  `validate-scenarios.py`, `validate-evidence.py`.
+- **Reference fetch (exact pins)** (5): `fetch-i2cp-clients.sh`,
+  `fetch-m6-java.sh`, `fetch-sam-clients.sh`,
+  `fetch-service-tunnel-clients.sh`, `fetch-ssu2-reference.sh`.
+- **Scenario execution and gates** (10): `run-scenario.sh`,
+  `run-matrix.sh`, `run-gate.sh`, `run-ntcp2-loopback-smoke.sh`,
+  `run-minimal-i2pd-host-loopback-probe.py`, `reset-lane-state.sh`,
+  `cleanup.sh`, `verify-clean-host.sh`, `verify-isolation.sh`,
+  `offline-reuse.sh`.
+- **Evidence assembly** (2): `aggregate-evidence.py`,
+  `plan056_drive_bundles.py`.
+- **Lane-local checkers** (2): `check-m6-java-response-source-lock.sh`,
+  `check-p243-host-qualified.sh` (both documented above).
+- **Host probes and shared shell** (6): `probe-constrained-host-lanes.sh`,
+  `probe-rootless-sandbox.sh`, `rootless-enter.sh`, `lib/common.sh`,
+  `lib/namespaces.sh`, `aggregate-evidence.py`'s sibling
+  `anonymity/` pair below.
+- **Anonymity lane** (2): `anonymity/preflight-ubuntu.sh`,
+  `anonymity/record-reference-manifest.py`.
+- **Multipass recovery lane** (33 files under `interop/multipass/`):
+  lifecycle (`lifecycle.py`, `create.sh`, `destroy.sh`, `status.sh`,
+  `snapshot.sh`, `restore.sh`, `config.py`, `environment.toml`),
+  cloud-init (`cloud-init.yaml`, `cloud-init-status.sh`,
+  `cloud_init_status.py`), dispatch and direction
+  (`dispatch-gate.sh`, `run-direction.sh`, `run-matrix.sh`,
+  `run-evidence-lane.sh`), evidence (`collect.py`, `aggregate.py`,
+  `export.py`, `export-evidence.sh`, `records.py`, `host_state.py`,
+  `sidecars.py`, `source_tree.py`, `common.sh`), offline and transfer
+  (`prepare-offline.sh`, `offline-enforcement.json`,
+  `transfer-cache.sh`, `transfer-source.sh`, `selective-purge.sh`),
+  verification (`probe.sh`, `verify-base.sh`, `verify-clean-host.sh`),
+  and `README.md`.
 
 **How they work**: `check-dependency-direction.sh` uses
-`cargo metadata` + Python. The others use `rg` (ripgrep) for
-pattern scanning and `sha256sum` / `find` for manifest integrity.
-`fuzz-smoke.sh` delegates to `cargo fuzz run`.
+`cargo metadata` + Python. The static boundary and evidence checkers
+use `rg` (ripgrep) for pattern scanning; the fixture/vector checkers
+use `sha256sum` / `find` / bash 4 associative arrays for manifest
+integrity. `fuzz-smoke.sh` delegates to `cargo fuzz run`.
 
-## `tests/fixtures/i2np/` — I2NP wire fixture corpus
+## Floor and CI coverage
 
-- `manifest.tsv` — 31 entries (15 positive, 16 negative) with id,
-  path, classification, SHA-256, source (official I2NP spec),
+Every `AGENTS.md` floor command still maps to a script that exists —
+no floor entry is missing. The gaps run in the other direction.
+
+**In the floor but not in `ci.yml` (2):**
+
+- `bash scripts/check-service-tunnel-boundaries.sh`
+- `bash scripts/check-m11-transit-qualification-evidence.sh`
+
+**In `ci.yml` but not in the floor (1):**
+
+- `bash scripts/check-java-source-lock-gating.sh`
+
+**On disk but in neither the floor nor `ci.yml` (8):**
+
+- `scripts/check-m12-floodfill-boundaries.sh`
+- `scripts/check-m11-per-epoch-composition.sh`
+- `scripts/check-service-anonymity-boundaries.sh`
+- `scripts/check-streaming-fingerprint-evidence.sh`
+- `scripts/check-http-anonymity-evidence.sh` and
+  `scripts/check-http-anonymity-evidence.py`
+- `scripts/check-multipass-interop-boundary.sh`
+- `scripts/interop/check-m6-java-response-source-lock.sh`
+- `scripts/interop/check-p243-host-qualified.sh`
+
+**In a manual external workflow only (3):**
+`check-rootless-interop-boundary.sh`
+(`ntcp2-interop-rootless.yml`), `check-m6-final-closure-evidence.sh`
+(`m6-mixed-router-external.yml`), `check-m11-transit-qualification-evidence.sh`
+(`m11-transit-external.yml`).
+
+A new checker must be added here with its class, its floor/CI
+disposition, and its lane. Absence from both the floor and CI is a
+deliberate decision that needs a plan-of-record, not an oversight.
+
+## Fixture and vector corpora
+
+Four corpora live under `tests/fixtures/`. Each uses a TSV manifest with
+SHA-256 hashes, classification, and provenance; no corpus carries
+secrets, tokens, or operational keys.
+
+| Corpus | Manifest | Rows | `.hex` files | Classification split | Checker |
+| --- | --- | --- | --- | --- | --- |
+| `tests/fixtures/i2np/` | `manifest.tsv` (pipe-delimited) | 31 | 31 | 15 positive / 16 negative | `scripts/check-fixture-manifest.sh` |
+| `tests/fixtures/ntcp2/crypto/` | `manifest.tsv` + `vectors.tsv` | 5 + 13 | 4 | 4 positive / 1 malformed | `scripts/check-ntcp2-vectors.sh` |
+| `tests/fixtures/ssu2/` | `manifest.tsv` | 13 | 13 | 12 positive / 1 malformed | `scripts/check-ssu2-vectors.sh` |
+| `tests/fixtures/i2cp/` | `manifest.tsv` | 29 | 29 | 22 positive / 7 malformed | `scripts/check-i2cp-vectors.sh` |
+
+### `tests/fixtures/i2np/` — I2NP wire fixture corpus
+
+- `manifest.tsv` — 31 entries (15 positive, 16 negative) with id, path,
+  classification, SHA-256, source (official I2NP specification),
   revision, generator, deterministic input description, expected
-  decode/error, license (CC-BY), and provenance
-  (`locally-authored`).
+  decode/error, license (CC-BY), and independence
+  (`locally-authored`). The separator is `|`, not a tab.
 - **31 `.hex` files** — hand-crafted binary fixtures exercising
   DeliveryStatus, DatabaseLookup (none/legacy/ecies),
   DatabaseSearchReply, DatabaseStore (classic LeaseSet / compressed
@@ -56,25 +220,31 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   deferred-length, plus 16 malformed variants (bad checksum,
   truncated header, oversized payload, trailing bytes, unknown
   type, invalid flags, excessive counts, zero IDs).
-- **Verified by** `scripts/check-fixture-manifest.sh` on every CI
-  run.
+- **Verified by** `scripts/check-fixture-manifest.sh` in routine CI
+  (Linux only).
 
-## `tests/fixtures/ntcp2/crypto/` — NTCP2 cryptographic vector corpus
+### `tests/fixtures/ntcp2/crypto/` — NTCP2 cryptographic vector corpus
 
-- `manifest.tsv` — lists crypto test vectors with SHA-256 integrity.
-- `vectors.tsv` — 13 named deterministic vectors covering X25519
-  key exchange, protocol name hash, transcript initial/final hash,
-  SessionRequest/SessionCreated/SessionConfirmed AEAD,
-  ChaCha20-Poly1305 seal, AES-CBC ephemeral, and Split-KDF outputs.
-- Hex files: `storage-static-key.hex`,
-  `data-phase-frame.hex`, `data-phase-blocks.hex`,
-  `data-phase-malformed.hex`.
-- **Verified by** `scripts/check-ntcp2-vectors.sh` on every CI run.
+- `manifest.tsv` — 5 rows: the 4 `.hex` vectors plus `vectors.tsv`
+  itself, with SHA-256 integrity and provenance
+  (`independent-python-cryptography-41.0.7`, `local-format-seed-25`,
+  `local-plan-034-*`).
+- `vectors.tsv` — 13 named deterministic vectors (after two comment
+  header lines) covering X25519 key exchange, protocol name hash,
+  transcript initial/final hash, SessionRequest/SessionCreated/
+  SessionConfirmed AEAD, ChaCha20-Poly1305 seal, AES-CBC ephemeral,
+  and Split-KDF outputs.
+- Hex files: `storage-static-key.hex`, `data-phase-frame.hex`,
+  `data-phase-blocks.hex`, `data-phase-malformed.hex`.
+- **Verified by** `scripts/check-ntcp2-vectors.sh` in routine CI
+  (Linux only).
 
-## `tests/fixtures/ssu2/` — SSU2 v2 vector corpus (Plans 155–157)
+### `tests/fixtures/ssu2/` — SSU2 v2 vector corpus (Plans 155–157)
 
-- `manifest.tsv` — lists SSU2 vectors with SHA-256 integrity
-  (`positive`/`malformed` categories, explicit provenance).
+- `manifest.tsv` — 13 rows (12 positive, 1 malformed) with SHA-256
+  integrity and explicit provenance
+  (`spec-derived-constructed-vector` for the Plan 155 set,
+  `locally-authored-deterministic-vector` for Plans 156/157).
 - Hex files: `long-header.hex`, `short-header-data.hex`,
   `short-header-confirmed.hex`, `blocks-positive.hex`,
   `blocks-malformed.hex` (Plan 155 spec-derived constructed
@@ -86,12 +256,13 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   and `data-phase-ack.hex` (Plan 157 locally-authored deterministic
   data-phase vectors, reproduced byte-for-byte through the session
   path). No private keys, tokens, or operational secrets.
-- **Verified by** `scripts/check-ssu2-vectors.sh` on every CI run.
+- **Verified by** `scripts/check-ssu2-vectors.sh` in routine CI
+  (Linux only).
 
-## `tests/fixtures/i2cp/` — I2CP wire fixture corpus (Plan 164)
+### `tests/fixtures/i2cp/` — I2CP wire fixture corpus (Plan 164)
 
 - `manifest.tsv` — 29 entries (22 positive, 7 malformed) with id,
-  path, classification, SHA-256, and provenance
+  path, category, SHA-256, and provenance
   (`locally-authored-deterministic-vector`).
 - Hex files: `protocol-byte`, framed `get-date`/`set-date`,
   `create-session`/`reconfigure-session`/`destroy-session`,
@@ -104,18 +275,45 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   `host-lookup-hostname`, `host-reply-success`/`host-reply-failure`,
   plus malformed unknown/deprecated/oversize/truncated/trailing/
   bad-destination/short-signature negatives. Fixed test-only
-  keys/inputs are documented in `README.md`; no secrets present.
-- **Verified by** `scripts/check-i2cp-vectors.sh` on every CI run.
+  keys/inputs are documented in the corpus README; no secrets present.
+- **Verified by** `scripts/check-i2cp-vectors.sh` in routine CI
+  (Linux only).
 
-## `tests/integration/ntcp2/` — synthetic interoperability lane (Plan 036)
+## Integration and interop lanes
+
+Ten lane directories live under `tests/integration/`. Each lists its
+real driver scripts and its matching evidence checker.
+
+| Lane | Drivers | Evidence checker(s) | Manual workflow |
+| --- | --- | --- | --- |
+| `tests/integration/anonymity/` | `run-plan312-streaming.sh`, plus `test_streaming_fingerprint.py`, `test_http_capture.py`, `canonicalize_http_capture.py` (unittest), data files `http-corpus.toml`, `streaming-scenarios.toml`, `topology.toml`, `references.lock.toml`, `reference-diversity-matrix.md`, `README.md` | `check-http-anonymity-evidence.sh` / `.py`, `check-streaming-fingerprint-evidence.sh`, `check-service-anonymity-boundaries.sh` | none |
+| `tests/integration/floodfill/` | `run-i2pd.sh`, `run-java-floodfill.sh` | `check-m12-floodfill-qualification-evidence.sh`, `check-m12-floodfill-boundaries.sh` | none |
+| `tests/integration/i2cp/` | `run-independent.sh` (plus `external/`) | `check-i2cp-acceptance-evidence.sh` | `i2cp-external.yml` |
+| `tests/integration/i2pcontrol/` | `run-differential.sh` (plus `evidence/`) | `check-i2pcontrol-acceptance-evidence.sh` | none |
+| `tests/integration/m11-transit/` | `run-i2pd.sh` | `check-m11-transit-boundaries.sh`, `check-m11-transit-qualification-evidence.sh`, `check-m11-per-epoch-composition.sh` | `m11-transit-external.yml` |
+| `tests/integration/m6-interop/` | `run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`, `run-destination.sh`, `run-streaming.sh`, `run-java.sh`, `run-m6-mixed-router.sh` (plus `java/`) | `check-m6-mixed-router-acceptance-evidence.sh`, `check-exploratory-tunnel-evidence.sh`, `check-netdb-tunnel-evidence.sh`, `check-destination-tunnel-evidence.sh`, `check-streaming-tunnel-evidence.sh`, `check-m6-final-closure-evidence.sh`, `interop/check-m6-java-response-source-lock.sh`, `interop/check-p243-host-qualified.sh` | `m6-mixed-router-external.yml` |
+| `tests/integration/ntcp2/` | `manifest.toml` + Python `harness/` (23 modules, incl. `test_execution_lane.py`); subtrees `config/`, `evidence/`, `evidence-receipts/`, `mixed-scenarios/`, `qualification/`, `reference-drivers/`, `reference-observation-qualification/`, `reference-scenarios/`, `scenarios/` | `check-ntcp2-interoperability.sh`, `check-constrained-host-lane-boundary.sh`, `check-rootless-interop-boundary.sh`, `check-multipass-interop-boundary.sh`, `interop/check-p243-host-qualified.sh` | `ntcp2-interop-ubuntu.yml`, `ntcp2-interop-rootless.yml`, `ntcp2-interop-host-loopback-development.yml` |
+| `tests/integration/sam/` | `run-independent.sh` (plus `clients/build.sh`, `reference/`, `clients/`, `evidence.md`, `README.md`) | `check-sam-acceptance-evidence.sh` | `sam-external.yml` |
+| `tests/integration/service-tunnels/` | `run-independent.sh`, `run-plan213-generic.sh`, `run-plan214-applications.sh`, `test-plan215-tunnels-conf.sh`, `hold_sam_session.py` (plus `clients/`, `fixtures/`) | `check-service-tunnel-acceptance-evidence.sh`, `check-service-tunnel-boundaries.sh` | `service-tunnels-external.yml` |
+| `tests/integration/ssu2/` | `run-independent.sh` | `check-ssu2-acceptance-evidence.sh` | `ssu2-external.yml` |
+
+`tests/integration/ntcp2/harness/test_execution_lane.py` is also run in
+routine CI (`ci.yml`, Linux) via
+`python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
+
+### `tests/integration/ntcp2/` — synthetic interoperability lane (Plan 036)
 
 - `manifest.toml` — defines a synthetic test network
   (`network_id = "synthetic-private-036"`), loopback-only, fixed
-  clocks, disposable identities. Pins reference implementations:
-  Java I2P 2.12.0 and i2pd 2.60.0 at the exact full revisions recorded in
-  `references.lock.toml` (frozen NTCP2-era synthetic-lane pins; the
-  current SSU2/M6 lanes pin Java I2P 2.13.0 and i2pd 2.61.0 per
-  `AGENTS.md`). Specifies exactly 8 scenarios:
+  clocks, disposable identities. Pins reference implementations at the
+  exact full revisions recorded in `references.lock.toml`
+  (`lock_version = "plan-040-v1"`): **Java I2P 2.12.0**
+  (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and **i2pd 2.60.0**
+  (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`). These are the frozen
+  NTCP2-era synthetic-lane pins; the current SSU2/M6 lanes pin Java I2P
+  2.13.0 and i2pd 2.61.0 per [`AGENTS.md`](../../AGENTS.md). The lock
+  also pins IzPack 5.2.4. Specifies exactly **8** `[[scenario]]`
+  entries:
   1. `java-ipv4-inbound-outbound` — authenticated handshake + I2NP
      exchange.
   2. `java-ipv6-inbound-outbound` — same, IPv6.
@@ -126,22 +324,25 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   6. `i2pd-ipv6-inbound-outbound` — same as java-ipv6.
   7. `i2pd-adversarial-and-resource` — same as java-adversarial.
   8. `i2pd-duplicate-link-race` — same as java-duplicate-link.
-- `evidence/` — currently contains only `README.md`. The README
-  states that `i2pr` daemon activation is disabled; Java I2P and
-  i2pd lanes are "recorded blockers, not skipped successes."
+- `evidence/` — contains only `README.md`. The README states that
+  `i2pr` daemon activation is disabled; Java I2P and i2pd lanes are
+  "recorded blockers, not skipped successes."
 - `README.md` — explains this is manual / opt-in, requires an
   authorized external runner, and that
-  `cargo test -p i2pr-testkit --all-targets` is the local
-  substitute.
-- **Verified by** `scripts/check-ntcp2-interoperability.sh` on
-  every CI run.
+  `cargo test -p i2pr-testkit --all-targets` is the local substitute.
+- **Verified by** `scripts/check-ntcp2-interoperability.sh` in routine
+  CI (Linux only): required disclaimer lines (`network_id`,
+  `public_network = false`, `reseed = false`, …), exactly 8
+  `[[scenario]]` entries, and a scan of the committed `evidence/`
+  directory for forbidden artifacts (`.pcap`, `.pcapng`,
+  `router.identity`, `ntcp2.static.key`, private key headers).
 
 ### Plan 038 Ubuntu harness (implemented foundation, opt-in)
 
-Plan 038 extends the manual lane with an Ubuntu-only, amd64-only harness. The
-existing manifest and evidence preflight remain a repository boundary; they do
-not install or launch reference routers. The host and build commands
-are:
+Plan 038 extends the manual lane with an Ubuntu-only, amd64-only
+harness. The existing manifest and evidence preflight remain a
+repository boundary; they do not install or launch reference routers.
+The host and build commands are:
 
 ```text
 bash scripts/interop/ubuntu/check-host.sh --pre-install
@@ -151,14 +352,15 @@ bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
 ```
 
-Reference builds are source-pinned and hashed during preparation. The runner
-then uses a separate execution phase for each scenario. It creates one i2pr
-namespace and one reference namespace, moves both ends of a veth pair out of
-the host namespace, permits only the expected directly connected routes, and
-rejects default routes, DNS, host bridges, and public egress before launch.
-Route checks are primary; namespace-scoped nftables rules are defense in
-depth. Execution has no dependency downloads, reseed, bootstrap, RouterInfo
-publication, NetDB mutation, or public endpoint.
+Reference builds are source-pinned and hashed during preparation. The
+runner then uses a separate execution phase for each scenario. It
+creates one i2pr namespace and one reference namespace, moves both ends
+of a veth pair out of the host namespace, permits only the expected
+directly connected routes, and rejects default routes, DNS, host
+bridges, and public egress before launch. Route checks are primary;
+namespace-scoped nftables rules are defense in depth. Execution has no
+dependency downloads, reseed, bootstrap, RouterInfo publication, NetDB
+mutation, or public endpoint.
 
 The scenario and launcher interfaces are:
 
@@ -172,124 +374,118 @@ i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
-The launcher uses `i2pr-runtime` as its only Tokio owner. A valid disposable
-scenario creates or reloads private identity/static-key state, verifies the
-published RouterInfo endpoint, runs the selected listener or dial handshake,
-promotes the authenticated frame owner, and exchanges DeliveryStatus before
-cleanup. Its status protocol is versioned and redacted; state, handshake,
-data-phase, timeout, and cleanup failures are typed rejections. A successful
-launcher run is local driver validation only, never mixed-router evidence.
+The launcher uses `i2pr-runtime` as its only Tokio owner. A valid
+disposable scenario creates or reloads private identity/static-key
+state, verifies the published RouterInfo endpoint, runs the selected
+listener or dial handshake, promotes the authenticated frame owner,
+and exchanges DeliveryStatus before cleanup. Its status protocol is
+versioned and redacted; state, handshake, data-phase, timeout, and
+cleanup failures are typed rejections. A successful launcher run is
+local driver validation only, never mixed-router evidence.
 
 The evidence taxonomy is strict: environment smoke validates reference
 startup/RouterInfo generation and cleanup only; Plan 041's
 `reference-crosscheck-ipv4` profile runs two dedicated directional
-Java-I2P/i2pd control scenarios in `reference-scenarios/`, with a separate
-`java-*`/`i2pd-*` topology, explicit network ID 99, staged RouterInfo
-validation/import, and dual authenticated observations. It remains harness
-control evidence; i2pr mixed-router evidence
-requires bounded authenticated runs between i2pr and each reference in both
-directions. The full eight-scenario manifest remains gated on the positive
-smoke profiles. Sanitize before retention and keep only typed outcomes,
-bounded run metadata, and artifact/configuration hashes. Delete raw
-addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
-arbitrary remote error text. A missing host, cache, strict parser, or
-authoritative observation remains a typed blocker; NTCP2 remains
-experimental/non-advertised.
+Java-I2P/i2pd control scenarios in `reference-scenarios/`, with a
+separate `java-*`/`i2pd-*` topology, explicit network ID 99, staged
+RouterInfo validation/import, and dual authenticated observations. It
+remains harness control evidence; i2pr mixed-router evidence requires
+bounded authenticated runs between i2pr and each reference in both
+directions. The full eight-scenario manifest remains gated on the
+positive smoke profiles. Sanitize before retention and keep only typed
+outcomes, bounded run metadata, and artifact/configuration hashes. Delete
+raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts,
+logs, and arbitrary remote error text. A missing host, cache, strict
+parser, or authoritative observation remains a typed blocker; NTCP2
+remains experimental/non-advertised.
 
 ### Plan 040 corrective apparatus
 
 Plan 040 hardens that foundation. The machine identifiers are exactly
-`java_i2p` and `i2pd`; the exact source revisions, cache metadata schema,
-topology token rules, firewall semantics, implementation-specific runtime
-paths, and evidence finalization order are recorded in
-[`interop-apparatus.md`](interop-apparatus.md). The cache summary is
-`target/interop/cache/current-cache.json`; sanitized run results are written
-to `target/interop/evidence/`, while `target/interop/runs/` is always deleted
-after cleanup. A successful environment smoke result remains harness
-validation only and cannot advertise NTCP2.
+`java_i2p` and `i2pd`; the exact source revisions, cache metadata
+schema, topology token rules, firewall semantics, implementation-specific
+runtime paths, and evidence finalization order are recorded in
+[interop-apparatus.md](interop-apparatus.md). The cache summary is
+`target/interop/cache/current-cache.json`; sanitized run results are
+written to `target/interop/evidence/`, while `target/interop/runs/` is
+always deleted after cleanup. A successful environment smoke result
+remains harness validation only and cannot advertise NTCP2.
 
 ### Plan 043 build-system gates
 
-Plan 043 owns the build-system promotion boundary. The semantic gate order is
-`contract` → `reference-build` → `reference-offline-reuse` →
+Plan 043 owns the build-system promotion boundary. The semantic gate
+order is `contract` → `reference-build` → `reference-offline-reuse` →
 `environment-smoke` → `reference-crosscheck-ipv4` →
 `i2pr-handshake-smoke-ipv4` → `full-matrix` → `evidence-validation` →
-`cleanup-verification`. The contract gate is unprivileged and does not start
-routers. Preparation is the only network-enabled phase; offline reuse and all
-scenario profiles consume verified caches and namespace-local synthetic links.
+`cleanup-verification`. The contract gate is unprivileged and does not
+start routers. Preparation is the only network-enabled phase; offline
+reuse and all scenario profiles consume verified caches and
+namespace-local synthetic links.
 
 The exact host is Ubuntu 24.04 amd64/x86_64 with Bash 4+, UTF-8 locale,
-non-interactive `sudo` when needed, Linux namespace/nftables capability, and at
-least 4 GiB free under `target/`. The setup package list, full source pins,
-IzPack digest, cache schema, and build-command versions are authoritative in
-`tests/integration/ntcp2/references.lock.toml`. Host evidence records Ubuntu,
-kernel, architecture, Rust/Cargo, Java/Ant, compiler/CMake, Python, iproute2,
-and nftables; the aggregate manifest adds workflow run and attempt metadata.
+non-interactive `sudo` when needed, Linux namespace/nftables capability,
+and at least 4 GiB free under `target/`. The setup package list, full
+source pins, IzPack digest, cache schema, and build-command versions are
+authoritative in `tests/integration/ntcp2/references.lock.toml`. Host
+evidence records Ubuntu, kernel, architecture, Rust/Cargo, Java/Ant,
+compiler/CMake, Python, iproute2, and nftables; the aggregate manifest
+adds workflow run and attempt metadata.
 
 The offline gate restores only a cache selected through
-`target/interop/cache/current-cache.json`, validates strict schema-2 metadata,
-and re-hashes the complete runtime tree. Its key includes the canonical
-reference (`java_i2p` or `i2pd`), full source revision, lock digest,
-`ubuntu-24.04-amd64`, build-command version, and relevant tool/ABI versions.
-It must not fetch, clone, install, resolve DNS, or fall back on a cache miss.
-Runtime configs, identities, keys, RouterInfo, NetDB state, run roots, raw
-logs, namespace state, and evidence records are never cache inputs.
+`target/interop/cache/current-cache.json`, validates strict schema-2
+metadata, and re-hashes the complete runtime tree. Its key includes the
+canonical reference (`java_i2p` or `i2pd`), full source revision, lock
+digest, `ubuntu-24.04-amd64`, build-command version, and relevant
+tool/ABI versions. It must not fetch, clone, install, resolve DNS, or
+fall back on a cache miss. Runtime configs, identities, keys, RouterInfo,
+NetDB state, run roots, raw logs, namespace state, and evidence records
+are never cache inputs.
 
-The reference crosscheck is a control, not an i2pr result; it must pass before
-the four independent i2pr/reference IPv4 directions can run. The full profile
-adds bounded malformed, replay, timeout, resource, race, cancellation, and
-failure-cleanup scenarios, but not unbounded fuzzing. The evidence gate
-validates an aggregate manifest and a narrow sanitized upload allowlist.
-Cleanup runs with an always-run policy, and Plan 043 requires an independent
-`verify-clean-host.sh` check for residual namespaces, veths, processes,
-secret-bearing run roots, forbidden files, and attributable host firewall or
-route changes. The workflow and helper apparatus now expose this manual lane,
-but documentation of the contract is not a claim that the lane has passed.
+The reference crosscheck is a control, not an i2pr result; it must pass
+before the four independent i2pr/reference IPv4 directions can run. The
+full profile adds bounded malformed, replay, timeout, resource, race,
+cancellation, and failure-cleanup scenarios, but not unbounded fuzzing.
+The evidence gate validates an aggregate manifest and a narrow
+sanitized upload allowlist. Cleanup runs with an always-run policy, and
+Plan 043 requires an independent `verify-clean-host.sh` check for
+residual namespaces, veths, processes, secret-bearing run roots,
+forbidden files, and attributable host firewall or route changes. The
+workflow and helper apparatus expose this manual lane, but documentation
+of the contract is not a claim that the lane has passed.
 
 ### Zero Rust integration test files
 
 There are **zero `.rs` files** under `tests/`. All decode/encode
-verification lives inside the crates (typically in
-`#[cfg(test)]` modules). The `tests/` tree is purely fixture data
-and the interoperability manifest — a deliberate separation.
+verification lives inside the crates (typically in `#[cfg(test)]`
+modules). The `tests/` tree is purely fixture data, lane drivers, and
+the interoperability manifest — a deliberate separation.
 
 ## `fuzz/` — opt-in fuzz workspace
 
-- **Separate workspace** (`fuzz/Cargo.toml` declares `[workspace]`
-  with no members — standalone).
-- **Package**: `i2pr-proto-fuzz`, edition 2021, `publish = false`.
+- **Separate workspace** (`fuzz/Cargo.toml` declares an empty
+  `[workspace]` — standalone).
+- **Package**: `i2pr-proto-fuzz`, edition 2021, `publish = false`,
+  `[package.metadata] cargo-fuzz = true`.
 - **Dependencies**: `i2pr-crypto`, `i2pr-proto`, `i2pr-storage`,
   `i2pr-transport-ntcp2`, `libfuzzer-sys 0.4`.
-- **22 fuzz targets** in `fuzz/fuzz_targets/`, each declared as a
-  `[[bin]]`:
+- **24 fuzz targets** declared as `[[bin]]` in `fuzz/Cargo.toml`, each
+  with a matching `fuzz/fuzz_targets/*.rs`, plus one shared
+  `support.rs` module (25 `.rs` files in the directory).
 
-| Target | What it fuzzes |
+| Area | Targets |
 | --- | --- |
-| `date` | Date codec |
-| `date32` | 32-bit date codec |
-| `hash` | Hash primitives |
-| `mapping` | Mapping codec |
-| `certificate` | Certificate codec |
-| `key_certificate` | Key+Certificate codec |
-| `key_and_cert` | KeyAndCert combined |
-| `router_identity` | RouterIdentity codec |
-| `destination` | Destination codec |
-| `router_address` | RouterAddress codec |
-| `router_info` | RouterInfo codec (1 MiB max) |
-| `lease` | Lease codec |
-| `lease_set` | LeaseSet codec |
-| `i2np_standard` | I2NP standard message decode |
-| `i2np_bodies` | I2NP body parsing |
-| `i2np_short_ssu` | I2NP short SSU framing |
-| `i2np_short_transport` | I2NP short transport framing |
-| `ntcp2_transcript` | NTCP2 transcript hash |
-| `ntcp2_storage` | NTCP2 static key decode |
-| `ntcp2_handshake` | NTCP2 handshake state machine (full fuzz) |
-| `ntcp2_blocks` | NTCP2 block parsing |
-| `ntcp2_frames` | NTCP2 wire frame open/seal |
+| Primitive codecs | `date`, `date32`, `hash`, `mapping` |
+| Identity / certificate | `certificate`, `key_certificate`, `key_and_cert`, `router_identity`, `destination`, `router_address`, `router_info` |
+| Lease structures | `lease`, `lease_set`, `leaseset2`, `metaleaseset` |
+| I2NP | `i2np_standard`, `i2np_bodies`, `i2np_short_ssu`, `i2np_short_transport` |
+| NTCP2 | `ntcp2_transcript`, `ntcp2_storage`, `ntcp2_handshake`, `ntcp2_blocks`, `ntcp2_frames` |
+| Shared support (not a target) | `support.rs` — defines `COMMON_MAX` (1 MiB) and `I2NP_MAX` (62,724) with a `within()` guard |
 
-- `support.rs` — shared module defining `COMMON_MAX` (1 MiB) and
-  `I2NP_MAX` (62,724) with a `within()` guard.
+**Scope correction**: fuzzing covers datatypes, the LeaseSet/LeaseSet2
+datastore structures, I2NP message/framing decode, and NTCP2 crypto and
+framing. There are **no** fuzz targets for Streaming packets, SAM or
+I2CP framing, or tunnel records/fragmentation. Do not claim fuzz coverage
+for subsystems that have no target on disk.
 
 ### How to drive
 
@@ -297,15 +493,18 @@ and the interoperability manifest — a deliberate separation.
 rustup toolchain install nightly
 cargo install cargo-fuzz
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run --fuzz-dir fuzz ntcp2_handshake -- -runs=10000
-bash scripts/fuzz-smoke.sh   # all 22 targets, 32 iterations each
+bash scripts/fuzz-smoke.sh   # all 24 targets, 32 iterations each
 ```
+
+`fuzz-smoke.sh` is opt-in: it is **not** in the AGENTS.md floor and
+**not** in CI, because it requires `cargo-fuzz` + nightly.
 
 ### Corpus
 
 - `fuzz/corpus/<target>/` directories with seed files; most include
   a `seed-oversized-shape`.
-- `fuzz/corpus/metadata.toml` records provenance: all seeds
-  locally authored, no third-party bytes.
+- `fuzz/corpus/metadata.toml` records provenance: all seeds locally
+  authored, no third-party bytes.
 
 ## `.cargo/config.toml`
 
@@ -319,11 +518,13 @@ subcommands, no hidden `-Z` flags. Deliberately clean.
 
 ## Plan 161 SSU2 external lane (passed, retained)
 
-The independent SSU2 driver is `crates/i2pr-runtime/tests/ssu2_independent.rs`.
-It is compiled by `cargo check --workspace --all-targets` but its single
-environment-dependent test is explicitly ignored during ordinary workspace
-and direct-executable test runs. The dedicated loopback lane must provision
-the exact-pinned i2pd 2.61.0 reference and select it with:
+The independent SSU2 driver is
+`crates/i2pr-runtime/tests/ssu2_independent.rs`. It is compiled by
+`cargo check --workspace --all-targets` but its single
+environment-dependent test is explicitly ignored during ordinary
+workspace and direct-executable test runs. The dedicated loopback lane
+must provision the exact-pinned i2pd 2.61.0 reference and select it
+with:
 
 ```text
 cargo test --locked -p i2pr-runtime --test ssu2_independent \
@@ -332,9 +533,9 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent \
 
 The driver remains fail-closed when `I2PD_ROUTER_INFO`,
 `I2PD_SSU2_ENDPOINT`, `I2PR_SSU2_BIND`, `I2PR_SSU2_FLOODFILL`, or
-`EVIDENCE_DIR` is absent. Routine CI does not provision an external peer;
-Plan 162 established this as a test-lane boundary, not as a protocol or
-interoperability skip.
+`EVIDENCE_DIR` is absent. Routine CI does not provision an external
+peer; Plan 162 established this as a test-lane boundary, not as a
+protocol or interoperability skip.
 
 The full Plan 161 lane derives all 15 required rows from executed
 commands (local focused suites plus the single explicit driver
@@ -351,136 +552,185 @@ CI pass.
 
 ## `.github/` — CI
 
-### `.github/workflows/ci.yml` (single workflow, three jobs)
+Ten workflows exist. One is the ordinary gate; the other nine are
+`workflow_dispatch`-only manual external lanes.
+
+### `.github/workflows/ci.yml` (ordinary gate, three jobs)
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) → `check-i2pcontrol-acceptance-evidence.sh` (Linux) → `check-service-tunnel-acceptance-evidence.sh` (Linux) |
-| **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
-| **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
+| **Quality** | ubuntu-latest + macos-latest (matrix, `fail-fast: false`) | Checkout → ripgrep install (Linux only) → Rust 1.95.0 + rustfmt + clippy → Cargo cache → `cargo fmt --all --check` → `cargo check --locked --workspace` → `cargo check --locked --workspace --all-targets` → tests → `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` → `cargo doc --locked --workspace --no-deps` (with `RUSTDOCFLAGS: -D warnings`) → 24 checker invocations |
+| **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --locked --workspace --all-targets` |
+| **Dependency policy** | ubuntu-latest | `cargo deny check advisories bans sources` (via `EmbarkStudios/cargo-deny-action@v2`) |
 
 Triggers: `on: push`, `on: pull_request` (all branches).
+`permissions: contents: read`.
 
-### `.github/workflows/ssu2-external.yml` (manual lane)
+**The 24 checker invocations, exactly** (all bare `if: runner.os ==
+'Linux'` unless noted):
 
-- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 161: fetch/verify
-  the exact i2pd 2.61.0 reference → run the SSU2 evidence-integrity
-  checker → run `tests/integration/ssu2/run-independent.sh` → upload
-  sanitized evidence even on failure. Bounded 45-minute timeout; no
-  public-I2P participation beyond the GitHub source fetch.
+1. `bash scripts/check-dependency-direction.sh` (both OS)
+2. `python3 scripts/check-global-plan-number-uniqueness.py` (both OS)
+3. `python3 -m unittest discover -s tests/planning -p 'test_*.py'` (both OS)
+4. `bash scripts/check-runtime-boundaries.sh`
+5. `bash scripts/check-fixture-manifest.sh`
+6. `bash scripts/check-ntcp2-vectors.sh`
+7. `bash scripts/check-ssu2-vectors.sh`
+8. `bash scripts/check-i2cp-vectors.sh`
+9. `bash scripts/check-ntcp2-interoperability.sh`
+10. `bash scripts/check-constrained-host-lane-boundary.sh`
+11. `bash scripts/check-sam-acceptance-evidence.sh`
+12. `bash scripts/check-ssu2-acceptance-evidence.sh`
+13. `bash scripts/check-i2cp-acceptance-evidence.sh`
+14. `bash scripts/check-i2pcontrol-acceptance-evidence.sh`
+15. `bash scripts/check-service-tunnel-acceptance-evidence.sh`
+16. `bash scripts/check-exploratory-tunnel-evidence.sh`
+17. `bash scripts/check-netdb-tunnel-evidence.sh`
+18. `bash scripts/check-destination-tunnel-evidence.sh`
+19. `bash scripts/check-streaming-tunnel-evidence.sh`
+20. `bash scripts/check-m6-mixed-router-acceptance-evidence.sh`
+21. `bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test`
+22. `bash scripts/check-m11-transit-boundaries.sh`
+23. `bash scripts/check-java-source-lock-gating.sh`
+24. `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`
 
-### `.github/workflows/service-tunnels-external.yml` (manual lane)
+**macOS test pattern.** The workspace includes several real loopback
+listener suites, and macOS runners become flaky when Cargo launches
+those test binaries together. macOS therefore builds the complete test
+set once with `cargo test --locked --workspace --no-run
+--message-format=json-render-diagnostics`, extracts every
+`compiler-artifact` executable with `.profile.test == true` via `jq`,
+and then runs each executable serially with a single libtest worker
+(`"$executable" --test-threads=1`), finishing with `cargo test --locked
+--workspace --doc`. Non-macOS runners use the single
+`cargo test --locked --workspace -- --test-threads=1` invocation. Use
+`--test-threads=1` locally for the `i2pr-daemon` and `i2pr-runtime`
+loopback suites.
 
-- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 181 (local
-  rows green, remote rows `blocked` per §6.3): install i2pd build
-  deps + netcat → fetch/verify the exact jaraco/irc pin and the
-  exact i2pd 2.61.0 reference → run the service-tunnel
-  evidence-integrity checker → run
-  `tests/integration/service-tunnels/run-independent.sh` (31
-  command-derived rows: prerequisite/tool/pin gates, static
-  boundary checks, focused Rust suites with per-test ok-line
-  rows, unmodified curl HTTP/SOCKS rows, nc + stdlib generic
-  rows, exact-pinned jaraco/irc rows, restart stability, the
-  i2pd SAM DEST GENERATE qualification with the ignored-driver
-  stop-condition assertion, resource baseline,
-  unsupported-profile ledger) → upload sanitized evidence even on
-  failure. Full lane exits nonzero while the remote rows stay
-  blocked (fail-closed by design); `--local-only` skips only the
-  i2pd section and still records the remote rows as blocked.
-  Bounded 45-minute timeout; loopback-only, no public-I2P
-  participation beyond the GitHub source fetch.
+### Manual external lanes (all `workflow_dispatch`-only)
 
-### `.github/workflows/i2cp-external.yml` (manual lane)
+| Workflow | Lane |
+| --- | --- |
+| `ssu2-external.yml` | Plan 161: fetch/verify the exact i2pd 2.61.0 reference → run `scripts/check-ssu2-acceptance-evidence.sh` → run `tests/integration/ssu2/run-independent.sh` → upload sanitized evidence even on failure. Bounded 45-minute timeout; no public-I2P participation beyond the GitHub source fetch. |
+| `sam-external.yml` | SAM external clients: `bash scripts/interop/fetch-sam-clients.sh --rebuild` → `bash tests/integration/sam/clients/build.sh` → `scripts/check-sam-acceptance-evidence.sh` → `tests/integration/sam/run-independent.sh` → upload sanitized evidence. Ubuntu 24.04, bounded 30-minute timeout. |
+| `i2cp-external.yml` | Plan 172 (Plan 170 retained): install ant/JDK/Go → fetch/verify the exact Java I2P 2.13.0 + go-i2cp pins → `scripts/check-i2cp-acceptance-evidence.sh` → `tests/integration/i2cp/run-independent.sh` (24 fail-closed rows: 9 retained Plan 170 wire/data-plane rows + 15 counted Plan 172 lifecycle rows) → upload sanitized evidence. Bounded 45-minute timeout; loopback-only. |
+| `service-tunnels-external.yml` | Plan 181 (local rows green, remote rows `blocked` per §6.3): install i2pd build deps + netcat → fetch/verify the exact jaraco/irc pin and i2pd 2.61.0 → `scripts/check-service-tunnel-acceptance-evidence.sh` → `tests/integration/service-tunnels/run-independent.sh` (which delegates the remote section to `run-plan214-applications.sh`; `run-plan213-generic.sh` covers the generic rows) → upload sanitized evidence. The full lane exits nonzero while the remote rows stay blocked (fail-closed by design); `--local-only` skips only the i2pd section and still records the remote rows as blocked. Bounded 45-minute timeout; loopback-only. |
+| `m6-mixed-router-external.yml` | Plan 189 §8: install i2pd build deps + ant/JDK/gettext-base → fetch/verify the exact i2pd 2.61.0 reference → run the per-layer checkers (`check-exploratory-`, `check-netdb-`, `check-destination-`, `check-streaming-tunnel-evidence.sh`) and the cross-family checker `scripts/check-m6-mixed-router-acceptance-evidence.sh` → `tests/integration/m6-interop/run-m6-mixed-router.sh` → `scripts/check-m6-final-closure-evidence.sh` → upload sanitized evidence. Java family rows record `failed` with stop provenance until Plan 236 external execution closes the response-emission observability gap. Bounded 60-minute timeout; loopback-only. |
+| `m11-transit-external.yml` | Plan 264/265 M11 exact-pinned i2pd controlled transit. Takes `epoch`, `epoch_pass`, and `scenario` dispatch inputs and runs a frozen 8-attempt matrix. Runs `scripts/check-m11-transit-boundaries.sh`, `scripts/check-m11-transit-qualification-evidence.sh`, and `tests/integration/m11-transit/run-i2pd.sh`. Bounded 90-minute timeout. |
+| `ntcp2-interop-ubuntu.yml` | Plan 038 Ubuntu harness. Runs `check-dependency-direction.sh`, `check-ntcp2-interoperability.sh`, `check-runtime-boundaries.sh`, and the `ntcp2/harness` tests. Historical lane. |
+| `ntcp2-interop-rootless.yml` | Plan 046 rootless sealed-namespace lane. Runs `check-dependency-direction.sh`, `check-ntcp2-interoperability.sh`, `check-rootless-interop-boundary.sh` (twice — pre- and post-dispatch), `check-runtime-boundaries.sh`, and the `ntcp2/harness` tests. Historical lane. |
+| `ntcp2-interop-host-loopback-development.yml` | Historical host-loopback development lane. Intentionally has **no** `pull_request` trigger. Runs the `ntcp2/harness` tests and `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`. |
 
-- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 172 (Plan 170
-  retained): install ant/JDK/Go → fetch/verify the exact Java I2P
-  2.13.0 + go-i2cp pins → run the I2CP evidence-integrity checker →
-  run `tests/integration/i2cp/run-independent.sh` (24 fail-closed
-  rows: 9 retained Plan 170 wire/data-plane rows + 15 counted Plan 172
-  lifecycle rows including high-level connect, non-empty lease requests,
-  client-generated LS2 installs, gateway/tunnel ownership, usable-after-LS2,
-  and 4 post-LS2 digest rows + regressions + gates + resource baseline) →
-  upload sanitized evidence even on failure. Bounded 45-minute timeout;
-  loopback-only, no public-I2P participation beyond the GitHub/Maven
-  source fetch.
-
-### `.github/workflows/m6-mixed-router-external.yml` (manual lane)
-
-- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 189 §8: install
-  i2pd build deps + ant/JDK/gettext-base → fetch/verify the exact i2pd
-  2.61.0 reference (the lane does NOT start a Java router yet — the
-  second-family Java qualification harness is a follow-up plan) → run
-  the cross-family evidence-integrity checker
-  (`scripts/check-m6-mixed-router-acceptance-evidence.sh`) plus the
-  three per-layer static checkers → run
-  `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family
-  aggregator that reuses the four per-layer harnesses and binds every
-  Plan 189 §8 guarded row to a family + a per-layer exit code) →
-  upload sanitized evidence even on failure. Records `failed` for the
-  Java family with stop provenance until the Java qualification harness
-  lands; i2pd family rows are bound to the per-layer exit codes
-  directly. Bounded 60-minute timeout; loopback-only, no public-I2P
-  participation beyond the GitHub source fetch.
+The three `ntcp2-interop-*` workflows are retained historical
+apparatus. NTCP2 is experimental and non-advertised, and normal-daemon
+NTCP2 is disabled per Plan 101; do not extend those lanes without a new
+plan-of-record.
 
 ### `.github/dependabot.yml`
 
 - Cargo ecosystem: weekly, max 5 open PRs.
 - GitHub Actions: weekly, max 5 open PRs.
 
-## `.opencode/` and `.agents/`
+## Reference pins
 
-- `.opencode/skills/` — loadable skill bundles for OpenCode sessions
-  operating on the harness lanes. Five skills ship with the repo:
-  `i2pr-local-dev`, `i2pr-architecture`, `i2pr-ntcp2-interop`,
-  `i2pr-rootless-sandbox`, `i2pr-multipass-recovery`. These are the
-  source of truth for harness details; load the matching skill before
-  touching a lane.
-- `.agents/` — symlink to `../.opencode/skills` (consumed by agents
-  that resolve the conventional `.agents/` location).
+**Do not change a pin without a new plan.** Full rationale lives in
+[`specs/SOURCES.md`](../../specs/SOURCES.md) and
+[`docs/provenance/`](../../docs/provenance/).
 
-The historical references to `.codex/` and a separate `.agents/`
-directory are stale.
+| Reference | Pin | Role |
+| --- | --- | --- |
+| i2pd | `2.61.0` @ `635b013a612ff47278ef02acf8580a28e10e26c5` | **mandatory** — primary C++ interoperability reference |
+| Java I2P | `2.13.0` @ `9134f808337b401e8e53c73734c81fab04280c9d` | **secondary** — primary Java family |
+| go-i2cp | `b529ee1c10a6011558b4d69fc9436a4afc489eac` | mandatory for the I2CP counted lane |
+| i2psam | `b80ecd48…` | counted SAM client |
+| i2plib | `6edf51cd…` | counted SAM client |
+| Java I2P / i2pd (NTCP2 synthetic lane) | Java I2P `2.12.0` @ `2800040deee9bb376567b671ef2e9c34cf3e30b6`; i2pd `2.60.0` @ `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` | frozen NTCP2-era synthetic-lane pins in `tests/integration/ntcp2/references.lock.toml` |
+| IzPack | `5.2.4` | Java I2P build installer digest, in the same lock file |
+
+### Proposal 170 provenance pins (Plan 286)
+
+Frozen for the Proposal 170 / I2PControl workstream. Only
+manifest-listed Proposal 170 files receive the ADR 0028 reuse
+exception. Source: `docs/provenance/proposal-170-manifest.md`.
+
+| Reference | Pin |
+| --- | --- |
+| Proposal 170 (I2PControl Expansion, Open) | revision `2026-05-20`, source text SHA-256 `f13ae00b886c5e72131bc5d5b138a371148d1faa6899a119a1dacb65a555e7dc` |
+| eggstack/emissary fork master | `6885a945d25a5ae61bc68191d27c5816bc3df4c9` |
+| eepnet/emissary upstream master | `9b43484a21d5a1291c4881cdae62a36c527f8c0f` |
+| Java I2PControl Proposal 170 PR 6 head | `45bb593000408071dd376b78848fdc246dccd964` |
+
+## Environment-gated test discipline
+
+Lanes that need a reference router, a captured corpus, or an external
+client are `#[ignore]`-gated. This is a fail-closed contract, not a
+formality:
+
+- An ordinary run **compiles** the gated test and **skips** it.
+- An explicit run requires `--ignored --exact` plus the single exact
+  test name.
+- **Missing environment must fail, never silently pass.** A driver with
+  absent env must exit nonzero, not record a skip.
+- Forbidden: `|| true`, `continue-on-error`, filename filtering, fake
+  peer env, broad exclusions, early-return-success, and production wire
+  changes made to go green.
+- Raw reference logs are never evidence. Only sanitized counts and
+  hashes reach evidence files.
+- The environment-gated driver is the single
+  `crates/i2pr-runtime/tests/ssu2_independent.rs` SSU2 lane; it stays
+  fail-closed on `I2PD_ROUTER_INFO`, `I2PD_SSU2_ENDPOINT`,
+  `I2PR_SSU2_BIND`, `I2PR_SSU2_FLOODFILL`, and `EVIDENCE_DIR`.
+
+## Skills inventory
+
+Six skill bundles ship under `.opencode/skills/`. `.agents/skills` is a
+**symlink to `../.opencode/skills`** — the same directory, not a second
+copy. There is no separate `.skills/` directory, and the historical
+references to `.codex/` are stale.
+
+| Skill | Status | Use |
+| --- | --- | --- |
+| `i2pr-architecture` | active | ADR/plan navigation, per-crate deep-dive ownership, doc-vs-source audits |
+| `i2pr-local-dev` | active | the local product path — destinations/garlic/LeaseSet2/Streaming, SAM 3.1, SSU2, I2CP, service tunnels |
+| `i2pr-planning` | active | registering plans, closure records, `registry.md`, subsystem roadmaps, unblock audit |
+| `i2pr-ntcp2-interop` | **historical / read-only** | archaeology over the closed Plan 038–100 NTCP2 lane; never for routine work |
+| `i2pr-rootless-sandbox` | **historical / read-only** | the closed Plan 046 rootless lane |
+| `i2pr-multipass-recovery` | **historical / read-only** | the closed Plan 048–053 Multipass lane |
+
+Load the matching skill before touching a lane; the skills are the
+source of truth for harness detail.
+
+## `tools/`
+
+- `tools/i2pr-interop/` — the non-production interop launcher crate
+  (`Cargo.toml` + `src/`). It is the 20th workspace member and is
+  `publish = false`; no production crate may depend on it.
+- `tools/generate-els2-independent-fixture.py` — independent
+  EncryptedLeaseSet2 fixture producer.
+- `tools/generate-red25519-independent-fixture.py` — independent
+  Red25519 fixture producer.
+- `tools/i2pd-red25519-oracle.cpp` — the i2pd-side Red25519 oracle
+  used when producing the independent fixture.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (16 crates + 1 non-production binary)
+### Members (19 crates + 1 non-production binary = 20)
 
-```
-crates/i2pr-crypto, crates/i2pr-proto, crates/i2pr-core,
-crates/i2pr-daemon, crates/i2pr-runtime, crates/i2pr-storage,
+```text
+crates/i2pr-addressbook, crates/i2pr-api, crates/i2pr-crypto,
+crates/i2pr-proto, crates/i2pr-client, crates/i2pr-core,
+crates/i2pr-daemon, crates/i2pr-i2pcontrol, crates/i2pr-netdb,
+crates/i2pr-netdb-persist, crates/i2pr-runtime,
+crates/i2pr-service-tunnels, crates/i2pr-storage, crates/i2pr-su3,
 crates/i2pr-testkit, crates/i2pr-transport,
 crates/i2pr-transport-ntcp2, crates/i2pr-transport-ssu2,
-crates/i2pr-netdb, crates/i2pr-netdb-persist, crates/i2pr-tunnel,
-crates/i2pr-client, crates/i2pr-api, crates/i2pr-service-tunnels,
-tools/i2pr-interop
+crates/i2pr-tunnel, tools/i2pr-interop
 ```
 
-Resolver v2, edition 2024, MSRV 1.88, workspace version 0.1.0.
-`crates/i2pr-testkit` and `tools/i2pr-interop` are non-production
-crates (`publish = false`).
-
-### Workspace dependencies (32, all default-features = false unless noted)
-
-- **Crypto**: `aes 0.8.4`, `chacha20 0.9.1`, `chacha20poly1305 0.10.1`
-  (+alloc), `crypto-common = 0.1.7` (pinned),
-  `curve25519-elligator2 0.1.0-alpha.2` (deprecated, retained for
-  transitional use; Plan 131 retired it for the production Elligator
-  branch and `elligator2 = 0.1.0` is the active primitive),
-  `elligator2 = 0.1.0`,
-  `ed25519-dalek 2.2` (+std+zeroize), `hmac 0.12.1`, `rand_chacha 0.9`,
-  `rand_core 0.9` (+os_rng where noted), `sad-rsa 0.2` (+std+encoding+sha2),
-  `sha2 0.10`, `siphasher 1.0.3`, `subtle 2.6`,
-  `x25519-dalek 2.0.1` (+static_secrets+zeroize),
-  `x509-cert 0.2` (+builder+pem), `x509-parser 0.18` (+verify),
-  `zeroize 1.8` (+derive).
-- **Compression / packaging**: `flate2 1.1` (+rust_backend), `zip 2.2`
-  (+deflate), `base64ct 1.8` (+alloc), `cbc 0.1` (+block-padding).
-- **Runtime**: `tokio 1.48` (+io-util+macros+net+rt+signal+sync+time+test-util),
-  `tokio-util 0.7` (+rt), `futures-util 0.3` (+std).
-- **General**: `clap 4.5` (+derive+help+std+usage),
-  `thiserror 2.0`, `tracing 0.1`,
-  `tracing-subscriber 0.3` (+env-filter+fmt),
-  `serde 1.0` (+derive), `toml 0.8`, `tempfile 3.14`.
+`resolver = "2"`, `edition = "2024"`, `rust-version = "1.88"`,
+workspace version `0.1.0`. `crates/i2pr-testkit` and
+`tools/i2pr-interop` are non-production crates (`publish = false`), and
+no production crate may depend on the testkit.
 
 ### Workspace lints
 
@@ -513,6 +763,60 @@ lto = false
 Overflow checks are enabled in dev and test profiles. Release uses
 unwinding panics and no LTO (fast builds over binary size).
 
+## The routine floor
+
+The `AGENTS.md` handoff floor, cross-checked against disk. **Every entry
+resolves to a script that exists.** `scripts/fuzz-smoke.sh` is opt-in and
+is listed separately in [Opt-in runners](#opt-in-runners-not-in-the-floor-not-in-ci-by-design).
+
+```text
+cargo fmt --all --check
+cargo check --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+cargo test --locked --workspace --doc
+bash scripts/check-dependency-direction.sh
+python3 scripts/check-global-plan-number-uniqueness.py
+python3 -m unittest discover -s tests/planning -p 'test_*.py'
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-service-tunnel-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ssu2-vectors.sh
+bash scripts/check-i2cp-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-constrained-host-lane-boundary.sh
+bash scripts/check-m11-transit-boundaries.sh
+bash scripts/check-m11-transit-qualification-evidence.sh
+bash scripts/check-sam-acceptance-evidence.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
+bash scripts/check-i2cp-acceptance-evidence.sh
+bash scripts/check-i2pcontrol-acceptance-evidence.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
+bash scripts/check-exploratory-tunnel-evidence.sh
+bash scripts/check-netdb-tunnel-evidence.sh
+bash scripts/check-destination-tunnel-evidence.sh
+bash scripts/check-streaming-tunnel-evidence.sh
+bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
+cargo deny check advisories bans sources
+```
+
+### Host limitation: macOS bash 3.2
+
+The four fixture/vector checkers
+(`check-fixture-manifest.sh`, `check-ntcp2-vectors.sh`,
+`check-ssu2-vectors.sh`, `check-i2cp-vectors.sh`) use bash 4
+`declare -A` and `check-java-source-lock-gating.sh` uses bash 4
+`mapfile`. macOS ships bash 3.2, so those five exit early on this host
+with a shell-syntax/`command not found` error. This is a **host
+limitation, not a fixture fault** — the same scripts pass in Linux CI.
+Do not "fix" the scripts to accommodate a local shell; run them under
+bash 4 (e.g. `brew install bash` and invoke with an explicit path) or
+rely on CI.
+
 ## Distinctive design choices
 
 1. **Zero Rust integration test files under `tests/`.** All
@@ -520,8 +824,9 @@ unwinding panics and no LTO (fast builds over binary size).
 2. **Dual-toolchain CI.** Production builds use 1.95.0; MSRV
    verification runs 1.88.0 separately. The toolchain is pinned in
    `rust-toolchain.toml`.
-3. **Python in the dependency-direction guard.** Uses Python 3 stdlib
-   for JSON parsing — the only script that does so.
+3. **Python in several checkers.** `check-dependency-direction.sh` and
+   the planning checker use Python 3 stdlib for JSON/YAML-free
+   parsing, alongside the bash-4 vector checkers.
 4. **`unsafe_code = "deny"` workspace-wide** combined with clippy
    denies on `dbg!`, `todo!`, `unimplemented!`. Very strict lint
    posture.
@@ -540,41 +845,21 @@ unwinding panics and no LTO (fast builds over binary size).
 9. **Edition 2024 in production, 2021 in fuzz.** Likely because
    `libfuzzer-sys` / `cargo-fuzz` aren't edition-2024-compatible
    yet.
-10. **Top-level `AGENTS.md`** is the canonical developer guide —
-    read it before changing code, alongside `README.md`,
-    `GUARDRAILS.md`, the applicable `plans/NNN-*.md`, and relevant
-    `docs/adr/` records.
-
-## Pre-handoff sequence (from `AGENTS.md`)
-
-```text
-cargo fmt --all --check
-cargo check --locked --workspace --all-targets
-cargo test --locked --workspace --all-targets -- --test-threads=1
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
-cargo test --locked --workspace --doc
-bash scripts/check-dependency-direction.sh
-bash scripts/check-runtime-boundaries.sh
-bash scripts/check-service-tunnel-boundaries.sh
-bash scripts/check-fixture-manifest.sh
-bash scripts/check-ntcp2-vectors.sh
-bash scripts/check-ssu2-vectors.sh
-bash scripts/check-i2cp-vectors.sh
-bash scripts/check-ntcp2-interoperability.sh
-bash scripts/check-constrained-host-lane-boundary.sh
-bash scripts/check-sam-acceptance-evidence.sh
-bash scripts/check-ssu2-acceptance-evidence.sh
-bash scripts/check-i2cp-acceptance-evidence.sh
-bash scripts/check-i2pcontrol-acceptance-evidence.sh
-bash scripts/check-service-tunnel-acceptance-evidence.sh
-bash scripts/fuzz-smoke.sh                    # opt-in; requires cargo-fuzz + nightly
-```
+10. **Top-level [`AGENTS.md`](../../AGENTS.md)** is the canonical
+    developer guide — read it before changing code, alongside
+    `README.md`, `GUARDRAILS.md`, the applicable `plans/NNN-*.md`, and
+    relevant `docs/adr/` records.
 
 ## Cross-references
 
 - [Overview](overview.md)
+- [Dependency graph](dependency-graph.md)
+- [Interop apparatus](interop-apparatus.md)
 - [`AGENTS.md`](../../AGENTS.md)
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - [`GUARDRAILS.md`](../../GUARDRAILS.md)
+- [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md)
+- [`specs/SOURCES.md`](../../specs/SOURCES.md)
+- [`specs/support.toml`](../../specs/support.toml)
+- [`docs/provenance/`](../../docs/provenance/)
 - Plan-of-record: latest active `plans/NNN-*.md`

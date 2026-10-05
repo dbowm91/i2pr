@@ -1,70 +1,114 @@
 # `i2pr-core` — Deep Dive
 
-Runtime-neutral service contracts. The bottom of the runtime-aware
-dependency graph and the only crate with **zero** direct dependencies.
+Runtime-neutral service contracts: lifecycle, health, cancellation, and
+the shared resource governor. The bottom of the runtime-aware
+dependency graph and the only crate with **zero** dependencies.
 
 Path: `crates/i2pr-core/`
 
 ## Purpose
 
-Owns small, std-only types that the future router services all share:
+Owns the small, `std`-only types every other crate shares:
 
-- **Lifecycle** state machine and bounded service names.
-- **Health** snapshots, bounded diagnostic detail, liveness/readiness,
-  redaction.
-- **Cancellation** via a runtime-neutral `Arc<AtomicBool>` token.
-- **Resource budgets** with per-class ceilings, RAII leases, atomic
+- **Lifecycle** state machine, terminal-state query, and bounded
+  service names.
+- **Health** snapshots with explicit liveness/readiness, bounded
+  diagnostic detail, and redacted `Debug`.
+- **Cancellation** via a runtime-neutral, polling-only
+  `Arc<AtomicBool>` token.
+- **Resource governance** — per-class ceilings, RAII leases, atomic
   bundles, high-water marks, denial counters, and unwind safety.
-- **Failure classification** taxonomies for both consumer-reported
+- **Failure and completion taxonomies** for both consumer-reported
   (`ServiceFailure`) and supervisor-observed (`ServiceCompletion`)
   exits.
 
-It deliberately owns **no** runtime, configuration parsing, filesystem
-state, network transport, protocol codec, or router composition. It
-depends on **nothing** — not even `tokio` or `i2pr-*` crates.
+It deliberately owns **no** runtime, configuration parsing,
+filesystem state, network transport, protocol codec, or router
+composition. It depends on **nothing** — not even `tokio` or another
+`i2pr-*` crate.
 
 ## Module layout
 
-Single flat file: `crates/i2pr-core/src/lib.rs` (~1425 lines). All types
-live at the crate root. There are no submodules.
+One flat file, no submodules, no subdirectories. All public items live
+at the crate root.
+
+| File | Lines | Notes |
+| --- | --- | --- |
+| `crates/i2pr-core/src/lib.rs` | 1425 | `#![forbid(unsafe_code)]` at :7; `#[cfg(test)] mod tests` at :1105-1425 |
+
+Internal concept breakdown (not modules — declaration ranges in
+`lib.rs`):
+
+| Concept | Lines |
+| --- | --- |
+| Crate docs, `forbid(unsafe_code)`, `std` imports | 1-14 |
+| Bound constants | 16-19 |
+| Service naming | 21-78 |
+| Lifecycle FSM | 80-156 |
+| Failure / completion taxonomy | 158-279 |
+| Cancellation reasons, degradation codes | 281-307 |
+| Health state, detail, snapshot | 309-508 |
+| Shutdown reason, cancellation token | 510-539 |
+| Resource governor (classes → errors) | 541-1103 |
+| In-crate tests | 1105-1425 |
+
+Private helpers: `ClassState`, `BudgetState`, `BudgetInner` (:684-701)
+and `ResourceBudget::release` / `release_for_test` (:946-968).
 
 ## Public surface
 
+28 public items: 3 constants and 25 types. No traits are exported.
+
 ### Constants
 
-- `MAX_SERVICE_NAME_BYTES = 64` (lib.rs:17),
-  `MAX_HEALTH_DETAIL_BYTES = 160` (lib.rs:19),
-  `MAX_RESOURCE_CLASSES = 32` (lib.rs:542).
-  All three are bounded ceilings enforced at the constructor /
-  admission layer.
+- `MAX_SERVICE_NAME_BYTES: usize = 64` (lib.rs:17) — service
+  identifier ceiling.
+- `MAX_HEALTH_DETAIL_BYTES: usize = 160` (lib.rs:19) — bounded health
+  context ceiling.
+- `MAX_RESOURCE_CLASSES: usize = 32` (lib.rs:542) — class-count
+  ceiling enforced by `ResourceBudget::new` and
+  `try_acquire_bundle`. Enforced by a `const` assertion against
+  `ResourceClass::COUNT` in the test suite.
 
 ### Service naming and lifecycle
 
-- `struct ServiceName` (23) — bounded, validated UTF-8 (≤ 64 bytes).
-  `AsRef<str>` only.
-- `enum ServiceNameError` (60) — `Empty`, `TooLong { maximum }`.
-- `enum LifecycleState` (82) — `Registered → WaitingForDependencies →
-  Starting → Ready → Degraded → Stopping → Stopped/Failed`.
-  Self-transitions accepted; illegal transitions return
-  `InvalidLifecycleTransition`.
-- `struct InvalidLifecycleTransition` (139) — error value with
-  `from`/`to` fields.
+- `struct ServiceName` (23) — bounded (≤ `MAX_SERVICE_NAME_BYTES`)
+  non-empty UTF-8 newtype. `new`, `as_str`, `AsRef<str>`, and
+  `Display`; `Clone + Debug + Eq + Hash + Ord`.
+- `enum ServiceNameError` (60) — `Empty`, `TooLong { maximum: usize }`.
+- `enum LifecycleState` (82) — 8 variants: `Registered`,
+  `WaitingForDependencies`, `Starting`, `Ready`, `Degraded`,
+  `Stopping`, `Stopped`, `Failed`. Methods: `transition(self, next) ->
+  Result<Self, InvalidLifecycleTransition>`, `is_terminal(self) ->
+  bool` (`Stopped | Failed`).
+- `struct InvalidLifecycleTransition` (139) — public `from` /
+  `to: LifecycleState` fields.
 
-### Failure taxonomy
+### Failure and completion taxonomy
 
 - `enum ServiceClassification` (160) — `Essential / Restartable /
   Degradable / Optional`.
 - `enum FailureCategory` (173) — 10-variant static taxonomy:
-  `ServiceFailure`, `UnexpectedCleanExit`, `Panic`, `TaskJoinFailure`,
-  `StartupTimeout`, `ReadinessTimeout`, `GracefulShutdownTimeout`,
-  `ForcedAbort`, `RestartBudgetExhausted`, `DependencyUnavailable`.
+  `ServiceFailure`, `UnexpectedCleanExit`, `Panic`,
+  `TaskJoinFailure`, `StartupTimeout`, `ReadinessTimeout`,
+  `GracefulShutdownTimeout`, `ForcedAbort`,
+  `RestartBudgetExhausted`, `DependencyUnavailable`.
 - `enum ServiceFailureCategory` (198) — `Internal /
   DependencyUnavailable / ResourceExhausted / InvalidState`.
-- `struct ServiceFailure` (211) — typed failure with bounded
-  `HealthDetail`.
-- `enum ServiceCompletion` (234) — 10-variant mirror of
-  `FailureCategory` plus `RequestedShutdown`.
-- `enum CancellationReason` (283) — bounded reasons: `OperatorRequest /
+- `struct ServiceFailure` (211) — private `category` plus optional
+  bounded `HealthDetail`. `new` (const), `category` (const),
+  `detail`.
+- `enum ServiceCompletion` (235) — 10 variants: `RequestedShutdown`,
+  `UnexpectedCleanExit`, `Failed(ServiceFailure)`, `Panic`,
+  `TaskJoinFailure`, `StartupTimeout`, `ReadinessTimeout`,
+  `GracefulShutdownTimeout`, `ForcedAbort`,
+  `RestartBudgetExhausted`. It mirrors 9 of the 10
+  `FailureCategory` values (`DependencyUnavailable` is not
+  mirrored) and carries the typed failure as a payload instead of
+  a bare `ServiceFailure` marker. Methods: `category() ->
+  Option<FailureCategory>` (`None` only for `RequestedShutdown`),
+  `is_failure() -> bool`.
+- `enum CancellationReason` (283) — `OperatorRequest /
   EssentialServiceFailure / StartupFailure / ShutdownDeadline /
   ParentScope / TestHarnessTeardown`.
 - `enum DegradationCode` (300) — `DependencyUnavailable /
@@ -73,133 +117,249 @@ live at the crate root. There are no submodules.
 ### Health
 
 - `enum HealthState` (311) — `Starting / Ready / Degraded(code) /
-  Stopping / Failed`.
-- `struct HealthDetail` (338) — bounded diagnostic string (≤ 160
-  bytes). `Debug` impl **redacts** content (`{ redacted: true }`).
-- `enum HealthDetailError` (369) — `TooLong { maximum }`.
-- `struct HealthSnapshot` (385) — immutable observation with
-  liveness/readiness flags, restart count, monotonic sequence, timing.
+  Stopping / Failed`. Methods: `is_live(self) -> bool` (false only
+  for `Stopping | Failed`), `is_ready(self) -> bool` (`Ready` only).
+- `struct HealthDetail` (338) — bounded (≤ `MAX_HEALTH_DETAIL_BYTES`)
+  diagnostic string. `new`, `as_str`. Its **hand-written `Debug`** (:340)
+  prints `HealthDetail { redacted: true }` and never the content.
+- `enum HealthDetailError` (369) — `TooLong { maximum: usize }`.
+- `struct HealthSnapshot` (385) — all fields private. Two
+  constructors: `new(state, transition_sequence, detail)` (:399)
+  derives the matching `LifecycleState` and leaves
+  service/classification/restart/last-failure unset with
+  `transition_time = Duration::ZERO`; `for_service(..)` (:425) takes
+  the full runtime-facing metadata (service, classification,
+  lifecycle, state, restart count, last failure, sequence, time,
+  detail). Accessors: `service_name`, `classification`, `lifecycle`,
+  `health`, `restart_count`, `last_failure`, `state`, `transition_sequence`,
+  `transition_time`, `is_live`, `is_ready`, `detail`.
 
 ### Shutdown / cancellation
 
 - `enum ShutdownReason` (512) — `Requested / Signal / FatalFailure /
   Configuration / Test`.
-- `struct CancellationToken` (527) — runtime-neutral
-  `Arc<AtomicBool>` with `cancel` / `is_cancelled` / `clone` (shared).
+- `struct CancellationToken` (527) — newtype over `Arc<AtomicBool>`,
+  `Clone + Debug + Default`. Only `cancel` (Release store) and
+  `is_cancelled` (Acquire load). One-way: there is no reset, no
+  waker, and no async integration.
 
 ### Resource governor
 
-- `enum ResourceClass` (546) — 17 categories: `ServiceTasks,
-  ChildTasks, CommandQueueItems, EventQueueItems, BufferedBytes,
-  SimulatedStreamLinks, SimulatedDatagramLinks, PendingTimers,
-  TestPeers, Tasks, PendingHandshakes, ActiveLinks, NetDbQueries,
-  TunnelBuilds, Destinations, Streams, ApiSessions`.
-- `ResourceClass::ALL` (585) and `::COUNT` (606).
-- `struct ResourceLimit` (611), `ResourceRequest` (631),
-  `ResourceUsage` (651), `ResourceBudget` (705), `ResourceBundle` (973),
-  `ResourceLease` (1001).
-- `enum ResourceError` (1034) — 10 variants: `ZeroLimit, ZeroRequest,
-  DuplicateLimit, DuplicateRequest, EmptyBundle, TooManyClasses,
-  MissingLimit, Exhausted, ArithmeticOverflow, Poisoned`.
+- `enum ResourceClass` (546) — 17 classes, in declaration order:
+  `ServiceTasks`, `ChildTasks`, `CommandQueueItems`,
+  `EventQueueItems`, `BufferedBytes`, `SimulatedStreamLinks`,
+  `SimulatedDatagramLinks`, `PendingTimers`, `TestPeers`, `Tasks`,
+  `PendingHandshakes`, `ActiveLinks`, `NetDbQueries`,
+  `TunnelBuilds`, `Destinations`, `Streams`, `ApiSessions`.
+  `Tasks` is explicitly the legacy aggregate task count retained for
+  existing callers (:565).
+- `ResourceClass::ALL: [Self; 17]` (585) and
+  `ResourceClass::COUNT: usize` (606).
+- `struct ResourceLimit` (611) — public `class` / `maximum: u64`;
+  `new` rejects zero with `ZeroLimit`.
+- `struct ResourceRequest` (631) — public `class` / `amount: u64`;
+  `new` rejects zero with `ZeroRequest`.
+- `struct ResourceUsage` (651) — public `class`, `used`, `limit`,
+  `high_water`, `denied`, `release_underflow`, plus const accessors
+  `high_water_mark`, `denied_count`, `release_underflow_count`.
+  `denied` and `release_underflow` saturate at `u64::MAX`.
+- `struct ResourceBudget` (705) — `Arc<BudgetInner>` holding a
+  `Mutex<BTreeMap<ResourceClass, ClassState>>`. `Clone + Debug`;
+  limits are immutable after `new`. Methods: `new`,
+  `try_acquire(request) -> ResourceLease`,
+  `try_acquire_bundle(iter) -> ResourceBundle` (generic over
+  `R: Borrow<ResourceRequest>`), `usage(class) -> ResourceUsage`,
+  `snapshot() -> Vec<ResourceUsage>`.
+- `struct ResourceBundle` (973) — `len`, `is_empty`, `iter` (grants in
+  ascending `ResourceClass` order), `release`.
+- `struct ResourceLease` (1001) — `Drop` releases its units;
+  `class()`, `amount()`, `release()`.
+- `enum ResourceError` (1034) — 10 variants: `ZeroLimit`,
+  `ZeroRequest`, `DuplicateLimit`, `DuplicateRequest`,
+  `EmptyBundle`, `TooManyClasses`, `MissingLimit`, `Exhausted
+  { class, requested, available }`, `ArithmeticOverflow
+  { class, used, requested }`, `Poisoned`.
 
 ## Key contracts
 
 The crate defines **zero traits**. All contracts are concrete
 structs/enums with methods.
 
-- **Lifecycle FSM**: `LifecycleState::transition(self, next)` enforces
-  a hardcoded state graph, returns `InvalidLifecycleTransition` on
-  illegal moves.
-- **Health reporting**: `HealthSnapshot` (385) is an immutable value
-  object. Liveness and readiness are derived from `HealthState`.
-- **Cancellation**: `CancellationToken` is just `Arc<AtomicBool>` —
-  no waker, no async, no `select!` integration. `i2pr-runtime`
-  wraps this with `tokio_util::CancellationToken`.
-- **Resource budgets**:
-  - `ResourceBudget` is `Mutex`-guarded (not `RwLock`).
-  - `try_acquire` grants single-class leases; `try_acquire_bundle`
-    grants multiple classes atomically (sorted by class, all-or-nothing).
-  - `ResourceLease` releases on drop (RAII).
-  - Tracks `used` / `high_water` / `denied` / `release_underflow`
-    per class.
-  - `release()` is panic-safe (uses `into_inner()` on a poisoned
-    mutex).
+- **Lifecycle FSM**: `LifecycleState::transition` (:103) accepts any
+  self-transition plus this graph:
+  `Registered → {WaitingForDependencies, Starting, Stopping}`;
+  `WaitingForDependencies → {Starting, Stopping, Failed}`;
+  `Starting → {Ready, Degraded, Stopping, Failed}`;
+  `Ready → {Degraded, Stopping, Failed}`;
+  `Degraded → {Ready, Stopping, Failed}`;
+  `Stopping → Stopped`; `Failed → Stopping`. Anything else returns
+  `InvalidLifecycleTransition`. `is_terminal()` (:132) covers
+  `Stopped | Failed`.
+- **Bound constants** are enforced at the constructor / admission
+  layer, never at the type level: `ServiceName::new` and
+  `HealthDetail::new` reject oversized values, and
+  `ResourceBudget::new` / `try_acquire_bundle` reject more than
+  `MAX_RESOURCE_CLASSES` classes.
+- **Health reporting**: `HealthSnapshot` is an immutable value
+  object; liveness and readiness delegate to `HealthState`.
+  `HealthDetail` cannot leak through `Debug` because the derive is
+  replaced by a redacting impl.
+- **Cancellation**: `CancellationToken` is only
+  `Arc<AtomicBool>` — no waker, no async, no `select!` integration.
+  Plan 021's closure records it as "the polling-only token for
+  synchronous contracts" (`plans/closure/workspace-foundation/021-closure.md:34`);
+  `i2pr-runtime` layers the wakeable
+  `tokio_util::CancellationToken` on top.
+- **`ResourceBudget` accounting** is `Mutex`-guarded (not
+  `RwLock`) over a `BTreeMap`, so `snapshot()` ordering is
+  deterministic by `ResourceClass` ordering.
+- `try_acquire` grants a single-class lease; a request that would
+  exceed the limit returns `Exhausted` and bumps `denied`; a
+  `u64` overflow returns `ArithmeticOverflow` and also bumps
+  `denied`. `high_water` never decreases on release.
+- `try_acquire_bundle` copies, sorts, and pre-validates requests
+  (duplicate class → `DuplicateRequest`, empty → `EmptyBundle`,
+  missing limit → `MissingLimit`, all before any mutation), then
+  computes every `next` value into a pre-sized `Vec` and only then
+  applies them — so an exhausted class leaves every other class
+  untouched while still counting its own denial.
+- **`ResourceLease` releases on `Drop`** (RAII), so receive, drop,
+  error, cancel, and unwind paths all release identically.
+- `ResourceBudget::release` (:946) recovers a poisoned mutex with
+  `into_inner()`: a lease drop during unwinding is best-effort
+  cleanup and must not leak a grant. Releasing more than is held
+  clamps `used` to `0` and increments `release_underflow` instead
+  of wrapping or panicking.
+- `try_acquire`, `usage`, and `snapshot` surface a poisoned lock as
+  `ResourceError::Poisoned`; only the release path recovers it.
 
 ## Errors
 
-`ServiceNameError`, `HealthDetailError`, `InvalidLifecycleTransition`,
-`ResourceError`. All implement `Display + Error`.
+Four error types, all `Display + std::error::Error`:
+`ServiceNameError` (:60), `InvalidLifecycleTransition` (:139),
+`HealthDetailError` (:369), and `ResourceError` (:1034). The crate
+uses no `anyhow`-style dynamic errors and never carries a
+`Box<dyn Error>`.
 
-`HealthDetail::Debug` redacts: it prints `{ redacted: true }`,
-preventing diagnostic strings from leaking into logs.
+`HealthDetail` implements `Debug` manually (:340) and prints
+`HealthDetail { redacted: true }`, preventing diagnostic strings from
+reaching logs even through `{:?}`. `ServiceFailure` and
+`HealthSnapshot` derive `Debug` but only ever contain a redacting
+`HealthDetail` and bounded/static values.
 
 ## Dependencies
 
-**Zero direct dependencies.** `Cargo.toml` declares no
-`[dependencies]` block. Only `std` is used:
+**Zero dependencies, production or dev.** `Cargo.toml` declares no
+`[dependencies]` and no `[dev-dependencies]` block. Only `std` is
+used:
 
-- `std::sync::atomic::AtomicBool`
-- `std::sync::{Arc, Mutex}`
+- `std::borrow::Borrow`
 - `std::collections::BTreeMap`
+- `std::fmt`
+- `std::sync::atomic::{AtomicBool, Ordering}`
+- `std::sync::{Arc, Mutex}`
 - `std::time::Duration`
-- `std::borrow::Borrow`, `std::fmt`
 
-Confirmed: no `tokio`, no `std::net`/`std::fs`, no dependency on any
-other workspace crate. It is the leaf of the production dependency
-graph and is depended on by `i2pr-transport`, `i2pr-transport-ntcp2`,
-`i2pr-runtime`, `i2pr-daemon`, `i2pr-tunnel`, `i2pr-client`, and
-`i2pr-testkit`.
+(The test module additionally uses `std::panic::{catch_unwind,
+AssertUnwindSafe}`, `std::sync::atomic::AtomicUsize`,
+`std::sync::Barrier`, and `std::thread`.)
+
+This zero-dep invariant is **checker-enforced**:
+`scripts/check-dependency-direction.sh:16` pins
+`"i2pr-core": set()`. `i2pr-core` is the leaf of the production
+dependency graph. Actual workspace dependents (per `cargo metadata`
+and the same allowlist): `i2pr-transport`, `i2pr-tunnel`,
+`i2pr-runtime`, `i2pr-client`, `i2pr-daemon`, and `i2pr-testkit`.
+`i2pr-transport-ntcp2` does **not** depend on it — it reaches these
+types only through `i2pr-transport`.
 
 ## Tests
 
-Inline in `src/lib.rs:1106-1425` — 13 synchronous `#[test]` functions:
+There is **no `crates/i2pr-core/tests/` directory** and no test-only
+dev-dependency. All coverage is the single inline
+`#[cfg(test)] mod tests` at `lib.rs:1105-1425`: **14 synchronous
+`#[test]` functions**, all on the current thread except the
+explicitly threaded concurrency test. Line numbers below are the
+`fn` definition lines.
 
 | Test | Line | Coverage |
 | --- | --- | --- |
-| `lifecycle_rejects_recovery_from_stopped` | 1114 | FSM rejection |
-| `health_snapshot_exposes_typed_readiness` | 1129 | Snapshot liveness/readiness |
-| `resource_lease_releases_on_drop_and_rejects_overcommit` | 1142 | RAII + overcommit |
-| `resource_classes_and_snapshots_are_bounded_and_deterministic` | 1154 | Class count + ordering |
-| `resource_usage_records_exact_limit_denial_and_high_water` | 1182 | High-water + denial counting |
-| `resource_validation_rejects_zero_and_handles_u64_overflow` | 1212 | Zero + overflow |
-| `resource_release_is_consuming_drop_safe_and_unwind_safe` | 1249 | Panic-unwind safety |
-| `invalid_release_is_visible_without_wrapping_or_panicking` | 1278 | Underflow counter |
-| `resource_bundle_is_atomic_sorted_and_releases_together` | 1294 | Bundle atomicity |
-| `resource_bundle_rejects_duplicates_without_mutation` | 1339 | Duplicate/empty rejection |
-| `concurrent_acquisition_never_exceeds_the_limit` | 1359 | 16-thread race |
-| `bounded_types_reject_oversized_values` | 1405 | Name/detail max bytes |
-| `health_detail_debug_is_redacted` | 1411 | Redaction check |
+| `lifecycle_rejects_recovery_from_stopped` | 1114 | FSM rejection + `Registered → Starting` |
+| `health_snapshot_exposes_typed_readiness` | 1129 | Snapshot liveness/readiness via `HealthState` |
+| `resource_lease_releases_on_drop_and_rejects_overcommit` | 1142 | RAII + overcommit rejection |
+| `resource_classes_and_snapshots_are_bounded_and_deterministic` | 1154 | `COUNT`/`ALL`/`MAX_RESOURCE_CLASSES` + snapshot ordering |
+| `resource_usage_records_exact_limit_denial_and_high_water` | 1182 | Exact-limit grant, `Exhausted` payload, high-water retention |
+| `resource_validation_rejects_zero_and_handles_u64_overflow` | 1213 | `ZeroLimit`/`ZeroRequest` + `u64` overflow |
+| `resource_release_is_consuming_drop_safe_and_unwind_safe` | 1249 | `catch_unwind` lease cleanup |
+| `invalid_release_is_visible_without_wrapping_or_panicking` | 1278 | `release_underflow` counter via `release_for_test` |
+| `resource_bundle_is_atomic_sorted_and_releases_together` | 1294 | Bundle atomicity, class sort order, joint release |
+| `resource_bundle_rejects_duplicates_without_mutation` | 1339 | `DuplicateRequest` / `EmptyBundle`, no mutation |
+| `concurrent_acquisition_never_exceeds_the_limit` | 1359 | 16 threads, limit 4, barrier-synchronised exact grant count |
+| `bounded_types_reject_oversized_values` | 1405 | Both byte ceilings + 1 |
+| `health_detail_debug_is_redacted` | 1411 | `Debug` redaction |
 | `cancellation_is_shared_by_clones` | 1419 | Clones share the flag |
+
+Honest gaps: no test covers `try_acquire_bundle` returning
+`TooManyClasses`, `MissingLimit`, or `ArithmeticOverflow`; none
+covers `ResourceError::Poisoned`; none covers `ServiceCompletion::
+category`/`is_failure`, `ServiceName::as_str`/`Display`, or
+`ServiceNameError::Empty`.
 
 ## Distinctive design choices
 
-- **Zero dependencies** — uncommon and deliberate. The crate pulls
-  only `std` primitives.
-- **No traits at all** — every contract is concrete. Runtime code
-  uses these concrete types directly. The doc comments suggest this
-  is intentional ("runtime-neutral contracts shared by the future
-  router services").
-- **`HealthDetail::Debug` redacted** — privacy/security measure.
-- **`CancellationToken` is intentionally minimal** — just
-  `Arc<AtomicBool>`. The runtime layer owns the wakeable variant.
-- **Bundle atomicity is enforced by sorting + pre-validation** —
-  prevents deadlocks from inconsistent ordering without runtime
-  coordination.
-- **Panic-safe `release`** — recovered via `into_inner()` on a
-  poisoned mutex.
-- **`ServiceName` only implements `AsRef<str>`** — no `AsRef<[u8]>`.
+- **Zero dependencies** — uncommon and deliberate; the crate pulls
+  only `std` primitives and CI fails on any addition.
+- **No traits at all** — every contract is concrete, so runtime code
+  consumes these types directly with no generic abstraction layer.
+- **`HealthDetail::Debug` is hand-written and redacting**, so a
+  derive could never be re-added by accident without a semantic
+  diff.
+- **`CancellationToken` is intentionally minimal and polling-only** —
+  just `Arc<AtomicBool>` with `Release`/`Acquire` ordering; the
+  runtime layer owns the wakeable variant.
+- **Bundle atomicity without a second lock or a transaction log** —
+  pre-validation plus a pre-sized `Vec` of `next` values, so a
+  partial admission is structurally impossible.
+- **Sort-then-scan gives deadlock-free, deterministic order** —
+  `BTreeMap`/`Ord` class ordering is what makes `snapshot()` stable.
+- **Accounting faults are counted, not fatal** — over-release clamps
+  to zero and increments `release_underflow` rather than wrapping or
+  panicking.
+- **Release is best-effort by design** — a poisoned lock is recovered
+  with `into_inner()` so a lease dropped during unwinding cannot
+  leak its grant, while the read paths report `Poisoned`.
+- **`ServiceName` exposes only `AsRef<str>` / `as_str` / `Display`** —
+  deliberately no `AsRef<[u8]>` and no `From<String>` escape hatch.
+- **Two snapshot constructors** — `new` derives `LifecycleState` from
+  `HealthState` for callers that only know health; `for_service` is
+  the explicit runtime-facing constructor.
 
 ## Cross-references
 
 - [Overview](overview.md)
-- [i2pr-runtime](i2pr-runtime.md) — adds wakeable cancellation and
-  uses `LifecycleState`, `ServiceClassification`, `HealthSnapshot`,
-  `HealthDetail`, `ResourceBudget`, `ShutdownReason`,
-  `CancellationReason`, `DegradationCode`, `FailureCategory`,
-  `InvalidLifecycleTransition`, `ServiceCompletion`, `ServiceFailure*`,
-  `ServiceName`.
-- [i2pr-transport](i2pr-transport.md) — re-exports the resource
-  budget types at its crate root for runtime services.
-- [i2pr-testkit](i2pr-testkit.md) — uses `ResourceBudget` to track
-  pending timers, buffered bytes, and link leases.
-- Plan-of-record: series of milestone closures under `plans/0*`.
+- [i2pr-runtime.md](i2pr-runtime.md) — adds the wakeable
+  cancellation layer and supervision. It uses 24 of this crate's 28
+  public items: `LifecycleState`, `InvalidLifecycleTransition`,
+  `ServiceName`, `ServiceNameError`, `ServiceClassification`,
+  `ServiceCompletion`, `ServiceFailure`, `ServiceFailureCategory`,
+  `FailureCategory`, `HealthState`, `HealthSnapshot`, `HealthDetail`,
+  `MAX_HEALTH_DETAIL_BYTES`, `DegradationCode`, `ShutdownReason`,
+  `CancellationReason`, and the `ResourceBudget` / `ResourceClass` /
+  `ResourceLimit` / `ResourceRequest` / `ResourceUsage` /
+  `ResourceLease` / `ResourceError` governor surface.
+- [i2pr-transport.md](i2pr-transport.md) — re-exports eight governor
+  types at its crate root (`crates/i2pr-transport/src/lib.rs:11-14`).
+- [i2pr-testkit.md](i2pr-testkit.md) — uses `ResourceBudget` with
+  `PendingTimers`, `BufferedBytes`, and simulated stream/datagram
+  link leases (`crates/i2pr-testkit/src/network.rs:657-668`).
+- [ADR 0003: Bounded supervised services and explicit cancellation](../adr/0003-bounded-supervised-services.md).
+- [ADR 0008: Concrete runtime ownership and wakeable supervision](../adr/0008-runtime-supervision-and-cancellation.md).
+- [ADR 0009: Privacy-aware runtime observability and deterministic validation](../adr/0009-runtime-observability-and-validation.md).
+- Plan of record: Plan 021 (supervision, wakeable cancellation, and
+  shutdown) created the lifecycle/health/cancellation surface;
+  Plan 022 (bounded channels, backpressure, and resource governance)
+  added the resource classes and governor. Both closed as "Complete
+  for the bounded, non-networked scope"
+  (`plans/closure/workspace-foundation/021-closure.md`,
+  `022-closure.md`); Plan 023 added the deterministic testkit
+  consumer. See `plans/README.md` for the registry.

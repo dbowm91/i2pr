@@ -3,22 +3,24 @@
 Top-level architecture narrative. The detailed crate ownership map,
 dependency graph, tooling, and per-crate deep-dives live in
 [`docs/architecture/`](architecture/). This file records the
-modular-monolith boundaries, ownership rules, and the four conceptual
+modular-monolith boundaries, ownership rules, and the conceptual
 planes; it is intentionally short. Read
 [`docs/architecture/overview.md`](architecture/overview.md) for the
-bird's-eye view, then follow the deep-dive links.
+bird's-eye view and the deep-dive index, then follow the deep-dive
+links.
 
 > Status: experimental. Not production-ready. Not for anonymity or
 > security-sensitive workloads. See `README.md` and `GUARDRAILS.md`.
 
-## Four planes
+## Conceptual planes
 
 | Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded common-structure and I2NP models, Standard LeaseSet2 (Plan 119), Streaming wire format (Plan 128), transport-neutral link contracts, NTCP2 state, runtime-owned local TCP integration; no public-network behavior |
-| Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts plus the `i2pr-runtime` supervisor and bounded socket-owning services |
-| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Milestone 6 local product closed via Plan 134 (destinations, garlic, LS2, Streaming); Milestone 7 SAM 3.1 localhost acceptance closed via Plan 151; Milestone 9 I2CP loopback product closed via Plan 172 |
-| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Milestone 10 local product closed via Plans 174–180/182; remote generic + HTTP/IRC application closure via Plans 213–215 (see `plans/closure/service-tunnels/214-status.md`, `plans/closure/service-tunnels/215-status.md`); Plan 248 supersedes the Java-dependent convergence gate while retaining Java full-router debt at Plan 247 |
+| Foundation | Wire codecs, crypto wrappers, runtime-neutral service contracts, signed containers | Bounded common-structure and I2NP models, Standard LeaseSet2 (Plan 119), Streaming wire format (Plan 128), SU3 envelope verification, zero-dependency core contracts; no I/O |
+| Data | Authenticated links, I2NP messages, network tunnel traffic, garlic | Transport-neutral link contracts, SSU2 v2 protocol (Plan 161, bounded direct-IPv4 loopback vs exact-pinned i2pd), NTCP2 state machines (closed at `protocol-defect-localized` / `noise_authenticated`), runtime-owned local TCP integration; no public-network behavior |
+| Network state | RouterInfo / LeaseSet2 / ELS2 validation, stores, lookup, publication, tunnel construction | Bounded RouterInfo + LeaseSet2 stores, coalesced lookup and publication machines, floodfill record/provenance model on the type 0/1/3/7 floor; **no floodfill advertisement, no Encrypted LeaseSet2 capability advertised** |
+| Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets, identity persistence | Runtime-neutral core contracts plus the `i2pr-runtime` supervisor, versioned atomic identity storage, and bounded socket-owning services |
+| Client / service | Destinations, LeaseSets, streaming, SAM, I2CP, I2PControl, naming, HTTP/SOCKS5/IRC/generic service tunnels | M6 local product closed via Plan 134 (`milestone6_interoperable = not-yet-claimed`); M7 SAM 3.1 localhost via Plan 151; M8 SSU2 via Plan 161; M9 I2CP loopback via Plan 172; M10 service tunnels via Plans 174–180/182 + 213–215 |
 
 Network tunnels carry router-to-router I2P traffic and are distinct
 from application service tunnels, which eventually connect a local
@@ -31,54 +33,72 @@ The full allowlist and ASCII diagram live in
 [`docs/architecture/dependency-graph.md`](architecture/dependency-graph.md).
 The dependency direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. The current workspace has
-16 crates under `crates/` (15 production + `i2pr-testkit`) plus the non-production
-`tools/i2pr-interop/` launcher binary. `i2pr-testkit` is a
-test/simulation crate; no production crate may depend on it.
+**19 crates** under `crates/` (18 production + `i2pr-testkit`) plus the
+non-production `tools/i2pr-interop/` launcher binary. `i2pr-testkit` is
+a test/simulation crate; no production crate may depend on it, and
+`scripts/check-runtime-boundaries.sh` enforces that by globbing every
+`crates/*/Cargo.toml` (so `[dev-dependencies]` is covered too).
 
 ```text
-i2pr-proto  <- i2pr-crypto <- i2pr-storage
-     ^              ^               ^
-     |              |               |
-i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
-     ^             ^              ^
-     |             |              |
-     +-------------+  i2pr-transport-ntcp2
-                          ^
-                          |
-                    i2pr-proto + i2pr-crypto
+                i2pr-core            i2pr-su3           i2pr-i2pcontrol
+              (zero deps)         (zero deps)         (zero deps)
+                  |                    |                     |
+i2pr-proto <- i2pr-crypto                |                     |
+    ^    ^            ^                 |                     |
+    |    |      i2pr-storage            |                     |
+    |    |            |                 |                     |
+    +----+------------+--------+        |                     |
+         |                     |        |                     |
+  i2pr-transport         i2pr-netdb <---+                     |
+    ^  ^      ^               ^                              |
+    |  |      |               |                              |
+i2pr-transport-ntcp2   i2pr-netdb-persist                    |
+i2pr-transport-ssu2         ^                               |
+    ^                      |                               |
+    |                      |                               |
+i2pr-runtime               |                               |
+    ^                      |                               |
+i2pr-tunnel <--------------+                               |
+    ^                      |                               |
+i2pr-client ----------------+                               |
+    ^                      |                               |
+i2pr-api  i2pr-addressbook |                               |
+    ^      i2pr-service-tunnels                            |
+    +-----------------------+                               |
+                                                             |
+i2pr-daemon (composition root; 15 workspace deps) <----------+
 
-i2pr-netdb  <- i2pr-netdb-persist <- i2pr-runtime <- i2pr-daemon
-   (RouterInfo validation, LS2 store)    (Plan 104 cache + reseed)
-                                       ^
-                                  i2pr-tunnel
-                                       ^
-                                  i2pr-client
-                                  (Milestone 6 + SAM)
-
-i2pr-testkit (test/simulation only; no production crate may depend on it)
-tools/i2pr-interop (non-production launcher; never activates i2pr-daemon)
+i2pr-testkit (test-only)   tools/i2pr-interop (non-production)
 ```
 
-The arrows show dependency direction. `i2pr-proto` owns protocol-
-facing names, bounds, typed codec error categories, and the
-structural I2NP / I2NP Garlic / Standard LeaseSet2 / Streaming wire
-codecs. `i2pr-core` owns runtime-neutral service contracts,
-cancellation tokens, and resource budgets. `i2pr-runtime` owns
-Tokio, wakeable cancellation, the service graph, supervised task
-managers, bounded restart policy, graceful/forced shutdown, TCP
-listeners, streams, deadline timers, replay-cache state, and link
-child tasks. `i2pr-transport-ntcp2` owns the NTCP2 protocol
-implementation (Noise XK handshake, AES-CBC ephemeral obfuscation,
-ChaCha20-Poly1305 data phase, SipHash length masking, deterministic
-state machines) but no Tokio or socket. `i2pr-runtime` is the sole
-production owner of Tokio tasks, sockets, timers, channels, and
-wakeable cancellation.
+The arrows show dependency direction, always from the dependent crate
+toward its dependency. `i2pr-proto` owns protocol-facing names,
+bounds, typed codec error categories, and the structural I2NP / I2NP
+Garlic / Standard LeaseSet2 / Streaming / I2CP-Data-body wire codecs.
+`i2pr-core` owns runtime-neutral service contracts, cancellation
+tokens, and resource budgets. `i2pr-runtime` owns Tokio, wakeable
+cancellation, the service graph, supervised task managers, bounded
+restart policy, graceful/forced shutdown, TCP/UDP listeners, streams,
+deadline timers, replay-cache state, and link child tasks.
+`i2pr-transport-ntcp2` owns the NTCP2 protocol implementation (Noise XK
+handshake, AES-CBC ephemeral obfuscation, ChaCha20-Poly1305 data
+phase, SipHash length masking, deterministic state machines) but no
+Tokio or socket. `i2pr-runtime` is the sole production owner of Tokio
+tasks, sockets, timers, channels, and wakeable cancellation.
 
-`i2pr-tunnel` (Milestone 5 substrate) and `i2pr-client` (Milestone 6
-local product) compose on top of `i2pr-runtime` and the lower
-crates. `i2pr-client` depends on `i2pr-core` / `i2pr-crypto` /
-`i2pr-netdb` / `i2pr-proto` / `i2pr-tunnel`; it never composes back
-into `i2pr-tunnel` / `i2pr-netdb` and never imports `i2pr-daemon`.
+Note that `i2pr-netdb-persist` is composed by the **daemon**, not by
+`i2pr-runtime` — the runtime layer has no filesystem concern. It is the
+only composition crate that sits between `i2pr-storage` bytes and
+`i2pr-netdb` validation.
+
+`i2pr-tunnel` (exploratory + transit substrate) and `i2pr-client`
+(Milestone 6 local product) compose on top of the lower crates.
+`i2pr-client` depends on `i2pr-core` / `i2pr-crypto` / `i2pr-netdb` /
+`i2pr-proto` / `i2pr-tunnel`; it never composes back into
+`i2pr-tunnel` / `i2pr-netdb` and never imports `i2pr-daemon`.
+`i2pr-addressbook` owns canonical `.i2p` naming and
+`i2pr-i2pcontrol` owns the Proposal 170 wire/domain contract; both are
+runtime-neutral leaves that the daemon projects into its listeners.
 
 ## Production ownership rules
 
@@ -87,7 +107,7 @@ The boundary contract is enforced by scripts under `scripts/`:
 | Script | Catches |
 | --- | --- |
 | `check-dependency-direction.sh` | Crate-layer DAG violations |
-| `check-runtime-boundaries.sh` | `unbounded_channel`, `tokio::*` / `std::net` / `std::fs` in transport crates, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, `i2pr-testkit` referenced by a production crate |
+| `check-runtime-boundaries.sh` | `unbounded_channel`, `tokio::*` / `std::net` / `std::fs` in transport, i2pcontrol and service-tunnel crates, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, `i2pr-testkit` referenced by any `crates/*/Cargo.toml`. NOTE: this script has **no `i2pr-api` section**, so its "passed" result is not evidence for that crate — see [`i2pr-api.md`](architecture/i2pr-api.md). It also greps `std::net` literally, so an import hidden in a grouped `use std::{…}` can evade it. |
 | `check-fixture-manifest.sh` | Drift in the I2NP fixture corpus |
 | `check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus |
 | `check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane |
@@ -107,10 +127,24 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-streaming-tunnel-evidence.sh` | Plan 193 Streaming-tunnel evidence integrity |
 | `check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / 194 / 196 / 197 / 200 / 201 cross-family M6 evidence integrity |
 | `check-m6-final-closure-evidence.sh` | Plan 198/204 evidence-consuming final gate (manual external-workflow only, not routine CI) |
+| `check-m11-transit-qualification-evidence.sh` | Plan 268 M11 one-family transit qualification evidence integrity |
+| `check-m12-floodfill-qualification-evidence.sh` | Plan 279 §9 M12 floodfill qualification evidence integrity (supports `--self-test`) |
+| `check-i2pcontrol-acceptance-evidence.sh` | Proposal 170 / I2PControl evidence integrity |
 
-`check-plan095-workflow.sh` (Plan 095 manual live-wire workflow) was
-pruned by the Plan 099 harness reduction and is no longer on disk;
-historical references to it are audit context only.
+Two gaps in this table are worth recording rather than hiding:
+
+- `scripts/check-m12-floodfill-boundaries.sh` **currently exits 1 on
+  repo head**. It still enforces the Plan 281 "type 5 is deferred"
+  floor by grepping `DatabaseStoreData::EncryptedLeaseSet` in
+  `crates/i2pr-netdb/src`, which Plans 332/333 now legitimately
+  populate. It is in neither the `AGENTS.md` routine floor nor
+  `.github/workflows/ci.yml`, so the failure is silent. Resolving it
+  needs a plan owner's call (retire the rule or re-scope it), not a
+  docs edit.
+- `scripts/check-plan095-workflow.sh` (Plan 095 manual live-wire
+  workflow) was pruned by the Plan 099 harness reduction and is no
+  longer on disk; historical references to it are audit context only
+  and must not be linked as live commands.
 
 Production crates do not depend on `i2pr-testkit`, and `i2pr-proto`
 does not depend on filesystem or crypto execution. The daemon is
@@ -214,10 +248,12 @@ lints, script gates, and review:
   bytes, no validation side effects, and always a tested
   negative path.
 - All architecture/security decisions live under `docs/adr/`
-  (`0001` through `0025`); the plan-of-record is the active
-  `plans/NNN-*.md` plus its closure document. When closing a
-  milestone, attach a closure record with commands, results, and
-  evidence.
+  (`0000` through `0031`; ADRs are append-only, and a superseded ADR
+  keeps its original text plus a supersedure marker). The
+  plan-of-record is `plans/implementation/<subsystem>/NNN-*.md` plus
+  its closure record under `plans/closure/<subsystem>/NNN-status.md`,
+  indexed by `plans/registry.md`. When closing a milestone, attach a
+  closure record with commands, results, and evidence.
 
 ## Cross-references
 
@@ -228,13 +264,14 @@ lints, script gates, and review:
 - [`docs/architecture/tooling.md`](architecture/tooling.md) —
   scripts, fixtures, integration lanes, CI, fuzz
 - [`docs/architecture/interop-apparatus.md`](architecture/interop-apparatus.md) —
-  historical NTCP2 interop apparatus (Plan 038–100; substantially
-  stale per the 2026-08-27 audit; rewrite deferred to the next
-  interop-surface plan)
+  the interoperability/evidence apparatus: evidence classes,
+  reference pins, fail-closed lane discipline, the live lanes, and
+  the **historical** NTCP2 interop surface (Plans 038–100, closed at
+  `protocol-defect-localized` / `noise_authenticated`)
 - [`docs/architecture/audit/`](architecture/audit/) — past
   doc-vs-source drift audits
 - [`docs/architecture/i2pr-<crate>.md`](architecture/) — per-crate
-  deep-dives (16 crates)
+  deep-dives (**19 crates**, one per workspace member)
 - [`docs/security-model.md`](security-model.md) — secret-bearing
   types, memory hygiene, codec error policy
 - [`docs/protocol-support.md`](protocol-support.md) — generated
@@ -246,6 +283,32 @@ lints, script gates, and review:
   bundles for OpenCode sessions
 
 
-## Forward router-role roadmap
+## Router-role status
 
-Plan 268 closes M11 one-family experimental progression. Public transit remains disabled, non-advertised, and unclaimed. M12 floodfill is the registered next role sequence (Plans 270–279), currently blocked behind Plan 269 support/roadmap reconciliation; floodfill remains unimplemented and unadvertised.
+Plan 268 closes M11 one-family experimental progression. Public transit
+remains disabled, non-advertised, and unclaimed (ADR 0026, ADR 0031 for
+the single shared service-tunnel manager).
+
+M12 floodfill is the active role lane. Plans 270–276 passed the type
+0/1/3/7 floor (architecture, provenance, record validation/storage,
+bounded DatabaseStore/DatabaseLookup services, replication, versioned
+persistence, bounded maintenance, resource leases); Plan 280 stopped
+for want of a maintained Red25519 provider, and Plan 281 deferred
+EncryptedLeaseSet type 5. Both of those gaps were later closed
+in-repo: Plan 330 passed an independent Red25519 implementation, Plan
+331 passed qualification with a reference signature-transcript
+divergence recorded, and Plans 332/333 passed the ELS2 type-5
+foundation plus PSK/DH client authorization. **No capability is
+advertised** (`common.leaseset2-family` is `advertised = false`) and
+no live interoperability is claimed, because per ADR 0005 neither
+i2pd nor Java I2P can verify the transcript.
+
+Floodfill advertisement, daemon role lifecycle, and second-family
+qualification remain unimplemented and unclaimed.
+
+> Authority note: `plans/registry.md` and parts of
+> `specs/support.toml` lag the closure records. `plans/closure/<subsystem>/NNN-status.md`
+> wins — see `plans/README.md` for the ordering. Current known lags:
+> the registry still reports Proposal 170 Plans 322 and 334 as blocked
+> (both are `passed`/reclosed-passed), and the `m12_*` support rows
+> still describe the superseded Plan 280/281 stopped/deferred state.

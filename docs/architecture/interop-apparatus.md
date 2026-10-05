@@ -1,2038 +1,470 @@
-# Plan 040/041/043/044 interoperability apparatus
+# Interoperability and evidence apparatus
 
-## Current M6 Java second-family boundary
+> ## ⚠️ STATUS: the NTCP2 interoperability apparatus below is HISTORICAL
+>
+> **The NTCP2 interop development lane is CLOSED.** The retained NTCP2
+> development result is **`protocol-defect-localized` at
+> `noise_authenticated`** (Plans 099/100). **NTCP2 is disabled in the
+> production daemon** by the Plan 101 guard and is experimental and
+> non-advertised.
+>
+> - The Plan 046 **rootless** and Plan 048/049/050/051 **Multipass** lanes
+>   are retained **for archaeology only** — they are not runnable
+>   acceptance lanes.
+> - The `i2pr-ntcp2-interop`, `i2pr-rootless-sandbox`, and
+>   `i2pr-multipass-recovery` skills are **historical / read-only**.
+> - Nothing in this document authorizes an NTCP2 interoperability claim,
+>   a rootless/Multipass repair or retry, or normal-daemon NTCP2
+>   activation. Extending the historical lane requires a new
+>   plan-of-record.
+> - The **active** lanes are the SSU2 / M6 / M9 / M10 / M11 / M12 /
+>   anonymity / I2PControl surfaces under `tests/integration/`, driven by
+>   `run-*.sh` + `scripts/check-*-evidence.sh` and described in
+>   [Live lanes](#live-lanes) below.
 
-The historical apparatus below is not the authority for current M6 Java
-Streaming evidence. Plan 236 is the current bounded diagnostic authority:
-`scripts/interop/check-m6-java-response-source-lock.sh` validates the exact
-Java I2P 2.13.0 source path
-`ConnectionPacketHandler.receivePacket` → `Connection.eventOccurred` →
-`SchedulerReceived.eventOccurred` → `Connection.sendPacket` →
-`PacketQueue.enqueue` → `I2PSession.sendMessage`. The source lock and the
-sanitized Plan-236 terminal are durable facts; a returned `I2PSocket` does not
-prove response emission, Router-A I2CP admission, tunnel dispatch, or i2pr
-delivery. Plan 236 closed at
-`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`, so Java-family M6 remains
-unclaimed and no production corrective is authorized.
+The historical Plan 038–100 apparatus documented in
+[Historical NTCP2 apparatus](#historical-ntcp2-apparatus-closed) is
+preserved for archaeology. It describes what the closed lane was, not
+what is runnable today. Current product authority lives in
+[`plans/registry.md`](../../plans/registry.md) and
+[`plans/README.md`](../../plans/README.md), not in this file.
 
-The Ubuntu reference-router harness is preparation infrastructure, not a
-runtime plane and not an interoperability claim. Preparation runs on the
-supported Ubuntu 24.04 amd64 host and may fetch only the lock-listed source,
-IzPack artifact, and declared packages. Execution is offline and runs each
-reference in disposable namespaces connected by one veth pair. There is no
-default route, DNS, forwarding path, or public egress.
+## Cross-references
 
-## Canonical build contract
+| Concern | Authority |
+| --- | --- |
+| Crate index, data flow | [`overview.md`](overview.md) |
+| Scripts, fixtures, lanes, CI | [`tooling.md`](tooling.md) |
+| Dependency allowlist | [`dependency-graph.md`](dependency-graph.md) |
+| Binding evidence policy | [`../../specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md) |
+| Machine-readable support inventory | [`../../specs/support.toml`](../../specs/support.toml) |
+| Plan registry / current authority | [`../../plans/registry.md`](../../plans/registry.md) |
+| Planning process and closure records | [`../../plans/README.md`](../../plans/README.md) |
+| Routine floor, hard boundaries, historical-skill rule | [`../../AGENTS.md`](../../AGENTS.md) |
+| M6 Java bounded diagnostic (Plan 236) | [`236-status.md`](../../plans/closure/mixed-router-interop/236-status.md) |
+| Harness reduction / pruning audit | [`audit/2026-09-18-skills-docs-hygiene.md`](audit/2026-09-18-skills-docs-hygiene.md) |
+| Historical skills/docs hygiene | [`audit/2026-08-27-skills-pass.md`](audit/2026-08-27-skills-pass.md) |
+| NTCP2-era doc audits | [`audit/2026-08-27-doc-audit.md`](audit/2026-08-27-doc-audit.md), [`audit/2026-09-18-doc-audit.md`](audit/2026-09-18-doc-audit.md) |
 
-The machine identifiers are `java_i2p` and `i2pd`. Java I2P 2.12.0 is pinned
-to `2800040deee9bb376567b671ef2e9c34cf3e30b6`; i2pd 2.60.0 is pinned to
-`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. Cache keys hash the canonical
-reference, full source object ID, lock digest, `ubuntu-24.04-amd64` host
-contract, and reviewed build-command version. `current-cache.json` is the
-only cache lookup index; recursive metadata guessing is forbidden.
+## Evidence classes
 
-Each cache contains strict schema-2 metadata. The parser rejects duplicate or
-unknown keys, abbreviated revisions, invalid SHA-256 values, mismatched
-references/locks, and launcher or artifact paths escaping the cache root. The
-installed runtime tree is re-hashed before every execution. `--offline`
-cannot fetch a missing source or dependency and fails before a builder can
-perform network I/O.
+The binding policy is [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md).
+A protocol or feature may be marked implemented only when the applicable
+evidence exists — strict decode/encode tests, authoritative or
+independently generated cross-implementation vectors, malformed /
+truncated / oversized / semantically invalid input tests, state-machine
+success / failure / timeout / cancellation / teardown tests, explicit
+resource bounds, replay and expiry tests where relevant, documentation
+of unsupported behavior, and **no advertised RouterInfo, I2NP, API or
+transport capability beyond the tested subset**.
 
-## Topology and firewall
+Java I2P and I2P+ share lineage and count as **one** implementation
+family for independence. The preferred router-to-router pair is Java I2P
+(or I2P+) plus i2pd.
 
-Namespace names retain the run description, but veth names use an eight-hex
-token derived from the run ID and synthetic network ID. Generated names are
-at most 15 bytes. The topology verifier requires exactly `lo` and `peer0`,
-the expected `.1`/`.2` addresses, directly connected `/30` and optional `/64`
-routes, no defaults, no public route probes, disabled namespace forwarding,
-no host endpoint, no router process, and the expected nftables digest.
+### Raw logs are never evidence
 
-Each namespace has its own exact policy. Loopback and established traffic are
-allowed; new TCP output is limited to the peer address and peer listening
-port; new input is limited to the peer source address and local destination
-port. IPv6 uses the same protocol/port constraints. A disposable canary
-proves the allowed peer port, rejects a second peer port, and rejects a public
-route before a router starts.
+> **Raw reference logs are never evidence. Only sanitized counts,
+> digests, and typed dispositions reach an evidence file.**
 
-Plan 041 does not reuse the i2pr/reference topology owner for its control run.
-`harness/reference_topology.py` creates `java-<short-run-id>` and
-`i2pd-<short-run-id>` namespaces, assigns `192.0.2.1/30` and `192.0.2.2/30`,
-and installs a one-way new-TCP policy selected by the scenario. The reverse
-direction is a separate run; source-port observations never decide who
-initiated a session.
+A log capture is an input to a sanitizing step, not an artifact. This
+rule is binding across every lane in this document, historical and
+active. The historical apparatus enforced it with an explicit upload
+allowlist (sanitized JSON records, the sanitized reference-build summary,
+and the aggregate manifest only) and required raw run roots to be deleted
+before artifact upload. Private router keys, destination secrets, and raw
+application payloads stay in ephemeral scratch directories; evidence
+records carry digests, lengths, and counters only.
 
-The private network-ID contract is explicit and checked after rendering:
-Java I2P uses `router.networkID=99` and i2pd uses `netid = 99`. The names are
-source-traced in the adjacent configuration READMEs to the locked Java
-`Router.java` and i2pd `libi2pd/Config.cpp` revisions. A missing or public value
-rejects the run before either router starts.
+### Evidence tiers
 
-## Runtime layout and evidence
+ADR 0026 ([`0026-staged-interoperability-progression-and-java-debt.md`](../adr/0026-staged-interoperability-progression-and-java-debt.md))
+separates an **experimental development gate** from **full conformance**:
 
-The Java adapter stages the read-only cache under `reference-runtime`, keeps
-configuration under `config`, and writes router data under `reference-data`.
-The i2pd adapter uses its pinned binary/data-file cache and the same disposable
-data/config roots. Both adapters derive the `routerInfo-<identity-hash>.dat`
-NetDB filename from the bounded RouterInfo identity instead of trusting an
-arbitrary source filename.
+- For **experimental development progression**, a non-advertised
+  subsystem may continue after local conformance plus at least one
+  exact-pinned independent implementation demonstrates the relevant
+  controlled external path. This authorizes later implementation work
+  only — not public exposure, production-readiness language, broad
+  advertisement, or a full interoperability claim.
+- For **full router-to-router conformance or broad advertisement**, two
+  independent implementation families must interoperate for the claimed
+  surface.
+- For **client/application protocols** (Streaming, SAM, I2CP,
+  service-tunnel profiles) independent evidence appropriate to the
+  surface is required; a second full router family is not automatically
+  a hard gate merely because the path traverses routers.
 
-Child handles are retained for normal stop/join and atomically recorded PID
-files support emergency recovery. `cleanup.sh` additionally enumerates
-namespace PIDs, terminates then force-kills within a bound, removes namespaces
-and host veths, deletes run roots, and returns nonzero for any residual state.
+The NTCP2 lane's own four-tier ladder (ADR 0023) is historical and
+closed; see [Evidence ladder](#evidence-ladder-adr-0023-historical).
 
-Secret-bearing state lives only under `target/interop/runs/<run-id>/`.
-Sanitized records are atomically finalized under `target/interop/evidence/`
-after processes and namespaces are gone. A passed record contains the actual
-clean/dirty i2pr commit disposition, full reference revision, artifact/tree,
-configuration and topology hashes, counters, and cleanup result. Cleanup
-failure changes a protocol pass to `failed_cleanup`; it never leaves a secret
-run root behind.
+## Reference pins
 
-Plan 041 schema-2 records additionally carry both reference revisions and
-artifact/tree/configuration hashes, the direction policy, typed RouterInfo
-validation results, dual authenticated-link observations, connection/process
-counters, and the evidence digest. The reference control is not a support
-claim; i2pr mixed-router evidence still requires the authorized Plan 042
-launcher-to-reference execution.
+These pins are exact-SHA and **must not change without a new plan**. The
+i2pd pin is the mandatory reference; the Java I2P pin is secondary.
 
-## Plan 042 launcher boundary
+| Reference | Version | Pin | Role |
+| --- | --- | --- | --- |
+| i2pd | `2.61.0` | `635b013a612ff47278ef02acf8580a28e10e26c5` | **Mandatory** router reference |
+| Java I2P | `2.13.0` | `9134f808337b401e8e53c73734c81fab04280c9d` | **Secondary** full-router reference |
+| go-i2cp | — | `b529ee1c10a6011558b4d69fc9436a4afc489eac` | I2CP independent client |
+| i2psam | — | `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac` | Counted SAM client |
+| i2plib | — | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` | Counted SAM client |
 
-The Plan 042 launcher is now a bounded runtime composition seam, not a
-placeholder readiness process. It validates the strict confined scenario,
-prepares disposable permission-hardened identity, NTCP2 static-key/IV, and
-RouterInfo state, then invokes the runtime listener/dial, handshake executor,
-authenticated-link promotion, and DeliveryStatus exchange. Its JSONL status
-records keep listener readiness separate from terminal authentication/data
-results and use fixed reason codes only.
+The SAM client pins live in
+[`scripts/interop/fetch-sam-clients.sh`](../../scripts/interop/fetch-sam-clients.sh).
+Supporting sources are catalogued in
+[`specs/SOURCES.md`](../../specs/SOURCES.md) and
+[`specs/IMPLEMENTATIONS.md`](../../specs/IMPLEMENTATIONS.md).
 
-This local launcher path is still not reference evidence. The reference runner
-must complete the Ubuntu namespace, cache, RouterInfo import, and observation
-gates before any mixed-router result can be retained. The normal daemon remains
-disabled and all NTCP2 support rows remain experimental/non-advertised.
+> **Frozen NTCP2-era pins.** The historical NTCP2 harness carries its own
+> older lock — Java I2P `2.12.0` at `2800040deee9bb376567b671ef2e9c34cf3e30b6`
+> and i2pd `2.60.0` at `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` in
+> [`tests/integration/ntcp2/references.lock.toml`](../../tests/integration/ntcp2/references.lock.toml).
+> Those are **frozen historical** values and are **not** the current pins
+> above. See [`tooling.md`](tooling.md), which records the same
+> distinction.
 
-## Plan 043 build-system gate contract
+## The fail-closed discipline
 
-Plan 043 adds a fail-closed build-system promotion boundary around this
-apparatus. The required ordered gates are:
-
-```text
-contract
--> reference-build
--> reference-offline-reuse
--> environment-smoke
--> reference-crosscheck-ipv4
--> i2pr-handshake-smoke-ipv4
--> full-matrix
--> evidence-validation
--> cleanup-verification
-```
-
-The contract gate runs without starting routers and covers the locked Rust
-build, tests, documentation, dependency/runtime boundary checks, NTCP2
-manifest/evidence checks, and Python harness unit tests. The reference-build
-gate is the only network-enabled build phase. It uses the exact lock-listed
-packages and sources, records Ubuntu/tool metadata, runs available reference
-tests, and emits a canonical summary with source, artifact, and complete
-installed-tree hashes.
-
-The supported host is exactly Ubuntu 24.04 amd64/x86_64 with Bash 4+, a UTF-8
-locale, non-interactive `sudo` when not root, Linux user/network namespaces,
-nftables, at least 4 GiB free under `target/`, and the commands checked by the
-host preflight. The declared setup package set is:
+Environment-gated tests are **`#[ignore]`-gated**. An ordinary
+`cargo test` run compiles them and skips them. An explicit run requires
+`--ignored --exact`:
 
 ```text
-ca-certificates curl git wget xz-utils unzip zip coreutils findutils procps
-util-linux iproute2 nftables openssl python3 python3-venv
-openjdk-17-jdk-headless ant gettext
-build-essential cmake pkg-config libboost-all-dev libssl-dev zlib1g-dev
+cargo test --locked -p i2pr-daemon --test m11_transit_i2pd_external -- --ignored --exact
 ```
 
-The pinned references are Java I2P 2.12.0 at
-`2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd 2.60.0 at
-`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. The IzPack 5.2.4 download is
-accepted only with the SHA-256 in `references.lock.toml`. Rust uses the
-repository-pinned 1.95.0 toolchain and locked Cargo builds. Host metadata
-records the Ubuntu release, kernel, architecture, Java, Ant, compiler, CMake,
-Python, and iproute2/nftables versions; the aggregate manifest records
-workflow run and attempt as non-secret metadata.
+**Missing environment must FAIL, never silently pass.** A missing
+reference, endpoint, or pin is a lane failure, not a skip.
 
-The offline-reuse gate restores only a verified cache, runs
-`build-references.sh --offline`, and re-hashes the complete runtime tree. It
-must not clone, fetch, download, install packages, resolve DNS, or silently
-fall back to another cache. Cache identity includes the canonical reference,
-full source revision, lock digest, `ubuntu-24.04-amd64` host contract,
-build-command version, and relevant tool/ABI versions. Identities, keys,
-RouterInfo, NetDB state, rendered runtime configuration, run roots, raw logs,
-namespace state, and evidence records are never cache inputs.
+Forbidden in lanes, drivers, workflows, and checkers:
 
-After offline reuse, the environment-smoke and reference-control gates run
-before any i2pr gate. Environment smoke proves reference startup, disposable
-state production, and bounded cleanup only. `reference-crosscheck-ipv4` runs
-the separate `reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4`
-scenarios with private network ID 99, staged strict RouterInfo validation and
-import, controlled directions, dual authenticated observations, and clean
-shutdown. It is a harness control, not i2pr evidence. The i2pr gate requires
-four independent directions (i2pr↔Java I2P and i2pr↔i2pd), authenticated
-handshake and bounded DeliveryStatus exchange; one passing direction cannot
-mask another failure. The full matrix adds the bounded adversarial and
-resource cases, not unbounded fuzzing.
+- `|| true`, `set +e`-style suppression, or any early-return-success
+- `continue-on-error`
+- filename filtering that narrows a lane to the passing subset
+- fake or synthesized peer environment
+- broad exclusions
+- production wire changes made to turn a lane green
 
-Evidence validation consumes an aggregate run manifest. It rejects missing or
-unexpected passed records, placeholders, digest mismatches, incomplete
-direction coverage, forbidden content, and non-clean cleanup. Only sanitized
-JSON records, the sanitized reference-build summary, and the aggregate
-manifest belong in an upload allowlist. `cleanup.sh` must run with an
-always-run policy after privileged phases and at the end. Plan 043 requires a
-separate `verify-clean-host.sh` check for residual prefixed namespaces/veths,
-reference or launcher processes, secret-bearing run roots, forbidden retained
-files, and attributable nftables/routes/forwarding changes. The workflow now
-exposes the ordered manual lane and its verifier helper, but no completed
-successful aggregate run is present; this is a required contract, not a
-passing result.
+Reference-revision pins are verified on every run, and every lane
+re-hashes its artifacts rather than trusting a recorded digest. Counted
+rows must be produced by an executed command or test; a `passed` row
+without an executed command behind it is rejected by the
+evidence-integrity checkers.
 
-The clean-host verifier records a sanitized baseline before privileged
-execution:
+## Live lanes
+
+Each live lane is a `tests/integration/<area>/run-*.sh` driver plus a
+`scripts/check-*-evidence.sh` evidence-integrity checker. Routine
+checkers run in [CI](../../.github/workflows/ci.yml); external lanes are
+manual [`workflow_dispatch`](../../.github/workflows) workflows. All lanes
+are loopback-only, unprivileged, and free of root/sudo/namespaces/
+containers/VMs/public-I2P.
+
+| Lane | Driver(s) | Evidence checker(s) | Workflow |
+| --- | --- | --- | --- |
+| **anonymity** | [`run-plan312-streaming.sh`](../../tests/integration/anonymity/run-plan312-streaming.sh) | `check-http-anonymity-evidence.sh`, `check-streaming-fingerprint-evidence.sh` | none (local, evidence-arg) |
+| **floodfill** (M12) | [`run-i2pd.sh`](../../tests/integration/floodfill/run-i2pd.sh), [`run-java-floodfill.sh`](../../tests/integration/floodfill/run-java-floodfill.sh) | `check-m12-floodfill-qualification-evidence.sh` (`--self-test`), `check-m12-floodfill-boundaries.sh` | none (manual local) |
+| **i2cp** (M9) | [`run-independent.sh`](../../tests/integration/i2cp/run-independent.sh) | `check-i2cp-acceptance-evidence.sh` | [`i2cp-external.yml`](../../.github/workflows/i2cp-external.yml) |
+| **i2pcontrol** | [`run-differential.sh`](../../tests/integration/i2pcontrol/run-differential.sh) | `check-i2pcontrol-acceptance-evidence.sh` | none (CI corpus) |
+| **m11-transit** | [`run-i2pd.sh`](../../tests/integration/m11-transit/run-i2pd.sh) | `check-m11-transit-qualification-evidence.sh`, `check-m11-transit-boundaries.sh` | [`m11-transit-external.yml`](../../.github/workflows/m11-transit-external.yml) |
+| **m6-interop** | [`run-m6-mixed-router.sh`](../../tests/integration/m6-interop/run-m6-mixed-router.sh), [`run-java.sh`](../../tests/integration/m6-interop/run-java.sh), [`run-preflight.sh`](../../tests/integration/m6-interop/run-preflight.sh), [`run-tunnels.sh`](../../tests/integration/m6-interop/run-tunnels.sh), [`run-netdb.sh`](../../tests/integration/m6-interop/run-netdb.sh), [`run-destination.sh`](../../tests/integration/m6-interop/run-destination.sh), [`run-streaming.sh`](../../tests/integration/m6-interop/run-streaming.sh) | `check-m6-mixed-router-acceptance-evidence.sh`, `check-m6-final-closure-evidence.sh`, `check-netdb-tunnel-evidence.sh`, `check-destination-tunnel-evidence.sh`, `check-exploratory-tunnel-evidence.sh`, `check-streaming-tunnel-evidence.sh` | [`m6-mixed-router-external.yml`](../../.github/workflows/m6-mixed-router-external.yml) |
+| **sam** (M7) | [`run-independent.sh`](../../tests/integration/sam/run-independent.sh) | `check-sam-acceptance-evidence.sh` | [`sam-external.yml`](../../.github/workflows/sam-external.yml) |
+| **service-tunnels** (M10) | [`run-independent.sh`](../../tests/integration/service-tunnels/run-independent.sh), [`run-plan213-generic.sh`](../../tests/integration/service-tunnels/run-plan213-generic.sh), [`run-plan214-applications.sh`](../../tests/integration/service-tunnels/run-plan214-applications.sh), [`test-plan215-tunnels-conf.sh`](../../tests/integration/service-tunnels/test-plan215-tunnels-conf.sh) | `check-service-tunnel-acceptance-evidence.sh`, `check-service-tunnel-boundaries.sh` | [`service-tunnels-external.yml`](../../.github/workflows/service-tunnels-external.yml) |
+| **ssu2** (M8) | [`run-independent.sh`](../../tests/integration/ssu2/run-independent.sh) | `check-ssu2-acceptance-evidence.sh` | [`ssu2-external.yml`](../../.github/workflows/ssu2-external.yml) |
+| **ntcp2** | *no driver script* — closed lane, see [Historical](#historical-ntcp2-apparatus-closed) | `check-ntcp2-interoperability.sh` (archaeology guard) | three historical workflows below |
+
+`tests/integration/service-tunnels/run-independent.sh` delegates its
+remote leg to `run-plan214-applications.sh`.
+
+## Evidence-integrity checkers
+
+Every checker below rejects bookkeeping that would let a claim be marked
+`passed` without an executed command or test behind it. They run in
+routine CI where listed in [`../../AGENTS.md`](../../AGENTS.md).
+
+| Checker | Guards |
+| --- | --- |
+| `check-sam-acceptance-evidence.sh` | SAM 3.1 acceptance rows in `sam/run-independent.sh` |
+| `check-ssu2-acceptance-evidence.sh` | SSU2 v2 acceptance rows in `ssu2/run-independent.sh` |
+| `check-i2cp-acceptance-evidence.sh` | I2CP independent-LeaseSet2 lifecycle rows |
+| `check-service-tunnel-acceptance-evidence.sh` | M10 service-tunnel external rows |
+| `check-m6-mixed-router-acceptance-evidence.sh` | M6 two-family per-layer acceptance rows |
+| `check-m6-final-closure-evidence.sh` | M6 final closure gate; evidence-consuming, run only after a complete manual external workflow |
+| `check-netdb-tunnel-evidence.sh` | NetDB lane rows in `m6-interop/run-netdb.sh` |
+| `check-destination-tunnel-evidence.sh` | Destination lane rows in `m6-interop/run-destination.sh` |
+| `check-exploratory-tunnel-evidence.sh` | Exploratory tunnel lane rows |
+| `check-streaming-tunnel-evidence.sh` | M6 i2pd mixed-router Streaming fingerprint invariants |
+| `check-streaming-fingerprint-evidence.sh` | Plan 312 anonymity Streaming fingerprint evidence (takes an evidence dir) |
+| `check-http-anonymity-evidence.sh` | HTTP anonymity profile evidence (takes an evidence root) |
+| `check-m11-transit-qualification-evidence.sh` | M11 production self-reply qualification; adds Plan 257 far-side / full-drain / source-lock rejections |
+| `check-m11-transit-boundaries.sh` | M11 composition boundaries |
+| `check-m12-floodfill-qualification-evidence.sh` | M12 floodfill matrix rows (`--self-test` mode supported) |
+| `check-i2pcontrol-acceptance-evidence.sh` | I2PControl differential counted rows from the executed Rust corpus |
+| `check-java-source-lock-gating.sh` | Java source-lock test environment gating and ordinary CI wiring |
+| `check-ntcp2-interoperability.sh` | **Historical** NTCP2 harness boundary invariants (archaeology guard, not a live lane) |
+
+Boundary/vector checkers that are not evidence checkers but gate the same
+apparatus: `check-ntcp2-vectors.sh`, `check-ssu2-vectors.sh`,
+`check-i2cp-vectors.sh`, `check-fixture-manifest.sh`,
+`check-constrained-host-lane-boundary.sh`,
+`check-rootless-interop-boundary.sh`,
+`check-multipass-interop-boundary.sh`, `check-service-tunnel-boundaries.sh`,
+`check-m11-per-epoch-composition.sh`, `check-service-anonymity-boundaries.sh`.
+
+## M6 Java bounded diagnostic (Plan 236)
+
+Plan 236 is a **bounded diagnostic, not a Java-family pass**. It
+source-locks the exact Java I2P `2.13.0` Streaming response path and
+**stops** at `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. It does
+**not** infer Router-A or i2pr behavior and does **not** change
+production code.
+
+[`scripts/interop/check-m6-java-response-source-lock.sh`](../../scripts/interop/check-m6-java-response-source-lock.sh)
+validates this exact path against the pinned checkout:
 
 ```text
-sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline
+ConnectionPacketHandler.receivePacket(SYN)
+  -> Connection.eventOccurred()
+  -> SchedulerReceived.eventOccurred()
+  -> Connection.sendPacket(PacketLocal)
+  -> PacketQueue.enqueue(PacketLocal)
+  -> boolean I2PSession.sendMessage(... SendMessageOptions)
 ```
 
-After cleanup, it compares the host state and retained tree against that
-baseline:
+The source lock and the sanitized Plan 236 terminal are durable facts.
+**A returned `I2PSocket` does not prove response emission**, Router-A
+I2CP admission, tunnel dispatch, or i2pr delivery. Java-family M6
+remains unclaimed and no production corrective is authorized. The
+driver is [`m6-interop/run-java.sh`](../../tests/integration/m6-interop/run-java.sh);
+the terminal is recorded in
+[`236-status.md`](../../plans/closure/mixed-router-interop/236-status.md).
+M6 exact-pinned i2pd progression is recorded as passed; the Java
+full-router lane remains compatibility debt.
+
+## Historical NTCP2 apparatus (closed)
+
+> Everything in this section describes a **closed** lane. It is preserved
+> for archaeology. Do not run, repair, retry, or extend it without a new
+> plan-of-record. NTCP2 stays experimental and non-advertised, and
+> normal-daemon NTCP2 is disabled per the Plan 101 guard.
+
+### Harness surface (surviving)
+
+The Plan 099 harness reduction pruned most plan-numbered modules. The
+surviving surface under
+[`tests/integration/ntcp2/harness/`](../../tests/integration/ntcp2/harness):
 
 ```text
-sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline target/interop/build/clean-host-baseline.json
+execution_lane.py            i2pd_direct_driver.py       reference_trigger_v4.py
+interop_topology.py          minimal_i2pd_probe.py       rootless_inner_runner.py
+minimal_i2pd_reverse_probe.py plan083_runner.py           rootless_supervisor.py
+plan084_runner.py            plan099_exit_gate.py        rootless_topology.py
+preflight_runner.py          reference_event.py          topology.py
+reference_topology.py
 ```
 
-The baseline and verification marker remain under ignored `target/interop`
-state and are not evidence uploads.
-
-Promotion is manual first, then low-frequency scheduled control after repeated
-clean-checkout and cache-reuse runs, then a current successful run at
-Milestone 3 closure. Any trusted pull-request lane requires a separate later
-decision and must not expose privileged execution to forked or untrusted code.
-
-## Plan 044 mixed-router composition
-
-Plan 044 converts the component implementations from Plans 040–043 into one
-executable, reproducible, fail-closed path. It adds four directional
-i2pr/reference mixed-scenario definitions under
-`tests/integration/ntcp2/mixed-scenarios/`:
-
-- `i2pr-to-java-ipv4` (i2pr initiates, Java I2P responds)
-- `java-to-i2pr-ipv4` (Java I2P initiates, i2pr responds)
-- `i2pr-to-i2pd-ipv4` (i2pr initiates, i2pd responds)
-- `i2pd-to-i2pr-ipv4` (i2pd initiates, i2pr responds)
-
-Each direction has a unique execution ID, one declared initiator and responder,
-one terminal typed result, and one evidence record. No direction may mask
-another.
-
-The mixed runner composes `I2prAdapter` with each reference adapter through a
-strict launcher scenario renderer. The renderer populates the exact launcher
-schema and rejects absolute paths, parent traversal, endpoints outside
-synthetic namespace ranges, mismatched address families, missing peer data for
-initiators, peer data for responders, and unknown fields.
-
-The data-phase oracle does not rely on an echo assumption. It uses a
-protocol-valid trigger supported by both pinned references. Evidence records
-carry real counters for authenticated-link count, frames sent/received, I2NP
-message aggregates, admission/replay counters, process lifecycle counters,
-and cleanup disposition.
-
-Gate archival uses gate-specific staging to prevent cross-gate record
-relabeling. The aggregate manifest must include exactly the expected records
-for the selected profile; missing, extra, mislabeled, or zero-valued records
-fail the gate.
-
-The current checkout contains the mixed-scenario definitions, the mixed-runner
-composition, the strict launcher renderer, and the non-echo data-phase oracle.
-No completed mixed-router i2pr record is present; these are explicit blockers,
-not skipped successes. NTCP2 remains experimental and non-advertised.
-
-## Plan 046 rootless sealed-namespace evidence lane
-
-Plan 046 replaces the host-global namespace requirement for the primary NTCP2
-interoperability evidence path with a **rootless, process-scoped user/
-network/mount/PID sandbox** that an ordinary user can run without sudo,
-passwordless elevation, host capabilities, setuid helpers, host-visible
-namespaces, host veth creation, or host firewall mutation. The primary
-evidence topology is `rootless-sealed-single-netns` with privilege model
-`unprivileged-userns`. The legacy `privileged-dual-netns-veth` topology is
-renamed and kept for explicit later qualification only.
-
-The sandbox contains only `lo`. Both routers bind distinct synthetic RFC 5737
-addresses (`192.0.2.1/32` and `192.0.2.2/32`) and an optional synthetic IPv6
-pair (`2001:db8:36::1/128` and `2001:db8:36::2/128`). The structural
-isolation basis is the freshly created network namespace plus the
-single-ID UID/GID maps, `no_new_privs`, `setgroups deny`, and the
-absence of default or external routes. Namespace-local nftables are not
-required.
-
-The lane defends against accidental public-network contact, an adapter
-binding wildcard, an adapter attempting DNS or external connect, a stale
-host-global namespace, a sandbox process surviving the supervisor, a
-broader-than-one UID/GID map, a passing record generated outside the
-sandbox, a successful rootless probe that lacked a usable namespace, and
-any evidence that retains raw namespaces, UIDs, paths, endpoints, logs,
-RouterInfo, or I2NP contents.
-
-The topology backend contract (`tests/integration/ntcp2/harness/interop_topology.py`)
-defines `InteropTopology` and the `ProcessPlacement` value object. Adapters
-and runners select the topology through `select_topology("rootless-sealed-single-netns", ...)`
-and never inspect effective UID or construct `sudo` / `ip netns` prefixes.
-
-The outer entrypoint (`scripts/interop/rootless-enter.sh`) creates the
-sandbox and execs the inner supervisor. It accepts only a strictly
-allowlisted set of operations, has no shell `eval`, and never falls back
-to the privileged backend. The inner supervisor
-(`tests/integration/ntcp2/harness/rootless_supervisor.py`) verifies the
-sandbox via:
-
-- single-ID UID/GID maps;
-- `setgroups` denial;
-- `no_new_privs`;
-- distinct user, network, mount, and PID namespaces;
-- `lo` readiness;
-- exact synthetic bind and connect behavior;
-- the absence of any default or external route;
-- a bounded external connect probe.
-
-On success it writes a sanitized `IsolationAttestation` record whose
-sha256 is bound to every mixed-router evidence record, and whose
-parent-network state pre/post digests must be byte-equal for the run
-to be considered passing.
-
-A static rootless boundary checker (`scripts/check-rootless-interop-boundary.sh`)
-fails the change whenever rootless-owned files contain prohibited
-patterns or omit required contracts. The mixed-router evidence schema
- adds `topology_kind`, `privilege_model`, `sandbox_attestation_sha256`,
-and `parent_network_state_unchanged`. A passed record that violates any
-of these is rejected. The status file `plans/closure/ntcp2-transport/046-status.md` tracks the
-stages of implementation completion and external evidence completion;
-the closure record is `plans/closure/ntcp2-transport/046-closure.md`. Plan 046 closed with the
-canonical typed blocker `blocked_unprivileged_user_namespace` recorded
-on this host, and `plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`
-takes on cross-host recovery.
-
-## Plan 048/049/050 Multipass recovery environment
-
-The host-level Plan 046 AppArmor restriction remains unchanged as the negative
-baseline. Plan 048 adds a disposable Multipass Ubuntu 24.04 amd64 guest for
-the `host.apparmor-restrict-off` recovery category. Plan 049 corrects its
-lifecycle ownership model. Plan 050 minimizes the cloud-init unit (no
-`rustup` or host toolchain inside the guest), adds a sanitized cloud-init
-failure taxonomy, a `--guest-probe-only` flow, and a selective-purge
-remediation that requires a verified ownership contract. The reviewed
-environment contract is identified by a stable environment ID, while each
-execution has a separate run ID and each realization has a generation-bound
-concrete instance name. The legacy `i2pr-interop-rootless` name is not
-authoritative.
-
-The host reserves a versioned lifecycle record atomically before launch under
-`target/interop/multipass/state/<run-id>/lifecycle.json`. A per-run/
-per-instance lock serializes transitions through explicit states such as
-`reserved`, `launching`, `provisioned`, `source_and_cache_ready`, `probe_passed`,
-`offline_ready`, `running`, `exported`, `blocked`, and `destroyed`. Structured
-Multipass state is normalized; unknown and deleted-but-unpurged states fail
-closed. A generated name collision causes bounded reallocation, never mutation
-of the colliding resource.
-
-Each managed guest carries a root-owned environment contract and ownership
-token. Ownership is proven by matching host and guest records, token hash,
-environment/cloud-init/source/cache digests, generation, policy, execution
-user, mounts, snapshots, and process state. A name match alone is insufficient.
-`--inspect` is read-only. `--adopt-owned`, `--resume-owned`,
-`--recreate-owned`, and `--destroy-owned` are explicit and require proof;
-normal execution never silently adopts, recreates, stops, deletes, or purges an
-existing instance. Global `multipass purge` is not a lifecycle operation.
-
-Cloud-init and source/cache preparation may use the network;
-`prepare-offline.sh` installs a guest-only nftables egress-deny policy before
-`run-matrix.sh`. The host baseline probe is recorded independently and does not
-gate guest launch. After ownership/policy verification and immediately before
-router start, `probe.sh` must obtain `rootless_sandbox_available` and a
-non-zero validated `IsolationAttestation`. The matrix runs the four Plan 045
-directions in fixed order and requires the existing topology, privilege,
-attestation, cleanup, and parent-network predicates.
-
-The canonical cache is `target/interop/cache`, matching `build-references.sh`,
-`offline-reuse.sh`, and the Python cache resolver. The older Plan 047 example
-`target/interop/build/cache` is not an executable path. Host mounts are not
-authoritative inputs. Snapshots are allowlisted and bound to the instance
-generation and environment/source/cache contract. `export-evidence.sh`
-transfers only the sanitized bundle, independently hashes it, validates the
-guest manifest, and atomically places it under
-`target/interop/evidence/multipass/<run-id>/`. Every directional record refers
-to the same environment evidence hash; mixed runs or generations are rejected.
-Pre-router failures produce sanitized environment-blocker records and never
-become protocol evidence. Destroying an owned VM preserves the host evidence
-directory. A typed blocker or reference-only result never advances the support
-ledger or closes Milestone 3.
-
-## Plan 054 Java startup and reference-observation qualification
-
-Plan 054 closes the two Plan 052 evidence gates that depend on a live
-Java reference and a per-side observation marker. It adds three local
-artifacts and three new constraints:
-
-- The Java startup matrix driver
-  (`tests/integration/ntcp2/harness/java_matrix.py`) composes
-  `java_startup_probe.py` once per cell of the 16-cell matrix
-  (namespace × data-state × launcher × sequence) with three
-  independent attempts each. The new `seeded-clone` data state
-  copies a frozen template into a fresh per-attempt directory and
-  refuses to launch the template directly (`template-launch-forbidden`).
-- The frozen Java template lifecycle is anchored by
-  `scripts/interop/java-prepare-template.py`. The preparation phase
-  is the only path that may download, install, or seed Java state.
-  The execution phase is restricted to `seeded-clone` clones; the
-  template digest is verified unchanged before and after every
-  qualification start.
-- The machine-readable reference observation catalog
-  (`tests/integration/ntcp2/reference-observation-catalog.toml`)
-  binds every marker to its exact source path, symbol, marker text,
-  sanitization rule, and minimum count. The Markdown
-  (`reference-observation-catalog.md`) is now drift-checked,
-  explanatory documentation; the static
-  `check-ntcp2-interoperability.sh` checker rejects any
-  `PENDING-SOURCE-INSPECTION` entry and any hardcoded rejection in
-  the Plan 052 predicate.
-
-The Java and i2pd adapters expose
-`collect_observation(role, run_id, correlation, log_cursor, catalog)`
-and return finalized `i2pr-ntcp2-direction-observation-v2` records.
-`mixed_runner._evaluate_plan052_predicate` now applies the
-`receiver_passes_data_phase` predicate against those records. The
-Plan 053 pipeline accepts the live records through
-`write_direction_artifacts(..., i2pr_observation=...,
-reference_observation=...)`; the synthetic builder remains the typed
-fallback for blocked and rejected directions.
-
-External qualification (the complete 48-start matrix, the ten
-consecutive rootless starts, and the seven control experiments) still
-requires the pinned Java 2.12.0 and i2pd 2.60.0 references on an
-authorized Ubuntu 24.04 amd64 host or Multipass guest. The current
-host is the Plan 046 negative baseline and cannot exercise the matrix;
-the Plan 048/049 Multipass recovery lane is the canonical external
-path. Plan 054 does not close Milestone 3.
-
-## Plan 058 record and candidate integrity closure pass
-
-Plan 058 is a documentation, provenance, and execution-contract closure
-pass. It retires the Plan 056 candidate, supersedes the Plan 057
-follow-up plan, decides ADR 0021 (Rejected), and splits the previous
-Plan 057 responsibilities into Plan 059 (reference-side implementation
-and live qualification) and Plan 060 (fresh candidate + two-run
-certificate). Plan 058 does not implement the i2pd direct helper, the
-Java support topology, or external mixed-router execution.
-
-- The candidate record integrity validator
-  (`tests/integration/ntcp2/harness/candidate_record.py`, schema
-  `i2pr-interop-candidate-v1`) refuses records with multiple
-  authoritative SHAs, retired candidates consumed by execution
-  tooling, candidates frozen before the implementation floor, and
-  `committed` evidence claims that name ignored diagnostics.
-- The Plan 058 test matrix (`test_plan058.py`) covers the positive
-  and 14 negative fixtures, the on-disk
-  candidate/ADR/Plan 057 supersession markers, the locked field
-  set, and the two-lane contract.
-- The static boundary checker
-  (`scripts/check-ntcp2-interoperability.sh`) enforces the
-  candidate record integrity invariants, the supersession markers,
-  and the ADR decision marker.
-- The Plan 058 closure defines two alternative execution lanes for
-  any future Milestone 3 evidence run: Lane A (direct-host, requires
-  `rootless_sandbox_available` on the execution host) and Lane B
-  (guest, the outer host may continue to report
-  `blocked_unprivileged_user_namespace` but the Multipass recovery
-  guest must report `rootless_sandbox_available`). Exactly one lane
-  is selected per candidate; a certificate may not combine Run A from
-  one lane with Run B from another.
-- The Plan 056 candidate is marked
-  `retired; never used for an authoritative external run`. The
-  historical SHA `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf` is
-  preserved verbatim as an audit record. The Plan 056 closure
-  record describes the locally generated diagnostic bundles under
-  the ignored `target/interop/evidence/plan056/` directory and names
-  the bounded local-diagnostic receipt at
-  `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
-  with `artifact_storage = local-untracked`. Plan 057 is superseded
-  before execution.
-- ADR 0021 (`docs/adr/0021-minimal-java-support-topology.md`) is
-  Rejected. The repository does not implement the Java support
-  topology; the `java-to-i2pr-ipv4` direction remains a typed
-  blocker for the pinned Java I2P 2.12.0 revision; Plan 059 must
-  close with the typed blocker
-  `blocked_java_support_topology_rejected`; Plan 060 must not start
-  under the current four-direction contract.
-
-The Plan 058 plan-of-record is
-`plans/closure/ntcp2-transport/058-plan056-record-and-candidate-integrity-closure-pass.md`;
-the closure record is `plans/closure/ntcp2-transport/058-status.md`.
-
-## Plan 059 reference-side implementation and live qualification closure pass
-
-Plan 059 implements the i2pd direct helper, the per-reference
-observation qualification receipts, and the canonical pipeline
-live-mode wiring that Plans 055-057 deferred. Plan 058 rejected
-ADR 0021, so Plan 059 closes with the typed blocker
-`blocked_java_support_topology_rejected`; the Java support topology
-is forbidden under the current four-direction contract.
-
-- The i2pd direct helper source, build contract, and source-lock
-  record are committed under
-  `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`.
-  The C++ helper (`i2pd_direct_connect.cpp`) links against the
-  pinned i2pd 2.60.0 libraries and exercises the documented
-  `i2pd::transports::Transports::SendMessage` call graph recorded
-  in `tests/integration/ntcp2/reference-trigger-contracts.md`. The
-  Python bounded driver (`i2pd_direct_connect.py`) provides the
-  local qualification seam when the C++ helper cannot be built.
-  `source-lock.json` records the pinned revision, the helper build
-  inputs, and the locked constraints required by Plan 055 B2.
-- The per-reference observation qualification receipts
-  (`i2pd-2.60.0.json` and `java_i2p-2.12.0.json`) record the
-  catalog metadata, the runtime-control blocker, and the typed
-  absence per semantic level. The summary at `summary.json`
-  tracks the overall qualification status. Both receipts mark every
-  semantic level as `qualified = false` until the Plan 046
-  rootless sealed-namespace lane or the Plan 048/049 Multipass
-  recovery lane exercises the runtime controls.
-- The Plan 052 pipeline now exposes a `live_mode` flag; in live
-  mode a passed reference-initiated direction requires a real
-  trigger record and live sender/receiver observation-v2 records.
-  Helper, source, catalog, and qualification-receipt digests bind
-  into the direction record so drift fails the bundle cross-check.
-  Cleanup failure overrides pass. The synthetic fallback remains
-  available for blocked/diagnostic fixture runs only.
-- The Plan 059 test matrix
-  (`tests/integration/ntcp2/harness/test_plan059.py`) covers 36
-  cases across the five required surfaces: i2pd helper, Java
-  support-topology gate, receiver observations, Java startup gate,
-  and pipeline live mode.
-- The Plan 059 closure contract is the typed blocker
-  `blocked_java_support_topology_rejected` because ADR 0021 is
-  Rejected. The Java receiver observations and the Java support
-  topology remain blocked; the runtime qualification requires the
-  Plan 046 rootless sealed-namespace lane or the Plan 048/049
-  Multipass recovery lane.
-
-The Plan 059 plan-of-record is
-`plans/closure/ntcp2-transport/059-reference-side-implementation-and-live-qualification-closure-pass.md`;
-the closure record is `plans/closure/ntcp2-transport/059-status.md`.
-
-## Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
-
-Plan 060 is the execution-only pass that cuts one fresh candidate
-from the fully implemented and qualified repository, selects
-exactly one execution lane (direct-host or guest), runs the four
-primary IPv4 mixed-router directions twice on independent mutable
-state, and produces a verified Milestone 3 certificate over the
-two sanitized bundles.
-
-On this host the plan closes with the typed blocker
-`blocked_execution_lane_unavailable`. The Plan 046 rootless
-sealed-namespace probe returns `blocked_unprivileged_user_namespace`
-(the host's kernel activates
-`kernel.apparmor_restrict_unprivileged_userns=1`, which confines
-every unprivileged user namespace to a restrictive AppArmor policy
-and prevents `unshare -U -r --map-root-user` from writing
-`/proc/self/uid_map`). The Plan 048/049 Multipass recovery lane is
-the canonical external path but cannot complete on this
-constrained host (per Plan 051; the bridge is wired end-to-end but
-the host's 15 GiB physical RAM plus four reserved qemu guests
-repeatedly destabilize the guest SSH endpoint mid-dispatch, and the
-host's multipassd became unresponsive mid-investigation).
-ADR 0021 was Rejected by Plan 058; the Java support topology is
-forbidden under the current four-direction contract; the
-`java-to-i2pr-ipv4` direction remains a typed blocker for the
-pinned Java I2P 2.12.0 revision.
-
-The Plan 060 candidate is `declared-not-executable` on this host
-(`plans/closure/ntcp2-transport/060-candidate.md`). The Plan 060 implementation surface is
-mandatory regardless of close outcome:
-
-- `tests/integration/ntcp2/harness/plan060.py` — Plan 060 helper
-  module. Exports `plan060_typed_blocker() ->
-  "blocked_execution_lane_unavailable"`, `plan060_close_status()
-  -> "declared-not-executable"`, `execution_lane_lock(...)` for
-  the Plan 058 two-lane contract, `candidate_record_digests()`
-  for the bounded digest table, `freeze_readiness_report()` for
-  the freeze-readiness checklist,
-  `assert_plan060_freeze_invariants()` for the typed blocker
-  enforcement, and `plan060_two_bundle_independence(...)` for the
-  cross-run independence rules.
-- `tests/integration/ntcp2/harness/test_plan060.py` — Plan 060
-  test matrix (35 cases across the Plan 060 surface).
-- `scripts/check-ntcp2-interoperability.sh` extended to enforce
-  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
-  the candidate/closure marker invariants.
-- `plans/closure/ntcp2-transport/060-candidate.md` and `plans/closure/ntcp2-transport/060-closure.md` — the
-  candidate and closure records.
-
-The Plan 060 plan-of-record is
-`plans/closure/ntcp2-transport/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`;
-the candidate record is `plans/closure/ntcp2-transport/060-candidate.md`; the closure
-record is `plans/closure/ntcp2-transport/060-closure.md`. The aggregate Milestone 3
-closure (`plans/closure/ntcp2-transport/030-milestone-3-closure.md`) is amended by Plan 060
-to record the close outcome. NTCP2 stays experimental and
-non-advertised; Milestone 3 stays open until a future pinned Java
-revision exposes a transport-only direct seam or the closure
-contract is revised through a new ADR, and until either the Plan
-046 rootless sealed-namespace lane or the Plan 048/049 Multipass
-guest lane becomes runnable.
-
-## Plan 062 NTCP2 evidence-contract and architecture correction
-
-Plan 062 is the evidence-contract and architecture correction
-pass that supersedes the Plan 060 execution authority. Plan 062
-corrects the repository's mixed-router architecture and evidence
-contract before new reference drivers are implemented.
-
-Plan 062 lands:
-
-- `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
-  (Accepted) — two-process direct transport drivers for Java I2P
-  and i2pd. ADR 0022 replaces the rejected Java-support-topology
-  premise (ADR 0021, Rejected by Plan 058) without rewriting
-  ADR 0021. The primary topology is one reference router plus
-  one i2pr process inside a rootless sealed network namespace or
-  an equivalently isolated guest; there is no support router,
-  floodfill, reseed, SAM, I2CP, HTTP/I2PControl, or tunnel pool
-  in the primary path.
-- `tests/integration/ntcp2/reference-drivers/source-verification.md`
-  — the source-locked API inspection record for the pinned Java
-  I2P 2.12.0 revision
-  (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and the pinned
-  i2pd 2.60.0 revision
-  (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`).
-- `tests/integration/ntcp2/harness/reference_trigger_v4.py` — the
-  Plan 062 v4 trigger schema (`i2pr-reference-trigger-v4`). The
-  schema uses 64-lowercase-hex Router Hash for both local and
-  peer sides, mandates the per-run DeliveryStatus `message_id`
-  in `1..=0xffffffff`, binds the helper, source, build manifest,
-  observer patch, source inspection record, and run identity
-  digests, and rejects v3 trigger records for new bundles. The
-  historical v3 module remains the bounded historical-reader
-  path.
-- `tests/integration/ntcp2/harness/reference_event.py` — the
-  Plan 062 reference-event v1 schema
-  (`i2pr-reference-event-v1`). The schema records per-driver
-  structured events (`process_started`, `listener_ready`,
-  `router_info_exported`, `peer_router_info_validated`,
-  `tcp_connected`, `ntcp2_authenticated`, `frame_emitted`,
-  `frame_authenticated_and_decrypted`, `i2np_message_decoded`,
-  `terminal_clean`, `terminal_rejected`) with strict
-  per-process sequence ordering, exact DeliveryStatus message ID
-  correlation for data-phase events, and continuous Router Hash
-  binding.
-- `tests/integration/ntcp2/harness/observation_v3.py` — the Plan
-  062 v3 observation schema
-  (`i2pr-ntcp2-direction-observation-v3`). The schema adds the
-  mandatory correlation fields `delivery_status_message_id`,
-  `peer_router_hash_sha256`, `local_router_hash_sha256`, and
-  `source_event_sha256`. The receiver pass predicate requires
-  nonzero decrypt and decode counts and rejects
-  generic-phrase-only sources. The historical v2 module remains
-  the bounded historical-reader path.
-
-Plan 062 retires the Plan 060 candidate from all future
-candidate validators and the static boundary checker. The
-Plan 060 candidate record (`plans/closure/ntcp2-transport/060-candidate.md`) is preserved
-verbatim for audit; the Plan 060 closure record
-(`plans/closure/ntcp2-transport/060-closure.md`) carries the explicit "Superseded by
-Plan 062" marker. The future candidate implementation floor is
-Plan 065 closure or later. v3 trigger records and v2 observation
-records remain readable for historical inspection but cannot
-contribute to a new passing bundle; only Plan 062 v4 trigger
-records, v3 observation records, and reference-event v1 records
-may contribute.
-
-Plan 062 extends
-`scripts/check-ntcp2-interoperability.sh` to enforce the v4
-trigger schema, the v3 observation schema, the reference-event v1
-schema, the source-verification record, ADR 0022 (Accepted),
-the Plan 060 retirement markers, and the absence of active 40-hex
-SHA-1 Router Hash width in the active schemas. Plan 062 does not
-implement the Java or i2pd drivers; those belong to Plan 063 and
-Plan 064.
-
-NTCP2 stays experimental and non-advertised; Milestone 3 stays
-open until Plan 065 closes with one complete four-direction live
-diagnostic bundle and Plan 066 produces a verified Milestone 3
-certificate.
-
-## Plan 063 Java I2P stripped-router direct NTCP2 driver
-
-Plan 063 implements the source-locked Java I2P 2.12.0 stripped-router
-direct NTCP2 driver. The driver is the test-only counterpart to the
-Plan 064 i2pd driver; together they form the source-locked pair
-required by the Plan 061 roadmap. The driver is **test-only** and
-never becomes a production dependency of `i2pr-daemon`.
-
-Plan 063 lands:
-
-- `tests/integration/ntcp2/reference-drivers/java/src/JavaNtcp2InteropDriver.java`
-  — the source-locked Java driver. It embeds the upstream
-  `net.i2p.router.Router` and `RouterContext`, activates the
-  pinned dummy facades (`DummyNetworkDatabaseFacade`,
-  `DummyClientManagerFacade`, `DummyPeerManagerFacade`,
-  `DummyTunnelManagerFacade`), uses the real
-  `net.i2p.router.transport.ntcp.NTCPTransport` (no patch, no SSU2,
-  no `VMCommSystem`), and submits a real correlated
-  `DeliveryStatusMessage` through `OutNetMessagePool`. The driver
-  exposes `inspect`, `listen`, and `dial` modes through a strict
-  config contract. The receive handler is a `HandlerJobBuilder`
-  registered for `DeliveryStatusMessage.MESSAGE_TYPE` (constant
-  value 10); the data-phase events (`frame_emitted`,
-  `frame_authenticated_and_decrypted`, `i2np_message_decoded`) are
-  emitted from the receive handler invocation, never from a
-  generic log phrase.
-- `tests/integration/ntcp2/reference-drivers/java/source-lock.json`
-  — the source-lock record
-  (`i2pr-java-helper-source-lock-v1`) binding the pinned Java
-  revision `2800040deee9bb376567b671ef2e9c34cf3e30b6`, the helper
-  source path, the build contract, the locked constraints, and the
-  required verification controls.
-- `tests/integration/ntcp2/reference-drivers/java/classpath-manifest.json`
-  — the runtime classpath binding every pinned jar in
-  `target/interop/cache/java_i2p/<tree>/lib/` to its purpose. No
-  Maven Central dependency may be introduced.
-- `tests/integration/ntcp2/reference-drivers/java/build-manifest.schema.json`
-  — the build-manifest schema
-  (`i2pr-java-helper-build-manifest-v1`) that requires measured
-  digests for the i2p.jar, router.jar, all runtime jars, the
-  driver source, the driver binary, the classpath manifest, and the
-  JDK versions. No zero or placeholder digest is allowed in an
-  attempted run.
-- `tests/integration/ntcp2/reference-drivers/java/build-driver.sh`
-  and `run-driver.sh` — the offline build and runtime seams. The
-  build script requires the exact pinned source/build cache, uses a
-  deterministic sorted source list, uses an explicit classpath,
-  emits no download, and writes only into an owned output
-  directory.
-- `tests/integration/ntcp2/harness/java_direct_driver.py` — the
-  Python harness adapter that binds every helper invocation into a
-  Plan 062 v4 trigger record (`i2pr-reference-trigger-v4`) and
-  validates the Plan 063 strict driver config contract. The
-  adapter never reaches inside the Java helper state and never
-  synthesises a passing record.
-- `tests/integration/ntcp2/harness/test_java_direct_driver.py` and
-  `test_java_direct_control.py` — the Plan 063 test matrix
-  covering the source-verification contract, strict config
-  contract, Python harness adapter, structured event contract, and
-  the local inspect-mode round-trip where the pinned Java cache is
-  available.
-- `tests/integration/ntcp2/qualification/java-direct-driver.json` —
-  the Plan 063 qualification receipt
-  (`i2pr-java-direct-driver-qualification-v1`). On this host the
-  receipt records the typed host-environment blocker
-  (`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
-  qualification remains to be produced in the Plan 046 rootless
-  sealed-namespace lane or the Plan 048/049 Multipass recovery
-  lane.
-
-Plan 063 extends the Plan 062 source-verification record
-(`tests/integration/ntcp2/reference-drivers/source-verification.md`)
-with the canonical two-process topology contract. The Plan 062 v4
-trigger schema, the Plan 062 reference-event v1 schema, and the
-Plan 062 v3 observation schema remain the authoritative schemas for
-the direction records.
-
-Plan 063 extends `scripts/check-ntcp2-interoperability.sh` to
-enforce the Java direct driver source, the source-lock record, the
-classpath manifest, the build-manifest schema, the build/run
-scripts, the Python adapter, the test matrix, and the qualification
-receipt. The active v4 trigger, v3 observation, and reference-event
-schemas continue to enforce the 64-hex SHA-256 Router Hash
-contract; the historical v3 trigger and v2 observation paths remain
-the bounded historical-reader path.
-
-Plan 063 does not advance any support row. NTCP2 stays experimental
-and non-advertised; Milestone 3 stays open until Plan 065 closes
-with one complete four-direction live diagnostic bundle and Plan
-066 produces a verified Milestone 3 certificate. Plan 063 does not
-wire the Java driver into the canonical primary `mixed_runner.py`;
-that wiring belongs to Plan 065.
-
-## Plan 064 i2pd direct NTCP2 driver and observer correction
-
-Plan 064 replaces the partial Plan 059 i2pd direct connect helper
-with a correctly initialized, dual-mode, source-locked i2pd 2.60.0
-NTCP2 interoperability driver. The driver is the test-only
-counterpart to the Plan 063 Java driver; together they form the
-source-locked pair required by the Plan 061 roadmap. The driver is
-**test-only** and never becomes a production dependency of
-`i2pr-daemon`.
-
-Plan 064 lands:
-
-- `tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`
-  — the source-locked C++ driver. It performs the source-verified
-  pinned i2pd initialization sequence (`config::Init` →
-  `context::ParseConfig` → `fs::SetAppDir` → `crypto::Init` →
-  `context::Init` → transport singleton → `netdb.Start` →
-  `transports.Start(true, false)` → `context.Start`), uses the real
-  pinned NTCP2 transport (no patch, no SSU2, no SAM, no I2CP, no
-  HTTP/I2PControl), and submits a real correlated
-  `CreateDeliveryStatusMsg(delivery_status_message_id)` through
-  `Transports::SendMessage` exactly once. The driver exposes
-  `inspect`, `listen`, and `dial` modes through a strict config
-  contract. The receive observer is placed immediately after
-  `HandleData()` completes AEAD verification, block bounds
-  validation, and `FromNTCP2` conversion; the send observer is
-  placed in the successful branch of `HandleI2NPMsgsSent()` (or
-  pinned equivalent).
-- `tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h`
-  and `interop_observer.cpp` — the compile-time-gated passive
-  observer API and sink. The observer is `noexcept`, never blocks
-  the transport thread on unbounded I/O, writes only to an owned
-  bounded sink, and drops the observation with a typed local
-  counter if the sink is unavailable.
-- `tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch`
-  — the minimal observer patch that activates the post-AEAD
-  receive seam and the successful frame-write send seam.
-- `tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json`
-  — the source-lock record
-  (`i2pr-i2pd-direct-driver-source-lock-v1`) binding the pinned
-  i2pd revision `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`, the
-  helper source path, the build contract, the observer patch
-  digest, and the locked constraints, and the required
-  verification controls. Plan 064 explicitly eliminates the eight
-  defects of the Plan 059 helper: 64-hex SHA-256 Router Hash,
-  NTCP2-address static-key binding, source-verified pinned
-  initialization, real `CreateDeliveryStatusMsg` dispatch, bounded
-  `SendMessage` asynchronous semantics, sealed-topology
-  reserved-range disable, exact post-AEAD receive correlation,
-  and measured provenance for every helper input.
-- `tests/integration/ntcp2/reference-drivers/i2pd/build-manifest.schema.json`
-  — the build-manifest schema
-  (`i2pr-i2pd-direct-driver-build-manifest-v1`) that requires
-  measured digests for the i2pd source tree, the observer patch,
-  the helper source and binaries, the linked library manifest,
-  the CMake version, and the compiler version. No zero or
-  placeholder digest is allowed in an attempted run.
-- `tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt`,
-  `build-driver.sh`, and `run-driver.sh` — the offline build and
-  runtime seams. The build script verifies the pristine pinned
-  source tree digest, applies exactly one reviewed observer
-  patch with `--fuzz=0` equivalent behaviour, builds the
-  instrumented driver, restores the pristine tree, builds the
-  uninstrumented control driver, and emits two build manifests.
-- `tests/integration/ntcp2/harness/i2pd_direct_driver.py` — the
-  Python harness adapter that binds every helper invocation into
-  a Plan 062 v4 trigger record (`i2pr-reference-trigger-v4`) and
-  validates the Plan 064 strict driver config contract. The
-  adapter never reaches inside the C++ helper state and never
-  synthesises a passing record.
-- `tests/integration/ntcp2/harness/test_i2pd_direct_driver.py`
-  and `test_i2pd_direct_control.py` — the Plan 064 test matrices
-  covering the source-verification contract, strict config
-  contract, Python harness adapter, structured event contract,
-  observer compile-time gating, the Plan 059 supersedure, and the
-  typed host blocker.
-- `tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
-  — the Plan 064 qualification receipt
-  (`i2pr-i2pd-direct-driver-qualification-v1`). On this host the
-  receipt records the typed host-environment blocker
-  (`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
-  qualification remains to be produced in the Plan 046 rootless
-  sealed-namespace lane or the Plan 048/049 Multipass recovery
-  lane.
-
-Plan 064 extends the Plan 062 source-verification record
-(`tests/integration/ntcp2/reference-drivers/source-verification.md`)
-with the canonical two-process topology contract for the i2pd
-driver. The Plan 062 v4 trigger schema, the Plan 062 reference-
-event v1 schema, and the Plan 062 v3 observation schema remain the
-authoritative schemas for the direction records. The legacy Plan
-059 helper at `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
-is replaced by a fail-closed compatibility stub with the explicit
-Plan 064 supersedure marker; the original source-lock record is
-preserved verbatim as the bounded historical-reader path.
-
-Plan 064 extends `scripts/check-ntcp2-interoperability.sh` to
-enforce the i2pd driver source, the observer header, the observer
-source, the observer patch, the source-lock record, the
-build-manifest schema, the CMakeLists, the build/run scripts, the
-Python adapter, the test matrices, the control topology contract,
-the qualification receipt, and the Plan 059 supersedure marker.
-The active v4 trigger, v3 observation, and reference-event schemas
-continue to enforce the 64-hex SHA-256 Router Hash contract; the
-historical v3 trigger and v2 observation paths remain the bounded
-historical-reader path.
-
-Plan 064 does not advance any support row. NTCP2 stays experimental
-and non-advertised; Milestone 3 stays open until Plan 065 closes
-with one complete four-direction live diagnostic bundle and Plan
-066 produces a verified Milestone 3 certificate. Plan 064 does not
-wire the i2pd driver into the canonical primary `mixed_runner.py`;
-that wiring belongs to Plan 065.
-
-## Plan 065 NTCP2 canonical integration and live qualification
-
-Plan 065 wires the corrected Java and i2pd direct drivers into the
-canonical four-direction mixed-router lane, enforces the exact
-DeliveryStatus correlation on the i2pr side, and produces one
-complete four-direction live diagnostic bundle from a clean
-implementation commit. Plan 065 establishes the implementation
-floor from which Plan 066 may cut a candidate.
-
-### Workstream A: i2pr scenario contract
-
-The strict launcher scenario schema is bumped to
-`i2pr-launcher-scenario-v2` (schema name string) / 2 (schema version
-integer). The strict parser requires the per-run DeliveryStatus
-`message_id` in `1..=0xffffffff`, the 64-lowercase-hex expected sender
-and receiver Router Hashes, the `reference_driver_mode` field
-allowlisted to `java-direct-driver` or `i2pd-direct-driver`, and the
-`run_identity_sha256` 64-lowercase-hex digest. The strict parser
-refuses the historical schema 1 path, refuses zero message IDs,
-refuses uppercase or short Router Hashes, refuses all-zero
-provenance, and refuses a reference driver mode that does not match
-the direction encoded by `scenario_id`.
-
-The Rust strict parser lives in `tools/i2pr-interop/src/scenario.rs`;
-the Python strict parser lives in
-`tests/integration/ntcp2/harness/launcher_protocol.py`. The strict
-renderer lives in `tests/integration/ntcp2/harness/launcher_renderer.py`.
-
-### Workstream B: i2pr launcher send correction
-
-The `send_i2np_block` helper no longer hard-codes the
-`0x0420_0001` DeliveryStatus authority. The helper accepts the
-scenario-owned message ID, rejects a zero ID with
-`SenderDeliveryStatusMessageIdZero`, constructs the DeliveryStatus
-envelope using the exact ID, decodes the constructed message and
-verifies the round-trip envelope and payload message IDs before
-frame emission, and records the per-run DeliveryStatus
-`message_id` and the expected peer Router Hash in the typed
-counters. The hard-coded `0x0420_0001` is removed from the active
-primary code path.
-
-### Workstream C: i2pr launcher receive correction
-
-The `receive_delivery_status` helper requires the exact envelope
-message ID and the DeliveryStatus payload message ID before any
-other condition. A type-only DeliveryStatus match is rejected with
-`ReceiverDeliveryStatusIdMismatch`. A missing DeliveryStatus is
-rejected with `ReceiverDeliveryStatusMissing`. A duplicate is
-rejected with `ReceiverDeliveryStatusDuplicate`. The helper records
-the per-run DeliveryStatus `message_id` and the expected peer
-Router Hash in the typed counters.
-
-### Workstream D: reference adapter integration
-
-The canonical mixed-runner wires the new scenario primary fields
-through `render_and_validate` for both the i2pr initiator and
-responder paths. The `_plan065_primary_fields` helper derives the
-DeliveryStatus `message_id` from the run identity and the
-correlation nonce; the `_reference_driver_mode_for` helper returns
-the source-locked driver mode for a reference kind. The renderer
-rejects SAM, HTTP, I2PControl, support-topology, and
-synthetic-fallback helpers for any primary direction.
-
-### Workstream E: canonical two-process topology
-
-The canonical two-process topology enforces exactly one i2pr
-process and exactly one reference driver process per primary
-direction. The Plan 046 rootless sealed-namespace lane owns the
-canonical external lane; the Plan 048/049 Multipass recovery lane
-owns the canonical recovery lane. The Plan 058 deprecated the
-privileged dual-netns-veth lane as an opt-in qualification lane.
-
-### Workstream F: pass predicate
-
-The Plan 065 pass predicate requires both-side
-`ntcp2_authenticated`, sender `frame_emitted`, receiver
-`frame_authenticated_and_decrypted` AND `i2np_message_decoded`, a
-matching `delivery_status_message_id` between scenario, trigger,
-sender, and receiver, and a matching `peer_router_hash_sha256` /
-`local_router_hash_sha256` between trigger, sender, receiver, and
-direction record. The reference observation v3 schema carries the
-exact correlation fields and the canonical mixed-runner refuses
-to mark a direction as `passed` when the synthetic fallback is
-used.
-
-### Workstream G: evidence model and durability
-
-The Plan 052 evidence bundle and the Plan 053 pipeline integration
-remain the canonical evidence model. The Plan 065 evidence
-retention requires every primary direction to write exactly one
-`run-identity`, `environment-manifest`, `direction`, `trigger`,
-`observation-v3`, `cleanup`, and `diagnostics/sanitized-summary`
-record. The Plan 060 candidate is retired and the
-`declared-not-executable` status marker is preserved; the Plan 060
-candidate record is preserved verbatim as the bounded
-historical-reader path. The Plan 066 implementation floor is the
-Plan 065 closure commit or later.
-
-### Workstream H: live qualification sequence
-
-The Plan 065 live qualification sequence is documented in the plan
-of record. The Plan 046 rootless sealed-namespace lane is the
-canonical external lane; the Plan 048/049 Multipass recovery lane
-is the canonical recovery lane. Plan 066 cannot start under the
-current four-direction contract until either a future pinned Java
-revision is adopted or the closure contract is revised through a
-new ADR (because ADR 0021 is Rejected by Plan 058). The Plan 046
-rootless sealed-namespace lane returns
-`blocked_unprivileged_user_namespace` on this host; the Plan
-048/049 Multipass recovery lane is the canonical external path
-but cannot complete on this constrained host (per Plan 051).
-Plan 066 therefore closes on this host with the typed
-environment blocker `blocked_execution_lane_unavailable`.
-
-Plan 065 does not advance any support row. NTCP2 stays experimental
-and non-advertised; Milestone 3 stays open until Plan 066
-produces a verified Milestone 3 certificate.
-
-## Plan 066 fresh-candidate and authoritative NTCP2 two-run closure pass
-
-Plan 066 is the execution-only pass that cuts one fresh candidate
-descended from the Plan 065 implementation floor, selects exactly
-one execution lane (direct-host or guest), runs the four primary
-IPv4 mixed-router directions twice on independent mutable state,
-and produces a verified Milestone 3 certificate over the two
-sanitized bundles.
-
-The plan inherits the Plan 058/060 two-lane contract: Lane A
-(direct-host, requires `rootless_sandbox_available` on the
-execution host) and Lane B (guest, the outer host may continue to
-report `blocked_unprivileged_user_namespace` but the Multipass
-recovery guest must report `rootless_sandbox_available`). The two
-lanes are alternatives; cross-lane combinations are forbidden.
-
-The Plan 066 plan-of-record cannot start under the current
-four-direction contract until either a future pinned Java revision
-is adopted or the closure contract is revised through a new ADR
-(because ADR 0021 is Rejected by Plan 058). The host in the Plan
-046 `apparmor_restrict_on` negative baseline cannot exercise the
-Plan 046 sealed-namespace lane; the Plan 048/049 Multipass
-recovery lane is the canonical external path but cannot complete
-on this constrained host (per Plan 051). Plan 066 therefore closes
-on this host with the typed environment blocker
-`blocked_execution_lane_unavailable`; the candidate is
-`declared-not-executable` on this host.
-
-The Plan 066 implementation surface is mandatory:
-
-- `tests/integration/ntcp2/harness/plan066.py` — the Plan 066
-  helper module. Exports `plan066_typed_blocker() ->
-  "blocked_execution_lane_unavailable"`, `plan066_close_status()
-  -> "declared-not-executable"`, `plan066_execution_lane_lock(...)`
-  for the Plan 058/060 two-lane contract,
-  `plan066_candidate_record_digests()` for the bounded 23-row
-  digest table, `plan066_freeze_readiness_report()` for the
-  freeze-readiness checklist,
-  `assert_plan066_freeze_invariants()` for the typed blocker
-  enforcement, `plan066_directional_record(...)` for the per-
-  direction record skeleton, `plan066_two_bundle_independence(...)`
-  for the cross-run independence rules, and
-  `plan066_finalized_bundle_marker()` for the bundle mutation
-  guard.
-- `tests/integration/ntcp2/harness/test_plan066.py` — the Plan 066
-  test matrix (41 cases covering the 30 enumerated Plan 066
-  Phase 12 cases plus the typed-blocker, freeze-readiness,
-  helper-contract, and Plan 065 plan-of-record helpers).
-- `scripts/check-ntcp2-interoperability.sh` extended to enforce
-  the Plan 066 artifacts, the Plan 066 test matrix coverage, and
-  the candidate/closure marker invariants.
-- `plans/closure/ntcp2-transport/066-candidate.md` — the Plan 066 candidate record. Status
-  `declared-not-executable`. Implements the executed source
-  commit (the Plan 065 implementation floor), the bounded 23-row
-  digest table, the lane lock, the typed blockers, and the schema
-  marker.
-- `plans/closure/ntcp2-transport/066-closure.md` — the Plan 066 closure record with the
-  typed blocker and the close-status.
-
-### Plan 066 supersession of Plan 060
-
-Plan 060 was retired by Plan 062. Plan 066 supersedes the Plan 060
-two-run certificate authority. The Plan 060 helper module, test
-matrix, freeze-readiness checks, candidate record, and closure
-record remain mandatory as an audit trail and a Plan 066
-prerequisite. Future candidates must descend from the Plan 065
-implementation floor or later, must use the Plan 062 v4 trigger
-schema, the Plan 062 reference-event v1 schema, the Plan 062 v3
-observation schema, and the 64-hex SHA-256 Router Hash contract.
-
-The Plan 066 implementation surface is mandatory regardless of
-close outcome. Any change that removes or weakens the Plan 066
-helper module, the Plan 066 test matrix, the static boundary
-checker extension, or the freeze-readiness invariants must be
-re-justified in a new plan-of-record and must not silently weaken
-the Milestone 3 evidence gate. NTCP2 stays experimental and
-non-advertised; Milestone 3 stays open until a future candidate
-produces two independent verified bundles.
-
-## Plan 067 staged interoperability corrective roadmap
-
-Plan 067 is the **active** Milestone 3 corrective roadmap. Plan 067
-supersedes Plan 066 as the active execution authority. Plan 066
-remains an immutable historical record of the unavailable
-release-qualification lane on the constrained host.
-
-Plan 067 separates NTCP2 interoperability evidence into four bounded
-tiers:
-
-- **Level 0 — local conformance.** Deterministic local protocol and
-  runtime ownership.
-- **Level 1 — external loopback smoke.** Two real processes on the
-  host loopback. i2pd is the primary initial validator. Emissary is
-  conditional. No rootless namespace, no Multipass, no candidate
-  freeze, no two-bundle certificate, no reviewer record.
-- **Level 2 — repeated development interoperability.** Both
-  directions against the primary independent validator (pinned i2pd
-  2.60.0), three fresh-state repetitions per direction, exact
-  message and identity correlation, bounded negative controls.
-- **Level 3 — release qualification.** Java I2P 2.12.0 and i2pd
-  2.60.0, isolated no-public-egress lane, reproducible
-  source/reference provenance, exact authenticated data-phase
-  message correlation, independent fresh state, sanitized durable
-  evidence. The Plan 066 certificate verifier may be reused at Level
-  3.
-
-Java and i2pd remain required for release qualification. NTCP2 stays
-experimental and non-advertised.
-
-## Plan 068 staged evidence and authority correction
-
-Plan 068 implements the staged-evidence and authority correction
-that Plan 067 proposes. Plan 068 lands:
-
-- `docs/adr/0023-staged-ntcp2-interoperability-evidence.md`
-  (Accepted). ADR 0023 separates evidence into four bounded tiers
-  and forbids lower-tier promotion into release bundles. ADR 0023
-  does not supersede ADR 0022's direct-driver decision.
-- `tests/integration/ntcp2/harness/evidence_tier.py` — the
-  evidence-tier constants and tier-separation rules. The release
-  bundle validators refuse every record whose tier is missing or
-  lower than `release-qualification`.
-- `tests/integration/ntcp2/harness/loopback_smoke_record.py` — the
-  Level 1 smoke record schema
-  (`i2pr-ntcp2-loopback-smoke-v1`).
-- `tests/integration/ntcp2/harness/development_validation.py` — the
-  Level 2 development-validation summary schema
-  (`i2pr-ntcp2-development-validation-v1`).
-- The Plan 068 test matrices (`test_evidence_tier.py`,
-  `test_loopback_smoke_record.py`,
-  `test_development_validation.py`).
-- `scripts/check-ntcp2-interoperability.sh` extended to enforce the
-  new schema modules, the new test matrices, the ADR 0023
-  acceptance marker, and the release-bundle smoke/development
-  rejection.
-
-Plan 068 also removes the stale `blocked_java_support_topology_rejected`
-interpretation from the active Java path: ADR 0021 remains Rejected
-and the Java support topology remains forbidden, but the ADR 0022
-direct Java driver is the active Java architecture. Java may still be
-unavailable because of host/runtime/build defects, but not because
-ADR 0021 forbids the already accepted replacement architecture.
-
-The focused closure baseline for Plans 069-073 is the touched-code
-test suite plus `cargo fmt --all --check`, `cargo check --workspace
---all-targets`, `cargo test --workspace`,
-`scripts/check-dependency-direction.sh`, and
-`scripts/check-runtime-boundaries.sh`. Full historical harness
-matrices, rootless checks, and Multipass checks remain available
-for explicit integration checkpoints but are not required for
-Level 1 or Level 2 closures.
-
-## Plan 074 real-driver and constrained-host corrective roadmap (historical)
-
-Plan 074 is historical execution authority. Plan 085 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution
-pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086
-→ Plan 087 → Plan 088 → Plan 079 (blocked)**. Plans 075, 076, 077, and 080
-are closed prerequisites or historical lane records. The Plan 084 historical
-`lane-invalidated` closure is reclassified as "runner implementation
-completed; required reverse wire execution never occurred" and the active
-development decision now lives in `plans/closure/ntcp2-transport/088-status.md`.
-
-The corrected repository state is:
-
-```text
-plan_068_staged_evidence = implemented
-plan_069_runner_scaffolding = historical
-real_i2pd_driver = implemented
-real_i2pd_library_linkage = present
-real_reference_process_in_plan069_runner = corrected_by_plan075
-real_mixed_router_attempts = 0
-current_rootless_namespace_lane = unavailable
-multipass_lane = qualified
-support = experimental
-advertised = false
-normal_daemon_activation = disabled
-```
-
-The constrained-host lane decision and Plan 077 capability probe remain
-historical records. Do not treat capability probing or the pre-protocol
-Plan 078 stop as protocol evidence.
-
-## Plan 069 host-compatible NTCP2 loopback smoke lane (historical)
-
-> **Reclassification (Plan 074, supersession note).** Plan 069
-> implements the Plan 067 Level 1 host-loopback smoke runner and its
-> static boundary check; at Plan 074 registration the runner was
-> scaffolding/fake-process test coverage only. The runner integrity
-> correction landed in Plan 075. Plan 069 remains the historical
-> scaffolding snapshot in `plans/closure/ntcp2-transport/069-status.md`.
-
-Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
-The lane is a non-production composition that exercises a single
-two-process NTCP2 direction (one i2pr launcher process, one Plan 064
-i2pd direct driver process) on the host loopback, without sudo,
-namespaces, Multipass, or any public-network access. The runner is
-structurally incapable of producing a Level 3 release bundle or
-certificate. A passed Level 1 record satisfies the Plan 068 smoke
-schema (`i2pr-ntcp2-loopback-smoke-v1`) and the evidence tier
-`external-loopback-smoke`; it never satisfies a release-qualification
-predicate.
-
-Plan 069 lands:
-
-- `tests/integration/ntcp2/harness/loopback_smoke.py` — the runner
-  module. Owns the strict CLI/config parser, the run-root lifecycle,
-  the loopback port allocator, the Plan 065 strict scenario
-  renderer, the Plan 064 strict driver config builder, the
-  listener/dialer process ownership and cleanup, the network-audit
-  probe (strace-allowlist or configuration-only), the
-  failure-stage classifier, and the Plan 068 smoke record writer.
-  The runner must not import or call Plan 056/066 candidate,
-  bundle, certificate, rootless-topology, or Multipass authority.
-- `scripts/interop/run-ntcp2-loopback-smoke.sh` — the thin shell
-  entry point. The wrapper must never invoke sudo, namespaces,
-  containers, VMs, or public-network access.
-- `tests/integration/ntcp2/harness/test_loopback_smoke.py` — the
-  Plan 069 test matrix (42 cases). Exercises the strict config
-  parser, the failure staging, the cleanup contract, the
-  network-audit degradation, the listener-before-dialer ordering,
-  the exact DeliveryStatus correlation, the typed-blocker rules,
-  the runner ownership invariants, and the static shell wrapper
-  contract.
-- `scripts/check-ntcp2-loopback-smoke-boundary.sh` — the static
-  Plan 069 boundary check. Verifies the runner/shell/test artifacts
-  are present, the allowlist markers are committed, and the runner
-  is free of release/rootless/Multipass authority.
-- `plans/closure/ntcp2-transport/069-status.md` — the closure record with exact commands,
-  results, and no fabricated live pass.
-
-The Plan 068 Level 1 smoke record schema
-(`i2pr-ntcp2-loopback-smoke-v1`) remains the canonical record
-contract. Plan 069 consumes it without modifying the schema. A
-Level 1 passed record requires every positive boolean to be `True`,
-`cleanup_clean = True`, and `network_audit != not-run`. Raw payload,
-private key, Noise state, and full RouterInfo bytes are forbidden.
-
-Plan 069 does not claim mixed-router interoperability by itself; the
-implementation surface is **scaffolding and fake-process test coverage
-only** under Plan 074 until Plan 075 restores direction-aware process
-roles, structured reference events, measured provenance, and
-fail-closed guards. Plan 069 also does not modify production NTCP2
-code, the i2pd direct driver, or the Plan 065 strict launcher
-scenario contract.
-
-## Plan 075 Plan 069 runner integrity and evidence correction
-
-Plan 075 corrects the Plan 069 runner so it is structurally
-incapable of producing a mixed-router pass unless it launches one
-real i2pr process and one configured real reference process and
-consumes authentic structured events from both.
-
-The corrected runner must:
-
-- launch the reference role through the configured reference driver
-  via `tests/integration/ntcp2/reference-drivers/i2pd/run-driver.sh`,
-  not a second `i2pr-interop` process;
-- bind every accepted event to a measured reference process binary
-  digest, implementation name, run ID, direction, Router Hash pair,
-  and exact DeliveryStatus message ID;
-- derive milestones only from validated structured events
-  (`ntcp2_authenticated`, `frame_emitted`,
-  `frame_authenticated_and_decrypted`, `i2np_message_decoded`), never
-  from a TCP loopback probe alone;
-- refuse synthetic provenance fallback hashes that fabricate a
-  schema-valid digest from a run string;
-- fail closed with one of the typed blockers
-  `runner-reference-process-not-executed`,
-  `runner-reference-events-missing`,
-  `runner-synthetic-provenance-rejected`, or
-  `runner-protocol-event-unproven` whenever any of the above
-  contracts is violated.
-
-The Plan 046 `apparmor_restrict_on` host remains the Plan 046
-negative baseline; the Plan 048/049 Multipass recovery lane is
-the canonical external path. Plan 075 closes on this host with
-the typed environment blocker `runner-reference-events-missing`
-or `runner-synthetic-provenance-rejected` because the pinned i2pd
-build cache is not present and the Plan 064 driver is not
-linked against the pinned libraries.
-
-Plan 077 has selected and documented the constrained-host capability state;
-Plan 078 remains blocked because no full-runtime lane is qualified. No real
-mixed-router attempt has occurred.
-
-Plan 085 has since superseded Plan 074 for active execution. Plans 075,
-076, 077, and 080 are closed prerequisites; the active sequence is
-**Plan 082 (implemented) → Plan 083 (implemented, execution pending) →
-Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087
-→ Plan 088 → Plan 079 (blocked)**. The Plan 084 historical
-`lane-invalidated` closure is reclassified as "runner implementation
-completed; required reverse wire execution never occurred" and the active
-development decision now lives in `plans/closure/ntcp2-transport/088-status.md`.
-
-## Plan 077 constrained-host execution lane
-
-Plan 077 adds a separate capability-selection boundary for hosts that cannot
-use the Plan 046 rootless or Plan 048/049 Multipass paths. The probe at
-`scripts/interop/probe-constrained-host-lanes.sh` is inspection-only. It
-records Docker CLI/daemon access, QEMU system/TCG availability,
-`no_new_privs` support, and the presence of a manual remote workflow.
-
-Selection is fail-closed and ordered: existing Docker with `--network none`,
-QEMU TCG with `-nic none`, inherited connected descriptors plus seccomp as a
-reduced-scope diagnostic, manual remote Linux, and finally no full-runtime
-lane. The common manifest and qualification record are validated by
-`tests/integration/ntcp2/harness/execution_lane.py`. A tool, workflow, or
-reduced-scope capability is not a qualification; a full-runtime record must
-prove loopback-only communication, no public interface or route, exact
-artifact digests, the two-process control, result export, and cleanup.
-
-The historical Plan 077 probe found only the reduced descriptor capability.
-Plan 080 later qualified the owned Multipass guest used for the single Plan
-078 attempt; no Docker/QEMU packaging was added speculatively. See [ADR
-0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md), [the Plan 077
-record](../../plans/closure/ntcp2-transport/077-status.md), and [the Plan 080 closure](../../plans/closure/ntcp2-transport/080-status.md).
-
-## Active correction: Plan 082 pre-protocol state preparation
-
-The current execution authority is Plan 081 and its Plan 082 child, not the
-historical Plan 078 close label. The qualified Plan 080 guest and real Plan
-076 i2pd driver are valid prerequisites, while the Plan 078/080 attempt
-stopped before TCP. The i2pr launcher therefore has separate test-only
-`ntcp2 prepare` and `ntcp2 validate-scenario` operations that reuse the
-existing identity, NTCP2 static-key, RouterInfo-signing, and
-endpoint-verification code without opening a socket or dialing a peer. The
-mixed runner prepares i2pr and the pinned reference, validates both
-RouterInfos and Router Hashes, asserts the frozen
-`i2pr-minimal-run-identity-v1` digest, and invokes the Rust
-`validate-scenario` command before any live process. Plan 082 is
-implemented and closed per `plans/closure/ntcp2-transport/082-status.md`.
-
-The mixed runner prepares i2pr and the pinned reference before rendering a
-strict Plan 065 scenario, validates both RouterInfos and Router Hashes, and
-freezes `i2pr-minimal-run-identity-v1` before any live process. A primary
-scenario never uses a generated suffix or empty correlation fields. Preparation,
-scenario validation, and the frozen run identity are pre-protocol diagnostics
-only; they cannot claim TCP, authentication, frame, or I2NP progress. Plans
-083 and 084 own the first minimal i2pd wire probes; the active execution
-authority is Plan 085 (host-loopback development roadmap) → Plan 086 (lane
-enablement) → Plan 087 (forward probe) → Plan 088 (reverse probe and
-development decision). Plan 079 is blocked until the Plan 088 decision.
-
-## Plan 083 minimal i2pr-to-i2pd wire probe
-
-Plan 083 introduces the canonical development diagnostic for the first real
-`i2pr -> i2pd` direction. The probe lives at
-`tests/integration/ntcp2/harness/minimal_i2pd_probe.py` and uses the locked
-record schema `i2pr-minimal-i2pd-probe-v1`. The schema enforces the
-strictly-increasing stage model (`not_started`, `state_prepared`,
-`peer_router_info_imported`, `listener_ready`, `tcp_connected`,
-`noise_authenticated`, `session_confirmed_accepted`,
-`authenticated_frame_written`, `authenticated_frame_decrypted`,
-`i2np_delivery_status_decoded`), the bounded terminal-result set
-(`passed`, `protocol_rejected`, `protocol_timeout`, `pre_protocol_rejected`,
-`cleanup_failed`, `lane_invalid`), and the bounded reason-code set. The
-generic `typed-harness-operation-failed` reason is explicitly rejected.
-Preparation and live process counters are separated; a rendering or
-preparation failure cannot fabricate a live process start.
-
-The probe is a development diagnostic, not a release certificate. A passed
-probe record requires the final stage, the four canonical observed events
-(`ntcp2_authenticated`, `frame_emitted`, `frame_authenticated_and_decrypted`,
-`i2np_message_decoded`), clean cleanup, and `reason_code = not_started`. The
-probe never imports Plan 056/066 candidate, bundle, certificate,
-rootless-topology, or Multipass authority. The bounded schema and the
-focused test matrices (`test_minimal_i2pd_probe.py` and `test_plan083.py`)
-are committed; the probe does not invoke the broad Plan 045/052 release-style
-finalization path.
-
-The runner lives at `tests/integration/ntcp2/harness/plan083_runner.py` and
-owns the 11-step execution architecture. It is structurally incapable of
-producing a mixed-router pass unless it launches one real i2pr process and
-one configured real reference process and consumes authentic structured
-events from both. The C++ i2pd direct driver is the only allowlisted
-reference driver mode; the runner refuses to fall back to SAM, HTTP,
-support-topology, or synthetic-fallback helpers for any primary direction.
-The runner never imports Plan 056/066 candidate, bundle, certificate,
-rootless-topology, or Multipass authority. The implementation surface is
-in place on this host; no real wire attempt has been executed because the
-host is the Plan 046 `apparmor_restrict_on` negative baseline and the Plan
-080 Multipass guest cannot complete on this constrained host.
-
-## Plan 086 host-loopback development lane
-
-Plan 086 introduces the bounded `host-loopback-development` topology kind
-to the canonical Plan 083/084 runners, the
-`HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 `127.0.0.1`
-acceptance, the thin wrapper
-`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, and the
-listener-only preflight. The lane is development-only; it never satisfies
-a release or isolation predicate and must not be used for Plan 079/Plan
-073 evidence. The closure vocabulary is exactly three values
-(`host-loopback-development-ready`,
-`manual-isolated-fallback-required`,
-`blocked-artifact-or-build-defect`); the legacy `lane-invalidated`
-and `same-stage-two-way-i2pr-defect` tokens are forbidden.
-
-Plan 086 lands:
-
-- `tests/integration/ntcp2/harness/interop_topology.py` — adds the
-  `host-loopback-development` topology constant, the
-  `host-direct-loopback` privilege model, the bounded
-  `HOST_LOOPBACK_DEVELOPMENT_METADATA` table, and the
-  `HostLoopbackDevelopmentPlacement` narrow host-direct placement.
-  The placement is fail-closed on relative paths, unknown actors,
-  unbounded log capture, and `LD_PRELOAD`/`LD_LIBRARY_PATH` in the
-  environment. The placement never wraps the command in a namespace,
-  Multipass, capability mutation, or shell invocation.
-- `tests/integration/ntcp2/harness/i2pr.py` — extends the
-  `prepare_state` method with an optional `topology_kind` argument.
-  Literal IPv4 `127.0.0.1` is accepted only when
-  `topology_kind == host-loopback-development`; every other topology
-  refuses the address with `prepare-input-invalid` before any
-  subprocess is executed. Production address validation in the
-  synthetic lanes remains unchanged.
-- `tools/i2pr-interop/src/scenario.rs` — extends the Plan 065
-  strict scenario schema with an optional `topology_kind` field and
-  the `TopologyKind` enum (`Synthetic` and `HostLoopbackDevelopment`).
-  The strict parser accepts literal IPv4 `127.0.0.1` only when
-  `topology_kind == host-loopback-development`; alternate loopback
-  addresses, hostnames, DNS names, public addresses, and RFC 5737
-  addresses outside the development lane are rejected with the
-  existing bounded error codes.
-- `tools/i2pr-interop/src/main.rs` — extends the `prepare` command
-  with an optional `--topology-kind` flag. The prepare command
-  accepts `127.0.0.1` only when the topology kind is
-  `host-loopback-development`; the existing production address
-  validation in the daemon is untouched.
-- `scripts/interop/run-minimal-i2pd-host-loopback-probe.py` —
-  the thin operator entry point. The wrapper accepts the four
-  required positional inputs, refuses every release/support profile
-  flag, and dispatches to the canonical Plan 083/084 runner
-  modules without copying orchestration. The wrapper opens no
-  socket, performs no bootstrap, and never invokes sudo,
-  namespaces, Multipass, or any public-network access.
-- `tests/integration/ntcp2/harness/test_plan086.py` — the Plan 086
-  test matrix (33 cases) covering the topology constant and bounded
-  metadata, the `HostLoopbackDevelopmentPlacement` contract, the
-  closure-state vocabulary, the address-class acceptance rules, the
-  canonical runner topology acceptance, the bootstrap dependency
-  checks, the record schemas, the preflight contract, the status
-  record contract, and the handoff to Plan 087.
-- `scripts/check-ntcp2-interoperability.sh` — extended to enforce
-  the Plan 086 topology contract, the placement class, the test
-  matrix presence, the wrapper script presence, the Rust schema
-  marker, and the bounded closure state in `plans/closure/ntcp2-transport/086-status.md`.
-
-On this host the Plan 086 closure state is `host-loopback-development-ready`
-because the canonical `i2pd_ntcp2_interop_driver_instrumented` binary
-was built from the pinned source tree and the concurrent preflight
-recorded a sanitized `i2pr-minimal-i2pd-probe-v1` record whose
-`highest_stage_reached` is `listener_ready`. The Plan 087 forward
-direction is enabled on this host; see
-[`plans/closure/ntcp2-transport/086-status.md`](../../plans/closure/ntcp2-transport/086-status.md) for the closure
-record.
-
-## Plan 087 first real i2pr-to-i2pd host-loopback probe
-
-Plan 087 runs the first real `i2pr -> i2pd` forward direction under the
-Plan 086 `host-loopback-development` lane. The probe inherits the Plan
-083 forward probe record schema (`i2pr-minimal-i2pd-probe-v1`) and
-runner orchestration module (`plan083_runner.py`) unchanged. Plan 087
-must reach `i2np_delivery_status_decoded` with exact Router Hash and
-DeliveryStatus message ID correlation before Plan 088 begins.
-
-The Plan 087 implementation surface landed: the canonical Plan 083
-runner now drives the placement-owned concurrent i2pd listener and
-i2pr dialer via `HostLoopbackDevelopmentPlacement.popen`, copies the
-i2pd-exported RouterInfo into the scenario exchange path with a
-verified digest, and threads the missing `reference_tree_sha256` and
-`source_inspection_record_sha256` provenance digests through to the
-i2pd direct driver invocation. The wrapper
-(`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`) accepts
-only the two i2pd directions and refuses every release/support profile
-flag.
-
-The first instrumented forward attempt on this host reached
-`listener_ready` and the i2pr dialer started, then the i2pr dialer
-rejected the i2pd RouterInfo with `peer_router_info_invalid` before
-any TCP connection — the i2pd direct driver's emitted `router.info`
-carries zero `RouterAddress` entries, so `exact_ntcp2_address`
-rejects the peer RouterInfo. Plan 087 explicitly forbids patching
-pinned i2pd behavior, so the narrow correction is deferred to a Plan
-064/076 corrective pass that must restore the i2pd direct driver
-RouterInfo so it carries at least one non-published NTCP2 address
-whose endpoint matches the rendered `local_address`/`local_port`.
-Plan 087 remains open on this precondition; the bounded
-implementation surface travels with the repository so any future
-host that can run a fixed Plan 064/076 driver can resume the forward
-attempt without further runner changes. The closure record with the
-exact live command, recorded digests, and bounded correction-surfaces
-contract is in [`plans/closure/ntcp2-transport/087-status.md`](../../plans/closure/ntcp2-transport/087-status.md).
-NTCP2 stays experimental and non-advertised.
-
-## Plan 078 first real i2pd two-way execution
-
-Plan 078 used the Plan 080-qualified guest and stopped before TCP at the i2pr
-pre-protocol RouterInfo stage. No protocol pass or failure was inferred. The
-exact stop result is in [`plans/closure/ntcp2-transport/078-status.md`](../../plans/closure/ntcp2-transport/078-status.md),
-with the qualified-lane record in [`plans/closure/ntcp2-transport/080-status.md`](../../plans/closure/ntcp2-transport/080-status.md).
-
-## Plan 072 activation gate
-
-Plan 072 is a conditional differential lane, not the next executable plan. It
-may start only after Plan 088 reaches a real wire stage, i2pr and i2pd disagree
-at a precise stage that source/specification review cannot own, and
-[`plans/closure/ntcp2-transport/088-status.md`](../../plans/closure/ntcp2-transport/088-status.md) records
-`decision = ambiguous-reference-divergence` plus one exact diagnostic
-question. Preparation, rendering, cleanup, and generic pre-protocol failures
-never satisfy this gate. The Plan 072/079 gate amendment
-[`plans/implementation/ntcp2-transport/072-079-gate-amendment-plan-088.md`](../../plans/implementation/ntcp2-transport/072-079-gate-amendment-plan-088.md)
-records the active gate authority.
-
-## Plan 088 reverse host-loopback probe and development decision
-
-Plan 088 owns the reverse `i2pd -> i2pr` direction and the active
-development decision. Plan 088 inherits the Plan 086
-`host-loopback-development` lane (literal IPv4 loopback, network ID
-99, development-only) and reuses the Plan 084 reverse probe schema
-(`i2pr-minimal-i2pd-reverse-probe-v1`) and runner orchestration module
-(`plan084_runner.py`) unchanged.
-
-Plan 088 lands:
-
-- `tests/integration/ntcp2/harness/minimal_i2pd_probe.py` — the
-  shared `ALLOWED_TOPOLOGY_KINDS` set accepts
-  `host-loopback-development`; the new bounded
-  `DEVELOPMENT_ONLY_TOPOLOGY_KINDS` marker records the development-only
-  classification.
-- `tests/integration/ntcp2/harness/plan083_runner.py` and
-  `tests/integration/ntcp2/harness/plan084_runner.py` — both runners
-  accept `host-loopback-development` in their lane validators.
-- `tests/integration/ntcp2/harness/test_plan088.py` — the Plan 088
-  test matrix (35 cases) covering the bounded development decision
-  vocabulary, the Plan 079 entry gate, the Plan 072 activation gate,
-  the handoff fields, the development-only topology contract, the
-  reverse probe schema contract, the cross-direction rejection, and
-  the module boundary.
-- `scripts/check-ntcp2-interoperability.sh` — enforces the Plan 088
-  test matrix presence, the locked decision vocabulary, the
-  `host-loopback-development` topology coverage, the plan-of-record
-  reference, the `plans/closure/ntcp2-transport/088-status.md` decision token, and the
-  prohibition of the legacy `lane-invalidated` and
-  `same-stage-two-way-i2pr-defect` tokens.
-
-The Plan 088 development decision vocabulary is exactly five values:
-`two-way-development-probe-passed`, `one-way-passed-reverse-defect`,
-`ambiguous-reference-divergence`, `manual-isolated-fallback-required`,
-`insufficient-evidence`. Only `two-way-development-probe-passed` may
-unblock Plan 079; only `ambiguous-reference-divergence` may activate
-Plan 072. The historical `lane-invalidated` and
-`same-stage-two-way-i2pr-defect` tokens are forbidden by the static
-boundary checker.
-
-On this host the recorded decision is `insufficient-evidence` because
-the Plan 087 forward direction recorded a pre-TCP rejection owned by
-the i2pd direct driver and no real wire run has been retained. The
-Plan 087 implementation surface is ready for a fresh attempt against
-a fixed i2pd driver. The Plan 088 implementation surface travels with
-the repository unchanged for any future host where the Plan 086 lane
-becomes executable or the Plan 089 manual-isolated fallback becomes
-available. See [`plans/closure/ntcp2-transport/088-status.md`](../../plans/closure/ntcp2-transport/088-status.md) for
-the closure record. NTCP2 remains experimental and non-advertised.
-
-## Plan 095 CI host-loopback live-wire evidence lane
-
-Plan 095 is the next executable plan and the authoritative forward-
-direction closure pass. It implements the GitHub Actions
-`ubuntu-24.04` host-loopback live-wire evidence lane that runs the
-Plan 086 `host-loopback-development` topology on a fresh VM. The
-lane is **development-only**; it never satisfies a release or
-isolation qualification and cannot become a Milestone 3 certificate.
-
-The workflow lives at
-[`.github/workflows/ntcp2-interop-host-loopback-development.yml`](../../.github/workflows/ntcp2-interop-host-loopback-development.yml).
-The `workflow_dispatch` trigger is the only initial trigger; no
-`pull_request` automatic execution. Permissions are
-`contents: read`. The live jobs (`forward-instrumented`,
-`forward-control`, `validate-gate`) run on `ubuntu-24.04` and never
-invoke sudo, ip netns, nft, iptables, unshare, `--privileged`,
-`--network host`, multipass, or docker. The build job may install
-declared packages via `apt-get` only.
-
-The job sequence is:
-
-```text
-contract (static surface)
-  -> build (i2pr + i2pd-instrumented + i2pd-control from pinned source)
-  -> forward-instrumented (one fresh attempt)
-  -> forward-control (one fresh attempt, only after instrumented validates)
-  -> validate-gate (records both passes; emits plan095-ci-gate.json)
-```
-
-The artifact uploads are bounded to `target/interop/evidence/*.json`
-and `target/interop/build/*.json`; raw run roots are deleted before
-artifact upload. The CI environment blocker vocabulary is bounded
-(`ci_binary_execution_blocked`, `ci_loopback_bind_blocked`,
-`ci_loopback_connect_blocked`, `ci_reference_build_blocked`,
-`ci_artifact_transfer_blocked`, `ci_disk_space_blocked`,
-`ci_unexpected_runner_environment`); CI inability is never reported
-as a protocol failure.
-
-Plan 095 supersedes the Plan 094 assumption that the Plan 046
-rootless sealed-namespace lane or the Plan 048/049 Multipass guest
-must become runnable before development-only forward evidence can
-close. Those lanes remain valid historical/qualification lanes but
-are **not prerequisites** for the `host-loopback-development`
-forward evidence. The focused test matrix
-[`tests/integration/ntcp2/harness/test_plan095.py`](../../tests/integration/ntcp2/harness/test_plan095.py)
-statically enforces the workflow contract, the live-path prohibition
-list, the bounded CI environment blocker vocabulary, and the
-sanitized artifact upload allowlist. The static boundary checker
-[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
-is not extended for Plan 095 (the focused test matrix is the
-authoritative contract verifier for the workflow file), and the
-existing plan surfaces (Plan 055/056/058/059/060/062/063/064/065/066
-freeze-readiness invariants) remain intact.
-
-The plan-of-record is
-[`plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md`](../../plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md).
-A passing CI evidence pair feeds Plan 088 only after both records
-are validated. Plan 088 remains blocked pending the actual two-way
-Plan 088 decision. Plan 079 remains blocked pending the Plan 088
-two-way pass. Plan 072 remains inactive pending the Plan 088
-ambiguity decision. NTCP2 remains experimental and non-advertised.
-
-## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
-
-Plan 096 is the active workflow correctness and pre-dispatch
-closure pass over the Plan 095 manual GitHub Actions lane. The
-plan delivers four demonstrated workflow corrections and the
-static regression surface that proves the corrections on the
-post-correction workflow and rejects the pre-correction workflow
-on the pre-correction source.
-
-The four corrections are:
-
-1. The i2pr Cargo invocation now uses an explicit
-   `--manifest-path` and an explicit `--target-dir`; the
-   downstream binary is copied from the explicit target dir and
-   is asserted regular, executable, and non-symlink before
-   hashing.
-2. The instrumented and control sanitized evidence trees are
-   disjoint from the disposable run roots and live under
-   `target/interop/plan095-evidence/{instrumented,control}`.
-   The `delete-raw-run-state` steps delete only the disposable
-   run root and explicitly assert the sanitized tree still
-   exists after the destructive operation.
-3. Every embedded Python heredoc is audited for missing
-   imports. The known control validator now imports `os` so
-   the `os.environ` reference resolves.
-4. The i2pd source digest uses `git -C i2pd ls-files -z` over
-   the pinned tracked tree. The pinned revision equality and
-   the worktree-dirty check are asserted before the digest is
-   computed.
-
-The focused regression matrix
-[`tests/integration/ntcp2/harness/test_plan096.py`](../../tests/integration/ntcp2/harness/test_plan096.py)
-(36 cases) rejects the pre-correction workflow on each defect
-and exercises the dependency graph, the fail-closed live-attempt
-semantics, the disjoint build/evidence artifact trust boundaries,
-and the Plan 095/088/079/072 gate preservation. The pre-dispatch
-audit script
-[`scripts/check-plan095-workflow.sh`](../../scripts/check-plan095-workflow.sh)
-is invoked by the static boundary checker
-[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
-before the rest of the static surface.
-
-After Plan 096 lands, the current status of the active sequence
-is:
-
-```text
-plan_093 = implementation-landed-closure-incomplete
-plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
-plan_096 = passed-pre-dispatch-workflow-correction
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = blocked-pending-plan088-two-way-pass
-plan_072 = inactive-pending-plan088-ambiguity
-ntcp2    = experimental-non-advertised
-```
-
-Plan 095 is the single next executable plan. Exactly one manual
-Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
-The plan-of-record is
-[`plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`](../../plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md).
-
-## Plan 097 Plan 095 artifact-path and cleanup corrective pass
-
-Plan 097 is the active narrow corrective pass over the Plan 095
-GitHub Actions workflow that closes two workflow defects that
-remained after Plan 096.
-
-The two demonstrated workflow defects closed by Plan 097:
-
-1. **Artifact-path ownership (Defect A).** The `build-i2pr-interop`
-   step wrote the i2pr binary to a CWD-relative
-   `output/i2pr-interop` while the `hash-i2pr-build-manifest` and
-   `verify-build-artifacts` steps consumed from
-   `${BUILD_DIR}/output/i2pr-interop` after a step-local
-   `cd "$BUILD_DIR"`. Producer and consumer identities did not
-   match; the manifest would have hashed a file that did not yet
-   exist at the consumer's path. Plan 097 defines one canonical
-   absolute `BUILD_OUTPUT` path used by every producer, verifier,
-   manifest generator, artifact uploader, and live consumer. No
-   step relies on inherited step working directory to establish
-   artifact identity.
-2. **Disposable run-root cleanup (Defect B).** The cleanup used
-   `find $RUN_ROOT -mindepth 1 -delete` (descendant-only) plus
-   `test ! -e "$RUN_ROOT" || true` (suppressed absence
-   assertion). The root directory could survive cleanup while
-   the job claimed the cleanup is clean. Plan 097 replaces the
-   descendant-only deletion with strict `rm -rf -- "$RUN_ROOT"`
-   after an exact `case` path guard, and removes every
-   suppression from the post-cleanup absence assertion.
-
-The focused regression matrix
-[`tests/integration/ntcp2/harness/test_plan097.py`](../../tests/integration/ntcp2/harness/test_plan097.py)
-(45 cases) rejects the pre-Plan-097 workflow on the two defects
-and exercises the canonical absolute `$BUILD_OUTPUT` path
-identity, the exact path guard before `rm -rf`, the unsuppressed
-absence assertion, and the synthetic mutation tests that prove
-the regression surface catches the prior defective semantics on
-synthetic fixtures. The pre-dispatch audit script
-[`scripts/check-plan095-workflow.sh`](../../scripts/check-plan095-workflow.sh)
-is extended to reject both Plan 097 defects.
-
-After Plan 097 lands, the current status of the active sequence
-is:
-
-```text
-plan_093 = implementation-landed-closure-incomplete
-plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
-plan_096 = passed-pre-dispatch-workflow-correction
-plan_097 = passed-artifact-path-and-cleanup-correction
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = blocked-pending-plan088-two-way-pass
-plan_072 = inactive-pending-plan088-ambiguity
-ntcp2    = experimental-non-advertised
-```
-
-Plan 095 remains the single next executable plan. Exactly one
-manual Plan 095 GitHub Actions dispatch follows the Plan 097
-correction commit. The plan-of-record is
-[`plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md`](../../plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md).
-
-## Plan 098 Plan 095 runner/provenance boundary corrective pass
-
-Plan 098 is the active runner/provenance boundary corrective pass
-over the Plan 095 live runner and wrapper provenance surfaces. The
-plan closes the runner/provenance ownership defects that the first
-authoritative Plan 095 manual CI dispatch exposed on 2026-08-10.
-The authoritative run advanced through the contract, build, and
-live runner launch phases but failed closed before any TCP or
-NTCP2 wire activity. The runner reconstructed a non-authoritative
-`repo_root / target / debug / i2pr-interop` path instead of using
-the canonical absolute artifact path supplied by the wrapper; the
-runner therefore returned `pre-protocol-preparation-failed` before
-launching `i2pr-interop ntcp2 prepare`. That result must **not** be
-interpreted as a wire-level NTCP2 failure.
-
-Plan 098 corrects the runner/provenance ownership boundary and
-the adjacent provenance defects in a single coherent pass:
-
-- the runner accepts an explicit `i2pr_binary: Path` argument and
-  rehashes the supplied file bytes against `i2pr_binary_sha256`
-  before any subprocess launch;
-- the wrapper threads the exact caller-supplied path to every
-  runner and refuses a role/binary mismatch via the new
-  `--attempt-kind` flag;
-- the i2pr and i2pd build-manifest digests are independently
-  measured; the runner no longer aliases a generic manifest
-  digest into both artifact classes;
-- the Plan 095 final gate validates record digests against the
-  actual downloaded artifacts and role-specific manifests.
-
-The Plan 098 regression matrix
-[`tests/integration/ntcp2/harness/test_plan098.py`](../../tests/integration/ntcp2/harness/test_plan098.py),
-the extended pre-dispatch audit
-[`scripts/check-plan095-workflow.sh`](../../scripts/check-plan095-workflow.sh),
-and the extended interop boundary check
-[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
-are green locally.
-
-After Plan 098 lands, the current status of the active sequence
-is:
-
-```text
-plan_093 = implementation-landed-closure-incomplete
-plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
-plan_096 = passed-pre-dispatch-workflow-correction
-plan_097 = passed-artifact-path-and-cleanup-correction
-plan_098 = passed-runner-provenance-boundary-correction
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = blocked-pending-plan088-two-way-pass
-plan_072 = inactive-pending-plan088-ambiguity
-ntcp2    = experimental-non-advertised
-```
-
-Plan 095 remains the single next executable plan. Exactly one
-manual Plan 095 GitHub Actions dispatch follows the Plan 098
-correction commit. The plan-of-record is
-[`plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md`](../../plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md).
-
-## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
-
-[Plan 102](../../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
-is the active Milestone 4 parent authority that supersedes the
-historical Milestone 3 "active" blocks for the purpose of
-continuing router development. The retained Plan 099/100/101
-NTCP2 result (`protocol-defect-localized` at `noise_authenticated`,
-normal-daemon NTCP2 disabled and unenableable) is preserved as
-the authoritative NTCP2 development record. The Plan 099/100/101
-status blocks earlier in this document describe that result; the
-next substantial product work is now governed by Plan 102 and
-its child sequence (Plans 103 → 104 → 105 → 106). The local sequence has
-since completed through Plans 107–113. See
-[`plans/closure/netdb/102-amendment-status.md`](../../plans/closure/netdb/102-amendment-status.md) for
-the formal amendment closure and future-plan unblock audit.
-
-### Plan 102 amendment — exploratory-tunnel dependency
-
-[Plan 102 amendment](../../plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md)
-corrects an over-optimistic wording in the first Plan 102 draft.
-The current I2P `DatabaseLookup` operation uses an outbound
-exploratory tunnel and requests the response through an inbound
-exploratory tunnel; exploratory tunnels are Milestone 5 scope.
-Therefore a standards-conformant live RouterInfo lookup cannot
-complete inside the Plan 103–106 implementation sequence merely
-by re-entering NTCP2 or another direct router transport.
-
-The authoritative Plan 102 sequence is:
-
-```text
-Plan 103  RouterInfo validation + bounded local NetDB
-   -> Plan 104  persistent cache + SU3 reseed trust/ingestion
-   -> Plan 105  transport-neutral lookup/store/publication state machines
-   -> Plan 106  daemon/bootstrap integration
-   -> Milestone 5 exploratory tunnel substrate and short-build correction
-   -> qualified external-delivery checkpoint [unblocked; next]
-   -> return to Milestone 4B external acceptance
-```
-
-Plan 106 closed the local/bootstrap implementation phase, not
-the complete original Milestone 4 exit criteria. Plans 107–113 have
-since supplied the local exploratory-tunnel substrate and corrected
-short-build construction, so the qualified external-delivery checkpoint
-is now eligible. A direct
-`DatabaseLookup` over NTCP2 is not accepted as a substitute for
-the standard exploratory-tunnel path.
-
-Plan 103 has landed the local RouterInfo validation and
-in-memory NetDB foundation in the new `i2pr-netdb` crate
-(`crates/i2pr-netdb/`). The local signed RouterInfo carries zero
-`RouterAddress` entries under the Plan 101 activation guard and
-self-validates through the same validator used for remote
-records. The store enforces exact record-count and byte-quota
-accounting with checked arithmetic and deterministic
-replacement/conflict/expiry.
-
-Plan 104 has landed the persistent RouterInfo cache, SU3 signature
-verification, and bounded ZIP ingestion in
-`crates/i2pr-netdb/src/{base64,reseed}.rs` plus the composition
-owner `crates/i2pr-netdb-persist/`.
-
-Plan 105 has landed the transport-neutral query and publication
-state machines in `crates/i2pr-netdb/src/{routing,lookup_policy,
-lookup_id,lookup_action,databaselookup,lookup_engine,publication,
-store_message}.rs`. The lookup state machine refuses to emit a
-standards-conformant `DatabaseLookup` until the runtime supplies an
-exploratory reply path, the bounded gzip decompressor enforces
-explicit compressed and decompressed byte ceilings, and the local
-publication coordinator never re-signs the local RouterInfo on
-retry. Live standards-conformant NetDB lookup remains blocked on
-the qualified external-delivery checkpoint and its independent-router
-evidence.
-
-The next executable action is the narrow qualified external-delivery
-checkpoint. Plans 103–113 have completed the local foundation and
-short-build correction sequence; this checkpoint is not a normal-daemon
-NTCP2 activation or a generic interoperability-harness restart.
-
-Plan 117's terminal native-reference correction is a separate bounded
-qualification step. Its temporary pinned Emissary checkout compiles the test
-inside `emissary-core`'s own `#[cfg(test)]` build and may use only test/dev
-dependencies plus a test-only pre-Garlic observer. The current attempt reaches
-native OBEP admission and reply AEAD opening, then rejects the pinned
-reference's request-prefixed reply during strict i2pr Mapping decoding. The
-result is `native-reference-terminal-pending`; parser compatibility and the
-local Phase G composition are retained but are not promoted to mixed-router
-NetDB evidence. See [`plans/closure/exploratory-tunnels/117-status.md`](../../plans/closure/exploratory-tunnels/117-status.md).
-
-## Plan 115 Emissary Q0 construction + native OBEP reply
-
-Plan 115 Emissary Q0 construction + native OBEP reply has passed
-locally; see [`plans/closure/exploratory-tunnels/115-status.md`](../../plans/closure/exploratory-tunnels/115-status.md) for
-digests and the pinned Emissary revision
-(`9b43484a21d5a1291c4881cdae62a36c527f8c0f`, emissary-core 0.4.0).
-The Q0 test was added as a new `#[tokio::test]` module inside
-Emissary's `tunnel/tests/mod.rs` (the only seam that has access to
-the private `TestTransitTunnelManager`). `i2pr-proto` and
-`i2pr-tunnel` were added to Emissary's `[dev-dependencies]` only
-in the temporary combined worktree at
-`/tmp/opencode/plan115-q0/combined/emissary-core-pkg/`; the upstream
-Emissary source and `Cargo.toml` were not modified. The i2pr
-production code was not modified either; the test exercises the
-existing `ShortBuildStateMachine::prepare → deliver_action` and
-`ShortBuildI2npBridge::wrap_deliver_action` chain unchanged. Q1/Q2 +
-qualified external delivery remain pending. The Plan 115 bridge
-(`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`)
-converts a `ShortBuildAction::Deliver` into a complete I2NP type-25
-message; the Emissary native handler accepts it and returns
-TunnelGateway + Garlic inner message plus a feedback channel.
-
-## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
-
-Plan 099 is the corrective and exit plan from the multi-job
-CI/provenance expansion that consumed Plans 095–098. It corrects
-the central Plan 099 implementation finding — the instrumented
-i2pd transport libraries were never actually compiled from the
-patched source tree — and it freezes interoperability
-architecture growth. The build script now produces two separate
-i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR` and
-`I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
-native `Transports::SendMessage`, `Transports::IsConnected`, and
-`TransportSession::IsEstablished` instead of observer APIs the
-control build cannot emit.
-
-Plan 100 closed its exit-readiness defects (D1, D2, D3, D4) and
-the Plan 099 single-job CI workflow was dispatched exactly once
-from the Plan 100 correction commit. The bounded replacement
-runs (allowed by Plan 100 Result branch C) consumed two narrow
-direct corrections before the bound forward-instrumented attempt
-reached authentic post-TCP protocol evidence. The final
-development result is `protocol-defect-localized`:
-
-```text
-plan_099 = closed-protocol-defect-localized
-plan_100 = closed-exit-cleanup-with-recorded-procedural-deviation
-plan_101 = active-daemon-ntcp2-activation-safety-correction
-plan_095 = historical-superseded-by-plan099-single-job-lane
-plan_087 = historical-development-sequence
-plan_088 = historical-development-sequence
-plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
-plan_072 = inactive-pending-plan088-ambiguity
-ntcp2    = experimental-non-advertised
-normal_daemon_ntcp2 = disabled-after-plan101
-router_construction = active
-development_interop = protocol-defect-localized
-exact_wire_stage = noise_authenticated
-external_netdb_over_ntcp2 = blocked
-```
-
-The compact sanitized summary is preserved at
-`target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
-Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon
-NTCP2 is disabled and unenableable. NTCP2 remains experimental and
-non-advertised.
-
-The active development interop lane is bounded to one fresh
-GitHub Actions `ubuntu-24.04` workflow
-([`.github/workflows/ntcp2-interop-host-loopback-development.yml`](../../.github/workflows/ntcp2-interop-host-loopback-development.yml))
-with one `development-interop` job that builds i2pr and the
-pinned i2pd direct driver (with separate pristine and instrumented
-archive sets), runs the four primary attempts in sequence
-(forward-instrumented, forward-control, reverse-instrumented,
-reverse-control), and emits one compact sanitized summary. No
-cross-job artifact transfer. No Multipass, Docker, public-network
-traffic, reseed, SAM, I2CP, SSU2, or Java I2P.
-
-The active functional surface is small:
-
-- [`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`](../../scripts/interop/run-minimal-i2pd-host-loopback-probe.py)
-  — the only allowed entry point to live subprocess execution;
-- [`tests/integration/ntcp2/harness/plan083_runner.py`](../../tests/integration/ntcp2/harness/plan083_runner.py)
-  and
-  [`tests/integration/ntcp2/harness/plan084_runner.py`](../../tests/integration/ntcp2/harness/plan084_runner.py)
-  — the canonical forward/reverse runners;
-- [`tests/integration/ntcp2/harness/preflight_runner.py`](../../tests/integration/ntcp2/harness/preflight_runner.py)
-  — the listener-only preflight;
-- [`tests/integration/ntcp2/harness/i2pd_direct_driver.py`](../../tests/integration/ntcp2/harness/i2pd_direct_driver.py),
-  [`minimal_i2pd_probe.py`](../../tests/integration/ntcp2/harness/minimal_i2pd_probe.py),
-  [`minimal_i2pd_reverse_probe.py`](../../tests/integration/ntcp2/harness/minimal_i2pd_reverse_probe.py),
-  [`interop_topology.py`](../../tests/integration/ntcp2/harness/interop_topology.py),
-  [`reference_event.py`](../../tests/integration/ntcp2/harness/reference_event.py),
-  [`reference_trigger_v4.py`](../../tests/integration/ntcp2/harness/reference_trigger_v4.py),
-  [`execution_lane.py`](../../tests/integration/ntcp2/harness/execution_lane.py),
-  [`plan099_exit_gate.py`](../../tests/integration/ntcp2/harness/plan099_exit_gate.py)
-  — the functional interop modules;
-- [`tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py`](../../tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py),
-  [`test_i2pd_direct_driver.py`](../../tests/integration/ntcp2/harness/test_i2pd_direct_driver.py),
-  [`test_i2pd_direct_control.py`](../../tests/integration/ntcp2/harness/test_i2pd_direct_control.py),
-  [`test_execution_lane.py`](../../tests/integration/ntcp2/harness/test_execution_lane.py)
-  — the bounded functional tests;
-- [`tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`](../../tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh)
-  and
-  [`CMakeLists.txt`](../../tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt)
-  — the i2pd driver build script and the split-library link
-  contract;
-- [`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
-  — the trimmed static boundary check.
-
-The Plan 099/Plan 100 development exit gate vocabulary is exactly
-three values:
-
-```text
-passed
-protocol-defect-localized
-environment-or-harness-blocked
-```
-
-- `passed` — all four per-attempt records carry
-  `terminal_result = passed` and `cleanup_result = clean`.
-- `protocol-defect-localized` — at least one executed primary
-  direction reached `tcp_connected` (or any later wire stage) and
-  then failed before the required correlated DeliveryStatus pass.
-  A skipped downstream attempt cannot erase that classification.
-- `environment-or-harness-blocked` — the earliest nonpassing path
-  is pre-TCP preparation, build, reference startup, or
-  workflow/API failure.
-
-The gate is implemented in `plan099_exit_gate.py` and is covered
-by the focused `Plan099ExitGateTests` class in
+plus the focused tests `test_execution_lane.py`,
+`test_i2pd_direct_driver.py`, `test_i2pd_direct_control.py`,
 `test_minimal_i2pd_probe.py`.
 
-Plan 099/Plan 100 forbid adding new `test_planNNN.py` files, new
-plan-number-specific Python runners, or new plan-token static
-checks. Historical plan documents remain in `plans/` as audit
-records but are not executable API contracts.
+The functional entry points were
+[`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`](../../scripts/interop/run-minimal-i2pd-host-loopback-probe.py)
+(the only allowed live-subprocess entry point),
+[`plan083_runner.py`](../../tests/integration/ntcp2/harness/plan083_runner.py) /
+[`plan084_runner.py`](../../tests/integration/ntcp2/harness/plan084_runner.py)
+(forward/reverse runners), and
+[`preflight_runner.py`](../../tests/integration/ntcp2/harness/preflight_runner.py)
+(listener-only preflight). Supporting configuration survives in
+[`references.lock.toml`](../../tests/integration/ntcp2/references.lock.toml),
+[`mixed-scenarios/`](../../tests/integration/ntcp2/mixed-scenarios),
+[`scenarios/`](../../tests/integration/ntcp2/scenarios),
+[`reference-scenarios/`](../../tests/integration/ntcp2/reference-scenarios),
+[`reference-drivers/`](../../tests/integration/ntcp2/reference-drivers),
+[`qualification/`](../../tests/integration/ntcp2/qualification),
+[`evidence-receipts/`](../../tests/integration/ntcp2/evidence-receipts),
+and [`reference-observation-catalog.toml`](../../tests/integration/ntcp2/reference-observation-catalog.toml).
 
-The active sequence forbids repairing or retrying the Plan 046
-rootless lane or the Plan 048/049/050 Multipass recovery lane.
-A localized NTCP2 defect keeps NTCP2 disabled and non-advertised
-but does not block production daemon composition, RouterInfo
-publication architecture, NetDB storage/indexing, SU3 reseed
-parsing, or deterministic local state-machine tests. The next
-substantial plan after Plan 100 is governed by
-[Plan 102](../../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
-and its child sequence (Plans 103 → 104 → 105 → 106), not another
-NTCP2 evidence framework plan.
+#### Pruned surfaces
+
+The Plan 099 harness reduction and later hygiene passes removed these
+paths. They are cited here as **plain code spans, not links**, so no dead
+reference remains:
+
+| Pruned path | Status |
+| --- | --- |
+| `tests/integration/ntcp2/harness/test_plan095.py` | pruned |
+| `tests/integration/ntcp2/harness/test_plan096.py` | pruned |
+| `tests/integration/ntcp2/harness/test_plan097.py` | pruned |
+| `tests/integration/ntcp2/harness/test_plan098.py` | pruned |
+| `scripts/check-plan095-workflow.sh` | pruned (also recorded as pruned in [`tooling.md`](tooling.md)) |
+
+The Plan 095/096/097/098 CI workflow correctness work is retained in
+`plans/` as audit records. See
+[`audit/2026-09-18-skills-docs-hygiene.md`](audit/2026-09-18-skills-docs-hygiene.md),
+which records the harness reduction and the `check-plan095-workflow.sh`
+pruning.
+
+### Build contract and topology (historical)
+
+Preparation runs on the supported Ubuntu 24.04 amd64 host and may fetch
+only lock-listed sources, the IzPack artifact, and declared packages.
+Execution is offline and namespace-isolated; there is no default route,
+DNS, forwarding path, or public egress. Secret-bearing state lived only
+under `target/interop/runs/<run-id>/`; sanitized records were finalized
+under `target/interop/evidence/` after processes and namespaces were gone.
+Cache identity hashed the canonical reference, full source object ID,
+lock digest, the `ubuntu-24.04-amd64` host contract, and reviewed build
+command version; `--offline` could not fetch a missing source.
+
+ADR 0015 ([`0015-ubuntu-reference-router-harness.md`](../adr/0015-ubuntu-reference-router-harness.md))
+fixed the reference-router harness boundary (**accepted**, extended by
+Plans 041/042/044, amended by Plan 046). ADR 0016
+([`0016-ubuntu-build-system-interop-gates.md`](../adr/0016-ubuntu-build-system-interop-gates.md))
+fixed the ordered fail-closed build-system promotion gates
+(**accepted**, amended by Plan 046): `contract → reference-build →
+reference-offline-reuse → environment-smoke → reference-crosscheck-ipv4 →
+i2pr-handshake-smoke-ipv4 → full-matrix → evidence-validation →
+cleanup-verification`, with `verify-clean-host.sh` residual-state
+verification. ADR 0020
+([`0020-plan053-evidence-pipeline-integrity.md`](../adr/0020-plan053-evidence-pipeline-integrity.md))
+fixed the evidence-pipeline integrity boundary (**Accepted** for Plan 053).
+
+### Evidence ladder (ADR 0023, historical)
+
+ADR 0023
+([`0023-staged-ntcp2-interoperability-evidence.md`](../adr/0023-staged-ntcp2-interoperability-evidence.md),
+**Accepted**) separated NTCP2 interoperability evidence into bounded
+tiers and forbade lower-tier promotion into release bundles:
+
+1. **Level 1 — external loopback smoke** (`evidence_tier = external-loopback-smoke`).
+2. **Level 2 — repeated development interoperability** (`evidence_tier = repeated-development-interop`).
+3. **Level 2D — conditional Emissary differential validation** (`evidence_tier = conditional-differential`).
+4. **Level 3 — release qualification** (`evidence_tier = release-qualification`).
+
+A record declares exactly one tier; a release-bundle validator rejects
+any lower tier. ADR 0023 does **not** supersede ADR 0022.
+
+### Direct reference drivers (ADR 0022)
+
+ADR 0022
+([`0022-direct-reference-router-ntcp2-interop-drivers.md`](../adr/0022-direct-reference-router-ntcp2-interop-drivers.md),
+**Accepted**) chose two-process direct transport drivers: one reference
+router plus one i2pr process in a sealed namespace or isolated guest, with
+no support router, floodfill, reseed, SAM, I2CP, HTTP/I2PControl, or
+tunnel pool in the primary path. It replaced the conclusion of
+[`0021-minimal-java-support-topology.md`](../adr/0021-minimal-java-support-topology.md)
+(**Rejected** by Plan 058) without rewriting it; the Java support
+topology was never implemented. ADR 0025
+([`0025-plan090-i2pd-driver-routerinfo-correction.md`](../adr/0025-plan090-i2pd-driver-routerinfo-correction.md),
+**Accepted** for Plan 090) corrected the i2pd direct-driver RouterInfo
+emission and pre-TCP classification.
+
+### Constrained-host lane order (ADR 0024, historical)
+
+ADR 0024
+([`0024-constrained-host-ntcp2-execution-lanes.md`](../adr/0024-constrained-host-ntcp2-execution-lanes.md),
+**Accepted** for Plan 077) fixed the fail-closed, ordered
+capability-selection list for hosts that cannot use the rootless or
+Multipass paths:
+
+1. an already accessible rootful Docker daemon, one `--network none` container;
+2. QEMU system emulation with TCG and `-nic none`;
+3. inherited connected descriptors with `no_new_privs`/seccomp, explicitly reduced-scope;
+4. a manually triggered remote Linux workflow with documented isolation;
+5. a typed **no-full-runtime-lane** result.
+
+The inspection-only probe is
+[`scripts/interop/probe-constrained-host-lanes.sh`](../../scripts/interop/probe-constrained-host-lanes.sh);
+the manifest/qualification record is validated by
+[`execution_lane.py`](../../tests/integration/ntcp2/harness/execution_lane.py);
+the static guard is
+[`check-constrained-host-lane-boundary.sh`](../../scripts/check-constrained-host-lane-boundary.sh).
+A tool, workflow, or reduced-scope capability is **not** a qualification.
+
+### Rootless sealed-namespace lane (ADR 0017, historical)
+
+ADR 0017
+([`0017-rootless-sealed-namespace-interop-evidence.md`](../adr/0017-rootless-sealed-namespace-interop-evidence.md),
+**accepted** for Plan 046) replaced the host-global namespace requirement
+with a rootless, process-scoped user/network/mount/PID sandbox
+(`rootless-sealed-single-netns`, `unprivileged-userns`) that an ordinary
+user could run without sudo, setuid helpers, host-visible namespaces,
+host veths, or firewall mutation. The outer entrypoint is
+[`scripts/interop/rootless-enter.sh`](../../scripts/interop/rootless-enter.sh);
+the inner supervisor is
+[`rootless_supervisor.py`](../../tests/integration/ntcp2/harness/rootless_supervisor.py);
+the static guard is
+[`check-rootless-interop-boundary.sh`](../../scripts/check-rootless-interop-boundary.sh).
+On a passed record, `IsolationAttestation` digests bound to the
+evidence and parent-network pre/post digests must be byte-equal. Plan 046
+closed on this host with the typed blocker
+`blocked_unprivileged_user_namespace` (the AppArmor
+`kernel.apparmor_restrict_unprivileged_userns=1` baseline).
+
+### Multipass recovery lane (ADR 0018, historical)
+
+ADR 0018
+([`0018-multipass-rootless-interop-environment.md`](../adr/0018-multipass-rootless-interop-environment.md),
+**Accepted**) adopted a lifecycle-owned permissive rootless environment:
+atomic lifecycle reservation, per-run/per-instance locks, explicit
+transition states, ownership proof by host/guest token and digest
+match, explicit `--adopt-owned`/`--resume-owned`/`--recreate-owned`/
+`--destroy-owned`, and a sanitized export. `--inspect` is read-only;
+normal execution never silently adopts, recreates, stops, deletes, or
+purges. ADR 0019
+([`0019-guest-level-nft-marker-clarification.md`](../adr/0019-guest-level-nft-marker-clarification.md),
+**accepted** for Plan 051) reconciled the guest-level nft egress-deny
+marker. The subtree survives under
+[`scripts/interop/multipass/`](../../scripts/interop/multipass); the
+static guard is
+[`check-multipass-interop-boundary.sh`](../../scripts/check-multipass-interop-boundary.sh).
+This lane could not complete on the constrained host (Plan 051).
+
+### Retained NTCP2 result and exit gate
+
+The retained development result is `protocol-defect-localized` at
+`noise_authenticated` (Plans 099/100). The exit-gate vocabulary is
+exactly three values, implemented in
+[`plan099_exit_gate.py`](../../tests/integration/ntcp2/harness/plan099_exit_gate.py)
+and covered by the `Plan099ExitGateTests` class in
+[`test_minimal_i2pd_probe.py`](../../tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py):
+
+```text
+passed                        # all four per-attempt records passed with clean cleanup
+protocol-defect-localized     # a direction reached tcp_connected or later, then failed
+                              # before the correlated DeliveryStatus pass
+environment-or-harness-blocked  # earliest nonpassing path is pre-TCP/build/startup
+```
+
+Plan 101 disabled and made unenableable normal-daemon NTCP2. The three
+retained historical workflows — [`ntcp2-interop-ubuntu.yml`](../../.github/workflows/ntcp2-interop-ubuntu.yml),
+[`ntcp2-interop-rootless.yml`](../../.github/workflows/ntcp2-interop-rootless.yml),
+and [`ntcp2-interop-host-loopback-development.yml`](../../.github/workflows/ntcp2-interop-host-loopback-development.yml)
+— are `workflow_dispatch`-only with `contents: read`; they are not a
+routine acceptance path and are not run for routine work.
+
+Plans 099/100 forbid adding new `test_planNNN.py` files, new
+plan-number-specific runners, or new plan-token static checks.
+Historical plan documents remain in `plans/` as audit records, not
+executable contracts.
+
+## Skills
+
+Skill bundles are canonical under [`.opencode/skills/`](../../.opencode/skills)
+(`.agents/skills` is a symlink to the same directory). The three below
+are **historical and read-only for archaeology**; routine work uses
+`i2pr-local-dev`, `i2pr-architecture`, or `i2pr-planning`.
+
+| Skill | Scope |
+| --- | --- |
+| `i2pr-ntcp2-interop` | Historical Plan 038–100 NTCP2 harness; read/reproduce the closed harness surface, prepare/validate reference routers, validate evidence. Do not activate NTCP2 in the production daemon or extend the lane without a new plan-of-record. |
+| `i2pr-rootless-sandbox` | Historical Plan 046 rootless sealed-namespace sandbox; run the rootless probe, enter the sandbox, validate the typed blocker taxonomy, update the static boundary checker. |
+| `i2pr-multipass-recovery` | Historical Plan 048/049/050/051/053 Multipass recovery lane; create/adopt/resume/recreate/destroy a guest, run the evidence lane, classify cloud-init failure, troubleshoot the host-side Plan 046 blocker bridge. |
+
+`AGENTS.md` forbids root/sudo/namespaces/containers/VM/public-I2P for
+routine acceptance, and all three of these lanes require them; they are
+therefore never routine. See
+[`i2pr-local-dev`](../../.opencode/skills/i2pr-local-dev) for the active
+lane surface.

@@ -1,1330 +1,892 @@
 # `i2pr-daemon` — Deep Dive
 
-Composition root and CLI entrypoint. Glues together the other
-workspace crates into the `i2pr` binary. Provides a real Tokio
-daemon composition with identity load, supervisor, service graph,
-bootstrap pipeline, and graceful shutdown. NTCP2 is disabled
-while support remains experimental; the daemon owns no NTCP2
-listener under normal operation.
+**Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
+**Size:** 50 `.rs` files, 76 293 lines of `src` (46 at the crate root + 4 under `src/sam/`).
+**Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
+`clippy::todo`, and `clippy::unimplemented`.
 
-Path: `crates/i2pr-daemon/`
+**One-line purpose:** the composition root and the only production owner of Tokio, sockets,
+timers, channels, and **every** listener in the router.
 
-Binary: `i2pr` (declared via `[[bin]]` in `Cargo.toml`).
+Authority order for this document (highest first): executable tests/scripts > ADRs >
+prose. `plans/closure/*/*-status.md` **wins** over `plans/registry.md`, and both win over
+`specs/support.toml`. See [`plans/README.md`](../../plans/README.md).
 
-Plan 184 activates the first daemon-owned SSU2 transport under the
-strict loopback/non-advertised controlled profile
-(`crates/i2pr-daemon/src/router_i2np.rs`, `ssu2-router` service).
-Plan 185 adds the daemon-owned exploratory build coordinator
-(`crates/i2pr-daemon/src/exploratory_build.rs`) and the bounded
-creator-side tunnel liveness scheduler
-(`crates/i2pr-daemon/src/tunnel_liveness.rs`); both route the
-existing Plan 184 central dispatcher. Plan 186 adds the daemon-owned
-NetDB-over-tunnels coordinator
-(`crates/i2pr-daemon/src/netdb_tunnels.rs`) over the Plan 185 pair
-through the authoritative bounded store. Plan 187 adds the
-daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator
-(`crates/i2pr-daemon/src/destination_tunnels.rs`) with the full
-local destination message plane (27 unit + 9 live two-role rows);
-the external lane stops fail-closed at Plan 190 §6 boundary E (the
-reference-side inbound delivery of the destination message to the
-i2pd-owned SAM bridge plus the destination-side ordering rows). No
-public advertisement, Streaming, or M10 remote-service claim
-follows from any of it. Plan 188 is the short-build-reply
-corrective (outbound garlic-unwrap + inbound forwarded-STBM
-consumption in `ExploratoryBuildCoordinator`; 5/7 destination rows
-flipped to passed via consumed reference replies; `installed_ob=1
-installed_ib=1`, no synthesis, no wire change); the historical
-`plans/implementation/mixed-router-interop/188-m6-mixed-router-streaming-with-i2pd.md` Streaming
-file remains historical context only and is superseded by
-[`plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md`](../../plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md).
-Plan 314 adds a separate qualified Destination request carrying an ordered
-three-peer path. `destination_peers.rs` projects bounded build and Java-profile
-diversity facts from the validated store owned by `DestinationTunnelCoordinator`;
-`ServiceProduct` selects exactly three peers or fails closed, then the same
-`ExploratoryBuildCoordinator` pending-attempt owner and `ShortBuildStateMachine`
-process the request. Exploratory `BuildRequest` remains one-peer. Deterministic
-local tests exercise real three-hop cryptographic trajectories; this does not
-establish external three-router interoperability.
-Plan 318 attaches configured Destination groups to the normal daemon owner:
-`run_daemon` supplies a bounded snapshot of validated bootstrap RouterInfos to
-the existing SSU2 service, which seeds the group's bounded NetDB and selects
-exact-three paths from that validated material. The group's first-hop dial,
-short-build coordinator, Plan 315 pool, and consumers all use the existing
-`Ssu2DaemonHandle`; no second SSU2 socket or receiver is created. Startup
-provisioning temporarily receives build traffic from the shared bounded queue,
-then replays every consumed message in order through the normal router and
-floodfill dispatcher. The replay has explicit message and byte ceilings and
-startup fails closed if either is exceeded. Application supervisors start only
-after the required group pools are usable, and SSU2 readiness is signalled
-afterward. An enabled per-tunnel entry also requires `[service_tunnels].enabled
-= true`, an enabled loopback SSU2 owner, and a validated bootstrap source;
-missing peers, bad selected-peer address material, failed builds, cancellation,
-or insufficient usable pools fail startup before application listeners accept.
-This is a local product composition boundary and makes no public-network or
-anonymity claim.
-Plan 316 gives that owner a bounded shutdown phase: the first signal stops new
-service admission and group-pool replacement/publication refresh while the
-existing SSU2 dispatcher and service delivery remain alive. The drain ends when
-published inbound leases have expired and tracked service connections reach
-zero, or at the 11-minute hard cap. A second signal upgrades to immediate
-supervisor shutdown; startup-time signals and supervisor failures bypass the
-drain. The one-second outbound startup delay begins after the configured
-inbound builds are installed and the usable-pool minimum is met. Status
-contains only a lifecycle phase and coarse remaining
-time bucket.
-
-Plan 322 adds the canonical RouterInfo `i2p.router.news` source. The
-daemon-owned `news.rs` manager fetches only through the configured loopback
-proxy, verifies NEWS SU3 content with a pinned signer certificate before
-parsing, bounds XML/GZIP processing, and exposes only sanitized Atom text.
-The verified SU3 payload and conditional-fetch validators are stored through
-`i2pr-storage`'s opaque current/backup cache and are re-verified on restart.
-Transient fetch or validation failures retain the current verified snapshot;
-status reports freshness and the last bounded error. This does not perform
-router update or install behavior. Plan 322 remains in progress pending its
-signed-news acceptance fixtures and other canonical source rows.
-Plan 190 isolates and corrects the inbound NetDB reply-path
-metadata defect that left 5/7 destination rows blocked after the
-Plan 188 installs (typed public `InboundGatewayRoute` in
-`i2pr-tunnel::DataPlaneRegistry`; daemon-owned
-`reply_path_for_inbound_route` adapter in
-`crates/i2pr-daemon/src/destination_tunnels.rs` derives
-`i2pr_netdb::ReplyPath` only from `(gateway_router,
-gateway_receive_tunnel)`; local regression rows with unequal IDs
-`0x9601` vs `0x9602` prove the encoded `DatabaseLookup`
-advertises the gateway tuple and never the local endpoint id;
-`destination_tunnel_unit` 32 passed; the corrected external
-`run-destination.sh` against exact-pinned i2pd 2.61.0 flips three
-destination rows from `blocked` to `passed`
-(`external-lease-lookup-tunnel`, `external-ls2-publication-tunnel`,
-`external-destination-outbound`); Plan 191 then ran the inbound-delivery
-layer and stopped at the i2pd-compatible I2CP-style Data body
-wire-format defect — i2pd's `ClientDestination::HandleDataMessage`
-parses an I2CP-style Data header + gzip-wrapped datagram payload,
-but i2pr emits a raw 16-byte-standard I2NP Data body whose first
-four bytes are misread as the length field. The test driver no
-longer panics; `read_line`/`wait_for_datagram` return
-`Option<...>` and record distinct evidence keys
-(`reference-received-timeout`, `destination-inbound-send-failed`,
-`inbound-delivery-boundary-E-stop`). The 2 ordering rows
-`external-direct-rejected` and `external-liveness-first-test`
-flip `blocked` → `passed`. The 2 inbound-delivery rows
-`external-reference-received` and `external-destination-inbound`
-stay `blocked` with stop provenance in Plan 191 and flip to
-`passed` in Plan 192. Plan 192 closed the inbound-delivery
-layer: the i2pd-compatible 9-byte NTCP2/SSU2 short-transport
-inner envelope + i2cp I2CP-style Data body
-(`length[4 BE] + reserved[4] + fromPort[2 BE] + toPort[2 BE] +
-padding[1] + protocol[1] + gzip-no-compression-wrapped
-payload`) + `STYLE=RAW` SAM session + `RAW RECEIVED SIZE=N`
-digest equality + `RAW SEND` reply direction. No M6 wire change
-beyond the destination message-plane seam; no `LocalZeroHop`
-substitution; no authentication weakening; inbound-delivery
-layer closed for exact-pinned i2pd 2.61.0. Plan 193 closed
-the M6 i2pd mixed-router Streaming qualification: local
-rows pass (`streaming_tunnel_unit` 15 + `streaming_tunnel_live`
-11); one fail-closed external driver
-(`streaming_tunnel_external::streaming_through_i2pd`,
-`#[ignore]`-gated) plus `tests/integration/m6-interop/run-streaming.sh`
-plus `scripts/check-streaming-tunnel-evidence.sh` (33 guarded
-labels, wired into routine CI) all pass; full Direction A
-(i2pr→i2pd STREAM SYN/Established + 25 B + 8192 B digests +
-reverse 23 B + 4096 B digests with live NACK/retransmit
-loss-recovery + sibling + close/EOF + isolation) and Direction B
-(i2pd→i2pr CONNECT/Established + 17 B + 2048 B digests +
-close/EOF) external matrix passes twice on exact head
-`3687189` against exact-pinned i2pd 2.61.0
-(`635b013a612ff47278ef02acf8580a28e10e26c5`). Narrow
-correctives landed inside the plan (no new plan needed; no
-M6 wire change beyond the destination message-plane seam):
-per-turn `poll_acks`/`poll_retransmits` pump drain, fresh SAM
-sockets for ACCEPT/CONNECT, `StreamingReceiveLimit::
-destination_path()` receive bound (reference emits 1812 B
-payloads above our 1730 send advertisement; send path
-unchanged), per-delivery RNG, and 4 KiB SAM read chunks.
-Plan 189 is the registered M6 Java I2P second-family
- qualification plan; it lands the fail-closed M6 mixed-router
-cross-family ledger/checker/workflow scaffold
-(`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
-`tests/integration/m6-interop/run-m6-mixed-router.sh`,
-`.github/workflows/m6-mixed-router-external.yml`). Plan 194
-owns the Java qualification follow-up and lands the §3 fetch
-script (`scripts/interop/fetch-m6-java.sh`; exact-pinned Java
-I2P 2.13.0 @ `9134f808337b401e8e53c73734c81fab04280c9d`
-built via `ant updater preppkg`, no IzPack 5 GUI installer),
-the §5 second-family harness
-(`tests/integration/m6-interop/run-java.sh`; fresh disposable
-datadir, no reseed, SAM loopback), the §5.1/§5.4(a) external
-driver (`crates/i2pr-daemon/tests/java_tunnel_external.rs::
-destination_message_plane_against_java`), the cross-family
-aggregator wiring (`run-m6-mixed-router.sh` binds every Plan
-189 §8 guarded row to a family + the actual `run-java.sh`
-exit code), the static structural checker extension
-(`scripts/check-m6-mixed-router-acceptance-evidence.sh` adds
-`run-streaming.sh` + `check-streaming-tunnel-evidence.sh` +
-`run-java.sh` + `fetch-m6-java.sh` to the required-artifacts
-list), and the hosted-workflow extension
-(`.github/workflows/m6-mixed-router-external.yml` runs the
-Java fetch + build log tail). Plan 196 owns the controlled
-first-run topology corrective and lands the implementation:
-out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
-test-only launcher that compiles against the staged Java I2P
-`lib/` jars and invokes the stock public
-`net.i2p.router.Router(Properties)` + `setKillVMOnEnd(false)`
-+ `runRouter()` lifecycle (the exact-pinned upstream `MultiRouter`
-precedent); rewritten `tests/integration/m6-interop/run-java.sh`
-at the topology/startup boundary (reserves fixed loopback Java
-SSU2 / SAM / I2CP ports before startup, drives the controlled
-`Properties` set with exact-pinned upstream names, writes a
-disposable `clients.config` containing only the SAM bridge,
-never mutates `${JAVA_CACHE}/clients.config`, passes actual
-selected endpoints to `java_tunnel_external.rs`, asserts every
-controlled-topology invariant); and the Plan 196 §7 static
-checker extension that rejects `i2p.vmCommSystem=true`, the
-obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`,
-`i2np.ntcp2.enabled`), mutation of the verified Java cache's
-`clients.config` / `clients.config.d`, non-loopback reseed URLs,
-and `|| true` forgiveness in the lane. The first counted external
-Java run proved the controlled topology end-to-end and then
-stopped at the Plan 196 §10.B PQ option rejection (Java's `pq=4,3`
-is not parseable by `Ssu2RouterAddress::parse`). Plan 197 has
-landed the narrow PQ SSU2 option support corrective: parser-only
-tolerance of the `pq` KEM-scheme option Java I2P 2.13.0
-unconditionally publishes (`UDPTransport.addSSU2Options` at the
-exact-pinned `9134f808337b401e8e53c73734c81fab04280c9d` commit,
-`PQ_VERSION = "4,3"`), typed `Ssu2PqKem`/`PqCapabilities`
-surface with bounded `MAX_SSU2_PQ_SCHEMES = 8`, the i2pr
-session layer stays classical X25519 only by the Plan 156/160/161
-establishment contract, the i2pr publication path stays pq-free
-(Plan 197 adds a `publication_never_emits_pq` regression), and
-no ML-KEM implementation is added, depended on, advertised, or
-claimed at any layer. The Plan 196 external lane now re-runs
-against the same exact-pinned Java cache and the
-`external-session-established-java` row flips from `failed` to
-`passed`; Plan 196 then flips from
-`in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run`
-to `passed-m6-java-controlled-first-run-topology-corrective` and
-Plan 199 now owns the unified final-closure corrective. Its
-out-of-tree `ReferenceRawDestination.java` and
-`ReferenceStreamingService.java` use only public Java client/Streaming
-APIs, while the existing Rust driver continues to own the counted i2pr
-path. The helpers connect successfully in the exact-pinned Java 2.13.0
-controlled topology, but the Java router has not returned the public-client
-LeaseSet2 to the real i2pr DatabaseLookup path; mandatory Java lookup,
-delivery, and Streaming rows remain blocked and the final evidence gate
-must reject closure until that boundary is resolved.
-
-Plan 200 closed the diagnostic/evidence side of the lane: the Java
-helpers decoupled the `leaseset=published` claim from `READY` and
-added a bounded `REPORT_STATUS` command; the Rust driver now proves
-Router A/B main-NetDB bootstrap through ordinary post-store
-DatabaseLookup round-trips in both directions; sanitized Java log
-keys for the client LS2 lifecycle and tunnel/floodfill/store/ack
-selection are emitted to evidence; and exactly one terminal
-`P200-{A..H}` classification is recorded per run. Plan 201
-landed the **Branch G (store-acked-remote-lookup-fails) corrective
-framework**: eleven new sanitized observation counters on
-`DestinationTunnelCounters` (`lookup_key_matches` / `_mismatches`,
-`floodfill_candidates_present` / `_absent`, `reply_paths_derived` /
-`_unresolved`, `ls2_records_decoded` / `_decode_rejected` /
-`_signature_rejected`, `inbound_cells_garlic_completed` /
-`_incomplete`); the public `note_lookup_boundary(label, value)`
-typed observation surface; eight new `plan201_g_*` unit rows in
-`destination_tunnel_unit.rs`; six new `blocked_row` Plan 201 §G
-entries in `run-java.sh`; and
-`scripts/check-m6-mixed-router-acceptance-evidence.sh` extended
-with §11 + §12 invariants. Final closure of Plan 201 is blocked on
-the Plan 200 exact-head external run that records the unambiguous
-`P200-*` classification and flips the seven §11 stop rows
-`blocked → passed`; the M6 Java second-family claim stays
-`not-yet-passed` until then.
-
-Plan 202 closed the M10 production remote Destination/Streaming
-composition (`crates/i2pr-daemon/src/service_delivery.rs`,
-Plan 202 §5): the M10 `ServiceTunnelManager` now owns one shared
-`ServiceDestinationDelivery` capability (Plan 202 §5); the typed
-`RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` /
-`RemoteUnresolved`) drives the resolve path; the new bounded
-`RemoteDeliveryCounters` surface emits twelve positive observations
-on every counted path (`remote_lookup_started`,
-`remote_lookup_succeeded`, `remote_lookup_failed`,
-`remote_stream_connect_started`, `remote_stream_established`,
-`remote_outbound_requests`, `remote_inbound_payloads`,
-`remote_route_retries`, `remote_route_timeouts`,
-`remote_tunnel_loss`, `local_coowned_deliveries`, `unknown_peer`);
-the `m10_remote_destination_streaming_composition_through_manager`
-Direction A external driver exercises the manager-level
-`install_router_delivery_handle` / `routing_decision_for` /
-`co_owned_destination_hashes` seams against the exact-pinned
-i2pd 2.61.0 cache through the dedicated M6 interop lane; nine
-new unit rows in `service_delivery.rs` + five new unit rows in
-`service_tunnels.rs::plan202_routing_tests` cover the
-routing-decision classification; and the
-`scripts/check-service-tunnel-acceptance-evidence.sh` static
-checker extended with Plan 202 §12 invariants. The new
-`m10-remote-destination-streaming-composition` row in
-`tests/integration/service-tunnels/run-independent.sh` records
-`blocked` in this lane (no SSU2 endpoint + bind tuple) and flips
-to `passed` through `record_guarded` when the dedicated M6 interop
-lane provisions the environment and the driver emits
-`lease-lookup-completed=` + `remote-stream-established=true`. The
-runtime-neutral `i2pr-service-tunnels` crate remains transport-agnostic;
-the capability lives in the daemon. Plan 206 (M10 production
-remote delivery composition corrective — `service_delivery.rs` +
-`service_tunnels.rs::plan206_remote_composition_tests`,
-Plan 206 §5/§7/§9/§13) promoted the Plan 202 marker/counter
-capability into an executable backend: `ServiceDestinationDelivery::with_backend(Arc<RemoteDestinationBackend>)`
-attaches a shared `RemoteDestinationBackend` that owns the
-`DestinationTunnelCoordinator` (for LeaseSet2 lookup /
-publication through `resolve_remote_lease_set2`) and the
-authenticated router delivery service (Plan 184 SSU2). The
-manager gained typed `route_outbound_remote_request` /
-`dispatch_inbound_to_owned_destination` /
-`register_inbound_destination_owner` /
-`inbound_destination_owner` seams; inbound owner registration
-is atomic with a fail-closed duplicate guard. Three new
-operation-boundary counter fields (`remote_lookup_cache_hit`,
-`remote_outbound_composed`, `remote_inbound_dispatched`) advance
-only through typed backend seams; the external `record_observation`
-helper silently ignores those labels so a positive observation
-cannot be manufactured without the production operation. Seven
-new `plan206_*` manager-level unit rows lock the typed path. The
-`scripts/check-service-tunnel-acceptance-evidence.sh` static
-checker extended with the Plan 206 §13 source-level invariants
-(executable `RemoteDestinationBackend` struct,
-`with_backend` constructor, `has_backend` accessor, three typed
-`note_*` seams, three typed operation-boundary counter fields,
-the `plan206_remote_composition_tests` module, the manager-level
-typed methods, the `ServiceTunnelManager::inbound_owners` field,
-and the Plan 202 driver's `has_backend` assertion). Plan 202 is
-reclassified to `partial-m10-remote-routing-capability-surface-
-superseded-by-plan206`; the underlying `RoutingDecision`,
-`RemoteDeliveryCounters`, and manager installation seams remain
-valid.
-
-Plan 207 closed the genuine M10 remote HTTP + IRC application
-interop (`crates/i2pr-daemon/tests/service_tunnels_application_genuine_remote_qualification.rs`,
-Plan 207 §5/§6/§9/§10): the new
-`m10_genuine_remote_http_and_irc_application_interop` external
-driver replaces the synthetic Plan 203 label-injection pattern
-with command-derived evidence from unmodified application
-clients. The HTTP row is bound to the real system `curl` binary
-spawned as a subprocess against the i2pr HTTP client listener;
-the IRC row is bound to the unmodified exact-pinned jaraco/irc
-public API (`irc.client`) spawned as a subprocess against the
-i2pr IRC client listener; the driver writes the documented Plan
-207 §9 subfact rows plus `plan206-backend-counters` to
-`${EVIDENCE_DIR}/plan207-driver/driver-evidence.tsv`; the
-aggregate pass rows derive purely from the command-derived
-subfact rows; `record_remote_application_observation` is
-explicitly forbidden in the driver (Plan 207 §9 forbids manual
-label injection). The Plan 206 executable backend (the shared
-`RemoteDestinationBackend` + the typed
-`route_outbound_remote_request` / `dispatch_inbound_to_owned_destination`
-seams) carries the manager-level routing decision and the
-real LeaseSet2 lookup the application layer relies on. The
-runner provisions i2pd with one HTTP server tunnel + one IRC
-server tunnel pointing at the harness-owned loopback fixtures;
-the static checker `scripts/check-service-tunnel-acceptance-evidence.sh`
-rejects literal `record "... passed"` lines and requires the
-positive rows to flow through `record_guarded` + the documented
-Plan 207 §9 subfact rows + `plan206-backend-counters`; the two
-`remote-independent-*` rows flip from `blocked` to `passed` once
-the dedicated M6 interop lane provisions the SSU2 endpoint + bind
-tuple and the driver emits every documented Plan 207 §9 subfact
-row in the same evidence directory/run id; the full M10 lane stays
-fail-closed without it. Plan 208 closed the M10 production
-delivery-driver remote-route integration corrective
-(`crates/i2pr-daemon/src/service_tunnels.rs`,
-Plan 208 §A/§B/§D/§E/§G/§15): the production
-`ServiceTunnelManager::deliver_outbound` sweep now invokes the
-typed `route_outbound_remote_request` seam on the local-miss
-branch so a reachable remote peer no longer dies at the
-pre-Plan-208 `unknown_peer` terminal branch; the typed
-`route_outbound_remote_request` performs a real send through
-the existing `StreamingDestinationAdapter` (cell composition
-through the same adapter the local Plan 129 / Plan 182 / Plan
-193 lanes use), encodes the resulting `OBGWRouterDelivery` cells
-through the existing `deliver_outbound_cells` helper, and
-dispatches them to the established SSU2 peer session through
-the daemon-owned `RouterDeliveryService`. The inbound-owner
-registry wired by Plan 206 (`register_inbound_destination_owner` /
-`unregister_inbound_destination_owner` / `inbound_destination_owner`
-with a fail-closed atomic duplicate guard + `dispatch_inbound_to_owned_destination`)
-wires inbound data to the actual owning service runtime. Seven
-new `plan208_*` manager-level unit rows in
-`service_tunnels.rs::plan208_remote_route_integration_tests` lock
-the integration call graph; the new `#[ignore]`-gated
-`m10_remote_route_integration_through_deliver_outbound` external
-driver (`crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs`)
-exercises the production sweep against the exact-pinned i2pd
-2.61.0 cache; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh`
- extended with Plan 208 §15 source-level invariants (production
-`deliver_outbound` must call `route_outbound_remote_request`,
-the `plan208_remote_route_integration_tests` module must
-exist, `compose_remote_cells` must be present, the counted
-driver must not construct a parallel `StreamingManager::new` /
-`StreamingDestinationAdapter::new`, must never call
-`record_remote_application_observation`, must never log peer
-key material, and the `RemoteDeliveryCounters` operation-boundary
-counters must advance only through the typed backend seams).
-
-Plan 210 landed the M10 real service-Destination network material
-and inbound Streaming structural corrective as
-retained-partial-superseded-by-plan212
-(`crates/i2pr-daemon/src/service_tunnels.rs`,
-`crates/i2pr-daemon/src/sam/streams.rs`,
-`crates/i2pr-daemon/src/service_product.rs`, Plan 210 §A/§B/§C/§D/§E/§F/§G/§I/§16;
-see `plans/closure/service-tunnels/212-status.md` for the superseding corrective):
-- **Phase F** — added the inbound tunnel owner reverse map keyed
-  by local receive tunnel id before ECIES decryption. The
-  `ServiceTunnelManager` now exposes
-  `register_inbound_tunnel_owner` /
-  `unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` /
-  `inbound_tunnel_owner_pairs` / `note_inbound_orphan_receive` /
-  `inbound_orphan_receives`; stale / orphan receives fail closed
-  via the typed `inbound_orphan_receives` counter.
-- **Phase E** — replaced the pre-Plan-210 `dummy_outbound_tunnel()`
-  swap placeholder in `compose_remote_cells` with a single bridge
-  helper `SamDestinationBridge::compose_adapter_send_owned_fields`
-  that reads the bridge's real
-  `DestinationRouting` / `EciesSessionManager` /
-  `DestinationOutboundRole` directly.
-- **Phase C** (superseded by Plan 212 §8) — removed `DestinationHash::from_hash(i2pr_crypto::sha256(&reference.router_info_bytes))`
-  as a service LeaseSet lookup target. Plan 210 added an explicit
-  `ReferencePeer::destination_hash` field; Plan 212 removes that
-  single-hash shape — `ReferencePeer` is now router-only and
-  per-service targets resolve from the specs' `DestinationRef` via
-  `remote_target_hash_for_reference` +
-  `resolve_remote_destination_for_service` (HTTP and IRC resolve
-  independently).
-- **Phase G** — wired the recovered inbound Garlic envelope
-  through the canonical
-  `DestinationDispatcher::dispatch_garlic_envelope` via
-  `SamDestinationBridge::dispatch_inbound_garlic_owned` and
-  advances the typed `remote_inbound_dispatched` counter through
-  the backend seam.
-- **Phase I** — integrated the new state with the existing
-  Plan 180 generation lifecycle. The static checker
-  `scripts/check-service-tunnel-acceptance-evidence.sh` extended
-  with the Plan 210 §16 source-level invariants (`SHA256(reference.router_info_bytes)`
-  forbidden as a service lookup key, `dummy_outbound_tunnel()`
-  forbidden in `compose_remote_cells`, `inbound_tunnel_owners`
-  registry must exist with `dispatch_inbound_garlic_owned`,
-  silent `I2npBody::Garlic(_) => {}` drop forbidden, at least
-  one `plan210_…` test row required). Eight new `plan210_*` unit
-  rows in
-  `service_tunnels.rs::plan210_real_service_destination_material_tests`
-  lock the §14 conditions 1-8 (round-trip / duplicate /
-  unregister / zero-id rejection / orphan counter advance /
-  placeholder-free compose / explicit destination hash /
-  typed pairs drain); the remaining §14 conditions are enforced
-  by the static checker and the Plan 209 driver carry-over.
-
-  Plan 212 (in-progress, see `plans/closure/service-tunnels/212-status.md`) completes the
-  split on top: `RouterDestinationNetworkState` + bridge
-  `install/clear/has/summary` + `compose_router_send` (explicit
-  router-backed compose, never fabric) +
-  `dispatch_router_garlic_to_canonical_streaming` (`dispatch` +
-  `pop_payload` drain + `StreamingDestinationAdapter::receive`
-  into the SAME canonical service `StreamingManager`);
-  `ServiceProduct::start` reorder (router-only bootstrap, then
-  `prepare()`, then per-service real provisioning with disjoint
-  tunnel ids, then supervisors; atomic failure); per-service
-  lookup/publication; standard-first/short-fallback decode parity;
-  25 `plan212_*` unit rows; §20–§26 checker invariants; the
-  `#[ignore]`-gated generic Direction A/B driver. The generic
-  external product qualification against exact-pinned i2pd 2.61.0
-  is owned by Plan 212; Plan 211 requalifies after it.
-
-  Plan 213 (in-progress, see `plans/closure/service-tunnels/213-status.md`) completes the
-  qualification harness without changing the router architecture:
-  the generic driver performs real local TCP application I/O
-  (small + 8192 B payloads, exact reads, digest equality) with
-  concurrent `ServiceProduct::poll_inbound()` pumping, Direction B
-  initiates through the harness-only `sam_stream_fixture.py`
-  (`STREAM CONNECT` over a fresh SAM socket) while inbound keeps
-  pumping, and every row derives from executed I/O, typed
-  summaries (`service_router_network_summary` with
-  `lease_count`/`inbound_owner_registered`), per-direction
-  counter windows, or subprocess exit codes — exactly one
-  `P213-{A..N}` terminal classification per run. Two narrow
-  read-only product surfaces (`service_destination_public_info`,
-  `service_router_network_summary`) reuse existing manager
-  accessors; the server-publication branch now runs
-  unconditionally for server specs and dispatches real
-  DatabaseStore cells   through `compose_ls2_publication_via_tunnel`.
-  The standalone `run-plan213-generic.sh` runner owns pin
-  verification, fixture orchestration, row validation, and the
-  no-secret audit; the checker carries the Plan 213 §27
-  invariants. The lane additionally proved narrow product
-  correctives (short-transport Garlic u32 framing, AckRequest
-  tolerance, inbound LS2 mirror, wall-clock wire Dates, and the
-  server SYN-ACK bridge-mirror fallback in
-  `route_outbound_remote_request`).
-
-  Plan 315 passed after Plan 314. Remote `DestinationGroupRuntime`
-  instances resolve to one `DestinationRuntime` in the manager's
-  `DestinationRegistry`; this runtime's `DestinationTunnelPool` retains the
-  authoritative group registrations. The Plan 314 build owner hands established
-  material to that runtime, and startup fills configured inbound/outbound
-  targets in bounded pairs. LeaseSets come from the runtime's current usable
-  inbound leases. The product poll advances pools, drops expired data-plane
-  roles and receive owners, refreshes group LeaseSets/publication, and submits
-  target-deficit builds through the same bounded coordinator. The bridge holds
-  activated role projections keyed to group pool slots; exploratory router
-  pools remain separate. Deterministic/manual-time pool, LeaseSet, owner,
-  cancellation, and outbound projection tests passed; no live multi-router
-  result is claimed here.
+---
 
 ## Purpose
 
-`i2pr-daemon` is the top of the dependency graph — it sees every
-crate that will eventually participate in the running daemon. Its
-work is scoped to:
+`i2pr-daemon` sits at the top of the dependency graph and sees every crate that will
+eventually participate in the running daemon. It is the process shell, not a protocol
+implementation.
 
-- **CLI parsing** via `clap` derives: subcommands, flags, `--help`.
-- **Configuration** parsing, validation, normalization, schema
-  version checking; NTCP2 `enabled = true` is rejected while
-  support remains experimental. Plan 106 added bounded `[netdb]`
-  and `[reseed]` sections.
-- **Identity lifecycle**: explicit generation and inspection of
-  `<data_dir>/router.identity`. No auto-generated side effects on
-  `run --dry-run`.
-- **Daemon composition**: real Tokio supervisor, service graph,
-  lifecycle service, netdb-bootstrap service, and graceful
-  shutdown. `i2pr run` starts the daemon; it is no longer a
-  non-networked shell.
-- **NetDB/bootstrap pipeline** (Plan 106): runs cache revalidation,
-  local RouterInfo construction, and bounded offline reseed before
-  the supervisor starts. Produces a sanitized `BootstrapReport`
-  with a bounded `BootstrapSnapshot` and `ReseedAttemptSummary`.
-- **Stable process exit codes** that operators and automation can
-  rely on.
-- **SAM 3.1 loopback service** (Plans 137–149): owns the supervised
-  listener, transactional sessions, per-destination Streaming pools,
-  STREAM CONNECT/ACCEPT dispatch, loopback-only STREAM FORWARD
-  registrations, bounded/cancellable raw forwarding, and local naming
-  outcomes. SAM remains disabled by default and is never a public
-  network listener. Plan 147 closed the dedicated same-socket
-  raw-socket handoff to live destination delivery (see
-  [`plans/closure/sam/147-status.md`](../../plans/closure/sam/147-status.md)). Plan 149 closed
-  the self-composed local STREAM product (see
-  [`plans/closure/sam/149-status.md`](../../plans/closure/sam/149-status.md)): `SESSION CREATE`
-  now self-composes the entire localhost product from SAM protocol
-  commands alone via one `Arc<DestinationIdentity>` allocation, the
-  OS-CSPRNG-driven `SamLocalProductFabric`, automatic per-destination
-  driver spawn, local peer LeaseSet2 directory, byte-exact
-  `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw
-  transition, and typed `DeliverySweepCounters`. The canonical
-  evidence lives in
-  [`crates/i2pr-daemon/tests/sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs).
-  Plan 148 is historical blocked-audit evidence and is superseded for
-  execution by Plans 149–150.
-- **I2CP loopback listener** (Plan 167): owns the supervised
-  loopback I2CP server (`[i2cp]` config, `enabled = false` by
-  default, IPv4/IPv6 loopback only, non-loopback bind rejected
-  fail-closed), one `SessionRegistry` for I2CP session IDs and
-  their destination hashes, one router-local `DestinationRegistry`
-  populated through the Plan 166 client-owned destination runtime,
-  and the supervised per-connection child scope. I2CP remains
-  disabled by default and is never a public network listener.
-  TLS, credentialed authentication, and remote I2CP exposure are
-  explicitly deferred. See
-  [`plans/implementation/i2cp/167-m9-i2cp-loopback-server-runtime.md`](../../plans/implementation/i2cp/167-m9-i2cp-loopback-server-runtime.md)
-  and the canonical real-TCP evidence in
-  [`crates/i2pr-daemon/tests/i2cp_loopback.rs`](../../crates/i2pr-daemon/tests/i2cp_loopback.rs).
-- **I2CP message data plane** (Plan 168): extends the Plan 167
-  service with bounded per-session `SendMessage` /
-  `SendMessageExpires` validation, a bounded `MessageStatus`
-  correlation table, sibling-isolated `MessagePayload` inbound
-  delivery (per-session queue + `tokio::sync::Notify` between
-  `read_chunk` branches), the cross-session local loopback
-  shortcut for two destinations owned by active I2CP sessions,
-  `DestLookup` resolving through the local destination registry,
-  and `GetBandwidthLimits` returning the config-derived client
-  ceiling and the documented neutral router values. The Plan 168
-  data plane is the documented caller of the existing
-   `i2pr_client::DestinationRuntime::enqueue_outbound` seam; it
-    never duplicates destination routing state. Independent
-   Java I2P 2.13.0 + go-i2cp client evidence passed via Plan 170
-   (digest-matched small/large payloads both directions through
-   the loopback daemon). See
-  [`plans/implementation/i2cp/168-m9-i2cp-message-data-plane.md`](../../plans/implementation/i2cp/168-m9-i2cp-message-data-plane.md)
-  and the canonical real-TCP evidence in
-  [`crates/i2pr-daemon/tests/i2cp_message_data_plane.rs`](../../crates/i2pr-daemon/tests/i2cp_message_data_plane.rs).
-- **I2CP reconfiguration + self-composed local product**
-  (Plan 169): adds the Plan 165 reconfigure transaction handler
-  (`handle_reconfigure_session` + `apply_reconfigure`) plus the
-  Plan 169 §3 session-destruction hardening. The reconfigure
-  handler parses/verifies the full new SessionConfig, classifies
-  each diff entry using `classify_reconfigure_diff`, and commits
-  the new baseline atomically through
-  `I2cpSessionState::last_options` only when every change is
-  `MutableImmediate` or `MutableWithRebuild`; immutable and
-  unsupported options reject the whole transaction without
-  state mutation. `handle_destroy_session` now drains the
-  per-session data-plane bookkeeping synchronously so repeated
-  DestroySession/CreateSession cycles retain zero bounded
-  resource. See
-  [`plans/implementation/i2cp/169-m9-i2cp-self-composed-local-product-and-hardening.md`](../../plans/implementation/i2cp/169-m9-i2cp-self-composed-local-product-and-hardening.md)
-  and the canonical real-TCP evidence in three narrowly named
-  suites —
-  [`crates/i2pr-daemon/tests/i2cp_final_acceptance.rs`](../../crates/i2pr-daemon/tests/i2cp_final_acceptance.rs),
-  [`crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs),
-   and
-   [`crates/i2pr-daemon/tests/i2cp_resource_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_resource_matrix.rs).
-- **I2CP invalid-preamble close corrective** (Plan 171): retains
-  the Plan 169 surface and hardens the common per-connection
-  terminal path — `handle_connection` calls
-  `stream.shutdown()` before `teardown_connection` +
-  `drop_connection` so every terminal pre-session rejection
-  terminates TCP deterministically instead of relying on
-  `TcpStream` drop timing (shutdown failure never blocks
-  cleanup; no frame is written for an invalid first byte). The
-   strict `wrong_protocol_byte_is_closed` row plus its non-paused
-   `wrong_protocol_byte_is_closed_real_time` companion prove the
-   close with resource baselines. See
-   [`plans/implementation/i2cp/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](../../plans/implementation/i2cp/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md).
-- **I2CP independent wire/data-plane** (Plan 170, retained-passed):
-  exact-pinned Java I2P 2.13.0 and go-i2cp exchange
-  digest-matched 25 B/32 KiB payloads both directions through
-  the loopback daemon under the fail-closed 9-row lane
-  (`tests/integration/i2cp/run-independent.sh`,
-  `scripts/check-i2cp-acceptance-evidence.sh` in routine CI,
-  manual `.github/workflows/i2cp-external.yml`). Daemon deltas
-  are the `ReplyAndFollowup` `RequestVariableLeaseSet` after
-  `CreateSession`, `0.x.y` version negotiation, empty-auth
-  GetDate acceptance, `messageReliability=none` best-effort
-  mapping, and the ElGamal-legacy-slot policy relocation.
-  Its wire/data-plane evidence is retained; its final-acceptance
-  interpretation is superseded by Plan 172 (counted Java driver
-  bypassed `I2PSession.connect()`; no external LeaseSet2 install).
-  See
-  [`plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
-- **I2CP independent LeaseSet2 lifecycle corrective** (Plan 172,
-  active): explicit local zero-hop tunnel kind (typed, not empty
-  remote `EstablishedMaterial`), non-empty real 44-byte
-  Lease-compatible `RequestVariableLeaseSet` (gateway + tunnel id +
-  8-byte ms end date) derived from the destination pool via the Plan
-  166 `take_client_refresh_request` seam, existing Plan 166 atomic
-  `install_client_lease_set2` (ElGamal-slot skip, unpublished accepted,
-  u8 LS2 key count per reference), session usability gated on LS2
-  install, high-level Java `I2PSession.connect()` plus public go-i2cp
-  async `CreateSession` + persistent `ProcessIO` lifecycle proof,
-  post-LS2 cross-client traffic with digest equality mandatory, and
-  fail-closed sanitized listener facts (`I2CP_LEASE_REQUEST` /
-  `I2CP_LS2_INSTALLED`, no private bytes). `i2cp.dontPublishLeaseSet=true`
-  installs the client-signed LS2 locally without public NetDB publication.
-  Milestone 9 final acceptance is closed via Plan 172. See
-  [`plans/implementation/i2cp/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/implementation/i2cp/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
-- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), **HTTP `.i2p` proxy + CONNECT** (Plan 176), **SOCKS5 `.i2p` CONNECT proxy** (Plan 177), **IRC `.i2p` client profile + privacy filtering** (Plan 178), and **IRC `.i2p` server profile + authenticated peer hostname** (Plan 179): adds the shared
-  `destination_streaming` pump (`run_stream_pump` generic over
-  `AsyncRead + AsyncWrite` with bounded chunk, negotiated
-  segmentation, backpressure, sibling-isolated drain, and
-  cancel/EOF/terminal convergence) and adapts SAM plus the
-  Plan 175 `ServiceTunnelManager` and the Plan 176 HTTP proxy
-  executor (`crates/i2pr-daemon/src/service_tunnels_http.rs`)
-  to it via narrow capability traits (no second byte pump).
-  Plan 175 adds the persistent `ServiceDestinationStore`
-  (versioned, atomic, secret-safe) plus a daemon-owned
-  `ServiceTunnelManager` that binds loopback TCP for
-  `generic-client` and a loopback Streaming listener for
-  `generic-server`, reuses the Plan 149 local destination product
-  path, and exposes a typed cross-tunnel local destination lookup.
-  Plan 176 adds the runtime-neutral `i2pr-service-tunnels::http`
-  module (bounded HTTP/1.1 parser with smuggling rejection,
-  hop-by-hop `Connection` removal, conservative privacy/header
-  rewrite, `.i2p`-only target validation, bounded error response
-  generation) and the daemon-owned HTTP proxy executor that owns
-  one loopback listener per `http-client` spec, dispatches CONNECT
-  to a 2xx tunnel or rewrites/forwards ordinary proxy requests,
-  and reuses the shared byte pump + destination product path. Plan 177
-  adds the runtime-neutral `i2pr-service-tunnels::socks5` module
-  (RFC 1928 no-auth greeting negotiation, CONNECT request parser
-  with strict `.i2p`/DOMAINNAME-only target policy, deterministic
-  reply generator with neutral loopback bind) and the daemon-owned
-  SOCKS5 proxy executor that owns one loopback listener per
-  `socks5-client` spec. Plan 178 adds the runtime-neutral
-  `i2pr-service-tunnels::irc` module (bounded IRC/IRCv3 line
-  parser, message-tag framing, typed command classifier with
-  per-direction allowlist, USER/PING/QUIT/PART privacy rewrites,
-  CTCP/DCC policy) and the daemon-owned IRC client executor that
-  owns one loopback listener per `irc-client` spec. Plan 179 adds
-  the runtime-neutral `i2pr-service-tunnels::irc::server`
-  registration interceptor (bounded pre-registration line/byte
-  ceilings, cross-protocol rejection of HTTP/BitTorrent first
-  lines, authenticated peer Destination hash projection to
-  `<52-char base32>.b32.i2p` that replaces the USER hostname
-  and is bound to the streaming peer identity, RFC 2812 four-arg
-  and legacy RFC 1459 USER shapes, IRCv3 tagged USER rewrite with
-  envelope preserved, PASS / CAP / AUTHENTICATE / NICK passthrough,
-  same-read post-USER bytes preserved as first raw-pump bytes,
-  optional `SERVER` server-to-server handoff) plus the
-  daemon-owned IRC server executor
-  (`crates/i2pr-daemon/src/service_tunnels_irc_server.rs`) that
-  waits for the Streaming connection to reach `Established`,
-  captures the peer Destination hash, runs the bounded
-  registration interceptor under a 30 s total deadline,
-  connects to the loopback target under a 10 s deadline, writes
-  the rewritten prefix + leftover exactly once, and switches to
-  the shared Plan 174 byte pump in opaque mode for the
-  post-registration stream. Plans 175-179 enable `enabled = true`
-  for `generic-client`, `generic-server`, `http-client`,
-  `socks5-client`, `irc-client`, and `irc-server` in order; no
-  remaining not-yet-available gate exists for the current kinds.
-  Plan 182 proved the per-service Streaming byte round-trip over
-  local TCP (per-destination delivery drivers, wildcard port 0,
-  SAM-parity accepts, completed IRC client executor, orderly
-  half-close). Plan 181's external lane passes its 29 local
-  independent-application-client rows while the two remote rows
-  stay `blocked`. Plan 199 confirmed this is an architecture
-  boundary: the manager routes through its local co-owned peer bridge
-  and has no production remote-router transport/LeaseSet2 lookup
-  path. The remote runner remains a bounded qualification probe
-  until that path exists. See
-  [`plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
-  [`plans/implementation/service-tunnels/175-m10-generic-client-server-service-tunnels.md`](../../plans/implementation/service-tunnels/175-m10-generic-client-server-service-tunnels.md),
-  [`plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md`](../../plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md),
-  [`plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md`](../../plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md),
-  [`plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md`](../../plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md),
-  and
-  [`plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](../../plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md).
+### What the daemon owns
 
-- **SSU2 router service** (Plan 184): owns the strict
-  `[ssu2]` controlled activation, the daemon-owned
-  `Ssu2DaemonService` under `ssu2-router` supervision, the central
-  authenticated router-I2NP dispatcher (`dispatch_router_i2np` with
-  standard/short classification and authenticated peer
-  preservation), and the narrow `RouterDeliveryService` over the
-  existing `send_i2np` seam. Exact-pinned i2pd 2.61.0 bidirectional
-  control is proven in
-  [`crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs`](../../crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs)
-  via `tests/integration/m6-interop/run-preflight.sh`. See
-[`plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
-- **Floodfill delivery boundary** (Plans 277/282 stopped, Plan 283 in progress): `floodfill.rs` retains coordinator resource
-  leases through effect completion, constructs fresh bounded I2NP envelopes, and routes Store
-  acknowledgements and direct/tunnel lookup replies using the supplied reply route. Tunnel replies
-  are exactly one Garlic body nested in one TunnelGateway. Direct replication sends a zero-token
-  DatabaseStore only to its selected peer. If no authenticated session exists, the async adapter
-  resolves only an answer-eligible main-router RouterInfo SSU2 endpoint and delegates one bounded
-  dial to the existing runtime owner. `run_floodfill_owner` supplies one bounded ingress,
-  maintenance, and effect-drain future with per-effect outcome accounting, a bounded
-  cancel-drain, and a stats return; the production SSU2 service graph does not start
-  it. Plan 283 adds the controlled activation/withdrawal composition (`activate_controlled` /
-  `withdraw_controlled`, the only composition site the M12 guard permits) behind the wire-real
-  controlled peer-test evidence driver (Option 3): explicit-bind recording → publication
-  material → eligibility → activation → `caps=f` install → publish, with failure rollback to
-  the previous non-`f` bytes and health-loss withdrawal (Draining → same-address non-`f`
-  reinstall → bounded drain → Disabled). Local acceptance lives in
-  [`crates/i2pr-daemon/tests/floodfill_controlled_lifecycle.rs`](../../crates/i2pr-daemon/tests/floodfill_controlled_lifecycle.rs)
-  (13 live loopback rows: direct/tunnel acks, ECIES tunnel open, established/dial/failed
-  replication, cancel-drain, plus controlled eligibility/serve, health withdrawal, RI
-  rotation across handshakes, dial-permit cancel baseline, and the ordinary-config
-  refusal).
-- **Exploratory build coordinator + tunnel liveness scheduler**
-  (Plans 185/188): the daemon-owned
-  [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)
-  drives the existing `i2pr_tunnel::short::ShortBuildStateMachine`
-  end-to-end through the Plan 184 central dispatcher with one
-  bounded pending table (16), monotonic attempt / creator tunnel
-  ids, a single central scheduler (no per-build task), strict
-  canonical OTBRM extraction, and `register_*_with_material`
-  installs through the existing `i2pr_tunnel::pool::ExploratoryPool`
-  then activates once into the existing
-  `i2pr_tunnel::data_plane_registry::DataPlaneRegistry` (no
-  synthetic insertion). Plan 188 adds consumed-reference installs:
-  forwarded `ShortTunnelBuild` for pending inbound `(peer,
-  message_id)` plus `TunnelGateway` Garlic unwrap (OBEP
-  `RGarlicKeyAndTag` by `(peer, next_tunnel)` + inner `message_id`)
-  through `i2pr_tunnel::garlic_reply`. Plan 189 §8 adds the
-  fail-closed M6 mixed-router cross-family ledger/checker/workflow
-  scaffold that reuses the four per-layer harnesses
-  (`run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`,
-  `run-destination.sh`) through
-  [`tests/integration/m6-interop/run-m6-mixed-router.sh`](../../tests/integration/m6-interop/run-m6-mixed-router.sh)
-  without changing the per-layer evidence semantics; no second-family
-  Java row exists until a follow-up plan lands the Java qualification
-  harness. The bounded creator-side
-  [`TunnelLivenessScheduler`](../../crates/i2pr-daemon/src/tunnel_liveness.rs)
-  owns every active pair with one central scheduler (no per-tunnel
-  task or per-tunnel timer); the first test is scheduled
-  ≤ 30 s after establishment, the repeat interval is ≤ 60 s while
-  active, the response timeout stays well below the two-minute idle
-  deletion boundary, and the bounded failure threshold removes the
-  affected pair and asks the coordinator to rebuild. The full lane
-  is proven against exact-pinned i2pd 2.61.0 in
-  [`crates/i2pr-daemon/tests/exploratory_tunnel_external.rs`](../../crates/i2pr-daemon/tests/exploratory_tunnel_external.rs)
-  via `tests/integration/m6-interop/run-tunnels.sh`; the local
-  two-daemon-pair suite
-  [`crates/i2pr-daemon/tests/exploratory_build_live.rs`](../../crates/i2pr-daemon/tests/exploratory_build_live.rs)
-  drives the same coordinator end-to-end against a simulated
-  build responder and exercises the full OTBRM-to-Installed
-  pipeline. The static
-  [`scripts/check-exploratory-tunnel-evidence.sh`](../../scripts/check-exploratory-tunnel-evidence.sh)
-  rejects hard-coded `passed` rows. See
-  [`plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md).
+- **CLI parsing** (`src/cli.rs`, 69 lines) via `clap` derives: subcommands, flags, `--help`.
+- **Configuration** (`src/config.rs`, 4 077 lines): strict versioned TOML, `deny_unknown_fields`
+  on all 21 `Raw*` structs, semantic validation, and normalization.
+- **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
+  No auto-generated side effects on `run --dry-run`.
+- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:1453`): identity load,
+  cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
+- **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
+  `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
+- **ALL listeners.** SAM 3.1 (`sam.rs`), I2CP (`i2cp.rs`), I2PControl (`i2pcontrol.rs`,
+  TLS + JSON-RPC), service-tunnel per-profile executors, and the SSU2 `ssu2-router` service.
+  Every `TcpListener` / `UdpSocket` / `tokio::spawn` in production lives here or in
+  `i2pr-runtime`; the boundary is enforced by
+  [`scripts/check-runtime-boundaries.sh`](../../scripts/check-runtime-boundaries.sh).
+- **All task/queue/channel ownership.** Every spawned task has explicit ownership and
+  cancellation; channel and socket close are lifecycle events, never blind retries.
+- **The M10 service-tunnel manager** (`service_tunnels.rs`, 9 342 lines) and every per-profile
+  executor.
+- **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`) —
+  in the **disabled** posture only.
+- **M12 floodfill** (`floodfill.rs`) — controlled-activation/withdrawal composition only.
+- **Address book** (`addressbook.rs`, `addressbook_fetch.rs`, `control_sources.rs`): refresh
+  tasks, timers, bounded download composition, and resolver-handle installation into SAM,
+  service-tunnel, and I2PControl consumers.
+- **NEWS** (`news.rs`, private module) handling.
+- **Stable process exit codes** (`error.rs`) that operators and automation can rely on.
 
-What it **does not** do yet:
+### What the daemon must NOT own
 
-- Participate in transit tunnels in ordinary profiles (Plan 252 composition is
-  disabled by default: `TransitIngressGate::disabled()` keeps the existing
-  `TunnelBuildReserved` outcome; only an explicit controlled opt-in enables the
-  message-level STBM path, and no RouterInfo capability is advertised).
-- Open NTCP2 listeners (disabled under current authority).
-- Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
-- Claim Milestone 6 mixed-router interop: one-hop builds are
-  accepted by exact-pinned i2pd (Plans 185–186), the local
-  destination plane passes (Plan 187: 27 unit + 9 live rows),
-  the inbound-delivery layer is closed for i2pd 2.61.0
-  (Plan 192), and Plan 193 closed the i2pd-family mixed-router
-  Streaming qualification (33/33 external rows twice on exact
-  head 3687189). The cross-family gate still pending is Plan
-  194 (Java I2P second-family qualification).
-- Apply live configuration changes.
-- Drive a live exploratory tunnel build (Plan 107 lands the
-  substrate; Plan 108 landed the local architecture but its
-  wire/cryptographic algorithm is not protocol-conformant against
-  the current official I2P Tunnel Creation Specification — see
-  [`plans/implementation/exploratory-tunnels/108-conformance-amendment.md`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md);
-  the locally conformant build lands after Plan 109/110 corrective
-  work).
-- Accept HTTPS reseed at runtime (the offline source path is the
-  only allowlisted Plan 106 acquisition path; HTTPS is deferred
-  to a future plan).
+Protocol semantics live in the runtime-neutral crates and stay there:
+
+- No I2NP/LeaseSet2/Streaming wire codecs — `i2pr-proto`.
+- No crypto primitives — `i2pr-crypto` (the daemon only calls wrappers such as
+  `hkdf_sha256_extract_and_expand` and `red25519::derive_public_key`).
+- No tunnel-build or tunnel-data-plane algorithms — `i2pr-tunnel`.
+- No RouterInfo/LeaseSet2 validation or store semantics — `i2pr-netdb` / `i2pr-netdb-persist`.
+- No SAM/I2CP/I2PControl wire state machines — `i2pr-api` / `i2pr-i2pcontrol`.
+- No HTTP/SOCKS5/IRC/Streamr/TLS parsing — `i2pr-service-tunnels`.
+- No destination lifecycle or ECIES session logic — `i2pr-client`.
+- No SU3 framing — `i2pr-su3`.
+- No runtime/transport/runtime-neutral contracts — `i2pr-runtime`, `i2pr-transport`.
+
+NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
+(`src/config.rs:718`), `build_daemon_graph` rejects `ntcp2.enabled = true`, and
+`ntcp2-transport` is never registered (Plan 101 guard). `i2pr-transport-ntcp2` and
+`i2pr-transport-ssu2` are **not** direct daemon dependencies.
+
+---
 
 ## Module layout
 
-Twenty-six files at the crate root plus the `sam/`
-subdirectory (four files). The table below covers every `src/` file;
-the row count matches the filesystem:
+46 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
+`wc -l` on repo head. The tables below cover every `src/` file; the row count matches the
+filesystem (50 rows).
 
-| File | Responsibility | Main items |
-| --- | --- | --- |
-| `src/main.rs` | Executable shell: parse CLI, dispatch through `execute()`, print results, map errors to stable exit codes | `main()` |
-| `src/lib.rs` | Crate root: re-exports `cli`, `config`, `error`, `bootstrap`, `netdb_seam`; defines `execute()` (pure dispatch), `CommandOutcome`, `IdentitySummary`, `initialize_logging()` (layered subscriber: filtered formatted stdout plus the Plan 295 log-ring feed), `bootstrap_daemon()`, `build_daemon_graph()`, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `run_daemon()` (Plan 288: graph construction shares one `InspectionHandles` across SAM/I2CP/I2PControl factories for live-owner publication; `run_daemon` publishes the bootstrap router hash; Plan 295: composition installs the log ring, metrics, ban ledger, and static attestations, and the SSU2 factory publishes its runtime service) |
-| `src/cli.rs` | CLI vocabulary — `clap` derives | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
-| `src/config.rs` | Strict versioned TOML configuration (`serde(deny_unknown_fields)` everywhere) | `CURRENT_SCHEMA_VERSION`, `DEFAULT_MAX_TASKS`, `DEFAULT_MAX_BUFFERED_BYTES`, `RouterProfile`, `LogFormat`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `Config`, `ConfigError`, `I2pControlConfig`, `I2pControlPassword` (Plan 287: disabled/loopback-default `[i2pcontrol]` with fail-before-bind password/TLS validation and redacted password `Debug`) |
-| `src/error.rs` | Typed error hierarchy and stable exit-code mapping | `ExitCode`, `DaemonError` |
-| `src/bootstrap.rs` | Plan 106 NetDB/bootstrap state machine | `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `Bootstrap`, `bootstrap_daemon`, `bootstrap_with_offline_reseed`, `build_trust_set`, `store_summary` |
-| `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions, extended by Plan 187 with store-parameter LeaseSet2 lookup (`begin_lease_set2_lookup_with_store`, `advance_lease_set2_after_path_with_store`) and `ingest_lease_set2_search_reply` | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
-| `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition, extended by Plan 187 with `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
-| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it), extended by Plan 187 with the `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
-| `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
-| `src/transit_compose.rs` | Plan 252 disabled-by-default M11 transit composition (message-level STBM dispatch, role-specific STBM/OTBRM routing, TunnelData previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
-| `src/exploratory_build.rs` | Plans 185/188 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction + forwarded-STBM + TunnelGateway Garlic paths, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
-| `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
-| `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
-| `src/destination_peers.rs` | Plan 314 bounded validated-RouterInfo projection and exact-three Java-profile selector with OS-seeded production randomness | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os` |
-| `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss), extended by Plan 190 with `reply_path_for_inbound_route` (typed `InboundGatewayRoute` → `i2pr_netdb::ReplyPath` adapter) and `ReplyPathDerivationError`. Plan 188 lands consumed-reference installs both directions; Plan 190 isolates and corrects the inbound NetDB reply-path metadata defect. Plan 201 §G adds the Branch G (store-acked-remote-lookup-fails) diagnostic observation surface: eleven new sanitized `DestinationTunnelCounters` (lookup_key_matches / _mismatches, floodfill_candidates_present / _absent, reply_paths_derived / _unresolved, ls2_records_decoded / _decode_rejected / _signature_rejected, inbound_cells_garlic_completed / _incomplete) plus the public `note_lookup_boundary(label, value)` typed observation surface. | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
-| `src/service_els2.rs` | Plan 334 daemon-owned ELS2 publication owner for a control-owned service: builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed via `unblinded_scalar_from_ed25519_seed` (unblinded type 7, blinded type 11), constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** together with the correctly flagged `.b32.i2p` address. Adds **no** new file format and **no** new at-rest secret: the only new durable material is the lookup secret and client list, which already live in the control definition. `ServiceEls2Material` is not `Clone` and its `Debug` prints presence and counts only. **Consumed by the publication sweep as of Plan 337:** `TunnelControlState::sync_els2_materials` installs the material on the shared `ServiceTunnelManager`'s per-spec registry once a transaction commits, and `service_product::service_publication_store` reads it to file the type-5 record at the record's own blinded storage key. A service with no installed material publishes its ordinary LeaseSet2 at the destination hash, unchanged. **Every server group is persistent** (`ServiceTunnelSet::destination_groups` sets `persistent` for `kind.is_server()`), so a control-created server has a persisted identity and an encrypted create succeeds. The record is resolved by `ServiceTunnelManager::service_identity_record` — the same path `create_bridge_for_group` writes through — rather than by a store path re-derived here, because three paths exist for one concept (`for_group`, `for_key_reference`, legacy `for_service`) and a record the publication cannot find publishes an address naming an identity the service is not using (Plan 338). | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
-| `src/service_delivery.rs` | Plan 202 daemon-owned M10 production remote Destination/Streaming delivery capability (typed `RoutingDecision` enum + bounded `RemoteDeliveryCounters`); Plan 206 promoted the marker/counter shape into an executable backend (`RemoteDestinationBackend` owns the shared `DestinationTunnelCoordinator` + authenticated router delivery service). The capability is shared across every service the manager owns (Plan 202 §5 / Plan 206 §5); it carries the typed `RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` / `RemoteUnresolved`), the bounded `RemoteDeliveryCounters` (`remote_lookup_started` / `remote_lookup_succeeded` / `remote_lookup_failed` / `remote_stream_connect_started` / `remote_stream_established` / `remote_outbound_requests` / `remote_inbound_payloads` / `remote_route_retries` / `remote_route_timeouts` / `remote_tunnel_loss` / `local_coowned_deliveries` / `unknown_peer` / `remote_lookup_cache_hit` / `remote_outbound_composed` / `remote_inbound_dispatched` — the three operation-boundary counters advance only through typed backend seams), the in-flight resolution table (`MAX_CONCURRENT_REMOTE_RESOLUTIONS = 32`), the pure `classify_destination` helper, and the canonical hash conversion helpers. Plan 203 inherits the counters surface for the positive remote HTTP + IRC application interop lane. | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `RemoteDestinationBackend`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
-| `src/service_generation.rs` | Plan 180 generation diff classification surface | `ServiceGeneration`, generation diff types |
-| `src/service_product.rs` | Plan 209 single production composition helper wiring SSU2 + tunnels + LeaseSet2 + backend; Plan 294 address-book install; Plan 318 normal-daemon adapter over the existing SSU2 owner, bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, and readiness gated on usable group pools | `ServiceProduct::start`, `ServiceProduct::start_over_existing_daemon`, `ServiceProduct::next_inbound`, `ServiceProduct::poll_inbound`, `ServiceProduct::remote_counters` |
-| `src/addressbook.rs` | Plan 294 canonical AddressBook runtime owner: `[addressbook]` config, current/backup/import activation rule, transactional mutations with rollback, generation persistence, shared resolver cell, bounded refresh queue + diagnostic artifact, snapshot-artifact import, cadence worker driver | `AddressBookManager`, `AddressBookSubsystemConfig`, `SharedAddressBook`, `AddressBookManagerError`, `IngestReport` |
-| `src/control_sources.rs` | Plan 295 control-plane source owners: bounded redacted `LogRing` (INFO+, secret markers, 256 entries, 192 B lines) with the `tracing` layer feed, explicit `BanLedger` attesting the empty set, rolling `ControlMetrics` (O(1) tick over registered transport counters, bandwidth pair, `ssu2.*` rates, build outcomes) | `LogRing`, `LogRingLayer`, `BanLedger`, `ControlMetrics`, `MAX_LOG_RING_ENTRIES`, `MAX_LOG_LINE_BYTES`, `MAX_CONTROL_RATES` |
-| `src/service_tunnels_tls.rs` | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
-| `src/service_tunnels.rs` | M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle; Plan 309 gives each shared group one persistent/ephemeral identity, Streaming bridge, and registry owner while retaining per-service listeners and server-port dispatch; Plans 289 and 316 separate runtime cancellation from admission cancellation so per-generation removal or graceful router retirement can stop new accepts while existing connections retain their cancellation token and the committed-generation spec lookup so control-reconciled runtimes resolve without a construction-config rewrite; Plan 290 adds the composed-family dispatch (`is_connect_client`/`is_socks_irc`/`is_http_server`/`is_http_bidir`), shared `poll_streaming_accept`/`accept_server_syn`, and the server-side `ServicePumpEndpoint` direction; Plan 292 adds the pre-SYN access gate with `access_denied` counting, the per-peer deterministic source dial (`dial_server_target`) with counted `AddrNotAvailable` fallback, the 5 s idle sweeper with close/rebuild/reduce transactions, and live committed-spec readers for in-place edits; Plan 294 adds the canonical address-book step on static-alias miss (aliases win; hits decode through the existing local/remote machinery); Plan 296 adds multihoming target selection (per-connection round-robin over the committed target list with sequential failover inside the overall connect deadline, rotation counter advances only for multihomed specs) and the reply-bundling sweep (consecutive same-remote groups bundle into one reply with per-index counters, committed flag read per sweep); Plan 297 adds the `use_ssl` server TLS dial (verified TLS under the installed policy with typed counted failures and per-connection committed reads, `ServerTargetStream` plaintext/TLS union over the generic pump) | `ServiceTunnelManager`, `DestinationGroupRuntime`, `register_service_tunnel_manager`, `set_addressbook_handle` |
-| `src/service_tunnels_http.rs` | HTTP proxy executor (one loopback listener per `http-client` spec); Plan 290 adds the strict-CONNECT client executor (`run_connect_only_connection`, `run_connect_client_loop`) and the shared SOCKS version-peek negotiator reused by SOCKS-IRc; Plan 292 adds guarded-listener proxy authentication (407 challenge, verifier-only options) | HTTP executor types |
-| `src/service_tunnels_socks5.rs` | SOCKS5 executor (one loopback listener per `socks5-client` spec); Plan 290 shares the version-peek negotiator and rejection helpers with SOCKS-IRc; Plan 292 adds guarded-listener RFC 1929 authentication (`05 02` + subnegotiation, no-auth refused, SOCKS4a rejected without downgrade) | SOCKS5 executor types |
-| `src/service_tunnels_irc_client.rs` | IRC client executor (one loopback listener per `irc-client` spec); Plan 290 extends the filtered loop with `initial_inbound` for the SOCKS-to-IRC handoff | IRC client executor types |
-| `src/service_tunnels_irc_server.rs` | IRC server executor (Streaming accept loop per `irc-server` spec) | IRC server executor types |
-| `src/service_tunnels_http_server.rs` | Plan 290 filtered HTTP server executor (shared SYN accept, loopback target connect, slowloris-bounded head read, server privacy filter, paced body forward, filtered response admit, remainder relay); Plan 292 adds pre-filter presentation gating (closed helper/jump classes admit 403 `Forbidden` without touching the target) and the unique-local target dial | `HttpServerConnectionOutcome`, `run_http_server_connection`, `run_http_server_loop` |
-| `src/service_tunnels_http_bidir.rs` | Plan 290 deprecated bidirectional HTTP server (loopback proxy listener plus Streaming SYN poll under one supervisor task, one generation, one persistent public identity) | `run_http_bidir_loop` |
-| `src/service_tunnels_socks_irc.rs` | Plan 290 SOCKS+IRC composer (shared version-peek negotiation, target selection, then the IRC filtered loop with no raw bypass); Plan 292 shares the guarded-listener negotiator | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
-| `src/service_tunnels_streamr.rs` | Plan 291 Streamr subscriber/publisher executors: loopback UDP media source/target sockets, bounded subscribe cadence with terminal unsubscribe (client), authenticated subscriber table with expiry sweep and raw fanout (server), producer-bound media forwarding; Plan 292 adds the subscriber sink redirect (media to the configured sink, socket bound on the local media host) | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
-| `src/destination_streaming.rs` | Shared destination Streaming byte pump reused by SAM and service tunnels | Shared pump types |
-| `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root; extended by Plan 294 with the canonical address-book step in `NAMING LOOKUP` (session/Base32 paths precede it; inactive stays `KeyNotFound`) | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP`, `set_addressbook_handle` |
-| `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
-| `src/i2pcontrol.rs` | Plan 287 supervised loopback-default I2PControl HTTPS/JSON-RPC listener: daemon-owned TLS (managed ephemeral self-signed for loopback, explicit PEM otherwise), in-memory token table (32-byte tokens, one-day lifetime, 1024 FIFO), source-IP throttle, bounded connection/in-flight permits, sequential no-fanout batch dispatch with deferred mints, graceful `close_notify` shutdown; extended by Plan 288 with authenticated `RouterInfo`/`ClientServicesInfo` select-form dispatch over shared inspection handles; extended by Plan 289 with authenticated `TunnelManager` seven-action dispatch over installed control state; extended by Plan 294 with authenticated `AddressBook` canonical-form dispatch (one mode per request, whole-request validation, `{success, message}` results) over the installed address-book manager | `I2pControlServiceState`, `I2pControlServiceSnapshot`, `I2pControlServiceError`, `bind`, `serve`, `dispatch_body`, `ct_password_eq`, `build_tls_config`, `new_with_inspection`, `set_control_manager`, `set_addressbook_manager`, `process_router_info`, `process_client_services`, `process_tunnel_manager`, `process_addressbook` |
-| `src/i2pcontrol_inspection.rs` | Plan 288 narrow inspection handles and pure response builders: static config truth (network id, SAM/I2CP enablement/binds, startup service inventory) plus publish-gated dynamic snapshots; select-form validation with canonical ordering; per-selector serialization with whole-request gap failures; truthful service shapes (disabled is real state, BOB constant, no peer addresses); extended by Plan 294 with the six address-book getters rendering the published generation snapshot (books as hostname maps, subscriptions object, thirteen-key config map) with collection-ceiling re-checks; extended by Plan 295 with live log-ring/metrics/SSU2 cells (per-request reads, unpublished owners gap) and composition attestations for owner-less rows, plus the `network.clock_skew` neutral constant | `InspectionHandles`, `ServiceEndpoint`, `StartupServiceEntry`, `PublishedSnapshots` (via `publish_*`), `FloodfillMode`, `PublishError`, `InspectionGap`, `SelectError`, `select_router_info`, `select_client_services`, `router_info_result`, `client_service_result`, `publish_addressbook`, `publish_log_ring`, `publish_metrics`, `publish_ssu2`, `publish_bans`, `CLOCK_SKEW_NEUTRAL` |
-| `src/i2pcontrol_tunnels.rs` | Plan 289 TunnelManager control state, over the **one** shared M10 manager (ADR 0031, Plan 337). The composition root builds that manager once in `build_shared_service_manager` and injects the same `Arc` into this control state and the destination-group product, so a control-created runtime is the same runtime the product delivers and publishes through; `for_config` takes the manager rather than building one. The I2PControl service declares `depends_on("ssu2-router")`, because the graph's order is lexical and the product must prepare the manager and install the executable delivery backend before any control reconcile. Three changes are load-bearing on a shared manager: `candidate_set` carries startup-owned specs through verbatim (`reconcile` is a whole-set transactional replace, so a control-only candidate would remove every startup-owned runtime), `verify_agreement` scopes its "no extra runtime" rule to names this coordinator does not own, and `shutdown` reconciles back to the startup-only set instead of tearing the manager down. `sync_els2_materials` installs or drops the Plan 334 publication material at the end of a committed transaction and **fails the transaction closed** when a type-5 definition's identity record is unreadable, so an encrypted service is never silently downgraded to an ordinary LeaseSet2. `rollback_state` (Plan 338) reconciles the shared manager to the rolled-back candidate as well as restoring the in-memory mirror, and all five failure paths await it, so a failed transaction leaves no runtime the operator cannot see, stop, or delete. A rollback that cannot reconcile is logged, not swallowed. Startup-vs-control provenance, versioned generation store (stage/publish/pointer/recovery/retention), validate-mirror-stage-reconcile-publish-verify transaction coordinator with immediate-release drain and 5 s reconcile-back, twelve-family typed mapping (Plan 290: connectclient/socksirc/httpserver/httpbidirserver join the six M10 backends; Plan 291: streamrclient/streamrserver join over the repliable-datagram substrate), per-kind option applicability, Streamr extensions, and Plan 323 metadata/proxy-auth/HTTP request-filter owners; per-name supervisor snapshots, startup restore and disabled-mode isolation | `TunnelControlState`, `ControlStore`, `ControlDefinition`, `TunnelProvenance`, `ControlError`, `CONTROL_SCHEMA_VERSION`, `CONTROL_DRAIN_DEADLINE`, `CONTROL_ROLLBACK_DEADLINE`, `MAX_GENERATION_BYTES`, `SUPPORTED_289_OPTIONS`, `SUPPORTED_291_OPTIONS`, `SUPPORTED_323_OPTIONS`, `map_tunnel_type`, `has_plan290_backend`, `has_plan291_backend`, `build_control_spec`, `normalize_definition` |
-| `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
-| `src/sam/streams.rs` | Plan 138 + Plan 143 + Plan 144 SAM Streaming bridge (captured-outbound seam removed, Plan 129 destination stack drives live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses) | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash`, strict destination decoding |
-| `src/sam/faults.rs` | SAM fault-injection surface for adversarial tests | Fault types |
-| `src/sam/raw_stream.rs` | SAM raw STREAM mode helpers | Raw-stream types |
+### CLI and configuration
 
-The `sam/` files above are the four files in the `src/sam/` subdirectory; everything else in the table is at the crate root.
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
+| `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
+| `src/config.rs` | 4 077 | Strict versioned TOML: 21 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION` |
+| `src/lib.rs` | 1 823 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
+
+### Identity and bootstrap
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/bootstrap.rs` | 631 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
+
+> `bootstrap_daemon` itself lives in `src/lib.rs:1453`, not in `bootstrap.rs` — it is the
+> composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
+> `RouterInfoStoreConfig`, then calls `Bootstrap::run`.
+
+### NetDB, discovery, and routing seams
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/netdb_seam.rs` | 1 206 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
+| `src/netdb_tunnels.rs` | 887 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
+| `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
+| `src/inbound_dispatch.rs` | 290 | Plan 117 §9 inbound exploratory `TunnelData` dispatch; Plan 187 `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE = MAX_I2NP_PAYLOAD_SIZE` |
+| `src/destination_peers.rs` | 478 | Bounded projection and selection of validated Destination build peers from the validated RouterInfo store | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os` |
+| `src/peer_test.rs` | 417 | Plan 285 bounded I2NP peer testing: echo a `(message id, timestamp)` unchanged, match the echo against an outstanding probe, derive RTT from the supplied timestamp | `PeerTestTracker`, `PeerTestEcho`, `PeerTestOutcome`, `PeerTestError`, `MAX_OUTSTANDING_PEER_TESTS = 32`, `DEFAULT_PEER_TEST_TIMEOUT_MS = 10_000` |
+
+### Tunnels, transit, and floodfill
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/router_i2np.rs` | 1 607 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
+| `src/exploratory_build.rs` | 2 142 | Plans 185/188/314 daemon-owned short-build coordinator over `i2pr_tunnel::short::ShortBuildStateMachine`: bounded pending table (16), monotonic attempt/creator tunnel ids, one central scheduler, strict canonical OTBRM extraction, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry` | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
+| `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
+| `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
+| `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
+| `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
+
+### Destinations and the shared streaming pump
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/destination_streaming.rs` | 708 | Plan 174 **shared** daemon Streaming byte pump (`run_stream_pump`, generic over `AsyncRead + AsyncWrite` with bounded chunk, negotiated segmentation, backpressure, sibling-isolated drain, cancel/EOF/terminal convergence). Reused by SAM and every service-tunnel executor — there is no second byte pump | shared pump types |
+| `src/service_delivery.rs` | 819 | Plan 202/206 M10 production remote Destination/Streaming delivery capability: typed `RoutingDecision`, bounded `RemoteDeliveryCounters`, in-flight resolution table, and the executable `RemoteDestinationBackend` | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `RemoteDestinationBackend`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
+
+### SAM 3.1
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/sam.rs` | 3 189 | Plans 137–149 supervised loopback SAM 3.1 listener and composition root; Plan 294 canonical address-book step in `NAMING LOOKUP` (session/Base32 paths precede it; inactive stays `KeyNotFound`). `FORWARD_COPY_CHUNK = 16 * 1024` | `SamServiceState`, `SamServiceError`, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
+| `src/sam/fabric.rs` | 457 | Plan 149 localhost product fabric: OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed delivery sweep counters | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
+| `src/sam/streams.rs` | 2 038 | Plans 138/143/144 SAM Streaming bridge; Plan 129 destination stack drives the live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash` |
+| `src/sam/raw_stream.rs` | 821 | Plan 147 dedicated raw STREAM socket driver (the Plan 143 command-mode regression fix: real TCP <-> `StreamingManager` loop, CSPRNG CONNECT path) | raw-stream types |
+| `src/sam/faults.rs` | 464 | Plan 151 §8 deterministic pre-start delivery fault seam for adversarial tests (packet-level faults a TCP SAM client can never observe) | fault types |
+
+### I2CP
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/i2cp.rs` | 2 516 | Plan 167 supervised loopback I2CP v0.9.67 listener; Plan 168 bounded per-session message/data plane; Plan 169 reconfigure transaction handler + synchronous destroy drain; **Plan 171 explicit `stream.shutdown()` on the common per-connection terminal path**; Plan 170 `ReplyAndFollowup` `RequestVariableLeaseSet` | `I2cpServiceState`, `I2cpServiceError`, `I2cpServiceSnapshot`, `I2cpSessionState`, `handle_connection`, `handle_connection_inner`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `drop_connection` |
+
+### I2PControl
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/i2pcontrol.rs` | 3 449 | Plan 287 supervised loopback-default I2PControl TLS + JSON-RPC listener: daemon-owned TLS (managed ephemeral self-signed for loopback, explicit PEM otherwise), in-memory token table, source-IP throttle, bounded connection/in-flight permits, sequential no-fanout batch dispatch with deferred mints, graceful `close_notify` shutdown; extended by Plans 288/289/294 with RouterInfo, ClientServicesInfo, TunnelManager, and AddressBook dispatch | `I2pControlServiceState`, `I2pControlServiceError`, `I2pControlServiceSnapshot`, `dispatch_body`, `ct_password_eq`, `build_tls_config`, `new_with_inspection`, `set_control_manager`, `set_addressbook_manager`, `process_router_info`, `process_client_services`, `process_tunnel_manager`, `process_addressbook` |
+| `src/i2pcontrol_inspection.rs` | 2 687 | Plan 288 narrow inspection handles and pure response builders: static config truth plus publish-gated dynamic snapshots; select-form validation with canonical ordering; truthful service shapes; Plans 294/295 address-book getters, live log-ring/metrics/SSU2 cells, and composition attestations | `InspectionHandles`, `ServiceEndpoint`, `StartupServiceEntry`, `PublishedSnapshots` (`publish_*`), `FloodfillMode`, `PublishError`, `InspectionGap`, `SelectError`, `select_router_info`, `select_client_services`, `router_info_result`, `client_service_result`, `publish_addressbook`, `publish_log_ring`, `publish_metrics`, `publish_ssu2`, `publish_bans`, `MAX_INSPECTION_LIST = 1024`, `MAX_INSPECTION_STATE_STRING = 32`, `MAX_LOCAL_ROUTER_INFO_BYTES = 786_432`, `MAX_INSPECTION_HASH_STRING = 64` |
+| `src/i2pcontrol_tunnels.rs` | 7 829 | Plan 289 TunnelManager control state over the **one** shared M10 manager (ADR 0031, Plan 337). The composition root builds that manager once in `build_shared_service_manager` and injects the same `Arc` into the control state and the destination-group product, so a control-created runtime is the runtime the product delivers and publishes through. `for_config` takes the manager rather than building one. The I2PControl service declares `depends_on("ssu2-router")`. Three shared-manager changes are load-bearing: `candidate_set` carries startup-owned specs through verbatim, `verify_agreement` scopes its "no extra runtime" rule to names this coordinator does not own, and `shutdown` reconciles back to the startup-only set instead of tearing the manager down. `sync_els2_materials` installs or drops the Plan 334 publication material at the end of a committed transaction and **fails the transaction closed** when a type-5 definition's identity record is unreadable. `rollback_state` (Plan 338) reconciles the shared manager to the rolled-back candidate; all five failure paths await it, and a rollback that cannot reconcile is logged, not swallowed | tunnel control-state, versioned generation store, transaction coordinator, twelve-family typed mapping types |
+| `src/outbound_secret.rs` | 467 | **Plan 341** restart-safe outbound proxy secret owner. HKDF-SHA256 derives a ChaCha20-Poly1305 key from the router signing seed; the proxy credential is sealed under a random nonce with an associated-data frame | `OutboundSecretKey`, `RouterBoundOutboundSecrets`, `OUTBOUND_SECRET_KEY_INFO`, `OUTBOUND_SECRET_KEY_LEN = 32`, `OUTBOUND_SECRET_NONCE_LEN = 12`, `OUTBOUND_SECRET_TAG_LEN = 16` |
+
+### Address book, control sources, and NEWS
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/addressbook.rs` | 1 504 | Plan 294 canonical AddressBook runtime owner (daemon half): `[addressbook]` config, current/backup/import activation rule, transactional mutations with rollback, generation persistence, shared resolver cell, bounded refresh queue + diagnostic artifact, snapshot-artifact import, cadence worker driver | `AddressBookManager`, `AddressBookSubsystemConfig`, `SharedAddressBook`, `AddressBookManagerError`, `IngestReport`, `MAX_SNAPSHOT_ARTIFACT_BYTES = 8_000_000`, `MAX_DIAGNOSTIC_ARTIFACT_BYTES = 65_536`, `DIAGNOSTIC_ARTIFACT_RETAIN_BYTES = 32_768` |
+| `src/addressbook_fetch.rs` | 655 | Bounded content fetch over an **explicitly configured local HTTP proxy**. Its only network capability is a loopback eepProxy connect | (private module) |
+| `src/control_sources.rs` | 672 | Plan 295 control-plane source owners: bounded redacted `LogRing` (INFO+, secret markers, 256 entries, 192 B lines) with the `tracing` layer feed, explicit `BanLedger` attesting the empty set, rolling `ControlMetrics` (O(1) tick over registered transport counters, bandwidth pair, `ssu2.*` rates, build outcomes) | `LogRing`, `LogRingLayer`, `BanLedger`, `ControlMetrics`, `MAX_LOG_RING_ENTRIES`, `MAX_LOG_LINE_BYTES`, `MAX_CONTROL_RATES` |
+| `src/news.rs` | 1 401 | Signed NEWS handling (private module; not part of the public surface) | (private module) |
+
+### Service tunnels (M10)
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
+| `src/service_product.rs` | 4 063 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:895`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_els2.rs` | 859 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
+| `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
+| `src/service_lifecycle.rs` | 360 | Bounded normal-daemon Destination-group startup and retirement policy — local phase/timing only, no secrets and no routing state (private module) | (private module) |
+| `src/service_tunnels_http.rs` | 1 050 | HTTP proxy executor, one loopback listener per `http-client` spec; Plan 290 adds the strict-CONNECT client executor and the shared SOCKS version-peek negotiator; Plan 292 adds guarded-listener proxy authentication (407 challenge) | HTTP executor types |
+| `src/service_tunnels_http_server.rs` | 673 | Plan 290 filtered HTTP server executor: shared SYN accept, loopback target connect, slowloris-bounded head read, server privacy filter, paced body forward, filtered response admit, remainder relay; Plan 292 adds pre-filter presentation gating | `HttpServerConnectionOutcome`, `run_http_server_connection`, `run_http_server_loop` |
+| `src/service_tunnels_http_bidir.rs` | 212 | Plan 290 deprecated bidirectional HTTP server (loopback proxy listener plus Streaming SYN poll under one supervisor task, one generation, one persistent public identity) | `run_http_bidir_loop` |
+| `src/service_tunnels_socks5.rs` | 1 014 | SOCKS5 executor, one loopback listener per `socks5-client` spec; Plan 292 adds guarded-listener RFC 1929 authentication (`05 02`, no-auth refused, SOCKS4a rejected without downgrade) | SOCKS5 executor types |
+| `src/service_tunnels_irc_client.rs` | 521 | IRC client executor, one loopback listener per `irc-client` spec; Plan 290 extends the filtered loop with `initial_inbound` for the SOCKS-to-IRC handoff | IRC client executor types |
+| `src/service_tunnels_irc_server.rs` | 729 | IRC server executor (Streaming accept loop per `irc-server` spec): waits for `Established`, captures the peer Destination hash, runs the bounded registration interceptor under a 30 s deadline, connects under 10 s, writes the rewritten prefix + leftover exactly once, then switches to the shared pump in opaque mode | IRC server executor types |
+| `src/service_tunnels_socks_irc.rs` | 337 | Plan 290 SOCKS+IRC composer: shared version-peek negotiation, target selection, then the IRC filtered loop with no raw bypass | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
+| `src/service_tunnels_streamr.rs` | 739 | Plan 291 Streamr subscriber/publisher executors: loopback UDP media source/target sockets, bounded subscribe cadence with terminal unsubscribe, authenticated subscriber table with expiry sweep and raw fanout, producer-bound media forwarding; Plan 292 adds the subscriber sink redirect | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
+| `src/service_tunnels_tls.rs` | 428 | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
+
+---
 
 ## Public surface
 
-### Crate root (`src/lib.rs`)
-- `pub mod addressbook;`
-- `pub mod bootstrap;`
-- `pub mod cli;`
-- `pub mod config;`
-- `pub mod control_sources;`
-- `pub mod destination_streaming;`
-- `pub mod destination_tunnels;`
-- `pub mod destination_peers;`
-- `pub mod error;`
-- `pub mod i2cp;`
-- `pub mod inbound_dispatch;`
-- `pub mod netdb_seam;`
-- `pub mod netdb_tunnels;`
-- `pub mod outbound_lookup;`
-- `pub use error::DaemonError;`
-- `enum CommandOutcome`:
-  - `Validated { dry_run, config }`
-  - `IdentityGenerated { path }`
-  - `IdentityInspected { path, summary }`
-  - `RunReady { config }`
-- `struct IdentitySummary { signing_algorithm, encryption_algorithm }`.
-- `fn execute(Cli) -> Result<CommandOutcome, DaemonError>`.
-- `fn initialize_logging(&LoggingConfig)`.
-- `fn bootstrap_daemon(&Config, now_seconds, offline_reseed_path) -> Result<(BootstrapReport, Arc<Mutex<Bootstrap>>), DaemonError>`.
+### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–52`)
+
+41 `pub mod` + 3 private modules + 4 `sam/` submodules:
+
+`pub mod` — `addressbook`, `bootstrap`, `cli`, `config`, `control_sources`,
+`destination_peers`, `destination_streaming`, `destination_tunnels`, `error`,
+`exploratory_build`, `floodfill`, `i2cp`, `i2pcontrol`, `i2pcontrol_inspection`,
+`i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
+`outbound_lookup`, `outbound_secret`, `peer_test`, `router_i2np`, `sam`,
+`service_delivery`, `service_els2`, `service_generation`, `service_product`,
+`service_tunnels`, `service_tunnels_http`, `service_tunnels_http_bidir`,
+`service_tunnels_http_server`, `service_tunnels_irc_client`,
+`service_tunnels_irc_server`, `service_tunnels_socks5`, `service_tunnels_socks_irc`,
+`service_tunnels_streamr`, `service_tunnels_tls`, `transit_compose`, `transit_owner`,
+`transit_volume`, `tunnel_liveness`.
+
+Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`, `mod tests`
+(in-crate test module at `src/lib.rs:1611`).
+
+### The actual `pub use` re-exports (`src/lib.rs:54–61`)
+
+```rust
+pub use error::DaemonError;
+pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};
+pub use i2pcontrol::{I2pControlServiceError, I2pControlServiceSnapshot, I2pControlServiceState};
+pub use i2pcontrol_inspection::InspectionHandles;
+pub use netdb_seam::{
+    CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
+};
+pub use sam::{SamServiceError, SamServiceState, StreamingPools};
+```
+
+### Crate-root public items (`src/lib.rs`)
+
+- `enum CommandOutcome`: `Validated { dry_run, config }`, `IdentityGenerated { path }`,
+  `IdentityInspected { path, summary }`, `RunReady { config }`.
+- `struct IdentitySummary { signing_algorithm: u16, encryption_algorithm: u16 }`.
+- `fn execute(cli: Cli) -> Result<CommandOutcome, DaemonError>` — pure dispatch hub.
+- `fn initialize_logging(config: &config::LoggingConfig)`.
+- `fn bootstrap_daemon(&Config, now_seconds, offline_reseed_path) -> Result<(bootstrap::BootstrapReport, Arc<Mutex<bootstrap::Bootstrap>>), DaemonError>`.
 - `fn build_daemon_graph(&Config) -> Result<i2pr_runtime::ServiceGraph, DaemonError>`.
-- `async fn run_daemon(Config) -> Result<(), DaemonError>`.
+- `fn build_daemon_graph_with_inspection(...) -> Result<(i2pr_runtime::ServiceGraph, Arc<InspectionHandles>), DaemonError>`.
+- `fn build_shared_service_manager(...)` — builds the one M10 manager (Plan 337).
+- `async fn run_daemon(config: Config) -> Result<(), DaemonError>`.
 
-### `src/config.rs`
-- `enum RouterProfile { Balanced }`.
-- `enum LogFormat { Text }`.
-- `struct RouterConfig { data_dir, profile }`.
-- `struct LoggingConfig { filter, format }`.
-- `struct LimitsConfig { max_tasks, max_buffered_bytes }`.
-- `struct NetDbConfig { enabled, max_records, max_encoded_bytes, min_router_infos, min_floodfill_advertisers }`.
-- `struct ReseedConfig { enabled, max_sources, max_su3_bytes, sources }`.
-- `struct ReseedSourceConfig { signer_id, certificate_path }`.
-- `struct Config { schema_version, router, logging, limits, network, transport, netdb, reseed }`.
-- `impl Config { fn load(&Path) -> Result<Self, DaemonError>; fn parse(&str) -> Result<Self, ConfigError> }`.
-- `enum ConfigError` with `fn exit_code() -> ExitCode`.
+`ServiceGraph` is **`i2pr_runtime::ServiceGraph`** — the daemon owns no graph type of its own.
 
-### `src/error.rs`
-- `enum ExitCode #[repr(u8)]`; `fn as_i32() -> i32`.
-- `enum DaemonError` with `fn exit_code() -> ExitCode`.
+### Per-area public types
 
-## CLI surface
+- **CLI/config** — `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`,
+  `RunArgs`; the `Config` family in the layout table above; `ConfigError`.
+- **Errors** — `ExitCode` (`#[repr(u8)]`, `as_i32()`), `DaemonError` (with `exit_code()`).
+- **NetDB/routing** — `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`,
+  `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome`, `NetDbTunnelCoordinator`,
+  `OutboundLookupDispatch`, `OutboundLookupError`, `InboundDispatchOutcome`,
+  `InboundResponseKind`, `InboundDispatchError`.
+- **Tunnels/transit/floodfill** — `ExploratoryBuildCoordinator`, `TunnelLivenessScheduler`,
+  `DestinationTunnelCoordinator`, `TransitOwner`, `TransitLiveOwner<R>`,
+  `TransitParticipation`, `controlled_transit_disabled_probe`,
+  `Ssu2DaemonService`, `Ssu2DaemonHandle`, `RouterDeliveryService`, `RouterI2npOutcome`.
+- **SAM** — `SamServiceState`, `SamServiceError`, `StreamingPools` (re-exported).
+- **I2CP** — `I2cpServiceState`, `I2cpServiceError`, `I2cpServiceSnapshot` (re-exported).
+- **I2PControl** — `I2pControlServiceState`, `I2pControlServiceError`,
+  `I2pControlServiceSnapshot` (re-exported), `InspectionHandles` (re-exported),
+  `OutboundSecretKey`, `RouterBoundOutboundSecrets`.
+- **Address book/control** — `AddressBookManager`, `SharedAddressBook`,
+  `AddressBookSubsystemConfig`, `AddressBookManagerError`, `IngestReport`, `LogRing`,
+  `LogRingLayer`, `BanLedger`, `ControlMetrics`.
+- **Service tunnels** — `ServiceTunnelManager`, `ServiceTunnelManagerConfig`,
+  `ServiceTunnelSnapshot`, `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`,
+  `ServiceDestinationDelivery`, `RemoteDestinationBackend`, `RoutingDecision`,
+  `ServiceEls2Material`, `ServiceGeneration`.
+
+---
+
+## Key contracts
+
+### CLI surface (`src/cli.rs`)
 
 ```
-i2pr [--version] [--help]
+i2pr [--version] [--help] <SUBCOMMAND>
 ```
 
-About string (`cli.rs:12`): *"Experimental I2P router (NTCP2
-disabled while support is experimental)."*
-
-### Subcommands
+About string (`src/cli.rs:12`): *"Experimental I2P router (NTCP2 disabled while support is
+experimental)"*
 
 | Subcommand | Flags | Description |
 | --- | --- | --- |
 | `check-config` | `--config <PATH>` (required) | Parse and semantically validate a configuration without side effects. |
 | `identity generate` | `--config <PATH>` (required) | Generate and atomically persist a new router identity. |
 | `identity inspect` | `--config <PATH>` (required) | Load and validate the existing router identity without displaying secrets. |
-| `run` | `--config <PATH>` (required), `--dry-run` (bool) | Validate configuration and perform the future daemon startup path. |
+| `run` | `--config <PATH>` (required), `--dry-run` (bool) | Validate configuration and optionally start the router runtime. |
 
-All `--config` arguments are `#[arg(long)]`. **No positional
-arguments, no default config path** — operator intent is always
-explicit.
+All `--config` arguments are `#[arg(long)]`. **No positional arguments and no default config
+path** — operator intent is always explicit.
+
+### Strict configuration posture (`src/config.rs`)
+
+- `deny_unknown_fields` appears **21** times — every `Raw*` struct rejects unknown keys.
+- `CURRENT_SCHEMA_VERSION: u64 = 1` (`src/config.rs:13`) and the check is **`!=`**, not `>=`:
+  any other value is `ConfigError::UnsupportedSchemaVersion { actual }` (exit 11). Schema
+  migration requires a binary update first.
+- `Config::parse` is pure text-in/no-I/O and leaves `source_path: None`;
+  `Config::load` records the path as provenance only.
+- `Config` fields: `source_path`, `schema_version`, `router`, `logging`, `limits`, `network`,
+  `transport`, `netdb`, `reseed`, `news`, `sam`, `ssu2`, `i2cp`, `i2pcontrol`,
+  `service_tunnels`, `addressbook`, `floodfill`.
+- `RouterProfile` has exactly one variant (`Balanced`); any other profile string is rejected.
+  `LogFormat` has exactly one variant (`Text`).
 
 ### Defaults baked into config parsing
 
-| Field | Default |
-| --- | --- |
-| `router.profile` | `"balanced"` |
-| `logging.filter` | `"info"` |
-| `logging.format` | `"text"` |
-| `limits.max_tasks` | `4_096` |
-| `limits.max_buffered_bytes` | `67_108_864` (64 MiB) |
-| `netdb.enabled` | `true` |
-| `netdb.max_records` | `4_096` |
-| `netdb.max_encoded_bytes` | `4 MiB` |
-| `netdb.min_router_infos` | `50` |
-| `netdb.min_floodfill_advertisers` | `5` |
-| `reseed.enabled` | `false` |
-| `reseed.max_sources` | `4` |
-| `reseed.max_su3_bytes` | `8 MiB` |
+| Field | Default | Source |
+| --- | --- | --- |
+| `router.profile` | `"balanced"` | `default_profile` (686) |
+| `logging.filter` | `"info"` | `default_filter` (690) |
+| `logging.format` | `"text"` | `default_log_format` (694) |
+| `limits.max_tasks` | `4_096` | `DEFAULT_MAX_TASKS` (15) |
+| `limits.max_buffered_bytes` | `67_108_864` (64 MiB) | `DEFAULT_MAX_BUFFERED_BYTES` (17) |
+| `network.bind_address` | `"0.0.0.0"` | `default_bind_address` (706) |
+| `network.listen_port` | `9150` | `default_listen_port` (710) |
+| `network.network_id` | `2` | `default_network_id` (714) |
+| `ntcp2.enabled` | `false` | `default_ntcp2_enabled` (718) |
+| `netdb.enabled` | `true` | `default_netdb_enabled` (762) |
+| `netdb.max_records` | `4_096` | (766) |
+| `netdb.max_encoded_bytes` | `4 MiB` | (770) |
+| `netdb.min_router_infos` | `50` | (774) |
+| `netdb.min_floodfill_advertisers` | `5` | (778) |
+| `reseed.enabled` | `false` | `default_reseed_enabled` (782) |
+| `reseed.max_sources` | `4` | (786) |
+| `reseed.max_su3_bytes` | `8 MiB` | (790) |
+| `news.enabled` | `false` | `RawNewsConfig::default` (649) |
+| `news.proxy_port` | `4444` | (794) |
+| `news.max_su3_bytes` | `8 MiB` | (798) |
+| `news.refresh_interval_secs` | `21_600` (6 h) | (802) |
+| `sam.enabled` | `false` | `default_sam_enabled` (810) |
+| `sam.bind_address` | `"127.0.0.1"` | (812) |
+| `sam.port` | `7656` | (814) |
+| `sam.max_clients` | `16` | (816) |
+| `sam.max_sessions` | `16` | (818) |
+| `sam.max_stream_sockets_per_session` | `16` | (820) |
+| `sam.max_pending_accepts_per_session` | `16` | (822) |
+| `sam.max_buffered_bytes_per_stream_direction` | `64 KiB` | (824) |
+| `sam.hello_timeout_ms` | `10_000` | (826) |
+| `sam.command_timeout_ms` | `60_000` | (828) |
+| `ssu2.enabled` | `false` | (941) |
+| `ssu2.bind_ipv4` | `"127.0.0.1"` | (955) |
+| `ssu2.bind_ipv6` | `""` (unset) | (961) |
+| `i2cp.enabled` | `false` | (874) |
+| `i2cp.bind_address` | `"127.0.0.1"` | (876) |
+| `i2pcontrol.enabled` | `false` | (916) |
+| `i2pcontrol.bind_address` | `"127.0.0.1"` | (918) |
+| `service_tunnels.enabled` | `false` | (1039) |
+| `service_tunnels.max_active_connections` | `128` | (1047) |
+| `addressbook.enabled` | `false` | (1055) |
+| `floodfill.enabled` | `false` | (1063) |
 
-### Stable exit codes
+**Loopback-only and disabled-by-default posture.** `[sam]`, `[i2cp]`, `[i2pcontrol]`,
+`[service_tunnels]`, `[ssu2]`, `[addressbook]`, and `[floodfill]` all default to
+`enabled = false` with a loopback `bind_address`. For I2PControl, TLS covers loopback
+identities only (managed ephemeral self-signed); any non-loopback bind requires explicit
+operator-owned certificate and private key, and there is **no plaintext fallback**
+(`src/config.rs:327–332`). `I2pControlConfig::is_loopback_bind()` (1177) is the gate.
+`I2cpConfig::loopback_test_profile()` (1114) is the loopback-only integration-test profile;
+non-loopback bind is rejected fail-closed.
+
+### Configuration hard caps (`src/config.rs`)
+
+`MAX_ALLOWED_TASKS = 1_000_000`, `MAX_ALLOWED_BUFFERED_BYTES = 1 << 40`,
+`MAX_ALLOWED_DURATION_SECS = 3_600`, `MAX_ALLOWED_PREFIX_IPV4 = 32`,
+`MAX_ALLOWED_PREFIX_IPV6 = 128`, `MAX_ALLOWED_NETDB_RECORDS = 65_536`,
+`MAX_ALLOWED_NETDB_ENCODED_BYTES = 64 MiB`, `MAX_ALLOWED_RESEED_SOURCES = 16`,
+`MAX_ALLOWED_RESEED_BYTES = 16 MiB`, `MAX_ALLOWED_BOOTSTRAP_RECORDS = 65_536`.
+
+### Stable exit codes (`src/error.rs`)
 
 | Code | Name | When |
 | --- | --- | --- |
 | 0 | `Success` | Command completed. |
 | 10 | `ConfigUnavailable` | Config file could not be read. |
-| 11 | `ConfigParse` | Invalid TOML or unsupported schema. |
+| 11 | `ConfigParse` | Invalid TOML or unsupported schema version. |
 | 12 | `ConfigSemantic` | Syntactically valid but semantically invalid. |
-| 20 | `RuntimeNotImplemented` | `run` without `--dry-run`. |
+| 20 | `RuntimeNotImplemented` | Reserved runtime path not implemented. |
 | 30 | `IdentityStorage` | Identity persistence failure. |
 | 31 | `IdentityCrypto` | Identity generation failure. |
 | 40 | `RuntimeBindFailed` | TCP listener could not bind. |
 | 41 | `RuntimeIdentity` | Router identity not found/invalid. |
 | 42 | `RuntimeListenerFailed` | Listener accept loop failed. |
 | 43 | `RuntimeDialFailed` | Outbound connection failed. |
-| 44 | `RuntimeHandshakeFailed` | NTCP2 Noise handshake failed. |
+| 44 | `RuntimeHandshakeFailed` | Transport handshake failed. |
 | 45 | `RuntimeShutdownTimeout` | Supervised shutdown exceeded deadline. |
-| 46 | `RuntimeSupervisorFailed` | Child task crashed and supervisor terminated. |
+| 46 | `RuntimeSupervisorFailed` | Child task crashed and the supervisor terminated. |
 | 47 | `RuntimeBootstrap` | Bootstrap pipeline failed. |
 | 70 | `Internal` | Unexpected internal failure. |
 
-`clap`'s own usage errors produce exit code **2**.
+`clap`'s own usage errors produce exit code **2**. `DaemonError` variants:
+`ConfigUnavailable { path, source }`, `Config(ConfigError)`, `RuntimeNotImplemented`,
+`IdentityStorage(StorageError)`, `IdentityCrypto(CryptoError)`, `RuntimeIdentity(String)`,
+`RuntimeBindFailed(io::Error)`, `RuntimeListenerFailed(String)`,
+`RuntimeDialFailed(String)`, `RuntimeHandshakeFailed(String)`,
+`RuntimeShutdownTimeout`, `RuntimeSupervisorFailed(String)`, `RuntimeBootstrap(String)`,
+`Internal`. `ConfigError` variants: `Parse(toml::de::Error)`,
+`UnsupportedSchemaVersion { actual }`, `Semantic { .. }`.
 
-## Composition step
-
-`execute(cli: Cli) -> Result<CommandOutcome, DaemonError>` is the
-pure dispatch hub (`lib.rs`):
+### `bootstrap_daemon` (`src/lib.rs:1453`) — ordered startup
 
 ```
-execute(cli: Cli) -> Result<CommandOutcome, DaemonError>
+bootstrap_daemon(&Config, now_seconds, offline_reseed_path)
 │
-├─ Command::CheckConfig
-│    ├─ Config::load(path)
-│    └─ return Validated { config }    // no side effects
-│
-├─ Command::Identity::Generate
-│    ├─ Config::load(path)
-│    ├─ IdentityStore::prepare_directory(data_dir)
-│    ├─ IdentityStore::in_data_dir(data_dir)
-│    ├─ OsRng                          // from i2pr-crypto
-│    ├─ RouterIdentityBundle::generate(&mut rng)
-│    └─ store.save_new(&bundle)        // atomic write
-│
-├─ Command::Identity::Inspect
-│    ├─ Config::load(path)
-│    ├─ IdentityStore::in_data_dir(data_dir)
-│    ├─ store.load()
-│    └─ return IdentityInspected { path, summary }   // no secrets
-│
-└─ Command::Run
-     ├─ Config::load(path)
-     ├─ if dry_run → return Validated { config }
-     └─ return RunReady { config }     // run_daemon called by main
+├─ IdentityStore::in_data_dir(config.router.data_dir).load()      // 1. identity
+│    └─ fail closed -> DaemonError::RuntimeIdentity
+├─ LocalRouterInfoBuilder::new(&bundle)
+├─ RouterInfoStoreConfig::new(netdb.max_records, netdb.max_encoded_bytes)
+├─ Bootstrap::new(store_config, config.reseed.clone())
+│    [+.with_offline_reseed_path(path) when supplied]
+├─ BootstrapPolicy::from_config(&config)
+└─ Bootstrap::run(data_dir, &builder, policy, now_seconds)        // 2..5
+     ├─ revalidate the persistent RouterInfo cache
+     ├─ construct + self-validate the local RouterInfo
+     ├─ recompute bootstrap readiness
+     └─ at most ONE bounded reseed attempt when reseed.enabled
+          └─ fail closed -> DaemonError::RuntimeBootstrap
 ```
 
-`run_daemon(config)` (`lib.rs`) is the real daemon path:
+The function **never opens sockets, never performs DNS, and never contacts I2P peers**. The
+offline SU3 bundle is the only allowlisted acquisition path; HTTPS reseed is deferred. It
+returns both the sanitized `BootstrapReport` and an `Arc<Mutex<Bootstrap>>` so long-lived
+runtime adapters can observe the in-memory store without re-running a pipeline stage.
+`BootstrapState` is a bounded seven-variant enum: `Empty`, `CacheSufficient`,
+`ReseedRequired`, `Reseeding`, `ReadyForNetworkIntegration`, `DegradedInsufficientPeers`,
+`Failed`.
 
-1. Compute current wall-clock seconds.
-2. Run `bootstrap_daemon(&config, now_seconds, None)`:
-   a. load persistent router identity from `data_dir`;
-   b. construct the NetDB store and bootstrap state;
-   c. revalidate the persistent RouterInfo cache through
-      `CacheLoader::load_into`;
-   d. construct and self-validate the local RouterInfo;
-   e. recompute bootstrap readiness;
-   f. if reseed is enabled and the cache is below threshold, run
-      the bounded offline reseed pipeline;
-   g. return a sanitized `BootstrapReport`.
-3. Build the service graph via `build_daemon_graph(&config)`.
-4. Create the `Supervisor` with the graph.
-5. Run the supervisor alongside the signal owner. The first signal starts
-   Plan 316 group retirement when groups are active; startup-time signals and a
-   second signal request immediate supervisor shutdown.
-6. Keep the normal SSU2 owner active through the bounded service-group drain,
-   then cancel the supervisor and join its service scopes.
+### Composition (`src/lib.rs`)
 
-NTCP2 is excluded from the service graph under current authority.
-The graph contains a `lifecycle` service that observes supervisor
-cancellation and a `netdb-bootstrap` service that observes the same
-token. The signal owner lives in `run_daemon` so it can wait for service
-retirement before cancelling that token.
+`execute(cli)` is the pure dispatch hub: `CheckConfig` -> `Config::load` -> `Validated` (no
+side effects); `Identity::Generate` -> `OsRng` -> `RouterIdentityBundle::generate` ->
+`store.save_new` (atomic); `Identity::Inspect` -> `store.load` -> `IdentityInspected` (no
+secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }`).
 
-`bootstrap_daemon(&config, now_seconds, offline_reseed_path)` is
-the Plan 106 synchronous pipeline. The function returns both the
-sanitized `BootstrapReport` and an `Arc<Mutex<Bootstrap>>` so future
-long-lived runtime adapters can observe the in-memory store
-without re-running any pipeline stage.
+`run_daemon(config)` (`src/lib.rs:1482`) is the real daemon path:
 
-`build_daemon_graph(&Config)` (`lib.rs`) is the testable seam
-that builds the service graph without running the supervisor.
-It rejects `ntcp2.enabled = true` as a defense-in-depth check.
+1. Compute wall-clock seconds.
+2. Run `bootstrap_daemon(&config, now_seconds, None)`.
+3. Build one `InspectionHandles` from config and one `ServiceLifecycleController`.
+4. Build the service graph via `build_daemon_graph_inner` (Plan 288 shares one
+   `InspectionHandles` across the SAM/I2CP/I2PControl factories; Plan 295 installs the log
+   ring, metrics, ban ledger, and static attestations; the SSU2 factory publishes its runtime
+   service).
+5. Publish the local RouterInfo base64 through `MAX_LOCAL_ROUTER_INFO_BYTES`.
+6. Create the `Supervisor` with the graph, run it alongside the signal owner, then keep the
+   normal SSU2 owner active through the bounded service-group drain before cancelling the
+   supervisor and joining its scopes.
 
-`main()` (`main.rs`) is the outermost shell:
+`main()` (`src/main.rs`) is the outermost shell: `Cli::parse()`, `execute(cli)`, and on
+`RunReady` `i2pr_runtime::run_blocking(i2pr_daemon::run_daemon(config))` — the binary is
+**not** synchronous; it hands an `async fn` to the runtime owner.
 
-1. `Cli::parse()`.
-2. `i2pr_daemon::execute(cli)`.
-3. On `Validated`: `initialize_logging(&config.logging)`,
-   print success.
-4. On `RunReady`: `initialize_logging`, `run_daemon(config)`,
-   print result.
-5. On `IdentityGenerated` / `IdentityInspected`: print the result.
-6. On `Err`: print to stderr, exit with the mapped code.
+`ServiceProduct` has exactly **one** `pub` entry point, `ServiceProduct::start`
+(`src/service_product.rs:895`); `ServiceProduct::start_over_existing_daemon` is
+`pub(crate)`, the normal-daemon adapter that reuses an already-running SSU2 owner. Build the
+one shared `ServiceTunnelManager` with `build_shared_service_manager` (Plan 337) and inject
+the same `Arc` into both the control state and the destination-group product.
 
-`initialize_logging()` (`lib.rs`) builds a
-`tracing_subscriber::EnvFilter` from the config filter string and
-calls `try_init()` — duplicate init is silently ignored for test
-embedding.
+### `NetDbSeam` and the reply-path flip (`src/netdb_seam.rs`)
 
-### Plan 106 bootstrap state machine (`src/bootstrap.rs`)
+`path_status()` returns `ExploratoryPathStatus::Available` when the injected
+`i2pr_netdb::ReplyPathProvider` reports at least one valid inbound tunnel, and
+`BlockedExploratoryTunnelUnavailable` otherwise. `set_reply_path_provider` accepts any
+`Box<dyn ReplyPathProvider>`; the production wiring is the
+`i2pr_tunnel::ExploratoryPoolReplyPathProvider` adapter installed when a registered inbound
+exploratory tunnel activates. **A peer transport link is not a complete reply path.**
 
-`bootstrap_daemon` owns the Plan 106 bounded startup/readiness
-pipeline. It composes the Plan 103/104/105 surfaces
-(`RouterInfoStore`, `LocalRouterInfoBuilder`,
-`ReseedSignerTrustSet`) without owning a runtime, sockets, or
-tunnels.
+`composition_outcome_with_registry` derives the readiness outcome from the real
+`DataPlaneRegistry` state at the supplied deterministic time; the legacy caller-set readiness
+bits are deprecated. `CompositionOutcome` is the bounded vocabulary
+(`NeedInboundExploratory`, `NeedOutboundExploratory`, `LookupReadyForTunnelDispatch`,
+`NoEligibleCandidates`).
 
-`BootstrapState` is a bounded seven-variant enum
-(`Empty`, `CacheSufficient`, `ReseedRequired`, `Reseeding`,
-`ReadyForNetworkIntegration`, `DegradedInsufficientPeers`,
-`Failed`). `BootstrapPolicy::from_config` derives the readiness
-thresholds from the validated `Config`.
+Plan 122 adds a **separate** LeaseSet2 reply-path provider so Plan 117 router-side
+exploration is not consulted for destination lookups: `begin_lease_set2_lookup`,
+`advance_lease_set2_after_path`, `ingest_lease_set2_response`, `ingest_lease_set2_store`,
+`lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, `active_lease_set2_lookup`.
 
-The pipeline never opens sockets, never performs DNS, never
-contacts I2P peers, and never accepts plain HTTP bytes. The
-HTTPS reseed adapter is deferred to a future plan; the offline
-SU3 source path is the only allowlisted Plan 106 acquisition
-path.
+### Outbound/inbound composition roles
 
-### Plan 106/107 runtime seam (`src/netdb_seam.rs`)
+`OutboundGatewayRole` and `LocalInboundEndpointRole` are **not** daemon types — they are
+defined in `i2pr_tunnel::roles`. The daemon composes them:
+`outbound_lookup.rs` drives `OutboundGatewayRole::forward_cells` against a `Router`-delivery
+`TunnelPayloadHeader` and packages the resulting `TunnelData` cells as complete
+short-transport I2NP messages addressed to the outbound first hop;
+`inbound_dispatch.rs` routes one `TunnelDataMessage` by `tunnel_id` to the activated
+`LocalInboundEndpointRole` in the `i2pr_tunnel::DataPlaneRegistry`, decodes the recovered
+standard I2NP envelope exactly once through `i2pr-proto`, and supports only `DatabaseStore`,
+`DatabaseSearchReply`, and `DeliveryStatus` bodies. Unknown tunnel ids fail closed without
+allocating role state.
 
-`NetDbSeam` exposes the Plan 105 lookup state machines behind a
-stable runtime-facing surface. `path_status()` returns
-`ExploratoryPathStatus::Available` when an injected
-`i2pr_netdb::ReplyPathProvider` reports at least one valid inbound
-tunnel, and `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`
-otherwise. `set_reply_path_provider` accepts any `Box<dyn
-ReplyPathProvider>`; the production wiring is the
-`i2pr_tunnel::ExploratoryPoolReplyPathProvider` adapter. A peer
-transport link is not equivalent to a complete reply path.
+### `router_i2np.rs` — the controlled `ssu2-router` service
 
-### Plan 117 composition state machine (`src/netdb_seam.rs`)
+`Ssu2DaemonService` runs under `SSU2_SERVICE_NAME = "ssu2-router"` supervision
+(`src/lib.rs:597`) and is the **only** inbound entry point for authenticated router I2NP.
+`dispatch_router_i2np(inbound: &i2pr_runtime::Ssu2InboundI2np, now_ms: u64)`
+(`src/router_i2np.rs:354`) is the single dispatch seam; it takes its input from the runtime
+SSU2 session owner, so an inbound body only reaches it after the runtime has authenticated
+the peer session. The dispatcher returns one of exactly four `RouterI2npOutcome` variants —
+`TunnelBuildReserved { .. }`, `PeerTest { .. }`, `TunnelData { .. }`,
+`RouterControl { .. }` — or `Unsupported { .. }` for a body kind it will not touch, and
+fails closed on `RouterI2npError::Empty` / `TooLarge` before any decode
+(`src/router_i2np.rs:471`, `474`). `dispatch_router_i2np_with_transit_bodies` (387) is the
+same seam plus the bounded `TransitInboundBodies` extraction, and
+`controlled_transit_disabled_probe` gates the transit-shaped path. `RouterDeliveryService`
+is the narrow outbound seam over the existing `send_i2np` path.
 
-Plan 117 §7.2–7.3 replaces the Plan 107/108 post-path placeholder
-with the live composition root. After `accept_reply_path` succeeds,
-`advance_after_path` drives the lookup state machine through
-`RouterInfoLookup::handle_pending_after_path` and emits the next
-typed `LookupAction::SendDatabaselookup` so the runtime adapter
-never has to reach into private fields. The seam exposes the
-bounded `CompositionOutcome` vocabulary
-(`NeedInboundExploratory`, `NeedOutboundExploratory`,
-`LookupReadyForTunnelDispatch`, `NoEligibleCandidates`) so the
-runtime scheduler can request the right exploratory build at every
-step. The
-[`composition_outcome_with_registry`](../daemon/src/netdb_seam.rs)
-helper derives the readiness outcome from the real
-`DataPlaneRegistry` state at the supplied deterministic time; the
-legacy caller-set readiness bits are deprecated.
+The service **is** registered in the production graph: `src/lib.rs:1104` constructs
+`Ssu2DaemonService::new(&ssu2_config, identity)` when `[ssu2] enabled = true`, and the whole
+block fails closed (`ServiceResult::Failed` with `InvalidState`) when the SSU2 service has no
+loopback bind. Activation is therefore opt-in through configuration, **default off**
+(`default_ssu2_enabled() == false`), and publication stays pq-free and non-advertised.
+Java `pq=4,3` remains parser-tolerance only.
 
-### Plan 117 outbound composition (`src/outbound_lookup.rs`)
+### M11 transit (Plan 268) — do not over-claim
 
-The outbound composition root wraps a typed `DatabaseLookupMessage`
-or `DatabaseStoreMessage` in the standard I2NP envelope through
-`i2pr-proto`, drives `OutboundGatewayRole::forward_cells` against a
-`Router`-delivery `TunnelPayloadHeader`, and packages the resulting
-`TunnelData` cells as complete short-transport I2NP messages
-addressed to the outbound first hop. The Plan 117 corrective
-closure ([`plans/closure/exploratory-tunnels/117-corrective-closure.md`](../../plans/closure/exploratory-tunnels/117-corrective-closure.md))
-corrected two bugs: the ROUTER delivery target was the lookup key
-rather than the selected floodfill peer, and the raw 1028-byte
-`TunnelData` body was being placed directly in `EncodedI2npMessage`
-instead of being wrapped in a complete short-transport I2NP
-envelope. No hand-built STBM, no second I2NP codec, no direct
-transport-to-floodfill fallback. The composition hard-ceilings are
-`MAX_OUTBOUND_LOOKUP_CELLS` and `MAX_OUTBOUND_PUBLICATION_CELLS`.
+Plan 268 passed a **ONE-FAMILY experimental qualification** with exact-head CI
+(`plans/closure/transit-tunnels/268-status.md`:
+`passed-m11-receipt-family-three-completions-zero-semantic-failures-path-divergence-falsified-exact-head-ci-green`).
+**Public transit participation remains DISABLED, NON-ADVERTISED, and UNCLAIMED** (ADR
+[`0026`](../../docs/adr/0026-staged-interoperability-progression-and-java-debt.md)).
+`TransitParticipation::Disabled` is the enforced product posture and owns no counters;
+`TransitParticipation::Enabled(Arc<Mutex<TransitVolumeCounters>>)` exists only for the
+controlled qualification lane. The honest product baseline for the three Proposal 170
+transit selectors is `0` / `0` / `0.0`. Plan 340 closed ownership of
+`total.transit.bytes`, `bw.transit.15s`, and `tunnels.shareratio` as a
+participation-posture change, not as missing snapshots.
 
-### Plan 117 inbound dispatch (`src/inbound_dispatch.rs`)
+### M12 floodfill (Plans 270–283, 302–303, 306)
 
-The inbound dispatch helper routes one `TunnelDataMessage` by
-`tunnel_id` to the activated `LocalInboundEndpointRole` in the
-`i2pr_tunnel::DataPlaneRegistry`, decodes the recovered standard
-I2NP envelope exactly once through the existing `i2pr-proto`
-decoder, and supports only `DatabaseStore`, `DatabaseSearchReply`,
-and `DeliveryStatus` body kinds. Unknown tunnel ids fail closed
-without allocating role state. The recovered envelope ceiling is
-`MAX_RECOVERED_ENVELOPE`. `route_databasestore` and
-`route_database_search_reply` drive the Plan 105 ingestion
-helpers.
+`floodfill.rs` retains coordinator resource leases through effect completion, constructs
+fresh bounded I2NP envelopes, and routes Store acknowledgements and direct/tunnel lookup
+replies using the supplied reply route. Tunnel replies are exactly one Garlic body nested
+in one `TunnelGateway`. Direct replication sends a zero-token `DatabaseStore` only to its
+selected peer. `run_floodfill_owner` supplies one bounded ingress, maintenance, and
+effect-drain future with per-effect outcome accounting, a bounded cancel-drain, and a stats
+return. `activate_controlled` / `withdraw_controlled` are the only composition sites the M12
+guard permits: explicit-bind recording -> publication material -> eligibility -> activation
+-> `caps=f` install -> publish, with failure rollback to the previous non-`f` bytes and
+health-loss withdrawal (Draining -> same-address non-`f` reinstall -> bounded drain ->
+Disabled). The production SSU2 service graph does not start `run_floodfill_owner`.
+**Daemon role lifecycle, qualification, and all floodfill advertisement remain
+unimplemented/unclaimed** ([ADR
+`0027`](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)).
 
-### Plan 117 status
+> **Broken-script note (verified, not fixed).** `scripts/check-m12-floodfill-boundaries.sh`
+> **exits 1 on repo head.** Line 17 greps `crates/i2pr-netdb` for
+> `DatabaseStoreData::EncryptedLeaseSet|ValidatedEncryptedLeaseSet|ServerEncryptedLeaseSet`
+> — the Plan 281 type-5 deferral guard — and that pattern now legitimately matches, because
+> Plans 332/333/334 populated the type-5 Encrypted LeaseSet2 floor in NetDB storage
+> (`i2pr-netdb/src/els2.rs`, `lookup_engine.rs:523`, `floodfill_service.rs:739`,
+> `server_store.rs:31`, `store_message.rs:84`). The script is in **neither** `AGENTS.md`'s
+> routine floor **nor** `.github/workflows/ci.yml`, so the failure is invisible to CI. This
+> is a script lag, not a source violation. Do not weaken the script and do not "fix" it by
+> removing type-5 from NetDB.
 
-Plan 117 closed per Plan 118 as
-`closed-for-progression-with-evidence-gap`. The all-i2pr Phase G
-production-seam trajectory remains passed: it drives real
-`EstablishedMaterial` through the canonical `TunnelEntry` /
-`EstablishedTunnel` pool and exercises lookup success, wrong-target
-rejection, `DatabaseSearchReply` iteration, and publication. The
-historical Phase H Emissary parser result remains
-`passed-emissary-wire-format-compatibility` at
-`h_emissary_database_lookup_parsed` against pinned Emissary
-revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
-(`emissary-core 0.4.0`).
+### SAM and I2CP listeners
 
-The corrected native test now belongs to `emissary-core`'s own
-`#[cfg(test)]` build and reaches native OBEP admission plus reply
-AEAD opening, but strict i2pr reply Mapping decoding rejects the
-pinned reference's request-prefixed reply plaintext. Native
-publication, lookup, and inbound return evidence is not claimed;
-the reference-side defect is localized to the pinned Emissary
-revision, and no upstream correction is available. See
-[`plans/closure/exploratory-tunnels/117-status.md`](../../plans/closure/exploratory-tunnels/117-status.md) and the Plan 118
-disposition in
+Both are loopback listeners with supervised admission and explicit per-connection ceilings
+(`sam.max_clients = 16`, `sam.max_sessions = 16`, `sam.max_stream_sockets_per_session = 16`,
+`sam.max_pending_accepts_per_session = 16`; `MAX_I2CP_CLIENTS = 256`,
+`MAX_I2CP_SESSIONS_PER_CONNECTION = 16`, `MAX_I2CP_SESSIONS_ROUTER = 256`,
+`MAX_I2CP_BUFFERED_BYTES_PER_CONNECTION = 1 MiB`,
+`MAX_I2CP_PENDING_WRITES_PER_CONNECTION = 4_096`). Both reuse the **shared**
+`destination_streaming` byte pump; there is no second pump.
 
-### Plan 122 LeaseSet2 lookup seam (`src/netdb_seam.rs`)
+**I2CP pre-session reject path ordering (verified).** `handle_connection`
+(`src/i2cp.rs:1109`) performs the terminal close in this exact order:
 
-Plan 122 extends the daemon `NetDbSeam` with a dedicated LeaseSet2
-lookup state machine and a separate reply-path provider so Plan 117
-router-side exploration is not consulted for destination lookups. The
-seam exposes `begin_lease_set2_lookup`, `advance_lease_set2_after_path`,
-`ingest_lease_set2_response`, `ingest_lease_set2_store`,
-`lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, and
-`active_lease_set2_lookup`. The typed errors live in `NetDbSeamError`
-and the typed ingestion results in `LeaseSet2ResponseOutcome`. Both
-are re-exported from the daemon crate root (`lib.rs:18–20`). The
-local Plan 122 deterministic composition reaches a `Complete` outcome
-immediately when no floodfill candidate exists, surfacing the
-typed terminal result rather than a stuck pending state.
-[`plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md).
-Phase I authenticated transport remains
-`deferred-host-lane-unavailable` on this host and is tracked
-separately under the external acceptance debt ledger in
-[`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md).
+```rust
+let _ = stream.shutdown().await;      // src/i2cp.rs:1136
+state.teardown_connection(connection_id); // src/i2cp.rs:1137
+state.drop_connection(connection_id);     // src/i2cp.rs:1138
+```
 
-Plan 119 closed as `passed-leaseset2-protocol-foundation` per
-[`plans/closure/destination-streaming/119-status.md`](../../plans/closure/destination-streaming/119-status.md); the ordinary
-online-signed published Standard LeaseSet2 carrier is wired into
-`i2pr-proto` and `i2pr-netdb`. Plan 120 closed as
-`passed-destination-lifecycle-and-pools` and lands the first
-`i2pr-client` destination runtime. Plan 121 closed as
-`passed-ecies-destination-session-layer` and adds the ECIES-X25519-
-AEAD-Ratchet destination session layer in `i2pr-client` (with the
-primitive audit, wrapped primitives in `i2pr-crypto`, and the
-bounded structural Garlic payload block codec in `i2pr-proto`).
-Plan 122 closed as `passed-corrected-local-destination-routing` per
-[`plans/closure/destination-streaming/122-status.md`](../../plans/closure/destination-streaming/122-status.md) and
-[`plans/closure/destination-streaming/124-status.md`](../../plans/closure/destination-streaming/124-status.md); it composes the
-Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime,
-the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane
-into the first complete local destination routing pipeline. Plan 124
-closed as `passed-plan122-corrective-closure` and corrected the
-Plan 122 composition defect where `compose_outbound_delivery`
-retained an ECIES Garlic envelope but fed the plaintext inner I2NP
-`Data` envelope into the outbound tunnel role. The corrected
-composition wraps the encrypted envelope in an `I2npBody::Garlic`
-carrier and feeds the standard-encoded I2NP Garlic message bytes
-into the outbound tunnel data plane; `OutboundDeliveryPlan` exposes
-`garlic_i2np_bytes: Vec<u8>` as the canonical carrier. Milestone 6
-subsequently closed through the Plans 126–130 corrective sequence;
-Plan 129's integrated gate is `superseded-by-plan130-final-gate` and
-Plan 130 closed as
-`passed-milestone6-final-wire-runtime-corrective-closure`
-([`plans/closure/destination-streaming/130-status.md`](../../plans/closure/destination-streaming/130-status.md)); the next product
-layer is SAM baseline planning (Milestone 7). Plan 137 closed
-the SAM 3.1 loopback server and session lifecycle as
-`passed-m7-sam31-loopback-server-session-lifecycle`
-([`plans/closure/sam/137-status.md`](../../plans/closure/sam/137-status.md)); Plan 138 closed
-the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
-`passed-m7-sam31-stream-connect-accept-bridge`
- ([`plans/closure/sam/138-status.md`](../../plans/closure/sam/138-status.md)); Plan 139 closes
-the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
-`passed-m7-sam31-forward-naming-hardening`
- ([`plans/closure/sam/139-status.md`](../../plans/closure/sam/139-status.md)); Plan 149 then
-closed the self-composed localhost STREAM product. Plan 150 retains the
-localhost independent-client core evidence; Plan 151 passed the final
-Milestone 7 SAM acceptance and Plan 152 is the retained narrow M6
-corrective underneath it (see [`plans/closure/sam/151-status.md`](../../plans/closure/sam/151-status.md)
-and [`plans/closure/sam/152-status.md`](../../plans/closure/sam/152-status.md)). Plan 153 is the
-active post-M7 authority/CI hygiene pass. The retained external-client
-pins and build lane are documented in
-[`tests/integration/sam/README.md`](../../tests/integration/sam/README.md).
+`stream.shutdown()` is awaited **before** any bookkeeping, so every terminal pre-session
+rejection terminates TCP deterministically instead of relying on `TcpStream` drop timing. A
+shutdown failure never blocks cleanup (`let _ =`), and no frame is written for an invalid
+first byte. The `wrong_protocol_byte_is_closed` row is **strict** — a timeout is a failure,
+not a pass — and it has a non-paused `wrong_protocol_byte_is_closed_real_time` companion with
+24-iteration baselines. Never revert to drop-timing.
 
-### Which crates are wired in today
+### I2PControl listener stack
 
-| Subsystem | Crate |
-| --- | --- |
-| Crypto (`OsRng`, `RouterIdentityBundle`) | `i2pr-crypto` |
-| Storage (`IdentityStore`, `ByteCache`) | `i2pr-storage` |
-| NetDB (`RouterInfoStore`, `ValidatedRouterInfo`, `LocalRouterInfoBuilder`, lookup state machines, `ReplyPathProvider`) | `i2pr-netdb` |
-| NetDB composition (`CacheLoader`, `ReseedIngestor`) | `i2pr-netdb-persist` |
-| Tunnel substrate (`ExploratoryPool`, `BuildRecordLayout`, `BuildCryptography` seam, `ExploratoryPoolReplyPathProvider`, `ShortBuildI2npBridge`, `DataPlaneRegistry`, `OutboundGatewayRole`, `LocalInboundEndpointRole`) | `i2pr-tunnel` |
-| Runtime (supervisor, service graph, lifecycle) | `i2pr-runtime` |
-| Wire codecs (I2NP envelopes, LeaseSet2 carriers, database-lookup/store messages) | `i2pr-proto` (used by `outbound_lookup.rs`, `inbound_dispatch.rs`, `netdb_seam.rs`, `bootstrap.rs`) |
-| Transport contracts (`Deadline`, `DeliveryRequest`, `EncodedI2npMessage`, `PeerId`) | `i2pr-transport` (used by `outbound_lookup.rs`) |
-| `i2pr-core` | declared (`Cargo.toml:13`); not referenced by daemon source today |
+`i2pcontrol.rs` owns the TLS + JSON-RPC listener with an in-memory token table, a
+source-IP throttle (`THROTTLE_CAPACITY = 1_024`, `THROTTLE_WINDOW_MS = 60_000`,
+`THROTTLE_FREE_FAILURES = 4`, `THROTTLE_DELAY_STEP_MS = 50`, `THROTTLE_DELAY_MAX_MS = 2_000`),
+`MAX_HTTP_HEAD_BYTES = 16_384`, `MAX_HEADER_TOKEN_BYTES = 512`, and
+`INFLIGHT_REQUESTS = i2pr_i2pcontrol::MAX_INFLIGHT_REQUESTS`. `i2pcontrol_tunnels.rs` is
+the TunnelManager control state; `i2pcontrol_inspection.rs` holds the narrow
+publish-gated inspection handles and the pure response builders.
+
+**Plan 341 restart-safe outbound proxy secret owner** (`src/outbound_secret.rs`, the most
+recent daemon commit `11842388`): `OutboundSecretKey(Zeroizing<[u8; OUTBOUND_SECRET_KEY_LEN]>)`
+— **deliberately not `Clone` and not `Debug`-derived** — holds an HKDF-SHA256-derived key
+from the router signing seed, labelled by the constant
+`OUTBOUND_SECRET_KEY_INFO = b"i2pr:outproxy:secret-box:v1"`. The proxy credential is sealed
+with ChaCha20-Poly1305 under a fresh random nonce with an associated-data frame; the
+derived key is separable from the signing key, so compromising one does not yield the other.
+`RouterBoundOutboundSecrets` re-derives the key on restart, which is what makes the owner
+restart-safe without persisting the key. The frame ceiling is
+`OUTBOUND_SECRET_NONCE_LEN + MAX_OUTBOUND_SECRET_LEN + OUTBOUND_SECRET_TAG_LEN`, and the
+success type is proven not to be `Debug` by an in-crate test.
+
+`ServiceEls2Material` (`src/service_els2.rs:124`) is likewise **not `Clone`** — two copies
+of a service's scalar is exactly what must not exist — and its hand-written
+`impl fmt::Debug` prints `<redacted>` for the authorization plus presence/counts only. The
+lookup secret is borrowed from the manager's record, never copied.
+
+### Address book, control sources, and NEWS
+
+`addressbook.rs` owns the manager, `[addressbook]` config, transactional mutations with
+rollback, generation persistence, the bounded refresh queue, the diagnostic artifact, and
+the cadence worker driver. `addressbook_fetch.rs` is a **private** module whose only network
+capability is a loopback eepProxy connect over an explicitly configured local HTTP proxy.
+`control_sources.rs` owns the bounded redacted `LogRing` (INFO+, secret markers, 256 entries,
+192 B lines) with the `tracing` layer feed, the explicit `BanLedger` attesting the empty set,
+and rolling `ControlMetrics`. Resolver-handle installation is explicit at each consumer:
+`SamServiceState::set_addressbook_handle` (`src/sam.rs:353`) and
+`ServiceTunnelManager::set_addressbook_handle` (`src/service_tunnels.rs:662`), wired from
+`src/sam.rs:3179` and `src/service_tunnels.rs:6540`. `news.rs` is a **private** module.
+
+### Service tunnels
+
+`ServiceTunnelManager` (`src/service_tunnels.rs`) is the manager: explicit Destination-group
+ownership, one persistent/ephemeral identity and Streaming bridge per shared group
+(Plan 309), per-service listeners, and server-port dispatch. `reconcile` is a whole-set
+transactional replace, so startup-owned specs must be carried through `candidate_set`
+verbatim. The manager installs router delivery through `install_router_delivery` /
+`uninstall_router_delivery` and exposes `router_service_candidates`,
+`routing_decision_for`, and `co_owned_destination_hashes` as the typed remote-routing seams.
+`RemoteDestinationBackend` (`src/service_delivery.rs:242`) is the executable backend that
+owns the shared `DestinationTunnelCoordinator` plus the authenticated router delivery
+service; `ServiceDestinationDelivery::new()` / `with_backend` / `has_backend` select it.
+`service_generation.rs` holds the committed-generation bookkeeping;
+`service_lifecycle.rs` is a **private** module holding only local Destination-group
+phase/timing policy — no secrets, no routing state.
+
+---
 
 ## Dependencies
 
-| Dependency | Source | Actually used |
-| --- | --- | --- |
-| `clap` | workspace | Yes (CLI parsing) |
-| `i2pr-crypto` | path | Yes (RNG + identity) |
-| `i2pr-core` | path | Declared but not yet referenced by daemon source |
-| `i2pr-proto` | path | Yes (I2NP envelopes in `outbound_lookup`, `inbound_dispatch`, `netdb_seam`, `bootstrap`) |
-| `i2pr-runtime` | path | Yes (supervisor, service graph, `tokio::spawn`) |
-| `i2pr-storage` | path | Yes (identity store) |
-| `i2pr-transport` | path | Yes (delivery contracts in `outbound_lookup`) |
-| `i2pr-netdb` | path | Yes (RouterInfo store + validation + lookup state machines) |
-| `i2pr-netdb-persist` | path | Yes (`CacheLoader`, `ReseedIngestor`) |
-| `i2pr-tunnel` | path | Yes (`ExploratoryPool`, bridge, data-plane registry, roles) |
-| `i2pr-api` | path | Yes (SAM 3.1 parser, session registry, line reader, server state machine — Plans 136–137; STREAM CONNECT/ACCEPT plus FORWARD/naming outcomes and atomic inbound mode — Plans 138–139) |
-| `i2pr-client` | path | Yes (`DestinationRegistry`, `DestinationRuntime`, per-destination `StreamingManager` pool — Plan 137; `StreamingDestinationAdapter`, `DestinationRouting`, `EciesSessionManager`, `DestinationOutboundRole` — Plan 138) |
-| `rand_chacha` | 0.9 | Yes (deterministic RNG for the Plan 138 STREAM adapter seam) |
-| `rand_core` | 0.9 | Yes (RNG injection in `outbound_lookup`) |
-| `serde` | workspace | Yes (config deserialization) |
-| `thiserror` | workspace | Yes (error derives) |
-| `tokio` | workspace | Yes (`tokio::signal::ctrl_c`, `tokio::spawn`, `tokio::main`-equivalent `run_blocking` in `main.rs`) |
-| `toml` | workspace | Yes (TOML parsing) |
-| `tracing` | workspace | Yes (transitive via logging) |
-| `tracing-subscriber` | workspace | Yes (`EnvFilter`, `try_init()`) |
-| `tempfile` (dev) | workspace | For filesystem tests |
+### Production (`crates/i2pr-daemon/Cargo.toml`)
 
-`i2pr-transport-ntcp2` is intentionally **not** a direct
-dependency — it would flow through `i2pr-runtime` once the runtime
-integration lands and NTCP2 is enabled in the service graph.
+**15 workspace path crates** (the full composition edge set, matching the allowlist in
+[`scripts/check-dependency-direction.sh:34`](../../scripts/check-dependency-direction.sh)):
+
+`i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`,
+`i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`,
+`i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel`.
+
+**External crates:** `chacha20poly1305`, `clap`, `flate2`, `quick-xml`, `rand_chacha`,
+`rand_core`, `rcgen`, `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`,
+`thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`,
+`webpki-roots`, `x509-parser`, `zeroize`.
+
+**Binaries/examples:** `[[bin]] name = "i2pr"`, `path = "src/main.rs"`;
+`[[example]] name = "sam_loopback_listener"` (plus `i2cp_loopback_listener` and
+`service_tunnels_loopback_listener`).
+
+### Dev
+
+`tempfile` and the workspace dev-dependency set, used for filesystem and loopback test
+isolation.
+
+### Notable dependency facts
+
+- `i2pr-transport-ntcp2` and `i2pr-transport-ssu2` are **not** direct dependencies. NTCP2 is
+  disabled in production (Plan 101); SSU2 contracts are reached through the
+  composition-owned path, not a direct crate edge.
+- `i2pr-core` is declared and is the only path crate the daemon does not yet reference from
+  `src/`; keep it declared (contracts/budgets/health are its reason) but do not invent usage.
+- `zeroize` and `chacha20poly1305` are present specifically for the Plan 341
+  `outbound_secret.rs` owner; `rustls`/`tokio-rustls`/`rcgen`/`webpki-roots`/
+  `x509-parser`/`rustls-pki-types` serve I2PControl TLS and `service_tunnels_tls.rs`.
+
+### Boundary checkers (run on repo head)
+
+| Script | Exit | Output |
+| --- | --- | --- |
+| `scripts/check-runtime-boundaries.sh` | **0** | `runtime boundary checks passed` |
+| `scripts/check-dependency-direction.sh` | **0** | `dependency direction: ok` |
+| `scripts/check-service-tunnel-boundaries.sh` | **0** | `service-tunnel boundary checks passed` |
+| `scripts/check-m11-transit-boundaries.sh` | **0** | `check-m11-transit-boundaries: passed` |
+| `scripts/check-m12-floodfill-boundaries.sh` | **1** | Plan 281 type-5 deferral grep now legitimately matches Plan 332/333/334 NetDB type-5 work. Not in `AGENTS.md` or `ci.yml`. See the note in **M12 floodfill** above. |
+
+---
 
 ## Tests
 
-Unit tests in `src/lib.rs` and `src/config.rs` include composition
-regression tests (`daemon_graph_contains_no_ntcp2_transport_service`,
-`daemon_graph_rejects_ntcp2_enabled_config`) and NTCP2 activation
-safety tests (omitted section → disabled, explicit false accepted,
-explicit true rejected). Plan 158 adds the parallel `[ssu2]` surface
-(disabled loopback-only defaults, `enabled = true` / `advertise` /
-`introducer_service` rejected fail-closed, strict ceilings): the
-daemon parses and validates it but starts no SSU2 service —
-activation stays fail-closed: Plan 159 deliberately built only the
-snapshot/policy inputs (reachability, publication, selection)
-without wiring production activation or publication, per plan
-§§7/13/15.15; identity/RouterInfo plumbing and any activation
-belong to Plans 160–161.
+**72 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+modules (notably `src/lib.rs:1611`, `src/config.rs`, and the module-local test blocks in
+`outbound_secret.rs`, `transit_volume.rs`, and `service_els2.rs`).
 
-Integration tests in `tests/cli.rs` invoke the compiled binary via
-`Command::new(env!("CARGO_BIN_EXE_i2pr"))`:
+### Acceptance-suite inventory by area
+
+| Area | Count | Representative files |
+| --- | --- | --- |
+| CLI | 1 | `cli.rs` |
+| NetDB | 5 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs` |
+| Exploratory tunnels / build / liveness | 4 | `exploratory_build_unit.rs`, `exploratory_build_live.rs`, `exploratory_tunnel_external.rs` |
+| Destinations (M6) | 3 | `destination_tunnel_unit.rs`, `destination_tunnel_live.rs`, `destination_tunnel_external.rs` |
+| Streaming (M6) | 3 | `streaming_tunnel_unit.rs`, `streaming_tunnel_live.rs`, `streaming_tunnel_external.rs` |
+| SAM 3.1 | 10 | `sam_loopback.rs`, `sam_forward_naming.rs`, `sam_plan146_reference.rs`, `sam_stream.rs`, `sam_stream_independent.rs`, `sam_stream_product.rs`, `sam_stream_raw_product.rs`, `sam_stream_self_composed.rs`, `sam_stream_final_acceptance.rs` |
+| I2CP (M9) | 6 | `i2cp_loopback.rs`, `i2cp_message_data_plane.rs`, `i2cp_zero_hop_lifecycle.rs`, `i2cp_final_acceptance.rs`, `i2cp_adversarial_matrix.rs`, `i2cp_resource_matrix.rs` |
+| I2PControl (Proposal 170) | 6 | `i2pcontrol_base.rs`, `i2pcontrol_tunnels.rs`, `i2pcontrol_inspection.rs`, `i2pcontrol_differential.rs`, `i2pcontrol_shared_service_manager.rs`, `i2pcontrol_els2_black_box.rs` |
+| Service tunnels (M10) | 24 | `service_tunnels_foundation.rs`, `service_tunnels_local_roundtrip.rs`, `service_tunnels_final_acceptance.rs`, `service_tunnels_adversarial_matrix.rs`, `service_tunnels_remote_qualification.rs`, `service_tunnels_application_remote_qualification.rs`, `service_tunnels_remote_route_integration_qualification.rs`, `service_tunnels_remote_transport_qualification.rs`, `service_tunnels_application_product_only_remote_qualification.rs`, `service_tunnels_application_genuine_remote_qualification.rs`, `service_tunnels_independent_application_clients.rs`, `service_tunnels_plan210_real_service_destination_material.rs`, `service_tunnels_plan212_router_backed_product.rs`, plus 12 per-profile `service_tunnel_*_product.rs` suites |
+| M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
+| M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
+| SSU2 | 1 | `ssu2_daemon_preflight.rs` |
+| Java / M6 cross-family | 1 | `java_tunnel_external.rs` |
+
+### Black-box product discipline
+
+These suites drive behavior **only** through real TCP / SAM / I2CP / I2PControl after
+listener startup. They must not call private bridge, `LeaseSet2`, driver, or pump APIs:
+`sam_stream_self_composed.rs`, `sam_stream_product.rs`, `sam_stream_raw_product.rs`,
+`sam_stream_final_acceptance.rs`, `i2cp_message_data_plane.rs`, `i2cp_final_acceptance.rs`,
+`i2cp_adversarial_matrix.rs`, `i2cp_resource_matrix.rs`,
+`i2pcontrol_els2_black_box.rs`, `service_tunnels_local_roundtrip.rs`,
+`service_tunnels_plan212_router_backed_product.rs`, and the `service_tunnel_*_product.rs`
+family. Each listener binds `127.0.0.1:0` and uses loopback only.
+
+### Runtime-test discipline
+
+Loopback suites flake under parallel Cargo. Run the daemon's suites with:
+
+```text
+cargo test --locked -p i2pr-daemon --test <name> -- --test-threads=1
+```
+
+macOS CI builds every test executable **once** and then runs each one with
+`--test-threads=1` rather than letting Cargo parallelize the loopback listeners.
+Environment-gated external lanes are `#[ignore]`-gated and require an explicit
+`--ignored --exact` run; a missing environment must **fail**, never silently pass.
+
+Focused suites run while refreshing this document (repo head `11842388`):
+
+| Command | Result |
+| --- | --- |
+| `cargo test --locked -p i2pr-daemon --test cli --test netdb_tunnel_unit -- --test-threads=1` | **ok** — `cli`: 7 passed, 0 failed; `netdb_tunnel_unit`: 22 passed, 0 failed |
+
+The full 72-file daemon suite and the full workspace suite were deliberately **not** run
+during this documentation refresh.
+
+### `tests/cli.rs` in detail
+
+Invokes the compiled binary via `Command::new(env!("CARGO_BIN_EXE_i2pr"))`:
 
 | Test | Coverage |
 | --- | --- |
 | `help_and_version_are_available` | `--help` lists subcommands; `--version` prefix |
-| `missing_config_maps_to_exit_code_ten` | Missing → 10 |
-| `missing_required_argument_maps_to_usage_exit_code_two` | Missing `--config` → 2 |
-| `malformed_and_unknown_config_are_rejected` | Malformed TOML → 11, unknown → 11, semantic → 12 |
-| `dry_run_succeeds_and_live_run_is_not_implemented` | `--dry-run` ✓; live run → 41 (identity load) |
-| `identity_lifecycle_is_explicit_and_inspection_redacts_private_material` | Generate → inspect, no secret text |
+| `missing_config_maps_to_exit_code_ten` | Missing -> 10 |
+| `missing_required_argument_maps_to_usage_exit_code_two` | Missing `--config` -> 2 |
+| `malformed_and_unknown_config_are_rejected` | Malformed TOML -> 11, unknown -> 11, semantic -> 12 |
+| `dry_run_succeeds_and_live_run_is_not_implemented` | `--dry-run` ok; live run -> 41 (identity load) |
+| `identity_lifecycle_is_explicit_and_inspection_redacts_private_material` | Generate -> inspect, no secret text |
 | `dry_run_does_not_create_identity_state` | `run --dry-run` does not create `data_dir` |
+
+In-crate `#[cfg(test)]` in `src/lib.rs` and `src/config.rs` also cover composition
+regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
+`daemon_graph_rejects_ntcp2_enabled_config`) and the `[ssu2]` NTCP2 activation safety rows.
+
+---
 
 ## Distinctive design choices
 
-1. **NTCP2 is disabled and unenableable.** The default is `false`;
-   explicit `enabled = true` is rejected during config validation
-   with a stable semantic error.
-2. **Composition graph excludes NTCP2.** `build_daemon_graph` never
-   registers `ntcp2-transport`; a minimal `lifecycle` service owns
-   the shutdown signal.
-3. **No default config path.** Every command requires `--config`.
-4. **`run` without `--dry-run` starts a real daemon.** Config is
-   validated first, then the supervisor runs the service graph.
-5. **`<data_dir>/router.identity` is the on-disk path.** Created
-   by `identity generate`; never created by `run --dry-run`
-   (verified by the integration test).
-6. **`deny_unknown_fields` everywhere.** Every `Raw*` config struct
-   rejects unknown keys. Extra keys are an error (exit code 11).
-7. **Limits have hard safety caps** in `MAX_ALLOWED_*` constants
-   (e.g. `max_tasks` ≤ 1 000 000; `max_buffered_bytes` ≤ 1 TiB).
-8. **Logging uses `tracing-subscriber` with `EnvFilter`.** `try_init`
-   means duplicate init is silently ignored for test embedding.
-9. **`ExitCode` is `#[repr(u8)]`** with explicit numeric assignments,
-   asserted by integration tests. Stable API for operators.
-10. **Schema version is `==`, not `>=`.** `schema_version = 2` is
-   `UnsupportedSchemaVersion` (code 11). Schema migration requires
-   a binary update first.
-10. **Profile is locked to `"balanced"`.** Any other profile is
-    rejected (`config.rs:170-178`). A placeholder for future
-    routing policies.
-11. **No `#[tokio::main]`** — the binary is synchronous today.
-12. **`_command_name` (`main.rs:47-54`) is `#[allow(dead_code)]`** —
-    reserved for future logging/metrics.
+1. **The daemon is the composition root, and that is legitimate.** It is the only production
+   owner of Tokio, sockets, timers, channels, and every listener; `check-runtime-boundaries.sh`
+   enforces the inverse for every other crate.
+2. **NTCP2 is disabled and unenableable.** The default is `false`, and explicit
+   `ntcp2.enabled = true` is rejected during config validation with a stable semantic error.
+3. **The composition graph never registers `ntcp2-transport`.** A `lifecycle` service owns the
+   shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all.
+4. **No default config path.** Every subcommand requires `--config`, so operator intent is
+   always explicit and reproducible.
+5. **`deny_unknown_fields` on all 21 `Raw*` config structs.** Extra keys are an error
+   (exit 11), never a silently ignored typo.
+6. **Schema version is `!=`, not `>=`.** `CURRENT_SCHEMA_VERSION` is `1`; any other value is
+   `UnsupportedSchemaVersion`. Migration requires a binary update first.
+7. **Profile is locked to `"balanced"`.** `RouterProfile` has a single variant; any other
+   value is rejected. A deliberate placeholder for future routing policies.
+8. **`ExitCode` is `#[repr(u8)]`** with explicit numeric assignments, asserted by integration
+   tests, so operators and automation can depend on it.
+9. **The I2CP pre-session reject path awaits `stream.shutdown()` before any bookkeeping**
+   (`src/i2cp.rs:1136–1138`), making the close deterministic instead of drop-timing
+   dependent.
+10. **Secret types refuse both `Debug` and `Clone`.** `OutboundSecretKey` and
+    `ServiceEls2Material` are zeroized or redacted, and an in-crate test proves the success
+    type is not `Debug`.
+11. **`TransitParticipation::Disabled` is a value, not an absence.** The disabled posture
+    still projects counters (`0`/`0`/`0.0`) so a relayed-nothing router reports truth rather
+    than a gap; a poisoned lock is a gap, never a zero.
+12. **The three `pub(crate)` internals are deliberate.** `addressbook_fetch`, `news`, and
+    `service_lifecycle` are private because none of their invariants are consumer contracts.
+13. **The live `run` path is async through the runtime owner.** `main()` hands `run_daemon`
+    to `i2pr_runtime::run_blocking`; the binary has no `#[tokio::main]` of its own.
+
+---
 
 ## Cross-references
 
-- [Overview](overview.md)
-- [i2pr-storage](i2pr-storage.md) — primary consumer via
-  `IdentityStore`.
-- [i2pr-crypto](i2pr-crypto.md) — provides `OsRng` and
-  `RouterIdentityBundle::generate`.
-- [i2pr-runtime](i2pr-runtime.md) — future `run` driver.
-- Plan-of-record: sequence of `m1-` plans and `m2-` plans; the
-  composition root is implicit in the latest active milestone.
+### Deep dives
+
+- [Overview](overview.md) — crate index and data flow.
+- [i2pr-runtime.md](i2pr-runtime.md) — supervisor, `ServiceGraph`, `MAX_SERVICE_COUNT`,
+  `run_blocking`.
+- [i2pr-api.md](i2pr-api.md) — SAM 3.1 and I2CP wire/state machines.
+- [i2pr-client.md](i2pr-client.md) — destination lifecycle, ECIES, Streaming.
+- [i2pr-netdb.md](i2pr-netdb.md) — RouterInfo/LeaseSet2 validation, `ReplyPathProvider`, ELS2.
+- [i2pr-tunnel.md](i2pr-tunnel.md) — `OutboundGatewayRole`, `LocalInboundEndpointRole`,
+  `ExploratoryPool`, `DataPlaneRegistry`.
+- [i2pr-service-tunnels.md](i2pr-service-tunnels.md) — HTTP/SOCKS5/IRC/Streamr parsing.
+- [i2pr-addressbook.md](i2pr-addressbook.md) — the runtime half of the AddressBook.
+- [i2pr-i2pcontrol.md](i2pr-i2pcontrol.md) — JSON-RPC and control-plane contracts.
+- [i2pr-storage.md](i2pr-storage.md) — `IdentityStore`, `ByteCache`.
+- [i2pr-crypto.md](i2pr-crypto.md) — `OsRng`, `RouterIdentityBundle`, `red25519`.
+- [i2pr-proto.md](i2pr-proto.md) — I2NP envelopes, LeaseSet2 carriers.
+- [i2pr-transport.md](i2pr-transport.md) — `DeliveryRequest`, `EncodedI2npMessage`, `Deadline`.
+- [i2pr-su3.md](i2pr-su3.md) — SU3 framing and signature verification.
+- [i2pr-netdb-persist.md](i2pr-netdb-persist.md) — `CacheLoader`, `ReseedIngestor`.
+- [tooling.md](tooling.md) — scripts, fixtures, lanes, CI.
+- [dependency-graph.md](dependency-graph.md) — the allowlist this crate satisfies.
+
+### ADRs
+
+- [`0002` tokio runtime boundary](../../docs/adr/0002-tokio-runtime-boundary.md)
+- [`0003` bounded supervised services](../../docs/adr/0003-bounded-supervised-services.md)
+- [`0026` staged interoperability progression and Java debt](../../docs/adr/0026-staged-interoperability-progression-and-java-debt.md)
+- [`0027` floodfill role provenance and advertisement](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)
+- [`0028` I2PControl Proposal 170 control plane](../../docs/adr/0028-i2pcontrol-proposal-170-control-plane.md)
+
+### Closure records and plans of record
+
+- **M6 destinations/Streaming** — Plan 134 authority; Plan 152 retained corrective; Plan 190
+  `InboundGatewayRoute`; Plan 192 inbound-delivery closure; Plan 193 i2pd Streaming.
+  Closure: [`130`](../../plans/closure/destination-streaming/130-status.md),
+  [`119`](../../plans/closure/destination-streaming/119-status.md),
+  [`122`](../../plans/closure/destination-streaming/122-status.md),
+  [`124`](../../plans/closure/destination-streaming/124-status.md).
+- **SAM** — Plans 149/150/151. Closure: [`147`](../../plans/closure/sam/147-status.md),
+  [`149`](../../plans/closure/sam/149-status.md), [`151`](../../plans/closure/sam/151-status.md),
+  [`152`](../../plans/closure/sam/152-status.md).
+- **I2CP** — Plans 164–172. Closure:
+  [`170`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
+- **SSU2** — Plans 158–161. Closure: `plans/closure/ssu2/`.
+- **M10 service tunnels** — Plans 174–180, 182, 213–215. Closure:
+  `plans/closure/service-tunnels/`. Plan-of-record:
+  [`174`](../../plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
+  [`175`](../../plans/implementation/service-tunnels/175-m10-generic-client-server-service-tunnels.md),
+  [`176`](../../plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md),
+  [`177`](../../plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md),
+  [`178`](../../plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md),
+  [`179`](../../plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md).
+- **M11 transit** — Plan 268. Closure:
+  [`268-status.md`](../../plans/closure/transit-tunnels/268-status.md).
+- **M12 floodfill** — Plans 270–283, 302–303, 306; type-5 floor later populated by Plans
+  330–334. Closure: `plans/closure/floodfill/`.
+- **Exploratory tunnels** — Plans 185/188; Plan 109/110 corrective. Closure:
+  [`117`](../../plans/closure/exploratory-tunnels/117-status.md),
+  [`117-corrective-closure`](../../plans/closure/exploratory-tunnels/117-corrective-closure.md).
+  Plan-of-record:
+  [`185`](../../plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md),
+  [`184`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md),
+  [`193`](../../plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md),
+  [`108`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md).
+- **I2PControl / Proposal 170** — Plans 319–341. Closure:
+  `plans/closure/i2pcontrol-proposal-170/`. Most recent daemon commit: `11842388`
+  (Plan 341 restart-safe outbound proxy secret owner).
+- **NTCP2** — Plan 101 guard; the development interop lane is closed and normal-daemon NTCP2
+  stays disabled.
+- **M6 Java** — Plan 236 is a bounded diagnostic blocked at
+  `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`; see
+  [`236-status.md`](../../plans/closure/mixed-router-interop/236-status.md). Do not infer
+  Java-family Router-A behavior.
+- **Planning system** — [`plans/README.md`](../../plans/README.md),
+  [`plans/registry.md`](../../plans/registry.md),
+  [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md),
+  [`specs/support.toml`](../../specs/support.toml).
+
+### Registry-lag warning
+
+`plans/registry.md` and `specs/support.toml` lag their closure records and, in places,
+contradict them. Where they disagree, `plans/closure/*/*-status.md` wins. Concretely, as of
+this refresh:
+
+- The registry's **narrative** paragraph still says "Plan 322 therefore remains blocked on
+  the three transit selectors alone" and "Plan 334 is blocked", while both closure records
+  say otherwise: [`322-status.md`](../../plans/closure/i2pcontrol-proposal-170/322-status.md)
+  is `passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged`
+  (Plan 340 closed Group A) and
+  [`334-status.md`](../../plans/closure/i2pcontrol-proposal-170/334-status.md) was
+  **reclosed** 2026-10-05 as `passed-mode-mapping-and-control-surface-complete` after Plans
+  337/338. The registry's own tables (rows 107 and 118) are already updated — the
+  narrative paragraph is the stale part.
+- `specs/support.toml`'s M12 row still reads "Plan 281 deferred EncryptedLeaseSet type 5" and
+  describes the floor as type 0/1/3/7. That is superseded by Plans 330–334, which populated
+  type 5 (`m11_transit_tunnels` row, `specs/support.toml:370`).
+- No Encrypted LeaseSet2 capability is advertised and no live interoperability is claimed.
+  Full Proposal 170 conformance is not claimed.

@@ -1,972 +1,788 @@
 # `i2pr-service-tunnels` — Deep Dive
 
-Runtime-neutral Milestone 10 service-tunnel configuration,
-destination reference policy, typed errors, typed events/snapshots, plus
-the Plan 175 generic client/server tunnel composition surface owned by
-the daemon, the Plan 176 HTTP/1.1 proxy parser/rewrite/target-validation
-surface, the Plan 177 SOCKS5 no-auth CONNECT proxy
-negotiation/request/reply surface, the Plan 178 IRC
-client line-parser/tag/classifier/filter surface, the Plan 179
-IRC server registration interceptor plus the authenticated peer
-Destination hash projection, and the Plan 180 generation diff
-classification surface.
+## Crate header
 
-Path:
-- `crates/i2pr-service-tunnels/` (configuration + reference parsing + HTTP + SOCKS5 + IRC client/server).
-- `crates/i2pr-storage/src/service_destination.rs` (persistent server destinations).
-- `crates/i2pr-daemon/src/service_tunnels.rs` (manager + listener runtime).
-- `crates/i2pr-daemon/src/service_tunnels_http.rs` (HTTP proxy executor).
-- `crates/i2pr-daemon/src/service_tunnels_socks5.rs` (SOCKS5 proxy executor).
-- `crates/i2pr-daemon/src/service_tunnels_irc_client.rs` (IRC client tunnel executor).
-- `crates/i2pr-daemon/src/service_tunnels_irc_server.rs` (IRC server tunnel executor).
+- **Crate:** `i2pr-service-tunnels`
+- **Path:** `crates/i2pr-service-tunnels/`
+- **One-line purpose:** Runtime-neutral Milestone 10 (and Proposal 170) service-tunnel
+  configuration, destination-reference policy, per-profile protocol parsers, and typed
+  errors/events — every byte of socket, task, timer, and listener ownership lives in
+  `i2pr-daemon`.
+
+Crate size: 37 Rust files, 14,620 lines (14 declared modules + `lib.rs`).
+Test floor: 313 unit tests, all passing, all in-crate `#[cfg(test)]` modules.
 
 ## Purpose
 
-Plan 175 lands the first complete Milestone 10 application service
-product; Plan 176 adds the first M10 application profile; Plan 177 adds
-the second; Plan 178 adds the third; Plan 179 adds the
-fourth; Plan 180 adds the runtime-neutral diff classification
-that backs the daemon-side transactional reconcile. The crate
-builds on the Plan 174 foundation
-(`ServiceTunnelSet`, `LocalListenerSpec`, `ServerTarget`, bounded
-resource/timeouts) and adds:
+This crate owns the *validated policy* half of every M10 service tunnel:
 
-- bounded typed identifiers and service kinds;
-- strict destination reference policy (Base32 / static alias /
-  configured public material);
-- loopback-only listener/target shapes;
-- central resource and deadline ceilings;
-- validated service-tunnel sets;
-- typed errors and events carrying no sockets or secrets;
-- the Plan 176 HTTP/1.1 parser, hop-by-hop/privacy rewrite,
-  `.i2p`-only target validation, and bounded error-response
-  surface;
-- the Plan 177 RFC 1928 SOCKS5 greeting + CONNECT request
-  parser, `.i2p`/DOMAINNAME-only target policy, deterministic
-  RFC 1928 reply generator with neutral loopback bind, and
-  bounded typed errors;
-- the Plan 178 IRC/IRCv3 line parser, message-tag framing,
-  typed command classifier with per-direction allowlist,
-  client-to-network privacy rewrites, and CTCP/DCC policy;
-- the Plan 179 IRC server registration interceptor, bounded
-  pre-registration line / byte ceilings, cross-protocol
-  detection, the authenticated peer Destination hash projection
-  to a 52-character `.b32.i2p` hostname, IRCv3 tagged USER
-  rewrite, and the typed `RegistrationOutcome` handoff contract;
-- a versioned, atomic, secret-safe persistent service-destination
-  storage seam (Plan 175);
-- a daemon-owned manager that wires loopback TCP, I2P Streaming, and
-  the existing Plan 149 local destination product path together
-  (Plan 175 + Plan 176 + Plan 177 + Plan 178 + Plan 179);
-- the runtime-neutral `DiffClass` typed generation diff classification
-  (`Unchanged`, `MutableInPlace`, `ReplaceListener`,
-  `ReplaceDestination`, `Remove`, `Add`) and the `diff_sets` /
-  `diff_spec` helpers used by the daemon-side reconcile algorithm
-  (Plan 180).
+- typed service-tunnel kinds, ids, groups, listener specs, server targets, and
+  destination references;
+- central resource / deadline / tunnel-shaping / idle / rate-limit ceilings;
+- the runtime-neutral HTTP/1.1 parser + privacy rewrite + request-target validator +
+  bounded error-response generator;
+- the runtime-neutral RFC 1928 SOCKS5 greeting/CONNECT parser + deterministic reply
+  generator, plus the Plan 290 bounded SOCKS4a CONNECT parser;
+- the runtime-neutral strict-CONNECT client option surface;
+- the runtime-neutral IRC/IRCv3 line parser, tag framing, per-direction allowlist, and
+  client-to-network privacy filter;
+- the Plan 179 IRC server registration interceptor and authenticated peer hostname
+  projection;
+- the Plan 291 Streamr option surface;
+- the Plan 292 listener proxy-credential verifiers, server inbound access policy, and
+  pure idle-sweep decision;
+- the Plan 341 outbound-proxy-secret policy seam (trait + framing + fail-closed default);
+- the Plan 180 runtime-neutral `DiffClass` generation diff;
+- typed errors and value-only typed events/snapshots.
 
-It must not own:
+### What it must NOT own
 
-- Tokio, sockets, listeners, tasks, timers;
-- filesystem access (lives in `i2pr-storage`);
-- transport or tunnel-build internals;
-- NetDB mutation;
-- Garlic/I2NP construction;
-- SAM or I2CP protocol parsing.
+The crate doc comment (`src/lib.rs:18-22`) is explicit and the source agrees. This
+crate owns **no sockets, no Tokio tasks, no timers, no filesystem access, no transport
+internals, no NetDB mutation, and no Garlic/I2NP construction**. `i2pr-daemon` remains
+the sole M10 socket/task/composition owner.
 
-The daemon remains the sole M10 socket/task/composition owner.
-Milestone 10 independent acceptance is retained under Plan 181 +
-Plan 207 (29 local rows passed; the two `remote-independent-*`
-rows now flip `blocked → passed-on-env` through the Plan 207
-genuine external driver once the dedicated M6 interop lane
-provisions the SSU2 endpoint + bind tuple and the driver emits
-every documented Plan 207 §9 subfact row + `plan206-backend-counters`
-in the same evidence directory/run id). The manager owns a
-single shared `ServiceDestinationDelivery` capability (Plan 202
-§5 / Plan 206 §5 / Plan 208 §A) — installed through the daemon
-composition root via `install_router_delivery_handle` and shared
-across every service the manager owns; the typed
-`RoutingDecision` enum distinguishes the explicit local co-owned
-path (`LocalCoOwned`) from the remote-router path (`RemoteRouter`)
-and the typed failure (`RemoteUnresolved`). Plan 206 (M10
-production remote delivery composition corrective) promoted the
-marker-shape capability into an executable backend:
-`RemoteDestinationBackend` owns the shared
-`DestinationTunnelCoordinator` (for LeaseSet2 lookup /
-publication through `resolve_remote_lease_set2`) and the
-authenticated router delivery service (Plan 184 SSU2); the
-manager gained typed `route_outbound_remote_request` /
-`dispatch_inbound_to_owned_destination` /
-`register_inbound_destination_owner` /
-`resolve_remote_lease_set2` seams that route queued Streaming
-requests through the production Plan 184–193 stack without a
-parallel test-owned backend. Plan 208 (M10 production
-delivery-driver remote-route integration corrective) wired the
-Plan 206 backend into the production
-`ServiceTunnelManager::deliver_outbound` sweep so a reachable
-remote peer no longer dies at the pre-Plan-208 `unknown_peer`
-terminal branch: the local-miss branch invokes the typed
-`route_outbound_remote_request` seam, which composes the queued
-request through the existing `StreamingDestinationAdapter`,
-encodes the resulting `OBGWRouterDelivery` cells through the
-existing `deliver_outbound_cells` helper, and dispatches them to
-the established SSU2 peer session through the daemon-owned
-`RouterDeliveryService`. The inbound-owner registry wired by Plan
-206 (`register_inbound_destination_owner` /
-`unregister_inbound_destination_owner` /
-`inbound_destination_owner` with a fail-closed atomic duplicate
-guard + `dispatch_inbound_to_owned_destination`) wires inbound
-data to the actual owning service runtime. Three operation-
-boundary counter fields (`remote_lookup_cache_hit`,
-`remote_outbound_composed`, `remote_inbound_dispatched`) advance
-only through typed backend seams; the external `record_observation`
-helper silently ignores those labels so a positive observation
-cannot be manufactured without the production operation. The
-legacy marker shape keeps `RemoteUnresolved` so a silent local
-fallback for a remote peer cannot regress. Local co-owned delivery
-remains the explicit path for destinations the manager owns and
-is now retained as a
-bounded optimization, not the only path; the remote-router path
-drives the Plan 184–193 one-hop SSU2/tunnel/NetDB/LeaseSet2/
-ECIES/Garlic/Streaming stack with no second SSU2/tunnel stack.
-Plans 180-and-182 jointly close the M10 local product + round-trip
-layer (reconcile model + local-delivery driver); Plans 202, 203,
-and 206 jointly close the M10 production remote Destination/
-Streaming composition + positive remote HTTP/IRC application
-interop. Plans 195 and 204 own the M10 final closure authority
-normalization; Plan 204 landed the docs/CI normalization pass
-on top of Plans 200/202/203 and remains blocked on Plan 201's
-Java branch corrective. Plan 210 (M10 real service-Destination
-network material and inbound Streaming corrective) landed the
-structural work as retained-partial-superseded-by-plan212: the
-inbound tunnel owner reverse map keyed by the local receive
-tunnel id (`register_inbound_tunnel_owner` /
-`unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` /
-`inbound_tunnel_owner_pairs` / `note_inbound_orphan_receive`)
-selects the owning service runtime before ECIES decryption; the
-production `compose_remote_cells` no longer swaps in a
-`dummy_outbound_tunnel()` placeholder; service LeaseSet lookup
-stopped deriving from `SHA256(reference.router_info_bytes)`;
-recovered inbound Garlic envelopes dispatch through the canonical
-`DestinationDispatcher::dispatch_garlic_envelope` instead of
-being silently dropped. Plan 212 completes the split (see
-`plans/closure/service-tunnels/212-status.md`): `RouterDestinationNetworkState` +
-`compose_router_send` (explicit router-backed compose, never
-fabric) + `dispatch_router_garlic_to_canonical_streaming`
-(`pop_payload` drain + `StreamingDestinationAdapter::receive`
-into the SAME canonical service `StreamingManager`);
-`ServiceProduct::start` reorder with per-service real
-provisioning; router-only `ReferencePeer` with per-service
-`DestinationRef` resolution (HTTP and IRC resolve
-independently). The generic external qualification against
-exact-pinned i2pd 2.61.0 is owned by Plan 212; Plan 211
-requalifies after it. The structural invariants (Plan 210 §16 +
-Plan 212 §20–§26) are enforced by the static checker, and the
-unit-test floor (eight `plan210_*` rows in
-`service_tunnels.rs::plan210_real_service_destination_material_tests`
-plus 25 `plan212_*` rows in
-`service_tunnels.rs::plan212_router_backed_service_destination_tests`)
-locks the typed path. Plan 213 closed the generic router-backed
-Direction A+B external proof twice on one exact SHA. Plan 214
-(see `plans/closure/service-tunnels/214-status.md`) owns the M10 HTTP/IRC application
-requalification source: the counted v214 driver stays inside the
-black-box `ServiceProduct` boundary (runtime-neutral
-`ServiceTunnelSet::validate` preflight, no placeholder manager),
-pumps `poll_inbound` concurrently around every `curl`/jaraco
-subprocess, binds HTTP facts to fresh fixture `seq` records plus
-the actual curl `%{http_code}` frame, proves IRC registration /
-privacy / PING-PONG / token PRIVMSG / ACTION / DCC-policy from
-fresh streamed fixture records, and snapshots independent
-per-application counter windows with orphan deltas; the
-standalone `run-plan214-applications.sh` runner owns the §16/§17
-aggregates plus exactly one `P214-*` terminal classification;
-`run-independent.sh` delegates remote qualification to it; the
-static checker enforces the Plan 214 §28 invariants (including a
-synthetic-key extraction-boundary self-test for
-`parse_i2pd_destination.py`). Plan 215 (see `plans/closure/service-tunnels/215-status.md`)
-closed the hosted Plan 214 tunnel-config generation corrective on
-the immutable SHA `1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`. The
-source-side corrective (Commit `0fbacc3`) replaced the original
-runner's unquoted heredoc — which contained Markdown backticks in
-explanatory comments that the shell interpreted as command
-substitution while generating i2pd's `tunnels.conf`, stripping
-`type = server` from the IRC server tunnel and breaking the
-destination `.dat` file generation — with a deterministic
-`printf`-based `write_plan214_tunnels_conf` helper plus a
-`validate_plan214_tunnels_conf` pre-launch sanity gate that fails
-closed on any of the 12 Plan 215 §5 contract violations (file
-presence, exactly two sections, `type = http` + `type = server`,
-configured HTTP/IRC port equality, expected key filenames,
-zero-hop lengths, no unresolved template placeholders); the
-sanity result is recorded through a
-`plan214-reference-tunnel-config-sanity` row that maps to the
-existing `P214-B-reference-startup-or-pin` terminal class. The
-static checker §29 enforces twelve structural invariants:
-reject the unquoted `<<EOF` heredoc shape for `tunnels.conf`;
-require `write_plan214_tunnels_conf` and the literal
-`[HTTP-Server]` / `[IRC-Server]` headers; require
-`validate_plan214_tunnels_conf` to run before the i2pd `setsid`
-launch; require the literal `'type = server'` token; require
-`HTTP_TARGET` / `IRC_TARGET` as dynamic inputs; require the
-documented `plan214-http-server.dat` / `plan214-irc-server.dat`
-key filenames; require the `plan214-reference-tunnel-config-sanity`
-row through `record_guarded`; reject any `eval` call; require the
-`P214-B` mapping; reject `envsubst` / `jinja2` / `mustache`
-template layers; reject `echo … > tunnels.conf` regressions; and
-require the focused `tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
-contract test to stay on disk and cover all nine documented
-contract cases.
+Two nuances worth recording precisely:
 
-The Plan 215 §5 runner cleanup hardening (Commit `1992d67`)
-addresses two runner-side races that prevented the §16 cleanup
-from landing deterministically when the runner was invoked via
-delegation from `run-independent.sh --full`: the loopback
-fixtures are started under `setsid` so they run in their own
-process group; `stop_group` now sends SIGKILL (uncatchable)
-instead of SIGTERM, since CPython's accept() auto-restarts on
-EINTR for the default SIGTERM handler; the §16 cleanup replaces
-the indefinite `wait $pid` with a bounded grace window + KILL
-fallback + bounded reap; the §16 process and port checks are now
-scoped to *this run's* fixtures via the unique `--facts
-${HTTP_FACTS}` / `--facts ${IRC_FACTS}` command-line markers and
-the ephemeral `--datadir ${I2PD_DATA}` i2pd directory, so the
-delegated lane no longer races against the harness's local-lane
-fixtures (which are owned by `run-independent.sh` and stopped
-only at its own `CHILD_PIDS` sweep).
-
-The hosted double-pass landed on `1992d67` as runs
-`35309158441` + `35309655867` — both observed
-`P213-N-passed` + `P214-N-passed` with 73/73 rows green (incl.
-the `plan214-clean-resource-baseline` and
-`plan214-cleanup-kills-on-timeout` rows the §5 hardening
-introduced). Plan 215 §18 fired: Plan 214 advanced to
-`passed-m10-product-only-remote-http-and-irc-application-closure`,
-`m10_remote_application_interop` advanced to
-`passed-hosted-double-pass-on-1992d67`, and Milestone 10 final
-acceptance advanced to
-`closed-on-1992d67-pending-plan204-convergence`.
+- **Address naming boundary.** This crate owns the *policy* for a destination
+  reference — `DestinationRef::parse` is structural only (see
+  [Key contracts](#key-contracts)). Canonical hostname ownership lives in
+  `i2pr-addressbook`. The *lookup wiring* that turns a validated `StaticAlias` into a
+  resolved destination is daemon-owned (`ServiceTunnelManager::resolve_reference` →
+  `addressbook_lookup` → `resolve_addressbook_entry`, injected through
+  `set_addressbook_handle`). This crate never performs that lookup.
+- **`forbid(unsafe_code)`.** `src/lib.rs:48` sets the crate-level
+  `#![forbid(unsafe_code)]`, and every module except `src/idle.rs` repeats it locally.
+  `src/idle.rs` is covered by the crate-level attribute; it simply has no redundant
+  per-module one. The effective invariant is what matters and it holds crate-wide.
 
 ## Module layout
 
-| Module | File | Responsibility | Key public types |
-| --- | --- | --- | --- |
-| `lib` | `crates/i2pr-service-tunnels/src/lib.rs` | Crate root, re-exports, architecture pointer | `ServiceTunnelId`, `DestinationRef`, `ServiceTunnelError`, HTTP re-exports |
-| `config` | `crates/i2pr-service-tunnels/src/config.rs` | Typed kinds, policy, listener/target, limits, timeouts, set validation; Plan 290 adds `ConnectClient`/`SocksIrc`/`HttpServer`/`HttpBidirServer` (10 kinds) with per-kind option applicability (`connect_options`/`socks5_options`+`irc_options`/`http_options`) and listener/target/destination shape validation; Plan 291 adds `StreamrClient`/`StreamrServer` (12 kinds) with `streamr_options` gating and UDP-endpoint shape validation; Plan 292 adds `TunnelShaping` (1..=3 length, 1..=6 quantity, per-direction overrides with single-length agreement), `streaming_interactive`, `IdlePolicy`, `ServerAccessPolicy`, `unique_local_address`, and `HttpServerPolicy` fields with per-kind contradiction gates | `ServiceTunnelKind`, `DestinationPolicy`, `LocalListenerSpec`, `ServerTarget`, `ServiceResourceLimits`, `ServiceTimeouts`, `ServiceTunnelSpec`, `ServiceTunnelSet` |
-| `generation` | `crates/i2pr-service-tunnels/src/generation.rs` | Plan 180 runtime-neutral generation diff model; Plan 292 classifies shaping/profile/credential/cadence/peer-policy edits as `ReplaceDestination` and resource/deadline/idle/dial/presentation edits as `MutableInPlace` | `DiffClass`, `ServiceDiff`, `diff_sets`, `diff_spec`, `kind_string` |
-| `destination` | `crates/i2pr-service-tunnels/src/destination.rs` | Base32/alias/configured parsing, alias table | `DestinationRef`, `StaticAliasTable` |
-| `errors` | `crates/i2pr-service-tunnels/src/errors.rs` | Typed structural errors, no secrets | `ServiceTunnelError` |
-| `events` | `crates/i2pr-service-tunnels/src/events.rs` | Value-only lifecycle events and snapshots | `ServiceTunnelEvent`, `ServiceTunnelSnapshot` |
-| `http` | `crates/i2pr-service-tunnels/src/http/` | Plan 176 runtime-neutral HTTP/1.1 parser, target validator, hop-by-hop/privacy rewrite, bounded error response; Plan 290 adds the server privacy contract (`server.rs`: origin-form only, required `Host` replaced with the loopback target, `Transfer-Encoding` rejection, hop-by-hop + identifying strip, forced close, no peer-identity injection) and `HttpErrorKind::MethodNotAllowed` (405); Plan 292 adds `HttpServerPolicy` presentation gates (`classify_presentation`: `/addresshelper` + `i2paddresshelper` helper class, `/jump` + `jump` jump class, closed gates refuse 403 via `HttpErrorKind::PresentationRefused`); Plan 323 maps `AllowUserAgent`, `AllowReferer`, and `AllowAccept` into the typed request rewrite policy for HTTP client families | `HttpLimits`, `HttpClientOptions`, `PrivacyPolicy`, `UserAgentPolicy`, `HttpRequestHead`, `RequestTarget`, `parse_request_head`, `rewrite_headers`, `build_error_response`, `filter_server_request`, `filter_server_response`, `HttpServerPolicy`, `PresentationClass`, `classify_presentation` |
-| `auth` | `crates/i2pr-service-tunnels/src/auth.rs` | Plan 292 proxy credentials: per-realm SHA-256 `username:realm:password` verifiers with `$i2pr1$` marked stored form, constant-time verify, redacted `Debug`, HTTP Basic decode and SOCKS RFC 1929 subnegotiation helpers | `ProxyCredentials`, `PROXY_AUTH_REALM_*` |
-| `access` | `crates/i2pr-service-tunnels/src/access.rs` | Plan 292 server inbound peer allow/deny policy over canonical Base32 destination hashes (allow = `access_list` ∪ `white_list`, deny = `black_list`, deny wins, values never echoed) | `ServerAccessPolicy`, `MAX_ACCESS_LIST_ENTRIES` |
-| `idle` | `crates/i2pr-service-tunnels/src/idle.rs` | Plan 292 pure idle-sweep decision (close > rebuild > reduce priority, exact-deadline fire, saturating arithmetic) | `IdlePolicy`, `IdleSweepAction`, `idle_decision` |
-| `connect` | `crates/i2pr-service-tunnels/src/connect.rs` | Plan 290 runtime-neutral strict-CONNECT client options (allowed-port set, default 443) | `ConnectClientOptions` |
-| `socks5` | `crates/i2pr-service-tunnels/src/socks5/` | Plan 177 runtime-neutral RFC 1928 no-auth greeting + CONNECT request parser, `.i2p`/DOMAINNAME-only target policy, deterministic reply generator; Plan 290 adds bounded SOCKS4a CONNECT parsing (`socks4a.rs`: version `0x04`, command CONNECT only, `0.0.0.x` marker with bounded USERID, grant/refuse 8-byte replies, plain IPv4 fail-closed) | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `RequestParser`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_socks5_reply`, `build_socks4a_reply` |
-| `irc` | `crates/i2pr-service-tunnels/src/irc/` | Plan 178 runtime-neutral IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, USER/PING/QUIT/PART rewrites, CTCP/DCC policy; plus the Plan 179 server registration interceptor, authenticated peer Destination hash projection, and the typed `RegistrationOutcome` handoff contract | `IrcLimits`, `IrcClientOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerOptions`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname` |
-| `service_destination` | `crates/i2pr-storage/src/service_destination.rs` | Versioned, atomic, secret-safe persistent service destination storage | `ServiceDestinationStore`, `ServiceDestinationRecord`, `ServiceDestinationStorageError` |
-| `service_tunnels` | `crates/i2pr-daemon/src/service_tunnels.rs` | Generic client/server tunnel composition root + Plan 180 generation/reconcile/draining + Plan 182 per-destination local-delivery driver + Plan 202 router-delivery capability surface + Plan 203 remote application observation surface + Plan 206 executable remote backend seams + Plan 208 production `deliver_outbound` remote-route integration | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceRuntime`, `ServiceTunnelSnapshot`, `ClientTarget`, `DestinationFailure`, `ReconcileOutcome`, `ReapReport`, `GenerationSnapshot`, `StagedRuntime`, `install_router_delivery`, `uninstall_router_delivery`, `has_router_delivery`, `router_delivery`, `routing_decision_for`, `co_owned_destination_hashes`, `resolve_client_destination_with_decision`, `resolve_remote_lease_set2`, `route_outbound_remote_request`, `dispatch_inbound_to_owned_destination`, `register_inbound_destination_owner`, `unregister_inbound_destination_owner`, `inbound_destination_owner`, `inbound_owned_destination_hashes`, `record_remote_application_observation`, `REMOTE_APPLICATION_DOCUMENTED_LABELS`, `deliver_outbound` (async) |
-| `service_generation` | `crates/i2pr-daemon/src/service_generation.rs` | Plan 180 committed-generation bookkeeping | `ServiceTunnelGeneration`, `DrainingGeneration`, `GenerationCounters`, `GenerationIdAllocator`, `DestinationResolution` |
-| `service_tunnels_http` | `crates/i2pr-daemon/src/service_tunnels_http.rs` | Plan 176 HTTP client tunnel executor (supervisor + per-connection handler) | `HttpConnectionOutcome`, `run_http_connection`, `run_http_client_loop` |
-| `service_tunnels_socks5` | `crates/i2pr-daemon/src/service_tunnels_socks5.rs` | Plan 177 SOCKS5 client tunnel executor (supervisor + per-connection handler) | `Socks5ConnectionOutcome`, `run_socks5_connection`, `run_socks5_client_loop` |
-| `service_tunnels_irc_client` | `crates/i2pr-daemon/src/service_tunnels_irc_client.rs` | Plan 178 IRC client tunnel executor (supervisor + per-connection handler) | `IrcConnectionOutcome`, `run_irc_connection`, `run_irc_client_loop` |
-| `service_tunnels_irc_server` | `crates/i2pr-daemon/src/service_tunnels_irc_server.rs` | Plan 179 IRC server tunnel executor (supervisor + per-connection handler with registration interception, target connect, and raw pump handoff) | `IrcServerConnectionOutcome`, `InterceptionResult`, `InterceptionSource`, `StreamingInterceptionSource`, `ChannelInterceptionSource`, `run_irc_server_loop`, `intercept_registration` |
-| `service_tunnels_http` (connect) | `crates/i2pr-daemon/src/service_tunnels_http.rs` | Plan 290 strict-CONNECT client executor: CONNECT-only admission (other methods 405, disallowed ports 403), shared pump relay after establishment | `run_connect_only_connection`, `run_connect_client_loop` |
-| `service_tunnels_socks_irc` | `crates/i2pr-daemon/src/service_tunnels_socks_irc.rs` | Plan 290 SOCKS+IRC composer: shared version-peek negotiation (SOCKS4a vs SOCKS5), target selection, then the IRC filtered loop over the same connection with no raw bypass | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
-| `service_tunnels_http_server` | `crates/i2pr-daemon/src/service_tunnels_http_server.rs` | Plan 290 filtered HTTP server executor: shared SYN accept, loopback target connect, slowloris-bounded head read, server privacy filter, paced body forward (whole drain batches accumulated, never dropped), filtered response admit, remainder relay | `HttpServerConnectionOutcome`, `run_http_server_connection`, `run_http_server_loop` |
-| `service_tunnels_http_bidir` | `crates/i2pr-daemon/src/service_tunnels_http_bidir.rs` | Plan 290 deprecated bidirectional HTTP server: loopback proxy listener (no-outproxy client half) plus Streaming SYN poll (filtered server half) under one supervisor task, one generation, one persistent public identity | `run_http_bidir_loop` |
-| `service_tunnels_streamr` | `crates/i2pr-daemon/src/service_tunnels_streamr.rs` | Plan 291 Streamr subscriber/publisher executors over the repliable-datagram substrate with daemon-owned loopback UDP sockets (bounded cadence subscribes, authenticated subscriber table, producer-bound media forwarding, raw fanout) | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
-| `streamr` | `crates/i2pr-service-tunnels/src/streamr.rs` | Plan 291 runtime-neutral Streamr profile options (loopback UDP endpoint, I2P port, refresh/expiry/subscriber/payload policy with freeze-default values); Plan 292 adds the loopback-confined subscriber `remote_sink` redirect (replaces the media target, never duplicates) | `StreamrOptions` |
+Line counts are real `wc -l` output. Directory rows are the sum of their files.
 
-Line counts (approximate at Plan 179 close): see files.
+| Module | File | Lines | Responsibility | Key public types |
+| --- | --- | ---: | --- | --- |
+| `lib` | `src/lib.rs` | 122 | Crate root: module declarations, crate-level `#![forbid(unsafe_code)]`, the full `pub use` re-export surface, architecture pointer | (re-exports only) |
+| `config` | `src/config.rs` | 2563 | Typed kinds (12), ids/groups, listener + target shapes, `DestinationPolicy`, resource/deadline ceilings, `TunnelShaping`, `IdlePolicy`, `HttpServerPolicy`, destination group specs, `ServiceTunnelSet::validate` | `ServiceTunnelKind`, `ServiceTunnelId`, `ServiceClientGroupId`, `DestinationPolicy`, `LocalListenerSpec`, `ServerTarget`, `ServiceResourceLimits`, `ServiceTimeouts`, `ServiceTunnelSpec`, `ServiceTunnelSet`, `TunnelShaping`, `IdlePolicy`, `HttpServerPolicy`, `DestinationGroupSpec`, `DestinationGroupId`, `DestinationGroupKey`, `ServiceKeyReference`, `DestinationCryptoPolicy`, `DestinationSigningPolicy`, `DestinationLeaseSetEncryptionPolicy`, `multihoming_start_index` |
+| `destination` | `src/destination.rs` | 464 | Structural Base32 / static-alias / configured-public-material reference policy and the bounded alias table; no DNS, filesystem, or network lookup, no clearnet fallback, IP literals rejected | `DestinationRef`, `StaticAliasTable`, `B32_SUFFIX`, `I2P_SUFFIX`, `B32_LABEL_LEN`, `MAX_STATIC_ALIAS_LEN`, `MAX_STATIC_ALIAS_LABEL_LEN`, `MAX_CONFIGURED_DESTINATION_LEN` |
+| `errors` | `src/errors.rs` | 104 | The single typed structural error enum for the whole crate; carries bounded/truncated values and machine-readable reasons only | `ServiceTunnelError` |
+| `events` | `src/events.rs` | 100 | Value-only lifecycle events and point-in-time accounting snapshots (no socket handles, no Tokio guards, no secrets) | `ServiceTunnelEvent`, `ServiceTunnelSnapshot` |
+| `generation` | `src/generation.rs` | 555 | Plan 180 runtime-neutral generation diff model driving the daemon-side transactional reconcile | `DiffClass`, `ServiceDiff`, `diff_sets`, `diff_spec`, `kind_string` |
+| `http` | `src/http/` | 3297 | Plan 176 HTTP/1.1 parser, header/limits config, request-target validator, hop-by-hop + privacy rewrite, bounded error responses, and the Plan 290/292 filtered-server + presentation policy (9 files: `mod`/`config`/`error`/`limits`/`parser`/`response`/`rewrite`/`server`/`target`) | `HttpLimits`, `HttpClientOptions`, `PrivacyPolicy`, `UserAgentPolicy`, `HttpRequestHead`, `RequestLine`, `HeaderEntry`, `HeaderName`, `RequestTarget`, `TargetKind`, `parse_request_head`, `parse_request_target`, `parse_authority_form`, `parse_origin_form`, `rewrite_headers`, `build_error_response`, `proxy_auth_required`, `HttpError`, `HttpErrorKind`, `ParseError`, `TargetParseError`, `HttpServerPolicy`, `HttpPostLimiter`, `HttpPostLimits`, `FilteredServerRequest`, `PresentationClass`, `classify_presentation`, `filter_server_request`, `filter_server_request_with_policy`, `filter_server_response` |
+| `socks5` | `src/socks5/` | 2300 | Plan 177 RFC 1928 no-auth greeting + CONNECT parser, strict `.i2p` target policy, deterministic bounded reply generator, plus the Plan 290 bounded SOCKS4a CONNECT parser (7 files: `mod`/`config`/`errors`/`limits`/`negotiation`/`reply`/`request`/`socks4a`) | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `GreetingOutcome`, `RequestParser`, `RequestOutcome`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_reply`, `build_reply_from_code`, `Socks4aRequestParser`, `Socks4aOutcome`, `build_socks4a_reply`, `SOCKS4A_REPLY_LEN`, `SOCKS4A_GRANTED`, `SOCKS4A_REJECTED` |
+| `irc` | `src/irc/` | 3680 | Plan 178 IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, client-to-network privacy filter, and the Plan 179 server registration interceptor + peer hostname projection (10 files: `mod`/`client_filter`/`config`/`errors`/`limits`/`line`/`policy`/`server`/`tags`) | `IrcLimits`, `IrcClientOptions`, `IrcServerOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `PrivacySubstitutions`, `IrcTag`, `TagsOutcome`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname`, `encode_b32_label`, `classify_core`, `classify_post_tag_core`, `is_allowed`, `is_command_allowed` |
+| `access` | `src/access.rs` | 390 | Plan 292 server inbound peer allow/deny policy over canonical Base32 hashes, plus a bounded fixed-window authenticated connection-rate limiter | `ServerAccessPolicy`, `ServerConnectionRateLimits`, `ServerConnectionRateLimiter`, `MAX_ACCESS_LIST_ENTRIES`, `MAX_RATE_LIMIT_PEERS` |
+| `auth` | `src/auth.rs` | 298 | Plan 292 per-realm SHA-256 `username:realm:password` verifiers, constant-time verify, redacted `Debug`, HTTP Basic decode, SOCKS RFC 1929 realm binding | `ProxyCredentials`, `decode_basic_credentials`, `PROXY_AUTH_REALM_HTTP`, `PROXY_AUTH_REALM_CONNECT`, `PROXY_AUTH_REALM_SOCKS`, `PROXY_VERIFIER_MARKER`, `MAX_PROXY_USERNAME_LEN`, `MAX_PROXY_PASSWORD_LEN` |
+| `idle` | `src/idle.rs` | 172 | Plan 292 pure, timer-free, socket-free per-tunnel idle-sweep decision (exact-deadline fire, saturating arithmetic) | `IdleSweepAction`, `idle_decision` |
+| `streamr` | `src/streamr.rs` | 187 | Plan 291 runtime-neutral Streamr profile options (loopback UDP endpoints, I2P port, refresh/expiry/subscriber/payload policy with freeze-derived defaults) | `StreamrOptions`, `DEFAULT_SUBSCRIBE_INTERVAL_MS`, `DEFAULT_SUBSCRIPTION_EXPIRY_MS`, `DEFAULT_MAX_SUBSCRIBERS`, `DEFAULT_PAYLOAD_LIMIT_BYTES`, `MAX_PAYLOAD_LIMIT_BYTES`, `MAX_SUBSCRIBER_CEILING`, `DEFAULT_STREAMR_I2P_PORT` |
+| `outbound_secret` | `src/outbound_secret.rs` | 277 | Plan 341 runtime-neutral *policy* half of outbound proxy-secret ownership: the `OutboundSecretStore` capability, the sealed stored-form framing, and a fail-closed default. Holds no cryptography | `OutboundSecret`, `OutboundSecretStore`, `NoOutboundSecrets`, `validate_stored_form`, `OUTBOUND_SECRET_MARKER`, `MAX_OUTBOUND_SECRET_LEN`, `MAX_OUTBOUND_SECRET_STORED_LEN` |
+| `connect` | `src/connect.rs` | 111 | Plan 290 strict HTTP CONNECT-only client option surface (bounded allowed-port set, default 443). Parsing/validation live in `http`; the executor lives in the daemon | `ConnectClientOptions`, `CONNECT_OPTIONS_MAX_PORTS`, `CONNECT_DEFAULT_PORT` |
 
 ## Public surface
 
+The `pub use` re-exports from `src/lib.rs:65-122`, verbatim in shape:
+
 ```text
-i2pr_service_tunnels:
-  pub use config::{ServiceTunnelId, ServiceClientGroupId, ServiceTunnelKind,
-    DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceResourceLimits,
-    ServiceTimeouts, ServiceTunnelSpec, ServiceTunnelSet, MAX_*};
-  pub use destination::{DestinationRef, StaticAliasTable};
-  pub use errors::ServiceTunnelError;
-  pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
-  pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
-  pub use http::{HeaderEntry, HeaderName, HttpClientOptions, HttpError,
-    HttpErrorKind, HttpLimits, HttpRequestHead, ParseError, PrivacyPolicy,
-    RequestLine, RequestTarget, TargetKind, TargetParseError, UserAgentPolicy,
-    build_error_response, parse_authority_form, parse_request_head,
-    parse_request_target, rewrite_headers};
-  pub use socks5::{ConnectDestination, ConnectPortPolicy, GreetingOutcome,
-    GreetingParser, RequestOutcome, RequestParser, Socks5ClientOptions,
-    Socks5Error, Socks5ErrorKind, Socks5Limits, Socks5ReplyCode,
-    build_socks5_reply, build_socks5_reply_from_code};
-  pub use irc::{IrcClientOptions, IrcCommand, IrcCommandClass,
-    IrcDropReason, IrcError, IrcErrorKind, IrcLimits, IrcLineParser,
-    IrcServerOptions, IrcServerRegistration, IrcTag, LineDirection,
-    LineParserOutcome, ParsedLine, PingRewriteState, PrivacySubstitutions,
-    ReasonRewritePolicy, RegistrationOutcome, RegistrationRejection,
-    RegistrationState, TagsOutcome, TagsParser, classify_irc_core,
-    classify_post_tag_core, encode_b32_label, is_irc_command_allowed,
-    is_irc_command_allowed_alias, project_peer_hostname};
-
-i2pr_storage:
-  pub ServiceDestinationStore, ServiceDestinationRecord,
-  ServiceDestinationStorageError, decode_service_destination_bytes,
-  MAX_SERVICE_DESTINATION_FILE_SIZE,
-  SERVICE_DESTINATION_FILE_NAME, SERVICE_DESTINATIONS_SUBDIR,
-  SERVICE_DESTINATION_FORMAT_VERSION.
-
-i2pr_daemon::service_tunnels:
-  pub ServiceTunnelManager, ServiceTunnelManagerConfig, ServiceRuntime,
-  ServiceTunnelSnapshot, ClientTarget, DestinationFailure,
-  ReconcileOutcome, ReapReport, GenerationSnapshot, StagedRuntime,
-  register_service_tunnel_manager.
-
-i2pr_daemon::service_generation:
-  pub ServiceTunnelGeneration, DrainingGeneration, GenerationCounters,
-  GenerationIdAllocator, DestinationResolution.
-
-i2pr_daemon::service_tunnels_http:
-  pub HttpConnectionOutcome, run_http_connection, run_http_client_loop.
-
-i2pr_daemon::service_tunnels_socks5:
-  pub Socks5ConnectionOutcome, run_socks5_connection, run_socks5_client_loop.
-
-i2pr_daemon::service_tunnels_irc_client:
-  pub IrcConnectionOutcome, run_irc_connection, run_irc_client_loop.
-
-i2pr_daemon::service_tunnels_irc_server:
-  pub IrcServerConnectionOutcome, InterceptionResult, InterceptionSource,
-  StreamingInterceptionSource, ChannelInterceptionSource,
-  IrcServerOptions, IrcServerRegistration, RegistrationOutcome,
-  RegistrationRejection, RegistrationState, intercept_registration,
-  project_peer_hostname, run_irc_server_loop.
+pub use access::{MAX_ACCESS_LIST_ENTRIES, MAX_RATE_LIMIT_PEERS, ServerAccessPolicy,
+  ServerConnectionRateLimiter, ServerConnectionRateLimits};
+pub use auth::{MAX_PROXY_PASSWORD_LEN, MAX_PROXY_USERNAME_LEN, PROXY_AUTH_REALM_CONNECT,
+  PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,
+  decode_basic_credentials};
+pub use config::{DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_STREAMING_CONNECT_DELAY_MS,
+  DestinationCryptoPolicy, DestinationGroupId, DestinationGroupKey, DestinationGroupSpec,
+  DestinationLeaseSetEncryptionPolicy, DestinationPolicy, DestinationSigningPolicy, IdlePolicy,
+  LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
+  MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS, MAX_EFFECTIVE_DIRECTION_TUNNELS,
+  MAX_GROUP_ID_LEN, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS,
+  MAX_STATIC_ALIASES, MAX_STREAMING_CONNECT_DELAY_MS, MAX_TUNNEL_BACKUP_QUANTITY,
+  MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MAX_UNIX_PATH_LEN,
+  MIN_BUFFERED_BYTES_PER_DIRECTION, MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceClientGroupId,
+  ServiceKeyReference, ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId,
+  ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping,
+  multihoming_start_index};
+pub use connect::{CONNECT_DEFAULT_PORT, CONNECT_OPTIONS_MAX_PORTS, ConnectClientOptions};
+pub use destination::{DestinationRef, StaticAliasTable};
+pub use errors::ServiceTunnelError;
+pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
+pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
+pub use http::{FilteredServerRequest, HeaderEntry, HeaderName, HttpClientOptions, HttpError,
+  HttpErrorKind, HttpLimits, HttpPostLimiter, HttpPostLimits, HttpRequestHead, HttpServerPolicy,
+  MAX_POST_LIMIT_PEERS, ParseError, PresentationClass, PrivacyPolicy, RequestLine,
+  RequestTarget, TargetKind, TargetParseError, UserAgentPolicy, build_error_response,
+  classify_presentation, filter_server_request, filter_server_request_with_policy,
+  filter_server_response, parse_authority_form, parse_origin_form, parse_request_head,
+  parse_request_target, proxy_auth_required, rewrite_headers};
+pub use idle::{IdleSweepAction, idle_decision};
+pub use irc::{IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcError,
+  IrcErrorKind, IrcLimits, IrcLineParser, IrcServerOptions, IrcServerRegistration, IrcTag,
+  LineDirection, LineParserOutcome, ParsedLine, PingRewriteState, PrivacySubstitutions,
+  ReasonRewritePolicy, RegistrationOutcome, RegistrationRejection, RegistrationState,
+  TagsOutcome, TagsParser, classify_core as classify_irc_core, classify_post_tag_core,
+  encode_b32_label, is_allowed as is_irc_command_allowed,
+  is_command_allowed as is_irc_command_allowed_alias, project_peer_hostname};
+pub use socks5::{ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser,
+  RequestOutcome, RequestParser, SOCKS4A_GRANTED, SOCKS4A_REJECTED, SOCKS4A_REPLY_LEN,
+  Socks4aOutcome, Socks4aRequestParser, Socks5ClientOptions, Socks5Error, Socks5ErrorKind,
+  Socks5Limits, Socks5ReplyCode, build_reply as build_socks5_reply,
+  build_reply_from_code as build_socks5_reply_from_code, build_socks4a_reply};
+pub use streamr::{DEFAULT_MAX_SUBSCRIBERS, DEFAULT_PAYLOAD_LIMIT_BYTES,
+  DEFAULT_STREAMR_I2P_PORT, DEFAULT_SUBSCRIBE_INTERVAL_MS, DEFAULT_SUBSCRIPTION_EXPIRY_MS,
+  MAX_PAYLOAD_LIMIT_BYTES, MAX_SUBSCRIBER_CEILING, StreamrOptions};
 ```
+
+### `outbound_secret` is module-public but *not* re-exported at the crate root
+
+`pub mod outbound_secret;` is declared at `src/lib.rs:61`, but there is deliberately **no**
+`pub use outbound_secret::…`. Downstream crates reach these items through the module path
+`i2pr_service_tunnels::outbound_secret::{OutboundSecret, OutboundSecretStore, …}`. The
+private submodule constants (`OUTBOUND_SECRET_MARKER`, `MAX_OUTBOUND_SECRET_LEN`,
+`MAX_OUTBOUND_SECRET_STORED_LEN`) and the `validate_stored_form` framing validator are
+public within that module. This is the crate's only secret-bearing module.
 
 ## Key contracts
 
-### `i2pr-service-tunnels` (Plan 174 foundation, retained)
+### Typed service-tunnel kinds
 
-- `#![forbid(unsafe_code)]` in every module.
-- Every count/length/deadline has a hard typed ceiling:
-  32 services, 64 aliases, 64-byte IDs, 128 conns per service,
-  1024 aggregate, 1024-1048576 buffered bytes per direction,
-  8 configured targets, connect 1-120 s, read/write 1-600 s,
-  shutdown 1-30 s, 52-char Base32, 67-byte alias, 255-byte Unix path.
-- `ServiceTunnelSet::validate()` rejects duplicate IDs, duplicate
-  binds, contradictory options, and aggregate overflow before daemon
-  state changes.
-- `DestinationRef::parse()` is structural only: no DNS, filesystem,
-  network, or clearnet fallback; IP literals rejected.
-- `StaticAliasTable` rejects duplicates, conflicts, malformed
-  targets, and ceiling overflow.
-- Client kinds require listener + destination and forbid server
-  targets; server kinds require target(s), forbid listener and remote
-  destination. Explicitly grouped server services require distinct,
-  nonzero inbound I2P ports.
-- `ServiceTunnelSpec::http_options` is mandatory for `HttpClient`
-  and rejected for every other kind.
-- `ServiceTunnelSpec::socks5_options` is mandatory for
-  `Socks5Client` and rejected for every other kind.
-- `ServiceTunnelSpec::irc_options` is mandatory for `IrcClient`
-  and rejected for every other kind.
-- `ServiceTunnelSpec.kind == IrcServer` reuses the Plan 175
-  persistent server destination storage so restart preserves the
-  public service Destination.
+`ServiceTunnelKind` (`src/config.rs`) has exactly **12** variants, paired with their
+`parse` / `as_str` spellings (`src/config.rs:230-263`):
 
-### Plan 309 Destination groups
+| Variant | Spelling |
+| --- | --- |
+| `GenericClient` | `generic-client` |
+| `GenericServer` | `generic-server` |
+| `HttpClient` | `http-client` |
+| `Socks5Client` | `socks5-client` |
+| `IrcClient` | `irc-client` |
+| `IrcServer` | `irc-server` |
+| `ConnectClient` | `connect-client` (Plan 290) |
+| `SocksIrc` | `socks-irc` (Plan 290) |
+| `HttpServer` | `http-server` (Plan 290) |
+| `HttpBidirServer` | `http-bidir-server` (Plan 290, deprecated) |
+| `StreamrClient` | `streamr-client` (Plan 291) |
+| `StreamrServer` | `streamr-server` (Plan 291) |
 
-`DestinationPolicy::Dedicated` is the default and creates one private
-Destination group per service. An explicit `group` is an intentional
-linkability domain: every member shares one identity, Streaming owner,
-router material, registry entry, and lifecycle. Client-only groups use
-ephemeral identities unless their explicit `PersistentClientKey`
-policy selects the same versioned service-Destination store. The
-Proposal 170 `Shared` plus `PersistentClientKey` combination persists
-the opted-in control-owned client group under
-`service_destinations/groups/i2pcontrol-shared-client/destination.identity`.
-A group containing any server persists under
-`service_destinations/groups/<group>/destination.identity`; an existing
-dedicated server identity is migrated byte-for-byte to its corresponding
-group path. Client activity in a persistent mixed group is logged as
-intentionally linkable to the published server Destination.
+Kinds are typed enum values, never strings, after parsing. Per-kind option
+applicability is gated structurally: `http_options`, `socks5_options`, `irc_options`,
+`connect_options`, `streamr_options`, plus per-kind contradiction gates (shaping, profile,
+credential, cadence, peer policy) are all rejected for the wrong kind.
 
-For example, HTTP and SOCKS proxies can intentionally share a Destination:
+### Destination references, static aliases, and the naming boundary
 
-```toml
-[[service_tunnels.tunnel]]
-id = "web-proxy"
-kind = "http-client"
-group = "shared-clients"
-listener = "127.0.0.1:4444"
-destination = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p"
+`DestinationRef` (`src/destination.rs:32-45`) has three variants, dispatched purely
+structurally in `DestinationRef::parse`:
 
-[[service_tunnels.tunnel]]
-id = "socks-proxy"
-kind = "socks5-client"
-group = "shared-clients"
-listener = "127.0.0.1:4445"
-destination = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p"
-```
+- `Base32Hash { label, hash }` — value ends with `.b32.i2p`; `label` is exactly
+  `B32_LABEL_LEN = 52` lower-case characters and `hash` is the decoded 32-byte hash.
+- `StaticAlias(String)` — value ends with `.i2p`; bounded lower-case label of at most
+  `MAX_STATIC_ALIAS_LABEL_LEN = 63` (`MAX_STATIC_ALIAS_LEN = 67` including the suffix).
+- `ConfiguredDestination(String)` — anything else that is bounded
+  (`MAX_CONFIGURED_DESTINATION_LEN = 4096`) public material and is **not** an IP literal.
 
-Multiple server services can share a persistent Destination when each uses
-a distinct nonzero `inbound_port`. Reusing a group and port is rejected.
-This sharing intentionally links all member services; it is never selected
-automatically to satisfy a resource limit.
+There is no DNS lookup, no filesystem lookup, no network lookup, and no implicit
+clearnet fallback. Resolution of a validated reference to a LeaseSet or a remote runtime
+remains a daemon/client composition operation. Canonical *naming* is owned by
+`i2pr-addressbook`; the daemon owns the lookup wiring that injects the shared addressbook
+into the manager. This crate owns the policy that decides what a syntactically acceptable
+reference is.
 
-### Plan 176 HTTP runtime-neutral module
+### Resource and deadline ceilings (real values)
 
-- Hard ceilings: request-line 8192 bytes, total header bytes
-  65536, header count 100, field name 256 bytes, field value
-  8192 bytes, CONNECT authority 512 bytes, retained buffer 65536,
-  generated error 1024 bytes.
-- Parser rejects: NUL/CR/LF/obs-fold/CRLF ambiguities, host
-  smuggling (conflicting `Content-Length`, `Transfer-Encoding` +
-  `Content-Length`, GET/HEAD with framing, duplicate `Host` with
-  conflicting authority), overlong fields under deadline, methods
-  outside uppercase ASCII, non-`HTTP/1.1` versions.
-- Target validator rejects: non-`http` schemes, userinfo, IP
-  literals, `localhost`/`.localhost`, mixed-suffix confusion
-  (`*.i2p.example`), empty CONNECT ports, port 0, malformed/empty
-  authority. `.b32.i2p` references pass; canonical `.i2p` aliases
+From `src/config.rs` unless noted:
+
+| Constant | Value |
+| --- | ---: |
+| `MAX_SERVICE_TUNNELS` | 32 |
+| `MAX_STATIC_ALIASES` | 64 |
+| `MAX_SERVICE_ID_LEN` | 64 |
+| `MAX_GROUP_ID_LEN` | 64 |
+| `MAX_ACTIVE_CONNECTIONS_PER_SERVICE` | 128 |
+| `MAX_ACTIVE_CONNECTIONS_AGGREGATE` | 1024 |
+| `MIN_BUFFERED_BYTES_PER_DIRECTION` | 1_024 |
+| `MAX_BUFFERED_BYTES_PER_DIRECTION` | 1_048_576 |
+| `MAX_CONFIGURED_TARGETS` | 8 |
+| `MAX_UNIX_PATH_LEN` | 255 |
+| `MIN_CONNECT_TIMEOUT_MS` / `MAX_CONNECT_TIMEOUT_MS` | 1_000 / 120_000 |
+| `MIN_READ_TIMEOUT_MS` / `MAX_READ_TIMEOUT_MS` | 1_000 / 600_000 |
+| `MIN_WRITE_TIMEOUT_MS` / `MAX_WRITE_TIMEOUT_MS` | 1_000 / 600_000 |
+| `MIN_SHUTDOWN_TIMEOUT_MS` / `MAX_SHUTDOWN_TIMEOUT_MS` | 1_000 / 30_000 |
+| `DEFAULT_STREAMING_CONNECT_DELAY_MS` / `MAX_…_DELAY_MS` | 500 / 5_000 |
+| `MAX_TUNNEL_QUANTITY` | 6 |
+| `MAX_TUNNEL_LENGTH_HOPS` | 3 |
+| `MAX_TUNNEL_BACKUP_QUANTITY` | 3 |
+| `MAX_TUNNEL_LENGTH_VARIANCE` | 2 |
+| `MAX_EFFECTIVE_DIRECTION_TUNNELS` | 8 |
+| `MIN_IDLE_TIMEOUT_MS` / `MAX_IDLE_TIMEOUT_MS` / `DEFAULT_IDLE_TIMEOUT_MS` | 1_000 / 86_400_000 / 600_000 |
+
+Profile ceilings:
+
+- **HTTP** (`src/http/config.rs`): request line 8_192; total header 65_536; header count
+  100; field name 256; field value 8_192; CONNECT authority 512; retained buffer 65_536;
+  generated error 1_024; options ports 16; user-agent rules 32 × 256 bytes; host 256;
+  path 4_096; query 4_096; server authority 256; spoofed host 253; `MAX_POST_LIMIT_PEERS`
+  4_096; each bounded error body 256 bytes.
+- **SOCKS5** (`src/socks5/config.rs`): method count 16; greeting 32; request header 32;
+  domain 255; retained buffer 320; reply 64; options ports 16; `DEFAULT_CONNECT_PORT`
+  443; `REPLY_LEN` 10; success bind `127.0.0.1` / port 0. **SOCKS4a**
+  (`src/socks5/socks4a.rs`): version `0x04`; command `0x01`; fixed header 8; USERID max
+  255; retained max 520; reply len 8; granted `90`; rejected `91`.
+- **CONNECT** (`src/connect.rs`): `CONNECT_OPTIONS_MAX_PORTS` 16;
+  `CONNECT_DEFAULT_PORT` 443.
+- **IRC** (`src/irc/config.rs`): core line 512; tag envelope 8_191; client tag data 4_094;
+  per-direction line buffer 8_192; generated line 8_192; tag count 128; tag key 64; CTCP
+  counter ceilings 1_024; options allowed hosts 16. **IRC server**
+  (`src/irc/server.rs`): pre-registration lines default 10, ceiling 64; cumulative
+  pre-registration bytes default `IRC_LINE_BUFFER_MAX_BYTES` (8_192).
+- **Access** (`src/access.rs`): `MAX_ACCESS_LIST_ENTRIES` 64;
+  `MAX_RATE_LIMIT_PEERS` 4_096; rate windows `[60_000, 3_600_000, 86_400_000]` ms;
+  per-limit maximum 100_000.
+- **Auth** (`src/auth.rs`): `MAX_PROXY_USERNAME_LEN` 128;
+  `MAX_PROXY_PASSWORD_LEN` 512.
+- **Streamr** (`src/streamr.rs`): default subscribe interval 10_000 ms (fast start 2_000 ms
+  for the first 5); default/max subscribe interval 30_000; default subscription expiry
+  60_000; min/max expiry 10_000 / 300_000; default/max subscribers 10 / 64; default and
+  hard payload limit 1_200; `DEFAULT_STREAMR_I2P_PORT` 0.
+- **Outbound secret** (`src/outbound_secret.rs`): `MAX_OUTBOUND_SECRET_LEN` 512;
+  `MAX_OUTBOUND_SECRET_STORED_LEN` = `2 * (512 + 64) + 16` = 1_168.
+
+### Validated sets and listener/target shapes
+
+- `ServiceTunnelSet::validate()` rejects duplicate ids, duplicate binds, contradictory
+  options, and aggregate overflow **before** any daemon state change.
+- Client kinds require a listener + destination and forbid server targets; server kinds
+  require target(s), forbid a listener and a remote destination. Explicitly grouped
+  server services require distinct, nonzero inbound I2P ports.
+- `LocalListenerSpec` carries a `std::net::IpAddr` and is loopback-only;
+  `ServerTarget` is `LoopbackTcp(std::net::SocketAddr)` or a bounded Unix path
+  (`MAX_UNIX_PATH_LEN` 255). These are *value* types used for structural validation —
+  this crate never opens one.
+- `StaticAliasTable` rejects duplicates, conflicts, malformed targets, and ceiling
+  overflow.
+
+### Typed errors (`src/errors.rs`)
+
+`ServiceTunnelError` is `Clone + Debug + Eq + PartialEq + Error` with exactly 11 variants:
+`InvalidId`, `InvalidKind`, `InvalidGroup`, `InvalidDestinationRef`, `InvalidAlias`,
+`InvalidListener`, `InvalidTarget`, `DuplicateId`, `DuplicateListener`, `DuplicateAlias`,
+`ContradictoryOptions`, `ExceedsCeiling`. Values are bounded/truncated by callers and
+`reason` fields are `&'static str`, so no runtime payload is carried.
+
+Profile-specific typed errors live in their own modules and are re-exported at the root:
+
+- `Socks5ErrorKind` (27 variants) — `Success` … `InvalidLimits`, `ConnectFailure`,
+  including the negotiation/structural/`NonI2pTarget` split and the SOCKS4a
+  `MalformedUserid` path.
+- `IrcErrorKind` (13 variants) — `CoreLineTooLong`, `TagEnvelopeTooLong`,
+  `TagDataTooLong`, `BufferCeiling`, `UnknownCommand`, `DisallowedDirection`, `InvalidTag`,
+  `TagKeyTooLong`, `TooManyTags`, `RealnameTooLong`, `InvalidNumeric`, `InvalidLimits`,
+  `PingTokenOverflow`.
+- `HttpErrorKind` (17 variants) — `MalformedRequestLine`, `MalformedHeaders`,
+  `MalformedField`, `MalformedTarget`, `UnsupportedScheme`, `NonI2pAuthority`,
+  `UserinfoInAuthority`, `SmugglingAmbiguity`, `UnsupportedConnectPort`,
+  `MethodNotAllowed` (405), `PresentationRefused` (403),
+  `BufferCeilingExceeded`, `ResponseCeilingExceeded`, `InvalidLimits`, `BadGateway`,
+  `GatewayTimeout`, `Other`.
+- `RegistrationRejection` (8 variants) — `TooManyLines`, `BufferOverflow`,
+  `CrossProtocol`, `UnknownCommand`, `InvalidLine`, `InvalidUser`, `InvalidServer`,
+  `CoreLineTooLong`.
+
+### Typed events and snapshots (`src/events.rs`)
+
+`ServiceTunnelEvent` (5 variants): `SpecValidated { id, kind }`,
+`SpecRejected { id, reason }`, `SetValidated { service_count }`,
+`ConnectionAdmitted { id, active_for_service, active_aggregate }`,
+`ConnectionClosed { id, active_for_service, active_aggregate }`.
+
+`ServiceTunnelSnapshot` is a `Copy` point-in-time struct:
+`configured_services`, `enabled_services`, `active_connections`, `rejected_connections`,
+`destination_failures`. Snapshots are never memory-backed queues; saturation is signaled
+by rejection, not buffer growth.
+
+### `access.rs` and `auth.rs` — policy only, no listener, no connection
+
+**What is modelled.** `ServerAccessPolicy { allow, deny, connection_rates }` where
+`allow` is the union of `access_list` and `white_list` and `deny` is `black_list`.
+Entries are canonical Base32 destination hashes (52 characters, with or without the
+`.b32.i2p` suffix) decoded to `[u8; 32]`. Matching is exact on the 32-byte peer hash
+observed at inbound accept: **deny always wins**; an empty allow set admits everyone not
+denied; a non-empty allow set admits only its members. Values are never echoed.
+`ServerConnectionRateLimiter` provides bounded fixed-window per-peer and aggregate
+accounting over caller-supplied process-monotonic milliseconds; at table capacity it
+reclaims expired records and fail-closed rejects an unseen peer.
+
+**What is NOT owned — stated precisely.** This crate models access and auth *policy*
+only. It owns **no listener, no connection, no accept loop, and no peer-hash source**.
+The authenticated 32-byte peer hash arrives from the daemon's inbound Streaming accept;
+this crate only decides what may be done with it. Likewise `ProxyCredentials` models the
+*verifier* half: one SHA-256 over `username:realm:password` per tunnel, the plaintext
+password dropped at construction, constant-time verification, and a hand-written
+`Debug` that emits exactly `ProxyCredentials(<redacted>)`. The realm binds the verifier
+to its listener family, so a verifier stolen from HTTP does not verify on SOCKS or
+CONNECT. `decode_basic_credentials` is RFC 7617 Basic decode; SOCKS RFC 1929 shares the
+same realm binding. Digest authentication is not implemented. **None of this crate's
+code opens, accepts, or holds a listener or connection.**
+
+### `outbound_secret.rs` — secret-handling invariants (verified)
+
+`OutboundSecret` is the only type in the crate carrying outbound secret bytes. Verified
+against `src/outbound_secret.rs`:
+
+- **No `Debug`, no `Display`.** The struct declaration (`lines 64-67`) carries no
+  `#[derive(...)]`; there is no `impl Debug` and no `impl Display` anywhere in the file.
+  There is therefore no way to print it.
+- **No `Clone`.** No `#[derive(Clone)]` and no manual `impl Clone`; the type is not
+  copyable and cannot be duplicated.
+- **Zeroized on drop.** The buffer is
+  `Zeroizing<[u8; MAX_OUTBOUND_SECRET_LEN]>` (`line 65`), allocated via
+  `Zeroizing::new([0_u8; 512])` (`line 89`) — a fixed-size stack buffer, not a `String`
+  and not a `Vec`, so the crate does not need `zeroize/alloc` and the secret never
+  sits in a heap allocation. `zeroize::Zeroizing` implements `Drop` and scrubs on scope
+  exit. The `zeroize` dependency is present in `Cargo.toml` and used.
+- **Bounded and NUL-free at construction.** `OutboundSecret::new` rejects empty input,
+  input longer than 512 bytes, and any embedded NUL.
+- **Borrow-only access.** `expose()` / `expose_str()` return borrows that cannot outlive
+  the value; a caller builds its header and drops it.
+- **Marker separation.** `OUTBOUND_SECRET_MARKER = "$i2pr1o$"` is intentionally
+  distinct from the inbound verifier marker `PROXY_VERIFIER_MARKER = "$i2pr1$"`, so an
+  inbound verifier can never be mistaken for an outbound sealed form.
+  `validate_stored_form` enforces marker presence, non-empty lowercase-hex body of even
+  length, and the stored-length ceiling — **before** any decode work.
+- **Fail-closed default.** `NoOutboundSecrets` implements `OutboundSecretStore` by
+  returning an error from `seal` and `open` and `false` from `is_available`. It is a
+  refusal, not a stub that returns a default value, so "no owner installed" is a state
+  the type carries.
+
+The trait is the injection point: the daemon supplies the concrete router-bound
+implementation, exactly as it already injects `RouterDeliveryService`. This module holds
+no cryptography — it is only the policy half, which is why it can be runtime-neutral
+with no AEAD dependency.
+
+### `idle.rs` — pure idle-sweep decision
+
+`idle_decision(policy, active_connections, streamr_subscribers, last_activity_ms,
+now_ms) -> Option<IdleSweepAction>` is a pure function. There is no clock, no timer, and
+no socket. It fires only when nothing is active (no open streams **and** no Streamr
+subscribers) and the quiet interval reaches the deadline. Arithmetic is saturating, so
+clock jumps never panic or wrap.
+
+`IdleSweepAction` has 4 variants — `Close`, `RotateDestination`, `RebuildPools`,
+`ReducePools` — and the fixed priority is **rotate > close > rebuild > reduce**
+(`src/idle.rs:46-58`). `close_timeout_ms` and `reduce_timeout_ms` override
+`timeout_ms`; `None` inherits `timeout_ms` and `Some(0)` fires as soon as the tunnel is
+idle. `IdlePolicy::disabled()` and any inert policy decide nothing.
+
+### `streamr.rs` — Streaming-repair profile options
+
+`StreamrOptions` is `Copy` and shared by the subscriber (`streamr-client`) and publisher
+(`streamr-server`) halves: `local_udp` (loopback media source for the server half / media
+target for the client half), `remote_sink` (Plan 292 loopback-confined subscriber media
+redirect — it *replaces* the media target, never duplicates it), `target_i2p_port`,
+`subscribe_interval_ms`, `subscription_expiry_ms`, `max_subscribers`,
+`payload_limit_bytes`. Defaults are freeze-derived from Java I2P's
+`net.i2p.i2ptunnel.streamr` (`Pinger` cadence, `Subscriber::EXPIRATION`,
+`MAX_SUBSCRIPTIONS`). Per-kind required fields are enforced by `ServiceTunnelSpec::validate`,
+not here. No sockets, no timers, no Tokio — the daemon owns all UDP I/O.
+
+### HTTP/1.1 parser, rewrite, target validation, bounded error responses
+
+- **Parser** rejects NUL/CR/LF/obs-fold/CRLF ambiguities and host-smuggling shapes
+  (conflicting `Content-Length`, `Transfer-Encoding` + `Content-Length`, GET/HEAD with
+  framing, duplicate `Host` with a conflicting authority), overlong fields under deadline,
+  methods outside uppercase ASCII, and non-`HTTP/1.1` versions.
+- **Target validator** rejects non-`http` schemes, userinfo, IP literals, `localhost` /
+  `.localhost`, mixed-suffix confusion (`*.i2p.example`), empty CONNECT ports, port 0,
+  and malformed/empty authorities. `.b32.i2p` references and canonical `.i2p` aliases
   pass the strict static-alias grammar.
-- Rewrite policy: parses the `Connection` value list and removes
-  every header named by it (case-insensitive); removes
-  `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`,
-  `Transfer-Encoding`; forces `Connection: close`; normalizes
-  `Host` from the target authority; strips `Via`, `Forwarded`,
-  `X-Forwarded-{For,Host,Proto}`, `Proxy-Authorization`,
-  optionally `Referer`, `From`; `User-Agent` keep/strip/replace
-  with the stable `i2pr/0.1` value.
-- Error response: bounded bytes, sanitized `X-HTTP-Proxy-Reason`
-  header (CR/LF/control bytes stripped), never echoes request
-  bytes.
+- **Rewrite** parses the `Connection` value list and removes every header it names
+  (case-insensitive); removes `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`,
+  `Upgrade`, `Transfer-Encoding`; forces `Connection: close`; normalizes `Host` from the
+  validated destination authority; strips `Via`, `Forwarded`, `X-Forwarded-{For,Host,Proto}`,
+  `Proxy-Authorization`, optionally `Referer` and `From`; applies
+  `User-Agent` keep/strip/replace with the stable `DEFAULT_USER_AGENT_VALUE`
+  (`"MYOB/6.66 (AN/ON)"`).
+- **Error responses** are bounded to 256 bytes each with a sanitized
+  `X-HTTP-Proxy-Reason` header (CR/LF/control bytes stripped). Untrusted request bytes are
+  never echoed.
+- **Filtered server side** (Plan 290/292) enforces origin-form only, requires `Host` and
+  replaces it with the loopback target, rejects `Transfer-Encoding`, strips
+  hop-by-hop and identifying headers, forces close, and injects no peer identity.
+  `classify_presentation` maps `/addresshelper` + `i2paddresshelper` to
+  `PresentationClass::Helper` and `/jump` + `jump` to `PresentationClass::Jump`;
+  `Ordinary` is always forwarded and a closed gate refuses 403 via
+  `HttpErrorKind::PresentationRefused`.
 
-### Plan 175 generic client/server execution
+### RFC 1928 SOCKS5 negotiation + CONNECT + bounded replies
 
-Plan 175 enables `enabled = true` for `generic-client` and
-`generic-server`. Plan 176 adds `http-client`. Plan 177 adds
-`socks5-client`. Plan 178 adds `irc-client`. Plan 179 adds
-`irc-server`. Every current kind is accepted after its plan
-lands; there is no remaining not-yet-available gate (a
-hypothetical future kind remains rejected until its plan lands).
+- **Greeting parser**: `VER` must be `0x05`; `NMETHODS` must be
+  `1..=SOCKS5_METHOD_COUNT_MAX`; the method list must contain
+  `0x00 NO AUTHENTICATION REQUIRED`. `0x02 username/password` is never accepted, even
+  when offered.
+- **CONNECT request parser**: rejects BIND (`0x02`), UDP ASSOCIATE (`0x03`), and unknown
+  commands; rejects IPv4 (`0x01`) and IPv6 (`0x04`) address types; rejects
+  clearnet / IP literal / `localhost` / mixed-suffix / malformed alias targets; rejects
+  NUL, control, and whitespace domain bytes; rejects zero-length domain and port 0.
+- **Reply generator**: a deterministic `REPLY_LEN = 10` RFC 1928 reply with
+  `BND.ADDR = 127.0.0.1` and `BND.PORT = 0` — a neutral loopback bind. Untrusted request
+  bytes and destination private material are never echoed.
+- **Port policy**: `ConnectPortPolicy::default()` permits only port 443
+  (`DEFAULT_CONNECT_PORT`); configurable per service.
+- **Allowed hosts**: `Socks5ClientOptions::allowed_hosts` may pin a bounded list of
+  `.i2p` hosts, each validated by the strict static-alias grammar.
+- **Plan 290 SOCKS4a parity** (`src/socks5/socks4a.rs`): version `0x04`, command
+  `0x01` only, the `0.0.0.x` marker with a bounded USERID, an 8-byte grant/refuse reply
+  (`90`/`91`), and the identical `.i2p`-only domain policy. **Plain SOCKS4 IPv4 literals
+  fail closed** — only the domain-extension (4a) form is accepted.
 
-### Plan 177 SOCKS5 runtime-neutral module
+**Explicit fail-closed non-support** (from `src/socks5/mod.rs` and
+`specs/protocols/11-service-tunnels.md:256-260`): clearnet outproxy, DNS resolution of
+SOCKS hostnames, IP-literal forwarding, SOCKS UDP, BIND, authentication as a *negotiated
+SOCKS method*, Tor `RESOLVE` / `RESOLVE_PTR`, and arbitrary local/LAN target relay. The
+SOCKS5 profile is strictly narrower than Java I2P's broad SOCKS/outproxy profile, and
+that is a deliberate non-goal, not a gap. (The Plan 177 §11 list also named
+"SOCKS4/4a" as unsupported; Plan 290 later added the *bounded* SOCKS4a CONNECT parser
+above, so the current surface is narrower still: 4a domain-extension only, no SOCKS4
+IPv4, no auth method.)
 
-- Hard ceilings: method count 16, greeting bytes 32, request
-  header bytes 32, domain length 255, retained buffer 320,
-  generated reply bytes 64.
-- Greeting parser: VER must be `0x05`; `NMETHODS` must be
-  `1..=method_count_max`; method list must contain `0x00 NO
-  AUTHENTICATION REQUIRED`; `0x02 username/password` is never
-  accepted even when offered.
-- Request parser: rejects NUL/control/whitespace in domain
-  during accumulation (structural failure), BIND/UDP
-  ASSOCIATE/unknown commands (`0x07`), IPv4/IPv6 (`0x08`),
-  clearnet/IP literal/localhost/mixed-suffix/malformed alias
-  (`0x02`), zero-length domain and zero port (`0x01`).
-- Reply: deterministic 10-byte RFC 1928 reply with
-  `BND.ADDR=127.0.0.1`, `BND.PORT=0`; never echoes untrusted
-  request bytes or destination private material.
-- CONNECT port policy: `ConnectPortPolicy::default()` permits
-  only port 443; configurable per-service.
-- Allowed-host policy: `Socks5ClientOptions::allowed_hosts` may
-  pin a bounded list of `.i2p` hosts (validated by the strict
-  static-alias grammar).
+### IRC line parser, IRCv3 tags, classification, and privacy filter
 
-### Plan 178 IRC runtime-neutral module
+- **Ceilings**: core line 512 bytes, tag envelope 8_191, client tag data 4_094,
+  per-direction line buffer 8_192, generated line 8_192, tag count 128, tag key 64.
+  Overlong lines are dropped without truncation and are never split into a
+  syntactically different valid command.
+- **Tag framing**: a structural IRCv3 envelope (`@tag …` plus a separating space) with
+  opaque tag names/values, invalid escapes rejected, and per-key / count / data ceilings
+  enforced. Tag presence never bypasses command classification, and core and tag limits
+  are enforced separately.
+- **Classification**: `IrcCommandClass::{Known(IrcCommand), Unknown}` with a typed
+  `IrcCommand` set (29 spellings) and an explicit per-direction allowlist covering the
+  Plan 178 §4 set. Unknown or unclassified commands are dropped, never passed.
+- **Client-to-network privacy rewrites**: `USER` hostname/servername replaced with stable
+  non-identifying placeholders (`DEFAULT_USER_HOSTNAME = "i2p"`,
+  `DEFAULT_USER_SERVERNAME = "localhost"`); a location-bearing `PING` is rewritten with
+  one bounded per-connection outstanding PONG token
+  (`DEFAULT_PING_LOCATION = "i2p"`) where a new rewrite deterministically replaces the
+  old; `QUIT`/`PART` reasons pass unchanged by default
+  (`DEFAULT_QUIT_REASON = ""`, `ReasonRewritePolicy::Keep`) with a named opt-in stable
+  replacement.
+- **CTCP/DCC policy**: `ACTION` passes; malformed and multi-delimiter messages,
+  address-bearing `DCC`, and other unsupported CTCP requests are dropped. There is no DCC
+  helper tunnel.
+- **Drop reasons** are typed: `UnknownCommand`, `DisallowedDirection`, `DccBlocked`,
+  `UnsupportedCtcp`, `MalformedCtcp`, `RealnameTooLong`, `BadUserField`,
+  `PingLocationOverflow`.
+- **Options**: `IrcClientOptions { allowed_hosts, reason_rewrite, user_realname_max_bytes }`.
+- Errors carry kinds plus machine-readable reasons only — no secrets, no nicknames, no
+  message text.
 
-- Hard ceilings: core line 512 bytes, tag envelope 8191 bytes,
-  client tag data 4094 bytes, per-direction line buffer 8192
-  bytes, generated line 8192 bytes, tag count 128, tag key 64
-  bytes. Overlong lines are dropped without truncation, never
-  split into a syntactically different valid command.
-- Tag framing: structural IRCv3 envelope (`@tag …` + separating
-  space) with opaque tag names/values, invalid escapes
-  rejected, per-key/count/data ceilings enforced; tag presence
-  never bypasses command classification and core/tag limits are
-  enforced separately.
-- Command classifier: explicit per-direction allowlist covering
-  `PASS CAP AUTHENTICATE NICK USER PING PONG JOIN PART QUIT
-  PRIVMSG NOTICE MODE TOPIC AWAY NAMES LIST WHO WHOIS WHOWAS
-  ISON INVITE KICK USERHOST SERVER`, numeric replies, and
-  documented server-originated commands (`PING MODE JOIN NICK
-  QUIT PART KICK TOPIC CAP AUTHENTICATE ACCOUNT CHGHOST
-  ERROR`). Unknown/unclassified commands are dropped, never
-  passed.
-- Privacy rewrites: `USER` hostname/servername replaced with
-  stable non-identifying placeholders; location-bearing `PING`
-  rewritten with one bounded per-connection outstanding PONG
-  token (a new rewrite deterministically replaces the old
-  one); `QUIT`/`PART` reasons pass unchanged by default with a
-  named opt-in stable replacement.
-- CTCP/DCC policy: `ACTION` passes; malformed/multi-delimiter
-  messages, address-bearing `DCC`, and unsupported CTCP are
-  dropped. No DCC helper tunnels.
-- Options: `IrcClientOptions { allowed_hosts,
-  reason_rewrite, user_realname_max_bytes }`; reason rewrite
-  defaults to `Keep`.
-- Errors carry kinds + machine-readable reasons only; no
-  secrets, no nicknames, no message text.
+**Explicit fail-closed non-support** (`specs/protocols/11-service-tunnels.md:334-338`,
+Plan 178 §12): DCC tunnel support, WEBIRC, TLS termination, SASL credential management,
+IRC bouncer functionality, a channel/user state database, and an arbitrary
+protocol-aware server-side filter. The IRC profile is deliberately stricter than Java
+I2P's broad IRC/DCC/operator profile.
 
-### Plan 179 IRC server runtime-neutral module
+### Plan 179 IRC-server registration interceptor and the 52-char projection
 
-- Hard ceilings: pre-registration lines default 10 with a hard
-  maximum of 64; cumulative pre-registration bytes default
-  to the Plan 178 IRC line-buffer ceiling (8192); the
-  pre-registration command allowlist (`PASS CAP AUTHENTICATE
-  NICK`) rejects any line whose command name contains
-  non-uppercase ASCII, is empty, or exceeds 16 bytes.
-- Cross-protocol rejection: the first observed line is checked
-  against a small fixed list (`GET / POST / HEAD / PUT /
-  DELETE / OPTIONS / CONNECT / TRACE / PATCH ` and the
-  BitTorrent handshake magic); non-empty matches reject the
-  registration as `CrossProtocol`.
-- Authenticated peer hostname projection:
-  `project_peer_hostname(&peer_destination_hash)` returns a
-  52-character lower-case I2P Base32 label plus `.b32.i2p`,
-  computed once at construction time from the 32-byte
-  Streaming peer destination hash. The projection is the
-  only acceptable source for the post-rewrite USER hostname
-  argument.
-- `USER` rewriting: the registered `USER` line is rewritten so
-  the second argument is replaced with the projected hostname;
-  the username, servername, realname, and (for RFC 1459) mode
-  parameter are preserved within the 512-byte core ceiling. A
-  rewrite that would push the projected line past the ceiling
-  is rejected as `CoreLineTooLong`, never truncated.
-- IRCv3 tag envelopes are preserved verbatim on the rewritten
-  `USER` (and `SERVER`) line so the local IRC target observes
-  the original tagged message.
-- `SERVER` (server-to-server IRC) is accepted as a handoff
-  line; the line is passed through verbatim (the connecting
-  server name is not a per-user identity).
-- Pre-registration commands are passed through verbatim to the
-  local target; they accumulate in a per-interceptor buffer
-  that is concatenated with the rewritten `USER` line at
-  handoff time.
-- Same-read post-USER bytes (any bytes that follow the
-  terminating CRLF in the same read after the `USER` line)
-  are preserved verbatim as the first raw-pump bytes.
-- Typed `RegistrationOutcome::{Incomplete { retained },
-  Ready { prefix, leftover }, Rejected(reason), Eof}` so the
-  daemon executor can drive one-shot prefix + leftover
-  handoff to the loopback target.
-- Typed rejection reasons: `TooManyLines`, `BufferOverflow`,
-  `CrossProtocol`, `UnknownCommand`, `InvalidLine`,
-  `InvalidUser`, `InvalidServer`, `CoreLineTooLong`.
+- **Ceilings**: pre-registration lines default `10` with a hard ceiling of `64`;
+  cumulative pre-registration bytes default to the Plan 178 IRC line-buffer ceiling
+  (8_192). The pre-registration allowlist (`PASS CAP AUTHENTICATE NICK`) rejects any line
+  whose command name is empty, exceeds 16 bytes, or contains a non-uppercase-ASCII byte.
+- **Cross-protocol detection**: the first observed line is checked against a small fixed
+  list (`GET / POST / HEAD / PUT / DELETE / OPTIONS / CONNECT / TRACE / PATCH ` and the
+  BitTorrent handshake magic); a non-empty match rejects the registration as
+  `RegistrationRejection::CrossProtocol`.
+- **The 52-character rule, and where it is enforced.** `project_peer_hostname` in
+  `src/irc/server.rs:120-125` returns `encode_b32_label(&peer_destination_hash)` followed
+  by `".b32.i2p"`. `encode_b32_label` (`src/irc/server.rs:131-…`) encodes a 32-byte
+  (256-bit) hash over the I2P Base32 alphabet `a-z` + `2-7`, producing **52**
+  characters with 4 bits of zero padding on the final character. The length is enforced
+  at three places: `B32_LABEL_LEN = 52` in `src/destination.rs:17` (checked at
+  `src/destination.rs:187` when parsing a reference label), the `String::with_capacity(52)`
+  preallocation in `encode_b32_label`, and the
+  `String::with_capacity(52 + ".b32.i2p".len())` preallocation in
+  `project_peer_hostname`. The projection is computed once at interceptor construction
+  time from the 32-byte Streaming peer destination hash, and it is the only acceptable
+  source for the post-rewrite `USER` hostname argument. Note the source of the hash: the
+  daemon takes it from the *authenticated* established Streaming connection, so
+  application bytes can never influence the projected identity.
+- **`USER` rewriting**: the registered `USER` line has its second argument replaced with
+  the projected hostname; username, servername, realname, and (for RFC 1459) the mode
+  parameter are preserved within the 512-byte core ceiling. A rewrite that would push
+  the line past the ceiling is rejected as `RegistrationRejection::CoreLineTooLong`,
+  never truncated.
+- **Tag preservation**: IRCv3 tag envelopes are preserved verbatim on the rewritten
+  `USER` (and `SERVER`) line, so the local IRC target observes the original tagged
+  message.
+- **`SERVER`** (server-to-server IRC) is accepted as a handoff line and passed verbatim;
+  a connecting server name is not a per-user identity.
+- **Buffering and handoff**: pre-registration commands are buffered per interceptor and
+  concatenated with the rewritten `USER` line at handoff time. Same-read post-USER bytes
+  (anything following the terminating CRLF in the same read) are preserved verbatim as
+  the first raw-pump bytes.
+- **Typed outcome**: `RegistrationOutcome::{Incomplete { retained }, Ready { prefix,
+  leftover }, Rejected(reason), Eof}`, so the daemon executor can drive a one-shot prefix
+  + leftover handoff to the loopback target.
 
-### Persistent server destinations (`i2pr-storage`)
+### Remaining fail-closed non-goals for M10
 
-The Plan 175 persistent service destination format is independent of
-Rust layout and serde:
+None of these are silently bridged; each is a deliberate boundary:
 
-| Region | Size | Contents |
-| --- | ---: | --- |
-| Magic | 8 | `I2PRSD\0\0` |
-| Header | 16 | version (1), reserved (0), signing algorithm (7 = Ed25519), static algorithm (4 = X25519) |
-| Payload | 448 | Ed25519 seed, X25519 static secret, derived signing public key, derived X25519 public key, destination padding |
-| Integrity | 32 | SHA-256 over header+payload |
-
-Version 1 accepts only Ed25519 signing (type 7) and X25519 static
-keys (type 4). The format:
-
-- is integrity-protected by SHA-256;
-- never accepts truncation, trailing bytes, unsupported versions,
-  checksum changes, or derived public-key mismatches;
-- is permission-hardened (file `0o600`, directory `0o700`);
-- is atomic and no-replace (same-directory temporary + `hard_link`
-  install; `AlreadyExists` is fail-closed);
-- secret material is non-`Clone`, redacted `Debug`, and zeroized on
-  drop.
-
-A reload/reconcile never generates a new identity because a
-component restart occurred. Corruption or wrong-version files fail
-closed; identity rotation is never a side effect of reload.
-
-### Service tunnel manager (`i2pr-daemon`)
-
-- `ServiceTunnelManager::new(config)` builds a manager from a
-  validated `ServiceTunnelSet` and `StaticAliasTable` plus the router
-  data directory.
-- `prepare()` builds each enabled service's destination runtime,
-  binds loopback TCP listeners for client tunnels, and installs the
-  per-service Streaming listener for server tunnels. The first call
-  seeds the authoritative committed generation
-  (`ServiceTunnelGeneration`).
-- `start_supervisors(runtimes, children, cancellation)` spawns the
-  per-service supervisor loops under the daemon's child scope,
-  plus one supervised per-destination local-delivery driver per
-  runtime (Plan 182; fail-closed when the child scope rejects
-  the spawn).
-- `shutdown()` cancels every per-service supervisor token and
-  every delivery-driver token (counter entries retained).
-- Plan 182 delivery substrate: per-destination outbound `Notify`
-  signals (`outbound_signal` / `notify_outbound_signal`),
-  cumulative `DeliverySweepCounters` (`delivery_counters`),
-  and `deliver_outbound` sweeping the manager-level
-  `sam_destinations` mirror through the public Plan 129
-  `bridge_to_peer` seam (sender LeaseSet2 install, peer
-  inbound-tunnel build, typed counters, failed-delivery
-  termination). Stale drivers are cancelled on reconcile;
-  the sweep covers both canonical and receiver-mirror queues.
-- Plan 182 Streaming conventions: server tunnels listen on
-  wildcard port 0 (SAM convention; clients connect `(0, 0)`),
-  accepts use the connection's real authenticated peer/ports
-  with the SYN response queued for the driver, and
-  `ServicePumpEndpoint::try_send` branches on direction with
-  typed backpressure matching (never Display-string matching).
-- `lookup_local_service_destination(hash)` resolves a Base32 hash to
-  a [`ClientTarget`] when the hash matches a service destination
-  registered with the manager (cross-tunnel local delivery).
-- `service_destination_b64(service_id)` returns the canonical SAM
-  private-destination wrapper base64 for one service.
-- `snapshot()` returns a sanitized accounting view (counts and
-  identifiers only; no secrets).
-- Plan 180 transactional reconcile: `reconcile(candidate,
-  drain_deadline) -> ReconcileOutcome { generation_id, diff,
-  draining_ids, drain_deadline }` validates the candidate,
-  computes the typed `DiffClass` diff against the committed
-  generation, stages every `Add` / `Replace*` entry, then
-  atomically publishes the new generation and pushes only
-  replaced/removed old runtimes onto the draining list under a
-  hard deadline. `committed_generation_id`,
-  `draining_generation_count`, `reap_expired_drains -> ReapReport`,
-  and `generation_snapshot -> GenerationSnapshot` complete the
-  unified cross-service resource accounting surface.
-
-The manager never logs private destination material, signing seeds,
-static secrets, raw payloads, or base64 of the private destination.
-
-### Plan 176 HTTP proxy executor (`i2pr-daemon`)
-
-- Per-connection loop: read HTTP/1.1 header section under a
-  30 s deadline; parse; dispatch.
-- CONNECT: validate the port against `HttpClientOptions::privacy
-  .connect_allowed_ports` (default `{443}`), resolve the
-  authority via the manager, open I2P Streaming, write a 2xx
-  response with no `Content-Length`/`Transfer-Encoding`, then run
-  the shared Plan 174 byte pump in blind bidirectional mode.
-- Ordinary proxy: validate the absolute-form target host is `.i2p`,
-  resolve via the manager, open I2P Streaming, write the rewritten
-  request-line + headers (with the original same-read body bytes
-  preserved as `initial_body`), then run the shared pump in
-  body/response mode.
-- Cleanup: Streaming CLOSE on a clean exit, RESET on pump error,
-  `Connection: close` plus half-close shutdown on the local socket
-  when the proxy emits a bounded error response.
-- Headers/state: same per-listener `permit` budget and
-  `ActiveConnections` / `FailedConnects` accounting as the generic
-  client tunnels.
-
-### Plan 177 SOCKS5 proxy executor (`i2pr-daemon`)
-
-- Per-connection loop: read greeting under a 30 s deadline,
-  negotiate no-auth, read CONNECT request under a 30 s deadline.
-- Validation: CONNECT port against
-  `Socks5ClientOptions::port_policy.connect_allowed_ports` (default
-  `{443}`); reject with `0x02` (ConnectionNotAllowed) when outside
-  policy.
-- Resolution: `DestinationRef::parse` of the `.i2p` host plus
-  `ServiceTunnelManager::resolve_reference` for Base32 / alias /
-  local-delivery path.
-- Streaming: open I2P Streaming, wait for `Established`, send the
-  SOCKS5 success reply (`0x00`, `BND.ADDR=127.0.0.1`,
-  `BND.PORT=0`), then run the shared Plan 174 byte pump in opaque
-  tunnel mode with same-read post-request bytes preserved as the
-  first tunnel bytes.
-- Cleanup: Streaming CLOSE on a clean exit, RESET on pump error,
-  `Connection: close` plus half-close shutdown on the local socket
-  when the proxy emits a bounded SOCKS5 reply.
-- State: same per-listener `permit` budget and `ActiveConnections`
-  / `FailedConnects` accounting as the generic client tunnels.
-
-### Plan 178 IRC client executor (`i2pr-daemon`)
-
-- Per-connection loop: read IRC lines under a 30 s deadline,
-  run the per-direction incremental line parser (one bounded
-  partial-line buffer per side), consume runtime-neutral
-  `Allow` / `Rewrite` / `Drop` filter decisions.
-- Privacy: `USER`/`PING`/`QUIT`/`PART` rewrites and CTCP/DCC
-  policy are owned by the runtime-neutral filter; the executor
-  never duplicates command policy inline and never logs
-  usernames, realnames, nicknames, or message text.
-- Streaming: open I2P Streaming to the configured fixed I2P
-  IRC destination after the filter pass, then run the shared
-  Plan 174 byte pump in line-aware mode. Target selection never
-  depends on IRC command contents.
-- Cleanup: Streaming CLOSE on a clean exit, RESET on pump
-  error, filter buffers released after EOF/cancel/remote
-  close; sibling connections keep independent PONG/filter
-  state.
-- State: same per-listener `permit` budget and
-  `ActiveConnections` / `FailedConnects` accounting as the
-  generic client tunnels.
-
-### Plan 179 IRC server executor (`i2pr-daemon`)
-
-- Per-connection loop: the supervisor accepts inbound Streaming
-  SYNs through the Plan 175 persistent server destination
-  listener, waits up to 15 s for the connection to reach
-  `Established`, captures the peer destination hash from
-  authenticated Streaming metadata, then drives the
-  registration interception phase under a 30 s total deadline
-  with a 20 ms poll cadence.
-- Authentication: the projected hostname is taken from
-  `peer_destination_hash()` on the established streaming
-  connection; the runtime-neutral interceptor rejects the
-  registration if no peer hash is available, so application
-  bytes never influence the projected identity.
-- Target connect: connects to the configured loopback TCP
-  target under a 10 s deadline; on failure emits at most one
-  bounded IRC-style failure to the remote peer where safe
-  and closes/reset without leaking.
-- Handoff: writes the registration prefix + leftover exactly
-  once to the loopback target, then switches permanently to
-  the shared Plan 174 byte pump in opaque mode for the
-  post-registration stream. After handoff, the post-handler
-  is byte-transparent; no second ongoing IRC filter is
-  layered on the server tunnel.
-- Cleanup: Streaming CLOSE on a clean exit, RESET on pump
-  error, registration buffers released after EOF/cancel/
-  remote close; sibling connections keep independent
-  per-connection state.
-- State: same per-listener `permit` budget and
-  `ActiveConnections` / `FailedConnects` accounting as the
-  generic client/server tunnels. `irc-server` services use
-  the Plan 175 persistent server destination storage so
-  restart preserves the projected hostname algorithm.
+- no clearnet outproxy;
+- no SOCKS UDP ASSOCIATE or BIND;
+- no SOCKS4 IPv4 relay, and no SOCKS *auth method* negotiation;
+- no transparent proxying (client listeners are loopback-only by construction);
+- no HTTP/2+ termination (HTTP/1.1 only);
+- no TLS interception;
+- no IRC DCC tunnelling or WEBIRC.
 
 ## Dependencies
 
-From `Cargo.toml`:
-- `i2pr-service-tunnels` depends on `i2pr-proto` + `thiserror`.
-- `i2pr-daemon` depends on `i2pr-service-tunnels` for the typed spec
-  surface and on the SAM bridge infrastructure for destination
-  composition.
-- `i2pr-storage` adds `service_destination` module depending on
-  `i2pr-crypto` (keys, hashing).
+From `crates/i2pr-service-tunnels/Cargo.toml` — production dependencies only, **no
+`[dev-dependencies]` section and no build dependencies**:
 
-From `scripts/check-dependency-direction.sh`: the workspace graph is
-unchanged. From `scripts/check-runtime-boundaries.sh`:
-`i2pr-service-tunnels` (including the Plan 176 `http`, Plan 177
-`socks5`, Plan 178 `irc` client, and Plan 179 `irc::server`
-sub-modules) is runtime-neutral (`#![forbid(unsafe_code)]`, no
-Tokio, sockets, listeners, tasks, or timers); the daemon owns
-all M10 sockets and tasks.
+| Dependency | Why |
+| --- | --- |
+| `base64ct` (workspace) | RFC 7617 Basic credential decode in `auth.rs` |
+| `i2pr-proto` (path) | Bounded wire types shared with the rest of the workspace |
+| `sha2` (workspace) | SHA-256 credential verifiers (`auth.rs`) |
+| `subtle` (workspace) | Constant-time verifier comparison (`auth.rs`) |
+| `thiserror` (workspace) | `ServiceTunnelError` derive |
+| `zeroize` (workspace) | `Zeroizing` buffer in `outbound_secret.rs` |
+
+From `scripts/check-dependency-direction.sh`, the allowlist entry is
+`"i2pr-service-tunnels": {"i2pr-client", "i2pr-proto"}`. The checker only fails on
+`direct - allowed` (forbidden edges), so an allowed-but-unused edge is not a violation.
+**Precise statement: the allowlist permits `i2pr-client`, but this crate's manifest does
+not depend on it.** Of the two allowed workspace edges, only `i2pr-proto` is actually
+used. `src/outbound_secret.rs:14-16` states the reason directly: the crate is permitted
+only `i2pr-client` and `i2pr-proto` internally, so it cannot depend on an AEAD — which
+is precisely why that module is the policy half of outbound-secret ownership and holds no
+cryptography.
+
+`scripts/check-service-tunnel-boundaries.sh` additionally greps `Cargo.toml` for
+`i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit` and rejects any match.
+None is present.
+
+Reverse direction: `i2pr-daemon` depends on `i2pr-service-tunnels` (line 45 of the
+checker's `i2pr-daemon` allowlist) for the typed spec surface.
 
 ## Tests
 
-- `crates/i2pr-service-tunnels/src/http/parser.rs` unit tests:
-  minimal GET round-trip, malformed obs-fold, lone LF, bare CR,
-  conflicting `Content-Length`, `Transfer-Encoding` +
-  `Content-Length`, GET with framing, duplicate Host, control-byte
-  values, request-line length ceiling, header-count ceiling.
-- `crates/i2pr-service-tunnels/src/http/target.rs` unit tests:
-  absolute-form with/without port, non-`http` schemes, userinfo,
-  clearnet/IP/localhost/mixed-suffix rejection, CONNECT
-  authority-form with/without port, CONNECT-with-zero-port,
-  CONNECT-overlong authority, canonical authority + origin-form
-  rendering.
-- `crates/i2pr-service-tunnels/src/http/rewrite.rs` unit tests:
-  connection-nominated removal, hop-by-hop removal, host
-  normalization, forced `Connection: close`, privacy headers
-  stripped, `User-Agent` keep/strip/replace-stable, duplicate
-  Host uniqueness.
-- `crates/i2pr-service-tunnels/src/http/response.rs` unit tests:
-  400/403 bounded response bytes, smuggling `400` without
-  diagnostic header, sanitization of CR/LF/control bytes.
-- `crates/i2pr-service-tunnels/src/http/config.rs` + `limits.rs`
-  unit tests: `UserAgentPolicy` parse, default privacy policy
-  (HTTPS-only), empty-port rejection, allowed-hosts malformed
-  alias rejection, default limits validation.
-- `crates/i2pr-service-tunnels/src/config.rs` unit tests:
-  `http-client` requires `http_options`, `socks5-client`
-  requires `socks5_options`, `irc-client` requires
-  `irc_options`; non-profile kinds reject any options.
-- `crates/i2pr-service-tunnels/src/irc/` unit tests: exact
-  core/tag/data ceilings and `+1` rejection, tag envelope and
-  escape grammar, command classification for the full §4 set,
-  per-direction allowlist, tag-bypass attempts, USER rewrite,
-  PING rewrite + PONG token replacement, QUIT/PART policy,
-  CTCP ACTION pass vs DCC/VERSION/malformed drops,
-  incremental fragmentation, coalesced lines, limits
-  validation, options validation.
-- Daemon-side: `crates/i2pr-daemon/src/config.rs` unit tests
-  (disabled-by-default, unknown fields, loopback, enabled
-  acceptance for `generic-client`/`generic-server`/`http-client`/
-  `socks5-client`/`irc-client`, `irc-server` still rejected,
-  duplicates, bounds) plus
-  `crates/i2pr-daemon/tests/service_tunnels_foundation.rs`
-  (Plan 174 black-box config/graph tests, updated for the Plan
-  178 `irc-client` acceptance rule),
-  `crates/i2pr-daemon/tests/service_tunnel_generic_product.rs`
-  (Plan 175 manager-level tests),
-  `crates/i2pr-daemon/tests/service_tunnel_http_product.rs`
-  (Plan 176 black-box tests: clearnet/IP/localhost/mixed-suffix
-  rejection, non-`http`/userinfo/smuggling/HTTP/1.0 rejection,
-  unknown `.i2p` 502, CONNECT port-policy enforcement, sibling
-  isolation, slow-incomplete-header timeout, snapshot
-  accounting), and
-  `crates/i2pr-daemon/tests/service_tunnel_socks5_product.rs`
-  (Plan 177 black-box tests: no-auth happy path, multiple-method
-  negotiation, no-acceptable-method, wrong version, zero/oversized
-  methods, BIND/UDP ASSOCIATE/unknown command rejection, IPv4/IPv6
-  rejection, clearnet/IP literal/localhost/mixed-suffix
-  rejection, zero-domain/zero-port rejection, port-policy
-  rejection, unknown `.i2p` host unreachable, same-read post-
-  request bytes preserved, sibling isolation, snapshot
-  accounting, username/password method rejection, oversized method
-  rejection, request-with-control-byte rejection), and
-  `crates/i2pr-daemon/tests/service_tunnel_irc_client_product.rs`
-  (Plan 178 black-box tests: listener accept, unknown-command
-  drop, sibling isolation, snapshot accounting, overlong core/tag
-  rejection, fragmented/coalesced lines, CTCP ACTION pass, CTCP
-  DCC drop, USER rewrite path, tagged message path,
-  registration/CAP-SASL/JOIN/PRIVMSG/NOTICE path, slowloris
-  boundedness, aggregate ceiling).
-- Pump-side: `crates/i2pr-daemon/src/destination_streaming.rs` (5
-  deterministic pump tests, retained from Plan 174; Plan 182
-  adds the default-no-op `shutdown_write()` hook with CLOSE
-  linger, byte-identical for the SAM endpoint).
-- Plan 182 local-delivery tests:
-  `crates/i2pr-daemon/tests/service_tunnels_local_roundtrip.rs`
-  (9 tests: generic small/large/sibling echo digests, framed
-  reverse, half-close EOF propagation, HTTP GET 200 + digest,
-  SOCKS5 CONNECT + echo, IRC register/message/projection,
-  resource baseline with zero `unknown_peer`/`missing_factory`)
-  and
-  `crates/i2pr-daemon/tests/service_tunnels_independent_application_clients.rs`
-  (6 wire-surface tests incl. restart-stable server identity).
-- Plan 181 external lane:
-  `tests/integration/service-tunnels/run-independent.sh` (31
-  command-derived rows),
-  `scripts/check-service-tunnel-acceptance-evidence.sh`
-  (routine-CI static checker),
-  `scripts/interop/fetch-service-tunnel-clients.sh`
-  (exact-pin jaraco/irc fetch),
-  `.github/workflows/service-tunnels-external.yml` (manual
-  full/local-only lane), and the ignored-by-default
-  `service_tunnels_remote_qualification.rs` driver asserting
-  the §6.3 stop condition (local rows passed, remote rows
-  `blocked` on retained M6 debt).
+There is **no `crates/i2pr-service-tunnels/tests/` directory**. All 313 tests are
+in-crate `#[cfg(test)]` modules, which is the honest coverage picture for a
+runtime-neutral crate: the daemon and runtime integration suites are what exercise the
+sockets, and they live elsewhere.
+
+Verified count: `cargo test -p i2pr-service-tunnels --all-targets` → **313 passed; 0
+failed; 0 ignored**.
+
+`#[cfg(test)]` module and test counts per file:
+
+| File | Tests | File | Tests |
+| --- | ---: | --- | ---: |
+| `config.rs` | 28 | `irc/policy.rs` | 22 |
+| `irc/server.rs` | 24 | `http/server.rs` | 20 |
+| `socks5/request.rs` | 20 | `generation.rs` | 18 |
+| `irc/client_filter.rs` | 17 | `http/target.rs` | 16 |
+| `http/parser.rs` | 16 | `irc/line.rs` | 15 |
+| `irc/tags.rs` | 11 | `http/rewrite.rs` | 10 |
+| `destination.rs` | 10 | `socks5/negotiation.rs` | 10 |
+| `socks5/socks4a.rs` | 13 | `access.rs` | 6 |
+| `http/config.rs` | 5 | `auth.rs` | 5 |
+| `irc/config.rs` | 5 | `irc/errors.rs` | 5 |
+| `http/response.rs` | 5 | `connect.rs` | 3 |
+| `socks5/reply.rs` | 3 | `streamr.rs` | 3 |
+| `outbound_secret.rs` | 4 | `socks5/config.rs` | 4 |
+| `idle.rs` | 7 | `events.rs` | 2 |
+| `http/limits.rs` | 2 | `socks5/errors.rs` | 2 |
+| `socks5/limits.rs` | 2 | | |
+| No test module: `errors.rs`, `http/error.rs`, `http/mod.rs`, `irc/limits.rs`, `irc/mod.rs`, `lib.rs`, `socks5/mod.rs` | | | |
+
+### Bounded negative paths
+
+- **Malformed HTTP**: NUL/CR/LF/obs-fold, lone LF, bare CR, conflicting `Content-Length`,
+  `Transfer-Encoding` + `Content-Length`, GET with framing, duplicate `Host`, control-byte
+  values, request-line and header-count ceilings, non-`http` schemes, userinfo,
+  clearnet/IP/`localhost`/mixed-suffix, CONNECT-with-zero-port, overlong authority.
+- **Bad SOCKS5**: wrong version, zero methods, too many methods, no acceptable method,
+  BIND / UDP ASSOCIATE / unknown command, IPv4 / IPv6 address type, clearnet / IP literal
+  / `localhost` / mixed-suffix, zero-domain / zero-port, request-with-control-byte,
+  port-policy rejection; plus the SOCKS4a wrong version, plain-SOCKS4-IPv4 rejection,
+  USERID control byte, overlong domain, zero port, and bounded neutral reply shape.
+- **Malformed IRC**: exact core/tag/data ceilings and their `+1` rejection, tag envelope
+  and escape grammar, tag-bypass attempts, full command-classification set, per-direction
+  allowlist, incremental one-byte fragmentation, coalesced lines, USER rewrite, PING
+  rewrite + PONG token replacement, QUIT/PART policy, CTCP `ACTION` pass vs
+  DCC/`VERSION`/malformed drops.
+- **Access / auth / idle / outbound secret**: rate limiter is bounded and fails closed at
+  peer-table capacity; post-limiter bounds peer tracking and fails closed; verifier
+  round-trips, realm separation, and Basic decode; idle exact-deadline fire, priority
+  ordering, activity suppression, and clock-jump saturation; outbound-secret bounding,
+  NUL rejection, marker interchangeability refusal, oversize-frame rejection without
+  decode work, and the fail-closed default store.
+
+## Boundary enforcement
+
+Both scripts were run from the repository root. **Both passed.**
+
+| Script | Exit code | Output |
+| --- | ---: | --- |
+| `bash scripts/check-service-tunnel-boundaries.sh` | `0` | `service-tunnel boundary checks passed` |
+| `bash scripts/check-runtime-boundaries.sh` | `0` | `runtime boundary checks passed` |
+
+### What `scripts/check-service-tunnel-boundaries.sh` enforces (Plan 180 §15)
+
+Eight invariants, in order:
+
+1. `crates/i2pr-service-tunnels/src` contains none of
+   `tokio::|TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream|tokio::net|tokio::spawn|tokio::time|tokio::sync`
+   — no Tokio, sockets, listeners, tasks, or timers.
+2. The crate's `Cargo.toml` contains none of
+   `i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit`.
+3. No Garlic/I2NP construction: none of
+   `GarlicClove|GarlicMessage|i2np::|i2np_message|build_short_tunnel|build_short_request|build_short_reply`.
+4. No transport internals: none of
+   `i2pr_transport_ssu2|i2pr_transport_ntcp2|build_short_request|build_short_reply`.
+5. The production daemon config accepts no non-loopback `bind_address`.
+6. **A single streaming pump**: `fn run_stream_pump\b` is defined at most once across
+   `crates/i2pr-daemon/src` — a service-specific duplicate raw byte pump fails.
+7. **No unbounded channels**: no `unbounded_channel|unbounded::<|UnboundedSender|UnboundedReceiver`
+   in the five M10 daemon service-tunnel modules.
+8. **A single manager entry point**: `pub fn register_service_tunnel_manager` must appear
+   exactly once across `crates/i2pr-daemon/src` — never one supervisor per spec.
+
+### Manual verification (in addition to the scripts)
+
+Confirmed absent from `crates/i2pr-service-tunnels/src`: `tokio` (0 matches),
+`std::fs` (0), `async fn` / `async move` / `async {` (0), `spawn` (0), and any of
+`TcpListener` / `TcpStream` / `UdpSocket` / `mpsc::` / `broadcast::` / `channel(` (0).
+
+`std::net` **does** appear, 11 times, but only as the value types
+`std::net::IpAddr` and `std::net::SocketAddr` in `config.rs`, `destination.rs`,
+`http/target.rs`, `socks5/request.rs`, and `streamr.rs` — used to *validate and reject*
+non-loopback addresses and to *reject* IP literals as targets. No I/O type or operation
+appears. This is consistent with the boundary scripts, neither of which greps for
+`std::net` at all.
+
+**Grouped-`use` blind spot: not present in this crate.** A sibling agent reported that
+the runtime checker's literal `std::net` grep can miss an import hidden inside a grouped
+`use std::{…}` block. I checked explicitly: there are **zero** matches for
+`use std::{` in this crate. All nine `use std` imports are single-line and fully visible
+(`std::collections::{BTreeMap, BTreeSet, HashMap}` spelled out individually across
+`access.rs`, `socks5/config.rs`, `generation.rs`, `connect.rs`, `irc/config.rs`,
+`irc/server.rs`, `http/config.rs`, `http/server.rs`, and `streamr.rs`). No
+`std::net` usage is hidden behind a grouped import, and no violation was found.
 
 ## Distinctive design choices
 
-1. Runtime-neutral configuration by construction; the boundary
-   script proves no Tokio or listener ownership in
-   `i2pr-service-tunnels` (including the Plan 176 `http`, Plan
-   177 `socks5`, and Plan 178 `irc` sub-modules).
-2. Kinds are typed enum values, not strings, after parsing.
-3. Destination references never touch the network during validation.
-4. Static aliases are lower-case and bounded; b32 spellings are
-   never aliases.
-5. Server targets distinguish loopback TCP from Unix path values;
-   Unix targets are explicit `not-yet-supported` rather than silently
-   ignored.
-6. Shared client destinations require an explicit group; sharing is
-   never implicit.
-7. Contradictory client/server options fail before daemon mutation.
-8. Persistent group destinations follow the same versioned,
-   permission-hardened, atomic, no-replace contract as the router
-   identity (see ADR 0006).
-9. `generic-client`, `generic-server`, `http-client`,
-   `socks5-client`, `irc-client`, and `irc-server` may be
-   `enabled = true` after their plans land; there is no
-   remaining not-yet-available gate for the current kinds.
-10. The manager exposes only the public Destination b64; raw secrets
-    stay inside `ServiceDestinationRecord` and `DestinationIdentity`.
-11. Errors are typed and carry truncated values only, never secrets.
-12. Snapshots are point-in-time counters, never memory-backed queues.
-13. The cross-tunnel local-delivery path resolves through the manager
-    itself so client tunnels do not need an external LeaseSet
-    lookup to talk to a server tunnel owned by the same router.
-14. The HTTP parser/rewrite target validator is shared by the
-    daemon-owned executor and the runtime-neutral unit tests; the
-    executor owns sockets and Streaming lifetime but never the
-    parser grammar.
-15. The HTTP executor's per-connection state, header deadlines, and
-    error responses stay bounded; no per-connection memory grows
-    with request body size.
-16. The SOCKS5 greeting + CONNECT parser is shared by the daemon-
-    owned executor and the runtime-neutral unit tests; the executor
-    owns sockets and Streaming lifetime but never the parser
-    grammar or the RFC 1928 reply generator.
-17. The SOCKS5 executor's per-connection state, greeting/request
-    deadlines, and reply bytes stay bounded; no per-connection
-    memory grows with the negotiated CONNECT request size.
-18. The IRC line parser/filter is shared by the daemon-owned
-    executor and the runtime-neutral unit tests; the executor
-    owns sockets and Streaming lifetime but never the filter
-    grammar, the allowlist, or the rewrite policy.
-19. The IRC executor's per-connection state (one partial-line
-    buffer per side, one outstanding PONG token), line
-    deadlines, and drop counters stay bounded; no
-    per-connection memory grows with stream length, and
-    sibling connections keep independent filter state.
-20. Plan 180 transactional reconcile: the runtime-neutral
-    `DiffClass` typed classification drives a single-stage
-    generation swap. `Unchanged` / `MutableInPlace` entries copy
-    the existing committed runtime + identity (preserving the
-    persistent server destination across no-op reconciles);
-    `ReplaceListener` / `ReplaceDestination` / `Remove` entries
-    push the old runtime onto the draining list under a hard
-    deadline; `Add` entries install fresh destinations.
-    Stable server identities survive a no-op or
-    target-only reconcile; forced-drain closes are bounded by
-    a single `AtomicU64` per generation; the per-service
-    runtime carries no Garlic/I2NP/Streaming implementation.
-21. Plan 180 static boundary checker
-    (`scripts/check-service-tunnel-boundaries.sh`) is enforced
-    in routine CI and rejects the same runtime-neutral
-    invariants `check-runtime-boundaries.sh` enforces plus the
-    no-Glob/I2NP-construction, no-duplicate-byte-pump,
-    no-unbounded-Tokio-channel, and exactly-one-entry-point
-    Plan 180 §15 invariants.
+1. Every service tunnel is validated as *policy* before the daemon allocates anything, so
+   a bad config fails with a typed error rather than a half-built listener.
+2. Kinds are typed enum values with paired `parse` / `as_str` spellings, never loose
+   strings after parsing.
+3. `DestinationRef::parse` is strictly structural — no DNS, filesystem, network, or
+   clearnet fallback — and IP literals are rejected outright.
+4. Static aliases are lower-case and bounded, and a Base32 spelling is never an alias;
+   canonical naming stays in `i2pr-addressbook` while this crate owns only the reference
+   *policy*.
+5. `ServerTarget` distinguishes loopback TCP from a bounded Unix path, and a Unix target
+   is an explicit `not-yet-supported` rather than a silently ignored field.
+6. `outbound_secret` is the only secret-bearing module, and it is deliberately
+   *un-re-exported* at the crate root: no `Debug`, no `Display`, no `Clone`, a fixed-size
+   `Zeroizing` stack buffer, and a fail-closed default store instead of a stub.
+7. The inbound verifier and the outbound sealed form carry deliberately distinct markers
+   (`$i2pr1$` vs `$i2pr1o$`) so one can never be replayed as the other.
+8. `idle_decision` is a pure function with no clock, so every deadline edge — including
+   the exact-deadline fire, the `Some(0)` case, and clock-step saturation — is unit
+   testable without a timer.
+9. `access.rs` and `auth.rs` model policy only; the authenticated peer hash and the
+   accepted connection both arrive from the daemon, so this crate never owns a listener.
+10. Parser, rewrite, and reply *grammars* are shared verbatim between the daemon executor
+    and the runtime-neutral unit tests, so the executor owns sockets and Streaming lifetime
+    but never re-implements a grammar.
 
-## Normal-daemon Destination-group product (Plan 318)
+## Status and plan authority
 
-The normal `ssu2-router` service passes its existing `Ssu2DaemonHandle`,
-runtime `ChildScope`, cancellation token, and a capped snapshot of validated
-bootstrap RouterInfos into `ServiceProduct::start_over_existing_daemon`.
-Group selection, selected-peer transport resolution, short-build replies,
-and Plan 315 pool operations use that owner. During pre-listener provisioning,
-messages received while waiting for build replies are retained in a bounded
-FIFO and replayed to the normal router/floodfill dispatcher before live queue
-traffic; overflow aborts startup. Service supervisors and the router service
-readiness signal are delayed until every enabled group meets its usable-pool
-threshold. This local composition does not qualify external reachability or
-anonymity properties.
+M10 is closed. Per `plans/registry.md:35` the Service tunnels subsystem is `closed`, with
+**Plan 215 as product authority and Plan 204 superseded by Plan 248**.
 
-### Plan 316 graceful service-group retirement
+| Plan | Scope | Result |
+| --- | --- | --- |
+| 173 | Planning authority | — |
+| 174 | Foundation | — |
+| 175 | Generic client/server tunnels | — |
+| 176 | HTTP | — |
+| 177 | SOCKS5 | — |
+| 178 | IRC client | — |
+| 179 | IRC server | — |
+| 180 | Composition / reconcile / hardening | — |
+| 182 | Local-delivery corrective | — |
+| 181 | Independent local acceptance | 29/29 local rows passed |
+| 213 | Router-backed generic A/B external qualification | `P213-N-passed`, hosted double-pass |
+| 214 | Product-only remote HTTP + IRC application closure | `passed-m10-product-only-remote-http-and-irc-application-closure` |
+| 215 | Hosted Plan 214 tunnel-config-generation corrective + exact-head reverification | `passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification` |
 
-The normal daemon's first shutdown signal enters a service-group drain before
-the supervisor's root cancellation. `ServiceTunnelManager::stop_admission`
-cancels each runtime's separate admission token; existing connection tasks keep
-the service cancellation token and router delivery path until the drain ends.
-The group product stops build replacement and LeaseSet refresh, continues
-dispatching inbound delivery, and lets published leases and their tunnel roles
-expire. Retirement completes when the latest published inbound lease expiry
-has passed and tracked application connections reach zero. A local 11-minute
-hard cap bounds the wait. A second signal or fatal supervisor failure skips
-this phase and cancels the supervisor immediately. The product lifecycle
-status carries only phase and coarse remaining-time bucket values.
+The hosted double-pass landed first on `1992d67` (runs `35309158441` +
+`35309655867`, 73/73 rows green) and was then re-proved on the post-dependabot-merge head
+`a71e0193c420c8d8464fd05ff67d5323515ed4dd` (runs `35347780246` + `35349313549`, both
+again `P214-N-passed` with `P213-N-passed` and 73/73 rows green).
 
-Startup provisions the configured inbound pool first and verifies its usable
-minimum, then waits one second before submitting outbound builds. The normal
-group readiness gate still requires the configured minimum usable inbound
-pool before application supervisors begin. Java I2P's corresponding ordering is reference
-behavior; this bounded i2pr timing policy does not claim Java-equivalent
-anonymity or application fingerprinting behavior.
+**Authority note.** `plans/closure/*/*-status.md` wins over `plans/registry.md`. The
+authoritative `milestone10_final_acceptance` value per
+`plans/closure/service-tunnels/215-status.md` is
+**`closed-on-a71e0193-pending-plan204-convergence`** (it advanced from
+`closed-on-1992d67-pending-plan204-convergence` on the re-closure pass). The registry
+records that the Plan 204 convergence record is retained as
+`retained-convergence-record-superseded-by-plan248-policy-reconciliation`, with M10
+authority remaining Plan 215, and the M6 Java second-family row (Plan 201 / Plan 247)
+stays pending. This crate's local composition does not qualify external reachability or
+any anonymity property.
 
 ## Cross-references
 
-- Plans 173 (roadmap authority), 174 (foundation),
-  175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (IRC
-  client), 179 (IRC server), 180 (composition / reconcile /
-  hardening), 182 (local-delivery corrective), 181 (independent
-  acceptance, blocked on retained M6 debt), 183 (M6 mixed-router
-  program, registered).
-- `docs/architecture/i2pr-daemon.md` (manager + runtime surface).
-- `docs/architecture/i2pr-storage.md` (persistent destination storage).
-- `specs/protocols/11-service-tunnels.md` (M10 dossier).
-- ADRs 0001 (modular monolith), 0002 (Tokio boundary), 0006 (private
-  identity storage), 0010 (transport contracts).
+**ADRs**
+
+- [0001 — Modular monolith](../adr/0001-modular-monolith.md)
+- [0002 — Tokio runtime boundary](../adr/0002-tokio-runtime-boundary.md)
+- [0003 — Bounded supervised services](../adr/0003-bounded-supervised-services.md)
+- [0006 — Private identity storage](../adr/0006-private-identity-storage.md)
+- [0010 — Transport contracts and crate boundaries](../adr/0010-transport-contracts-and-crate-boundaries.md)
+- [0028 — i2pcontrol / Proposal 170 control plane](../adr/0028-i2pcontrol-proposal-170-control-plane.md)
+- [0030 — Destination linkability domains / service lifecycle](../adr/0030-destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md)
+- [0031 — One shared service tunnel manager](../adr/0031-one-shared-service-tunnel-manager.md)
+
+**Plans and closure records**
+
+- `plans/subsystems/service-tunnels-roadmap.md` (M10 roadmap)
+- `plans/closure/service-tunnels/213-status.md`
+- `plans/closure/service-tunnels/214-status.md`
+- `plans/closure/service-tunnels/215-status.md`
+- `plans/closure/mixed-router-interop/248-status.md` (Plan 248, supersedes Plan 204)
+- `plans/registry.md` (subsystem status and M10 sequence)
+
+**Specifications and reference notes**
+
+- `specs/protocols/11-service-tunnels.md` (M10 dossier; the authoritative source for the
+  Plan 177 §11 and Plan 178 §12 fail-closed non-support lists)
+- `specs/protocols/12-repliable-datagrams-streamr.md` (frozen Streamr behavior reference)
+- `specs/CONFORMANCE.md` (what counts as evidence)
+- `specs/references/proposal-170-outbound-secret-owner.md` — directly relevant: it defines
+  the `$i2pr1$` / `$i2pr1o$` marker separation that `src/outbound_secret.rs` implements
+- `specs/references/proposal-170-transit-volume-and-share.md` — the same Proposal 170
+  tunnel-shaping family that `TunnelShaping` and `IdlePolicy` model
+
+**Related deep dives**
+
+- [i2pr-daemon.md](i2pr-daemon.md) — the sole M10 socket, task, listener, and composition
+  owner, plus the five `service_tunnels_*` executors
+- [i2pr-client.md](i2pr-client.md) — destination lifecycle, ECIES session/routing,
+  Streaming; the allowlisted-but-unused edge for this crate
+- [i2pr-proto.md](i2pr-proto.md) — the one workspace crate this manifest actually depends on
+- [i2pr-addressbook.md](i2pr-addressbook.md) — canonical destination naming, the other
+  half of the naming boundary
+- [i2pr-storage.md](i2pr-storage.md) — the versioned, atomic, secret-safe persistent
+  service-destination store used by server kinds
+- [i2pr-runtime.md](i2pr-runtime.md) — the runtime ownership this crate must not take
+- [i2pr-i2pcontrol.md](i2pr-i2pcontrol.md) — the Proposal 170 control-plane surface
+  (ADR 0028)
+- [dependency-graph.md](dependency-graph.md) — the allowlist mirroring
+  `scripts/check-dependency-direction.sh`
+- [overview.md](overview.md) — crate index and data flow
+- [tooling.md](tooling.md) — scripts, fixtures, lanes, CI
