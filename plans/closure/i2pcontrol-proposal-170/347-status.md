@@ -147,13 +147,34 @@ Plan 347 acceptance row requires.
 
 ### What actually blocks `i2pr → Java`
 
-One concrete omission, not a policy question. The controlled floodfill **accepts and stores**
-type-5 records — `floodfill_service.rs:739-752` validates and files
-`DatabaseStoreData::EncryptedLeaseSet` under `BlindedStorageKey::from_hash(key)` — and the
-store layer can **retrieve** them by blinded key: `server_store.rs:291-300` is a complete
-`5 =>` arm of `database_store_for_answer` returning `DatabaseStoreData::EncryptedLeaseSet`.
+**Two narrow omissions, not one** — and this section also corrects an earlier draft of this
+record, which claimed the store half was already working. It is not.
 
-But `floodfill_service.rs:336-343` never asks for type 5:
+*Store.* `ServerNetDb` has complete type-5 machinery: a
+`ValidatedNetDbRecord::EncryptedLeaseSet2` variant filed at `RecordId::new(5, storage_key)`
+(`server_store.rs:31,41`), insertion through `self.els2.insert(value)` (`:170`), retrieval via
+`encrypted_lease_set2_for_answer` (`:470`), and a complete `5 =>` arm in
+`database_store_for_answer` (`:291-300`). The floodfill's `validate()` also already builds the
+right variant for an inbound type-5 record (`floodfill_service.rs:739-752`, including the note
+that the floodfill never derives the subcredential, because it never learns the unblinded key).
+
+**But `FloodfillStoreService::handle` refuses type 5 outright**, before validation is reached:
+
+```rust
+// floodfill_service.rs:493-494
+if record_type == 5 {
+    return FloodfillStoreEffect::Unsupported;
+}
+```
+
+So the type-5 arm in `validate()` is unreachable from the store entry point and the `5 =>` arm in
+`database_store_for_answer` can never hit. The guard was present in the original commit that
+created the service (`53a404b netdb: add bounded floodfill DatabaseStore service`) — a deliberate
+from-the-start hold-back, not an oversight. Its rationale is now gone: the reason a controlled
+floodfill could not usefully store a *reference-published* type-5 record was the transcript gap
+Plan 346 closed.
+
+*Serve.* Even once stored, `floodfill_service.rs:336-343` never asks for type 5:
 
 ```rust
 let types: &[u8] = match lookup.lookup_type {
@@ -167,6 +188,9 @@ A stock Java client resolving an encrypted service issues a blinded-key LeaseSet
 (`DatabaseLookupMessage.lookup_type == 1`, a 2-bit field per `i2pr-proto/src/i2np/message.rs:662`),
 so it would always miss. The served capability already exists one layer down; the floodfill's
 candidate list simply does not name it.
+
+**Both are owned by corrective Plan 350**, registered alongside this record and scoped to exactly
+these two changes plus the coverage guard.
 
 Plan 346 is what made this direction reachable at all in the first place: before the
 correction, the floodfill's own type-5 store path

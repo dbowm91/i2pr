@@ -78,7 +78,8 @@ pub use floodfill_role::{
 pub use floodfill_service::{
     FloodfillAck, FloodfillIngress, FloodfillLookupEffect, FloodfillReplyIntent, FloodfillRole,
     FloodfillStoreEffect, FloodfillStorePolicy, FloodfillStoreService, FloodfillStoreStats,
-    FloodfillTime, LookupFailure, ReplicationCandidate, ReplyProtection,
+    FloodfillTime, LookupFailure, ReplicationCandidate, ReplyProtection, SERVABLE_LEASE_LOOKUP,
+    SERVABLE_NORMAL_LOOKUP, SERVABLE_RECORD_TYPES,
 };
 pub use lease_set::{
     LeaseSetInsertOutcome, LeaseSetStore, LeaseSetStoreConfig, LeaseSetValidationContext,

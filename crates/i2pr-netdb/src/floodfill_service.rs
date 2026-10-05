@@ -24,6 +24,30 @@ use crate::{
 const MAX_TRACKED_SOURCES: usize = 1024;
 const MAX_TRACKED_KEYS: usize = 2048;
 
+/// Every record type this floodfill can hand back in a lookup answer.
+///
+/// This is the authoritative set: it is exactly the set of `record_type` arms that
+/// `ServerNetDb::database_store_for_answer` implements. A type in this set that is missing
+/// from every lookup list is a record the floodfill will accept and then never serve — the
+/// failure mode Plan 350 found for type 5, which silently made every reference consumer's
+/// blinded-key lookup miss. Plan 350 added type 5 to the normal and LeaseSet lists and
+/// introduced this constant so the correspondence is checkable rather than conventional.
+///
+/// `SERVABLE_NORMAL_LOOKUP` and `SERVABLE_LEASE_LOOKUP` are the per-lookup-type lists; their
+/// union must equal this set. `scripts/check-floodfill-type5-serve.sh` enforces that, and fails
+/// if a type gains a store arm without being declared here.
+pub const SERVABLE_RECORD_TYPES: &[u8] = &[0, 1, 3, 5, 7];
+
+/// Record types probed for a normal (`lookup_type == 0`) lookup.
+pub const SERVABLE_NORMAL_LOOKUP: &[u8] = &[0, 1, 3, 5, 7];
+
+/// Record types probed for a LeaseSet (`lookup_type == 1`) lookup.
+///
+/// Type 5 belongs here specifically: an encrypted LeaseSet2 is filed under its **blinded**
+/// storage key, not the destination hash, so this is the lookup a reference client issues when
+/// resolving an encrypted service.
+pub const SERVABLE_LEASE_LOOKUP: &[u8] = &[1, 3, 5, 7];
+
 /// Floodfill server role gate. Configuration intent alone must not select `Serving`; the daemon
 /// derives that state from its lifecycle/readiness authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -334,9 +358,23 @@ impl FloodfillStoreService {
         local_router: Hash,
         time: FloodfillTime,
     ) -> Result<Option<I2npBody>, LookupFailure> {
+        // `SERVABLE_RECORD_TYPES` is the authoritative list of record types
+        // `ServerNetDb::database_store_for_answer` can return. Every type in it must appear in
+        // at least one lookup list below, or a stored record could never be handed back and a
+        // reference consumer would silently miss. `scripts/check-floodfill-type5-serve.sh`
+        // enforces that correspondence statically, because a type dropping out of this match
+        // is a silent, data-only failure that no unit test on another type would catch.
         let types: &[u8] = match lookup.lookup_type {
-            0 => &[0, 1, 3, 7],
-            1 => &[1, 3, 7],
+            // Normal lookup: every record type that can live at this key. Type 5 is included
+            // because a client may address a blinded storage key directly; at a plain
+            // destination hash the type-5 probe simply misses and the type 1/3/7 slots answer.
+            0 => SERVABLE_NORMAL_LOOKUP,
+            // LeaseSet lookup. This is the type a reference client issues when resolving an
+            // encrypted service, because the record is filed under its blinded storage key
+            // rather than the destination hash. Plan 350 added 5 here; without it every
+            // blinded-key LeaseSet lookup returned a miss.
+            1 => SERVABLE_LEASE_LOOKUP,
+            // RouterInfo and exploration answers are unchanged.
             2 => &[0],
             3 => &[],
             _ => return Ok(None),
@@ -490,9 +528,17 @@ impl FloodfillStoreService {
             self.stats.invalid = self.stats.invalid.saturating_add(1);
             return FloodfillStoreEffect::Invalid;
         }
-        if record_type == 5 {
-            return FloodfillStoreEffect::Unsupported;
-        }
+        // Record type 5 (encrypted LeaseSet2) is admitted, Plan 350. It used to be refused
+        // here with `Unsupported`; the hold-back existed because a controlled floodfill could
+        // not usefully store a *reference-published* type-5 record while i2pr's type-11
+        // verification disagreed with Java's and i2pd's deployed transcript. ADR 0032 closed
+        // that gap, so the type-5 arm in `validate` is reachable for the first time.
+        //
+        // Nothing about admitting type 5 escapes the budgets: `admit_request` above already
+        // applied the global request cap, the global byte cap, the per-source cap, and the
+        // per-key cap (keyed on `RecordId::new(5, blinded_key)`), and the `crypto` budget below
+        // now bounds the extra Red25519 verification this type performs. The record lands in
+        // the separately bounded `Els2Store`, and the floodfill never derives the subcredential.
         if !self.crypto.admit(
             time.monotonic_ms,
             self.policy.window_ms,

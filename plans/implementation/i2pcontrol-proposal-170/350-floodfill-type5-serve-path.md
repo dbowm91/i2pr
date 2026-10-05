@@ -1,34 +1,54 @@
-# Plan 350 — Floodfill type-5 lookup serve path
+# Plan 350 — Floodfill type-5 store and lookup serve path
 
-Status: **registered-floodfill-stores-type5-but-never-serves-it-on-lookup-ready**
+Status: **passed-floodfill-now-stores-and-serves-encrypted-leaseset2-type5; reference-consumers-can-resolve-an-i2pr-published-service**
+
+> **Amended during implementation.** This plan was registered from Plan 347's boundary with the
+> premise that the type-5 **store** half already worked and only the serve list was missing.
+> **That premise was wrong**, and reading the code before editing it is what caught it:
+> `FloodfillStoreService::handle` also refused `record_type == 5` outright
+> (`if record_type == 5 { return FloodfillStoreEffect::Unsupported; }`), so the type-5 arm in
+> `validate` and the `5 =>` arm in `ServerNetDb::database_store_for_answer` were both
+> unreachable. The scope was widened from one change to two. Plan 347's record was corrected in
+> the same commit. See the closure record for the full account.
 
 Classification: **invariant + narrow capability gap**. Origin: the corrected boundary in
 [`347-status.md`](../../closure/i2pcontrol-proposal-170/347-status.md).
 
 Hard dependencies:
-- Plan 346 passed (ADR 0032). Required, because a reference-published type-5 record only
-  validates at the floodfill once the deployed transcript is accepted — before Plan 346 this
-  plan's own inbound store path would have rejected every Java- and i2pd-signed record.
+- Plan 346 passed (ADR 0032). Required, not formal: before Plan 346 the type-11 verification in
+  `ValidatedEncryptedLeaseSet2::validate` would have rejected the deployed transcript, so a
+  controlled floodfill could not have usefully admitted a *reference-published* type-5 record
+  even with the store refusal removed.
 - Plan 333 passed (type-5 framing and validation).
 
 No other dependency. Subsystem: `i2pcontrol-proposal-170`.
 
 ## The gap, stated exactly
 
-The controlled floodfill **stores** type-5 records and the store layer **retrieves** them by
-blinded key. The floodfill's lookup path **never asks for type 5**.
+The controlled floodfill would not store an encrypted LeaseSet2, and could not serve one.
 
-Storage works. `floodfill_service.rs:739-752` accepts
-`DatabaseStoreData::EncryptedLeaseSet`, validates it with
-`ValidatedEncryptedLeaseSet2::validate(value, Some(BlindedStorageKey::from_hash(key)), …)`, and
-files it as `ValidatedNetDbRecord::EncryptedLeaseSet2`. `message_key` at
-`floodfill_service.rs:778-780` already maps `DatabaseStoreData::EncryptedLeaseSet(_) => 5`.
+**Store.** `ServerNetDb` has complete type-5 machinery: a
+`ValidatedNetDbRecord::EncryptedLeaseSet2` variant filed at `RecordId::new(5, storage_key)`
+(`server_store.rs:31,41`), insertion through `self.els2.insert(value)` (`:170`), retrieval via
+`encrypted_lease_set2_for_answer` (`:470`), and a complete `5 =>` arm in
+`database_store_for_answer` (`:291-300`). The floodfill's `validate()` already builds the right
+variant for an inbound type-5 record (`floodfill_service.rs`, the
+`DatabaseStoreData::EncryptedLeaseSet` branch, including the note that the floodfill never
+derives the subcredential because it never learns the unblinded public key).
 
-Retrieval works. `server_store.rs:291-300` is a complete `5 =>` arm of
-`database_store_for_answer`, looking up `BlindedStorageKey::from_hash(key)` and returning
-`DatabaseStoreData::EncryptedLeaseSet`.
+**But the store entry point refused it**, before validation was reached:
 
-The lookup does not reach it. `floodfill_service.rs:336-343`:
+```rust
+if record_type == 5 {
+    return FloodfillStoreEffect::Unsupported;
+}
+```
+
+The guard was present in the commit that created the service (`53a404b netdb: add bounded
+floodfill DatabaseStore service`) — a deliberate from-the-start hold-back, not an oversight. Its
+rationale was the type-11 transcript disagreement that Plan 346 closed.
+
+**Serve.** Even once stored, `lookup_body` never asked for type 5:
 
 ```rust
 let types: &[u8] = match lookup.lookup_type {
@@ -36,76 +56,74 @@ let types: &[u8] = match lookup.lookup_type {
     1 => &[1, 3, 7],      // LeaseSet lookup
     2 => &[0],
     3 => &[],
-    _ => return Ok(None),
-};
 ```
 
-Record type 5 is absent from every list. A stock Java or i2pd client resolving an encrypted
-service issues a blinded-key LeaseSet lookup — `DatabaseLookupMessage.lookup_type == 1`, a
-2-bit field per `i2pr-proto/src/i2np/message.rs:662` — and therefore always misses, returning
-`NoResponse(LookupFailure::UnsupportedType)` or an empty answer even when the record is stored
-and fresh under exactly the key that was requested.
+A stock Java or i2pd client resolving an encrypted service issues a blinded-key LeaseSet lookup
+— `DatabaseLookupMessage.lookup_type == 1`, a 2-bit field per `i2pr-proto/src/i2np/message.rs:662`
+— and therefore always missed, returning nothing even when the record was stored and fresh under
+exactly the key that was requested.
 
-This is the **only** thing standing between the current tree and a reference consumer being
-able to resolve an i2pr-published encrypted service. It is not a policy question, a
-transcript question, or a topology question.
+Type 5 is filed under the **blinded** storage key, not the destination hash, so the lookup a
+reference client issues is a `lookup_type == 1` lookup *at that blinded key*. That is the row
+that must work.
 
-## Why it matters now
+## Why it matters
 
 Plan 347 needs `i2pr → Java I2P` and `i2pr → i2pd`: a publisher stores a type-5 record, an
 independent router's NetDB actually serves it, and the consumer verifies the outer type-11
-signature, decrypts, validates the inner LeaseSet2, and uses it. The store half is done and
-Plan 346 made the inbound path accept the deployed transcript. The serve half is missing.
+signature, decrypts, validates the inner LeaseSet2, and uses it. Both halves of the store side
+were missing.
 
 ## Objective
 
-Make the controlled floodfill answer a blinded-key LeaseSet lookup with the stored type-5
-record, so a stock reference client can complete the store→lookup→decrypt chain against i2pr.
+Make the controlled floodfill accept a type-5 record and answer a blinded-key LeaseSet lookup
+with it, so a stock reference client can complete the store→lookup→decrypt chain against i2pr.
 
 ## In scope
 
-1. **Add record type 5 to the floodfill's lookup candidate list** for `lookup_type == 1`
-   (LeaseSet lookup), which is the type a blinded-key client issues.
-2. Decide and document the `lookup_type == 0` case. A type-5 record is stored under the
-   *blinded* storage key, not the destination hash, so a type 0 lookup at a destination hash
-   can never hit one. Adding 5 there is harmless but semantically noisy; leaving it out is
-   defensible. Either choice is acceptable **provided it is stated and pinned by a test**, so
-   the choice cannot be mistaken for an oversight later.
-3. A regression row that stores a type-5 record, performs a real `lookup_type == 1` lookup at
-   its blinded storage key, and asserts the returned `DatabaseStore` carries the type-5 record
-   back byte-for-byte.
-4. A guard preventing the served-type list from silently losing a type that the store layer
-   can serve.
+1. **Remove the `record_type == 5` store refusal** so the already-written type-5 arm in
+   `validate` becomes reachable.
+2. **Add record type 5 to the floodfill's lookup candidate list** for `lookup_type == 1`.
+3. Decide and document the `lookup_type == 0` case. **Decision: include type 5.** A type-0
+   lookup at a plain destination hash misses the type-5 slot and is answered from the 1/3/7
+   slots, so the extra probe is a normal store miss rather than an error — and excluding a
+   servable type from the catch-all list is exactly the omission that caused this bug.
+4. A regression row proving a stored type-5 record is returned byte-identically, and that
+   `lookup_type` 0/2/3 answers are unchanged.
+5. A guard preventing a servable type from silently dropping out of the lookup lists again.
 
 ## Out of scope
 
 - **The i2pr type-5 *consumer* path** (address → secret → blinded key → lookup → validate →
-  decrypt). That is Plan 349 and it is a separate, larger piece of work.
+  decrypt). Plan 349, a separate and larger piece of work.
 - **Any reference-side driver.** Java 2.13.0 already implements the consumer surface
   (`EncryptedLeaseSet`, `Blinding`, `BlindingInfoMessage`, blinded lookup in
   `RequestVariableLeaseSetMessageHandler`/`LookupDestJob`) and pinned i2pd 2.61.0 does too
-  (`Destination.cpp:491`, `RequestLeaseSet` with `requestedBlindedKey`). Building those drivers
-  belongs to the Plan 347 re-attempt, not here.
+  (`Destination.cpp:491`, `RequestLeaseSet` with `requestedBlindedKey`). Those drivers belong to
+  the Plan 347 re-attempt.
 - **Any caps or advertisement change.** The Java caps gate is a tunnel-peering gate
-  (`TunnelPeerSelector.shouldExclude`); nothing in this plan requires Java to peer with i2pr,
-  so ADR 0030 is untouched and no caps letter is added.
+  (`TunnelPeerSelector.shouldExclude` caps arity plus `allowAsIBGW`'s `R` requirement); nothing
+  here requires Java to peer with i2pr, so ADR 0030 is untouched and no caps letter is added.
 - **Any transcript change.** ADR 0032 is the current, correct policy.
 - Running the live cross-router matrix.
 
 ## Invariants
 
-- The change is a lookup-type list, not a new store, index, or key space. No new
-  configuration, key derivation, or record type is introduced.
-- The returned record must be the **same validated record** the store admitted, with no
-  re-validation that could accept bytes the store rejected, and no re-encoding that could change
-  the signature preimage.
-- No unbounded growth: a lookup probes a fixed, small type list. Type 5 adds at most one
-  additional store probe per lookup, and the existing per-key and global lookup throttles
-  (`floodfill_service.rs:308-321`) are unchanged and still apply.
-- Record type 0 and 2 (RouterInfo) answers, and type 3 (exploration) answers, must be
-  byte-identical before and after this change.
-- `i2pr-netdb` stays runtime-neutral: no `tokio`, `std::net`, `std::fs`, or `JoinHandle`.
-- No production crate may depend on `i2pr-testkit`.
+- Type 5 gains **no exemption from any budget**. `admit_request` already applies a global
+  request cap, a global byte cap, a per-source cap, and a per-key cap (keyed on
+  `RecordId::new(5, blinded_key)`), and the crypto-validation budget now bounds the extra
+  Red25519 verification. Type-5 records land in the separately bounded `Els2Store`.
+- The floodfill still **never derives a subcredential**, because it never learns the unblinded
+  public key.
+- Client-tunnel ingress and a non-serving role remain refused for type 5, as for every type.
+- The returned record is the same validated record the store admitted, with no re-validation that
+  could accept bytes the store rejected and no re-encoding that could shift the signature
+  preimage.
+- Record type 0 and 2 (RouterInfo) and type 3 (exploration) answers stay byte-identical.
+- No new unbounded growth: a lookup probes a fixed, small type list, and the existing per-key
+  and global lookup throttles are unchanged.
+- `i2pr-netdb` stays runtime-neutral; no production crate may depend on `i2pr-testkit`.
+- No new dependency, wire-format change, configuration surface, or advertisement change.
 
 ## Required evidence
 
