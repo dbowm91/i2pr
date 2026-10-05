@@ -382,24 +382,39 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
   which is what the published address must name for a client to verify the inner LeaseSet2. Six
   rows assert a real type-5 `DatabaseStore` at the day's blinded storage key, carrying the day's
   blinded public key, a non-zero outer salt, and a non-empty outer ciphertext.
-- **The runtime publication effect is NOT yet claimed, and the blocker is upstream of ELS2.** A
-  service tunnel created through TunnelManager is reconciled onto a `ServiceTunnelManager` built by
-  `TunnelControlState::for_config` over an *empty* `ServiceTunnelSet` — a different instance from the
-  one `ServiceProduct::new` builds over the startup config, and the only instance
-  `publish_service_ls2_for_service` is ever handed. No production call site installs a router
-  delivery capability on the control-owned manager. So a control-created *server* tunnel publishes
-  **no LeaseSet2 at all**, encrypted or ordinary, and no ELS2 mode can change what it publishes.
-  Two rows pin this: `plan334_control_manager_is_separate_from_the_product_manager` and
-  `plan334_control_created_server_is_validated_but_not_published`. The `.b32.i2p` address is
-  therefore also not exposed, because an address for an unpublished service is worse than no
-  address. This is a pre-existing defect in Plan 289's subsystem, is outside Plan 334's scope, and is
-  carried as the plan's open item. Matrix cells name the owner that exists today, not a publication
-  driver that does not.
-- **Plan 289's "one existing M10 `ServiceTunnelManager`" invariant does not hold in the source.**
-  The `i2pcontrol_tunnels` module documentation claims durable administrative ownership over one
-  shared manager and no second runtime; the source has two managers and a second runtime. Per
-  `plans/README.md` the source wins. Recorded as doc-versus-source drift rather than corrected in
-  place, because rewriting another plan's architectural invariant is not this plan's call.
+- **A control-created server now reaches the publication path (Plan 337, ADR 0031).** The composition
+  root builds the **one** `ServiceTunnelManager` in `build_shared_service_manager` and injects the
+  same `Arc` into the control state and the destination-group product, so a control-created runtime is
+  the same runtime the product delivers and publishes through. The I2PControl service declares
+  `depends_on("ssu2-router")` because the graph's order is lexical; the product prepares the manager
+  and installs the executable router delivery backend before any control reconcile. A control-created
+  server is therefore visible to the publication sweep, which reads the manager's committed
+  generation rather than its original configured spec set.
+- **A type-5 record is published at the record's own blinded storage key.** `service_publication_store`
+  selects the record's own storage key — the day's blinded key for an encrypted service, the
+  destination hash otherwise — and the floodfill is chosen for whichever it is. Absent material leaves
+  the ordinary publication byte-identical to before.
+- **Every server group is persistent, and the ELS2 material is resolved by the manager that wrote the
+  record (Plan 338).** `ServiceTunnelSet::destination_groups` sets `persistent` for
+  `kind.is_server()`, so a control-created server has a persisted `ServiceDestinationRecord` and a
+  stable identity across restarts. Three store paths exist for one concept — `for_group`,
+  `for_key_reference`, and the legacy `for_service` — and `ServiceTunnelManager` is the single owner
+  of which one a resolved ownership policy uses. A record the publication cannot find would publish
+  an address naming an identity the service is **not** using, which is worse than publishing nothing.
+- **The posture and the `.b32.i2p` address reach the JSON-RPC wire.** `get` reports
+  `lease_set_security` and `encryptedAddress` inside `info`; the address decodes as a real
+  `EncryptedServiceAddress` whose flag bits follow the mode. Without this a JSON-RPC client could
+  never discover the address it needs to look the service up, and the whole mode mapping would be
+  unobservable to a real client.
+- **A failed control transaction leaves no runtime behind (Plan 338).** `rollback_state` reconciles the
+  shared manager as well as the in-memory mirror, and all five failure paths await it, so no
+  transition can leave a service the operator cannot see, stop, or delete.
+- **Black-box evidence exists.** Five rows drive a real TLS listener and real JSON-RPC `TunnelManager`
+  calls: the create/get/rawConfig round trip, an `edit` that changes the posture and the address, a
+  rejected `edit` leaving options, posture, and address byte-identical, a restart restoring a
+  secret-bearing definition with the address unchanged, and the refused modes staying refused
+  (including `encrypted (aes)` refused *by name*, and non-identifiers not case-folded or trimmed). No
+  private bridge, LeaseSet2, driver, pump, or manager API is touched.
 - **The client-count ceiling is 24 on this control surface, and that is not a protocol limit.** The
   ELS2 authorization block format permits 65,535 entries and the protocol owner accepts 255; the
   narrower number here is a consequence of carrying the list through one durable option value
@@ -407,8 +422,13 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
 - **At-rest protection for the lookup secret and the client list is not claimed.** Both live in the
   durable control definition. That is the same posture as the existing per-service Ed25519 seed
   files: at-rest encryption remains `i2pr-storage`'s responsibility.
+- **No live interoperability is claimed.** The Java I2P and i2pd differential is unexecuted (no
+  runnable Java I2P build is provisioned) and the i2pd/Java type-11 signature transcript is
+  unverifiable by both (ADR 0005, Plan 336). Plan 335 owns that lane.
 
-Authority: Plan 334 (`plans/closure/i2pcontrol-proposal-170/334-status.md`).
+Authority: Plan 334 (`plans/closure/i2pcontrol-proposal-170/334-status.md`), with Plan 337
+(`337-status.md`, ADR 0031) and Plan 338 (`338-status.md`) for the publication path and transaction
+correctness underneath it.
 
 ## Interoperability matrix
 

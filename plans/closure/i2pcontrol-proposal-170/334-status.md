@@ -1,18 +1,54 @@
-# Plan 334 status — blocked: Proposal 170 encrypted-LeaseSet mode mapping
+# Plan 334 status — passed: Proposal 170 encrypted-LeaseSet mode mapping
+
+> **Reclosed 2026-10-05 as `passed-mode-mapping-and-control-surface-complete`.** This record was
+> written as `blocked` on 2026-10-04. Every blocker it named has since been removed by Plan 337
+> (one shared service manager) and Plan 338 (one owner for the service identity store, and a
+> rollback that reaches the manager), and this plan's own black-box, rollback, and restart evidence
+> landed in `db63bc0`. The sections below are **kept as written at closure time**, with the
+> reclosure recorded here and in the requirement-to-evidence matrix, rather than rewritten. A closure
+> record that hid the blocked state would erase the reason the three corrective plans existed.
 
 - Plan: [`plans/implementation/i2pcontrol-proposal-170/334-prop170-encrypted-leaseset-mode-mapping.md`](../../implementation/i2pcontrol-proposal-170/334-prop170-encrypted-leaseset-mode-mapping.md)
-- Status: **`blocked-leaseset-mode-mapping-control-plane-complete-runtime-publication-unwired`**
-- Decision date: 2026-10-04
+- Status: **`passed-mode-mapping-and-control-surface-complete`**
+- Decision date: 2026-10-04 (blocked) / 2026-10-05 (passed, reclosure)
+- Reclosure commits: **`bdaa48c`** (Plan 338, the identity store and the rollback),
+  **`db63bc0`** (the wire posture/address and the black-box evidence)
 - Classification: control-plane contract plus control-surface wiring. This plan promotes **no**
   capability advertisement and **no** live interoperability.
 - Normative freeze commit: **`ffb1f02`** — `specs/references/proposal-170-encryptleaseset-mode-mapping.md`
   and the byte-pinned Proposal 170 manifest, committed *before* any implementation change could
   narrow or widen the mapping.
-- Implementation commits: **`e381170`**, **`586f371`**, **`0b84949`**
+- Implementation commits: **`e381170`**, **`586f371`**, **`0b84949`**; foundation: **`7842c93`** (Plan 337), **`bdaa48c`** (Plan 338), **`db63bc0`** (this reclosure)
 - Conformance: [`specs/CONFORMANCE.md`](../../../specs/CONFORMANCE.md)
   §"Proposal 170 LeaseSet mode mapping status (Plan 334)"
 - Support inventory: [`specs/support.toml`](../../../specs/support.toml) surface
   `control.i2pcontrol-leaseset-modes`
+
+## Reclosure — 2026-10-05
+
+Plan 334 closed `blocked` on three obligations, all of which are now met.
+
+| Obligation at the blocked closure | How it was met |
+|---|---|
+| A control-created tunnel publishes no LeaseSet2, because it is reconciled onto a manager instance that is not the product layer's and carries no router delivery capability | **Plan 337** (`7842c93`, ADR 0031). The composition root builds the **one** `ServiceTunnelManager` in `build_shared_service_manager` and injects the same `Arc` into the control state and the product. `i2pcontrol` declares `depends_on("ssu2-router")` because the graph's order is lexical, so the product prepares the manager and installs the delivery backend before any control reconcile. The publication sweep reads the committed generation, so a later control reconcile is visible to it. |
+| `publish_service_ls2_for_service` does not consume the ELS2 material | **Plan 337** (`6d06c73`). `service_publication_store` selects the record's **own** storage key — the day's blinded key for an encrypted service, the destination hash otherwise — and the floodfill is chosen for whichever it is. Absent material leaves the ordinary publication byte-identical. |
+| The `.b32.i2p` address is not exposed | **Plan 337** added it to the control-state response; **`db63bc0`** carried it onto the **JSON-RPC wire** (`info.encryptedAddress` plus `info.lease_set_security`). Without the wire step a JSON-RPC client could never discover the address, so the whole mode mapping was unobservable to a real client — a gap this plan's own black-box rows found. |
+| **Black-box evidence through I2PControl** | **NOT MET → MET** (`db63bc0`). Five rows over a real TLS listener and real JSON-RPC `TunnelManager` calls, in `crates/i2pr-daemon/tests/i2pcontrol_els2_black_box.rs`. No private bridge, LeaseSet2, driver, pump, or manager API is touched. |
+| **Create/edit rollback and restart evidence** | **NOT MET → MET** (`db63bc0`). A rejected `edit` leaves the stored options, the posture, and the address byte-identical; a restart over the same data directory restores a secret-bearing encrypted definition with the address **unchanged**. |
+| A type-5 record needs a persisted service identity | **Plan 338** (`bdaa48c`). Every server group is already persistent, so a control-created server always had a `ServiceDestinationRecord`; the ELS2 loader had been reading `for_service` while the runtime writes `for_group`. `ServiceTunnelManager` is now the single owner of that resolution. This also **corrects this record's** gap-1 diagnosis, which wrongly concluded the capability was missing. |
+
+Two things this reclosure does **not** claim:
+
+- **No live interoperability.** The Java I2P and i2pd differential is unexecuted — no runnable Java
+  I2P build is provisioned — and the type-11 signature transcript is unverifiable by both
+  (ADR 0005, Plan 336). That is Plan 335's obligation and it remains open.
+- **The client-count ceiling divergence is untouched.** ELS2 permits 65,535 entries, the protocol
+  owner accepts 255, this control surface accepts 24, and Emissary parses at most 99. No
+  specification reconciles them.
+
+The pre-existing, unrelated `parse_configured_destination` substring defect is still deliberately
+unfixed and is recorded in the Plan 333 and 338 closures as well.
+
 
 ## Why this plan is blocked rather than passed
 
@@ -125,15 +161,15 @@ kinds, plus the refused mode, five bad mode spellings, and the retired duplicate
 | An authorization mismatch is refused, not published unauthenticated | `an_authorization_mismatch_is_refused_rather_than_published_unauthenticated` | PASS, for all three mismatch shapes. |
 | A lookup secret changes the daily key but not the address | `a_lookup_secret_changes_the_daily_key_but_not_the_address` | PASS. Two secrets give two different daily keys and the same address; an absent secret gives a third. A client with the wrong secret finds the service and cannot read it. |
 | **A control-created tunnel reaches the product layer's publication path** | `plan334_control_manager_is_separate_from_the_product_manager` | **NOT MET — pre-existing, not this plan's.** `TunnelControlState::for_config` builds its own manager over an empty `ServiceTunnelSet`; `ServiceProduct::new` builds another over the startup config and is the only one handed to `publish_service_ls2_for_service`. No production call site installs a delivery capability on the control-owned manager. |
-| **A control-created server publishes a LeaseSet2 at all** | `plan334_control_created_server_is_validated_but_not_published` | **NOT MET — pre-existing, not this plan's.** The definition is real, validated, and its posture resolves to a type-5 publisher, but the `ServiceTunnelSpec` carries no publication intent and its manager has no router backend. |
-| **Plan 289's "the one existing M10 `ServiceTunnelManager`" invariant holds** | the same row; `i2pcontrol_tunnels.rs` module docs | **NOT MET — recorded doc-versus-source drift.** The module documentation claims one shared manager and no second runtime; the source has two managers and a second runtime. The source wins per `plans/README.md`. Correcting another plan's invariant is not Plan 334's call. |
+| **A control-created server publishes a LeaseSet2 at all** | `plan337_control_created_server_reaches_the_product_publication_sweep`; `plan338_control_created_encrypted_server_publishes_type5_at_its_blinded_key` | **MET (Plan 337/338).** The definition is real and validated; the definition's publication intent is installed as ELS2 material on the shared manager at the end of a committed transaction, and the product's publication sweep — which reads the manager's **committed** generation — sees the control-created server and files a record for it. Replaces the negative pin, which asserted the opposite. |
+| **Plan 289's "the one existing M10 `ServiceTunnelManager`" invariant holds** | `plan337_the_composition_root_builds_exactly_one_service_manager`; `plan337_control_reconciles_onto_the_product_manager` | **MET (Plan 337, ADR 0031).** The composition root builds the one manager and injects the same `Arc` into both owners, so the source now matches the invariant. The drift is resolved in the source rather than by rewriting another plan's text. |
 | No new `i2pr-*` production edge | `scripts/check-dependency-direction.sh` | PASS. The mode contract lives in `i2pr-i2pcontrol`, which has no `i2pr-*` edge and therefore cannot reach the ELS2 owners; `i2pr-daemon` is the only layer that sees both. |
 | The ELS2 material holds no long-lived secret beyond the identity it must | `ServiceEls2Material` | PASS. Not `Clone`; `Debug` prints presence and counts only. |
-| **Live protocol effect for the configured mode** | `plan334_control_created_server_is_validated_but_not_published` | **NOT MET, and not reachable inside this plan.** A control-created server tunnel publishes no LeaseSet2 at all, because it is reconciled onto a manager instance that is not the product layer's and that carries no delivery capability. The blocker is upstream of ELS2. |
-| **The `.b32.i2p` address exposed through the control surface** | `ServiceEls2Material::address` | **NOT MET, and not useful yet.** The method produces a real, correctly flagged address, but nothing surfaces it — and exposing it now would hand an operator an address for a service no client could look up, because the service publishes nothing. |
-| **Black-box evidence through I2PControl** | — | **NOT MET.** The rows above are unit- and lib-level. A `create`/`get`/`rawConfig`/`edit` round trip over a real JSON-RPC connection has not been written, so the control-surface rows are not yet end-to-end evidence. |
-| **Create/edit rollback and restart evidence** | — | **NOT MET.** The validation ordering is correct by construction, but no row exercises a rejected `edit` leaving no half-converted tunnel, and no row restarts a daemon and re-reads a secret-bearing definition. |
-| **Cross-implementation check against Java I2P or i2pd** | — | **NOT EXECUTED, and not reachable.** Same two blockers Plan 333 recorded: no Java I2P build is provisioned, and the type-11 signature transcript is unverifiable by both (ADR 0005, Plan 336). Plan 335 owns the lane. |
+| **Live protocol effect for the configured mode** | `plan338_control_created_encrypted_server_publishes_type5_at_its_blinded_key`; `an_encrypted_service_publishes_type5_at_its_blinded_storage_key`; `plan334_els2_create_get_rawconfig_round_trip_over_jsonrpc` | **MET (Plan 337/338, this reclosure).** A control-created encrypted server publishes a type-5 record at the record's own blinded storage key — the store key is `blinded_storage_key(record.blinded_public_key())` and is **not** the destination hash — and the posture and address are observable over the JSON-RPC wire. The publication selector row drives the production function, not a reimplementation. |
+| **The `.b32.i2p` address exposed through the control surface** | `plan338_control_created_authorized_server_address_carries_both_flags`; `plan334_els2_create_get_rawconfig_round_trip_over_jsonrpc` | **MET (Plan 337, wire step in this reclosure).** `get` reports `info.encryptedAddress` and `info.lease_set_security` on the JSON-RPC wire; the address decodes with the protocol's own decoder and its flag bits follow the mode. |
+| **Black-box evidence through I2PControl** | `crates/i2pr-daemon/tests/i2pcontrol_els2_black_box.rs` (5 rows) | **MET (this reclosure).** Real TLS listener, real JSON-RPC `TunnelManager` calls, canonical Proposal 170 wire shape, no private API touched. |
+| **Create/edit rollback and restart evidence** | `plan334_els2_rejected_edit_leaves_the_tunnel_unchanged_over_jsonrpc`; `plan334_els2_restart_restores_the_definition_without_rotating_the_address`; `plan338_a_rolled_back_transition_leaves_no_ghost_runtime` | **MET (this reclosure, plus Plan 338).** A rejected `edit` leaves options, posture, and address byte-identical; a restart restores a secret-bearing encrypted definition with the address unchanged; and a rolled-back transition leaves no ghost runtime — a row verified to fail when the reconcile half of the rollback is removed. |
+| **Cross-implementation check against Java I2P or i2pd** | — | **NOT EXECUTED, and out of this plan's scope.** No Java I2P build is provisioned, and the type-11 signature transcript is unverifiable by both (ADR 0005, Plan 336). **This does not block this plan's closure**: the obligation is a live-interoperability obligation, and Plan 335 owns it. |
 
 ## The central finding
 

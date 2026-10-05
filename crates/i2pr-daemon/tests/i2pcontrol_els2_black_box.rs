@@ -232,13 +232,11 @@ fn server_action(
     let mut params = serde_json::json!({
         "Action": action, "Name": name,
     });
-    // An `edit` may not change the type, so it is sent only on a create.
-    if action == "create" {
-        if let Some(target) = params.as_object_mut() {
+    if let Some(target) = params.as_object_mut() {
+        // An `edit` may not change the type, so it is sent only on a create.
+        if action == "create" {
             target.insert("Type".to_owned(), serde_json::json!("server"));
         }
-    }
-    if let Some(target) = params.as_object_mut() {
         target.insert("TargetHost".to_owned(), serde_json::json!("127.0.0.1"));
         target.insert("TargetPort".to_owned(), serde_json::json!(port));
     }

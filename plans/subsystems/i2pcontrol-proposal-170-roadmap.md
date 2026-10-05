@@ -275,13 +275,8 @@ Current graph (`passed` / `ready` / `blocked`):
        -> 331 passed  independent qualification
             -> 332 passed  type-5 ELS2 foundation
                  -> 333 passed  PSK/DH client auth
-                      -> 334 ready (implementation complete:
-                                   a control-created encrypted server
-                                   publishes type-5 at the record's own
-                                   blinded key and exposes a resolving
-                                   address; only black-box I2PControl
-                                   evidence remains)
-                           -> 335 blocked on 334  live ELS2 interoperability/reclosure
+                      -> 334 passed  canonical Prop 170 mode mapping + control surface
+                           -> 335 ready  live ELS2 interoperability/reclosure
 
 337 passed  control-owned service tunnels reach the product layer
   (corrective pass on Plan 289: two ServiceTunnelManager instances, the
@@ -293,10 +288,16 @@ Current graph (`passed` / `ready` / `blocked`):
 
 Every obstacle found on this control path is now removed: one manager, a
 publication path a control-created service reaches, a type-5 record at the
-record's own blinded storage key, a resolving `.b32.i2p`, and transactions
-that leave nothing behind when they fail. **Plan 334's remaining scope is its
-black-box I2PControl evidence**, and that is the only thing between this line
-and Plan 335.
+record's own blinded storage key, a resolving `.b32.i2p` **on the JSON-RPC
+wire**, and transactions that leave nothing behind when they fail.
+
+**Plan 334 reclosed `passed` on 2026-10-05.** Its own black-box, rollback, and restart
+evidence landed in `db63bc0`, and writing it found one more real gap: Plan 337 had added the
+posture and address to the *control-state* response, but the JSON-RPC adapter builds its own
+`info` object and dropped them — so a real client could never discover the address, and the
+whole mode mapping was unobservable outside the process. The wire step fixes that.
+
+**Plan 335 is the only remaining item on this line.** It is `ready`, not blocked.
 
 Plan 337 was the real blocker behind Plan 334, and it was older and broader than the ELS2 work. A
 service tunnel created through TunnelManager was reconciled onto a `ServiceTunnelManager` built by
