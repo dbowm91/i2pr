@@ -248,7 +248,7 @@ lints, script gates, and review:
   bytes, no validation side effects, and always a tested
   negative path.
 - All architecture/security decisions live under `docs/adr/`
-  (`0000` through `0031`; ADRs are append-only, and a superseded ADR
+  (`0000` through `0032`; ADRs are append-only, and a superseded ADR
   keeps its original text plus a supersedure marker). The
   plan-of-record is `plans/implementation/<subsystem>/NNN-*.md` plus
   its closure record under `plans/closure/<subsystem>/NNN-status.md`,

@@ -30,6 +30,41 @@ if grep -En 'i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit' \
   exit 1
 fi
 
+# Plan 349: the portable policy core must not acquire ownership of router
+# state, persistence, or runtime facilities. Keep i2pr-proto separately
+# reviewable: Plan 350 removes it only after proving it is unused.
+portable_dependency_pattern='i2pr-(daemon|runtime|netdb(-persist)?|transport(-ntcp2|-ssu2)?|tunnel|testkit)'
+if grep -En "$portable_dependency_pattern" "$root/crates/i2pr-service-tunnels/Cargo.toml" >/dev/null; then
+  echo "portable service-tunnel core must not depend on router/runtime/NetDB/transport/tunnel crates" >&2
+  exit 1
+fi
+
+# A negative boundary rule needs a positive control. Confirm the same
+# expression catches representative forbidden manifest entries.
+if ! printf '%s\n' 'i2pr-daemon' | grep -En "$portable_dependency_pattern" >/dev/null || \
+   ! printf '%s\n' 'i2pr-netdb-persist' | grep -En "$portable_dependency_pattern" >/dev/null; then
+  echo "Plan 349 dependency guard positive control failed" >&2
+  exit 1
+fi
+
+# Policy code may use address value types (IpAddr/SocketAddr), but may not
+# own runtime calls, filesystem/process/DNS access, async functions, or I/O
+# socket types. This catches both std and Tokio spellings.
+portable_source_pattern='tokio::|async[[:space:]]+fn|std::(net::)?(TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener)|tokio::net|std::fs|tokio::fs|std::process|Command::new|to_socket_addrs|lookup_host|File::(open|create)'
+if grep -REn "$portable_source_pattern" "$root/crates/i2pr-service-tunnels/src" >/dev/null; then
+  echo "portable service-tunnel source must not own runtime, socket, filesystem, process, or DNS operations" >&2
+  exit 1
+fi
+
+# Positive controls prove the source detector rejects runtime, socket, and
+# filesystem ownership spellings rather than passing vacuously.
+if ! printf '%s\n' 'tokio::spawn(task)' | grep -En "$portable_source_pattern" >/dev/null || \
+   ! printf '%s\n' 'std::net::TcpStream' | grep -En "$portable_source_pattern" >/dev/null || \
+   ! printf '%s\n' 'std::fs::read(path)' | grep -En "$portable_source_pattern" >/dev/null; then
+  echo "Plan 349 source guard positive control failed" >&2
+  exit 1
+fi
+
 # 3. service-tunnels must not build Garlic/I2NP. Plan 173 §3
 #    forbids service-specific Garlic/I2NP construction in the
 #    runtime-neutral crate.

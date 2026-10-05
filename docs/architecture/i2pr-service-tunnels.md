@@ -1,5 +1,11 @@
 # `i2pr-service-tunnels` — Deep Dive
 
+Portability ownership is defined by [ADR 0032](../adr/0032-portable-service-tunnel-policy-core-and-adapters.md)
+and [`portable-service-tunnel-core-v1`](../../specs/references/portable-service-tunnel-core-v1.md).
+This crate owns reusable, runtime-neutral service-tunnel policy and filters; adapters own
+transport, sockets, clocks, persistence, and lifecycle. The public API is not considered
+stable until Plan 350 closes.
+
 ## Crate header
 
 - **Crate:** `i2pr-service-tunnels`
