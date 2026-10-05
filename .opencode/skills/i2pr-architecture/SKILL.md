@@ -43,10 +43,10 @@ docs/
     dependency-graph.md      # Per-crate allowlist + ASCII graph (script: check-dependency-direction.sh)
     tooling.md               # Scripts, fixtures, integration lanes, CI, fuzz
     interop-apparatus.md     # NTCP2 interop apparatus (Plan 038–100; historical surface)
-    i2pr-<crate>.md          # Per-crate deep-dive (19 crates: 18 production + i2pr-testkit)
+    i2pr-<crate>.md          # Per-crate deep-dive (21 crates: 20 production + i2pr-testkit)
     audit/
       YYYY-MM-DD-doc-audit.md # Subagent doc-vs-source drift audit
-  adr/                       # Architecture decision records (0000..0031)
+  adr/                       # Architecture decision records (0000..0034; 0030 is a duplicate pair)
   security-model.md          # Memory hygiene, secret-bearing types, codec error policy
   private-testnet.md         # Private testnet operation guidance
   protocol-support.md        # Generated from specs/support.toml
@@ -127,11 +127,12 @@ writing or updating a deep-dive.
 | `i2pr-addressbook` | `docs/architecture/i2pr-addressbook.md` | Canonical `.i2p` books, precedence resolver, subscriptions, versioned generations. No I/O. |
 | `i2pr-i2pcontrol` | `docs/architecture/i2pr-i2pcontrol.md` | Proposal 170 JSON-RPC 2.0 contract: envelope, auth vocabulary, method/type/selector inventories, tunnel option metadata, wire ceilings. No I/O. |
 | `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy (12 kinds) plus the outproxy provider **policy** and the outbound-secret capability trait. No sockets, no Tokio; the daemon owns all listeners. |
+| `i2pr-console` | `docs/architecture/i2pr-console.md` | Loopback router console substrate: embedded assets, Halloy-schema-compatible themes, browser security (Host/Origin authority, CSP, Argon2id auth, sessions, CSRF, throttle), and the read-only Proposal 170 overview. **No socket, zero workspace deps**; the daemon owns the listener. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 
 The table must list **every** workspace member exactly once. Verify with
-`ls crates/ | wc -l` (currently 19) after any crate lands.
+`ls crates/ | wc -l` (currently 21) after any crate lands.
 
 ## ADR index
 
@@ -184,6 +185,9 @@ plan-of-record renumbers one record. Tracked in
 0030  destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md   COLLIDING NUMBER
 0030  loopback-controlled-floodfill-reachability-advertisement.md              COLLIDING NUMBER
 0031  one-shared-service-tunnel-manager.md                One shared ServiceTunnelManager
+0032  managed-native-app-process-and-capability-boundary.md
+0033  portable-service-tunnel-policy-core-and-adapters.md
+0034  eggserve-axum-router-console-http-substrate.md     EggServe + Axum console substrate
 ```
 
 ## Plan-of-record index
@@ -257,7 +261,7 @@ listed under "Known enforcement gaps" below. Verify a script exists with
 
 | Script | Catches |
 | --- | --- |
-| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations. **See gaps: does not police `i2pr-tunnel` or `tools/i2pr-interop`.** |
+| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations. **Map gap CLOSED by Plan 356** — 22 keys for 22 members, and `check-console-boundaries.sh` rule 7 asserts every member is present. |
 | `scripts/check-runtime-boundaries.sh` | `unbounded_channel`, `tokio::*`/`std::net`/`std::fs` in transport, raw `JoinHandle`s, `tokio::spawn` without owner. **See gaps: no `i2pr-api` section.** |
 | `scripts/check-global-plan-number-uniqueness.py` | Cross-subsystem implementation-plan number ownership. **Run with `python3`, not `bash`** (CI-enforced). |
 | `scripts/check-java-source-lock-gating.sh` | Java source-lock tests stay `#[ignore]`-gated. **CI-enforced, not in the AGENTS.md floor.** |
@@ -274,6 +278,7 @@ listed under "Known enforcement gaps" below. Verify a script exists with
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-i2pcontrol-acceptance-evidence.sh` | Proposal 170 I2PControl evidence integrity (CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point) **plus Plan 343 rules 9–11: the outproxy policy and route owner may not name a clearnet socket/resolver/TLS client, load a plugin, or spawn a process, with a positive control on `service_tunnels_http.rs`.** |
+| `scripts/check-console-boundaries.sh` | Plans 356–358 console invariants: `i2pr-console` has no `i2pr-*` dependency, names no `tokio`/`std::net`, opens no socket, and reaches no router state outside `ControlClient`; rule 7 asserts dependency-map coverage (CI-enforced). |
 | `scripts/check-m11-transit-boundaries.sh` | M11 transit runtime-neutral invariants (CI-enforced). |
 | `scripts/check-m11-transit-qualification-evidence.sh` | M11 one-family qualification evidence integrity. **Floor, not CI.** |
 | `scripts/check-m11-per-epoch-composition.sh` | M11 per-epoch tunnel composition. **Now in the AGENTS.md floor.** |
@@ -289,25 +294,31 @@ listed under "Known enforcement gaps" below. Verify a script exists with
 | `scripts/check-m12-floodfill-boundaries.sh` | **Currently exits 1 — broken.** Still enforces the Plan 281 "type 5 deferred" floor that Plans 332/333/334 legitimately superseded. In neither the floor nor CI, so the failure is silent. Do not add to the floor until a plan corrects the script. |
 | `scripts/check-streaming-fingerprint-evidence.sh` | Takes a plan argument; not a zero-arg floor candidate. |
 | `scripts/check-http-anonymity-evidence.sh` | Requires a Plan 308 evidence manifest that does not exist (Plan 308 blocked). Not a floor candidate. |
+| `scripts/check-console-browser-security.sh` | Plans 357/358 browser-security invariants: centralized CSP and hardening headers, no `Server` advertisement, no plaintext console password surviving config parse, no vendored third-party theme, bounded rendering. CI-enforced. |
 
 **Pruned, not live:** `scripts/check-plan095-workflow.sh` and
 `tests/integration/ntcp2/harness/test_plan09{5,6,7,8}.py` were removed by the
 Plan 099 harness reduction (`c04da77a`). Do not link them as live commands.
 
-### Known enforcement gaps (2026-10-05)
+### Known enforcement gaps (recorded 2026-10-05; re-audited 2026-10-06)
 
 A green floor is not full coverage. These are real holes, recorded rather than
 silently patched, because closing them means changing a script or the DAG
 allowlist and that needs a plan-of-record:
 
-- `check-dependency-direction.sh` has 18 `expected`-map keys for 20 workspace
-  members. `i2pr-tunnel` and `tools/i2pr-interop` are absent, so the loop never
-  inspects them and a new forbidden `i2pr-*` production edge in either would
-  pass CI silently. `tools/i2pr-interop` is also outside
-  `check-runtime-boundaries.sh`'s `crates/*/Cargo.toml` glob.
+- ~~`check-dependency-direction.sh` had 18 `expected`-map keys for 20
+  workspace members~~ — **CLOSED by Plan 356.** `i2pr-tunnel` and
+  `tools/i2pr-interop` now have allowlist entries (22 keys, 22 members), and
+  `check-console-boundaries.sh` rule 7 fails CI if a crate is added without
+  one. `tools/i2pr-interop` remains outside `check-runtime-boundaries.sh`,
+  whose globs cover `crates/` only.
 - `check-runtime-boundaries.sh` has no `i2pr-api` section, so its "passed"
   result is not evidence for that crate. It also greps `std::net` literally, so
-  a grouped `use std::{…}` import evades it.
+  a grouped `use std::{…}` import evades it. The console checkers name
+  `crates/i2pr-console` explicitly, so the grouped-import evasion applies to
+  them as well.
+- `check-m12-floodfill-boundaries.sh` exits 1 for a stale Plan 281 reason and is
+  in neither the floor nor CI, so the failure is silent.
 - ADR numbers have no uniqueness checker and `docs/adr/` has a live `0030`
   collision (see "ADR index" above).
 

@@ -11,6 +11,7 @@ mod addressbook_fetch;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+pub mod console;
 pub mod control_sources;
 pub mod destination_peers;
 pub mod destination_streaming;
@@ -20,6 +21,7 @@ pub mod exploratory_build;
 pub mod floodfill;
 pub mod i2cp;
 pub mod i2pcontrol;
+pub mod i2pcontrol_dispatch;
 pub mod i2pcontrol_inspection;
 pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
@@ -342,6 +344,10 @@ fn build_daemon_graph_inner(
         register_i2cp_service(&mut builder, config, inspection)?;
     }
 
+    if config.console.enabled {
+        register_console_service(&mut builder, config, inspection)?;
+    }
+
     if config.i2pcontrol.enabled {
         let manager = shared_service_manager.clone().ok_or_else(|| {
             DaemonError::RuntimeSupervisorFailed(
@@ -448,6 +454,98 @@ fn register_sam_service(
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!("failed to register SAM service: {e}"))
         })?;
+    Ok(())
+}
+
+/// Registers the supervised loopback router console.
+///
+/// The console is experimental, loopback-only, and disabled by default,
+/// exactly like SAM, I2CP, and I2PControl. This module owns the listener
+/// and the EggServe lifecycle; the console crate owns only the browser
+/// application. A construction or bind failure fails the service rather
+/// than degrading to a half-open console.
+fn register_console_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    inspection: &Arc<InspectionHandles>,
+) -> Result<(), DaemonError> {
+    let console_config = config.console.clone();
+    let address = console_config.bind_socket();
+    let inspection = Arc::clone(inspection);
+    let console_name = ServiceName::new(CONSOLE_SERVICE_NAME).expect("valid service name");
+    let spec = i2pr_runtime::ServiceSpec::new(
+        console_name,
+        i2pr_runtime::ServiceClassification::Optional,
+        move |ctx| {
+            let console_config = console_config.clone();
+            let inspection = Arc::clone(&inspection);
+            let cancellation = ctx.cancellation().clone();
+            Box::pin(async move {
+                let state =
+                    match crate::console::ConsoleServiceState::new(console_config, inspection) {
+                        Ok(state) => state,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "console service construction failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                // Bind under a bounded timeout so an unusable address
+                // fails the service promptly. The serving phase then runs
+                // until cancellation: wrapping the listener lifetime in a
+                // timeout would abort a healthy console after one second.
+                let bound =
+                    i2pr_runtime::bounded_timeout(Duration::from_secs(1), state.bind(address))
+                        .await;
+                let (listener, resolved) = match bound {
+                    Ok(Ok(bound)) => bound,
+                    Ok(Err(error)) => {
+                        let detail =
+                            i2pr_core::HealthDetail::new(format!("console bind failed: {error}"))
+                                .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
+                    Err(_) => {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "console listener failed to bind within the bounded timeout",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                };
+                let token = cancellation.clone();
+                if let Err(error) = state.serve(listener, resolved, token).await {
+                    let detail =
+                        i2pr_core::HealthDetail::new(format!("console serve failed: {error}")).ok();
+                    return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                        i2pr_core::ServiceFailureCategory::Internal,
+                        detail,
+                    ));
+                }
+                i2pr_runtime::ServiceResult::RequestedShutdown
+            })
+        },
+    );
+    builder.register(spec).map_err(|e| {
+        DaemonError::RuntimeSupervisorFailed(format!("failed to register console service: {e}"))
+    })?;
     Ok(())
 }
 
@@ -596,6 +694,9 @@ fn service_tunnels_active(config: &Config) -> bool {
 /// makes the I2PControl service depend on it, so the two must not drift
 /// apart; [`register_ssu2_service`] registers this exact name.
 const SSU2_SERVICE_NAME: &str = "ssu2-router";
+
+/// Supervisor service name for the loopback router console (Plan 356).
+const CONSOLE_SERVICE_NAME: &str = "router-console";
 
 /// Registers the supervised I2PControl HTTPS service in the supplied
 /// builder. The factory captures the [`I2pControlServiceState`] so the

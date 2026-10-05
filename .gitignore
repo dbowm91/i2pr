@@ -9,3 +9,6 @@ __pycache__/
 /tests/**/target/
 /tests/integration/**/reference/*.class
 /tests/integration/sam/build/
+
+# macOS directory metadata artifacts
+.DS_Store

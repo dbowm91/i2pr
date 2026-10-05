@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="i2pr router">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5aa9e6" />
+      <stop offset="1" stop-color="#3f7fb5" />
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="url(#g)" stroke-width="3" />
+  <circle cx="32" cy="32" r="20" fill="none" stroke="url(#g)" stroke-width="2" opacity="0.65" />
+  <circle cx="32" cy="32" r="9" fill="none" stroke="url(#g)" stroke-width="2" opacity="0.45" />
+  <circle cx="32" cy="12" r="4" fill="url(#g)" />
+  <circle cx="49" cy="42" r="3" fill="url(#g)" />
+  <circle cx="15" cy="42" r="3" fill="url(#g)" />
+</svg>

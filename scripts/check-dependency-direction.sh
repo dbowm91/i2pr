@@ -36,6 +36,7 @@ expected = {
         "i2pr-addressbook",
         "i2pr-api",
         "i2pr-client",
+        "i2pr-console",
         "i2pr-core",
         "i2pr-proto",
         "i2pr-crypto",
@@ -64,6 +65,22 @@ expected = {
     },
     "i2pr-i2pcontrol": set(),
     "i2pr-addressbook": {"i2pr-proto"},
+    # Plan 356: the browser console owns only its own application surface.
+    # It has no workspace dependencies at all, which keeps it from becoming
+    # a back door into the router-owner crates.
+    "i2pr-console": set(),
+    # Closed coverage gap (recorded in AGENTS.md): these two members were
+    # absent from this map, so a new forbidden edge in either would have
+    # passed CI silently. Their allowlists mirror their manifests.
+    "i2pr-tunnel": {"i2pr-core", "i2pr-crypto", "i2pr-netdb", "i2pr-proto"},
+    "i2pr-interop": {
+        "i2pr-crypto",
+        "i2pr-proto",
+        "i2pr-runtime",
+        "i2pr-storage",
+        "i2pr-transport",
+        "i2pr-transport-ntcp2",
+    },
 }
 
 for name, allowed in expected.items():

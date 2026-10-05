@@ -15,14 +15,13 @@ actual-vs-allowed notes below matter to a reviewer.
 
 Scope of enforcement:
 
-- The checker iterates the keys of `expected` (19 crates).
-- `crates/` contains **19** crates. **`i2pr-tunnel` is not a key** in
-  `expected`, so its own edge set is not policed by this script. Its
-  edges are constrained only by prose and by the tests. See
-  [Coverage gaps](#coverage-gaps).
-- `tools/i2pr-interop` is a workspace member but is **not** in `expected`
-  and the script never mentions `tools/`. It is entirely outside this
-  checker's scope. See [Non-production members](#non-production-members).
+- The checker iterates the keys of `expected`, and
+  `scripts/check-console-boundaries.sh` rule 7 asserts that **every**
+  `i2pr-*` workspace member appears in `expected`. Adding a crate without a
+  map entry therefore fails CI rather than silently escaping the check.
+- The coverage gap recorded in `AGENTS.md` (missing `i2pr-tunnel` and
+  `tools/i2pr-interop` keys) was **closed** when the console was added;
+  both now have explicit allowlists.
 
 ## Allowlist
 
@@ -47,12 +46,13 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-netdb-persist` (Plan 104) | `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-storage` | same | `sha2`, `thiserror` |
 | `i2pr-transport-ntcp2` | `i2pr-crypto`, `i2pr-proto`, `i2pr-transport` | same | `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
 | `i2pr-transport-ssu2` (Plans 155–158) | `i2pr-crypto`, `i2pr-proto`, `i2pr-transport` | same | `chacha20`, `chacha20poly1305`, `hmac`, `rand_core`, `sha2`, `thiserror`, `zeroize` |
-| `i2pr-tunnel` | **not in `expected`** (see [Coverage gaps](#coverage-gaps)) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` | `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
+| `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` | same | `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-client` (Plans 120/121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` | same | `rand_chacha`, `rand_core`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-api` (Plan 136; extended Plan 164+) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` | same | `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` | same | `futures-util`, `rand_core`, `tokio`, `tokio-util`, `tracing`, `zeroize` |
 | `i2pr-service-tunnels` (Plans 174/175; portability Plans 349–351) | `i2pr-client` | none — **`i2pr-client` is allowed-but-unused** | `base64ct`, `sha2`, `subtle`, `thiserror`, `zeroize` |
-| `i2pr-daemon` | 15 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 15 | `chacha20poly1305`, `clap`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
+| `i2pr-console` (Plans 356–358) | (none) | none | `argon2`, `axum` (built without `tokio`), `rand_core`, `serde`, `serde_json`, `toml`, `zeroize` |
+| `i2pr-daemon` | 16 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 16 | `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
 | `i2pr-testkit` (test-only) | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` | same | `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 
 Notes on the allowlisted-but-unused and legacy rows:
@@ -79,31 +79,32 @@ Notes on the allowlisted-but-unused and legacy rows:
 ### `i2pr-daemon` composition root
 
 `i2pr-daemon` is the CLI/config/composition root and is the only crate
-allowed to see 15 workspace dependencies at once:
+allowed to see 16 workspace dependencies at once:
 
 1. `i2pr-addressbook`
 2. `i2pr-api`
 3. `i2pr-client`
-4. `i2pr-core`
-5. `i2pr-crypto`
-6. `i2pr-i2pcontrol`
-7. `i2pr-netdb`
-8. `i2pr-netdb-persist`
-9. `i2pr-proto`
-10. `i2pr-runtime`
-11. `i2pr-service-tunnels`
-12. `i2pr-storage`
-13. `i2pr-su3`
-14. `i2pr-transport`
-15. `i2pr-tunnel`
+4. `i2pr-console`
+5. `i2pr-core`
+6. `i2pr-crypto`
+7. `i2pr-i2pcontrol`
+8. `i2pr-netdb`
+9. `i2pr-netdb-persist`
+10. `i2pr-proto`
+11. `i2pr-runtime`
+12. `i2pr-service-tunnels`
+13. `i2pr-storage`
+14. `i2pr-su3`
+15. `i2pr-transport`
+16. `i2pr-tunnel`
 
-All 15 are actually declared, and the set is not transitive: e.g. the
+All 16 are actually declared, and the set is not transitive: e.g. the
 daemon reaches `i2pr-transport-ssu2` only through `i2pr-runtime`, never
 directly.
 
 ## Zero-dependency and leaf crates
 
-Four crates have **no** workspace production dependencies, and the
+Six crates have **no** workspace production dependencies, and the
 checker pins each of them to the empty set:
 
 - `i2pr-proto` — the foundational namespace and error categories; it may
@@ -114,6 +115,13 @@ checker pins each of them to the empty set:
   verification. Leaf.
 - `i2pr-i2pcontrol` — runtime-neutral Proposal 170 control wire/domain
   contract. Leaf; only `i2pr-daemon` may depend on it.
+- `i2pr-app-proto` — runtime-neutral managed-app contract (Plan 345).
+  Leaf.
+- `i2pr-console` — the loopback router console substrate (Plans
+  356–358). Leaf *and* socketless: it may not depend on any `i2pr-*`
+  crate, so the console cannot reach router state directly. Every value
+  it renders arrives through the `ControlClient` trait, and the only
+  implementation of that trait lives in `i2pr-daemon`.
 
 `i2pr-transport` is the smallest non-leaf crate: its only production
 dependencies are `i2pr-core` and `i2pr-proto`, and it has **no external
@@ -147,7 +155,7 @@ enforced rule.
 ```text
 Tier 0 — zero workspace production dependencies
   i2pr-proto          i2pr-core          i2pr-su3          i2pr-i2pcontrol
-  i2pr-app-proto
+  i2pr-app-proto      i2pr-console
 
 Tier 1
   i2pr-crypto         --> i2pr-proto
@@ -176,8 +184,8 @@ Tier 5
   i2pr-service-tunnels  (no internal crate dependencies)
 
 Tier 6 — composition root
-  i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-client, i2pr-core,
-                     i2pr-crypto, i2pr-i2pcontrol, i2pr-netdb,
+  i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-client, i2pr-console,
+                     i2pr-core, i2pr-crypto, i2pr-i2pcontrol, i2pr-netdb,
                      i2pr-netdb-persist, i2pr-proto, i2pr-runtime,
                      i2pr-service-tunnels, i2pr-storage, i2pr-su3,
                      i2pr-transport, i2pr-tunnel
@@ -209,6 +217,8 @@ hidden inside a branching drawing:
 
   i2pr-crypto <-- i2pr-api
   i2pr-proto  <-- i2pr-api
+
+  i2pr-console <-- i2pr-daemon
 
   i2pr-runtime <-- i2pr-daemon
   i2pr-netdb   <-- i2pr-daemon
@@ -280,34 +290,37 @@ that makes each one non-obvious.
   crate may depend on `i2pr-addressbook`; only `i2pr-daemon` composes the
   owner into SAM, service tunnels, and control consumers, and
   `i2pr-storage` persists opaque generations only.
+- `i2pr-console` may not depend on any `i2pr-*` crate (Plans 356–358;
+  the console substrate is socketless and state-free). It also may not
+  depend on `i2pr-runtime` or `tokio`: `axum` is built with
+  `default-features = false` and **without** the `tokio` feature, so the
+  crate compiles as a synchronous, runtime-neutral router. Only
+  `i2pr-daemon` may depend on it, and the daemon — not the console —
+  owns the listener, the `ControlClient` implementation, and the control
+  principal.
 - **No production crate may depend on `i2pr-testkit`.** This rule is
   *not* in `check-dependency-direction.sh`; see
   [`i2pr-testkit`](#i2pr-testkit).
-- **`i2pr-tunnel` reverse edges are not machine-enforced.** Because
-  `i2pr-tunnel` is absent from the `expected` dictionary, none of its
-  inbound rules are policed by the checker. See
-  [Coverage gaps](#coverage-gaps).
 
 ## Coverage gaps
 
-Two facts a reader must know before trusting the checker as a complete
-DAG description.
+`check-dependency-direction.sh` now has one `expected` key per workspace
+member: 22 keys for 22 members (21 crates under `crates/` plus
+`tools/i2pr-interop`). There is no longer a crate whose production edges
+escape comparison.
 
-### `i2pr-tunnel` is not in the allowlist dictionary
+The gap this document used to describe — `i2pr-tunnel` had no
+`expected` key, so its inbound rules were prose-only — was **closed** as
+part of Plan 356. `"i2pr-tunnel": {"i2pr-core", "i2pr-crypto",
+"i2pr-netdb", "i2pr-proto"}` and `"i2pr-interop": {"i2pr-crypto",
+"i2pr-proto", "i2pr-runtime", "i2pr-storage", "i2pr-transport",
+"i2pr-transport-ntcp2"}` now pin both crates to their real edges. The fix
+went into the script rather than into the prose: nothing about the edges
+changed, only their enforcement.
 
-`scripts/check-dependency-direction.sh` defines `expected` with 18 keys.
-`crates/` has 19 crates. `i2pr-tunnel` is the one crate with no key, so
-the `for name, allowed in expected.items()` loop never inspects it and a
-new `i2pr-*` edge added to `crates/i2pr-tunnel/Cargo.toml` would pass the
-check silently.
-
-Its current production edges are `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`,
-and `i2pr-proto`, which satisfy the prose rules above (no `i2pr-client`,
-no `i2pr-runtime`, no `i2pr-daemon`, no testkit). The fix belongs in the
-script, not here: adding an `"i2pr-tunnel": {"i2pr-core", "i2pr-crypto",
-"i2pr-netdb", "i2pr-proto"}` entry would make the existing reality
-enforced without changing any edge. That change is out of scope for this
-document and is not made here.
+One factual correction to the rules above: `i2pr-tunnel` reverse edges
+**are** machine-enforced as of that change. The statement that they are
+not has been removed rather than left to rot.
 
 ### The `tokio` manifest rule does not match the manifests it scans
 
@@ -341,7 +354,7 @@ these two manifests may name the crate".
   fi
   ```
 
-  The glob `"$root/crates"/*/Cargo.toml` covers all 19 crate manifests,
+  The glob `"$root/crates"/*/Cargo.toml` covers all 21 crate manifests,
   and `grep -En` scans whole files without regard to TOML section, so the
   rule catches the string in `[dependencies]`, `[dev-dependencies]`, and
   `[build-dependencies]` alike. It is a text-level check, so a renamed
@@ -355,21 +368,22 @@ these two manifests may name the crate".
 - **Position:** a non-production, `publish = false` test launcher that
   lives outside `crates/`. It is a workspace member, so it appears in
   `cargo metadata`, and it declares the Tokio runtime directly.
-- **Checker-policed: no.** `i2pr-interop` does not appear in the
-  `expected` dictionary, and `check-dependency-direction.sh` contains no
-  reference to `tools/` or to `interop` at all. The loop only iterates the
-  dictionary keys, so this crate's edges are never compared against an
-  allowlist. The same is true of the testkit rule: its glob is
-  `crates/*/Cargo.toml`, so `tools/i2pr-interop/Cargo.toml` is outside
-  it too.
+- **Checker-policed: yes, for production edges.** `i2pr-interop` gained
+  an `expected` key in the same Plan 356 change that closed the
+  `i2pr-tunnel` gap, so a new `i2pr-*` production edge in this tools
+  crate now fails `check-dependency-direction.sh`. The *dev-dependency*
+  rule (`i2pr-testkit` may not be reached from production) is still
+  text-scoped to `crates/*/Cargo.toml` and does not cover `tools/`;
+  `i2pr-interop` reaches no testkit crate, so no edge exists to miss.
 - **Actual production edges:** `i2pr-crypto`, `i2pr-proto`,
   `i2pr-runtime`, `i2pr-storage`, `i2pr-transport`, and
   `i2pr-transport-ntcp2` — i.e. it deliberately reaches the runtime and
   transport crates from outside `crates/`. External production deps are
   `clap`, `rand_chacha`, `rand_core`, `serde`, `tokio`, and `toml`.
-- **Practical consequence:** a new `i2pr-*` production edge added to this
-  tools crate would not fail either boundary script. Treat this crate's
-  dependency set as review-by-convention, not CI-enforced.
+- **Practical consequence:** this crate is now compared against a real
+  allowlist, but `check-runtime-boundaries.sh` still does not inspect
+  `tools/`, so its Tokio usage remains outside the runtime-boundary
+  policy.
 
 ## Runtime boundaries (orthogonal enforcement)
 
@@ -396,6 +410,15 @@ and are separate from the dependency-direction check:
   `leptos`, `slint`) may enter `i2pr-i2pcontrol`.
 - Test-only `dangerous()` TLS accept-any verifiers are forbidden in
   production `i2pr-daemon` source.
+- `i2pr-console` has its own pair of checkers rather than folding into
+  `check-runtime-boundaries.sh`:
+  [`check-console-boundaries.sh`](../../scripts/check-console-boundaries.sh)
+  (no socket, no `i2pr-*` dependency, no `tokio`/`std::net`, no
+  unguarded router-state reach) and
+  [`check-console-browser-security.sh`](../../scripts/check-console-browser-security.sh)
+  (CSP and hardening headers applied centrally, no `Server` advertisement,
+  no plaintext-password retention past config parse, no vendored
+  third-party theme).
 - See [Coverage gaps](#coverage-gaps) for the `tokio` manifest rule,
   which is currently inert against `tokio.workspace = true`.
 
@@ -410,6 +433,8 @@ bash scripts/check-dependency-direction.sh
 # Orthogonal boundary checks.
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh
+bash scripts/check-console-boundaries.sh
+bash scripts/check-console-browser-security.sh
 
 # Actual production edges, straight from the manifests.
 cargo metadata --no-deps --format-version 1 | python3 -c '
@@ -464,12 +489,14 @@ Per-crate deep dives (one per crate in `crates/`):
 - [`i2pr-transport.md`](i2pr-transport.md) — no external production deps
 - [`i2pr-transport-ntcp2.md`](i2pr-transport-ntcp2.md)
 - [`i2pr-transport-ssu2.md`](i2pr-transport-ssu2.md)
-- [`i2pr-tunnel.md`](i2pr-tunnel.md) — not in the checker's `expected` dict
+- [`i2pr-tunnel.md`](i2pr-tunnel.md)
 - [`i2pr-client.md`](i2pr-client.md)
 - [`i2pr-api.md`](i2pr-api.md)
 - [`i2pr-runtime.md`](i2pr-runtime.md)
 - [`i2pr-service-tunnels.md`](i2pr-service-tunnels.md) — allowlisted but
   unused `i2pr-client` edge
-- [`i2pr-daemon.md`](i2pr-daemon.md) — composition root, 15 edges
+- [`i2pr-console.md`](i2pr-console.md) — leaf, socketless console
+  substrate
+- [`i2pr-daemon.md`](i2pr-daemon.md) — composition root, 16 edges
 - [`i2pr-testkit.md`](i2pr-testkit.md) — test-only, no production
   dependents

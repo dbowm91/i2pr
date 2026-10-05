@@ -52,10 +52,8 @@ use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 use crate::config::{I2pControlConfig, I2pControlPassword};
-use crate::i2pcontrol_inspection::{
-    InspectionHandles, ServiceEndpoint, client_service_result, router_info_result,
-    select_client_services, select_router_info,
-};
+use crate::i2pcontrol_dispatch::ControlDispatcher;
+use crate::i2pcontrol_inspection::{InspectionHandles, ServiceEndpoint};
 use crate::i2pcontrol_tunnels::TunnelControlState;
 use i2pr_runtime::{CancellationToken, ChildScope};
 
@@ -468,6 +466,9 @@ pub struct I2pControlServiceState {
     /// Plan 288 narrow inspection handles (static config truth plus
     /// publish-gated live snapshots from owning services).
     inspection: Arc<InspectionHandles>,
+    /// Canonical Proposal-170 dispatch, shared with the built-in console
+    /// so there is exactly one implementation of the read-only methods.
+    dispatcher: ControlDispatcher,
     /// Plan 289 TunnelManager control state (None for standalone
     /// construction; production composition always installs it).
     control: Mutex<Option<Arc<TunnelControlState>>>,
@@ -534,6 +535,7 @@ impl I2pControlServiceState {
         let max_connections = usize::try_from(config.max_connections)
             .map_err(|_| I2pControlServiceError::InvalidConfig("max_connections".to_owned()))?;
         let password = ServicePassword::new(&config.password);
+        let dispatcher = ControlDispatcher::new(Arc::clone(&inspection));
         Ok(Self {
             config,
             password,
@@ -549,6 +551,7 @@ impl I2pControlServiceState {
             auth_failures: AtomicU64::new(0),
             next_connection_id: AtomicU64::new(1),
             inspection,
+            dispatcher,
             control: Mutex::new(None),
             addressbook: Mutex::new(None),
         })
@@ -1174,498 +1177,29 @@ impl I2pControlServiceState {
         }
     }
 
-    /// Dispatches an authenticated `RouterInfo` request over the base API
-    /// and Proposal 170 selector namespaces.
+    /// Dispatches an authenticated `RouterInfo` request over the Plan
+    /// 294 canonical form.
     ///
-    /// Selector values are ignored; unknown keys fail with invalid params.
-    /// An empty
-    /// selection answers with an empty result object. Any unavailable or
-    /// unpublished selection fails the whole request explicitly with the
-    /// owning-plan marker; no partial response is emitted and no state is
-    /// mutated.
+    /// The body lives in [`crate::i2pcontrol_dispatch::ControlDispatcher`]
+    /// so the external listener and the built-in console share one
+    /// implementation (Plan 358).
     fn process_router_info(
         &self,
         id: Option<&JsonRpcRequestId>,
         params: &serde_json::Map<String, serde_json::Value>,
         now_ms: u64,
     ) -> (serde_json::Value, Duration) {
-        let selection = match select_router_info(params) {
-            Ok(selection) => selection,
-            Err(_) => {
-                return (
-                    error_envelope(
-                        id,
-                        JsonRpcErrorCode::InvalidParams.code(),
-                        JsonRpcErrorCode::InvalidParams.message(),
-                    ),
-                    Duration::ZERO,
-                );
-            }
-        };
-        // Control-plane uptime in whole seconds (truncating, saturating).
-        let uptime_secs = now_ms / 1000;
-        let mut result = serde_json::Map::with_capacity(selection.len());
-        let mut clear_logs = false;
-        for field in selection {
-            if field.key == "i2p.router.net.tunnels.i2ptunnel" {
-                match crate::i2pcontrol_inspection::proposal_i2ptunnel_summaries(&self.inspection) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.net.total.transit.bytes"
-                    | "i2p.router.net.bw.transit.15s"
-                    | "i2p.router.net.tunnels.shareratio"
-            ) {
-                // Plan 340: the value is the transit participation posture
-                // and the volume its forward path measured. Any gap fails
-                // the whole request closed rather than returning a partial
-                // RouterInfo result.
-                match crate::i2pcontrol_inspection::proposal_transit_volume(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes"
-            ) {
-                match crate::i2pcontrol_inspection::proposal_transport_total(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.netdb.ntcp.limit" | "i2p.router.netdb.ssu.limit"
-            ) {
-                match self.inspection.proposal_connection_limit(field.key) {
-                    Some(limit) => {
-                        result.insert(field.key.to_owned(), serde_json::Value::from(limit));
-                        continue;
-                    }
-                    None => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                "RouterInfo transport connection limit is unavailable",
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.net.status.v6"
-                    | "i2p.router.net.error"
-                    | "i2p.router.net.error.v6"
-                    | "i2p.router.net.testing"
-                    | "i2p.router.net.testing.v6"
-            ) {
-                match crate::i2pcontrol_inspection::proposal_network_condition_value(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if field.key == "i2p.router.net.tunnels.tbmqueue" {
-                match crate::i2pcontrol_inspection::proposal_tbm_queue_depth(&self.inspection) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.netdb.activepeers.info"
-                    | "i2p.router.netdb.activepeers.stats"
-                    | "i2p.router.netdb.peers.info"
-            ) {
-                match crate::i2pcontrol_inspection::proposal_empty_router_info_list(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if field.key == "i2p.router.netdb.bannedpeers" {
-                match crate::i2pcontrol_inspection::proposal_empty_banned_peer_details(
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            match field.key {
-                "i2p.router.news" => {
-                    let news = match self.inspection.proposal_news(now_ms / 1000) {
-                        Some(news) => news,
-                        None => {
-                            return (
-                                error_envelope(
-                                    id,
-                                    JsonRpcErrorCode::InternalError.code(),
-                                    "Router news unavailable: no verified NEWS feed has been published (Plan 322)",
-                                ),
-                                Duration::ZERO,
-                            );
-                        }
-                    };
-                    result.insert(
-                        field.key.to_owned(),
-                        serde_json::Value::String(news.rendered),
-                    );
-                    continue;
-                }
-                "i2p.router.clockskew" => {
-                    // No peer-skew sample is collected yet; the Proposal
-                    // explicitly permits null when there are no observations.
-                    result.insert(field.key.to_owned(), serde_json::Value::Null);
-                    continue;
-                }
-                "i2p.router.info" => {
-                    result.insert(
-                        field.key.to_owned(),
-                        crate::i2pcontrol_inspection::proposal_local_router_info(&self.inspection),
-                    );
-                    continue;
-                }
-                "i2p.router.id" => {
-                    let identity = router_info_result(
-                        i2pr_i2pcontrol::RouterInfoSelector::RouterHash,
-                        &self.inspection,
-                        uptime_secs,
-                    )
-                    .unwrap_or(serde_json::Value::Null);
-                    result.insert(field.key.to_owned(), identity);
-                    continue;
-                }
-                _ => {}
-            }
-            if field.key.starts_with("i2p.router.addressbook.") {
-                match crate::i2pcontrol_inspection::proposal_addressbook_value(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if field.key == "i2p.router.logs" {
-                let Some(lines) = self.inspection.recent_logs() else {
-                    return (
-                        error_envelope(
-                            id,
-                            JsonRpcErrorCode::InternalError.code(),
-                            "RouterInfo selector source is unavailable",
-                        ),
-                        Duration::ZERO,
-                    );
-                };
-                result.insert(field.key.to_owned(), serde_json::json!(lines));
-                continue;
-            }
-            if field.key == "i2p.router.logs.clear" {
-                clear_logs = true;
-                continue;
-            }
-            if field.key == "i2p.router.uptime" {
-                result.insert(field.key.to_owned(), serde_json::Value::from(now_ms));
-                continue;
-            }
-            if matches!(
-                field.key,
-                "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate"
-            ) {
-                match crate::i2pcontrol_inspection::proposal_tunnel_success_rate(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if field.key == "i2p.router.net.tunnels.queue" {
-                match crate::i2pcontrol_inspection::proposal_tunnel_queue_depth(&self.inspection) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            if matches!(
-                field.key,
-                "i2p.router.net.tunnels.exploratory.inbound"
-                    | "i2p.router.net.tunnels.exploratory.outbound"
-                    | "i2p.router.net.tunnels.exploratory.info.list"
-                    | "i2p.router.net.tunnels.client.inbound"
-                    | "i2p.router.net.tunnels.client.outbound"
-                    | "i2p.router.net.tunnels.client.info.list"
-                    | "i2p.router.net.tunnels.participating.info"
-            ) {
-                match crate::i2pcontrol_inspection::proposal_empty_tunnel_projection(
-                    field.key,
-                    &self.inspection,
-                ) {
-                    Ok(value) => {
-                        result.insert(field.key.to_owned(), value);
-                        continue;
-                    }
-                    Err(gap) => {
-                        return (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                &gap.message(),
-                            ),
-                            Duration::ZERO,
-                        );
-                    }
-                }
-            }
-            let Some(selector) = field.adapter else {
-                let message = crate::i2pcontrol_inspection::proposal_unavailable_gap(field.key)
-                    .map(|gap| gap.message())
-                    .unwrap_or_else(|| "RouterInfo selector source is unavailable".to_owned());
-                return (
-                    error_envelope(id, JsonRpcErrorCode::InternalError.code(), &message),
-                    Duration::ZERO,
-                );
-            };
-            match router_info_result(selector, &self.inspection, uptime_secs) {
-                Ok(value) => {
-                    let value = match field.key {
-                        "i2p.router.netdb.knownpeers" | "i2p.router.netdb.activepeers" => {
-                            match value.as_array() {
-                                Some(peers) => serde_json::Value::from(peers.len() as u64),
-                                None => {
-                                    return (
-                                        error_envelope(
-                                            id,
-                                            JsonRpcErrorCode::InternalError.code(),
-                                            "RouterInfo owner returned an invalid field shape",
-                                        ),
-                                        Duration::ZERO,
-                                    );
-                                }
-                            }
-                        }
-                        _ => value,
-                    };
-                    result.insert(field.key.to_owned(), value);
-                }
-                Err(gap) => {
-                    return (
-                        error_envelope(id, JsonRpcErrorCode::InternalError.code(), &gap.message()),
-                        Duration::ZERO,
-                    );
-                }
-            }
-        }
-        let shapes_valid = result
-            .iter()
-            .all(|(key, value)| proposal_router_info_value_matches(key, value))
-            && (!clear_logs
-                || proposal_router_info_value_matches(
-                    "i2p.router.logs.clear",
-                    &serde_json::Value::String("success".to_owned()),
-                ));
-        if !shapes_valid {
-            return (
-                error_envelope(
-                    id,
-                    JsonRpcErrorCode::InternalError.code(),
-                    "RouterInfo owner returned a value outside the canonical Proposal type",
-                ),
-                Duration::ZERO,
-            );
-        }
-        // Defer the side effect until every requested value has resolved,
-        // so a mixed selection cannot partially mutate on an error.
-        if clear_logs {
-            if self.inspection.clear_logs().is_none() {
-                return (
-                    error_envelope(
-                        id,
-                        JsonRpcErrorCode::InternalError.code(),
-                        "RouterInfo selector source is unavailable",
-                    ),
-                    Duration::ZERO,
-                );
-            }
-            result.insert(
-                "i2p.router.logs.clear".to_owned(),
-                serde_json::Value::String("success".to_owned()),
-            );
-        }
-        (
-            success_envelope(id, serde_json::Value::Object(result)),
-            Duration::ZERO,
-        )
+        self.dispatcher.process_router_info(id, params, now_ms)
     }
 
     /// Dispatches an authenticated `ClientServicesInfo` request over the
-    /// same select form. Every service row answers (disabled is truthful
-    /// state), so this path is infallible after select validation.
+    /// same canonical select form.
     fn process_client_services(
         &self,
         id: Option<&JsonRpcRequestId>,
         params: &serde_json::Map<String, serde_json::Value>,
     ) -> (serde_json::Value, Duration) {
-        let selection = match select_client_services(params) {
-            Ok(selection) => selection,
-            Err(_) => {
-                return (
-                    error_envelope(
-                        id,
-                        JsonRpcErrorCode::InvalidParams.code(),
-                        JsonRpcErrorCode::InvalidParams.message(),
-                    ),
-                    Duration::ZERO,
-                );
-            }
-        };
-        let mut result = serde_json::Map::with_capacity(selection.len());
-        for service in selection {
-            result.insert(
-                service.name().to_owned(),
-                client_service_result(service, &self.inspection),
-            );
-        }
-        (
-            success_envelope(id, serde_json::Value::Object(result)),
-            Duration::ZERO,
-        )
+        self.dispatcher.process_client_services(id, params)
     }
 
     /// Executes API version 1 `Authenticate` with the standard error
@@ -1852,7 +1386,7 @@ impl I2pControlServiceState {
 
 /// Checks one returned canonical Proposal field against its frozen JSON
 /// type. Only the three Proposal-nullable fields accept JSON null.
-fn proposal_router_info_value_matches(key: &str, value: &serde_json::Value) -> bool {
+pub(crate) fn proposal_router_info_value_matches(key: &str, value: &serde_json::Value) -> bool {
     if value.is_null() {
         return matches!(
             key,

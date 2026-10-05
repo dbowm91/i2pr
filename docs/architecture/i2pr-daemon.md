@@ -23,8 +23,8 @@ implementation.
 ### What the daemon owns
 
 - **CLI parsing** (`src/cli.rs`, 69 lines) via `clap` derives: subcommands, flags, `--help`.
-- **Configuration** (`src/config.rs`, 4 077 lines): strict versioned TOML, `deny_unknown_fields`
-  on all 21 `Raw*` structs, semantic validation, and normalization.
+- **Configuration** (`src/config.rs`, 4 587 lines): strict versioned TOML, `deny_unknown_fields`
+  on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
 - **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:1453`): identity load,
@@ -32,10 +32,16 @@ implementation.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
 - **ALL listeners.** SAM 3.1 (`sam.rs`), I2CP (`i2cp.rs`), I2PControl (`i2pcontrol.rs`,
-  TLS + JSON-RPC), service-tunnel per-profile executors, and the SSU2 `ssu2-router` service.
+  TLS + JSON-RPC), service-tunnel per-profile executors, the loopback router console
+  (`console.rs`, EggServe), and the SSU2 `ssu2-router` service.
   Every `TcpListener` / `UdpSocket` / `tokio::spawn` in production lives here or in
   `i2pr-runtime`; the boundary is enforced by
   [`scripts/check-runtime-boundaries.sh`](../../scripts/check-runtime-boundaries.sh).
+- **The router console listener and its control principal** (`console.rs`,
+  `i2pcontrol_dispatch.rs`). The console *substrate* is in `i2pr-console`; the daemon
+  owns the socket, the bind policy, the `ControlDispatcher` the console reads from,
+  and the closed read-only allow-set that keeps the console off `TunnelManager`
+  and `AddressBook`. Disabled by default, loopback-only, non-advertised.
 - **All task/queue/channel ownership.** Every spawned task has explicit ownership and
   cancellation; channel and socket close are lifecycle events, never blind retries.
 - **The M10 service-tunnel manager** (`service_tunnels.rs`, 9 342 lines) and every per-profile
@@ -69,6 +75,11 @@ Protocol semantics live in the runtime-neutral crates and stay there:
 - No destination lifecycle or ECIES session logic — `i2pr-client`.
 - No SU3 framing — `i2pr-su3`.
 - No runtime/transport/runtime-neutral contracts — `i2pr-runtime`, `i2pr-transport`.
+- No console HTML, CSS, theme parsing, asset table, session store, or Argon2id
+  verification — `i2pr-console`. The daemon contributes the listener and the control
+  side only; it does not re-implement any console rendering or password checking.
+  Equally, `i2pr-console` reaches no router state and opens no socket: every value it
+  renders arrives through its `ControlClient` trait.
 
 NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
 (`src/config.rs:718`), `build_daemon_graph` rejects `ntcp2.enabled = true`, and
@@ -79,9 +90,9 @@ NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
 
 ## Module layout
 
-47 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
+49 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
 `wc -l` on repo head. The tables below cover every `src/` file; the row count matches the
-filesystem (51 rows).
+filesystem (53 rows).
 
 ### CLI and configuration
 
@@ -110,7 +121,7 @@ not gate `sam-bridge` behind a never-ready Essential service.
 | --- | --- | --- | --- |
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
-| `src/config.rs` | 4 077 | Strict versioned TOML: 21 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION` |
+| `src/config.rs` | 4 587 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time) | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
 | `src/lib.rs` | 1 824 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
@@ -180,6 +191,20 @@ not gate `sam-bridge` behind a never-ready Essential service.
 | `src/i2pcontrol_tunnels.rs` | 7 829 | Plan 289 TunnelManager control state over the **one** shared M10 manager (ADR 0031, Plan 337). The composition root builds that manager once in `build_shared_service_manager` and injects the same `Arc` into the control state and the destination-group product, so a control-created runtime is the runtime the product delivers and publishes through. `for_config` takes the manager rather than building one. The I2PControl service declares `depends_on("ssu2-router")`. Three shared-manager changes are load-bearing: `candidate_set` carries startup-owned specs through verbatim, `verify_agreement` scopes its "no extra runtime" rule to names this coordinator does not own, and `shutdown` reconciles back to the startup-only set instead of tearing the manager down. `sync_els2_materials` installs or drops the Plan 334 publication material at the end of a committed transaction and **fails the transaction closed** when a type-5 definition's identity record is unreadable. `rollback_state` (Plan 338) reconciles the shared manager to the rolled-back candidate; all five failure paths await it, and a rollback that cannot reconcile is logged, not swallowed | tunnel control-state, versioned generation store, transaction coordinator, twelve-family typed mapping types |
 | `src/outbound_secret.rs` | 467 | **Plan 341** restart-safe outbound proxy secret owner. HKDF-SHA256 derives a ChaCha20-Poly1305 key from the router signing seed; the proxy credential is sealed under a random nonce with an associated-data frame | `OutboundSecretKey`, `RouterBoundOutboundSecrets`, `OUTBOUND_SECRET_KEY_INFO`, `OUTBOUND_SECRET_KEY_LEN = 32`, `OUTBOUND_SECRET_NONCE_LEN = 12`, `OUTBOUND_SECRET_TAG_LEN = 16` |
 
+### Router console (Plans 356–358)
+
+| File | Lines | Responsibility | Key public types |
+| --- | --- | --- | --- |
+| `src/console.rs` | 478 | **Plan 356–358** daemon half of the loopback browser console. Owns the EggServe listener lifecycle (bind under a bounded timeout, then serve until cancellation), builds the `SecurityPolicy` **after** `bind` so the authority allow-set names the resolved port, adapts `AxumRouter` through `TowerToEggserve`, and implements `ControlClient` over the in-process `ControlDispatcher`. Disabled by default; a non-loopback bind is rejected at config parse | `ConsoleServiceState`, `ConsoleControlClient`, `classify_envelope`, `security_policy`, `requestable_overview_selectors`, `VERIFIED_BASE_OVERVIEW_SELECTORS` |
+| `src/i2pcontrol_dispatch.rs` | 902 | Plan 358 extraction of the two read-only Proposal 170 handlers (`RouterInfo`, `ClientServices`) out of the listener state into a transport-free `ControlDispatcher`. The console injects one of these directly, so the console needs **no** external I2PControl listener, password, or token. `LocalConsolePrincipal` carries a closed allow-set of method names; a request naming anything else is refused before the dispatcher is consulted | `ControlDispatcher`, `LocalConsolePrincipal` |
+
+The console is deliberately **not** a second I2PControl listener. Everything
+Plan 358 renders comes from `ControlDispatcher` calls in-process, and the
+console's `LocalConsolePrincipal` can only ever name `RouterInfo` and
+`ClientServices` — the read-only, already-published methods — never
+`TunnelManager` or `AddressBook`. See [Router console](#router-console-plans-356358)
+under Key contracts for the lifecycle detail.
+
 ### Address book, control sources, and NEWS
 
 | File | Lines | Responsibility | Key public types |
@@ -213,13 +238,15 @@ not gate `sam-bridge` behind a never-ready Essential service.
 
 ## Public surface
 
-### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–53`)
+### The actual `pub mod` / `mod` declarations (`src/lib.rs:8–55`)
 
-42 `pub mod` + 3 private modules + 4 `sam/` submodules:
+44 `pub mod` + 4 private modules + 4 `sam/` submodules:
 
-`pub mod` — `addressbook`, `bootstrap`, `cli`, `config`, `control_sources`,
+`pub mod` — `addressbook`, `bootstrap`, `cli`, `config`, `console`,
+`control_sources`,
 `destination_peers`, `destination_streaming`, `destination_tunnels`, `error`,
-`exploratory_build`, `floodfill`, `i2cp`, `i2pcontrol`, `i2pcontrol_inspection`,
+`exploratory_build`, `floodfill`, `i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
+`i2pcontrol_inspection`,
 `i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
 `outbound_lookup`, `outbound_secret`, `outproxy_route`, `peer_test`, `router_i2np`,
 `sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
@@ -229,10 +256,12 @@ not gate `sam-bridge` behind a never-ready Essential service.
 `service_tunnels_streamr`, `service_tunnels_tls`, `transit_compose`, `transit_owner`,
 `transit_volume`, `tunnel_liveness`.
 
-Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`, `mod tests`
-(in-crate test module at `src/lib.rs:1612`).
+`console` and `i2pcontrol_dispatch` were added by Plans 356–358.
 
-### The actual `pub use` re-exports (`src/lib.rs:55–62`)
+Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`, `mod tests`
+(in-crate test module).
+
+### The actual `pub use` re-exports (`src/lib.rs:57–65`)
 
 ```rust
 pub use error::DaemonError;
@@ -633,6 +662,45 @@ of a service's scalar is exactly what must not exist — and its hand-written
 `impl fmt::Debug` prints `<redacted>` for the authorization plus presence/counts only. The
 lookup secret is borrowed from the manager's record, never copied.
 
+### Router console (Plans 356–358)
+
+`console.rs` owns the loopback listener and nothing else. Three decisions in it
+are load-bearing:
+
+1. **The router is built after `bind`, not before.** The authority policy is an
+   allow-list of exact `Host` values (`localhost:<port>`, `127.0.0.1:<port>`,
+   `[::1]:<port>`), and the tests bind `port = 0`. Building the `AxumRouter`
+   before the socket exists would freeze the allow-list against a port nobody
+   has yet, so `ConsoleServiceState` binds first and only then calls
+   `security_policy()` with the resolved port. A request whose `Host` does not
+   match is a `403`, including the bare `localhost` with no port.
+2. **The listener is bound under a bounded timeout and then served to
+   cancellation — it is not wrapped end-to-end in one timeout.** This differs
+   deliberately from the SAM pattern. A healthy long-lived listener that is
+   cancelled by the supervisor looks identical, under a whole-lifetime
+   timeout, to one that failed to start; binding is bounded so a failure is
+   reported promptly, and serving is then unbounded by design.
+3. **The console reaches router state through `ControlDispatcher`, never
+   through the network.** Plan 358 moved `process_router_info` and
+   `process_client_services` out of `I2pControlServiceState` into a
+   transport-free `ControlDispatcher`; the listener state now delegates to it.
+   `ConsoleControlClient` holds one `Arc<ControlDispatcher>` and answers the
+   console's `ControlClient` trait from it. The consequence is that enabling the
+   console does **not** require an I2PControl listener, a control password, or a
+   token — and the console cannot accidentally acquire one.
+
+`LocalConsolePrincipal` is the whole authorization story: a closed allow-set of
+`RouterInfo` and `ClientServices`. A request naming `TunnelManager`,
+`AddressBook`, or anything else is refused before the dispatcher is consulted.
+`i2pcontrol_dispatch.rs` carries a test proving the console principal's answers
+for those two methods are byte-identical to the external-wire answers for the
+same input, so the in-process path is not a second, drifting implementation.
+
+There is deliberately **no** `Server` response header. EggServe's default was
+empty rather than absent, and the project's posture is to advertise nothing
+beyond the tested subset, so the header is dropped entirely rather than
+populated.
+
 ### Address book, control sources, and NEWS
 
 `addressbook.rs` owns the manager, `[addressbook]` config, transactional mutations with
@@ -749,15 +817,16 @@ outproxy's network.
 
 ### Production (`crates/i2pr-daemon/Cargo.toml`)
 
-**37 production dependencies: 15 workspace path crates + 22 external.** The path crates are
+**38 production dependencies: 16 workspace path crates + 22 external.** The path crates are
 the full composition edge set, matching the allowlist in
-[`scripts/check-dependency-direction.sh:34`](../../scripts/check-dependency-direction.sh):
+[`scripts/check-dependency-direction.sh`](../../scripts/check-dependency-direction.sh):
 
-`i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`,
-`i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`,
-`i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel`.
+`i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-console`, `i2pr-core`, `i2pr-crypto`,
+`i2pr-i2pcontrol`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`,
+`i2pr-service-tunnels`, `i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel`.
 
-**External crates:** `chacha20poly1305`, `clap`, `flate2`, `quick-xml`, `rand_chacha`,
+**External crates:** `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`,
+`rand_chacha`,
 `rand_core`, `rcgen`, `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`,
 `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`,
 `webpki-roots`, `x509-parser`, `zeroize`.
@@ -768,8 +837,9 @@ the full composition edge set, matching the allowlist in
 
 ### Dev
 
-`tempfile` and the workspace dev-dependency set, used for filesystem and loopback test
-isolation.
+`tempfile`, `futures-executor` (a `block_on` for driving the synchronous
+EggServe tower service in tests), and the workspace dev-dependency set, used for
+filesystem and loopback test isolation.
 
 ### Notable dependency facts
 
@@ -786,6 +856,16 @@ isolation.
   `rand_core`/`OsRng` for the Streaming SYN. The outproxy path needs no new HTTP or SOCKS client
   crate, which is the dependency-level statement of the no-direct-clearnet invariant: there is
   no `reqwest`/`hyper` to reach for.
+- **Plans 356–358 added `i2pr-console` and `eggserve-server`, and that is all.** The console
+  substrate is where `axum`, `argon2`, `serde`/`toml`, and `zeroize` live; the daemon
+  deliberately does **not** depend on `axum` or `argon2` itself. `eggserve-server` is built
+  with `default-features = false, features = ["tower"]`, so the `axum` integration and any
+  default server header are not pulled into the daemon.
+- **The MSRV floor moved `1.88 → 1.89` for the console lane.** Every published
+  `eggserve-server` (0.2.0–0.4.0) and `eggserve-primitives 0.2.2` declares
+  `rust-version = "1.89"`. The previous locked graph topped out at exactly 1.88.0, so
+  `cargo check` hard-failed on the old floor once EggServe entered the graph. The bump
+  is recorded in `AGENTS.md`, `Cargo.toml`, and `.github/workflows/ci.yml`.
 
 ### Boundary checkers (run on repo head)
 
@@ -794,8 +874,16 @@ isolation.
 | `scripts/check-runtime-boundaries.sh` | **0** | `runtime boundary checks passed` |
 | `scripts/check-dependency-direction.sh` | **0** | `dependency direction: ok` |
 | `scripts/check-service-tunnel-boundaries.sh` | **0** | `service-tunnel boundary checks passed` (includes rules 9–11, below) |
+| `scripts/check-console-boundaries.sh` | **0** | `check-console-boundaries: passed` |
+| `scripts/check-console-browser-security.sh` | **0** | `check-console-browser-security: passed` |
 | `scripts/check-m11-transit-boundaries.sh` | **0** | `check-m11-transit-boundaries: passed` |
 | `scripts/check-m12-floodfill-boundaries.sh` | **1** | Plan 281 type-5 deferral grep now legitimately matches Plan 332/333/334 NetDB type-5 work. Not in `AGENTS.md` or `ci.yml`. See the note in **M12 floodfill** above. |
+
+`check-console-boundaries.sh` rule 7 also asserts that **every** `i2pr-*`
+workspace member appears in the dependency-direction `expected` map. That
+rule is what keeps the map from drifting back to the `i2pr-tunnel` /
+`tools/i2pr-interop` gap closed during Plans 356–358: adding a crate without
+a map entry now fails CI instead of silently escaping the check.
 
 ### Rules 9–11: the outproxy static guard (Plan 343)
 
@@ -833,9 +921,10 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**72 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:1612`, `src/config.rs`, and the module-local test blocks in
-`outbound_secret.rs`, `outproxy_route.rs`, `transit_volume.rs`, and `service_els2.rs`).
+**73 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+modules (notably `src/lib.rs:1718`, `src/config.rs`, and the module-local test blocks in
+`console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
+`transit_volume.rs`, and `service_els2.rs`).
 
 ### Acceptance-suite inventory by area
 
@@ -849,6 +938,7 @@ modules (notably `src/lib.rs:1612`, `src/config.rs`, and the module-local test b
 | SAM 3.1 | 10 | `sam_loopback.rs`, `sam_forward_naming.rs`, `sam_plan146_reference.rs`, `sam_stream.rs`, `sam_stream_independent.rs`, `sam_stream_product.rs`, `sam_stream_raw_product.rs`, `sam_stream_self_composed.rs`, `sam_stream_final_acceptance.rs` |
 | I2CP (M9) | 6 | `i2cp_loopback.rs`, `i2cp_message_data_plane.rs`, `i2cp_zero_hop_lifecycle.rs`, `i2cp_final_acceptance.rs`, `i2cp_adversarial_matrix.rs`, `i2cp_resource_matrix.rs` |
 | I2PControl (Proposal 170) | 6 | `i2pcontrol_base.rs`, `i2pcontrol_tunnels.rs`, `i2pcontrol_inspection.rs`, `i2pcontrol_differential.rs`, `i2pcontrol_shared_service_manager.rs`, `i2pcontrol_els2_black_box.rs` |
+| Router console (Plans 356–358) | 1 | `console_loopback.rs` — real `127.0.0.1:0` socket: shell, assets, path traversal refusal, bounded shutdown, the authenticated authority policy, and one end-to-end case that reads **real** control data through `ConsoleControlClient` |
 | Service tunnels (M10) | 24 | `service_tunnels_foundation.rs`, `service_tunnels_local_roundtrip.rs`, `service_tunnels_final_acceptance.rs`, `service_tunnels_adversarial_matrix.rs`, `service_tunnels_remote_qualification.rs`, `service_tunnels_application_remote_qualification.rs`, `service_tunnels_remote_route_integration_qualification.rs`, `service_tunnels_remote_transport_qualification.rs`, `service_tunnels_application_product_only_remote_qualification.rs`, `service_tunnels_application_genuine_remote_qualification.rs`, `service_tunnels_independent_application_clients.rs`, `service_tunnels_plan210_real_service_destination_material.rs`, `service_tunnels_plan212_router_backed_product.rs`, plus 12 per-profile `service_tunnel_*_product.rs` suites |
 | M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
 | M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
@@ -863,8 +953,15 @@ listener startup. They must not call private bridge, `LeaseSet2`, driver, or pum
 `sam_stream_final_acceptance.rs`, `i2cp_message_data_plane.rs`, `i2cp_final_acceptance.rs`,
 `i2cp_adversarial_matrix.rs`, `i2cp_resource_matrix.rs`,
 `i2pcontrol_els2_black_box.rs`, `service_tunnels_local_roundtrip.rs`,
-`service_tunnels_plan212_router_backed_product.rs`, and the `service_tunnel_*_product.rs`
-family. Each listener binds `127.0.0.1:0` and uses loopback only.
+`service_tunnels_plan212_router_backed_product.rs`, the `service_tunnel_*_product.rs`
+family, and `console_loopback.rs`. Each listener binds `127.0.0.1:0` and uses loopback only.
+
+`console_loopback.rs` probes must send `Host: localhost:<real-port>`, not a bare
+`localhost`: the authority policy allow-lists exact authority values including the
+port, so a bare `localhost` is correctly refused with `403` and a test that
+"helpfully" relaxed the header would be testing the wrong thing. HTTP/1.1 header
+names arrive lowercase on the wire, so the header assertions compare
+case-insensitively.
 
 ### Runtime-test discipline
 
@@ -922,7 +1019,7 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
    shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all.
 4. **No default config path.** Every subcommand requires `--config`, so operator intent is
    always explicit and reproducible.
-5. **`deny_unknown_fields` on all 21 `Raw*` config structs.** Extra keys are an error
+5. **`deny_unknown_fields` on all 22 `Raw*` config structs.** Extra keys are an error
    (exit 11), never a silently ignored typo.
 6. **Schema version is `!=`, not `>=`.** `CURRENT_SCHEMA_VERSION` is `1`; any other value is
    `UnsupportedSchemaVersion`. Migration requires a binary update first.
@@ -965,6 +1062,21 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     deliberately — the handshake cares only that the streaming manager accepted the bytes — and
     `terminate` reads the port tuple from the live connection so a mismatch fails closed instead
     of closing the wrong stream. Close is a lifecycle event, here as everywhere else.
+19. **The console binds before it builds.** See
+    [Router console](#router-console-plans-356358). Building the authority policy from a
+    port that has not been resolved yet would either forbid the real port or allow whatever
+    was configured instead of whatever was bound; binding first removes the question.
+20. **A disabled console may not shadow another subsystem's budget.** `normalize_console`
+    applies the runtime ceilings only when `console.enabled` is true. A *disabled* console
+    keeps its defaults and never contributes a budget error, so a misconfigured `[console]`
+    cannot be mistaken for a broken SAM or I2CP budget.
+21. **The console's authorization is an allow-set, not a deny-list.** `LocalConsolePrincipal`
+    names two methods. A new control method is invisible to the console until someone adds
+    it to that set, which is the direction a read-only posture should fail in.
+22. **A secret that survives config parsing must be hashed, not remembered.**
+    `RawConsoleConfig` converts a plaintext `password` to an Argon2id PHC string during
+    normalization and hands only the hash to `Config`; the plaintext is not stored, not
+    `Clone`, and `ConsolePasswordHash` has a redacting hand-written `Debug`.
 
 ---
 
@@ -989,6 +1101,7 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 - [i2pr-transport.md](i2pr-transport.md) — `DeliveryRequest`, `EncodedI2npMessage`, `Deadline`.
 - [i2pr-su3.md](i2pr-su3.md) — SU3 framing and signature verification.
 - [i2pr-netdb-persist.md](i2pr-netdb-persist.md) — `CacheLoader`, `ReseedIngestor`.
+- [i2pr-console.md](i2pr-console.md) — the socketless console substrate this crate hosts.
 - [tooling.md](tooling.md) — scripts, fixtures, lanes, CI.
 - [dependency-graph.md](dependency-graph.md) — the allowlist this crate satisfies.
 
@@ -999,6 +1112,7 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 - [`0026` staged interoperability progression and Java debt](../../docs/adr/0026-staged-interoperability-progression-and-java-debt.md)
 - [`0027` floodfill role provenance and advertisement](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)
 - [`0028` I2PControl Proposal 170 control plane](../../docs/adr/0028-i2pcontrol-proposal-170-control-plane.md)
+- [`0034` EggServe/Axum router console HTTP substrate](../../docs/adr/0034-eggserve-axum-router-console-http-substrate.md)
 
 ### Closure records and plans of record
 
@@ -1059,6 +1173,12 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     closed only half the line.
 - **NTCP2** — Plan 101 guard; the development interop lane is closed and normal-daemon NTCP2
   stays disabled.
+- **Router console** — Plans 356–358, ADR 0034. Plan-of-record:
+  [`356`](../../plans/implementation/router-console/356-eggserve-axum-self-contained-console-foundation.md),
+  [`357`](../../plans/implementation/router-console/357-loopback-browser-security-and-optional-authentication.md),
+  [`358`](../../plans/implementation/router-console/358-prop170-control-client-and-read-only-overview.md).
+  Closure: `plans/closure/router-console/`. The console is **experimental, loopback-only,
+  disabled by default, and non-advertised**; `specs/support.toml` is unchanged.
 - **M6 Java** — Plan 236 is a bounded diagnostic blocked at
   `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`; see
   [`236-status.md`](../../plans/closure/mixed-router-interop/236-status.md). Do not infer

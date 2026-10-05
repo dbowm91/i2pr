@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — M6 destinations/garlic/LeaseSet2/Streaming, M7 SAM 3.1, M8 SSU2, M9 I2CP, M10 service tunnels (12 kinds), M11 transit tunnels, M12 floodfill, Proposal 170 I2PControl, the addressbook and outproxy seams, and ELS2/Red25519 encrypted LeaseSet2. Load before touching product/SSU2/SAM/I2CP/I2PControl/tunnel/transit/floodfill code. Current plan authority lives in plans/registry.md and plans/closure/, not in this skill.
+description: Work on the local product path of the i2pr Rust I2P router — M6 destinations/garlic/LeaseSet2/Streaming, M7 SAM 3.1, M8 SSU2, M9 I2CP, M10 service tunnels (12 kinds), M11 transit tunnels, M12 floodfill, Proposal 170 I2PControl, the loopback router console, the addressbook and outproxy seams, and ELS2/Red25519 encrypted LeaseSet2. Load before touching product/SSU2/SAM/I2CP/I2PControl/console/tunnel/transit/floodfill code. Current plan authority lives in plans/registry.md and plans/closure/, not in this skill.
 ---
 
 # I2PR Local Development
@@ -356,6 +356,20 @@ bash scripts/check-service-tunnel-boundaries.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh
 ```
 
+Focused router-console floor (Plans 356–358):
+
+```text
+cargo test --locked -p i2pr-console --all-targets
+cargo test --locked -p i2pr-daemon --test console_loopback -- --test-threads=1
+bash scripts/check-console-boundaries.sh
+bash scripts/check-console-browser-security.sh
+```
+
+The console is **experimental, loopback-only, disabled by default, and
+non-advertised** — it is not in `specs/support.toml`, and `i2pr run` does
+not currently open any listener, so the console has no product-reachable
+path yet. Say so rather than implying it is running.
+
 Plan 203 positive remote application interop driver (fail-closed
 without the exact-pinned i2pd cache; flips to `passed` once the
 dedicated M6 interop lane provisions the SSU2 endpoint + bind
@@ -438,6 +452,10 @@ their floor above is a test-only safety net, not a boundary proof.
 - Outproxy (Proposal 170): the provider policy and the daemon route owner may only route through an I2P Streaming connection. Never add a direct clearnet socket, resolver, TLS client, plugin load, or process spawn. `check-service-tunnel-boundaries.sh` rules 9–11 enforce this, and `std::net::IpAddr` is deliberately allowed so the grammar can reject IP literals — do not "fix" that allowance.
 - Addressbook: `i2pr-addressbook` is a no-I/O naming owner (books, precedence, subscriptions, versioned generations). Do not give it sockets, fs, or Tokio, and do not fork a second naming precedence implementation elsewhere.
 - `i2pr-i2pcontrol` and `i2pr-addressbook` are runtime-neutral like `i2pr-api`: wire/domain only, no I/O.
+- Router console (Plans 356–358): `i2pr-console` owns **no socket** and has **zero** workspace deps; `axum` is built without `tokio`, so the crate stays runtime-neutral. The daemon owns the loopback listener, the bind policy, and the `ControlDispatcher` the console reads from. Never give `i2pr-console` an `i2pr-*` edge, a socket, or a runtime.
+- The console is read-only. `LocalConsolePrincipal` allow-lists `RouterInfo` + `ClientServices`; never add `TunnelManager`, `AddressBook`, a mutating method, or an external I2PControl connection/password/token to the console path. Enabling the console must not require an I2PControl listener.
+- `[console]` refuses a non-loopback bind at parse time, and requests must match an exact `Host` authority *including the port* — bare `localhost` is a 403. Browser-security headers are applied centrally; bypasses go through the local `redirect()`/`respond()` helpers, never `axum::response::Redirect`.
+- Do not vendor Halloy or any other third-party GPL theme files into `assets/themes/`; the bundled palettes are original i2pr work, and `PROVENANCE.md` records that the 50-theme import was not performed.
 - Do not claim I2CP behavior, sessions, listeners, or client interop from structural codecs alone.
 
 ## Final claim rules

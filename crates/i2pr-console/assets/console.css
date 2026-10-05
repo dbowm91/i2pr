@@ -1,0 +1,292 @@
+:root {
+  color-scheme: dark;
+  /* Fallbacks are declared here, not in the theme stylesheet, so the page
+     still renders legibly if /theme.css is blocked or fails to load. */
+  --console-page-background: #12131a;
+  --console-page-text: #e7e9f2;
+  --console-panel-background: #171925;
+  --console-panel-border: #2b2e3d;
+  --console-text-muted: #767d96;
+  --console-accent: #5aa9e6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--console-page-background);
+  color: var(--console-page-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--console-link, var(--console-accent));
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--console-button-background);
+  color: var(--console-button-text);
+  z-index: 10;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem;
+  background: var(--console-topbar-background);
+  color: var(--console-topbar-text);
+  border-bottom: 1px solid var(--console-page-border);
+}
+
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.topbar .brand img,
+.topbar .brand svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: block;
+}
+
+.topbar .status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--console-text-muted);
+  font-size: 0.85rem;
+}
+
+.nav {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 1rem;
+  background: var(--console-nav-background);
+  color: var(--console-nav-text);
+  border-bottom: 1px solid var(--console-page-border);
+}
+
+.nav a {
+  display: block;
+  padding: 0.55rem 0.85rem;
+  color: var(--console-nav-text);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.nav a[aria-current="page"] {
+  border-bottom-color: var(--console-accent);
+  font-weight: 600;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+  max-width: 78rem;
+  margin: 0 auto;
+}
+
+@media (min-width: 60rem) {
+  .layout {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+}
+
+.panel {
+  background: var(--console-panel-background);
+  border: 1px solid var(--console-panel-border);
+  border-radius: 0.5rem;
+  padding: 0.9rem 1rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--console-text-muted);
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+}
+
+.metric {
+  background: var(--console-panel-background);
+  border: 1px solid var(--console-panel-border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.metric .label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--console-text-muted);
+}
+
+.metric .value {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.2rem;
+}
+
+.metric .sub {
+  font-size: 0.8rem;
+  color: var(--console-text-secondary);
+}
+
+.chip {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--console-chip-background);
+  color: var(--console-chip-text);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.chip.status-success {
+  color: var(--console-status-success);
+}
+
+.chip.status-warning {
+  color: var(--console-status-warning);
+}
+
+.chip.status-error {
+  color: var(--console-status-error);
+}
+
+.chip.status-info {
+  color: var(--console-status-info);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--console-text-muted);
+  background: var(--console-table-header-background);
+  padding: 0.5rem 0.6rem;
+}
+
+td {
+  padding: 0.45rem 0.6rem;
+  border-top: 1px solid var(--console-table-border);
+}
+
+tbody tr:nth-child(even) {
+  background: var(--console-table-row-background);
+}
+
+button,
+.button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--console-button-border);
+  background: var(--console-button-background);
+  color: var(--console-button-text);
+  cursor: pointer;
+}
+
+button:hover,
+.button:hover {
+  background: var(--console-button-hover-background);
+}
+
+button:active,
+.button:active {
+  background: var(--console-button-active-background);
+}
+
+:focus-visible {
+  outline: 2px solid var(--console-focus-ring);
+  outline-offset: 2px;
+}
+
+.graph {
+  width: 100%;
+  height: 6rem;
+  display: block;
+}
+
+.graph .grid {
+  stroke: var(--console-graph-grid);
+  stroke-width: 1;
+}
+
+.graph .line {
+  stroke: var(--console-graph-line);
+  stroke-width: 2;
+  fill: none;
+}
+
+.graph .fill {
+  fill: var(--console-graph-fill);
+  fill-opacity: 0.35;
+  stroke: none;
+}
+
+.placeholder {
+  color: var(--console-text-muted);
+  font-style: italic;
+}
+
+.notice {
+  border: 1px solid var(--console-status-warning);
+  border-radius: 0.35rem;
+  padding: 0.5rem 0.7rem;
+  color: var(--console-status-warning);
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.empty {
+  color: var(--console-text-muted);
+  padding: 0.75rem 0;
+}
+
+footer {
+  padding: 1rem;
+  text-align: center;
+  color: var(--console-text-muted);
+  font-size: 0.8rem;
+}

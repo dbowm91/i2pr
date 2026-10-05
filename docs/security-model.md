@@ -22,10 +22,13 @@ The design treats the following as untrusted:
 - Corrupted or stale persisted network state.
 - Malicious or misleading reseed material.
 - Resource-exhaustion attempts and oversized inputs.
+- Browser-executed script on the operator's machine, and any page that may be
+  induced to issue requests to a loopback listener (Plans 356–358).
 - Dependencies, build tools, CI actions, and other supply-chain inputs.
 
 Trust boundaries are the protocol decoder, configuration parser, persisted-state
-loader, client adapters, local service boundary, and daemon composition root.
+loader, client adapters, local service boundary, the browser console surface,
+and daemon composition root.
 Each future boundary must validate input before handing a narrower capability to
 the next subsystem.
 
@@ -42,6 +45,77 @@ Destination's canonical Base32 name, independent of a local address-book alias.
 Opaque generic, SOCKS, and CONNECT forwarding can still expose application and
 TLS fingerprints. These local boundary properties do not establish anonymity,
 privacy, or resistance to traffic analysis.
+
+## Router console browser boundary (Plans 356–358)
+
+The console is a browser-facing HTTP surface, which introduces a threat class
+the other local adapters do not have: **the client is running attacker-influenced
+code on the operator's machine**. A loopback-only listener is not a browser
+boundary. The console is experimental, loopback-only, disabled by default, and
+non-advertised, and the following controls are what make enabling it defensible
+rather than merely possible.
+
+**DNS rebinding.** The accepted `Host` set is derived from the bound address and
+the **resolved** port, and matching is exact apart from ASCII case. A page
+hosted on an attacker-controlled name cannot resolve to `127.0.0.1` and be
+accepted, because the name is not in the set. Because the policy depends on the
+real port, the router is constructed after `bind` rather than before. No
+`X-Forwarded-*` header is consulted and there is no trusted-proxy mode; a
+forwarded header is not a fact the console has any way to verify.
+
+**Cross-site requests.** Unsafe methods require an `Origin` (or, only when
+`Origin` is absent, a `Referer`) that matches the allowed origin *including its
+terminating `/`*, which is what refuses `localhost:7070.evil.test`.
+Authenticated unsafe actions additionally require a per-session CSRF token.
+`/logout` is the one documented exemption: its token travels as a form field,
+which middleware cannot read, so the handler verifies it with the same
+`verify_csrf` before the state change.
+
+**Script execution.** CSP is `default-src 'none'` with `script-src 'self'`,
+`style-src 'self'`, `frame-ancestors 'none'`, `form-action 'self'`, and
+`base-uri 'none'`. There is no `unsafe-inline` and no `unsafe-eval`; the shell
+ships no inline script, so the escape hatch is never needed. `console.js` is
+dependency-free and uses `AbortController` with a single in-flight request, so a
+hidden or backgrounded tab cannot fan out requests.
+
+**Credentials.** Optional Argon2id at 16 MiB / 2 passes / 1 lane — deliberately
+not the desktop default, because a small SBC must not allocate hundreds of
+megabytes to log in. At most two verifications run concurrently; saturation is
+refused rather than queued, because a queue is an unbounded memory amplifier. A
+plaintext `[console] password` is converted to a PHC hash during configuration
+parsing and does not survive into `Config`; `auth = true` without credential
+material is a configuration error, so there is no dormant default password.
+
+**Login throttling is console-wide, deliberately.** The substrate does not
+surface an unforgeable per-client identity and no proxy header is trusted, so
+there is no sound key to throttle on — deriving one from `Host` would trust the
+attacker. The failure mode is therefore a bounded delay that expires with the
+window, not a lockout. This is a deliberate trade, recorded rather than hidden.
+
+**Cookies** are opaque, `HttpOnly`, `SameSite=Strict`, `Path=/`, and have no
+`Domain`. `Secure` is **deliberately omitted**: the listener is plain HTTP on
+loopback, and a `Secure` cookie over `http://localhost` would silently never be
+sent. The localhost exception is documented rather than assumed, and this
+console does not terminate TLS.
+
+**What the console can reach.** It is read-only. Its `ControlClient` trait has
+two methods and no method-name parameter, so "a browser cannot select arbitrary
+daemon methods" is a property of the type rather than a runtime check. The
+daemon-side principal's allow-set is `RouterInfo` and `ClientServicesInfo`; it
+bypasses only the external bearer-token transport step, while method, parameter,
+selector, availability, bounds, and redaction checks all still run in the shared
+dispatcher. **No configuration on the console path can reach `TunnelManager`,
+`AddressBook`, or any mutating method**, and enabling the console requires no
+I2PControl listener, password, or token.
+
+**Rendering.** Every value interpolated into HTML goes through the `Text`
+newtype, which escapes and offers no unescaped constructor, and the object-leaf
+renderer is bounded in depth and count. A value that is unavailable renders as
+an explicit `unavailable` with a null value, never as zero or empty — the page
+cannot be made to lie about router state.
+
+None of this establishes anonymity, privacy, or resistance to traffic analysis.
+The console is a local operator surface, not a privacy feature.
 
 ## SAM 3.1 local adapter boundary
 

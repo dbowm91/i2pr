@@ -110,6 +110,32 @@ Notes for the SAM surface: the only accepted session style is `STREAM` —
 requires `DESTINATION=`; and `NAMING LOOKUP NAME=ME` is only valid inside a
 session.
 
+## Router console (experimental)
+
+Plans 356–358 added a loopback browser console: a self-contained HTML/CSS/JS
+shell with bundled themes, served by EggServe with an Axum router. It is
+**experimental, loopback-only, disabled by default, and non-advertised**, and it
+is not listed in `specs/support.toml`.
+
+Its security posture is the point, not the pixels:
+
+- `[console]` refuses any non-loopback bind at config-parse time.
+- Every request must match an exact `Host` authority (`localhost:<port>`,
+  `127.0.0.1:<port>`, `[::1]:<port>`); anything else is `403`.
+- Optional Argon2id authentication with a bounded session store, CSRF tokens,
+  and a console-wide login throttle.
+- The overview is **read-only**: it renders `RouterInfo` and `ClientServices`
+  through an in-process Proposal 170 dispatcher with a closed allow-set. It
+  never reaches `TunnelManager` or `AddressBook`, and needs no I2PControl
+  listener, password, or token.
+- `i2pr-console` owns no socket and has zero workspace dependencies, so it
+  cannot reach router state except through the `ControlClient` trait.
+
+Note that the console is currently unreachable from the product path, because
+`i2pr run` does not open any listener (see below). `check-config` validates the
+`[console]` section; the behaviour is exercised by
+`cargo test -p i2pr-daemon --test console_loopback -- --test-threads=1`.
+
 ## Known limitation: `i2pr run` fails startup
 
 `i2pr run` (without `--dry-run`) starts, then shuts down after 30 seconds:
@@ -138,7 +164,7 @@ storage, `46` supervisor terminated. Full set in
 | Per-crate deep dives | [`docs/architecture/`](docs/architecture/) |
 | Security boundaries, threat model | [`docs/security-model.md`](docs/security-model.md) |
 | Scripts, fixtures, evidence lanes, CI | [`docs/architecture/tooling.md`](docs/architecture/tooling.md) |
-| Architecture decisions (ADR 0000–0031) | [`docs/adr/`](docs/adr/) |
+| Architecture decisions (ADR 0000–0034) | [`docs/adr/`](docs/adr/) |
 | Controlled testnet boundary | [`docs/private-testnet.md`](docs/private-testnet.md) |
 | Contributing conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Non-negotiable guardrails | [`GUARDRAILS.md`](GUARDRAILS.md) |
@@ -146,13 +172,13 @@ storage, `46` supervisor terminated. Full set in
 
 ## Repository layout
 
-19 crates: 18 production plus `i2pr-testkit` (deterministic fixtures, which no
+21 crates: 20 production plus `i2pr-testkit` (deterministic fixtures, which no
 production crate may depend on), plus the non-production `tools/i2pr-interop`
 launcher. `i2pr-runtime` is the only production owner of Tokio, sockets, timers,
-and channels; `i2pr-api`, `i2pr-i2pcontrol`, `i2pr-addressbook`, and
-`i2pr-service-tunnels` are runtime-neutral by construction. Crate index and
-enforced dependency allowlist:
-[`docs/architecture/`](docs/architecture/).
+and channels; `i2pr-api`, `i2pr-i2pcontrol`, `i2pr-addressbook`, `i2pr-console`,
+and `i2pr-service-tunnels` are runtime-neutral by construction — `i2pr-console`
+also owns no socket at all, so the daemon hosts its loopback listener. Crate
+index and enforced dependency allowlist: [`docs/architecture/`](docs/architecture/).
 
 ## Development
 

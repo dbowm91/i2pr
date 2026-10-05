@@ -44,6 +44,8 @@ struct RawConfig {
     #[serde(default)]
     reseed: RawReseedConfig,
     #[serde(default)]
+    console: RawConsoleConfig,
+    #[serde(default)]
     sam: RawSamConfig,
     #[serde(default)]
     ssu2: RawSsu2Config,
@@ -368,6 +370,86 @@ impl Default for RawI2pControlConfig {
             max_body_bytes: default_i2pcontrol_max_body_bytes(),
             request_deadline_ms: default_i2pcontrol_request_deadline_ms(),
             shutdown_timeout_ms: default_i2pcontrol_shutdown_timeout_ms(),
+        }
+    }
+}
+
+/// Raw router-console block.
+///
+/// `deny_unknown_fields` keeps a misspelled console key a configuration
+/// error instead of a silently ignored setting.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConsoleConfig {
+    #[serde(default = "default_console_enabled")]
+    enabled: bool,
+    #[serde(default = "default_console_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_console_port")]
+    port: u16,
+    #[serde(default = "default_console_theme")]
+    theme: String,
+    #[serde(default = "default_console_max_connections")]
+    max_connections: u32,
+    #[serde(default = "default_console_auth")]
+    auth: bool,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    password_hash: Option<String>,
+    #[serde(default = "default_console_session_idle_secs")]
+    session_idle_secs: u64,
+    #[serde(default = "default_console_session_absolute_secs")]
+    session_absolute_secs: u64,
+    #[serde(default = "default_console_max_sessions")]
+    max_sessions: usize,
+    #[serde(default = "default_console_login_max_failures")]
+    login_max_failures: u32,
+    #[serde(default = "default_console_login_window_secs")]
+    login_window_secs: u64,
+}
+
+/// A hand-written `Debug` so the credential never reaches a log.
+///
+/// The derived output would contain the plaintext password, and this struct
+/// is nested inside the `Debug` of the whole raw configuration.
+impl std::fmt::Debug for RawConsoleConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawConsoleConfig")
+            .field("enabled", &self.enabled)
+            .field("bind_address", &self.bind_address)
+            .field("port", &self.port)
+            .field("theme", &self.theme)
+            .field("max_connections", &self.max_connections)
+            .field("auth", &self.auth)
+            .field("password", &"<redacted>")
+            .field("password_hash", &"<redacted>")
+            .field("session_idle_secs", &self.session_idle_secs)
+            .field("session_absolute_secs", &self.session_absolute_secs)
+            .field("max_sessions", &self.max_sessions)
+            .field("login_max_failures", &self.login_max_failures)
+            .field("login_window_secs", &self.login_window_secs)
+            .finish()
+    }
+}
+
+impl Default for RawConsoleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_console_enabled(),
+            bind_address: default_console_bind_address(),
+            port: default_console_port(),
+            theme: default_console_theme(),
+            max_connections: default_console_max_connections(),
+            auth: default_console_auth(),
+            password: None,
+            password_hash: None,
+            session_idle_secs: default_console_session_idle_secs(),
+            session_absolute_secs: default_console_session_absolute_secs(),
+            max_sessions: default_console_max_sessions(),
+            login_max_failures: default_console_login_max_failures(),
+            login_window_secs: default_console_login_window_secs(),
         }
     }
 }
@@ -807,7 +889,51 @@ fn default_news_proxy_host() -> String {
     String::from("127.0.0.1")
 }
 
-const fn default_sam_enabled() -> bool {
+const fn default_console_enabled() -> bool {
+    false
+}
+
+fn default_console_bind_address() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_console_port() -> u16 {
+    7070
+}
+
+fn default_console_theme() -> String {
+    i2pr_console::theme::DEFAULT_THEME_NAME.to_string()
+}
+
+fn default_console_max_connections() -> u32 {
+    16
+}
+
+fn default_console_auth() -> bool {
+    false
+}
+
+fn default_console_session_idle_secs() -> u64 {
+    900
+}
+
+fn default_console_session_absolute_secs() -> u64 {
+    28_800
+}
+
+fn default_console_max_sessions() -> usize {
+    32
+}
+
+fn default_console_login_max_failures() -> u32 {
+    5
+}
+
+fn default_console_login_window_secs() -> u64 {
+    300
+}
+
+fn default_sam_enabled() -> bool {
     false
 }
 
@@ -1328,6 +1454,76 @@ pub struct NewsConfig {
     pub refresh_interval: Duration,
 }
 
+/// Normalized router-console service configuration (Plan 356).
+///
+/// The console is experimental, loopback-only, and disabled by default.
+/// There is no authentication field in this struct by design: Plan 357
+/// adds the browser security policy, and it must not be reachable through
+/// configuration alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsoleConfig {
+    /// Whether the console listener is started at all.
+    pub enabled: bool,
+    /// Bind address; always loopback after normalization.
+    pub bind_address: IpAddr,
+    /// TCP port. `0` requests an OS-assigned ephemeral port, which the
+    /// loopback tests rely on.
+    pub port: u16,
+    /// Bundled theme identifier, validated at configuration time.
+    pub theme: String,
+    /// Maximum concurrent browser connections.
+    pub max_connections: u32,
+    /// Whether a console password is required.
+    pub auth: bool,
+    /// Argon2id verifier for the console password.
+    ///
+    /// Redacted in `Debug`: a stored hash is an offline attack verifier.
+    pub password_hash: Option<ConsolePasswordHash>,
+    /// Maximum concurrent console sessions.
+    pub max_sessions: usize,
+    /// Session idle expiry in seconds.
+    pub session_idle_secs: u64,
+    /// Session absolute lifetime in seconds.
+    pub session_absolute_secs: u64,
+    /// Failed logins permitted inside the window.
+    pub login_max_failures: u32,
+    /// Login throttle window in seconds.
+    pub login_window_secs: u64,
+}
+
+/// An Argon2id console password verifier.
+///
+/// Wrapped so it cannot be printed: a stored hash is an offline attack
+/// verifier, and a configuration dump is a normal thing to paste into a
+/// bug report.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ConsolePasswordHash(String);
+
+impl ConsolePasswordHash {
+    /// Wraps a PHC hash string.
+    pub fn new(hash: String) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the hash text for the verifier owner.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ConsolePasswordHash {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ConsolePasswordHash(<redacted>)")
+    }
+}
+
+impl ConsoleConfig {
+    /// Returns the socket address the listener should bind.
+    pub fn bind_socket(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
+}
+
 /// Normalized SAM v3.1 service configuration (Plan 137).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SamConfig {
@@ -1427,6 +1623,7 @@ pub struct Config {
     /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
+    pub console: ConsoleConfig,
     pub i2cp: I2cpConfig,
     /// I2PControl listener settings (Plan 287; disabled, loopback-only TLS).
     pub i2pcontrol: I2pControlConfig,
@@ -1582,6 +1779,7 @@ impl Config {
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
+        let console = normalize_console(&raw.console, &raw.limits)?;
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
@@ -1610,6 +1808,7 @@ impl Config {
             transport: TransportConfig { ntcp2 },
             netdb,
             reseed,
+            console,
             news,
             sam,
             ssu2,
@@ -2321,6 +2520,152 @@ fn normalize_data_dir(value: &str) -> Result<PathBuf, ConfigError> {
             reason: "existing path cannot be inspected",
         }),
     }
+}
+
+/// Normalizes the console block.
+///
+/// Three rules are enforced here rather than at the listener:
+///
+/// - the bind address must be loopback (Plan 356, like every other
+///   non-public listener in this router);
+/// - the theme must be a compiled-in identifier, so `i2pr check-config`
+///   rejects a typo instead of silently serving the default palette;
+/// - the connection ceiling must sit inside an explicit range and inside
+///   the router-wide task budget.
+fn normalize_console(
+    raw: &RawConsoleConfig,
+    global: &RawLimitsConfig,
+) -> Result<ConsoleConfig, ConfigError> {
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "console.bind_address",
+            reason: "must be a valid IP address",
+        })?;
+    if !bind_address.is_loopback() {
+        return Err(ConfigError::Semantic {
+            field: "console.bind_address",
+            reason: "must be a loopback address; the console has no remote-exposure design",
+        });
+    }
+    // Runtime ceilings only bind a console that is actually started. A
+    // disabled console must not consume budget or fail validation, or it
+    // would shadow the error attribution of the subsystem that *does* own
+    // the budget.
+    if raw.enabled {
+        if !(1..=64).contains(&raw.max_connections) {
+            return Err(ConfigError::Semantic {
+                field: "console.max_connections",
+                reason: "must be between 1 and 64",
+            });
+        }
+        if u64::from(raw.max_connections) > global.max_tasks {
+            return Err(ConfigError::Semantic {
+                field: "console.max_connections",
+                reason: "exceeds the router-wide task budget",
+            });
+        }
+    }
+    let theme =
+        i2pr_console::theme::ThemeName::resolve(&raw.theme).map_err(|_| ConfigError::Semantic {
+            field: "console.theme",
+            reason: "must be a bundled console theme identifier",
+        })?;
+
+    // Authenticated mode requires real credential material. An empty
+    // password is refused rather than accepted, so `auth = true` can never
+    // mean "anyone may sign in".
+    let mut password_hash: Option<ConsolePasswordHash> = None;
+    if raw.auth {
+        if let Some(hash) = raw.password_hash.as_deref() {
+            // Validated here so a malformed supplied hash fails
+            // `check-config` instead of the listener.
+            i2pr_console::security::auth::verifier_from_hash(hash).map_err(|error| {
+                ConfigError::Semantic {
+                    field: "console.password_hash",
+                    reason: match error {
+                        i2pr_console::security::auth::PasswordError::UnsupportedAlgorithm => {
+                            "must be an Argon2id PHC hash"
+                        }
+                        i2pr_console::security::auth::PasswordError::UnsafeHashParameters => {
+                            "must use parameters inside the console's accepted range"
+                        }
+                        _ => "must be a valid Argon2id PHC hash",
+                    },
+                }
+            })?;
+            password_hash = Some(ConsolePasswordHash::new(hash.to_string()));
+        } else if let Some(password) = raw.password.as_deref() {
+            let secret = i2pr_console::ConsoleSecret::new(password);
+            let mut derived =
+                i2pr_console::security::auth::derive_from_password(secret).map_err(|error| {
+                    ConfigError::Semantic {
+                        field: "console.password",
+                        reason: match error {
+                            i2pr_console::security::auth::PasswordError::EmptyPassword => {
+                                "must not be empty when auth is enabled"
+                            }
+                            _ => "could not be converted to a password verifier",
+                        },
+                    }
+                })?;
+            let verifier = derived.verifier();
+            password_hash = Some(ConsolePasswordHash::new(
+                verifier.hash_for_audit().to_string(),
+            ));
+            // Drop the plaintext verifier material before returning.
+            derived.forget_temporary();
+        } else {
+            return Err(ConfigError::Semantic {
+                field: "console.password",
+                reason: "auth = true requires either a password or a password_hash",
+            });
+        }
+    } else if raw.password.is_some() || raw.password_hash.is_some() {
+        return Err(ConfigError::Semantic {
+            field: "console.password",
+            reason: "credential material is only accepted when auth = true",
+        });
+    }
+
+    // Session bounds are validated by the console owner, so the same
+    // ceilings apply whether they arrive from configuration or a test. Like
+    // the connection ceiling, they only bind an enabled console.
+    if raw.enabled
+        && i2pr_console::SessionLimits::validate(
+            raw.max_sessions,
+            std::time::Duration::from_secs(raw.session_idle_secs),
+            std::time::Duration::from_secs(raw.session_absolute_secs),
+        )
+        .is_none()
+    {
+        return Err(ConfigError::Semantic {
+            field: "console.sessions",
+            reason: "session ceilings or lifetimes are outside the accepted range",
+        });
+    }
+    if raw.enabled && (raw.login_max_failures == 0 || raw.login_window_secs == 0) {
+        return Err(ConfigError::Semantic {
+            field: "console.login_throttle",
+            reason: "must request at least one failure inside a non-empty window",
+        });
+    }
+
+    Ok(ConsoleConfig {
+        enabled: raw.enabled,
+        bind_address,
+        port: raw.port,
+        theme: theme.as_str().to_string(),
+        max_connections: raw.max_connections,
+        auth: raw.auth,
+        password_hash,
+        max_sessions: raw.max_sessions,
+        session_idle_secs: raw.session_idle_secs,
+        session_absolute_secs: raw.session_absolute_secs,
+        login_max_failures: raw.login_max_failures,
+        login_window_secs: raw.login_window_secs,
+    })
 }
 
 fn normalize_sam(raw: &RawSamConfig, global: &RawLimitsConfig) -> Result<SamConfig, ConfigError> {
@@ -4073,5 +4418,191 @@ data_dir = "./state"
         // Unknown keys fail closed.
         let text = format!("{MINIMAL}\n[service_tunnels.tls]\ntrust_anchor = true\n");
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn console_defaults_to_disabled_on_loopback() {
+        let config = Config::parse(MINIMAL).expect("minimal config parses");
+        assert!(!config.console.enabled, "console must be off by default");
+        assert!(config.console.bind_address.is_loopback());
+        assert_eq!(
+            config.console.theme,
+            i2pr_console::theme::DEFAULT_THEME_NAME.to_string()
+        );
+        assert!(config.console.max_connections > 0);
+        assert!(config.console.bind_socket().ip().is_loopback());
+    }
+
+    #[test]
+    fn console_block_is_read_when_present() {
+        let text = format!(
+            "{MINIMAL}\n[console]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = 7071\ntheme = \"i2pr-midnight\"\nmax_connections = 4\n"
+        );
+        let config = Config::parse(&text).expect("console block parses");
+        assert!(config.console.enabled);
+        assert_eq!(config.console.port, 7071);
+        assert_eq!(config.console.theme, "i2pr-midnight");
+        assert_eq!(config.console.max_connections, 4);
+    }
+
+    #[test]
+    fn console_rejects_non_loopback_bind_address() {
+        for address in ["0.0.0.0", "10.0.0.1", "192.168.1.10"] {
+            let text =
+                format!("{MINIMAL}\n[console]\nenabled = true\nbind_address = \"{address}\"\n");
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Semantic { .. })),
+                "{address} must be rejected"
+            );
+        }
+        // A non-IP literal is also rejected.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\nbind_address = \"localhost\"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+    }
+
+    #[test]
+    fn console_rejects_unknown_theme_identifiers() {
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\ntheme = \"no-such-palette\"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+    }
+
+    #[test]
+    fn console_rejects_out_of_range_connection_ceilings() {
+        for value in ["0", "65"] {
+            let text = format!("{MINIMAL}\n[console]\nenabled = true\nmax_connections = {value}\n");
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Semantic { .. })),
+                "{value} must be rejected"
+            );
+        }
+        // A value that does not fit the field type fails closed at decode
+        // time rather than being truncated into the accepted range.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\nmax_connections = 4294967296\n");
+        assert!(Config::parse(&text).is_err());
+    }
+
+    #[test]
+    fn console_rejects_unknown_keys() {
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\npublic_expose = true\n");
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn console_connection_ceiling_respects_the_router_task_budget() {
+        // A budget smaller than the console ceiling must refuse the
+        // configuration even though 64 is inside the console's own range.
+        let text = format!(
+            "{MINIMAL}\n[limits]\nmax_tasks = 8\nmax_buffered_bytes = 1048576\n\
+             \n[console]\nenabled = true\nmax_connections = 16\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        // The same ceiling fits a default-sized budget.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\nmax_connections = 16\n");
+        assert!(Config::parse(&text).is_ok());
+    }
+
+    #[test]
+    fn console_auth_requires_real_credential_material() {
+        // `auth = true` with nothing configured must fail rather than
+        // silently accepting an empty password.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\nauth = true\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+
+        // An explicitly empty password is refused for the same reason.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\nauth = true\npassword = \"\"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+
+        // A real password is converted to a verifier at parse time and the
+        // plaintext does not survive into the normalized configuration.
+        let text =
+            format!("{MINIMAL}\n[console]\nenabled = true\nauth = true\npassword = \"hunter2\"\n");
+        let config = Config::parse(&text).expect("console auth parses");
+        assert!(config.console.auth);
+        let hash = config
+            .console
+            .password_hash
+            .as_ref()
+            .expect("verifier present")
+            .as_str()
+            .to_string();
+        assert!(
+            hash.starts_with("$argon2id$"),
+            "unexpected verifier form: {hash}"
+        );
+        // The plaintext must not be recoverable from the snapshot.
+        assert!(!format!("{config:?}").contains("hunter2"));
+        assert!(!hash.contains("hunter2"));
+    }
+
+    #[test]
+    fn console_prehashed_verifier_is_validated_at_parse_time() {
+        let text = format!(
+            "{MINIMAL}\n[console]\nenabled = true\nauth = true\npassword_hash = \"not-a-phc-string\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+
+        // A non-Argon2id algorithm is refused.
+        let text = format!(
+            "{MINIMAL}\n[console]\nenabled = true\nauth = true\npassword_hash = \"$argon2i$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+    }
+
+    #[test]
+    fn console_credential_without_auth_is_a_configuration_error() {
+        // Credentials present while auth is off would be a dormant
+        // backdoor waiting for a flag flip.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\npassword = \"hunter2\"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+    }
+
+    #[test]
+    fn console_session_and_throttle_bounds_are_validated() {
+        // Zero sessions, an absolute window shorter than the idle window,
+        // and a zero-failure throttle are all refused.
+        let cases = [
+            "max_sessions = 0\n",
+            "session_idle_secs = 40000\n",
+            "session_absolute_secs = 60\n",
+            "login_max_failures = 0\n",
+            "login_window_secs = 0\n",
+        ];
+        for case in cases {
+            let text = format!("{MINIMAL}\n[console]\nenabled = true\n{case}");
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Semantic { .. })),
+                "{case} must be refused"
+            );
+        }
+        // The defaults are accepted.
+        let text = format!("{MINIMAL}\n[console]\nenabled = true\n");
+        let config = Config::parse(&text).expect("defaults parse");
+        assert_eq!(config.console.max_sessions, 32);
+        assert!(!config.console.auth);
+        assert!(config.console.password_hash.is_none());
     }
 }

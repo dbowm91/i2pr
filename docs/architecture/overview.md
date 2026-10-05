@@ -47,6 +47,7 @@ Five conceptual planes cut across the crates:
 | Network state | RouterInfo / LeaseSet2 validation, store, lookup, publication, floodfill records, tunnel construction | `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-tunnel` |
 | Control | Config, identity persistence, Tokio/socket/timer ownership, supervision, composition | `i2pr-storage`, `i2pr-runtime`, `i2pr-daemon` |
 | Client / service | Destinations, ECIES sessions, Streaming, SAM 3.1, I2CP, HTTP/SOCKS5/IRC/generic service tunnels, I2PControl, naming | `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-addressbook`, `i2pr-i2pcontrol`, `i2pr-daemon` |
+| Operator console | Loopback browser console: routing, embedded assets, themes, browser security, read-only overview | `i2pr-console`, `i2pr-daemon` |
 
 Hard boundaries (CI-enforced; fix code, never weaken scripts):
 
@@ -93,6 +94,7 @@ crates/
   i2pr-service-tunnels/     Runtime-neutral tunnel config/policy (no sockets)
   i2pr-addressbook/         Canonical `.i2p` naming owner (no I/O)
   i2pr-i2pcontrol/          Proposal 170 wire/domain contract (no I/O)
+  i2pr-console/             Loopback browser console (no sockets, no workspace deps)
   i2pr-app-proto/           Managed-app protocol/capability contract (no I/O)
   i2pr-runtime/             Sole Tokio/socket/timer/channel owner + supervision
   i2pr-daemon/              CLI/config/composition root; owns all listeners
@@ -174,8 +176,9 @@ Flattened allowlist (the exact set the checker enforces per crate):
 | `i2pr-api` | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` |
 | `i2pr-service-tunnels` | No internal crate dependencies; reusable policy core per ADR 0033 |
 | `i2pr-addressbook` | `i2pr-proto` |
+| `i2pr-console` | — (no workspace dependencies; owns no socket) |
 | `i2pr-testkit` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` |
-| `i2pr-daemon` | `i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`, `i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel` |
+| `i2pr-daemon` | `i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-console`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`, `i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel` |
 
 ## 3. Module index
 
