@@ -1,9 +1,9 @@
 # Protocol support matrix
 
-Current authority through Plan 268 (2026-10-01): M11 one-family experimental
+Current authority through Plan 283 (2026-10-02): M11 one-family experimental
 progression is passed, while public transit remains disabled, non-advertised, and
-unclaimed. Plan 269 is the sole ready plan for global support and roadmap reconciliation.
-Plans 270-279 are registered as a dependency-ordered M12 floodfill sequence and remain
+unclaimed. Plan 342 is the ready plan (Proposal 170 outproxy option surface and
+request paths). Plans 270-279 are registered as a dependency-ordered M12 floodfill sequence and remain
 blocked until their predecessors close. M12 implementation and floodfill advertisement
 have not begun. The Plan 118 and earlier M6 passages below are historical support detail;
 old “next plan” language in those passages is not current execution authority. Plan 119

@@ -31,17 +31,20 @@ crates/
   i2pr-proto/               Bounded wire codecs, typed errors, no I/O
   i2pr-app-proto/           Runtime-neutral managed-application contract, no I/O or process owner
   i2pr-crypto/              Protocol-specific cryptographic wrappers
+  i2pr-su3/                 Bounded SU3 envelope framing + RSA signature verification
   i2pr-storage/             Atomic persistence and migration support
   i2pr-core/                Shared contracts, lifecycle, budgets, health
   i2pr-transport/           Transport-neutral link management
   i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
   i2pr-transport-ssu2/      SSU2 v2 protocol (runtime-neutral), path validation/publication, peer-test/relay/introducers
   i2pr-runtime/             Tokio-owned supervision, cancellation, transport I/O
-  i2pr-netdb/               RouterInfo + LeaseSet2 validation, store, lookup, publication
-  i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane
+  i2pr-netdb/               RouterInfo + LeaseSet2/ELS2 validation, store, lookup, publication
+  i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion + floodfill records
+  i2pr-tunnel/              Tunnel identity, exploratory/transit pool, ECIES-X25519 short-build, runtime-neutral data plane
   i2pr-client/              Destinations, ECIES-X25519-AEAD-Ratchet session layer, routing, I2P Streaming
   i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 plus the M9 I2CP wire/profile foundation; no sockets)
+  i2pr-addressbook/         Canonical `.i2p` naming owner: books, precedence, subscriptions, generations (no I/O)
+  i2pr-i2pcontrol/          Proposal 170 JSON-RPC 2.0 wire/domain contract (no I/O)
   i2pr-service-tunnels/     Runtime-neutral M10 service-tunnel config/policy (no sockets; generic client/server tunnel composition lives in i2pr-daemon)
   i2pr-daemon/              CLI, configuration, composition, supervision, application listener ownership
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
@@ -60,7 +63,7 @@ Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`); MSRV is 1.88.
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 bash scripts/check-dependency-direction.sh
@@ -69,7 +72,10 @@ python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 ```
 
-Focused seams and the constrained-host lane are documented in [`AGENTS.md`](AGENTS.md).
+Use `--test-threads=1` locally for the `i2pr-daemon`/`i2pr-runtime` loopback
+suites. This is an abbreviated subset; the full routine floor (including every
+evidence-integrity checker) is the single source of truth in
+[`AGENTS.md`](AGENTS.md), together with the known checker coverage gaps.
 
 ## OpenCode skills
 

@@ -1,6 +1,6 @@
 ---
 name: i2pr-multipass-recovery
-description: Operate, diagnose, or extend the Plan 048/049/050/051/053 Multipass recovery lane for NTCP2 interoperability evidence, including atomic lifecycle reservation, cloud-init taxonomy, base verification, the four Plan 045 directions, the Plan 053 bound diagnostic bundle, sanitized export, selective-purge remediation, and the Plan 051 dispatch-gate troubleshooting bridge. Use when an agent is asked to create, adopt, resume, recreate, or destroy a Multipass guest, run the evidence lane, classify a cloud-init failure, or troubleshoot host-side Plan 046 blockers inside a disposable Ubuntu 24.04 amd64 guest.
+description: HISTORICAL, ARCHAEOLOGY-ONLY (closed Plan 048/049/050/051/053 lane). Preserved for the lifecycle state machine, the 14-phase --all ordering, and the ownership-proof semantics of the former Multipass recovery lane. Use only when an agent is asked to explain that closed lane's lifecycle model. Do not create, adopt, resume, recreate, or destroy a Multipass guest, and do not run the evidence lane: VM/Multipass is forbidden for routine acceptance per AGENTS.md, and this lane is closed.
 ---
 
 # I2PR Multipass Recovery (Plan 048/049/050/051)
@@ -224,7 +224,9 @@ The `handshake-smoke-rootless` dispatch profile creates one measured
 `run-identity.json` and one bundle staging root before the four directions.
 It passes the explicit identity, staging root, run ID, and
 `--evidence-profile milestone-3-v2` through `run-direction.sh`,
-`rootless-enter.sh`, `rootless_inner_runner.py`, and `mixed_runner.py`.
+`rootless-enter.sh`, and `rootless_inner_runner.py`.
+(`mixed_runner.py` was deleted in the Plan 099 harness reduction `c04da77a` on
+2026-08-11 and does not exist today.)
 Each blocked or rejected direction writes one attestation, direction,
 trigger, observation-v2, and cleanup record. Finalization verifies the
 catalog and identity bindings before export; the export acknowledgement is
@@ -293,20 +295,24 @@ absence of any global `multipass purge` form in normal paths. Run it after
 **any** edit to anything under `scripts/interop/multipass/`,
 `tests/integration/ntcp2/harness/{rootless_topology,interop_topology,
 rootless_supervisor,rootless_inner_runner}.py` (note: `rootless_supervisor.py`
-and `rootless_inner_runner.py` were pruned by the Plan 099 harness reduction
-on 2026-08-13; the script list above is retained for historical reference),
+and `rootless_inner_runner.py` were deleted in the Plan 099 harness reduction
+`c04da77a` on **2026-08-11** and then **re-added** in `8aba042f` on 2026-08-28,
+so they exist today; the script list above is retained for historical reference),
 or `.github/workflows/ntcp2-interop-rootless.yml`.
 
 ## Test surface
 
-The Multipass layer has dedicated unit tests at
-`tests/integration/ntcp2/harness/test_multipass.py`. They exercise the
+The Multipass layer *had* dedicated unit tests at
+`tests/integration/ntcp2/harness/test_multipass.py`, exercising the
 lifecycle/ownership contract, the sanitized records, the typed blocker
 taxonomy, the snapshot binding, and the export pipeline using a fake
-`multipass` executable. The normal suite must stay green:
+`multipass` executable. **That file was deleted in the Plan 099 harness
+reduction `c04da77a` (2026-08-11) and does not exist today.** The coverage it
+described is therefore *not* currently verified by any suite; do not report it
+as passing. The only surviving check here is the static boundary checker,
+which is green as of 2026-10-05:
 
 ```text
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_multipass.py'
 bash scripts/check-multipass-interop-boundary.sh
 ```
 
@@ -336,8 +342,9 @@ close Milestone 3.
 - Add negative-path unit tests for any new lifecycle, contract, or evidence
   state.
 - Before handoff: `bash scripts/check-multipass-interop-boundary.sh`,
-  `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_multipass.py'`,
-  `cargo fmt --all --check`, `cargo check --workspace --all-targets`,
+  `cargo fmt --all --check`, `cargo check --locked --workspace --all-targets`,
+  (do not run the old `test_multipass.py` discovery line — the file was deleted
+  in `c04da77a`, so the command collects zero tests and still exits 0),
   `bash scripts/check-dependency-direction.sh`,
   `bash scripts/check-runtime-boundaries.sh`.
 - For the host-side sandbox lane, hand off to `i2pr-rootless-sandbox`. For

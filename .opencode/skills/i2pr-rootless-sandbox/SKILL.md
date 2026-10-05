@@ -1,6 +1,6 @@
 ---
 name: i2pr-rootless-sandbox
-description: Operate, diagnose, or extend the Plan 046 rootless, process-scoped, sealed-namespace sandbox lane for NTCP2 interoperability evidence on the host itself. Use when an agent is asked to run the rootless probe, enter the sandbox, dispatch a bounded scenario inside it, validate the typed blocker taxonomy, or update the static rootless boundary checker.
+description: HISTORICAL, ARCHAEOLOGY-ONLY (closed Plan 046 lane). Preserved so the typed blocker taxonomy and topology contract of the former Plan 046 rootless, process-scoped, sealed-namespace sandbox can be consulted. Use only when an agent is asked to explain that closed lane's blocker taxonomy or topology contract. Do not create namespaces, enter the sandbox, or dispatch scenarios: root/sudo/namespaces are forbidden for routine acceptance per AGENTS.md, and this lane is closed.
 ---
 
 # I2PR Rootless Sandbox (Plan 046)
@@ -66,10 +66,10 @@ bash scripts/check-ntcp2-interoperability.sh
 |---|---|
 | `scripts/interop/probe-rootless-sandbox.sh` | Typed capability probe. Emits sanitized JSON `{schema, type, outcome}`. Writes a typed blocker when the inner unprivileged user namespace cannot be entered. |
 | `scripts/interop/rootless-enter.sh` | Outer no-escalation entrypoint. Creates the sandbox via `unshare --user --net --mount --pid --fork --propagation private --mount-proc --map-root-user`. Allowlists one operation at a time. Never uses `sudo`, `setcap`, `--privileged`, `--network host`, `ip netns`, `nft`, or any privileged fallback. |
-| `tests/integration/ntcp2/harness/rootless_supervisor.py` | (Plan 046/053 historical — pruned by the Plan 099 harness reduction on 2026-08-13.) Inner supervisor. Verified single-ID UID/GID maps, `no_new_privs`, distinct user/network/mount/PID namespaces, `lo` readiness, synthetic bind, absence of default/external routes, bounded external connect probe. Emitted sanitized `IsolationAttestation` whose sha256 was bound to every passed mixed-router record. |
-| `tests/integration/ntcp2/harness/rootless_inner_runner.py` | (Plan 046/053 historical — pruned by the Plan 099 harness reduction on 2026-08-13.) Inner-side process that ran the bounded scenario actions through the sandboxed adapter. |
-| `scripts/check-rootless-interop-boundary.sh` | Static checker. Fails the change when rootless-owned files contain prohibited patterns (`sudo`, `ip netns`, `nft`, `setcap`, `--privileged`, `--network host`, fallback to privileged backend), when the gate catalog omits `handshake-smoke-rootless`, or when evidence validation does not require the sandbox attestation. The script still references the historical file paths above; on the current host it fails with `rootless-owned file missing` until the script's file list is reconciled with the Plan 099 reduction. Treat that as a known pre-existing issue, not as evidence of a lane regression. |
-| `tests/integration/ntcp2/harness/test_rootless_topology.py` | (Plan 046/053 historical — pruned by the Plan 099 harness reduction on 2026-08-13.) Unit tests for the topology contract and the supervisor's structural checks (no `multipass`, no host networking). |
+| `tests/integration/ntcp2/harness/rootless_supervisor.py` | (Plan 046/053 historical. **Still on disk** — deleted in the Plan 099 harness reduction `c04da77a` (2026-08-11), then re-added in `8aba042f` (2026-08-28).) Inner supervisor. Verified single-ID UID/GID maps, `no_new_privs`, distinct user/network/mount/PID namespaces, `lo` readiness, synthetic bind, absence of default/external routes, bounded external connect probe. Emitted sanitized `IsolationAttestation` whose sha256 was bound to every passed mixed-router record. |
+| `tests/integration/ntcp2/harness/rootless_inner_runner.py` | (Plan 046/053 historical. **Still on disk** — deleted in `c04da77a` (2026-08-11), re-added in `8aba042f` (2026-08-28).) Inner-side process that ran the bounded scenario actions through the sandboxed adapter. |
+| `scripts/check-rootless-interop-boundary.sh` | Static checker. Fails the change when rootless-owned files contain prohibited patterns (`sudo`, `ip netns`, `nft`, `setcap`, `--privileged`, `--network host`, fallback to privileged backend), when the gate catalog omits `handshake-smoke-rootless`, or when evidence validation does not require the sandbox attestation. Verified 2026-10-05: this checker **passes** (exit 0) — all 10 required rootless-owned files are present, both shell scripts are executable, and the workflow contains none of the forbidden patterns. A failure here now is a real regression, not a known-issue allowance. (`scripts/check-multipass-interop-boundary.sh` also passes.) |
+| `tests/integration/ntcp2/harness/test_rootless_topology.py` | (Plan 046/053 historical — **genuinely pruned**, deleted in the Plan 099 harness reduction `c04da77a` (2026-08-11).) Unit tests for the topology contract and the supervisor's structural checks (no `multipass`, no host networking). |
 
 ## Typed blocker catalogue
 
@@ -124,11 +124,12 @@ authoritative for evidence.
   with a comment, not by weakening the gate.
 - Add negative-path tests for any new topology, supervisor, or attestation
   behavior.
-- Before handoff: `cargo fmt --all --check`, `cargo check --workspace --all-targets`,
-  `cargo test --workspace`, `bash scripts/check-dependency-direction.sh`,
+- Before handoff: `cargo fmt --all --check`, `cargo check --locked --workspace --all-targets`,
+  `cargo test --locked --workspace`, `bash scripts/check-dependency-direction.sh`,
   `bash scripts/check-runtime-boundaries.sh`,
-  `bash scripts/check-rootless-interop-boundary.sh`,
-  `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_rootless_topology.py'`.
+  `bash scripts/check-rootless-interop-boundary.sh`. Do **not** run the old
+  `test_rootless_topology.py` discovery line: that file was deleted in `c04da77a`,
+  so the command collects zero tests and still exits 0.
 - For the recovery lane on a permissive host or a permissive Multipass guest,
   hand off to `i2pr-multipass-recovery`. For the canonical harness workflow,
   hand off to `i2pr-ntcp2-interop`.

@@ -1,4 +1,11 @@
-# Plan 048/049/050 Multipass script catalog
+# Plan 048/049/050 Multipass script catalog (HISTORICAL — archaeology only)
+
+> **This lane is closed.** This catalog is a historical record of the former
+> Multipass recovery lane's dependency graph and lifecycle state machine, kept
+> because that model is not reconstructible elsewhere. **VM/Multipass and
+> `sudo` are forbidden for routine acceptance by `AGENTS.md`** — do not create,
+> adopt, resume, recreate, or destroy a guest from this document, and do not run
+> the lane without a new plan-of-record.
 
 This is the per-script dependency graph and the lifecycle state machine for
 the Multipass recovery lane. The authoritative source of the lane is

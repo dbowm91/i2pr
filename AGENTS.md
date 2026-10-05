@@ -24,14 +24,16 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 - `i2pr-storage` — identity/key persistence.
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
 - `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` — runtime-neutral, no Tokio/sockets/`async fn`.
-- `i2pr-netdb`, `i2pr-netdb-persist` — RouterInfo/LeaseSet2 validation/store.
+- `i2pr-netdb`, `i2pr-netdb-persist` — RouterInfo/LeaseSet2/ELS2 validation/store.
 - `i2pr-su3` — bounded, runtime-neutral SU3 framing and signature verification.
-- `i2pr-tunnel` — runtime-neutral exploratory pool, short-build, data plane.
+- `i2pr-tunnel` — runtime-neutral exploratory/transit pool, short-build, data plane.
 - `i2pr-client` — destination lifecycle, ECIES session/routing, Streaming.
 - `i2pr-api` — runtime-neutral SAM 3.1 + I2CP wire/state (no sockets).
+- `i2pr-addressbook` — canonical `.i2p` naming owner, precedence resolver, versioned generations (no I/O).
+- `i2pr-i2pcontrol` — Proposal 170 JSON-RPC 2.0 wire/domain contract (no I/O).
 - `i2pr-service-tunnels` — runtime-neutral tunnel config/policy (no sockets; daemon owns listeners).
 - `i2pr-runtime` — sole production owner of Tokio, sockets, timers, channels, cancellation.
-- `i2pr-daemon` — CLI/config/composition root; owns SAM/I2CP/service-tunnel listeners.
+- `i2pr-daemon` — CLI/config/composition root; owns SAM/I2CP/I2PControl/service-tunnel listeners.
 - `i2pr-testkit` — deterministic fixtures only; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher.
 
@@ -39,8 +41,8 @@ Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-b
 
 ## Skills and architecture index
 
-- Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code, `i2pr-planning` when registering or closing out an implementation plan (roadmap/registry/closure mechanics). The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
-- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives); `docs/adr/` (decisions 0000–0032); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory).
+- Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/I2PControl/tunnel/transit/floodfill code, `i2pr-planning` when registering or closing out an implementation plan (roadmap/registry/closure mechanics). The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
+- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow, capability snapshot); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives, one per workspace member); `docs/architecture/interop-apparatus.md` (closed NTCP2 apparatus, archaeology only); `docs/adr/` (decisions 0000–0031); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory). Latest drift audit: `docs/architecture/audit/`.
 
 ## Hard boundaries (CI-enforced — fix code, never weaken scripts)
 
@@ -51,6 +53,16 @@ Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-b
 - Secrets: no `Debug`/`Display`/unrestricted serialization on secret types; avoid `Clone` on secrets; zeroize where supported; never log `PRIV`, signing seeds, SSU2 static/session secrets, tokens, or raw payloads. Do not make `DestinationIdentity: Clone` or mint a second private identity for a bridge.
 - Treat all network/config/disk bytes as hostile and bounded: checked arithmetic, caller-visible alloc caps, exact-consumption decodes, typed errors (no `anyhow` in library crates; no swallowed codec results).
 - No patching/vendoring external routers/clients; no root/sudo/namespaces/containers/VM/systemd/public-I2P for routine acceptance.
+- Outbound proxy (Proposal 170): the runtime-neutral provider policy
+  (`i2pr-service-tunnels/src/outproxy.rs`) and the daemon route owner
+  (`i2pr-daemon/src/outproxy_route.rs`) may only route through an I2P
+  Streaming connection — never a direct clearnet socket, resolver, TLS
+  client, plugin load, or process spawn. `check-service-tunnel-boundaries.sh`
+  rules 9–11 enforce this, with `std::net::IpAddr` deliberately allowed so
+  the target grammar can refuse IP literals. Policy and route owner exist;
+  there is currently **no reachable request path** (`open_via_outproxy` has
+  zero callers) and no direct clearnet fallback. Do not describe this as a
+  working outproxy.
 - No capability/version/RouterInfo/SAM/I2CP behavior advertisement beyond tested subset (`specs/CONFORMANCE.md`).
 
 ## Routine floor (from repo root, before handoff)
@@ -67,6 +79,8 @@ python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh
+bash scripts/check-m11-per-epoch-composition.sh
+bash scripts/check-service-anonymity-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ssu2-vectors.sh
@@ -92,6 +106,22 @@ cargo deny check advisories bans sources
 
 macOS CI builds all test executables once then runs each with `--test-threads=1` (loopback suites flake under parallel Cargo). Use `--test-threads=1` locally for `i2pr-daemon`/`i2pr-runtime` suites. After changing committed fixture bytes, also run `bash scripts/check-fixture-manifest.sh`; after NTCP2/SSU2/I2CP fixture changes run the matching `check-*-vectors.sh`.
 
+**macOS/bash-3.2 trap.** Six floor/evidence checkers need **bash 4+** and do not
+declare it. macOS ships bash 3.2.57, so on this host they exit 2 and the failure
+looks like content drift:
+
+- `check-fixture-manifest.sh`, `check-ntcp2-vectors.sh`,
+  `check-ssu2-vectors.sh`, `check-i2cp-vectors.sh` — `declare: -A: invalid option`.
+- `check-java-source-lock-gating.sh` — needs `mapfile`.
+- `check-service-tunnel-acceptance-evidence.sh` — a parse error, because line
+  ~1667 puts a `<<'PY'` heredoc inside a `$( )` command substitution. Bash 3.2
+  mis-parses that and reports the failure ~287 lines later, at line 1954, which
+  is a red herring.
+
+Run these under a Homebrew bash 5 or on CI. Do not report them as passing
+locally, and do not "fix" the scripts to work around it.
+
+
 Focused examples (same `--locked` + `--test-threads=1` pattern):
 
 ```text
@@ -102,6 +132,30 @@ cargo test --locked -p i2pr-daemon --test i2cp_message_data_plane -- --test-thre
 cargo test --locked -p i2pr-daemon --test service_tunnels_local_roundtrip -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test destination_tunnel_unit -- --test-threads=1
 ```
+
+### Known checker gaps (a green floor is not full coverage)
+
+Recorded 2026-10-05. Treat these as real coverage holes, not as licence to add
+the forbidden edge. A plan-of-record is required to close each one; the rule is
+still to fix the boundary, never to weaken a script.
+
+- `scripts/check-dependency-direction.sh` has **18** expected-map keys for
+  **20** workspace members. `i2pr-tunnel` and `tools/i2pr-interop` are both
+  absent, so a new forbidden `i2pr-*` production edge in either would pass CI
+  silently. Cross-check those two by hand.
+- `scripts/check-runtime-boundaries.sh` has **no `i2pr-api` section**; its
+  "passed" result is not evidence for that crate. It also greps `std::net`
+  literally, so an import inside a grouped `use std::{…}` evades it.
+- `tools/i2pr-interop` is unpoliced by both direction and runtime scripts.
+- `scripts/check-m12-floodfill-boundaries.sh` currently **exits 1**: it still
+  enforces the Plan 281 "type 5 is deferred" floor, but Plans 332/333/334
+  legitimately populate `DatabaseStoreData::EncryptedLeaseSet`. It is in
+  neither this floor nor `ci.yml`, so the failure is silent. Do not add it to
+  the floor until the script is corrected by a plan.
+- ADR numbers are not uniqueness-checked. `docs/adr/` currently has **two**
+  `0030-*` records, both `Accepted`, which makes ADR 0029's "partially
+  superseded by ADR 0030" ambiguous. `check-global-plan-number-uniqueness.py`
+  scans `plans/` only.
 
 ## Testing quirks agents miss
 

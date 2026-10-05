@@ -1,4 +1,4 @@
 interface:
-  display_name: "I2PR Multipass Recovery"
-  short_description: "Plan 048/049/050/051 Multipass recovery lane"
-  default_prompt: "Use $i2pr-multipass-recovery to operate, diagnose, or extend the Plan 048/049/050 Multipass recovery lane for NTCP2 interoperability evidence."
+  display_name: "I2PR Multipass Recovery (historical)"
+  short_description: "Closed Plan 048/049/050/051 Multipass lane — archaeology only"
+  default_prompt: "Use $i2pr-multipass-recovery to explain the closed Multipass recovery lane's lifecycle state machine, 14-phase --all ordering, and ownership-proof semantics. Do not create, adopt, resume, recreate, or destroy a Multipass guest: VM/Multipass is forbidden for routine acceptance and the lane is closed."
