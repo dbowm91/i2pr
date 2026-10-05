@@ -168,6 +168,29 @@ pub struct AppPrincipal {
     pub publisher_id: Option<PublisherId>,
 }
 
+/// A runtime-owned resource reference carries its owner alongside the opaque
+/// handle so the handle cannot be interpreted outside an application domain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalOwnedResource {
+    principal: AppPrincipal,
+    resource_id: OwnedResourceId,
+}
+impl PrincipalOwnedResource {
+    pub fn new(principal: AppPrincipal, resource_id: OwnedResourceId) -> Self {
+        Self {
+            principal,
+            resource_id,
+        }
+    }
+    pub fn principal(&self) -> &AppPrincipal {
+        &self.principal
+    }
+    pub const fn resource_id(&self) -> OwnedResourceId {
+        self.resource_id
+    }
+}
+
 /// Attribution for a caller that a future AppManager transport has already
 /// authenticated as an administrator. This type does not authenticate its
 /// caller; the value must be created only at that trusted boundary.
@@ -1290,6 +1313,19 @@ mod tests {
                 .as_slice(),
             &[Capability::Sam]
         );
+    }
+
+    #[test]
+    fn owned_resource_reference_always_carries_its_principal() {
+        let principal = AppPrincipal {
+            app_id: AppId::parse("sample-app").unwrap(),
+            instance_id: AppInstanceId::new(7).unwrap(),
+            publisher_id: Some(PublisherId::parse("sample-publisher").unwrap()),
+        };
+        let resource =
+            PrincipalOwnedResource::new(principal.clone(), OwnedResourceId::new(9).unwrap());
+        assert_eq!(resource.principal(), &principal);
+        assert_eq!(resource.resource_id().get(), 9);
     }
 
     #[test]
