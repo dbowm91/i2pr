@@ -624,6 +624,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_backend_eof_does_not_close_a_sibling_connection() {
+        let session = session(3, &[Capability::Sam]);
+        let (mut client_a, router_a) = tokio::io::duplex(4096);
+        let (mut client_b, router_b) = tokio::io::duplex(4096);
+        let connection_a = session
+            .open_sam(Box::new(router_a))
+            .await
+            .expect("open SAM sibling A");
+        let connection_b = session
+            .open_sam(Box::new(router_b))
+            .await
+            .expect("open SAM sibling B");
+        for client in [&mut client_a, &mut client_b] {
+            client
+                .write_all(b"HELLO VERSION MIN=3.1 MAX=3.1\n")
+                .await
+                .expect("HELLO");
+            assert!(read_line(client).await.contains("HELLO REPLY RESULT=OK"));
+        }
+
+        drop(client_a);
+        assert_eq!(
+            connection_a.wait_closed().await,
+            AppGatewayConnectionEnd::BackendClosed
+        );
+        client_b
+            .write_all(b"SESSION CREATE STYLE=STREAM ID=sibling DESTINATION=TRANSIENT\n")
+            .await
+            .expect("sibling remains usable");
+        assert!(
+            read_line(&mut client_b)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        drop(client_b);
+        assert_eq!(
+            connection_b.wait_closed().await,
+            AppGatewayConnectionEnd::BackendClosed
+        );
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn connection_admission_is_bounded_and_cleanup_releases_capacity() {
         let cancellation = CancellationToken::new();
         let children = ChildScope::for_test(&cancellation, ChildFailurePolicy::CollectResult);
