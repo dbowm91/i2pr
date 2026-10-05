@@ -292,12 +292,47 @@ Current graph (`passed` / `ready` / `blocked`):
   -> 338 passed  one owner for the service identity store + transaction rollback
        (corrective pass on Plans 289 and 334, found while implementing 337;
         also corrects 337's own gap-1 diagnosis)
+
+339 active   per-family network status/error/testing owners
+  (reopens Plan 322 for FIVE selectors only:
+   i2p.router.net.status.v6 / .error / .error.v6 / .testing / .testing.v6.
+   The Proposal marks all five "(adopted from i2pd)", so the
+   enumeration is pinned to i2pd 2c69414 RouterContext.h:44-72
+   rather than invented, and every code derives from reachability
+   state i2pr already maintains. The three TRANSIT selectors stay
+   Plan 322 Group A: that is a transit-participation posture
+   change, not a missing snapshot.)
 ```
 
 Every obstacle found on this control path is now removed: one manager, a
 publication path a control-created service reaches, a type-5 record at the
 record's own blinded storage key, a resolving `.b32.i2p` **on the JSON-RPC
 wire**, and transactions that leave nothing behind when they fail.
+
+**Plan 322's eight gaps are two different problems, and the closure record
+compressed them into one.** Re-auditing the source on 2026-10-05 split them:
+
+- **Group A — the three transit selectors** (`net.total.transit.bytes`,
+  `net.bw.transit.15s`, `net.tunnels.shareratio`). `TransitBuildService` and its
+  bounded `TransitCounters` already exist; production profiles simply never
+  construct the service, because transit participation is deliberately disabled.
+  So this is a **production transit-participation posture change**, gated by M11
+  qualification and the constrained-host lane — not the "add a bounded snapshot
+  at the owning subsystem" that the Plan 322 text implies. It stays blocked and
+  is not picked up here.
+- **Group B — the five per-family selectors.** These project state i2pr already
+  maintains: `ReachabilityState` (with `AddressFamily` and expiry), configured
+  versus bound sockets, and the attested NetDB peer snapshot. Plan 339 takes
+  Group B.
+
+The decisive input was the Proposal text itself, re-retrieved read-only and
+hash-verified in-repo: all five Group B selectors are marked **"(adopted from
+i2pd)"**. The integer vocabulary is therefore i2pd's, pinned at `2c69414`
+(`RouterContext.h:44-72`) rather than chosen by i2pr, and the *conditions* under
+which i2pr emits each code are recorded as an explicit conservative policy.
+i2pr owns no detector for ClockSkew, SymmetricNAT, FullConeNAT, Proxy, Mesh, or
+Stan, so it never emits those codes; the honest ordinary-production baseline is
+`status=2, error=0, testing=0` — no claim made, and no test running.
 
 **Plan 334 reclosed `passed` on 2026-10-05.** Its own black-box, rollback, and restart
 evidence landed in `db63bc0`, and writing it found one more real gap: Plan 337 had added the
