@@ -16,6 +16,8 @@ brokered clearnet, or a usable third-party application capability.
 - `2716aa1` — added the daemon gateway, direct `i2pr-app-proto` dependency,
   isolated SAM/I2CP service contexts, supervised connection lifetime and
   completion reporting, boundary checker, CI/floor wiring, and dependency docs.
+- `e01c261` — added direct same-principal sibling-connection isolation
+  coverage; this test is included in the 4,080-test full-floor result below.
 
 Plan 354's prerequisite closure is `6cd35bf` (`passed-managed-app-private-client-transport-seams`).
 
