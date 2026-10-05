@@ -19,48 +19,71 @@
 The plan's acceptance criterion has two halves. The first — "Proposal 170 can configure every
 supported encrypted-LeaseSet mode" — is met. The second, which the plan also requires, is the
 matrix-promotion rule: *"no inert promotion … every cell must have live protocol effect."* That half
-is **not** met, and the gap is specific:
+is **not** met.
 
-> `publish_service_ls2_for_service` in `crates/i2pr-daemon/src/service_product.rs` still composes an
-> ordinary `DatabaseStoreData::LeaseSet2` at the destination hash. A service configured through
-> Proposal 170 with `EncryptLeaseSet: "blinded"` is therefore validated, persisted, and reported
-> correctly, and still publishes an unencrypted LeaseSet2.
+### Correction: the real blocker is upstream of ELS2
 
-A configuration an operator believes is encrypted, and which the control surface reports as
-encrypted, while the service publishes in the clear, is precisely the failure this plan exists to
-prevent. Rounding that up to `passed-` would be an inert promotion.
+This record was first written naming `publish_service_ls2_for_service` as the blocker, because that
+function still composes an ordinary `DatabaseStoreData::LeaseSet2`. **That was the wrong blocker**,
+and the correction is recorded here rather than quietly edited away.
 
-`i2pr-daemon::service_els2` does build real, correct type-5 records at the day's blinded storage
-key from the service's own identity, and six test rows prove it. What is missing is the one call
-site that must consume that material. Naming that is more useful than hiding it, so the matrix
-`owner` strings point at the control owner that exists today rather than at a publication driver
-that does not.
+A `ServiceTunnelManager` reached through I2PControl is reconciled onto a **separate manager
+instance**, not the one the product layer publishes through:
 
-### The named seam, and why it was not rushed
+- `TunnelControlState::for_config` builds a fresh `ServiceTunnelManager` over an **empty**
+  `ServiceTunnelSet` (`i2pcontrol_tunnels.rs`). That is the only production construction in the
+  module.
+- `ServiceProduct::new` builds a *different* manager over `config.service_tunnels.tunnels`
+  (`service_product.rs`), installs the executable router delivery backend on it, and that is the
+  only manager `publish_service_ls2_for_service` is ever handed.
+- No production call site installs a delivery capability on the control-owned manager.
+  `install_router_delivery_handle`, the free-function installer, is referenced only from integration
+  tests.
 
-`service_product.rs` owns publication; `i2pr-i2pcontrol_tunnels.rs` owns the definitions, including
-the only copies of the lookup secret and the client list. Neither can see the other's state:
+The consequence is larger than an ELS2 gap: **a service tunnel created through TunnelManager is not
+on the publication path at all.** A control-created *server* tunnel publishes no LeaseSet2 —
+encrypted or ordinary. No ELS2 mode can change what it publishes, because there is nothing there to
+change, and the `.b32.i2p` address Plan 334 wanted to expose would hand an operator an address for
+a service no client could look up.
 
-- `i2pr-service-tunnels` is permitted only `i2pr-client` and `i2pr-proto`, so `ServiceTunnelSpec`
-  cannot carry an `i2pr-i2pcontrol` type, and a `BlindingSchedule` is not `Clone`, so it cannot ride
-  in a `Clone` spec without a second secret-holding registry.
-- `ServiceTunnelManager` has no handle to `TunnelControlState`, and adding one is a structural
-  change to the composition root.
+Two executable rows pin this:
 
-Two candidate designs, neither taken here:
+- `plan334_control_manager_is_separate_from_the_product_manager` — the control-owned manager holds
+  no delivery capability and is not `Arc`-equal to a product-style manager, while a manager *can*
+  hold a capability. The asymmetry is in the construction, not the type.
+- `plan334_control_created_server_is_validated_but_not_published` — a control-created encrypted
+  server tunnel is a real, validated definition whose posture resolves to a type-5 publisher, and
+  the `ServiceTunnelSpec` it builds carries **no** LeaseSet publication intent at all.
 
-1. **A daemon-local control-security registry** holding only the `LeaseSetSecurityPlan` (which is
-   `Copy` and carries no secrets) keyed by spec id, with the secret options read from the committed
-   definition at publication time. This needs a control-state handle threaded into the product
-   layer, and a reverse destination→spec lookup (`spec_id_for_destination`, drafted and then
-   reverted) for the retry sweep, which is keyed by destination.
-2. **Resolve the material at config time and carry it on the spec.** This needs `i2pr-client` to
-   re-export the ELS2 types so `i2pr-service-tunnels` can name them, and a
-   `Arc`-indirection to avoid cloning the private scalar.
+### Doc-versus-source drift, recorded rather than corrected
 
-Option 1 is the better design and is the recommended next step. Neither was landed as a rushed
-structural change at the end of an implementation pass, and no partial edit to
-`publish_service_ls2_for_service` was left in the tree.
+The module documentation at the top of `i2pcontrol_tunnels.rs` states:
+
+> This module implements durable administrative ownership over **the one existing M10
+> [`ServiceTunnelManager`]**. It never creates a second service/destination/tunnel runtime.
+
+The source contradicts both halves: there are two manager instances, and a control-created runtime
+is a second runtime.
+
+This is not only a stale comment. Plan 289's own plan-of-record states the same invariant as a
+requirement, not a description — "It must not create a second service/destination/tunnel runtime"
+(line 13) and "Plan 289 closes when the seven lifecycle actions are real over **one** M10
+`ServiceTunnelManager`" (line 128). By `plans/README.md`'s authority order the executable tests and
+source outrank the prose, so the source wins and both the module documentation and the plan-of-record
+invariant do not hold in the code.
+
+Rewriting another plan's invariant is not Plan 334's call, so the drift is recorded here and the
+correct fix is a plan of its own for control-owned service tunnels reaching the product layer.
+
+### What Plan 334 would still owe once that is fixed
+
+The ELS2 work that already landed is correct: `i2pr-daemon::service_els2` builds real type-5
+records at the day's blinded storage key from the service's own Ed25519 seed, with no new stored
+secret and no new `i2pr-*` edge. Once a control-owned server can publish, that material needs one
+call site to consume it, and a plan would own exposing the `.b32.i2p` address.
+
+The matrix `owner` strings name the control owner that exists today rather than a publication driver
+that does not, so the repository does not over-claim.
 
 ## Requirement-to-evidence matrix
 
@@ -101,10 +124,13 @@ kinds, plus the refused mode, five bad mode spellings, and the retired duplicate
 | No new stored secret is needed for encryption | `unblinded_scalar_from_ed25519_seed` | PASS. The blinding identity is the Red25519 conversion of the service's existing Ed25519 signing seed, which the v1/v2 identity file format already stores. The format is untouched. |
 | An authorization mismatch is refused, not published unauthenticated | `an_authorization_mismatch_is_refused_rather_than_published_unauthenticated` | PASS, for all three mismatch shapes. |
 | A lookup secret changes the daily key but not the address | `a_lookup_secret_changes_the_daily_key_but_not_the_address` | PASS. Two secrets give two different daily keys and the same address; an absent secret gives a third. A client with the wrong secret finds the service and cannot read it. |
+| **A control-created tunnel reaches the product layer's publication path** | `plan334_control_manager_is_separate_from_the_product_manager` | **NOT MET — pre-existing, not this plan's.** `TunnelControlState::for_config` builds its own manager over an empty `ServiceTunnelSet`; `ServiceProduct::new` builds another over the startup config and is the only one handed to `publish_service_ls2_for_service`. No production call site installs a delivery capability on the control-owned manager. |
+| **A control-created server publishes a LeaseSet2 at all** | `plan334_control_created_server_is_validated_but_not_published` | **NOT MET — pre-existing, not this plan's.** The definition is real, validated, and its posture resolves to a type-5 publisher, but the `ServiceTunnelSpec` carries no publication intent and its manager has no router backend. |
+| **Plan 289's "the one existing M10 `ServiceTunnelManager`" invariant holds** | the same row; `i2pcontrol_tunnels.rs` module docs | **NOT MET — recorded doc-versus-source drift.** The module documentation claims one shared manager and no second runtime; the source has two managers and a second runtime. The source wins per `plans/README.md`. Correcting another plan's invariant is not Plan 334's call. |
 | No new `i2pr-*` production edge | `scripts/check-dependency-direction.sh` | PASS. The mode contract lives in `i2pr-i2pcontrol`, which has no `i2pr-*` edge and therefore cannot reach the ELS2 owners; `i2pr-daemon` is the only layer that sees both. |
 | The ELS2 material holds no long-lived secret beyond the identity it must | `ServiceEls2Material` | PASS. Not `Clone`; `Debug` prints presence and counts only. |
-| **Live protocol effect for the configured mode** | — | **NOT MET.** See "Why this plan is blocked". |
-| **The `.b32.i2p` address exposed through the control surface** | — | **NOT MET.** `ServiceEls2Material::address` produces a real, correctly flagged address, but nothing surfaces it to the operator or to a client. An encrypted service with no published address is unaddressable. |
+| **Live protocol effect for the configured mode** | `plan334_control_created_server_is_validated_but_not_published` | **NOT MET, and not reachable inside this plan.** A control-created server tunnel publishes no LeaseSet2 at all, because it is reconciled onto a manager instance that is not the product layer's and that carries no delivery capability. The blocker is upstream of ELS2. |
+| **The `.b32.i2p` address exposed through the control surface** | `ServiceEls2Material::address` | **NOT MET, and not useful yet.** The method produces a real, correctly flagged address, but nothing surfaces it — and exposing it now would hand an operator an address for a service no client could look up, because the service publishes nothing. |
 | **Black-box evidence through I2PControl** | — | **NOT MET.** The rows above are unit- and lib-level. A `create`/`get`/`rawConfig`/`edit` round trip over a real JSON-RPC connection has not been written, so the control-surface rows are not yet end-to-end evidence. |
 | **Create/edit rollback and restart evidence** | — | **NOT MET.** The validation ordering is correct by construction, but no row exercises a rejected `edit` leaving no half-converted tunnel, and no row restarts a daemon and re-reads a secret-bearing definition. |
 | **Cross-implementation check against Java I2P or i2pd** | — | **NOT EXECUTED, and not reachable.** Same two blockers Plan 333 recorded: no Java I2P build is provisioned, and the type-11 signature transcript is unverifiable by both (ADR 0005, Plan 336). Plan 335 owns the lane. |
@@ -185,7 +211,7 @@ apply to a single-host run.
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --locked --workspace --all-targets` | PASS |
-| `cargo test --locked --workspace --all-targets -- --test-threads=1` | **PASS — 3,939 passed, 0 failed, 35 ignored across 143 suites.** Exactly +19 over Plan 333's 3,920, which is the 12 new contract rows plus the 7 new `service_els2` rows; no pre-existing row was removed or weakened. |
+| `cargo test --locked --workspace --all-targets -- --test-threads=1` | **PASS — 3,941 passed, 0 failed, 35 ignored across 143 suites.** Exactly +21 over Plan 333's 3,920: the 12 new contract rows, the 7 new `service_els2` rows, and the 2 new manager-drift pinning rows. No pre-existing row was removed or weakened. |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | PASS |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps` | PASS |
 | `cargo test --locked --workspace --doc` | PASS |
@@ -220,13 +246,15 @@ No committed fixture bytes changed, so no fixture manifest or vector regeneratio
 
 ## Unblock audit
 
-Run per the planning process. The plan's own blocker is the unwired runtime publication; the audit
-surfaced one further item.
+Run per the planning process. The plan's own blocker is upstream of the ELS2 work and is
+pre-existing; the audit surfaced two further items.
 
 | Item | Disposition |
 |---|---|
-| `publish_service_ls2_for_service` does not consume the ELS2 material | **Blocks closure of Plan 334.** The recommended next step is the control-security registry described above, or a follow-on plan that lands the publication seam and the address exposure together. |
-| `.b32.i2p` address is not exposed | **Blocks closure of Plan 334**, and blocks any client use even after the publication seam lands. |
+| A control-created service tunnel is reconciled onto a manager instance that is not the product layer's and carries no delivery capability, so it publishes no LeaseSet2 at all | **Blocks closure of Plan 334, and is upstream of ELS2.** Pre-existing, in Plan 289's subsystem, and not fixable inside Plan 334. It needs its own plan: unify the control-owned and product managers, or route control-owned definitions into the product layer, and give the result a router delivery backend. Until then no ELS2 mode can have a publication effect, and the `.b32.i2p` address would name a service no client can look up. |
+| `publish_service_ls2_for_service` does not consume the ELS2 material | **Blocks closure of Plan 334**, but only *after* the manager unification above. `service_els2` already builds the correct record; one call site would consume it. A drafted `spec_id_for_destination` accessor was written and reverted rather than left half-landed. |
+| Plan 289's "one existing `ServiceTunnelManager`" invariant is contradicted by the source | **Recorded as doc-versus-source drift.** Not corrected in place, because rewriting another plan's architectural invariant is not this plan's call. The correct fix is the same unification plan. |
+| `.b32.i2p` address is not exposed | **Blocks closure of Plan 334**, after the manager unification. Exposing it earlier would publish an unreachable address. |
 | No black-box I2PControl evidence | **Blocks closure.** The control-surface rows are lib-level and must be re-established as JSON-RPC round trips. |
 | `parse_configured_destination` rejects any destination whose lowercased text contains `priv` | **Pre-existing, unrelated, deliberately not fixed here.** A legitimate random base64 I2P destination spells it by chance about once in 5,500 draws (measured 1.8×10⁻⁴ over 200k draws). Real availability bug in a different subsystem; the suggested fix is to decode-and-check-structure or to match an explicit `priv:` scheme prefix. Recorded again from Plan 333 so it is not lost. |
 | Java I2P and i2pd authorization lanes | **Deferred to Plan 335.** Unexecuted. No runnable Java I2P build is provisioned, and the type-11 transcript divergence blocks a meaningful comparison regardless. |

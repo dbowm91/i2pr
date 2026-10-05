@@ -1,12 +1,32 @@
 //! Plan 289 TunnelManager control state and existing service-runtime adapter.
 //!
-//! This module implements durable administrative ownership over the one
-//! existing M10 [`ServiceTunnelManager`]. It never creates a second
-//! service/destination/tunnel runtime: every lifecycle action validates
-//! a candidate control-owned definition, stages a versioned persistence
-//! generation, reconciles the existing manager, publishes the durable
-//! generation, and returns success only when durable intent and the
-//! authoritative runtime generation agree.
+//! # KNOWN DRIFT (recorded by Plan 334 — the two claims below are false)
+//!
+//! This module header and Plan 289's plan-of-record both state that the control
+//! plane owns "the one existing M10 [`ServiceTunnelManager`]" and "never
+//! creates a second service/destination/tunnel runtime". The source does not
+//! match. `for_config` builds a **separate** `ServiceTunnelManager` over an
+//! empty `ServiceTunnelSet`, while `ServiceProduct::new` builds the one
+//! `publish_service_ls2_for_service` is handed; and no production call site
+//! installs a router delivery capability on the control-owned manager, so its
+//! service runtimes cannot publish a LeaseSet2 at all. Per `plans/README.md`
+//! the source wins, and these two paragraphs are wrong.
+//!
+//! The defect is pre-existing, belongs to Plan 289's subsystem, and is **not**
+//! fixed here. It is pinned by
+//! `plan334_control_manager_is_separate_from_the_product_manager` and
+//! `plan334_control_created_server_is_validated_but_not_published`, and carried
+//! in `plans/closure/i2pcontrol-proposal-170/334-status.md`. The paragraphs are
+//! left in place rather than rewritten, because changing another plan's
+//! architectural invariant is not this plan's call; the correct fix is a plan
+//! that unifies the two managers.
+//!
+//! The rest of this module implements durable administrative ownership over a
+//! control-owned service runtime. Every lifecycle action validates a candidate
+//! control-owned definition, stages a versioned persistence generation,
+//! reconciles its manager, publishes the durable generation, and returns
+//! success only when durable intent and the authoritative runtime generation
+//! agree.
 //!
 //! Ownership model: `StartupOwned` definitions come from daemon TOML and
 //! are inspectable but never mutated here; `ControlOwned` definitions
@@ -4218,6 +4238,7 @@ fn static_control_reason(error: &ControlError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn test_manager(data_dir: &Path) -> Arc<ServiceTunnelManager> {
         let config = ServiceTunnelManagerConfig {
@@ -4233,6 +4254,105 @@ mod tests {
     fn test_control(data_dir: &Path) -> TunnelControlState {
         let store = ControlStore::open(data_dir).expect("store opens");
         TunnelControlState::new(store, ServiceTunnelSet::new(), test_manager(data_dir))
+    }
+
+    /// Plan 334: the control-owned manager is a **separate instance** from the
+    /// one the product layer publishes through, and it never receives a
+    /// router delivery backend.
+    ///
+    /// This is the finding that blocks Plan 334's ELS2 publication work, and
+    /// it is upstream of ELS2 entirely. `publish_service_ls2_for_service` lives
+    /// in `service_product.rs`, which only ever holds the manager built from
+    /// `config.service_tunnels.tunnels`; a tunnel created through
+    /// TunnelManager is reconciled onto the fresh control-only manager that
+    /// `for_config` builds. So a control-created *server* tunnel publishes no
+    /// LeaseSet2 at all — encrypted or ordinary — and no ELS2 mode can change
+    /// what it publishes, because there is nothing there to change.
+    ///
+    /// The module documentation above claims "durable administrative ownership
+    /// over the one existing M10 [`ServiceTunnelManager`]". That claim is
+    /// contradicted by the source, and this test is the executable form of the
+    /// contradiction. The defect is pre-existing and belongs to Plan 289's
+    /// subsystem, not to Plan 334.
+    #[test]
+    fn plan334_control_manager_is_separate_from_the_product_manager() {
+        let directory = TempDir::new().expect("temp dir");
+        let control = test_control(directory.path());
+
+        // The control-owned manager has no executable router backend, so its
+        // runtimes cannot deliver over the network and cannot publish.
+        assert!(
+            !control.manager.has_router_delivery_backend(),
+            "the control-owned manager must not be assumed router-backed"
+        );
+        // It has no delivery *capability* at all: nothing in the production
+        // call sites installs one on it. `uninstall_router_delivery` returns
+        // the previously installed capability, so `None` is the absence probe.
+        assert!(
+            control.manager.uninstall_router_delivery().is_none(),
+            "the control-owned manager must carry no delivery capability"
+        );
+
+        // A manager built the way the product layer builds one can hold a
+        // capability, so the asymmetry is in the construction, not the type.
+        // The capability this test can build is deliberately backend-less —
+        // the product layer attaches the executable backend with
+        // `with_backend` — which is why `has_router_delivery_backend` stays
+        // false here and the absence probe below is the one that separates
+        // the two managers.
+        let product_spec_dir = TempDir::new().expect("temp dir");
+        let product = test_manager(product_spec_dir.path());
+        assert!(product.uninstall_router_delivery().is_none());
+        product.install_router_delivery(crate::service_delivery::ServiceDestinationDelivery::new());
+        assert!(
+            product.uninstall_router_delivery().is_some(),
+            "a manager can hold a delivery capability"
+        );
+
+        // Two independently constructed managers are not the same instance, and
+        // the control state keeps its own: the product layer's manager is
+        // reachable only through the composition root, never through the
+        // control state.
+        assert!(
+            !Arc::ptr_eq(&control.manager, &product),
+            "control and product managers must be distinct instances"
+        );
+    }
+
+    /// Plan 334: a control-created server tunnel is a real, validated
+    /// definition — so the control surface is not inert — but it is not on the
+    /// publication path. This pins the boundary so the gap stays visible
+    /// instead of being read as ELS2-only.
+    #[test]
+    fn plan334_control_created_server_is_validated_but_not_published() {
+        let directory = TempDir::new().expect("temp dir");
+        let control = test_control(directory.path());
+        let mut options = BTreeMap::new();
+        options.insert("target_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("target_port".to_owned(), "8080".to_owned());
+        options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
+        let request = create_request("encsrv", TunnelType::HttpServer, options);
+        // The definition is accepted and its posture is resolved.
+        let definition =
+            normalize_definition("encsrv", TunnelType::HttpServer, &request.options, true)
+                .expect("control-created encrypted server normalizes");
+        let plan = definition.lease_set_security().expect("the block is valid");
+        assert!(plan.publishes_type5());
+        assert_eq!(plan.spelling(), Some("blinded"));
+
+        // But the spec it builds carries no publication intent, and the
+        // manager that would own it has no router backend. The absence of a
+        // field here is the finding: nothing in the spec tells the product
+        // layer to publish a type-5 record for this service.
+        let spec = build_control_spec(&definition).expect("spec builds");
+        let serialized = format!("{spec:?}");
+        for needle in ["encrypt_lease_set", "leaseset", "type5", "b33", "blinded"] {
+            assert!(
+                !serialized.to_lowercase().contains(needle),
+                "the spec must not carry LeaseSet publication intent: found {needle:?}"
+            );
+        }
+        assert!(!control.manager.has_router_delivery_backend());
     }
 
     fn create_request(

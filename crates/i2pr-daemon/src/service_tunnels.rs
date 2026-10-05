@@ -1534,8 +1534,24 @@ impl ServiceTunnelManager {
         guard.replace(capability)
     }
 
-    /// Plan 202 §5 — drops the router-owned delivery capability.
-    /// After this call every non-co-owned destination resolves as
+    /// Whether an executable router delivery backend is attached.
+    ///
+    /// Without one, every non-co-owned destination resolves as
+    /// `RemoteUnresolved`, so this manager's service runtimes cannot deliver
+    /// over the network and cannot publish a service LeaseSet. Plan 289's
+    /// control-owned manager is built without one, which is why the
+    /// `i2pcontrol_tunnels` documentation's "the one existing M10
+    /// `ServiceTunnelManager`" claim does not match the source: see
+    /// `plan334_control_manager_is_separate_from_the_product_manager`.
+    pub fn has_router_delivery_backend(&self) -> bool {
+        self.router_delivery
+            .lock()
+            .expect("router delivery poisoned")
+            .as_ref()
+            .is_some_and(crate::service_delivery::ServiceDestinationDelivery::has_backend)
+    }
+
+    /// Plan 202 §5 — drops the router-owned delivery capability.    /// After this call every non-co-owned destination resolves as
     /// `RemoteUnresolved` and the connect attempt terminates with a
     /// typed failure rather than silently falling back to the local
     /// bridge. The method is a no-op when no capability was

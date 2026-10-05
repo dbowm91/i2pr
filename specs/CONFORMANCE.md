@@ -382,11 +382,24 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
   which is what the published address must name for a client to verify the inner LeaseSet2. Six
   rows assert a real type-5 `DatabaseStore` at the day's blinded storage key, carrying the day's
   blinded public key, a non-zero outer salt, and a non-empty outer ciphertext.
-- **The runtime publication effect is NOT yet claimed.** The service LS2 publication sweep still
-  publishes the ordinary LeaseSet2, so a configured mode does not yet change what a running service
-  publishes, and the `.b32.i2p` address is not yet exposed through the control surface. This is the
-  plan's open item, carried in the closure record and reflected in the `support.toml` surface
-  status. Matrix cells name the owner that exists today, not a publication driver that does not.
+- **The runtime publication effect is NOT yet claimed, and the blocker is upstream of ELS2.** A
+  service tunnel created through TunnelManager is reconciled onto a `ServiceTunnelManager` built by
+  `TunnelControlState::for_config` over an *empty* `ServiceTunnelSet` — a different instance from the
+  one `ServiceProduct::new` builds over the startup config, and the only instance
+  `publish_service_ls2_for_service` is ever handed. No production call site installs a router
+  delivery capability on the control-owned manager. So a control-created *server* tunnel publishes
+  **no LeaseSet2 at all**, encrypted or ordinary, and no ELS2 mode can change what it publishes.
+  Two rows pin this: `plan334_control_manager_is_separate_from_the_product_manager` and
+  `plan334_control_created_server_is_validated_but_not_published`. The `.b32.i2p` address is
+  therefore also not exposed, because an address for an unpublished service is worse than no
+  address. This is a pre-existing defect in Plan 289's subsystem, is outside Plan 334's scope, and is
+  carried as the plan's open item. Matrix cells name the owner that exists today, not a publication
+  driver that does not.
+- **Plan 289's "one existing M10 `ServiceTunnelManager`" invariant does not hold in the source.**
+  The `i2pcontrol_tunnels` module documentation claims durable administrative ownership over one
+  shared manager and no second runtime; the source has two managers and a second runtime. Per
+  `plans/README.md` the source wins. Recorded as doc-versus-source drift rather than corrected in
+  place, because rewriting another plan's architectural invariant is not this plan's call.
 - **The client-count ceiling is 24 on this control surface, and that is not a protocol limit.** The
   ELS2 authorization block format permits 65,535 entries and the protocol owner accepts 255; the
   narrower number here is a consequence of carrying the list through one durable option value
