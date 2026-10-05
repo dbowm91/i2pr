@@ -251,7 +251,7 @@ pre-existing; the audit surfaced two further items.
 
 | Item | Disposition |
 |---|---|
-| A control-created service tunnel is reconciled onto a manager instance that is not the product layer's and carries no delivery capability, so it publishes no LeaseSet2 at all | **Blocks closure of Plan 334, and is upstream of ELS2.** Pre-existing, in Plan 289's subsystem, and not fixable inside Plan 334. It needs its own plan: unify the control-owned and product managers, or route control-owned definitions into the product layer, and give the result a router delivery backend. Until then no ELS2 mode can have a publication effect, and the `.b32.i2p` address would name a service no client can look up. |
+| A control-created service tunnel is reconciled onto a manager instance that is not the product layer's and carries no delivery capability, so it publishes no LeaseSet2 at all | **Blocks closure of Plan 334, and is upstream of ELS2.** Pre-existing, in Plan 289's subsystem, and not fixable inside Plan 334. **Registered as Plan 337** (`plans/implementation/i2pcontrol-proposal-170/337-control-owned-service-tunnels-reach-the-product-layer.md`), a corrective pass on Plan 289, `registered` and not blocked on anything: it unifies the two managers, gives the unified one its delivery backend, wires publication for a control-owned server, and exposes the address. Until it lands no ELS2 mode can have a publication effect. |
 | `publish_service_ls2_for_service` does not consume the ELS2 material | **Blocks closure of Plan 334**, but only *after* the manager unification above. `service_els2` already builds the correct record; one call site would consume it. A drafted `spec_id_for_destination` accessor was written and reverted rather than left half-landed. |
 | Plan 289's "one existing `ServiceTunnelManager`" invariant is contradicted by the source | **Recorded as doc-versus-source drift.** Not corrected in place, because rewriting another plan's architectural invariant is not this plan's call. The correct fix is the same unification plan. |
 | `.b32.i2p` address is not exposed | **Blocks closure of Plan 334**, after the manager unification. Exposing it earlier would publish an unreachable address. |
@@ -260,5 +260,8 @@ pre-existing; the audit surfaced two further items.
 | Java I2P and i2pd authorization lanes | **Deferred to Plan 335.** Unexecuted. No runnable Java I2P build is provisioned, and the type-11 transcript divergence blocks a meaningful comparison regardless. |
 | Plan 335 | **Stays blocked** on Plan 334, and additionally carries the unexecuted Java and i2pd lanes and the client-count ceiling divergence above. |
 
-Plan 334's own registry and roadmap entries move to `blocked-…` with the same suffix as this status.
+Plan 334's own registry and roadmap entries are `blocked on 337`, and Plan 337 is registered as the
+corrective pass that owns the defect. Per the planning process a corrective pass is a new plan in the
+same subsystem referencing the original plan and this record, and Plan 337 does that, explains why
+Plan 289's verification missed the defect, and carries the regression rows.
 The plan is **not** closed and **not** counted as passed in any census, milestone, or advertisement.

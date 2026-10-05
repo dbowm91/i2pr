@@ -122,8 +122,9 @@ No custom field/bignum/curve formulas are permitted.
 | 331 | passed | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
 | 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
-| 334 | blocked | exact Proposal 170 mode/field mapping; control plane complete, but a control-created tunnel publishes no LeaseSet2 at all (pre-existing Plan 289 defect) |
-| 335 | blocked on 334 (itself blocked) | live interop and successor reclosure for blocked Plan 326 |
+| 334 | blocked on 337 | exact Proposal 170 mode/field mapping; control plane complete and the ELS2 record builder lands, but a control-created tunnel publishes no LeaseSet2 at all |
+| 335 | blocked on 334, which is blocked on 337 | live interop and successor reclosure for blocked Plan 326 |
+| 337 | registered | corrective pass on Plan 289: unify the control-owned and product `ServiceTunnelManager` so a control-created tunnel is the same runtime and can publish. Blocks 334, and therefore 335. Plan: `plans/implementation/i2pcontrol-proposal-170/337-control-owned-service-tunnels-reach-the-product-layer.md` |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |
 
 ## 7. Completion boundary

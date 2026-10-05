@@ -275,11 +275,32 @@ Current graph (`passed` / `ready` / `blocked`):
        -> 331 passed  independent qualification
             -> 332 passed  type-5 ELS2 foundation
                  -> 333 passed  PSK/DH client auth
-                      -> 334 blocked (control plane complete;
-                                       control-owned tunnels are off
-                                       the publication path)
+                      -> 334 blocked on 337 (control plane
+                                                complete; ELS2 record
+                                                builder lands, but a
+                                                control-created tunnel
+                                                publishes no LeaseSet2)
                            -> 335 blocked on 334  live ELS2 interoperability/reclosure
+
+337 registered  control-owned service tunnels reach the product layer
+  (corrective pass on Plan 289: two ServiceTunnelManager instances, the
+  control-owned one never given a router delivery capability)
 ```
+
+Plan 337 is the real blocker behind Plan 334, and it is older and broader than the ELS2 work. A
+service tunnel created through TunnelManager is reconciled onto a `ServiceTunnelManager` built by
+`TunnelControlState::for_config` over an *empty* `ServiceTunnelSet`, while `ServiceProduct::new`
+builds the one `publish_service_ls2_for_service` is handed and gives it the executable router
+delivery backend. No production call site installs that capability on the control-owned manager, so a
+control-created server publishes no LeaseSet2 at all — encrypted or ordinary. This contradicts Plan
+289's own plan-of-record, which states the invariant as a requirement (lines 13 and 128) and which
+Plan 289's lifecycle evidence could not observe, because those rows assert the control transaction
+coordinator and never that a control-created runtime is reachable from outside the control state.
+Two rows added by Plan 334 pin it:
+`plan334_control_manager_is_separate_from_the_product_manager` and
+`plan334_control_created_server_is_validated_but_not_published`. Plan 337 makes Plan 289's stated
+invariant hold in the source, which unblocks Plan 334's publication call site and address exposure
+and therefore Plan 335.
 
 Plan 335 carries three named obligations that earlier plans did not resolve: the Java I2P
 authorization lane and the i2pd authorization lane, both unexecuted; the type-11 signature
