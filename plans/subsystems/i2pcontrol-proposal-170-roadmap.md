@@ -234,7 +234,7 @@ Current continuation graph:
 
     322 + 326 + 327 -> 328 live external full-conformance gate
 
-Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed packaged Rust provider matched I2P Red25519. Plans 321, 323, and 324 passed; Plans 322, 326, and 327 closed blocked on their recorded missing owners/dependencies; Plan 328 closed blocked because its required plans could not pass. Plans 329–335 now supersede only the forward Red25519/Encrypted-LeaseSet architecture: Plan 329 established a clean-room/spec-first path over maintained curve primitives, Java/i2pd readable references, and Emissary black-box-only differential, and Plans 330–333 have since passed. Plan 334 is blocked with its control plane complete but its blocker upstream of itself: a tunnel created through TunnelManager is reconciled onto a manager instance that is not the product layer's and that carries no router delivery capability, so it publishes no LeaseSet2 at all. That also contradicts this roadmap's Plan 289 "one existing M10 ServiceTunnelManager" invariant, and the drift is recorded rather than corrected in place. Plan 335 is blocked behind it. The unqualified full Proposal 170 claim is still not made.
+Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's packaged-provider survey closed blocked, then the clean-room successor line 329–331 implemented and qualified the primitive. Plans 332–334 implemented type-5 ELS2, client authorization, and the canonical control mapping; Plans 337/338 corrected product composition. Historical Plan 322's source gaps are now closed by passed successors 339/340. Historical Plan 327's secret/provider gaps are now partly superseded by 341/343, with request-path/option/wire capability still owned by ready Plan 342. Plan 335 measured a genuine type-11 incompatibility, but subsequent source-history research reclassifies it as a specification/deployment split: Proposal 146/standalone Red25519 uses domain+length-framed HStar, while the Encrypted-LS2 specification and deployed Java/i2pd use randomized RedDSA without those additions. Plans 346→347 own the bounded ELS2 correction and live cross-router proof. Historical Plan 328 remains blocked; fresh final gate Plan 348 waits on 342+347. The unqualified full Proposal 170 claim is still not made.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
@@ -505,3 +505,56 @@ worksheet §14.23, where i2pr publishes up to 255 authorized clients and Emissar
 Plan 335 resolves only the encrypted-LeaseSet branch. A future full-Proposal gate still requires
 successor work for blocked Plan 322 production transit/IPv6 sources and blocked Plan 327
 I2P-routed outproxy/secret ownership.
+
+
+## 15. ELS2 deployment reconciliation and fresh final gate (Plans 346–348)
+
+The historical Plan-335 measurements are retained, but their earlier interpretation is superseded
+for forward execution.
+
+Research frozen before registration established:
+
+- Java I2P's RedDSA engine landed on 2019-02-20.
+- Proposal 146's first committed text on 2019-02-24 already contained
+  `I2P_Red25519H(x)` and two-byte message-length framing.
+- the Encrypted LeaseSet specification documents the randomized RedDSA form without those
+  Proposal-146 additions;
+- i2pd implemented that deployed form on 2019-03-24;
+- current Java and i2pd verify each other's type-11 signatures.
+
+Therefore the open problem is not "ELS2 does not work cross-router" and not simply "both references
+are wrong". It is that i2pr used the standalone Proposal-146 transcript for a network object whose
+deployed Java/i2pd ecosystem follows the Encrypted-LS2-spec transcript.
+
+Forward graph:
+
+```text
+346 ready
+  ELS2-only type-11 transcript authority / deployed-compatibility corrective
+    -> 347 blocked on 346
+       real bidirectional Java+i2pd type-5 publication/lookup/application qualification
+
+342 ready
+  outproxy option surface + HTTP/CONNECT/SOCKS request paths + wire evidence
+
+342 passed + 347 passed
+  -> 348 fresh Proposal-170 full-conformance gate
+       (re-freeze the then-current Open Proposal before any final claim)
+```
+
+Plan 346 must leave the standalone Proposal-146 Red25519 primitive and all official vectors
+unchanged. Any deployed compatibility verifier/signing mode is confined to typed ELS2 type-5
+contexts; generic type-11 dual verification is forbidden.
+
+Plan 347, not a cryptographic fixture, owns the evidence needed to close historical Plan 326:
+actual DatabaseStore type-5 publication, independent NetDB lookup, outer verification/decryption,
+inner LeaseSet2 validation, and a successful streaming/application exchange in both directions with
+stock Java I2P and i2pd.
+
+Plan 348 replaces historical blocked Plan 328 for forward execution. Plan 328 is not rewritten.
+
+| Plan | State | Classification | Handoff |
+|---|---|---|---|
+| 346 | ready | protocol/security corrective | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
+| 347 | blocked on 346 | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
+| 348 | blocked on 342 + 347 | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |

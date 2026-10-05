@@ -1,7 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329, 330, 331, 332, 333, 334, 336, 337, and 338 passed. Plan 335 closed `blocked`, and its original "the references contain no Red25519/ELS2 implementation" diagnosis was **retracted the same day** — both references implement the full domain. **Both live lanes were then executed at the cryptographic boundary against unmodified pinned reference code, and both measure the same failure**: Java I2P and i2pd verify each other's type-11 signatures and both reject i2pr's, because both implemented *Zcash RedDSA* rather than I2P Red25519. The blocker is that measured negative result, not a build, so **the branch is not marked complete**
-behind it.
+Status: Plans 329–334, 336–338 passed. Plan 335 remains an authoritative measured-negative record, but its earlier interpretation is superseded for forward execution. Java I2P and i2pd verify each other's type-11 signatures and reject i2pr's former strict-only ELS2 signature; i2pr rejects theirs. Historical source review shows a specification/deployment split rather than a simple missing implementation: Proposal 146 / standalone Red25519 uses `I2P_Red25519H(x)` plus length framing, while the Encrypted LeaseSet specification and deployed Java/i2pd use the randomized RedDSA transcript without those additions. Plan 346 is ready to correct only the ELS2 network profile; Plan 347 is blocked on 346 for real cross-router qualification. The branch is not complete.
 
 Parent roadmap:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
@@ -51,17 +50,20 @@ Plan 329 must re-freeze all of these before implementation.
             -> 332 type-5 Encrypted LeaseSet2 foundation + lookup-secret/B33
                  -> 333 PSK and DH client authorization
                       -> 334 passed  canonical Proposal 170 encrypted-LeaseSet mode mapping
-                           -> 335 blocked live ELS2 interoperability: Emissary
-                                differential passed byte-exact; Java I2P and
-                                i2pd implement none of the domain
+                           -> 335 blocked historical measurement: Java+i2pd share the
+                                deployed ELS2 type-11 transcript and reject i2pr's
+                                Proposal-146 strict transcript
+                                -> 346 ready  ELS2-only transcript/deployment corrective
+                                     -> 347 blocked  live bidirectional Java+i2pd ELS2 qualification
 
 337 passed  one shared ServiceTunnelManager (corrective pass on Plan 289)
   -> 338 passed  one owner for the service identity store + transaction rollback
 ```
 
-Plan 335 closes only the encrypted-LeaseSet/Red25519 branch. Full Proposal 170 still requires
-successors for the blocked Plan 322 RouterInfo source owners and Plan 327 outproxy/secret-owner
-work before a successor to blocked Plan 328 may claim `full-proposal-conformant`.
+Plan 347 is now the closure gate for the encrypted-LeaseSet/Red25519 branch. Historical Plan 322's
+source gaps are closed by Plans 339/340. The outproxy branch still requires ready Plan 342 after
+Plans 341/343 supplied its secret owner and provider. Plan 348 is the fresh final Proposal-170 gate
+and waits on both Plan 342 and Plan 347 before any `full-proposal-conformant` claim.
 
 ## 4. Clean-room/reference boundary
 
@@ -128,16 +130,16 @@ No custom field/bignum/curve formulas are permitted.
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
 | 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
 | 334 | passed | exact Proposal 170 mode/field mapping; control plane complete, a control-created tunnel is on the publication path, a type-5 record is filed at the record's own blinded storage key, and a control-created encrypted server exposes a resolving `.b32.i2p` **on the JSON-RPC wire**. Black-box evidence (JSON-RPC round trip, rejected edit, restart, refused modes) landed in `db63bc0`; reclosed 2026-10-05 |
-| 335 | blocked | closed 2026-10-05, **corrected twice the same day**. The Emissary black-box differential passed byte-exact (90 rows at `3c138a9`). The original "the pinned references lack the Red25519/ELS2 domain" diagnosis was **wrong**: it came from searching for the specification's `I2P_Red25519H` hash-domain literal, while i2pd names the scheme `RedDSA` and Java names it `RedDSAEngine`. Both implement the full domain. Both live lanes were then **executed** at the cryptographic boundary against unmodified pinned reference code — i2pd via its own `IdentityEx::CreateVerifier(11)` linked against the real `libi2pd.a`, Java via the pinned `net.i2p.crypto.eddsa` subtree compiled unmodified with `javac` — on one key and one message shared with the committed i2pd fixture. i2pd and Java **verify each other** and both **reject i2pr**; i2pr rejects both; blinded public keys identical across all three. Cause: a construction mismatch behind a name collision — both references implemented *Zcash RedDSA* (`RedDSAEngine`'s class comment cites the Zcash spec), which is I2P Red25519 minus the `I2P_Red25519H(x)` domain and 2-byte length framing. Since every ELS2 record signs its outer layer under the blinded key (sigtype always 11), no specification-conformant type-5 record is verifiable by either named reference, so the acceptance fails on a measurement. Pinned in CI by `red25519_plain_ed25519_divergence.rs` (i2pd) and `red25519_java_reddsa_differential.rs` (Java executed output, 4 rows, provenance recorded, teeth verified). The second correction also retracts a first-correction error: **Emissary is Rust, not Java** (`eepnet/emissary`, 229 `.rs` / 0 `.java`), so it is not evidence about the Java ecosystem — the spec form has one supporting implementation, not a Java-ecosystem consensus. Upstream reporting is **not** started and out of scope; the path is not exercised live, so no deployed router is malfunctioning. Support-floor consequences not applied; `advertised` stays false; the branch is not marked complete. Closure: `plans/closure/i2pcontrol-proposal-170/335-status.md` |
+| 335 | blocked historical | Measured Java+i2pd mutual type-11 compatibility and i2pr strict-only incompatibility. The measurement remains valid; forward interpretation is superseded by Plan 346 because Proposal 146 and the Encrypted-LS2 specification define different transcripts. Closure: `plans/closure/i2pcontrol-proposal-170/335-status.md` |
 | 337 | passed | corrective pass on Plan 289: the composition root now builds the one `ServiceTunnelManager` and injects the same `Arc` into the control state and the product, so a control-created tunnel is the same runtime and publishes through the existing sweep (ADR 0031, closure: `plans/closure/i2pcontrol-proposal-170/337-status.md`) |
 | 338 | passed | corrective pass on Plans 289 and 334, found while implementing 337, and it **corrects Plan 337's own diagnosis**: every server group is already persistent, so a control-created server always had a persisted identity record — the ELS2 loader read `for_service` while the runtime wrote `for_group`. `ServiceTunnelManager` is now the single owner of that resolution, and `rollback_state` reconciles the shared manager as well as the mirror, so a failed transaction leaves no ghost runtime. Closure: `plans/closure/i2pcontrol-proposal-170/338-status.md` |
-| 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |
+| 336 | passed historical | Spec-first remains authoritative for standalone Proposal-146 Red25519; Plan 346 supersedes only the ELS2 network transcript decision. Closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md` |
 
 ## 7. Completion boundary
 
 This branch is complete only when:
 - the Red25519 primitive passes all official vectors and independent negative tests;
-- Java and i2pd accept/produce compatible blinded keys where applicable, and Emissary accepts compatible signatures (i2pd/Java split on the signature transcript is recorded as reference-side in Plan 331/336);
+- Java and i2pd accept/produce compatible blinded keys and deployed ELS2 type-11 signatures; standalone Proposal-146 strict Red25519 remains independently qualified; the two transcript definitions are explicitly separated rather than conflated;
 - Emissary black-box differential agrees after the implementation freeze (achieved in Plan 331: byte-identical alpha, blinded keys, storage keys, and signatures);
 - DatabaseStore type 5 is a first-class validated/publishable/lookup record;
 - B33/blinded address behavior is interoperable;
@@ -149,3 +151,38 @@ This branch is complete only when:
 - external publication/lookup succeeds against at least one independent router implementation;
 - no Emissary production source is incorporated.
 
+
+
+## 8. Specification/deployment correction (Plans 346–347)
+
+### Historical finding preserved
+
+Plan 335's executable result is not discarded:
+
+- Java and i2pd verify each other's type-11 signatures.
+- both reject i2pr's former ELS2 signature;
+- i2pr rejects theirs;
+- blinded public keys agree.
+
+What changes is the conclusion drawn from it.
+
+The original Proposal-146 text already used the domain-separated, length-framed HStar construction.
+The Encrypted LeaseSet specification separately describes the deployed randomized RedDSA
+construction, and Java/i2pd implement that ELS2 form. This has existed since the initial 2019
+deployment era.
+
+### Forward rule
+
+Plan 346 keeps the generic Proposal-146 Red25519 primitive strict and adds any compatibility
+semantics only at the typed ELS2 type-5 boundary.
+
+Plan 347 must then prove the real cross-router lifecycle, not only signature cross-verification.
+
+| Plan | State | Purpose |
+|---|---|---|
+| 346 | ready | ELS2 type-11 transcript authority + deployed Java/i2pd compatibility corrective |
+| 347 | blocked on 346 | bidirectional Java/i2pd DatabaseStore type-5 publication, lookup, decrypt, inner-LS2 and streaming/application qualification |
+
+The Emissary source quarantine remains unchanged. Emissary may continue to serve as a post-freeze
+black-box strict-profile oracle, but Java+i2pd deployment interoperability is the external network
+closure criterion for Plan 347.
