@@ -75,3 +75,16 @@ still source-level evidence, which is named as an open gap below.
   constraint on Plan 332: the ELS2 owner must not claim network interoperability.
 - Upstream reporting of the i2pd/Java divergence is outside this repository's scope and is not
   claimed as done.
+
+> **Addendum, 2026-10-05.** The first limitation above is **superseded on the evidence, not on the
+> classification**. The Java lane has since been executed: the pinned
+> `core/java/src/net/i2p/crypto/eddsa` subtree at `93eef5d` was compiled unmodified with `javac` and
+> driven by an independently written harness, with no router and no `i2p.jar`. Java measures the bare
+> Zcash transcript, **accepts i2pd's type-11 signature, and rejects i2pr's** — so the spec-first
+> decision this record took is confirmed by measurement rather than by reading source, and the
+> contingency it names ("if a future Java build does implement the specified domain") did not occur
+> at this pin. The second and third limitations stand, and the second is now stronger than stated:
+> because every encrypted LeaseSet2 record signs its outer layer under the blinded key (sigtype
+> always 11), *no* specification-conformant type-5 record is verifiable by either reference, whatever
+> the destination's own sigtype. Upstream reporting remains not done and out of scope. See
+> [`plans/closure/i2pcontrol-proposal-170/335-status.md`](335-status.md).

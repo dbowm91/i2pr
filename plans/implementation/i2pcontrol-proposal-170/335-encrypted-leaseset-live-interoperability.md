@@ -1,20 +1,35 @@
 # Plan 335 — Live Encrypted LeaseSet interoperability and Plan 326 successor reclosure
 
-Status: **closed-blocked-java-lane-unprovisioned-i2pd-type-11-transcript-incompatible**
+Status: **closed-blocked-measured-type-11-transcript-incompatible-with-both-named-references**
 
 Classification: external interoperability + branch closure.
 
 Hard dependency: Plan 334 passed. **Satisfied.**
 
-Outcome: closed `blocked` on 2026-10-05. The Emissary black-box differential ran and passed byte-exact
-(90 rows). **Corrected the same day:** the original closure claimed the Java I2P and i2pd lanes were
-unsatisfiable because the pinned references "contain no Red25519/ELS2 implementation at all". That was
-wrong — the search used the specification's `I2P_Red25519H` hash-domain literal as a feature marker,
-and i2pd names the scheme `RedDSA` while Java names it `RedDSAEngine`. Both references implement the
-full domain. The live lane was then executed at the cryptographic boundary against the real
-`libi2pd.a` and measured symmetric incompatibility on type 11: i2pd→i2pr REJECT and i2pr→i2pd REJECT,
-with both controls ACCEPT and the blinded public keys identical. The remaining obstacle is
-provisioning a Java I2P build. See
+Outcome: closed `blocked` on 2026-10-05, and corrected twice the same day. The Emissary black-box
+differential ran and passed byte-exact (90 rows). The original closure claimed the Java I2P and i2pd
+lanes were unsatisfiable because the pinned references "contain no Red25519/ELS2 implementation at
+all". That was wrong: the search used the specification's `I2P_Red25519H` hash-domain literal as a
+feature marker, and i2pd names the scheme `RedDSA` while Java names it `RedDSAEngine`. Both
+references implement the full domain. Both lanes were then **executed at the cryptographic
+boundary** against unmodified reference code from the pinned revisions — i2pd through its own
+`IdentityEx::CreateVerifier(11)` factory linked against the real `libi2pd.a`, Java through the
+pinned `net.i2p.crypto.eddsa` subtree compiled unmodified with `javac`. Both measure the same
+result, and it fails this plan's acceptance:
+
+| verifier \ signature | i2pr (spec form) | i2pd | Java I2P |
+|---|---|---|---|
+| **i2pr** | **ACCEPT** | **REJECT** | **REJECT** |
+| **i2pd** | **REJECT** | **ACCEPT** | **ACCEPT** |
+| **Java I2P** | **REJECT** | **ACCEPT** | **ACCEPT** |
+
+Blinded public keys are identical across all three, so blinding is not the disagreement. The cause
+is a construction mismatch behind a name collision: both references implemented *Zcash RedDSA* —
+`RedDSAEngine`'s own class comment cites the Zcash specification — which is I2P's Red25519 minus
+the `I2P_Red25519H(x)` domain and 2-byte length framing. Since every encrypted LeaseSet2 record
+signs its outer layer under the blinded key, whose sigtype is always 11, no specification-conformant
+type-5 record is verifiable by either named reference. The blocker is this measured negative result,
+not a missing build. See
 [`plans/closure/i2pcontrol-proposal-170/335-status.md`](../closure/i2pcontrol-proposal-170/335-status.md).
 
 ## Objective

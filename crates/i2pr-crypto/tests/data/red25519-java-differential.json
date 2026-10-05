@@ -1,0 +1,39 @@
+{
+  "schema": "i2pr-red25519-java-differential/1",
+  "provenance": {
+    "reference": "i2p/i2p.i2p (net.i2p.crypto.eddsa)",
+    "revision": "93eef5db87fae48025de00c0eb9b669e97b92149",
+    "engine": "net.i2p.crypto.eddsa.RedDSAEngine",
+    "reference_files": [
+      "core/java/src/net/i2p/crypto/eddsa/RedDSAEngine.java",
+      "core/java/src/net/i2p/crypto/eddsa/EdDSAEngine.java",
+      "core/java/src/net/i2p/crypto/eddsa/spec/EdDSAPrivateKeySpec.java",
+      "core/java/src/net/i2p/crypto/SigUtil.java",
+      "core/java/src/net/i2p/crypto/DSAEngine.java",
+      "core/java/src/net/i2p/crypto/SigType.java"
+    ],
+    "harness": "an independently written cross-verification driver that constructs the type-11 key exactly as SigUtil.cvtToJavaEdDSAKey does and delegates every operation to the unmodified upstream engine",
+    "build": "javac over the pinned core/java/src/net/i2p/crypto/eddsa subtree, compiled unmodified; the harness supplies only net.i2p.util.RandomSource and net.i2p.data.DataHelper, the two trivial helpers the subtree calls",
+    "generated_on": "2026-10-05",
+    "independence": "the reference sources are compiled unmodified; no Java I2P source is copied into i2pr",
+    "license": "reference output only; no Java I2P source or class file is redistributed as code",
+    "no_private_key_recorded": "the blinded private scalar is deliberately absent. Java signs with a random 80-byte Zcash nonce, so a committed private key could not reproduce this signature anyway; the three facts these rows need are the blinded public key, the signed message, and the signature.",
+    "shares_material_with": "red25519-i2pd-differential.json case 0: the same blinded scalar, the same blinded public key, and the same signed message. Only the signature differs, so the two fixtures isolate the transcript and nothing else.",
+    "freeze_record": "specs/references/red25519-qualification-freeze.md"
+  },
+  "cases": [
+    {
+      "unblinded_sigtype": 7,
+      "day": "20251015",
+      "blinded_public_key": "d581f97c36c718b4a8270ac8cb8a8ffe6cbe66a0983d587c9ce868c05262c637",
+      "blinded_sigtype": 11,
+      "signed_message": "6932707220706c616e2033333120646966666572656e7469616c00",
+      "signature": "382ca99216ac4a695f42e437f1c4b2a42ebfcbc34dab5c78fc154950639ffafcec17f98daddbb523d5af0d27751f5269434bdec2db8372daee9bb2fae12ffa07",
+      "reference_signature_verified": true,
+      "plain_ed25519_verifier_verified": true,
+      "specification_equation_verified": false,
+      "i2pr_verified": false,
+      "i2pd_verified": true
+    }
+  ]
+}

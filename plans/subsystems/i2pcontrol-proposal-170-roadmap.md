@@ -277,11 +277,14 @@ Current graph (`passed` / `ready` / `blocked`):
                  -> 333 passed  PSK/DH client auth
                       -> 334 passed  canonical Prop 170 mode mapping + control surface
                            -> 335 blocked  live ELS2 interoperability/reclosure
-                                (closed blocked, then corrected: both
-                                 references DO implement the domain; the
-                                 measured i2pd lane is a symmetric type-11
-                                 transcript incompatibility, and only the
-                                 Java lane remains unprovisioned)
+                                (closed blocked, then corrected twice:
+                                 both references DO implement the domain,
+                                 and BOTH lanes are now measured — i2pd
+                                 and Java verify each other's type-11
+                                 signatures and both reject i2pr's, because
+                                 both implemented Zcash RedDSA instead of
+                                 I2P Red25519. A measured negative result,
+                                 not a missing build)
 
 337 passed  control-owned service tunnels reach the product layer
   (corrective pass on Plan 289: two ServiceTunnelManager instances, the
@@ -303,17 +306,29 @@ posture and address to the *control-state* response, but the JSON-RPC adapter bu
 whole mode mapping was unobservable outside the process. The wire step fixes that.
 
 **Plan 335 closed `blocked` on 2026-10-05, and this line does not fully close.** The Emissary
-black-box differential passed byte-exact across 90 rows. The Java I2P lane is unprovisioned on this
-host: there is no gradle, no `i2p.jar`, and no Java I2P checkout, and the feature *is* present at
-the pin, so provisioning is the only obstacle left. **Corrected 2026-10-05:** this record previously
-said the two references had no overlapping feature set, because a search for the specification's
-`I2P_Red25519H` hash-domain literal found nothing while i2pd names the scheme `RedDSA`. Both
-references implement the full ELS2/Red25519 domain. The live lane was then measured against the real
-`libi2pd.a`: i2pd accepts its own type-11 signature, i2pr rejects it, i2pd rejects i2pr's, i2pr
-accepts its own, and the blinded public keys are identical. The encrypted-LeaseSet branch is
-implemented and internally qualified; its type-11 signatures are mutually unverifiable with both
-second-family implementations, measured in both directions, because both verify type 11 with a
-plain Ed25519 verifier instead of the specification's domain-separated transcript.
+black-box differential passed byte-exact across 90 rows. **Corrected twice on 2026-10-05.** First:
+this record previously said the two references had no overlapping feature set, because a search for
+the specification's `I2P_Red25519H` hash-domain literal found nothing while i2pd names the scheme
+`RedDSA`. Both references implement the full ELS2/Red25519 domain. Second: **the Java lane is no
+longer unprovisioned — it was executed**, and it fails the same way i2pd does. Both lanes now run
+against unmodified pinned reference code at the cryptographic boundary: i2pd through its own
+`IdentityEx::CreateVerifier(11)` linked against the real `libi2pd.a`, Java through the pinned
+`net.i2p.crypto.eddsa` subtree compiled unmodified with `javac`, on one key and one message shared
+with the committed i2pd fixture. The measured matrix: i2pd and Java **verify each other** and both
+**reject i2pr**; i2pr rejects both; blinded public keys identical across all three.
+
+The cause is a construction mismatch behind a name collision rather than a missing feature in either
+reference: both implemented *Zcash RedDSA* — `RedDSAEngine`'s own class comment cites the Zcash
+specification — which is I2P's Red25519 minus the `I2P_Red25519H(x)` domain and 2-byte length
+framing. Because every encrypted LeaseSet2 record signs its outer layer under the blinded key,
+whose sigtype is always 11, no specification-conformant type-5 record is verifiable by either named
+reference. So the encrypted-LeaseSet branch is implemented and internally qualified, agrees
+byte-exactly with Emissary, and is blocked on a **measured** interoperability failure that no
+provisioning can clear. The second correction also retracts a first-correction error: **Emissary is
+Rust, not Java** (`eepnet/emissary`, 229 `.rs` files and zero `.java`), so it is not evidence about
+the Java ecosystem — the specification form has one supporting implementation, not a Java-ecosystem
+consensus. Upstream reporting has not been started and is out of scope; the type-11 ELS2 path is not
+exercised by the live network, so no deployed router is malfunctioning.
 
 Plan 337 was the real blocker behind Plan 334, and it was older and broader than the ELS2 work. A
 service tunnel created through TunnelManager was reconciled onto a `ServiceTunnelManager` built by

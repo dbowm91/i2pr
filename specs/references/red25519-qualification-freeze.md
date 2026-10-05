@@ -63,7 +63,10 @@ Executed and classified, not waived:
 4. Source-level observation: the string `I2P_Red25519H` does not occur anywhere in the pinned Java
    I2P tree, so Java's type-11 engine cannot be applying the specified domain either. Java's
    `RedDSAEngine` mixes an 80-byte nonce and the public key into a SHA-512 digest, matching the
-   same bare form.
+   same bare form. **Superseded by execution:** this item is no longer the Java evidence. Java's lane
+   has since been run against the pinned sources compiled unmodified, and it measures the same bare
+   transcript — see §6. The observation was correct; it was simply the last thing resting on reading
+   source rather than running code.
 5. **Both references implement the domain in full.** Absence of the `I2P_Red25519H` literal is a
    statement about the *transcript*, never about whether the scheme is implemented, and reading it
    as an implementation statement is a mistake this repository has already made once: Plan 335's
@@ -138,13 +141,81 @@ Fixture: `crates/i2pr-crypto/tests/data/red25519-emissary-differential.json`; te
 
 ### Revised interoperability picture
 
-| Property | i2pr | Official vectors | Emissary `6885a94` | i2pd `2c69414` | Java I2P `93eef5d` |
+| Property | i2pr | Official vectors | Emissary `6885a94` (Rust) | i2pd `2c69414` (C++) | Java I2P `93eef5d` (Java) |
 |---|---|---|---|---|---|
-| alpha / blinded keys / storage key | reference | — | identical | identical | not executed |
-| signature transcript | `SHA-512("I2P_Red25519H(x)" ‖ … ‖ len_u16le(m) ‖ m)` | 10/10 verify | **identical** | bare `SHA-512(T ‖ A ‖ m)` | no `I2P_Red25519H` anywhere in tree |
+| alpha / blinded keys / storage key | reference | — | identical | identical | identical, executed |
+| signature transcript | `SHA-512("I2P_Red25519H(x)" ‖ … ‖ len_u16le(m) ‖ m)` | 10/10 verify | **identical** | bare `SHA-512(T ‖ A ‖ m)` | bare `SHA-512(T ‖ A ‖ m)`, executed |
+| verifies an i2pr type-11 signature | reference | — | yes | **no** | **no** |
+| i2pr verifies its type-11 signature | reference | — | yes | **no** | **no** |
 
-The divergence is therefore **reference-side**, not an i2pr defect: i2pr matches the specification,
-the specification's own published vector corpus, and a deployed independent I2P router
+Note the family column headers: **Emissary is a Rust implementation** (`eepnet/emissary`, a Cargo
+workspace), not a Java one. Agreement with Emissary is therefore not evidence about the Java
+ecosystem, and must never be cited as such.
+
+The divergence is **reference-side**, not an i2pr defect: i2pr matches the specification and the
+specification's own published vector corpus, and it matches an independent implementation
 (Emissary) byte-for-byte. i2pd and Java I2P use a bare-SHA-512 variant that cannot verify the
 official corpus. Addressing and lookup interoperate across all three references; only the signature
 transcript splits the ecosystem, with Emissary on the specification's side.
+
+Item 5 above records that the absence of the `I2P_Red25519H` literal is a statement about the
+transcript, never about whether the scheme is implemented. The corollary matters equally: **neither
+is agreement with one implementation evidence about a different family.** An earlier revision of the
+Plan 335 closure record made exactly that mistake by citing Emissary's agreement as "independent
+support inside the Java ecosystem". Emissary is Rust.
+
+## 6. Executed cross-verification, 2026-10-05
+
+Both live lanes were driven at the cryptographic boundary against **unmodified** pinned reference
+code, on one blinded key and one signed message — deliberately the same key and message as committed
+case 0 of `red25519-i2pd-differential.json`, so only the signature can differ.
+
+How each side was driven:
+
+- **i2pd** — a C++ driver linked the prebuilt `libi2pd.a` from the pinned revision and used i2pd's
+  own `IdentityEx::CreateVerifier(SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519)` and
+  `RedDSA25519Signer`, so the verdicts are i2pd's own.
+- **Java I2P** — the pinned `core/java/src/net/i2p/crypto/eddsa` subtree was checked out at
+  `93eef5d` and compiled unmodified with `javac` 25.0.4.1. That subtree's entire surface outside
+  itself and the JDK is two calls (`RandomSource.getInstance().nextBytes(t)` for the Zcash nonce and
+  `DataHelper.eqCT` to compare R), supplied by the harness; every cryptographic operation is
+  delegated to the upstream engine. Keys are built the way I2P's own
+  `SigUtil.cvtToJavaEdDSAKey` builds them for type 11. No Java I2P source is copied into i2pr.
+
+| verifier \ signature | i2pr (spec form) | i2pd | Java I2P |
+|---|---|---|---|
+| **i2pr** | **ACCEPT** (control) | **REJECT** | **REJECT** |
+| **i2pd** | **REJECT** | **ACCEPT** (control) | **ACCEPT** |
+| **Java I2P** | **REJECT** | **ACCEPT** | **ACCEPT** (control) |
+
+**Java I2P and i2pd verify each other's type-11 signatures.** They are one opinion expressed twice,
+not two independent ones. The blinded public key derived from the shared scalar was identical across
+all three implementations, so blinding is not the disagreement.
+
+**Root cause — a construction mismatch behind a name collision.** `RedDSAEngine`'s own class comment
+cites the *Zcash* protocol specification (`RedDSAEngine.java:9-10`, sections 4.1.6.1, 4.1.6.2,
+5.4.6), and it is a Zcash RedDSA: `r = SHA-512(T ‖ A ‖ m)` with an 80-byte random `T`, and the
+challenge is the bare `SHA-512(R ‖ A ‖ m)` (`EdDSAEngine.java:263`). i2pd's `SignRedDSA` is the same
+construction. I2P's Red25519 is that construction **plus** the `I2P_Red25519H(x)` domain and 2-byte
+length framing. The references implemented Zcash RedDSA and called it I2P Red25519; i2pr
+implemented I2P Red25519 as specified.
+
+**Verify-path control.** Driving the pinned engine's *plain* `EdDSAEngine` instead of
+`RedDSAEngine` returns an identical verdict on all three signatures. `RedDSAEngine` never alters
+verification, so it verifies type 11 with plain Ed25519 — which is why it accepts i2pd's signature.
+
+**Branch consequence.** Every encrypted LeaseSet2 record signs its outer layer under the blinded
+key, whose sigtype is always 11. This is therefore not confined to destinations whose own sigtype is
+11: no specification-conformant type-5 record is verifiable by Java I2P or i2pd, and none of theirs
+is verifiable by i2pr.
+
+**Why this is not a live-network defect.** The type-11 encrypted-LeaseSet path is not exercised by
+the deployed network, so no router is malfunctioning; Java I2P and i2pd have interoperated correctly
+with each other for the whole life of their type-11 code. This is a latent specification gap in an
+unadopted path. No upstream report has been filed.
+
+**Pinned in CI.** `crates/i2pr-crypto/tests/red25519_plain_ed25519_divergence.rs` (i2pd, 3 rows) and
+`crates/i2pr-crypto/tests/red25519_java_reddsa_differential.rs` (Java executed output, 4 rows), with
+fixtures `red25519-i2pd-differential.json` and `red25519-java-differential.json`. Teeth verified:
+removing both the domain and the length framing from `h_star` fails 2 of 4 Java rows and 2 of 3
+i2pd rows.

@@ -92,6 +92,17 @@ lane, which needs a controlled Java router in any case.
 > [`plans/closure/i2pcontrol-proposal-170/335-status.md`](335-status.md) and item 5 of
 > `specs/references/red25519-qualification-freeze.md`.
 
+> **Addendum, 2026-10-05 (later the same day) — the Java gap above is now closed.** The paragraph
+> above is superseded on one point: the Java lane is **no longer source-level only**. The pinned
+> `core/java/src/net/i2p/crypto/eddsa` subtree was compiled unmodified at
+> `93eef5db87fae48025de00c0eb9b669e97b92149` with `javac` and driven by an independently written
+> harness, with no router and no `i2p.jar` — the subtree's only non-JDK surface is two trivial calls
+> the harness supplies. Java's measured behavior is the bare Zcash transcript, the same as i2pd's,
+> and Java **accepts i2pd's type-11 signature while rejecting i2pr's**. So the classification this
+> record carries is now executed in every direction rather than argued from source. Pinned in CI by
+> `crates/i2pr-crypto/tests/red25519_java_reddsa_differential.rs`. See §6 of
+> `specs/references/red25519-qualification-freeze.md`.
+
 ## Crypto review
 
 | Area | Finding |
