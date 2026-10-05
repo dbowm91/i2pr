@@ -1,8 +1,8 @@
 //! Plan 292 matrix completeness and disposition-shape tests, with Plan 293
 //! determinations applied.
 //!
-//! The frozen inventory fixes 46 options and 12 types; the mask
-//! populations fix 336 applicable cells. These tests pin the disposition
+//! The frozen inventory fixes 52 options and 12 types; the mask
+//! populations fix 362 applicable cells. These tests pin the disposition
 //! census so no option silently disappears and no residual hides outside
 //! the named limitation/corrective plans (293 determinations carried by
 //! 295; correctives 296, 297).
@@ -16,9 +16,9 @@ use i2pr_i2pcontrol::tunnel_options::TUNNEL_OPTIONS;
 
 #[test]
 fn matrix_covers_every_applicable_cell() {
-    assert_eq!(MATRIX_CELLS, 336);
-    assert_eq!(MATRIX.len(), 336);
-    let mut seen = [[false; 12]; 46];
+    assert_eq!(MATRIX_CELLS, 362);
+    assert_eq!(MATRIX.len(), 362);
+    let mut seen = [[false; 12]; 52];
     for cell in MATRIX {
         assert!(
             TUNNEL_OPTIONS[cell.option_index].applies_to(cell.type_index),
@@ -51,9 +51,14 @@ fn disposition_census_is_exact() {
     // Plan 334 moved 12 cells: the three LeaseSet security options on the
     // four publishing kinds went from incompatible to apply, because they now
     // have the real ELS2 owners frozen by Plans 332/333.
-    assert_eq!(APPLY_CELLS, 281);
+    //
+    // Plan 342 added the seven outproxy options on the four proxy client
+    // kinds (24 new cells) and promoted Plan 293's two
+    // `use_outproxy_plugin` incompatibilities, widening that key's mask to
+    // the whole proxy-client block (+2 cells).
+    assert_eq!(APPLY_CELLS, 309);
     assert_eq!(NOT_APPLICABLE_CELLS, 37);
-    assert_eq!(INCOMPATIBLE_CELLS, 18);
+    assert_eq!(INCOMPATIBLE_CELLS, 16);
     assert_eq!(CORRECTIVE_296_CELLS, 0);
     assert_eq!(CORRECTIVE_297_CELLS, 0);
     assert_eq!(
@@ -108,7 +113,7 @@ fn every_cell_carries_a_named_disposition() {
 #[test]
 fn every_type_and_option_appears() {
     let mut type_seen = [false; 12];
-    let mut option_seen = [false; 46];
+    let mut option_seen = [false; 52];
     for cell in MATRIX {
         type_seen[cell.type_index] = true;
         option_seen[cell.option_index] = true;
@@ -120,7 +125,7 @@ fn every_type_and_option_appears() {
 #[test]
 fn find_cell_respects_masks() {
     assert!(find_cell(12, 0).is_none());
-    assert!(find_cell(0, 46).is_none());
+    assert!(find_cell(0, 52).is_none());
     // target_destination does not apply to server (mask excludes index 1).
     assert!(find_cell(1, 4).is_none());
     // use_ssl applies to httpserver.
@@ -208,11 +213,37 @@ fn spot_dispositions_match_plan_record() {
         find_cell(0, 13).expect("variance cell").disposition,
         CellDisposition::Apply { .. }
     ));
-    // (httpclient, use_outproxy_plugin) -> Plan 293 provider semantics.
+    // (httpclient, use_outproxy_plugin) -> Plan 342 provider. Plan 293
+    // recorded this as an explicit incompatibility because no I2P-routed
+    // provider existed; Plan 342 supplied one, so the determination is
+    // superseded rather than rewritten. The historical record stays in
+    // `specs/protocols/14-tunnel-deep-option-determinations.md`.
     assert!(matches!(
         find_cell(2, 45).expect("outproxy cell").disposition,
-        CellDisposition::ExplicitIncompatibility { .. }
+        CellDisposition::Apply { .. }
     ));
+    // Plan 342 widened the flag to the whole proxy-client block, so the
+    // two kinds Plan 293 had not named now carry the same owner.
+    assert!(matches!(
+        find_cell(3, 45).expect("socks outproxy cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    // Every one of the seven block options applies to all four proxy client
+    // kinds. The block is all-or-none, so a cell that applied to a subset
+    // would make the block unusable rather than partly available.
+    for option_index in [45, 46, 47, 48, 49, 50, 51] {
+        for type_index in [2, 3, 6, 7] {
+            assert!(
+                matches!(
+                    find_cell(type_index, option_index)
+                        .expect("outproxy block cell")
+                        .disposition,
+                    CellDisposition::Apply { .. }
+                ),
+                "outproxy block cell ({type_index}, {option_index}) is not an apply owner"
+            );
+        }
+    }
 }
 
 /// Every remaining incompatible cell carries the exact class limitation for
@@ -224,7 +255,6 @@ fn incompatible_cells_match_class_limitations() {
         "dynamic destination SigType has no key-generation owner (Ed25519-only)";
     const DUPLICATE_LOOKUP_SECRET_LIMITATION: &str = "a second LeaseSet lookup secret has no distinct owner; Proposal 170 \
          spells the single ELS2 lookup secret as OptionalLookup";
-    const OUTPROXY_LIMITATION: &str = "outproxy provider semantics have no I2P-routed provider";
     let mut incompatible = 0;
     for cell in MATRIX {
         match cell.disposition {
@@ -234,8 +264,6 @@ fn incompatible_cells_match_class_limitations() {
                     SIGTYPE_LIMITATION
                 } else if cell.option_index == 43 {
                     DUPLICATE_LOOKUP_SECRET_LIMITATION
-                } else if cell.option_index == 45 {
-                    OUTPROXY_LIMITATION
                 } else {
                     panic!(
                         "unexpected incompatible cell ({}, {})",
@@ -250,13 +278,22 @@ fn incompatible_cells_match_class_limitations() {
             }
             _ => {
                 assert!(
-                    !(cell.option_index == 40
-                        || cell.option_index == 43
-                        || cell.option_index == 45),
+                    !(cell.option_index == 40 || cell.option_index == 43),
                     "deep-primitive cell ({}, {}) lost its incompatibility",
                     cell.type_index,
                     cell.option_index
                 );
+                // Plan 342: the outproxy block is the other promoted set.
+                // Every one of its seven options must be an apply owner on
+                // every in-mask type, never silently incompatible.
+                if (45..=51).contains(&cell.option_index) {
+                    assert!(
+                        matches!(cell.disposition, CellDisposition::Apply { .. }),
+                        "Plan 342 cell ({}, {}) is not an apply owner",
+                        cell.type_index,
+                        cell.option_index
+                    );
+                }
                 // Plan 334: the three promoted keys must be apply cells on
                 // every in-mask type, never silently incompatible.
                 if matches!(cell.option_index, 41 | 42 | 44) {
@@ -270,6 +307,9 @@ fn incompatible_cells_match_class_limitations() {
             }
         }
     }
-    assert_eq!(incompatible, 18);
+    // 16 cells: `sig_type` on all twelve types and `leaseset_blinding_secret`
+    // on the four publishing kinds. Plan 293's two `use_outproxy_plugin`
+    // incompatibilities left this census when Plan 342 supplied the provider.
+    assert_eq!(incompatible, 16);
     assert_eq!(incompatible, INCOMPATIBLE_CELLS);
 }

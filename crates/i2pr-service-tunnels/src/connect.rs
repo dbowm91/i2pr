@@ -36,6 +36,13 @@ pub struct ConnectClientOptions {
     /// listener answers unauthenticated CONNECT requests with 407;
     /// when unset, the listener stays open (pre-292 behavior).
     pub proxy_auth: Option<crate::auth::ProxyCredentials>,
+    /// Plan 342: the I2P-routed outproxy provider policy.
+    ///
+    /// A CONNECT client is the kind that most needs it: every one of its
+    /// targets is a `host:port` authority and is either an I2P destination
+    /// (bypasses the outproxy) or a clearnet authority that has no other
+    /// route. Route policy only, never the credential.
+    pub outproxy: Option<crate::outproxy::OutproxyConfig>,
 }
 
 impl ConnectClientOptions {
@@ -46,6 +53,14 @@ impl ConnectClientOptions {
 
     /// Validates the CONNECT profile options structurally.
     pub fn validate(&self) -> Result<(), ServiceTunnelError> {
+        if let Some(outproxy) = &self.outproxy
+            && let Err(_error) = outproxy.validate()
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "ProxyList is malformed, empty, or its SSLProxies subset is not within it",
+            });
+        }
         if self.connect_allowed_ports.is_empty() {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id: String::new(),
@@ -75,6 +90,7 @@ impl Default for ConnectClientOptions {
         Self {
             connect_allowed_ports: ports,
             proxy_auth: None,
+            outproxy: None,
         }
     }
 }
@@ -96,6 +112,7 @@ mod tests {
         let options = ConnectClientOptions {
             connect_allowed_ports: BTreeSet::new(),
             proxy_auth: None,
+            outproxy: None,
         };
         assert!(options.validate().is_err());
     }
@@ -105,6 +122,7 @@ mod tests {
         let options = ConnectClientOptions {
             connect_allowed_ports: (1..=(CONNECT_OPTIONS_MAX_PORTS as u16 + 1)).collect(),
             proxy_auth: None,
+            outproxy: None,
         };
         assert!(options.validate().is_err());
     }

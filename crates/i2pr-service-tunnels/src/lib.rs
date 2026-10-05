@@ -110,12 +110,13 @@ pub use irc::{
     project_peer_hostname,
 };
 pub use outproxy::{
-    DEFAULT_OUTPROXY_ATTEMPTS, DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS, MAX_OUTPROXY_ATTEMPTS,
-    MAX_OUTPROXY_AUTH_HEADER_LEN, MAX_OUTPROXY_BACKOFF_MS, MAX_OUTPROXY_CONNECT_TIMEOUT_MS,
-    MAX_OUTPROXY_HOST_LABEL_LEN, MAX_OUTPROXY_HOST_LEN, MAX_OUTPROXY_LIST_ENTRIES,
-    MAX_OUTPROXY_LIST_LEN, MAX_OUTPROXY_USERNAME_LEN, NoOutproxyProvider, OutproxyAuthHeader,
-    OutproxyConfig, OutproxyEndpoint, OutproxyError, OutproxyFailure, OutproxyList, OutproxyPolicy,
-    OutproxyProvider, OutproxyRoute, OutproxyTarget, OutproxyType,
+    ClientTargetClass, DEFAULT_OUTPROXY_ATTEMPTS, DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS,
+    MAX_OUTPROXY_ATTEMPTS, MAX_OUTPROXY_AUTH_HEADER_LEN, MAX_OUTPROXY_BACKOFF_MS,
+    MAX_OUTPROXY_CONNECT_TIMEOUT_MS, MAX_OUTPROXY_HOST_LABEL_LEN, MAX_OUTPROXY_HOST_LEN,
+    MAX_OUTPROXY_LIST_ENTRIES, MAX_OUTPROXY_LIST_LEN, MAX_OUTPROXY_USERNAME_LEN,
+    NoOutproxyProvider, OutproxyAuthHeader, OutproxyConfig, OutproxyEndpoint, OutproxyError,
+    OutproxyFailure, OutproxyList, OutproxyPolicy, OutproxyProvider, OutproxyRoute, OutproxyTarget,
+    OutproxyType, classify_client_target,
 };
 pub use socks5::{
     ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser, RequestOutcome,

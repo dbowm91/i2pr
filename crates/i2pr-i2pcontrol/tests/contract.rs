@@ -29,8 +29,8 @@ fn frozen_counts_match_plan_286() {
     assert_eq!(SET_CONFIG_KEYS.len(), 13);
     assert_eq!(TUNNEL_ACTIONS.len(), 7);
     assert_eq!(TUNNEL_TYPES.len(), 12);
-    assert_eq!(TUNNEL_OPTIONS.len(), 46);
-    assert_eq!(SECRET_OPTIONS.len(), 4);
+    assert_eq!(TUNNEL_OPTIONS.len(), 52);
+    assert_eq!(SECRET_OPTIONS.len(), 5);
     assert_eq!(AuthErrorCode::ALL.len(), 6);
     assert_eq!(TunnelStatus::ALL.len(), 6);
     let inventory = ContractInventory::current();
@@ -460,7 +460,7 @@ fn secret_classification_is_total() {
         );
     }
     assert_eq!(secret_count, SECRET_OPTIONS.len());
-    assert_eq!(secret_count, 4);
+    assert_eq!(secret_count, 5);
     for secret in SECRET_OPTIONS {
         let option = tunnel_options::find_option(secret).expect("secret is a known option");
         assert_eq!(

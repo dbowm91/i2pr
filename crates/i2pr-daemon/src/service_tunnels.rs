@@ -468,6 +468,29 @@ pub struct ServiceTunnelManager {
     /// [`EncryptedTargetStatus`], and never carries a secret, a derived
     /// storage key, or fetched payload bytes.
     encrypted_target_status: Mutex<HashMap<String, EncryptedTargetStatus>>,
+    /// Plan 342: per-spec I2P-routed outproxy providers, installed by the
+    /// control plane once a definition's outproxy block normalizes.
+    ///
+    /// One registry rather than a separate credential map: the provider owns
+    /// the sealed stored form and the `Arc<dyn OutboundSecretStore>` that can
+    /// open it, so a request path that can reach a provider can also build
+    /// the header — and a request path that cannot reach the store has no way
+    /// to turn a credential into anything.
+    ///
+    /// `Arc`, not a copy: the store is the composition root's single instance
+    /// and re-deriving a second one per spec would be exactly the "second key"
+    /// Plan 341 forbids.
+    outproxy_providers: Mutex<HashMap<String, Arc<crate::outproxy_route::RouterOutproxyProvider>>>,
+    /// Plan 342: one aggregate counter block for every outproxy request this
+    /// router has served.
+    ///
+    /// A single block rather than per-spec counters: the set of fields is
+    /// fixed and small, so per-spec growth would be unbounded in the number of
+    /// tunnels for no diagnostic gain — the question an operator asks is
+    /// "did my outproxy work", not "how did each of my nine tunnels' outproxy
+    /// attempts go". The block holds counts only: no host, no username, no
+    /// header, no error string.
+    outproxy_counters: Mutex<crate::outproxy_route::OutproxyCounters>,
 }
 
 /// Plan 351: the outcome of one encrypted-target (`.b33`) provisioning
@@ -665,6 +688,8 @@ impl ServiceTunnelManager {
             els2_materials: Mutex::new(HashMap::new()),
             encrypted_target_secrets: Mutex::new(HashMap::new()),
             encrypted_target_status: Mutex::new(HashMap::new()),
+            outproxy_providers: Mutex::new(HashMap::new()),
+            outproxy_counters: Mutex::new(crate::outproxy_route::OutproxyCounters::default()),
         })
     }
 
@@ -2857,6 +2882,91 @@ impl ServiceTunnelManager {
         self.encrypted_target_status
             .lock()
             .expect("encrypted target status registry poisoned")
+            .clear();
+    }
+
+    /// Plan 342 — installs one spec's outproxy provider.
+    ///
+    /// The provider carries the sealed stored form and the store that can
+    /// open it, so installing it is the last thing the control plane does for
+    /// a tunnel with a configured outproxy and the only thing the request
+    /// paths need.
+    pub fn install_outproxy_provider(
+        &self,
+        spec_id: &str,
+        provider: Arc<crate::outproxy_route::RouterOutproxyProvider>,
+    ) {
+        self.outproxy_providers
+            .lock()
+            .expect("outproxy provider registry poisoned")
+            .insert(spec_id.to_owned(), provider);
+    }
+
+    /// Plan 342 — drops one spec's outproxy provider.
+    ///
+    /// Mandatory on every path that invalidates it, for the same reason
+    /// `remove_encrypted_target_secret` is: a provider installed for a spec
+    /// that no longer has an outproxy block is a live credential kept for no
+    /// reason.
+    pub fn remove_outproxy_provider(&self, spec_id: &str) {
+        self.outproxy_providers
+            .lock()
+            .expect("outproxy provider registry poisoned")
+            .remove(spec_id);
+    }
+
+    /// Plan 342 — returns one spec's outproxy provider.
+    ///
+    /// `Arc`, not a copy: the provider owns the store handle, and handing out
+    /// an independent copy would be a second way to reach the same key.
+    pub fn outproxy_provider(
+        &self,
+        spec_id: &str,
+    ) -> Option<Arc<crate::outproxy_route::RouterOutproxyProvider>> {
+        self.outproxy_providers.lock().ok()?.get(spec_id).cloned()
+    }
+
+    /// Plan 342 — the spec ids that currently have an outproxy provider
+    /// installed.
+    ///
+    /// Used by the control plane's reconciliation to drop providers whose
+    /// definition has been deleted: the manager cannot know about the
+    /// definition set, so it reports rather than decides.
+    pub fn installed_outproxy_providers(&self) -> Vec<String> {
+        let Ok(guard) = self.outproxy_providers.lock() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = guard.keys().cloned().collect();
+        // Bounded by the number of specs, and deterministic so the
+        // reconciliation's deletion order is reproducible.
+        ids.sort();
+        ids
+    }
+
+    /// Plan 342 — the aggregate outproxy counters.
+    ///
+    /// The `Mutex` itself, not a guard: a request path needs to take the lock
+    /// for the duration of one increment and release it, and a guard held
+    /// across an `.await` would block every other request's counters for the
+    /// length of an outproxy handshake.
+    pub fn outproxy_counters(&self) -> &std::sync::Mutex<crate::outproxy_route::OutproxyCounters> {
+        &self.outproxy_counters
+    }
+
+    /// Plan 342 — zeroes the aggregate outproxy counters.
+    pub fn reset_outproxy_counters(&self) {
+        let mut counters = self
+            .outproxy_counters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *counters = Default::default();
+    }
+
+    /// Plan 342 — drops every installed outproxy provider.
+    pub fn clear_outproxy_providers(&self) {
+        self.outproxy_providers
+            .lock()
+            .expect("outproxy provider registry poisoned")
             .clear();
     }
 
@@ -5428,6 +5538,24 @@ pub struct ServicePumpEndpoint {
     connection_id: ConnectionId,
     remote: Option<RemoteDestination>,
     direction: ServiceDirection,
+    /// Plan 342: bytes the far end already delivered before the pump's first
+    /// read, for a route opened through an outproxy.
+    ///
+    /// An outproxy is allowed to answer its handshake *and* start pushing the
+    /// tunnelled payload in the same burst. `open_via_outproxy` hands those
+    /// bytes back as `tunnel_prefix` precisely so they are not dropped, and
+    /// this is where they are handed to the pump.
+    ///
+    /// They live on the endpoint rather than in `run_stream_pump`'s
+    /// `initial_bytes` because that argument feeds the **local → Streaming**
+    /// direction, and the prefix belongs to the **Streaming → local** one.
+    /// Putting it there would silently prepend it to the wrong stream and
+    /// corrupt the first request on every pipelining outproxy.
+    ///
+    /// `Mutex` rather than `Option` for the obvious reason the endpoint is
+    /// behind an `Arc` and `drain_delivered` takes `&self`: the pump is the
+    /// only reader, and the take is once.
+    tunnel_prefix: Mutex<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5445,12 +5573,29 @@ impl ServicePumpEndpoint {
         connection_id: ConnectionId,
         remote: RemoteDestination,
     ) -> Self {
+        Self::new_client_with_prefix(manager, destination_id, connection_id, remote, Vec::new())
+    }
+
+    /// A client endpoint whose Streaming → local direction starts with
+    /// `tunnel_prefix`.
+    ///
+    /// Plan 342. The prefix is emitted once, ahead of whatever the first
+    /// `drain_delivered` returns, and is dropped afterwards so a second
+    /// call cannot replay it.
+    pub fn new_client_with_prefix(
+        manager: Arc<ServiceTunnelManager>,
+        destination_id: DestinationId,
+        connection_id: ConnectionId,
+        remote: RemoteDestination,
+        tunnel_prefix: Vec<u8>,
+    ) -> Self {
         Self {
             manager,
             destination_id,
             connection_id,
             remote: Some(remote),
             direction: ServiceDirection::Client,
+            tunnel_prefix: Mutex::new(tunnel_prefix),
         }
     }
 
@@ -5466,6 +5611,7 @@ impl ServicePumpEndpoint {
             connection_id,
             remote: Some(peer),
             direction: ServiceDirection::Server,
+            tunnel_prefix: Mutex::new(Vec::new()),
         }
     }
 }
@@ -5568,7 +5714,23 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
     }
 
     fn drain_delivered(&self) -> Vec<Vec<u8>> {
-        self.manager
+        // Plan 342: the outproxy handshake prefix goes out first, and only
+        // once. A poisoned mutex is treated as "no prefix" rather than
+        // panicking a pump task: the prefix is a recovery detail and losing
+        // it cannot make the route worse than not starting.
+        let mut out: Vec<Vec<u8>> = match self.tunnel_prefix.lock() {
+            Ok(mut prefix) => {
+                let taken = std::mem::take(&mut *prefix);
+                if taken.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![taken]
+                }
+            }
+            Err(_) => Vec::new(),
+        };
+        let drained = self
+            .manager
             .with_destination_bridge(self.destination_id, |bridge| {
                 let delivered = match self.direction {
                     ServiceDirection::Client => bridge
@@ -5587,9 +5749,11 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
                             Some(entry.bytes)
                         }
                     })
-                    .collect()
+                    .collect::<Vec<Vec<u8>>>()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        out.extend(drained);
+        out
     }
 
     fn is_terminal(&self) -> bool {

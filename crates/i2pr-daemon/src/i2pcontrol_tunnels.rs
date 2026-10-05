@@ -68,7 +68,7 @@ use i2pr_i2pcontrol::proposal_leaseset_mode::{LeaseSetClientAuthScheme, LeaseSet
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
-use i2pr_service_tunnels::outbound_secret::OutboundSecretStore;
+use i2pr_service_tunnels::outbound_secret::{NoOutboundSecrets, OutboundSecretStore};
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationPolicy, DestinationRef,
     IdleSweepAction, LocalListenerSpec, MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS,
@@ -232,6 +232,16 @@ pub const SUPPORTED_334_OPTIONS: [&str; 3] = [
     "leaseset_password",
     "leaseset_client_auth",
 ];
+/// Plan 342: the seven Proposal 170 outproxy fields, admitted as a
+/// **complete set or not at all**.
+///
+/// Membership here only admits the keys to a definition; whether the set is
+/// usable is decided by the whole-block rule in
+/// [`crate::outproxy_options::parse_outproxy_block`], which refuses a partial
+/// block by name. The two are deliberately the same seven keys: a key that
+/// could be stored but never block-validated would be exactly the inert
+/// acceptance Plan 342 forbids.
+pub const SUPPORTED_342_OPTIONS: [&str; 7] = crate::outproxy_options::OUTPROXY_BLOCK_KEYS;
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -437,6 +447,17 @@ pub enum ControlError {
         /// Static reason.
         reason: &'static str,
     },
+    /// Plan 342: the outproxy block is internally inconsistent — a partial
+    /// block, a disabled provider declaration, an incomplete credential
+    /// triple, or a block on a kind with no clearnet request target.
+    ///
+    /// A dedicated variant for the same reason
+    /// [`Self::LeaseSetSecurityRejected`] has one: the message must name
+    /// *which* of the seven fields are missing to be actionable, and
+    /// `ContradictoryOptions`' `&'static str` cannot carry that. The text is
+    /// built from option key names and frozen literals only — never from a
+    /// value, and never from a credential.
+    OutproxyBlockRejected(String),
     /// Malformed request envelope detail (static reason only).
     InvalidRequest(&'static str),
     /// Aggregate candidate set violates M10 ceilings.
@@ -486,6 +507,9 @@ impl core::fmt::Display for ControlError {
             }
             Self::ContradictoryOptions { name, reason } => {
                 write!(formatter, "contradictory options for {name}: {reason}")
+            }
+            Self::OutproxyBlockRejected(reason) => {
+                write!(formatter, "invalid outproxy block: {reason}")
             }
             Self::InvalidRequest(reason) => {
                 write!(formatter, "invalid TunnelManager request: {reason}")
@@ -2303,6 +2327,17 @@ pub fn build_control_spec_with_filter_root(
                     return Err(ControlError::UnsupportedOption(key.clone()));
                 }
             }
+            // Plan 342: the seven outproxy fields are consumed as a whole,
+            // not one key at a time. They carry no per-key `match` arm on
+            // purpose: a key that parsed on its own is exactly the inert
+            // acceptance the whole-block rule forbids, so the block is
+            // resolved once after the loop and any stray key that reached
+            // here has already been refused by `parse_outproxy_block`.
+            //
+            // Falling through rather than binding a variable is deliberate:
+            // these arms bind nothing, so the block parser below re-reads the
+            // values from `definition.options` in one place.
+            key if SUPPORTED_342_OPTIONS.contains(&key) => {}
             other => {
                 // Secret-classified keys are rejected here even though
                 // they never reach storage: belt and suspenders against
@@ -2590,10 +2625,26 @@ pub fn build_control_spec_with_filter_root(
             ));
         }
     }
+    // Plan 342: the route policy rides on the spec so the runtime request
+    // paths can reach the provider. Re-derived from `definition.options`
+    // rather than carried from normalize, which is why the same parse is
+    // safe to run twice: on the second pass `outproxy_password` holds the
+    // sealed stored form, and the parser reads only its presence.
+    //
+    // The parsed credential is dropped immediately. The policy is all a
+    // spec needs, and a `ServiceTunnelSpec` is `Debug` and `Clone`.
+    let outproxy = crate::outproxy_options::parse_outproxy_block(
+        &definition.name,
+        definition.tunnel_type.name(),
+        &definition.options,
+    )?
+    .map(|block| block.config);
+
     let (http_options, socks5_options, irc_options, connect_options, streamr_options) = match kind {
         ServiceTunnelKind::HttpClient => {
             let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
             options.proxy_auth = proxy_auth;
+            options.outproxy = outproxy.clone();
             apply_proposal_http_filters(
                 &mut options,
                 allow_user_agent,
@@ -2617,11 +2668,13 @@ pub fn build_control_spec_with_filter_root(
         ServiceTunnelKind::Socks5Client => {
             let mut options = i2pr_service_tunnels::Socks5ClientOptions::defaults();
             options.proxy_auth = proxy_auth;
+            options.outproxy = outproxy.clone();
             (None, Some(options), None, None, None)
         }
         ServiceTunnelKind::SocksIrc => {
             let mut socks = i2pr_service_tunnels::Socks5ClientOptions::defaults();
             socks.proxy_auth = proxy_auth;
+            socks.outproxy = outproxy.clone();
             (
                 None,
                 Some(socks),
@@ -2640,6 +2693,7 @@ pub fn build_control_spec_with_filter_root(
         ServiceTunnelKind::ConnectClient => {
             let mut options = i2pr_service_tunnels::ConnectClientOptions::defaults();
             options.proxy_auth = proxy_auth;
+            options.outproxy = outproxy.clone();
             (None, None, None, Some(options), None)
         }
         // Plan 291: Streamr endpoints are explicit (no silent
@@ -2830,23 +2884,92 @@ fn rejected_option_reason(tunnel_type: TunnelType, key: &str) -> String {
     }
 }
 
+/// Normalizes a definition without a secret owner.
+///
+/// Every caller that can supply an outbound credential uses
+/// [`normalize_definition_with_filter_root`], which takes the store. This
+/// wrapper passes [`NoOutboundSecrets`], the fail-closed default: a surface
+/// with no installed owner refuses a configured credential rather than
+/// storing it in the clear. There is no daemon-TOML outproxy block today, so
+/// the wrapper's only users are tests and the simple crate-level entry point.
+/// Seals a resolved outproxy credential into `persisted`, replacing the
+/// plaintext before the definition can reach a generation file.
+///
+/// Split out so the plaintext's lifetime is one function body rather than a
+/// block that could grow. `credential` is consumed; `persisted` is mutated in
+/// place only on success, so a failed seal leaves the caller's map untouched
+/// and the caller returns an error rather than continuing.
+fn seal_outproxy_credential(
+    name: &str,
+    store: &dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore,
+    credential: Option<zeroize::Zeroizing<String>>,
+    persisted: &mut BTreeMap<String, String>,
+) -> Result<(), ControlError> {
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    // Plan 342 invariant 3, enforced here and nowhere else: a credential that
+    // cannot be sealed fails the transaction before any listener or
+    // destination is allocated. Falling back to plaintext storage is not an
+    // option — it is the specific thing this owner exists to prevent.
+    if !store.is_available() {
+        return Err(ControlError::OutproxyBlockRejected(format!(
+            "{name}: no outbound secret owner is installed, so OutproxyPassword cannot be \
+             sealed; the tunnel was not created and no listener or destination was allocated"
+        )));
+    }
+    let secret = i2pr_service_tunnels::outbound_secret::OutboundSecret::new(credential.as_str())
+        .map_err(|_| {
+            ControlError::OutproxyBlockRejected(format!(
+                "{name}: OutproxyPassword exceeds the bounded credential length"
+            ))
+        })?;
+    let sealed = store.seal(&secret).map_err(|_| {
+        ControlError::OutproxyBlockRejected(format!(
+            "{name}: OutproxyPassword could not be sealed by the outbound secret owner"
+        ))
+    })?;
+    persisted.insert(
+        crate::outproxy_options::OUTPROXY_PASSWORD_KEY.to_owned(),
+        sealed,
+    );
+    Ok(())
+}
+
 pub fn normalize_definition(
     name: &str,
     tunnel_type: TunnelType,
     options: &BTreeMap<String, String>,
     start_on_load: bool,
 ) -> Result<ControlDefinition, ControlError> {
-    normalize_definition_with_filter_root(name, tunnel_type, options, start_on_load, None)
+    normalize_definition_with_filter_root(
+        name,
+        tunnel_type,
+        options,
+        start_on_load,
+        None,
+        &NoOutboundSecrets,
+    )
 }
 
-/// Normalizes a definition and validates file-backed options against an
-/// explicitly owned filter root.
+/// Normalizes a definition, validates file-backed options against an
+/// explicitly owned filter root, and resolves the Plan 342 outproxy block
+/// through `store`.
+///
+/// `store` is the composition root's single
+/// [`OutboundSecretStore`](i2pr_service_tunnels::outbound_secret::OutboundSecretStore).
+/// It is consulted for exactly one thing: sealing `outproxy_password` into
+/// its stored form before the definition reaches a generation file. A store
+/// that cannot seal makes creation and edit fail here — before any listener
+/// or destination is allocated — which is Plan 342 invariant 3's requirement
+/// stated as a property of the code path rather than a promise.
 pub fn normalize_definition_with_filter_root(
     name: &str,
     tunnel_type: TunnelType,
     options: &BTreeMap<String, String>,
     start_on_load: bool,
     filter_root: Option<&Path>,
+    store: &dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore,
 ) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
     if !tunnel_type.has_plan291_backend() {
@@ -2861,6 +2984,7 @@ pub fn normalize_definition_with_filter_root(
             && !SUPPORTED_323_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_324_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_334_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_342_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -2899,6 +3023,23 @@ pub fn normalize_definition_with_filter_root(
                 reason: "proxy_username and proxy_password are both required",
             });
         }
+    }
+    // Plan 342: resolve the outproxy block as a whole, then seal its
+    // credential before the definition can reach a generation file.
+    //
+    // The order inside this arm is load-bearing. The block rule runs first,
+    // so a partial or malformed block is refused by name before any key
+    // material is involved; then the credential is sealed; then the
+    // plaintext `OutboundSecret` is dropped at the end of the arm. There is
+    // no point at which the plaintext is in a value that outlives the arm.
+    if let Some(block) =
+        crate::outproxy_options::parse_outproxy_block(name, tunnel_type.name(), options)?
+    {
+        seal_outproxy_credential(name, store, block.credential, &mut persisted)?;
+        // `block` drops here. Its `credential` was moved into
+        // `seal_outproxy_credential`, and `block.config` is a policy value
+        // the spec build re-derives from `persisted` rather than carrying
+        // across, so nothing observable escapes this arm.
     }
     let mut explicit_start_on_load = start_on_load;
     if let Some(value) = persisted.get("start_on_load") {
@@ -3423,6 +3564,19 @@ impl TunnelControlState {
                 reconciled_back: back,
             });
         }
+        // Plan 342: the sealed outproxy credential is installed in the same
+        // reconciliation with the same rollback semantics, for the same
+        // reason. A published definition whose credential the request path
+        // cannot find would look configured and fail every clearnet request
+        // with "secret owner unavailable" — an error an operator could not
+        // trace back to the tunnel whose configuration changed.
+        if let Err(error) = self.sync_outproxy_providers() {
+            let back = self.reconcile_back().await;
+            return Err(ControlError::PublishFailed {
+                reason: static_control_reason(&error),
+                reconciled_back: back,
+            });
+        }
         self.verify_agreement()?;
         Ok((staged, outcome.diff))
     }
@@ -3477,6 +3631,72 @@ impl TunnelControlState {
                 self.manager.install_els2_material(name, Arc::new(material));
             } else {
                 self.manager.remove_els2_material(name);
+            }
+        }
+        Ok(())
+    }
+
+    /// Plan 351 Gate 2 — installs the ELS2 **consumer** lookup secret for
+    /// every control-owned definition that names an encrypted-service target,
+    /// and drops it for every definition that does not.
+    ///
+    /// The exact mirror image of [`Self::sync_els2_materials`], and it runs in
+    /// the same reconciliation, so the two can never drift: a definition that
+    /// stops naming a b33 loses its publisher material and its consumer secret
+    /// in the same pass, and a deleted definition loses both.
+    ///
+    /// An **absent** `leaseset_password` is not an error and installs nothing.
+    /// A `.b33` address alone derives today's blinded storage key; the secret
+    /// Plan 342 — installs each definition's **sealed** `outproxy_password`
+    /// for the request paths, and drops the ones that no longer have one.
+    ///
+    /// The same shape as `sync_els2_materials` and
+    /// `sync_encrypted_target_secrets`, and the same reasoning: the manager
+    /// cannot read a definition, so the control plane owns the mapping and
+    /// runs it inside the same reconciliation with the same rollback. A
+    /// definition that removes its credential, or is deleted outright, loses
+    /// its installation in the same pass that publishes the change.
+    fn sync_outproxy_providers(&self) -> Result<(), ControlError> {
+        let definitions = lock(&self.definitions).clone();
+        let store = self.outbound_secrets();
+        for (name, definition) in definitions.iter() {
+            // A definition with no outproxy block installs nothing, and an
+            // installation from a previous pass is dropped — the same
+            // behaviour as the two sibling sync passes.
+            let Some(block) = crate::outproxy_options::parse_outproxy_block(
+                name,
+                definition.tunnel_type.name(),
+                &definition.options,
+            )?
+            else {
+                self.manager.remove_outproxy_provider(name);
+                continue;
+            };
+            // The stored form, or `None` when the block declares no
+            // credential. `String`, not `Zeroizing`: on this pass the value is
+            // already ciphertext produced by the Plan 341 owner, and the
+            // provider wraps it.
+            let sealed = definition
+                .options
+                .get(crate::outproxy_options::OUTPROXY_PASSWORD_KEY)
+                .filter(|value| !value.is_empty())
+                .cloned();
+            let provider = crate::outproxy_route::RouterOutproxyProvider::new(
+                block.config,
+                Arc::clone(&store),
+                sealed,
+            )
+            .map_err(|_| ControlError::Manager("outproxy provider is not usable"))?;
+            self.manager
+                .install_outproxy_provider(name, Arc::new(provider));
+        }
+        // Names present in the registry but absent from the definition set are
+        // dropped: a deleted definition must not leave a live credential
+        // behind.
+        let known: BTreeSet<String> = definitions.keys().cloned().collect();
+        for spec_id in self.manager.installed_outproxy_providers() {
+            if !known.contains(&spec_id) {
+                self.manager.remove_outproxy_provider(&spec_id);
             }
         }
         Ok(())
@@ -3893,6 +4113,7 @@ impl TunnelControlState {
             &request.options,
             start_on_load,
             Some(&filter_root),
+            self.outbound_secrets().as_ref(),
         )?;
         let probe = build_control_spec_with_filter_root(&definition, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
@@ -3983,6 +4204,7 @@ impl TunnelControlState {
             &merged,
             start_on_load,
             Some(&filter_root),
+            self.outbound_secrets().as_ref(),
         )?;
         let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
@@ -4085,6 +4307,7 @@ impl TunnelControlState {
             merged,
             start_on_load,
             Some(&filter_root),
+            self.outbound_secrets().as_ref(),
         )?;
         let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
@@ -4604,6 +4827,9 @@ fn static_control_reason(error: &ControlError) -> &'static str {
         // recovery paths get a static label instead. That is also the safer
         // choice: `static_control_reason` feeds bounded diagnostic strings.
         ControlError::LeaseSetSecurityRejected(_) => "invalid LeaseSet security block",
+        // Plan 342: same reasoning — the outproxy block's reason names the
+        // seven keys, so recovery paths get a static label instead.
+        ControlError::OutproxyBlockRejected(_) => "invalid outproxy block",
         ControlError::ContradictoryOptions { reason, .. } => reason,
         ControlError::InvalidRequest(reason) => reason,
         ControlError::AggregateRejected(reason) => reason,
@@ -5778,6 +6004,7 @@ mod tests {
             &options,
             false,
             Some(&filter_root),
+            &NoOutboundSecrets,
         )
         .expect("bounded filter definition normalizes");
         let spec = build_control_spec_with_filter_root(&definition, Some(&filter_root))
@@ -5798,6 +6025,7 @@ mod tests {
                 &traversal,
                 false,
                 Some(&filter_root),
+                &NoOutboundSecrets,
             )
             .is_err()
         );
@@ -6318,6 +6546,29 @@ mod tests {
                         reason: "leaseset_password on a client tunnel requires target_destination to be an encrypted-service address (.b33.i2p)",
                     }
                 );
+            } else if secret == "outproxy_password" {
+                // Plan 342 — an intentional change to this row, not a
+                // regression.
+                //
+                // `outproxy_password` is no longer refused by the *mask*; it
+                // is one of the seven outproxy block keys and is admitted to
+                // a definition. It is still refused here, because a lone
+                // password is a partial block: the all-or-none rule fires
+                // first and names the six keys that are missing.
+                //
+                // That is a strictly better failure than the mask's. The mask
+                // said "this key is out of scope for a client", which was
+                // never true — a client is exactly where an outproxy
+                // credential belongs. The block rule says what is actually
+                // wrong: the operator supplied one seventh of a configuration
+                // whose other six parts are required for it to mean anything.
+                match error {
+                    ControlError::OutproxyBlockRejected(reason) => {
+                        assert!(reason.contains("outproxy_password"), "{reason}");
+                        assert!(reason.contains("missing proxy_list"), "{reason}");
+                    }
+                    other => panic!("unexpected error for {secret}: {other:?}"),
+                }
             } else {
                 assert_eq!(error, ControlError::UnsupportedOption(secret.to_owned()));
             }
@@ -6593,19 +6844,28 @@ mod tests {
                 Err(ControlError::InvalidOption { .. })
             ));
         }
-        // Outproxy provider residual on an in-mask proxy kind.
+        // Plan 342: the outproxy provider residual is no longer a residual.
+        // Plan 293 recorded this cell as an explicit incompatibility
+        // ("outproxy provider semantics have no I2P-routed provider") and
+        // Plan 342 supplied the provider, so the row that asserted the
+        // determination no longer describes the code.
+        //
+        // What replaced it is a stronger property, not a weaker one: the
+        // key alone is refused by the all-or-none block rule, which names
+        // the six fields it is missing. The Plan 293 determination itself is
+        // left in `specs/protocols/14-tunnel-deep-option-determinations.md`
+        // as history.
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
-        options.insert(
-            "use_outproxy_plugin".to_owned(),
-            "http://outproxy.i2p".to_owned(),
-        );
+        options.insert("use_outproxy_plugin".to_owned(), "true".to_owned());
         let error = normalize_definition("httpout", TunnelType::HttpClient, &options, false)
-            .expect_err("outproxy rejected");
-        assert!(
-            matches!(&error, ControlError::UnsupportedOption(message)
-                if message.contains("Plan 293 determination") && message.contains("Plan 295")),
-            "unexpected error: {error:?}"
-        );
+            .expect_err("a lone outproxy field is refused");
+        match error {
+            ControlError::OutproxyBlockRejected(reason) => {
+                assert!(reason.contains("all-or-none"), "{reason}");
+                assert!(reason.contains("missing proxy_list"), "{reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
         // Plan 297: `use_ssl` applies on server kinds through the
         // daemon TLS policy owner.
         for value in ["true", "false"] {
@@ -7020,22 +7280,28 @@ mod tests {
                 );
             }
         }
-        // Outproxy provider on the proxy kinds: any supplied plugin
-        // reference fails with the provider limitation.
+        // Plan 342: the outproxy provider limitation Plan 293 recorded for
+        // the proxy kinds is resolved, so these rows no longer assert it.
+        //
+        // A lone `use_outproxy_plugin` — whatever its value, including a
+        // plausible-looking plugin URL, which i2pr would never load anyway —
+        // is refused by the all-or-none block rule. Two things are being
+        // asserted here that were not before: the key is in the mask, and
+        // the refusal names the missing fields instead of a limitation that
+        // no longer describes the code.
         for tunnel_type in [TunnelType::HttpClient, TunnelType::ConnectClient] {
-            for value in ["true", "http://outproxy.i2p", ""] {
+            for value in ["true", "false", "http://outproxy.i2p", "", "maybe"] {
                 let mut options = base_options(tunnel_type);
                 options.insert("use_outproxy_plugin".to_owned(), value.to_owned());
                 let error = normalize_definition("opbad", tunnel_type, &options, false)
                     .expect_err("outproxy rejected");
-                assert!(
-                    matches!(&error, ControlError::UnsupportedOption(message)
-                        if message.contains("use_outproxy_plugin")
-                            && message.contains("outproxy provider")
-                            && message.contains("Plan 293 determination")
-                            && message.contains("Plan 295")),
-                    "unexpected error for {tunnel_type:?}: {error:?}"
-                );
+                match error {
+                    ControlError::OutproxyBlockRejected(reason) => {
+                        assert!(reason.contains("use_outproxy_plugin"), "{reason}");
+                        assert!(reason.contains("missing proxy_list"), "{reason}");
+                    }
+                    other => panic!("unexpected error for {tunnel_type:?}: {other:?}"),
+                }
             }
         }
         // Out-of-mask pairs still reject before allocation; the message
@@ -8183,5 +8449,358 @@ mod tests {
                 "expected UnsupportedOption({secret}), got {error:?}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Plan 342: the outproxy block at the control boundary.
+    // ------------------------------------------------------------------
+
+    /// A real router-bound store, so a sealing test cannot pass against a
+    /// stub that stores plaintext.
+    fn plan342_store() -> Arc<dyn OutboundSecretStore> {
+        let mut rng = i2pr_crypto::OsRng;
+        let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("bundle");
+        Arc::new(
+            crate::outbound_secret::RouterBoundOutboundSecrets::from_router_identity(&bundle)
+                .expect("router-bound store"),
+        )
+    }
+
+    /// A real Base32 destination for the outproxy list.
+    fn plan342_b32(byte: u8) -> String {
+        format!(
+            "{}.b32.i2p",
+            i2pr_service_tunnels::encode_b32_label(&[byte; 32])
+        )
+    }
+
+    /// The complete seven-field block on an `httpclient`, optionally with a
+    /// credential. Uses the real control-client spelling (`target_destination`
+    /// plus a loopback listener) so the row exercises the same option map a
+    /// TunnelManager `create` produces.
+    fn plan342_http_options(credential: Option<(&str, &str)>) -> BTreeMap<String, String> {
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert(
+            "proxy_list".to_owned(),
+            format!("{},staging.example.i2p", plan342_b32(0x5a)),
+        );
+        options.insert("use_outproxy_plugin".to_owned(), "true".to_owned());
+        options.insert("outproxy_type".to_owned(), "http".to_owned());
+        options.insert("ssl_proxies".to_owned(), "staging.example.i2p".to_owned());
+        match credential {
+            None => {
+                options.insert("outproxy_auth".to_owned(), "false".to_owned());
+                options.insert("outproxy_username".to_owned(), String::new());
+                options.insert("outproxy_password".to_owned(), String::new());
+            }
+            Some((user, password)) => {
+                options.insert("outproxy_auth".to_owned(), "true".to_owned());
+                options.insert("outproxy_username".to_owned(), user.to_owned());
+                options.insert("outproxy_password".to_owned(), password.to_owned());
+            }
+        }
+        options
+    }
+
+    /// The complete block reaches a definition and a spec, and the policy
+    /// rides on the HTTP client options.
+    #[test]
+    fn plan342_complete_block_reaches_the_spec() {
+        let options = plan342_http_options(None);
+        let definition = normalize_definition_with_filter_root(
+            "outproxy",
+            TunnelType::HttpClient,
+            &options,
+            false,
+            None,
+            &NoOutboundSecrets,
+        )
+        .expect("the complete block normalizes");
+        let spec = build_control_spec(&definition).expect("the block maps to a spec");
+        let outproxy = spec
+            .http_options
+            .as_ref()
+            .and_then(|http| http.outproxy.as_ref())
+            .expect("the route policy rides on the http-client options");
+        assert_eq!(outproxy.list.len(), 2);
+        assert_eq!(outproxy.tunnelled.len(), 1);
+        assert!(!outproxy.present_credential);
+        assert!(outproxy.list.select(0).is_some());
+    }
+
+    /// Every prefix of the block is refused, and the refusal names what is
+    /// missing.
+    ///
+    /// The "every prefix" framing is the point: a single-key or six-key test
+    /// would pass while some intermediate shape slipped through, and an
+    /// intermediate shape is exactly what produces a tunnel that looks
+    /// egress-capable and is not.
+    #[test]
+    fn plan342_no_proper_prefix_of_the_block_is_accepted() {
+        let full = plan342_http_options(None);
+        let keys: Vec<String> = full.keys().cloned().collect();
+        // Only the outproxy keys, and only for lengths below the full set.
+        let block_keys: Vec<String> = keys
+            .iter()
+            .filter(|key| crate::outproxy_options::OUTPROXY_BLOCK_KEYS.contains(&key.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(block_keys.len(), 7);
+        for take in 1..block_keys.len() {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            for key in &block_keys[..take] {
+                options.insert(key.clone(), full.get(key).cloned().expect("fixture value"));
+            }
+            let error = normalize_definition("partial", TunnelType::HttpClient, &options, false)
+                .expect_err("a partial block must be refused");
+            match error {
+                ControlError::OutproxyBlockRejected(reason) => {
+                    assert!(reason.contains("all-or-none"), "{reason}");
+                    let missing: Vec<&str> =
+                        block_keys[take..].iter().map(String::as_str).collect();
+                    for key in missing {
+                        assert!(reason.contains(key), "{reason} should name missing {key}");
+                    }
+                }
+                other => panic!("unexpected error for {take} keys: {other:?}"),
+            }
+        }
+    }
+
+    /// A configured credential is sealed into the stored definition, and the
+    /// plaintext never reaches the persisted options.
+    #[test]
+    fn plan342_outproxy_password_is_sealed_before_storage() {
+        let store = plan342_store();
+        let options = plan342_http_options(Some(("operator", "s3cret!")));
+        let definition = normalize_definition_with_filter_root(
+            "sealed",
+            TunnelType::HttpClient,
+            &options,
+            false,
+            None,
+            store.as_ref(),
+        )
+        .expect("the complete block with a credential normalizes");
+
+        let stored = definition
+            .options
+            .get("outproxy_password")
+            .expect("the key is present");
+        assert_ne!(stored, "s3cret!", "the plaintext must not be persisted");
+        assert!(
+            !format!("{definition:?}").contains("s3cret!"),
+            "the plaintext leaked into the definition's Debug"
+        );
+
+        // And it round-trips: the owner that sealed it opens it back to the
+        // same bytes. This is the row that makes the sealed form usable at
+        // request time rather than merely opaque.
+        let recovered = store
+            .open(stored)
+            .expect("the owner opens its own stored form");
+        assert_eq!(recovered.expose_str().expect("utf-8"), "s3cret!");
+
+        // The username stays in the clear by design — it is an identifier,
+        // not a credential — but the sealed password must not be mistaken for
+        // one when an operator reads the definition.
+        assert_eq!(
+            definition
+                .options
+                .get("outproxy_username")
+                .map(String::as_str),
+            Some("operator")
+        );
+    }
+
+    /// Without an installed owner, a configured credential fails the
+    /// transaction instead of being stored in the clear.
+    ///
+    /// This is Plan 342 invariant 3 stated as a test: the refusal must happen
+    /// in normalization, which is before the store, the manager, and any
+    /// listener or destination.
+    #[test]
+    fn plan342_credential_without_a_secret_owner_is_refused_not_stored() {
+        let options = plan342_http_options(Some(("operator", "s3cret!")));
+        let error = normalize_definition_with_filter_root(
+            "nosecret",
+            TunnelType::HttpClient,
+            &options,
+            false,
+            None,
+            &NoOutboundSecrets,
+        )
+        .expect_err("no owner means no credential");
+        match error {
+            ControlError::OutproxyBlockRejected(reason) => {
+                assert!(reason.contains("no outbound secret owner"), "{reason}");
+                assert!(reason.contains("was not created"), "{reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        // The same block with no credential needs no owner and is accepted:
+        // the fail-closed default must not make the whole feature unusable on
+        // a control plane without an identity.
+        normalize_definition_with_filter_root(
+            "nosecret",
+            TunnelType::HttpClient,
+            &plan342_http_options(None),
+            false,
+            None,
+            &NoOutboundSecrets,
+        )
+        .expect("a credential-free block needs no owner");
+    }
+
+    /// A complete block on a kind with no clearnet request target is refused.
+    #[test]
+    fn plan342_block_is_refused_on_kinds_without_a_request_target() {
+        // `client` and `ircclient` both take a `target_destination`, and both
+        // are refused — not for a missing destination but because neither has
+        // a clearnet request target an outproxy could carry.
+        for tunnel_type in [TunnelType::Client, TunnelType::IrcClient] {
+            let options = plan342_http_options(None);
+            let error = normalize_definition("wrongkind", tunnel_type, &options, false)
+                .expect_err("a kind with no clearnet target refuses the block");
+            assert!(
+                matches!(&error, ControlError::OutproxyBlockRejected(reason) if reason.contains("no clearnet request target")),
+                "unexpected error for {tunnel_type:?}: {error:?}"
+            );
+        }
+    }
+
+    /// A clearnet outproxy entry never reaches a definition, whatever the
+    /// other six fields say.
+    #[test]
+    fn plan342_clearnet_outproxy_entry_is_refused_at_the_boundary() {
+        for entry in ["proxy.example.com", "10.0.0.1", "proxy.example.com:8888"] {
+            let mut options = plan342_http_options(None);
+            options.insert("proxy_list".to_owned(), entry.to_owned());
+            let error = normalize_definition("clearnet", TunnelType::HttpClient, &options, false)
+                .expect_err("a clearnet outproxy must be refused");
+            assert!(
+                matches!(&error, ControlError::InvalidOption { option, .. } if option == "ProxyList"),
+                "unexpected error for {entry}: {error:?}"
+            );
+        }
+    }
+
+    /// `OutproxyType` stays a closed vocabulary at the control boundary: no
+    /// spelling reaches a path, a command, or a module.
+    #[test]
+    fn plan342_outproxy_type_is_a_closed_vocabulary_at_the_boundary() {
+        for value in [
+            "/usr/bin/curl",
+            "sh -c 'id'",
+            "HTTP_CONNECT_PLUGIN",
+            "socks6",
+        ] {
+            let mut options = plan342_http_options(None);
+            options.insert("outproxy_type".to_owned(), value.to_owned());
+            let error = normalize_definition("badtype", TunnelType::HttpClient, &options, false)
+                .expect_err("an out of vocabulary type must be refused");
+            assert!(
+                matches!(&error, ControlError::InvalidOption { option, .. } if option == "OutproxyType"),
+                "unexpected error for {value}: {error:?}"
+            );
+        }
+        for value in ["http", "HTTP", "socks5", "socks4a"] {
+            let mut options = plan342_http_options(None);
+            options.insert("outproxy_type".to_owned(), value.to_owned());
+            normalize_definition("goodtype", TunnelType::HttpClient, &options, false)
+                .unwrap_or_else(|error| panic!("{value} should parse: {error:?}"));
+        }
+    }
+
+    /// A `get` response reports that a credential is configured and never
+    /// carries its value — including the sealed form, which Java's
+    /// `rawConfig` would return in the clear.
+    #[test]
+    fn plan342_get_redacts_the_outproxy_credential() {
+        let store = plan342_store();
+        let data_dir = tempfile::tempdir().expect("temp dir");
+        let state = test_control(data_dir.path());
+        let mut options = plan342_http_options(Some(("operator", "s3cret!")));
+        options.insert("listen_port".to_owned(), "0".to_owned());
+        // Normalization uses the router-bound store; the state under test only
+        // has to hold the definition, so its own owner is irrelevant here.
+        let definition = normalize_definition_with_filter_root(
+            "redacted",
+            TunnelType::HttpClient,
+            &options,
+            false,
+            None,
+            store.as_ref(),
+        )
+        .expect("normalizes");
+        let response = state.control_response("redacted", &definition);
+        let reported = response
+            .get("options")
+            .and_then(serde_json::Value::as_object)
+            .expect("options object");
+        assert_eq!(
+            reported
+                .get("outproxy_password")
+                .and_then(serde_json::Value::as_str),
+            Some("[redacted]")
+        );
+        let serialized = response.to_string();
+        assert!(
+            !serialized.contains("s3cret!"),
+            "credential leaked into get"
+        );
+        // The username is an identifier and stays visible, so an operator can
+        // tell *which* account the outproxy expects.
+        assert_eq!(
+            reported
+                .get("outproxy_username")
+                .and_then(serde_json::Value::as_str),
+            Some("operator")
+        );
+    }
+
+    /// A stored definition reloads with a complete block, which is the row
+    /// that proves the sealed password survives a restart.
+    #[test]
+    fn plan342_sealed_block_survives_a_generation_round_trip() {
+        let store = plan342_store();
+        let options = plan342_http_options(Some(("operator", "s3cret!")));
+        let definition = normalize_definition_with_filter_root(
+            "roundtrip",
+            TunnelType::HttpClient,
+            &options,
+            false,
+            None,
+            store.as_ref(),
+        )
+        .expect("normalizes");
+        let store_dir = tempfile::tempdir().expect("temp dir");
+        let control_store = ControlStore::open(store_dir.path()).expect("control store");
+        let mut definitions = BTreeMap::new();
+        definitions.insert("roundtrip".to_owned(), definition.clone());
+        let staged = control_store.stage(&definitions).expect("staged");
+        control_store.publish(staged).expect("published");
+        let loaded = control_store.load().expect("reloaded");
+        let reloaded = loaded
+            .definitions
+            .into_iter()
+            .find(|candidate| candidate.name == "roundtrip")
+            .expect("the definition survived publication");
+        assert_eq!(
+            reloaded.options.get("outproxy_password"),
+            definition.options.get("outproxy_password"),
+            "the sealed form must round-trip byte-identically so an untouched credential survives an edit"
+        );
+        // And it still builds: a stored definition is re-validated by the same
+        // block rule, so a generation written under a different rule fails
+        // closed instead of silently losing its route.
+        let spec = build_control_spec(&reloaded).expect("a reloaded block still maps");
+        assert!(
+            spec.http_options
+                .as_ref()
+                .and_then(|http| http.outproxy.as_ref())
+                .is_some()
+        );
     }
 }

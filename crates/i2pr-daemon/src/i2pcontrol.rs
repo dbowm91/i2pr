@@ -2165,6 +2165,13 @@ fn proposal_tunnel_option_name(key: &str) -> Option<String> {
         "unique_local_address" => Some("UniqueLocalAddressPerClient"),
         "allow_internal_ssl" => Some("AllowInternalSSL"),
         "multihoming" => Some("MultiHoming"),
+        // Plan 342: Proposal 170 spells this `SSLProxies`, and the generic
+        // snake_case-to-Pascal derivation would produce `SslProxies`. That is
+        // not a spelling in the frozen field inventory, so without this row
+        // the value would be dropped from `rawConfig` silently rather than
+        // reported — an operator reading a missing key cannot tell it apart
+        // from a key this router never supports.
+        "ssl_proxies" => Some("SSLProxies"),
         _ => None,
     };
     let canonical = explicit.map(str::to_owned).unwrap_or_else(|| {

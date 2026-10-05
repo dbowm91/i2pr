@@ -585,6 +585,25 @@ pub enum OutproxyRoute {
     Refused(OutproxyFailure),
 }
 
+impl OutproxyRoute {
+    /// Whether this route runs through an outproxy.
+    ///
+    /// Named `is_via_outproxy` rather than `is_outproxy` because the other
+    /// two variants are refusals, not routes, and a caller reading
+    /// `route(...).is_outproxy()` would be asking the wrong question.
+    pub fn is_via_outproxy(&self) -> bool {
+        matches!(self, Self::ViaOutproxy { .. })
+    }
+
+    /// Whether this route was refused, and why.
+    pub fn refusal(&self) -> Option<OutproxyFailure> {
+        match self {
+            Self::Refused(failure) => Some(*failure),
+            _ => None,
+        }
+    }
+}
+
 /// Why an outproxy request could not be satisfied.
 ///
 /// Every variant is a *typed* refusal. There is no `Other` catch-all that a
@@ -739,6 +758,59 @@ impl OutproxyConfig {
     /// default rather than "everything is allowed".
     pub fn permits_tunnelled(&self, endpoint: &OutproxyEndpoint) -> bool {
         self.tunnelled.endpoints().contains(endpoint)
+    }
+}
+
+/// What a client request target is, decided before any socket is opened.
+///
+/// Plan 342 makes this the single decision point for the HTTP, CONNECT, and
+/// SOCKS request paths. One function, three request paths, so the guarantee
+/// cannot hold in one of them and not another.
+///
+/// The order of the arms is the whole point:
+///
+/// 1. an `.i2p` destination or alias is [`Self::Direct`] and **no provider is
+///    consulted** — not even to check whether one exists, so a misconfigured
+///    list cannot divert in-network traffic off-network;
+/// 2. a clearnet label is [`Self::ViaOutproxy`], and the `Ok` carries a
+///    parsed target so the caller never re-parses the authority;
+/// 3. a clearnet label with no provider is [`Self::Refused`]. There is no
+///    fourth outcome and no fallback arm. A caller that receives
+///    [`Self::Direct`] for a clearnet host would open exactly the direct
+///    socket this design forbids, so that combination is unrepresentable
+///    rather than merely discouraged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientTargetClass {
+    /// Route directly to the tunnel's own I2P destination.
+    Direct(OutproxyTarget),
+    /// Route through an outproxy selected from the configured list.
+    ViaOutproxy(OutproxyTarget),
+    /// No route exists. The only reason this is reachable is a clearnet
+    /// target on a tunnel with no configured outproxy.
+    Refused(OutproxyFailure),
+}
+
+/// Classifies one client request target.
+///
+/// `host` is the host the request actually named and `port` its effective
+/// port (the caller applies the scheme default, so this function never has
+/// to know what an HTTP request is). Neither is a secret and neither is ever
+/// echoed into a typed failure.
+pub fn classify_client_target(
+    config: Option<&OutproxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<ClientTargetClass, OutproxyError> {
+    // One grammar for both arms, so the `.i2p` bypass is decided by the same
+    // validator that would otherwise carry a clearnet target. That is what
+    // makes `example.i2p.com` a rejection rather than a clearnet label.
+    let target = OutproxyTarget::parse_authority(&format!("{host}:{port}"))?;
+    if target.is_i2p() {
+        return Ok(ClientTargetClass::Direct(target));
+    }
+    match config {
+        Some(_config) => Ok(ClientTargetClass::ViaOutproxy(target)),
+        None => Ok(ClientTargetClass::Refused(OutproxyFailure::NotConfigured)),
     }
 }
 
@@ -1233,6 +1305,119 @@ mod tests {
             tunnelled: OutproxyList::parse(&b32_outproxy()).expect("tunnelled"),
             policy: OutproxyPolicy::default(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Plan 342: `classify_client_target` — the one decision every client
+    // request path makes before it opens anything.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_i2p_target_is_direct_and_never_consults_a_provider() {
+        for (host, config) in [
+            (b32_outproxy(), Some(sample_config())),
+            (b32_outproxy(), None),
+        ] {
+            let class = classify_client_target(config.as_ref(), &host, 443).expect("classifiable");
+            assert_eq!(
+                class,
+                ClientTargetClass::Direct(
+                    OutproxyTarget::new(host.to_ascii_lowercase(), 443).expect("built")
+                ),
+                "an .i2p target must be direct whether or not a provider exists"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clearnet_target_with_a_provider_is_carried_by_it() {
+        let config = sample_config();
+        let class =
+            classify_client_target(Some(&config), "example.com", 443).expect("classifiable");
+        assert_eq!(
+            class,
+            ClientTargetClass::ViaOutproxy(
+                OutproxyTarget::new("example.com".to_owned(), 443).expect("built")
+            )
+        );
+    }
+
+    #[test]
+    fn a_clearnet_target_without_a_provider_is_refused_never_direct() {
+        // This is the row the whole "no direct clearnet fallback" guarantee
+        // reduces to. `Direct` for a clearnet host would be the bug.
+        let class = classify_client_target(None, "example.com", 443).expect("classifiable");
+        assert_eq!(
+            class,
+            ClientTargetClass::Refused(OutproxyFailure::NotConfigured)
+        );
+        assert!(
+            !matches!(class, ClientTargetClass::Direct(_)),
+            "a clearnet target must never classify as direct"
+        );
+    }
+
+    #[test]
+    fn a_mixed_suffix_host_is_a_parse_error_not_a_clearnet_label() {
+        // `example.i2p.com` ends in `.com`, so a grammar that checked the
+        // suffix last would carry it off-network. It must be refused.
+        for host in [
+            "example.i2p.com",
+            "a.b32.i2p.example.com",
+            "x.b32.i2p:not-base32",
+        ] {
+            assert!(
+                classify_client_target(None, host, 443).is_err(),
+                "{host} must not classify"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ip_literal_is_never_carried() {
+        // The client may name one; the outproxy route may not carry it. A
+        // refusal here is what stops a future implementation from handing a
+        // literal to something that would resolve it.
+        for host in ["127.0.0.1", "10.0.0.1", "[::1]", "1.2.3.4"] {
+            assert!(
+                classify_client_target(Some(&sample_config()), host, 443).is_err(),
+                "{host} must not classify"
+            );
+        }
+    }
+
+    #[test]
+    fn classification_is_identical_for_every_proxy_client_kind() {
+        // The function takes no "kind" parameter by construction. This row is
+        // what stops a future change from adding one.
+        let config = sample_config();
+        let direct = classify_client_target(Some(&config), "x.example.i2p", 80).expect("direct");
+        let via = classify_client_target(Some(&config), "x.example.com", 80).expect("via");
+        assert!(matches!(direct, ClientTargetClass::Direct(_)));
+        assert!(matches!(via, ClientTargetClass::ViaOutproxy(_)));
+    }
+
+    #[test]
+    fn a_refused_clearnet_target_is_the_only_outcome_a_bare_config_reaches() {
+        // An empty list is refused by `validate`, so `sample_config` with its
+        // list emptied stands in for "a provider that cannot carry anything".
+        // The classifier must still refuse rather than report a route that
+        // `route` would later reject.
+        let empty = OutproxyConfig {
+            list: OutproxyList::default(),
+            ..sample_config()
+        };
+        let class = classify_client_target(Some(&empty), "example.com", 443).expect("classifiable");
+        assert!(matches!(class, ClientTargetClass::ViaOutproxy(_)));
+        // The refusal lives one layer down, in `route`, and it is a refusal.
+        let target = match class {
+            ClientTargetClass::ViaOutproxy(target) => target,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(matches!(
+            empty.route(&target),
+            OutproxyRoute::Refused(OutproxyFailure::NotConfigured)
+        ));
     }
 
     #[test]

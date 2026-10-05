@@ -36,6 +36,7 @@ use i2pr_client::streaming::manager::{ConnectOutcome, RemoteDestination};
 use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::outbound_secret::{OutboundSecret, OutboundSecretStore};
+use i2pr_service_tunnels::outproxy::{ClientTargetClass, classify_client_target};
 use i2pr_service_tunnels::outproxy::{
     MAX_OUTPROXY_HANDSHAKE_BYTES, OutproxyAuthHeader, OutproxyConfig, OutproxyError,
     OutproxyFailure, OutproxyProvider, OutproxyRoute, OutproxyTarget, OutproxyType,
@@ -219,11 +220,21 @@ impl OutproxyProvider for RouterOutproxyProvider {
 }
 
 /// A route to an outproxy that completed its handshake and is ready to pump.
+#[derive(Clone, Debug)]
 pub struct OutproxySession {
     /// Streaming connection identifier for the established route.
     pub connection_id: ConnectionId,
     /// The outproxy destination the route runs to.
     pub outproxy: String,
+    /// The remote the route was opened to.
+    ///
+    /// Plan 342: the pump addresses its Streaming bridge by `(connection_id,
+    /// remote)`, so a session that carried only the connection would force
+    /// the request paths to re-resolve the outproxy to learn where they had
+    /// actually connected. Carrying it here makes "the route I opened" and
+    /// "the endpoint I pump" the same value, and removes the step where they
+    /// could disagree.
+    pub remote: i2pr_client::streaming::manager::RemoteDestination,
     /// Bytes already delivered by the outproxy that belong to the *tunnelled*
     /// stream rather than to the handshake.
     ///
@@ -232,6 +243,96 @@ pub struct OutproxySession {
     /// handed to the pump rather than dropped. Losing them would corrupt the
     /// first request on every such outproxy.
     pub tunnel_prefix: Vec<u8>,
+}
+
+/// What a client request path should do with one request.
+///
+/// The three request paths (HTTP forward, HTTP `CONNECT`, SOCKS5) differ in
+/// how they answer the *local* client — a status line, a 200, or a SOCKS
+/// reply — and in nothing else. Everything above that line is this enum, so
+/// the guarantee Plan 342 asks for cannot hold on one path and not another.
+#[derive(Debug)]
+pub enum ClientRoute {
+    /// The target is an I2P destination: the caller takes its existing direct
+    /// path and no provider is consulted.
+    Direct,
+    /// The route now runs through an outproxy and is ready to pump.
+    ViaOutproxy(OutproxySession),
+    /// There is no route.
+    ///
+    /// The caller must fail the request. There is deliberately no variant
+    /// meaning "fall back to a direct socket": a caller that could reach this
+    /// state by any other route is exactly what Plan 342 invariant 1 forbids.
+    Refused(OutproxyFailure),
+}
+
+/// Decides and, if needed, opens the route for one client request.
+///
+/// One function for all three request paths, for the reason
+/// [`classify_client_target`](i2pr_service_tunnels::outproxy::classify_client_target)
+/// has one: the guarantee is a property of the code, not of a convention
+/// three call sites follow.
+///
+/// `provider` is `None` on a tunnel with no outproxy block, which is the
+/// fail-closed default: a clearnet target then arrives as
+/// [`ClientRoute::Refused`] rather than being carried by the tunnel's own
+/// I2P destination. That is a behaviour change from before Plan 342 for a
+/// tunnel that has *no* provider, and it is the point — before, an
+/// http-client silently forwarded every `Host:` header to one configured I2P
+/// destination, which is a route the operator did not configure.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_client_route(
+    manager: &Arc<ServiceTunnelManager>,
+    spec_id: &str,
+    destination_id: i2pr_client::DestinationId,
+    provider: Option<&RouterOutproxyProvider>,
+    host: &str,
+    port: u16,
+    tunnelled: bool,
+    cancellation: &CancellationToken,
+    counters: &std::sync::Mutex<OutproxyCounters>,
+) -> Result<ClientRoute, OutproxyFailure> {
+    // One classification, one parse. The `.i2p` bypass is decided here, with
+    // no provider consulted, so a misconfigured list cannot divert in-network
+    // traffic off-network — and so that a failure to parse the target is
+    // counted as a refusal rather than being retried per outproxy.
+    let config = provider.map(RouterOutproxyProvider::config);
+    let target = classify_client_target(config, host, port).map_err(|_| {
+        let failure = OutproxyFailure::NotPermitted;
+        note(counters, |c| c.note(failure));
+        failure
+    })?;
+    let target = match target {
+        ClientTargetClass::Direct(_) => return Ok(ClientRoute::Direct),
+        ClientTargetClass::ViaOutproxy(target) => target,
+        ClientTargetClass::Refused(failure) => {
+            note(counters, |c| c.note(failure));
+            return Ok(ClientRoute::Refused(failure));
+        }
+    };
+
+    // Past the `.i2p` bypass a provider is not optional: a clearnet target
+    // classified as carryable means a config existed. The explicit arm keeps
+    // that invariant readable rather than asserting it with an unwrap.
+    let Some(provider) = provider else {
+        return Ok(ClientRoute::Refused(OutproxyFailure::NotConfigured));
+    };
+
+    match open_via_outproxy(
+        manager,
+        spec_id,
+        destination_id,
+        provider,
+        &target,
+        tunnelled,
+        cancellation,
+        counters,
+    )
+    .await
+    {
+        Ok(session) => Ok(ClientRoute::ViaOutproxy(session)),
+        Err(failure) => Ok(ClientRoute::Refused(failure)),
+    }
 }
 
 /// Builds the outproxy-facing request for one attempt.
@@ -587,6 +688,7 @@ async fn open_one(
     Ok(OutproxySession {
         connection_id,
         outproxy: endpoint.as_str(),
+        remote: client.remote.clone(),
         tunnel_prefix,
     })
 }

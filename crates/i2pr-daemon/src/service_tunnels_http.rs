@@ -50,10 +50,13 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::destination_streaming::{PumpConfig, StreamPumpEndpoint, run_stream_pump};
+use crate::outproxy_route::OutproxyCounters;
+use crate::outproxy_route::{RouterOutproxyProvider, open_client_route};
 use crate::service_tunnels::{
     ClientTarget, DestinationFailure, ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager,
     service_streaming_now_ms,
 };
+use i2pr_service_tunnels::outproxy::{ClientTargetClass, OutproxyTarget, classify_client_target};
 
 /// Default ceiling for reading the HTTP header section.
 const HEADER_READ_DEADLINE: Duration = Duration::from_secs(30);
@@ -459,6 +462,124 @@ async fn enforce_proxy_auth(
     false
 }
 
+/// Plan 342 — opens an outproxy route for one `CONNECT` request and pumps it.
+///
+/// The three things that make this not just `open_streaming` with a different
+/// destination:
+///
+/// 1. the local client still gets an HTTP reply, and it gets it **after** the
+///    outproxy's handshake has succeeded — never optimistically, so a failed
+///    route cannot leave a client believing it has a tunnel;
+/// 2. the pump endpoint is seeded with `tunnel_prefix`, or an outproxy that
+///    pipelines payload into its own handshake response would have its first
+///    bytes silently dropped and the first request on the connection
+///    corrupted;
+/// 3. a failure returns `BadGateway` and terminates the route. There is no
+///    arm that falls through to the direct path.
+async fn connect_via_outproxy(
+    mut stream: TcpStream,
+    manager: Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    cancellation: &CancellationToken,
+    provider: &RouterOutproxyProvider,
+    target: &OutproxyTarget,
+    counters: &std::sync::Mutex<OutproxyCounters>,
+) -> HttpConnectionOutcome {
+    let route = match open_client_route(
+        &manager,
+        &runtime.spec_id,
+        runtime.destination_id,
+        Some(provider),
+        target.host(),
+        target.port(),
+        true,
+        cancellation,
+        counters,
+    )
+    .await
+    {
+        Ok(route) => route,
+        Err(failure) => {
+            debug!(failure = failure.as_str(), "outproxy route open failed");
+            crate::outproxy_route::ClientRoute::Refused(failure)
+        }
+    };
+    let session = match route {
+        crate::outproxy_route::ClientRoute::ViaOutproxy(session) => session,
+        // `Direct` cannot happen: the classifier only returns it for an
+        // `.i2p` target, and this arm is only reached for `ViaOutproxy`. The
+        // explicit refusal keeps that a handled state rather than a panic if
+        // the two ever drift.
+        other => {
+            debug!(outcome = ?other, "CONNECT outproxy route was not open");
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(
+                    HttpErrorKind::Other,
+                    "no I2P-routed outproxy is configured for this tunnel",
+                ),
+            )
+            .await;
+            return HttpConnectionOutcome::BadGateway;
+        }
+    };
+    let response: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+    if let Err(error) = stream.write_all(response).await {
+        debug!(error = %error, "connect response write failed");
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return HttpConnectionOutcome::BadRequest;
+    }
+    if let Err(error) = stream.flush().await {
+        debug!(error = %error, "connect response flush failed");
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return HttpConnectionOutcome::BadRequest;
+    }
+    let endpoint: Arc<dyn StreamPumpEndpoint> =
+        Arc::new(ServicePumpEndpoint::new_client_with_prefix(
+            Arc::clone(&manager),
+            runtime.destination_id,
+            session.connection_id,
+            session.remote.clone(),
+            session.tunnel_prefix,
+        ));
+    let config = PumpConfig::defaults(BODY_CHUNK_BYTES);
+    let result = run_stream_pump(stream, Vec::new(), endpoint, config, cancellation.clone()).await;
+    if result.is_ok() {
+        return HttpConnectionOutcome::ConnectTunnelClosed;
+    }
+    if let Err(error) = result {
+        debug!(error = %error, "CONNECT outproxy pump failed");
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+    }
+    HttpConnectionOutcome::ConnectTunnelClosed
+}
+
+/// Plan 342: the port an `HTTP` request names when its `Host:` carries none.
+///
+/// A `CONNECT` authority has no scheme, so it defaults to 80 rather than 443:
+/// the local client is explicitly asking for a tunnel to the port it named,
+/// and if it named none it named the plain-HTTP port. A caller that wants 443
+/// says 443.
+const CONNECT_DEFAULT_PORT: u16 = 80;
+
 async fn handle_connect(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -511,6 +632,79 @@ async fn handle_connect(
         )
         .await;
         return HttpConnectionOutcome::Forbidden;
+    }
+    // Plan 342: classify before anything is opened. `.i2p` goes straight to
+    // the direct path below; a clearnet authority goes to the configured
+    // outproxy; a clearnet authority with no outproxy is refused with a 502
+    // and no socket is created.
+    //
+    // The port the classifier sees is the one the request actually named.
+    // `resolve_target_for_service` supplies the default for an `.i2p` target
+    // with no port; for the outproxy path the default has already been
+    // applied above, and passing it twice would be a second place for the two
+    // paths to disagree about what port is being reached.
+    let effective_port = authority.port.unwrap_or(CONNECT_DEFAULT_PORT);
+    let outproxy_provider = manager.outproxy_provider(&runtime.spec_id);
+    let counters = manager.outproxy_counters();
+    let class = match classify_client_target(
+        outproxy_provider
+            .as_deref()
+            .map(i2pr_service_tunnels::OutproxyProvider::config),
+        &authority.host,
+        effective_port,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(HttpErrorKind::MalformedTarget, "target is not usable"),
+            )
+            .await;
+            return HttpConnectionOutcome::Forbidden;
+        }
+    };
+    // An exhaustive `match`, not two `if let`s.
+    //
+    // With `if let`, anything that is neither `ViaOutproxy` nor `Refused`
+    // falls through to the direct path — so adding a fourth outcome to
+    // `ClientTargetClass` later would silently route it to the tunnel's own
+    // destination with no compiler complaint and no review signal. `match`
+    // makes that a build error instead. `scripts/check-outproxy-request-path.sh`
+    // asserts this shape.
+    match class {
+        // The two non-direct outcomes differ in more than the socket: the
+        // pump endpoint is seeded with the handshake prefix and the remote is
+        // the outproxy's.
+        ClientTargetClass::ViaOutproxy(target) => {
+            return connect_via_outproxy(
+                stream,
+                Arc::clone(&manager),
+                &runtime,
+                &cancellation,
+                outproxy_provider
+                    .as_deref()
+                    .expect("a ViaOutproxy classification implies a provider"),
+                &target,
+                counters,
+            )
+            .await;
+        }
+        ClientTargetClass::Refused(failure) => {
+            debug!(
+                failure = failure.as_str(),
+                "CONNECT target refused before any route"
+            );
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(
+                    HttpErrorKind::Other,
+                    "no I2P-routed outproxy is configured for this tunnel",
+                ),
+            )
+            .await;
+            return HttpConnectionOutcome::BadGateway;
+        }
+        ClientTargetClass::Direct(_) => {}
     }
     let target = match resolve_target_for_service(&manager, runtime.destination_id, &authority) {
         Ok(value) => value,
@@ -883,6 +1077,11 @@ pub async fn run_connect_only_connection(
         // Plan 292: the strict-CONNECT executor enforces the same
         // credentials as the shared CONNECT handler.
         proxy_auth: options.proxy_auth.clone(),
+        // Plan 342: the strict-CONNECT executor is one of the request
+        // paths that reaches the outproxy provider, so the route policy
+        // rides along. Route policy only; the credential stays in the
+        // Plan 341 owner.
+        outproxy: options.outproxy.clone(),
     };
     handle_connect(
         manager,

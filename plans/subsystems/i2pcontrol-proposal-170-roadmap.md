@@ -357,7 +357,7 @@ Current graph (`passed` / `ready` / `blocked`):
    framing two bytes short. NOT reachable from any request path:
    infrastructure, not a capability.)
 
-342 registered  outproxy option surface + request paths + wire lane
+342 in-progress  outproxy option surface + request paths + wire lane
   (Plan 342 retains the remainder after Plan 343: ProxyList /
    UseOutproxyPlugin / OutproxyAuth / OutproxyUsername /
    OutproxyPassword / OutproxyType / SSLProxies semantics with
@@ -365,8 +365,30 @@ Current graph (`passed` / `ready` / `blocked`):
    integration and the Proposal-applicable SOCKS families, and the
    self-composed in-tree loopback outproxy wire lane -- loopback
    evidence, NOT interoperability, per the Plan 339 decision.
-   Plan 327 stays BLOCKED: the provider exists but no client can
-   reach it.)
+
+   STEPS 1-3 LANDED. Step 1 closed the two structural gaps Plan 342 named:
+   `RouterIdentityBundle` gained a closure-based signing-seed accessor, and
+   the outbound secret store is derived once at the composition root and
+   threaded as a single `Arc`, so no second key exists. `OutproxyRoute` gained
+   a `Refused(OutproxyFailure)` variant, because the enum previously had no
+   way to say "no" and an empty proxy list made it claim `DirectI2p` for a
+   clearnet target. Step 2 admitted all seven canonical fields as ONE block:
+   a partial block is refused by name before any allocation, `outproxy_type`
+   is a closed vocabulary, `OutproxyPassword` is sealed into the Plan 341
+   stored form by `normalize_definition` and refuses the tunnel outright when
+   no owner is installed. Step 3 made the provider reachable: one
+   `classify_client_target` decides Direct / ViaOutproxy / Refused, all three
+   request paths match it exhaustively before opening anything, and the
+   outproxy handshake prefix is carried into the pump's INBOUND direction --
+   `run_stream_pump`'s `initial_bytes` feeds the opposite one, so putting it
+   there would have corrupted the first request on every pipelining outproxy.
+
+   STILL OPEN: step 4, the self-composed loopback wire lane and its evidence
+   checker. The request-path guarantee is pinned statically by
+   `scripts/check-outproxy-request-path.sh` (24/24 mutations) and by unit
+   rows on the classifier, but no live route has been exercised end to end.
+   Plan 327 stays BLOCKED: the provider is reachable from three request paths
+   now, but capability is only claimed with the lane.)
 
 PLAN 322 GAP CENSUS: ZERO. Plan 322 was amended to passed on
 2026-10-05; all 43 canonical RouterInfo additions now have a named
@@ -534,8 +556,11 @@ Forward graph:
     -> 347 blocked on 346
        real bidirectional Java+i2pd type-5 publication/lookup/application qualification
 
-342 ready
+342 in-progress
   outproxy option surface + HTTP/CONNECT/SOCKS request paths + wire evidence
+    (option surface and request paths landed together, because the plan
+     forbids accepting the surface before the route behind it exists;
+     the self-composed loopback wire lane is what remains)
 
 342 passed + 347 passed
   -> 348 fresh Proposal-170 full-conformance gate
