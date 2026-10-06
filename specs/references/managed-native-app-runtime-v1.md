@@ -121,6 +121,34 @@ Stream ids are unique and nonzero within a session. Open must precede data;
 duplicate open is an error. `close` and `reset` are idempotently representable.
 At most 128 live logical streams and 64 in-flight request ids are permitted.
 
+### Router service stream mapping
+
+For a successful `open` of `sam` or `i2cp`, the trusted host runtime binds
+that nonzero logical stream id to exactly one router-owned protocol connection.
+Each data-frame payload is passed to that SAM or I2CP connection as the exact
+protocol octets, in order; the gateway does not add an encoding, rewrite
+protocol fields, or inspect application protocol content. The host runtime owns
+stream-id correlation and multiplexing. A logical `close` or `reset` closes
+only its corresponding router connection, and backend EOF or failure closes or
+resets only that logical stream.
+
+The router gateway receives an authenticated `AppPrincipal`, an immutable
+`EffectiveCapabilities` value, and bounded limits from trusted composition.
+The app's `hello` identity fields are declarations only and cannot construct
+this authorization. Each gateway session owns isolated SAM/I2CP client state
+for one `AppInstanceId`; it never borrows the public loopback listener's
+connection state or connects back to a listener as a fallback. Exact service
+authorization is checked before backend state, resource ids, or tasks are
+allocated. `sam` requires effective `sam`, and `i2cp` requires effective
+`i2cp`. `control_scoped` remains reserved and returns typed unsupported from
+the router gateway, even if that capability is present; a separately gated
+Proposal 170 adapter must define its authority and lifetime first.
+
+The trusted runtime is responsible for proving that the process/channel it
+owns corresponds to the supplied principal before constructing gateway
+authorization. The gateway does not own package lifecycle, grants, process
+launch, sandboxing, or the outer managed-app channel.
+
 ## 4. Capabilities
 
 The closed v1 capability literals are `sam`, `i2cp`, `control_scoped`,

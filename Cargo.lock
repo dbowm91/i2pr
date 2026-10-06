@@ -1011,6 +1011,7 @@ dependencies = [
  "futures-executor",
  "i2pr-addressbook",
  "i2pr-api",
+ "i2pr-app-proto",
  "i2pr-client",
  "i2pr-console",
  "i2pr-core",

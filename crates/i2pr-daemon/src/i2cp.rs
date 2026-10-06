@@ -1,11 +1,11 @@
-//! Plan 167 supervised loopback I2CP v0.9.67 service.
+//! Plan 167 supervised I2CP v0.9.67 service with loopback and private stream origins.
 //!
 //! The Plan 167 daemon composes the runtime-neutral
 //! [`i2pr_api::i2cp`] protocol/session/connection surface into a real
 //! Tokio-owned TCP server. The service is the single composition root
 //! for the I2CP wire in `i2pr`:
 //!
-//! - the loopback [`TcpListener`];
+//! - the optional loopback [`TcpListener`] admission adapter;
 //! - one [`SessionRegistry`] for I2CP session IDs and their destination
 //!   hashes (Plan 165 §4);
 //! - one router-local [`DestinationRegistry`] for the underlying
@@ -17,7 +17,8 @@
 //! The runtime-neutral state/options/lease material lives in
 //! `i2pr_api::i2cp`. This module is the runtime-neutral seam that maps
 //! the API into a Tokio-driven supervised service, exactly as the SAM
-//! bridge does for SAM 3.1.
+//! bridge does for SAM 3.1. Listener and trusted private streams use the same
+//! bounded connection driver; the private entry point binds no host socket.
 //!
 //! I2CP ownership is deliberately different from SAM:
 //!
@@ -66,13 +67,21 @@ use i2pr_proto::Hash;
 use i2pr_proto::Mapping;
 use i2pr_runtime::{CancellationToken, ChildScope};
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::config::I2cpConfig;
+
+/// Async byte stream accepted by the daemon-owned I2CP connection driver.
+pub(crate) trait I2cpAsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> I2cpAsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+/// Erased owned stream used by listener and private I2CP connections.
+pub(crate) type I2cpIoStream = Box<dyn I2cpAsyncStream>;
 
 /// Typed I2CP service failure surfaced to the daemon supervisor.
 #[derive(Debug, Error)]
@@ -89,6 +98,14 @@ pub enum I2cpServiceError {
     /// A configuration invariant required by I2CP failed validation.
     #[error("invalid I2CP configuration: {0}")]
     InvalidConfig(String),
+}
+
+/// Admission failure for the narrow private I2CP connection seam.
+#[allow(dead_code)] // Consumed by the registered Plan 355 gateway.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum I2cpPrivateConnectionError {
+    /// The configured per-service concurrent connection ceiling is full.
+    AtCapacity,
 }
 
 /// Returns the protocol-time seconds used for SessionConfig / LeaseSet2
@@ -397,6 +414,7 @@ impl I2cpSessionState {
 #[derive(Debug)]
 pub struct I2cpServiceState {
     config: I2cpConfig,
+    connection_permits: Arc<tokio::sync::Semaphore>,
     session_registry: Mutex<SessionRegistry>,
     destination_registry: Arc<Mutex<DestinationRegistry>>,
     destinations: Mutex<HashMap<Hash, I2cpDestinationEntry>>,
@@ -447,8 +465,11 @@ impl I2cpServiceState {
                 I2cpServiceError::InvalidConfig(format!("local router hash unavailable: {error}"))
             })?
         };
+        let connection_permits =
+            Arc::new(tokio::sync::Semaphore::new(usize::from(config.max_clients)));
         Ok(Self {
             config,
+            connection_permits,
             session_registry,
             destination_registry,
             destinations: Mutex::new(HashMap::new()),
@@ -534,6 +555,17 @@ impl I2cpServiceState {
             .lock()
             .map(|active| active.len())
             .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_connection_ids_for_test(&self) -> Vec<u32> {
+        let mut ids = self
+            .active_connections
+            .lock()
+            .map(|active| active.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
     }
 
     /// Returns the number of committed I2CP sessions.
@@ -662,9 +694,7 @@ impl I2cpServiceState {
             "I2CP loopback listener bound"
         );
 
-        let client_permits = Arc::new(tokio::sync::Semaphore::new(usize::from(
-            self.config.max_clients,
-        )));
+        let client_permits = Arc::clone(&self.connection_permits);
         let child_token = cancellation.child_token();
         loop {
             tokio::select! {
@@ -701,7 +731,7 @@ impl I2cpServiceState {
                             handle_connection(
                                 state_for_task,
                                 connection_id,
-                                stream,
+                                Box::new(stream),
                                 task_cancellation,
                                 child_token_for_task,
                             )
@@ -716,6 +746,25 @@ impl I2cpServiceState {
             }
         }
         let _ = child_token.cancel(i2pr_core::CancellationReason::ParentScope);
+        Ok(())
+    }
+
+    /// Drives one private I2CP connection without binding a listener or
+    /// connecting a host socket. It shares listener admission and protocol
+    /// execution semantics and returns before consuming bytes if at capacity.
+    #[allow(dead_code)] // The registered Plan 355 gateway is the production caller.
+    pub(crate) async fn drive_private_connection(
+        self: Arc<Self>,
+        stream: I2cpIoStream,
+        task_cancellation: CancellationToken,
+        parent_token: CancellationToken,
+    ) -> Result<(), I2cpPrivateConnectionError> {
+        let permit = Arc::clone(&self.connection_permits)
+            .try_acquire_owned()
+            .map_err(|_| I2cpPrivateConnectionError::AtCapacity)?;
+        let connection_id = self.allocate_connection_id();
+        self.register_connection(connection_id, I2cpConnection::new(permit));
+        handle_connection(self, connection_id, stream, task_cancellation, parent_token).await;
         Ok(())
     }
 
@@ -1109,7 +1158,7 @@ fn projected_to_config(projected: ProjectedPolicy) -> DestinationConfig {
 async fn handle_connection(
     state: Arc<I2cpServiceState>,
     connection_id: u32,
-    mut stream: TcpStream,
+    mut stream: I2cpIoStream,
     task_cancellation: CancellationToken,
     parent_token: CancellationToken,
 ) {
@@ -1141,7 +1190,7 @@ async fn handle_connection(
 async fn handle_connection_inner(
     state: &Arc<I2cpServiceState>,
     connection_id: u32,
-    stream: &mut TcpStream,
+    stream: &mut I2cpIoStream,
     task_cancellation: CancellationToken,
     parent_token: CancellationToken,
 ) -> Result<(), I2cpConnectionError> {
@@ -1235,7 +1284,7 @@ async fn wait_for_inbound_notify(state: &I2cpServiceState, connection_id: u32) {
 async fn drain_inbound_payloads(
     state: &Arc<I2cpServiceState>,
     connection_id: u32,
-    stream: &mut TcpStream,
+    stream: &mut I2cpIoStream,
 ) -> Result<(), I2cpConnectionError> {
     let Some(session_state) = session_state_for_connection(state, connection_id) else {
         return Ok(());
@@ -2374,7 +2423,7 @@ fn i2cp_now_ms() -> u64 {
 }
 
 async fn read_protocol_byte(
-    stream: &mut TcpStream,
+    stream: &mut I2cpIoStream,
     config: &I2cpConfig,
     cancellation: CancellationToken,
 ) -> Result<u8, I2cpConnectionError> {
@@ -2410,7 +2459,7 @@ async fn read_protocol_byte(
 }
 
 async fn read_chunk(
-    stream: &mut TcpStream,
+    stream: &mut I2cpIoStream,
     timeout_duration: Duration,
     cancellation: CancellationToken,
 ) -> Result<Vec<u8>, I2cpConnectionError> {
@@ -2445,7 +2494,7 @@ async fn read_chunk(
 }
 
 async fn write_message(
-    stream: &mut TcpStream,
+    stream: &mut I2cpIoStream,
     message: &Message,
 ) -> Result<(), I2cpConnectionError> {
     let body = message
@@ -2514,3 +2563,68 @@ fn _i2cp_action_marker(_x: I2cpAction) {}
 // as used so unused-import warnings stay silent.
 #[allow(dead_code)]
 fn _disconnect_marker(_x: Disconnect) {}
+
+#[cfg(test)]
+mod private_connection_tests {
+    use super::*;
+    use i2pr_api::i2cp::SetDate;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn private_connection_runs_protocol_byte_and_get_date_without_listener() {
+        let mut config = I2cpConfig::loopback_test_profile(4, 8, 64 * 1024, 32);
+        config.enabled = false;
+        let state = Arc::new(I2cpServiceState::new(config).expect("service state"));
+        let token = CancellationToken::new();
+        let (mut client, router) = tokio::io::duplex(4096);
+        let driver = tokio::spawn(Arc::clone(&state).drive_private_connection(
+            Box::new(router),
+            token.child_token(),
+            token.clone(),
+        ));
+
+        client
+            .write_all(&[PROTOCOL_BYTE])
+            .await
+            .expect("write protocol byte");
+        let request = Message::GetDate(GetDate {
+            version: "0.9.67".to_owned(),
+            auth: None,
+        });
+        let body = request.encode_body().expect("GetDate body");
+        let frame = encode_frame(request.message_type() as u8, &body).expect("GetDate frame");
+        client.write_all(&frame).await.expect("write GetDate");
+
+        let mut header = [0_u8; 5];
+        client
+            .read_exact(&mut header)
+            .await
+            .expect("read SetDate header");
+        let body_len = u32::from_be_bytes(header[..4].try_into().expect("frame length")) as usize;
+        let mut response_body = vec![0_u8; body_len];
+        client
+            .read_exact(&mut response_body)
+            .await
+            .expect("read SetDate body");
+        assert_eq!(header[4], i2pr_api::i2cp::MessageType::SetDate as u8);
+        assert_eq!(
+            SetDate::decode(&response_body)
+                .expect("SetDate decode")
+                .version,
+            "0.9.67"
+        );
+
+        drop(client);
+        driver
+            .await
+            .expect("connection task join")
+            .expect("admission");
+        assert!(
+            state
+                .active_connections
+                .lock()
+                .expect("connection registry")
+                .is_empty()
+        );
+    }
+}

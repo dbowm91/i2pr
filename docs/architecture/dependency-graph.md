@@ -52,7 +52,7 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` | same | `futures-util`, `rand_core`, `tokio`, `tokio-util`, `tracing`, `zeroize` |
 | `i2pr-service-tunnels` (Plans 174/175; portability Plans 349–351) | `i2pr-client` | none — **`i2pr-client` is allowed-but-unused** | `base64ct`, `sha2`, `subtle`, `thiserror`, `zeroize` |
 | `i2pr-console` (Plans 356–358) | (none) | none | `argon2`, `axum` (built without `tokio`), `rand_core`, `serde`, `serde_json`, `toml`, `zeroize` |
-| `i2pr-daemon` | 16 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 16 | `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
+| `i2pr-daemon` | 17 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 17 | `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
 | `i2pr-testkit` (test-only) | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` | same | `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 
 Notes on the allowlisted-but-unused and legacy rows:
@@ -79,24 +79,25 @@ Notes on the allowlisted-but-unused and legacy rows:
 ### `i2pr-daemon` composition root
 
 `i2pr-daemon` is the CLI/config/composition root and is the only crate
-allowed to see 16 workspace dependencies at once:
+allowed to see 17 workspace dependencies at once:
 
 1. `i2pr-addressbook`
 2. `i2pr-api`
-3. `i2pr-client`
-4. `i2pr-console`
-5. `i2pr-core`
-6. `i2pr-crypto`
-7. `i2pr-i2pcontrol`
-8. `i2pr-netdb`
-9. `i2pr-netdb-persist`
-10. `i2pr-proto`
-11. `i2pr-runtime`
-12. `i2pr-service-tunnels`
-13. `i2pr-storage`
-14. `i2pr-su3`
-15. `i2pr-transport`
-16. `i2pr-tunnel`
+3. `i2pr-app-proto`
+4. `i2pr-client`
+5. `i2pr-console`
+6. `i2pr-core`
+7. `i2pr-crypto`
+8. `i2pr-i2pcontrol`
+9. `i2pr-netdb`
+10. `i2pr-netdb-persist`
+11. `i2pr-proto`
+12. `i2pr-runtime`
+13. `i2pr-service-tunnels`
+14. `i2pr-storage`
+15. `i2pr-su3`
+16. `i2pr-transport`
+17. `i2pr-tunnel`
 
 All 16 are actually declared, and the set is not transitive: e.g. the
 daemon reaches `i2pr-transport-ssu2` only through `i2pr-runtime`, never
@@ -184,9 +185,9 @@ Tier 5
   i2pr-service-tunnels  (no internal crate dependencies)
 
 Tier 6 — composition root
-  i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-client, i2pr-console,
-                     i2pr-core, i2pr-crypto, i2pr-i2pcontrol, i2pr-netdb,
-                     i2pr-netdb-persist, i2pr-proto, i2pr-runtime,
+i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-app-proto, i2pr-client,
+                     i2pr-console, i2pr-core, i2pr-crypto, i2pr-i2pcontrol,
+                     i2pr-netdb, i2pr-netdb-persist, i2pr-proto, i2pr-runtime,
                      i2pr-service-tunnels, i2pr-storage, i2pr-su3,
                      i2pr-transport, i2pr-tunnel
 ```
@@ -497,6 +498,6 @@ Per-crate deep dives (one per crate in `crates/`):
   unused `i2pr-client` edge
 - [`i2pr-console.md`](i2pr-console.md) — leaf, socketless console
   substrate
-- [`i2pr-daemon.md`](i2pr-daemon.md) — composition root, 16 edges
+- [`i2pr-daemon.md`](i2pr-daemon.md) — composition root, 17 edges
 - [`i2pr-testkit.md`](i2pr-testkit.md) — test-only, no production
   dependents

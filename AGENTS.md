@@ -94,7 +94,9 @@ python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-console-boundaries.sh
 bash scripts/check-console-browser-security.sh
+python3 scripts/check-managed-app-private-client-seams.py
 bash scripts/check-service-tunnel-boundaries.sh
+python3 scripts/check-managed-app-gateway-boundary.py
 bash scripts/check-m11-per-epoch-composition.sh
 bash scripts/check-service-anonymity-boundaries.sh
 bash scripts/check-fixture-manifest.sh

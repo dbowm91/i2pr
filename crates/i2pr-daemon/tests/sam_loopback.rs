@@ -377,8 +377,11 @@ async fn stream_connect_unknown_session_returns_invalid_id() {
 async fn session_capacity_boundary_is_enforced() {
     let mut config = sam_config();
     config.limits = SamLimits::loopback_test_profile();
+    let max = config.limits.max_sessions;
+    // Leave one connection slot for the overflow-session request below so
+    // this test isolates the session registry ceiling from client admission.
+    config.limits.max_clients = max + 1;
     let (state, address, scope, parent) = start_listener(config).await;
-    let max = SamLimits::loopback_test_profile().max_sessions;
     // Saturate the SAM session ceiling with concurrent control
     // sockets, each using a unique session identifier.
     let mut handles = Vec::new();
@@ -420,6 +423,27 @@ async fn session_capacity_boundary_is_enforced() {
     );
     drop(handles);
     drop(extra);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn listener_client_capacity_is_enforced() {
+    let mut config = sam_config();
+    config.limits.max_clients = 1;
+    let (state, address, scope, parent) = start_listener(config).await;
+
+    let mut admitted = TcpStream::connect(address).await.expect("connect admitted");
+    hello_3_1(&mut admitted).await;
+    let mut overflow = TcpStream::connect(address).await.expect("connect overflow");
+    assert!(
+        read_one_line(&mut overflow).await.is_empty(),
+        "over-capacity client must be closed before SAM command processing"
+    );
+
+    drop(overflow);
+    drop(admitted);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
     drop(state);

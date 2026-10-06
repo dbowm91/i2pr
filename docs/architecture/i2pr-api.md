@@ -29,7 +29,9 @@ per-session resource accounting — composed into real listeners by
 What the crate must **not** own:
 
 - **No sockets, listeners, or accept loops.** The daemon owns every
-  SAM and I2CP listener; see [i2pr-daemon.md](i2pr-daemon.md).
+  SAM and I2CP listener; see [i2pr-daemon.md](i2pr-daemon.md). The daemon
+  also owns listener-independent private connection drivers so trusted
+  composition can reuse the same protocol paths without a host socket.
 - **No Tokio runtime, no timers, no channels, no task spawning.**
   `#![forbid(unsafe_code)]` is set at the crate root
   (`crates/i2pr-api/src/lib.rs:51`); no `tokio` dependency appears in
