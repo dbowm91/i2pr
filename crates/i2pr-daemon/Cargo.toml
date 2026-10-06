@@ -13,6 +13,7 @@ clap.workspace = true
 eggserve-server.workspace = true
 flate2.workspace = true
 i2pr-addressbook = { path = "../i2pr-addressbook" }
+i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
 i2pr-app-proto = { path = "../i2pr-app-proto" }
 i2pr-api = { path = "../i2pr-api" }
 i2pr-client = { path = "../i2pr-client" }

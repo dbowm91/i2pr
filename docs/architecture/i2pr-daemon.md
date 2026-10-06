@@ -213,6 +213,51 @@ exact byte-stream mapping are specified in
 | File | Lines | Responsibility | Key types |
 | --- | --- | --- | --- |
 | `src/app_gateway.rs` | 704 | Plan 355 per-principal authorization, capability-first service admission, isolated private SAM/I2CP state, bounded supervised byte-stream ownership, and no listener fallback | `AppGatewayAuthorization`, `AppGatewayLimits`, `AppGatewaySession`, `AppGatewayConnection`, `AppGatewayConnectionEnd`, `AppGatewayError` |
+| `src/app_manager_bridge.rs` | Plan 368 trusted AppManager bridge over an **injected** duplex stream: handshake, strict directional control loop, manager-asserted grants re-derived through the administrator path, capability check before backend allocation, exact SAM/I2CP octet forwarding through bounded per-stream queues, one backend watcher per stream, and deterministic teardown on manager EOF. No listener, no socket, no loopback fallback | `AppManagerBridge`, `AppManagerComposition`, `AppManagerBridgeError`, `ManagerTransport` |
+
+### Trusted AppManager bridge
+
+The `app_manager_bridge` module is the router-facing consumer of the private
+manager protocol in `i2pr-app-manager-proto`. It exists because
+`AppGatewaySession` is crate-private: Plan 355 froze the router-side capability
+boundary but had no production caller, so nothing outside the daemon could ask
+the router whether a principal may use SAM or I2CP.
+
+Filling that gap with a loopback listener would be wrong — loopback is not a
+trust boundary, because a managed application can reach it through any local
+proxy or helper. Proposal 170 is also wrong: it is router *administrator*
+authority, strictly larger than this bridge may hold. ADR 0035 therefore fixes the
+transport as an anonymous **inherited capability** and the authority ceiling as
+strictly below Proposal 170. Plan 368 chooses no concrete transport, so the
+bridge takes its duplex stream by injection; Plan 369 owns the inherited binding.
+
+Properties the module holds:
+
+- One manager transport maps to one bridge; one accepted `create_session` maps to
+  exactly one `AppGatewaySession` bound to one `AppInstanceId`.
+- Manager-asserted effective grants are **re-derived** through
+  `GrantedCapability::from_administrator_policy` and
+  `EffectiveCapabilities::from_grants`. There is no decoder from an application
+  `hello`, a `RequestedCapability`, or manifest bytes into authority, so
+  application-declared capability can never be promoted.
+- The capability check happens before any backend context, permit, or task
+  allocation, and a refusal is side-effect free.
+- Service handles are session-local, so a handle from another session is simply
+  absent and fails deterministically.
+- Service octets are forwarded exactly: no base64, JSON wrapping, rewriting, or
+  reordering. Each stream's in-memory duplex and inbound queue are bounded, so a
+  slow manager stalls the reader instead of growing memory.
+- Each stream has its own backend watcher, so one backend EOF closes only that
+  stream; manager transport EOF tears down every session and connection.
+- `control_scoped` is unrepresentable in the protocol's service vocabulary, so
+  the bridge cannot open it even if asked.
+
+The normative contract is
+[`managed-app-manager-protocol-v1.md`](../../specs/references/managed-app-manager-protocol-v1.md).
+`scripts/check-managed-app-manager-boundary.py` and `scripts/check-runtime-boundaries.sh`
+enforce the boundary statically. As of Plan 368 this module has **no production
+caller** — that is Plan 369 — so its `#![allow(dead_code)]` is scoped and
+documented, and it must not be read as shipped capability.
 
 ### SAM 3.1
 
@@ -1300,6 +1345,7 @@ Type 5 stays `advertised = false`.
 - [`0027` floodfill role provenance and advertisement](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)
 - [`0028` I2PControl Proposal 170 control plane](../../docs/adr/0028-i2pcontrol-proposal-170-control-plane.md)
 - [`0034` EggServe/Axum router console HTTP substrate](../../docs/adr/0034-eggserve-axum-router-console-http-substrate.md)
+- [`0035` Private manager protocol and inherited authority](../../docs/adr/0035-private-manager-protocol-and-inherited-authority.md)
 
 ### Closure records and plans of record
 

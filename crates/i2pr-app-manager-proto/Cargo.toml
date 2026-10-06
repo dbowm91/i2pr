@@ -1,0 +1,17 @@
+[package]
+name = "i2pr-app-manager-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Runtime-neutral private router/AppManager protocol contract (Plan 368)"
+publish = false
+
+[dependencies]
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

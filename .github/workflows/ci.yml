@@ -69,6 +69,8 @@ jobs:
         run: bash scripts/check-service-tunnel-boundaries.sh
       - name: Check managed-app gateway boundary
         run: python3 scripts/check-managed-app-gateway-boundary.py
+      - name: Check managed-app manager boundary
+        run: python3 scripts/check-managed-app-manager-boundary.py
       - name: Check portable service-tunnel API snapshot
         run: python3 scripts/check-portable-service-tunnel-api.py
       - name: Check portable service-tunnel external consumer

@@ -936,6 +936,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-app-manager-proto"
+version = "0.1.0"
+dependencies = [
+ "i2pr-app-proto",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "i2pr-app-proto"
 version = "0.1.0"
 dependencies = [
@@ -1011,6 +1021,7 @@ dependencies = [
  "futures-executor",
  "i2pr-addressbook",
  "i2pr-api",
+ "i2pr-app-manager-proto",
  "i2pr-app-proto",
  "i2pr-client",
  "i2pr-console",

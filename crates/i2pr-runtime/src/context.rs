@@ -429,6 +429,19 @@ impl ChildScope {
         Self::new(parent, policy, crate::observability::TaskCounters::new())
     }
 
+    /// Constructs a production child scope under an explicit parent token.
+    ///
+    /// A component that owns a sub-lifecycle — the Plan 368 manager bridge gives
+    /// every app gateway session its own cancellation domain so session teardown
+    /// reaches only its own descendants — needs its own scope rather than
+    /// sharing the caller's. The internal counters are unique per call, exactly
+    /// as for [`ChildScope::for_test`], so the new scope is fully independent
+    /// from the parent's accounting; the difference is only the intent that the
+    /// name states.
+    pub fn child_of(parent: &CancellationToken, policy: ChildFailurePolicy) -> Self {
+        Self::new(parent, policy, crate::observability::TaskCounters::new())
+    }
+
     /// Spawns a checked child future under this service's cancellation scope.
     pub fn spawn<F, Fut>(&self, factory: F) -> Result<(), ChildScopeError>
     where

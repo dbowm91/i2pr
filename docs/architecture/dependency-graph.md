@@ -38,6 +38,7 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-su3` | (none) | none | `sad-rsa`, `sha2`, `thiserror`, `x509-parser` |
 | `i2pr-i2pcontrol` (Plan 286) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-proto` (Plan 345) | (none) | none | `serde`, `serde_json`, `thiserror` |
+| `i2pr-app-manager-proto` (Plan 368) | `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
 | `i2pr-crypto` | `i2pr-proto` | same | `chacha20`, `chacha20poly1305`, `curve25519-dalek` (Plan 330), `ed25519-dalek`, `elligator2` (Plan 131; replaces the retired `curve25519-elligator2 0.1.0-alpha.2`), `hmac`, `rand_core`, `sha2`, `subtle`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-addressbook` (Plan 294) | `i2pr-proto` | same | `base64ct`, `serde`, `serde_json`, `thiserror` |
 | `i2pr-storage` | `i2pr-crypto` | same | `rand_core`, `thiserror`, `zeroize` |
@@ -83,23 +84,24 @@ allowed to see 17 workspace dependencies at once:
 
 1. `i2pr-addressbook`
 2. `i2pr-api`
-3. `i2pr-app-proto`
-4. `i2pr-client`
-5. `i2pr-console`
-6. `i2pr-core`
-7. `i2pr-crypto`
-8. `i2pr-i2pcontrol`
-9. `i2pr-netdb`
-10. `i2pr-netdb-persist`
-11. `i2pr-proto`
-12. `i2pr-runtime`
-13. `i2pr-service-tunnels`
-14. `i2pr-storage`
-15. `i2pr-su3`
-16. `i2pr-transport`
-17. `i2pr-tunnel`
+3. `i2pr-app-manager-proto`
+4. `i2pr-app-proto`
+5. `i2pr-client`
+6. `i2pr-console`
+7. `i2pr-core`
+8. `i2pr-crypto`
+9. `i2pr-i2pcontrol`
+10. `i2pr-netdb`
+11. `i2pr-netdb-persist`
+12. `i2pr-proto`
+13. `i2pr-runtime`
+14. `i2pr-service-tunnels`
+15. `i2pr-storage`
+16. `i2pr-su3`
+17. `i2pr-transport`
+18. `i2pr-tunnel`
 
-All 16 are actually declared, and the set is not transitive: e.g. the
+All 18 are actually declared, and the set is not transitive: e.g. the
 daemon reaches `i2pr-transport-ssu2` only through `i2pr-runtime`, never
 directly.
 
@@ -118,6 +120,9 @@ checker pins each of them to the empty set:
   contract. Leaf; only `i2pr-daemon` may depend on it.
 - `i2pr-app-proto` — runtime-neutral managed-app contract (Plan 345).
   Leaf.
+- `i2pr-app-manager-proto` — private trusted AppManager protocol
+  contract (Plan 368). Depends only on `i2pr-app-proto`; only
+  `i2pr-daemon` may depend on it.
 - `i2pr-console` — the loopback router console substrate (Plans
   356–358). Leaf *and* socketless: it may not depend on any `i2pr-*`
   crate, so the console cannot reach router state directly. Every value
@@ -185,7 +190,8 @@ Tier 5
   i2pr-service-tunnels  (no internal crate dependencies)
 
 Tier 6 — composition root
-i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-app-proto, i2pr-client,
+i2pr-daemon    --> i2pr-addressbook, i2pr-api, i2pr-app-manager-proto,
+                     i2pr-app-proto, i2pr-client,
                      i2pr-console, i2pr-core, i2pr-crypto, i2pr-i2pcontrol,
                      i2pr-netdb, i2pr-netdb-persist, i2pr-proto, i2pr-runtime,
                      i2pr-service-tunnels, i2pr-storage, i2pr-su3,

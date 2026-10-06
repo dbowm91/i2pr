@@ -527,15 +527,34 @@ if missing_contract:
 if re.search(r"pub enum AppService\s*\{[^}]*BrokeredTcp", contract_text, re.S):
     raise SystemExit("i2pr-app-proto must not expose brokered_tcp as an openable service")
 
-app_proto_manifest = (root / "crates/i2pr-app-proto/Cargo.toml").read_text(encoding="utf-8")
-if re.search(
-    r"^(tokio|tokio-util|rustix|libloading|nix|windows|objc)\s*=",
-    app_proto_manifest,
-    re.M,
-):
-    raise SystemExit("i2pr-app-proto must not depend on runtime/OS backend crates")
+for contract_label in ("i2pr-app-proto", "i2pr-app-manager-proto"):
+    manifest_text = (
+        root / f"crates/{contract_label}/Cargo.toml"
+    ).read_text(encoding="utf-8")
+    if re.search(
+        r"^(tokio|tokio-util|rustix|libloading|nix|windows|objc)\s*=",
+        manifest_text,
+        re.M,
+    ):
+        raise SystemExit(
+            f"{contract_label} must not depend on runtime/OS backend crates"
+        )
 
+# Plan 368: the manager contract must stay a two-crate contract and must not name
+# an administrator role or the Proposal 170 crate.
+manager_manifest = (
+    root / "crates/i2pr-app-manager-proto/Cargo.toml"
+).read_text(encoding="utf-8")
+if "i2pr-i2pcontrol" in manager_manifest:
+    raise SystemExit(
+        "i2pr-app-manager-proto must not depend on the Proposal 170 crate"
+    )
+
+# Plan 368: `i2pr-app-manager-proto` is the private trusted AppManager contract.
+# It is runtime-neutral in exactly the Plan 345 class, so it reuses the same rule
+# set rather than a narrower one that could be evaded.
 for label, target, rule_set in (
+    ("i2pr-app-manager-proto", root / "crates/i2pr-app-manager-proto/src", patterns),
     ("i2pr-i2pcontrol", root / "crates/i2pr-i2pcontrol/src", i2pcontrol_patterns),
     ("i2pr-service-tunnels", root / "crates/i2pr-service-tunnels/src", service_tunnel_patterns),
     ("i2pr-api", root / "crates/i2pr-api/src", i2pr_api_patterns),
