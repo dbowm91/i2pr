@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use i2pr_core::{
     FailureCategory, HealthSnapshot, HealthState, LifecycleState, ResourceUsage,
-    ServiceClassification, ServiceName,
+    ServiceClassification, ServiceName, StartupRequirement,
 };
 
 use crate::channel::ChannelSnapshot;
@@ -72,7 +72,9 @@ pub enum RouterLifecycle {
     Registered,
     /// Startup sequencing is in progress.
     Starting,
-    /// All required services have signalled readiness.
+    /// All required services have signalled readiness. A service registered
+    /// with `StartupRequirement::Optional` is not required and does not gate
+    /// this transition.
     Ready,
     /// Shutdown has begun.
     Stopping,
@@ -89,6 +91,8 @@ pub struct ServiceSnapshot {
     pub service: ServiceName,
     /// Service failure classification.
     pub classification: ServiceClassification,
+    /// Startup-disposition policy validated by graph construction.
+    pub startup_requirement: StartupRequirement,
     /// Current lifecycle phase.
     pub lifecycle: LifecycleState,
     /// Current typed health state.
@@ -108,6 +112,7 @@ impl ServiceSnapshot {
         Some(Self {
             service: snapshot.service_name()?.clone(),
             classification: snapshot.classification()?,
+            startup_requirement: snapshot.startup_requirement(),
             lifecycle: snapshot.lifecycle(),
             health: snapshot.health(),
             restart_count: snapshot.restart_count(),
@@ -123,7 +128,13 @@ impl ServiceSnapshot {
 pub struct SupervisorSnapshot {
     /// Router lifecycle.
     pub lifecycle: RouterLifecycle,
-    /// Whether all required services are currently ready.
+    /// Whether every service whose validated startup requirement is
+    /// [`StartupRequirement::Required`] and whose classification gates
+    /// readiness is currently ready.
+    ///
+    /// A service registered with [`StartupRequirement::Optional`] is excluded,
+    /// so `ready` reports whether the router is operator-usable rather than
+    /// whether every optional feature is healthy.
     pub ready: bool,
     /// Per-service redacted observations in deterministic order.
     pub services: Vec<ServiceSnapshot>,
@@ -294,13 +305,20 @@ impl TaskCounters {
                 .lock()
                 .map(|lifecycle| *lifecycle)
                 .unwrap_or(RouterLifecycle::Failed),
+            // Readiness is gated by the validated startup requirement first,
+            // then by classification. A service that opted out of startup
+            // readiness (`StartupRequirement::Optional`) never gates the
+            // router, so a broken optional subsystem degrades its own feature
+            // instead of leaving `ready` permanently false while the router is
+            // in fact usable.
             ready: services
                 .iter()
                 .filter(|service| {
-                    matches!(
-                        service.classification,
-                        ServiceClassification::Essential | ServiceClassification::Restartable
-                    )
+                    service.startup_requirement.gates_readiness()
+                        && matches!(
+                            service.classification,
+                            ServiceClassification::Essential | ServiceClassification::Restartable
+                        )
                 })
                 .all(|service| service.health.is_ready()),
             services,

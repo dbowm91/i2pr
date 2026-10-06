@@ -168,6 +168,39 @@ pub enum ServiceClassification {
     Optional,
 }
 
+/// Whether the router requires a service to reach readiness before startup
+/// completes.
+///
+/// This is a **startup-disposition** policy and is deliberately distinct from
+/// [`ServiceClassification`], which describes how a service behaves once the
+/// router is already running. The two are orthogonal: a service can be
+/// `Optional` here and `Restartable` afterwards.
+///
+/// `Required` is the default so that a service which does not consider this
+/// field keeps the all-or-nothing startup contract.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum StartupRequirement {
+    /// Startup fails if the service does not become ready.
+    #[default]
+    Required,
+    /// Startup continues if the service never becomes ready. The service is
+    /// recorded as degraded and is excluded from router readiness, so a broken
+    /// optional subsystem degrades its own feature instead of taking the
+    /// router down.
+    Optional,
+}
+
+impl StartupRequirement {
+    /// Whether a service with this requirement contributes to router readiness.
+    ///
+    /// Only `Required` services gate `SupervisorSnapshot::ready`; an
+    /// `Optional` service that never becomes ready must not leave the router
+    /// permanently reporting "not ready" while it is in fact usable.
+    pub const fn gates_readiness(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
 /// Static categories that may be safely retained in health and completion data.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FailureCategory {
@@ -385,6 +418,7 @@ impl std::error::Error for HealthDetailError {}
 pub struct HealthSnapshot {
     service: Option<ServiceName>,
     classification: Option<ServiceClassification>,
+    startup_requirement: StartupRequirement,
     lifecycle: LifecycleState,
     state: HealthState,
     restart_count: u32,
@@ -404,6 +438,7 @@ impl HealthSnapshot {
         Self {
             service: None,
             classification: None,
+            startup_requirement: StartupRequirement::Required,
             lifecycle: match state {
                 HealthState::Starting => LifecycleState::Starting,
                 HealthState::Ready => LifecycleState::Ready,
@@ -436,6 +471,7 @@ impl HealthSnapshot {
         Self {
             service: Some(service),
             classification: Some(classification),
+            startup_requirement: StartupRequirement::Required,
             lifecycle,
             state,
             restart_count,
@@ -446,6 +482,17 @@ impl HealthSnapshot {
         }
     }
 
+    /// Attaches the startup-disposition policy that the supervisor validated
+    /// for this service.
+    ///
+    /// Kept as a builder so an existing `for_service` caller keeps compiling and
+    /// keeps the `Required` default rather than silently acquiring optional
+    /// startup semantics.
+    pub const fn with_startup_requirement(mut self, requirement: StartupRequirement) -> Self {
+        self.startup_requirement = requirement;
+        self
+    }
+
     /// Stable service identity, present for supervisor-created snapshots.
     pub fn service_name(&self) -> Option<&ServiceName> {
         self.service.as_ref()
@@ -454,6 +501,14 @@ impl HealthSnapshot {
     /// Registered service failure classification, when known.
     pub const fn classification(&self) -> Option<ServiceClassification> {
         self.classification
+    }
+
+    /// Startup-disposition policy for this service.
+    ///
+    /// Only services with [`StartupRequirement::Required`] gate router
+    /// readiness.
+    pub const fn startup_requirement(&self) -> StartupRequirement {
+        self.startup_requirement
     }
 
     /// Current lifecycle phase.

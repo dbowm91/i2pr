@@ -145,5 +145,5 @@ pub use i2pr_core::{
     CancellationReason, DegradationCode, FailureCategory, HealthDetail, HealthSnapshot,
     HealthState, InvalidLifecycleTransition, LifecycleState, ServiceClassification,
     ServiceCompletion, ServiceFailure, ServiceFailureCategory, ServiceName, ServiceNameError,
-    ShutdownReason,
+    ShutdownReason, StartupRequirement,
 };

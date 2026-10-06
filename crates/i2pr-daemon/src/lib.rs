@@ -611,6 +611,16 @@ fn build_daemon_graph_inner(
 /// down because an application manager crashed, would turn an optional feature
 /// into an availability dependency.
 ///
+/// It is additionally registered with [`i2pr_core::StartupRequirement::Optional`]
+/// (Plan 371), which is a different guarantee from the restart policy. The
+/// restart policy covers *repeated failure*; the startup requirement covers a
+/// manager that never becomes usable at all — a handshake that never completes
+/// before the readiness deadline, for instance. Without it, such a manager
+/// would abort router startup even though the router has no other use for it.
+/// `Optional` also excludes this service from `SupervisorSnapshot::ready`, so a
+/// broken manager does not leave a usable router permanently reporting that it
+/// is not ready.
+///
 /// It depends on the SAM and I2CP services only for their *configuration*: the
 /// bridge uses them to open backend connections for an application session, so
 /// a manager session that opened a SAM stream needs a SAM configuration to
@@ -628,12 +638,15 @@ fn register_app_runtime_service(
     };
     // Preflight the manager before registering the service.
     //
-    // The supervisor awaits initial readiness for *every* registered service
-    // and aborts router startup if one never arrives, regardless of its
-    // classification. A missing sibling would therefore surface as an opaque
-    // startup failure several seconds later. Resolving it here turns that into
-    // an actionable configuration error at composition time, and it costs no
-    // authority: the same resolution the service will use is checked up front.
+    // The service is startup-optional (Plan 371), so an unresolvable sibling
+    // would no longer abort the router — it would degrade silently. That is the
+    // right behaviour for a manager that is *present but broken*, and the wrong
+    // one for a feature the operator explicitly enabled without installing its
+    // manager: the operator would get a usable router with no indication that
+    // the app runtime they asked for never started. Resolving the path here
+    // turns that case into an actionable configuration error at composition
+    // time, and it costs no authority: the same resolution the service will use
+    // is checked up front.
     if let Err(error) = inputs.manager_path() {
         return Err(DaemonError::RuntimeSupervisorFailed(format!(
             "the managed-application runtime is enabled but unusable: {error}"
@@ -667,6 +680,7 @@ fn register_app_runtime_service(
             })?
             .on_exhaustion(i2pr_runtime::RestartExhaustion::Degrade),
         )
+        .startup_requirement(i2pr_core::StartupRequirement::Optional)
         .depends_on(i2pr_runtime::ServiceName::new(LIFECYCLE_SERVICE_NAME).expect("static name"));
     builder.register(spec).map_err(|error| {
         DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {error}"))

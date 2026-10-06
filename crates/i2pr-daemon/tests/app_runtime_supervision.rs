@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use i2pr_core::{LifecycleState, ShutdownReason};
+use i2pr_core::{DegradationCode, HealthState, LifecycleState, ShutdownReason};
 use i2pr_daemon::app_runtime::set_manager_path_override_for_tests;
 use i2pr_daemon::config::{AppRuntimeConfig, Config};
 
@@ -232,20 +232,30 @@ async fn a_manager_that_completes_the_handshake_reaches_ready_and_is_reaped_on_s
     }
 }
 
-/// A manager that speaks the wrong magic must never reach ready.
+/// Plan 369 §5 / invariant 1: a manager that speaks the wrong magic degrades the
+/// app runtime and nothing else.
 ///
-/// **Known gap (tracked by corrective Plan 371).** The supervisor awaits
-/// initial readiness for every registered service and aborts router startup if
-/// one never arrives, whatever its classification. A manager that is spawned
-/// but whose greeting is rejected therefore fails *router startup*, rather
-/// than degrading only the app runtime the way Plan 369 invariant 1 requires.
+/// This assertion **replaces** the pre-Plan-371 version of this test, which
+/// recorded the opposite behaviour — that a rejected greeting failed *router
+/// startup*. That was the executable record of the supervisor substrate gap
+/// Plan 371 corrected; see
+/// `plans/closure/runtime-supervision/371-status.md`.
 ///
-/// This test asserts the **current** behaviour deliberately: it is the
-/// executable record of the gap, and it will fail loudly if Plan 371 changes
-/// it, at which point this assertion must be replaced by the degradation
-/// assertion Plan 369 §5 asks for. Do not "fix" it by weakening the assertion.
+/// The properties asserted here are the ones that actually matter, and they are
+/// deliberately not the negation of the old ones:
+///
+/// - readiness still follows the handshake, so a wrong magic never produces a
+///   `Ready` app runtime;
+/// - the router still starts and still reports itself ready, because the app
+///   runtime is registered `StartupRequirement::Optional` and a usable router
+///   must not be permanently reported as unready because an optional feature
+///   is broken;
+/// - the app runtime is reported as a typed degradation, so the operator can
+///   still see that the feature they enabled is not working;
+/// - every manager child spawned across the exhausted restart budget is
+///   terminated and reaped.
 #[tokio::test]
-async fn a_manager_that_sends_the_wrong_magic_never_becomes_ready() {
+async fn a_manager_that_sends_the_wrong_magic_degrades_the_feature_not_the_router() {
     let scratch = Scratch::new("wrongmagic");
     // Stays alive, so only the handshake can reject it. This proves readiness
     // is gated on the handshake rather than on the process merely existing.
@@ -264,36 +274,80 @@ async fn a_manager_that_sends_the_wrong_magic_never_becomes_ready() {
 
     // The greeting is rejected immediately, so the bounded restart budget is
     // spent well inside the readiness deadline.
-    let outcome = tokio::time::timeout(DEADLINE, runner).await;
+    let reached_ready = wait_until(&handle, |snapshot| {
+        snapshot.lifecycle == i2pr_runtime::RouterLifecycle::Ready
+    })
+    .await;
     let snapshot = handle.snapshot();
+    let app_runtime = lifecycle_of(&snapshot, "app-runtime");
     set_manager_path_override_for_tests(None);
 
-    if outcome.is_err() {
-        panic!(
-            "a rejected handshake must fail fast rather than hang; snapshot={snapshot:?} \
-             app_runtime={:?}",
-            lifecycle_of(&snapshot, "app-runtime")
-        );
-    }
     assert!(
-        !snapshot.ready,
-        "a wrong manager magic must never reach ready; snapshot={snapshot:?}"
+        reached_ready,
+        "a rejected manager greeting must degrade the app runtime, not abort router startup; \
+         snapshot={snapshot:?} app_runtime={app_runtime:?}"
     );
-    let app_runtime = lifecycle_of(&snapshot, "app-runtime");
+    assert_eq!(
+        app_runtime,
+        Some(LifecycleState::Degraded),
+        "the app runtime must be published as degraded; snapshot={snapshot:?}"
+    );
     assert_ne!(
         app_runtime,
         Some(LifecycleState::Ready),
         "readiness must follow a valid handshake, not merely a live process"
     );
+    let health_of_app_runtime = snapshot
+        .services
+        .iter()
+        .find(|entry| entry.service.as_str() == "app-runtime")
+        .map(|entry| entry.health);
+    assert_eq!(
+        health_of_app_runtime,
+        Some(HealthState::Degraded(DegradationCode::LocalPolicy)),
+        "the degradation must carry a typed code; snapshot={snapshot:?}"
+    );
+    assert!(
+        snapshot.ready,
+        "a broken optional feature must not leave a usable router reported as unready; \
+         snapshot={snapshot:?}"
+    );
+    assert!(
+        snapshot
+            .services
+            .iter()
+            .any(|entry| { entry.service.as_str() == "lifecycle" && entry.health.is_ready() }),
+        "the essential lifecycle service must still be ready; snapshot={snapshot:?}"
+    );
+
+    handle.shutdown(ShutdownReason::Test);
+    let outcome = tokio::time::timeout(DEADLINE, runner).await;
+    assert!(
+        matches!(outcome, Ok(Ok(Ok(_)))),
+        "the supervisor must report a clean shutdown, got {outcome:?}"
+    );
+    if let Ok(Ok(Ok(report))) = outcome {
+        assert_eq!(report.remaining_tasks(), 0, "a task outlived shutdown");
+        assert_eq!(
+            report.remaining_child_tasks(),
+            0,
+            "a manager child outlived shutdown"
+        );
+        assert_eq!(
+            report.cleanup_failures(),
+            0,
+            "manager cleanup violated a shutdown invariant"
+        );
+    }
 }
 
 /// A missing sibling manager is refused at composition, not at startup.
 ///
-/// The supervisor's startup gate cannot express "this service is optional", so
-/// Plan 369 preflights the sibling in the composition root: an operator who
-/// enables the app runtime without the manager binary gets an actionable
-/// configuration error immediately, instead of an opaque readiness failure
-/// seconds later with no indication that the manager was the cause.
+/// The `app-runtime` service is startup-optional (Plan 371), so an unresolvable
+/// sibling would otherwise degrade silently and the operator would get a usable
+/// router with no indication that the feature they enabled never started. Plan
+/// 369's composition-root preflight keeps that case an actionable configuration
+/// error instead.
 #[test]
 fn a_missing_manager_binary_is_refused_at_composition_with_an_actionable_message() {
     let scratch = Scratch::new("missing");

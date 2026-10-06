@@ -9,7 +9,7 @@ use futures_util::FutureExt;
 use i2pr_core::{
     CancellationReason, DegradationCode, FailureCategory, HealthDetail, HealthState,
     LifecycleState, ServiceClassification, ServiceCompletion, ServiceFailure,
-    ServiceFailureCategory, ServiceName, ShutdownReason,
+    ServiceFailureCategory, ServiceName, ShutdownReason, StartupRequirement,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -266,6 +266,20 @@ impl std::fmt::Debug for Supervisor {
     }
 }
 
+/// Bookkeeping threaded through one service's initial-readiness wait.
+///
+/// Bundled because the wait needs three mutable owners plus the set of services
+/// that already degraded at startup; passing them as five separate parameters
+/// made the signature exceed the workspace's argument bound and, more usefully,
+/// obscured that they are one startup session's state rather than five
+/// independent inputs.
+struct StartupSession<'a> {
+    tasks: &'a mut JoinSet<ManagerOutput>,
+    active: &'a mut BTreeMap<ServiceName, ActiveManager>,
+    completions: &'a mut BTreeMap<ServiceName, ServiceCompletion>,
+    degraded: &'a BTreeSet<ServiceName>,
+}
+
 impl Supervisor {
     /// Validates global shutdown policy and prepares bounded health snapshots.
     pub fn new(
@@ -289,6 +303,7 @@ impl Supervisor {
                     SharedHealth::new(
                         name.clone(),
                         service.classification(),
+                        service.startup_disposition(),
                         service.description_text(),
                         Arc::clone(&clock),
                     ),
@@ -357,6 +372,10 @@ impl Supervisor {
         let mut active = BTreeMap::<ServiceName, ActiveManager>::new();
         let mut completions = BTreeMap::new();
         let mut startup_receivers = BTreeMap::<ServiceName, watch::Receiver<bool>>::new();
+        // Services that failed startup without failing the router. Tracked so a
+        // later service that declared a dependency on one is not told the
+        // dependency is unavailable; see `observe_startup_peer`.
+        let mut degraded_at_startup = BTreeSet::<ServiceName>::new();
 
         for name in self.graph.startup_order() {
             let spec = self.graph.service(name);
@@ -381,14 +400,28 @@ impl Supervisor {
                     name,
                     spec.startup_timeout(),
                     receiver,
-                    &mut tasks,
-                    &mut active,
-                    &mut completions,
+                    &mut StartupSession {
+                        tasks: &mut tasks,
+                        active: &mut active,
+                        completions: &mut completions,
+                        degraded: &degraded_at_startup,
+                    },
                 )
                 .await
             {
                 Ok(()) => {}
                 Err(completion) => {
+                    if self.degrades_startup_failure(spec, &completion) {
+                        // Startup continues. Dependents of this service have not
+                        // been spawned yet — `startup_order` is dependency-first
+                        // — so there is nothing to cancel or re-stamp here; the
+                        // degraded service stays visible in the snapshot and
+                        // later services are still given their own chance.
+                        self.record_non_fatal_startup_failure(name, &completion, &mut completions);
+                        degraded_at_startup.insert(name.clone());
+                        continue;
+                    }
+                    self.record_completion(name, &completion, &mut completions);
                     let report = self
                         .shutdown(
                             &mut tasks,
@@ -456,6 +489,21 @@ impl Supervisor {
                     let Some(manager) = active.remove(&output.name) else {
                         continue;
                     };
+                    if degraded_at_startup.remove(&output.name) {
+                        // This service's startup disposition was already decided
+                        // and published by `degrades_startup_failure`. Its
+                        // manager output can legitimately arrive *after*
+                        // startup — the readiness gate may have been satisfied by
+                        // the readiness signal while this output was still
+                        // queued behind it in the `JoinSet`.
+                        //
+                        // Re-running classification semantics here would report
+                        // the same failure twice, and for a `Degradable` service
+                        // it would call `mark_dependents_degraded`, cancelling
+                        // dependents that startup deliberately allowed to run.
+                        let _ = manager;
+                        continue;
+                    }
                     let classification = self.graph.service(&output.name).classification();
                     let failure = output.completion.is_failure();
                     if !failure || self.root.is_cancelled() {
@@ -608,15 +656,24 @@ impl Supervisor {
         current: &ServiceName,
         timeout: Duration,
         mut receiver: watch::Receiver<bool>,
-        tasks: &mut JoinSet<ManagerOutput>,
-        active: &mut BTreeMap<ServiceName, ActiveManager>,
-        completions: &mut BTreeMap<ServiceName, ServiceCompletion>,
+        session: &mut StartupSession<'_>,
     ) -> Result<(), ServiceCompletion> {
+        let tasks = &mut *session.tasks;
+        let active = &mut *session.active;
+        let completions = &mut *session.completions;
+        let degraded_at_startup = &session.degraded;
         let wait = async {
             loop {
                 tokio::select! {
                     changed = receiver.changed() => {
                         if changed.is_err() {
+                            // The readiness sender is gone, so this service's
+                            // manager has finished — but its output may still
+                            // be ordered *behind* an earlier peer's in the
+                            // `JoinSet`, and `join_next` hands out completion
+                            // order. So keep joining until this service's own
+                            // output appears: a peer that was merely observed
+                            // is not evidence that this service became ready.
                             loop {
                                 self.state.service_finished();
                                 match tasks.join_next().await {
@@ -640,35 +697,27 @@ impl Supervisor {
                                             );
                                             return Ok(());
                                         }
-                                        self.record_completion(
-                                            &output.name,
-                                            &output.completion,
-                                            completions,
-                                        );
+                                        // The caller is the disposition decision
+                                        // point: it either degrades this service or
+                                        // fails startup, and stamps the completion
+                                        // itself so an optional service never
+                                        // publishes a transient `Failed` health state.
                                         return Err(output.completion);
                                     }
                                     Some(Ok(output)) => {
                                         active.remove(&output.name);
-                                        self.record_startup_completion(
-                                            &output.name,
-                                            &output.completion,
+                                        if let Some(completion) = self.observe_startup_peer(
+                                            current,
+                                            &output,
+                                            degraded_at_startup,
                                             completions,
-                                        );
-                                        if self.graph.service(&output.name).classification()
-                                            == ServiceClassification::Essential
-                                            && output.completion.is_failure()
-                                        {
-                                            return Err(output.completion);
-                                        }
-                                        if self.graph.service(current).dependencies().contains(&output.name) {
-                                            return Err(ServiceCompletion::Failed(ServiceFailure::new(
-                                                ServiceFailureCategory::DependencyUnavailable,
-                                                None,
-                                            )));
+                                        ) {
+                                            return Err(completion);
                                         }
                                     }
-                                    Some(Err(_)) => return Err(ServiceCompletion::TaskJoinFailure),
-                                    None => return Err(ServiceCompletion::TaskJoinFailure),
+                                    Some(Err(_)) | None => {
+                                        return Err(ServiceCompletion::TaskJoinFailure);
+                                    }
                                 }
                             }
                         }
@@ -699,32 +748,22 @@ impl Supervisor {
                                     );
                                     return Ok(());
                                 }
-                                self.record_completion(
-                                    &output.name,
-                                    &output.completion,
-                                    completions,
-                                );
+                                // Disposition is decided by the caller; see the
+                                // equivalent arm in the watch-sender branch.
                                 return Err(output.completion);
                             }
                             Some(Ok(output)) => {
                                 active.remove(&output.name);
-                                self.record_startup_completion(
-                                    &output.name,
-                                    &output.completion,
+                                if let Some(completion) = self.observe_startup_peer(
+                                    current,
+                                    &output,
+                                    degraded_at_startup,
                                     completions,
-                                );
-                                if self.graph.service(&output.name).classification()
-                                    == ServiceClassification::Essential
-                                    && output.completion.is_failure()
-                                {
-                                    return Err(output.completion);
+                                ) {
+                                    return Err(completion);
                                 }
-                                if self.graph.service(current).dependencies().contains(&output.name) {
-                                    return Err(ServiceCompletion::Failed(ServiceFailure::new(
-                                        ServiceFailureCategory::DependencyUnavailable,
-                                        None,
-                                    )));
-                                }
+                                // A benign peer exited; this service still owes the supervisor
+                                // a readiness signal.
                             }
                             Some(Err(_)) => return Err(ServiceCompletion::TaskJoinFailure),
                             None => return Err(ServiceCompletion::TaskJoinFailure),
@@ -781,6 +820,123 @@ impl Supervisor {
             (LifecycleState::Failed, HealthState::Failed)
         };
         self.set_health(name, lifecycle, health, 0, completion.category(), None);
+        completions.insert(name.clone(), completion.clone());
+    }
+
+    /// Handles one *other* service's manager output observed while waiting for
+    /// `current` to become ready.
+    ///
+    /// Returns `Some(completion)` when that output must abort `current`'s
+    /// startup, and `None` when it was merely observed and the wait must
+    /// continue. The distinction is load-bearing: a peer service exiting is not
+    /// evidence that `current` became ready, so collapsing `None` into a
+    /// successful wait would let a service clear its readiness gate without ever
+    /// signalling one.
+    ///
+    /// A service already in `degraded_at_startup` is exempt, and that exemption
+    /// is the whole point of tracking the set. A dependency edge constrains
+    /// start *order*, not *availability*: once a dependency has explicitly
+    /// declared itself startup-optional and degraded, its dependents are still
+    /// given their own attempt rather than being failed on its behalf. Without
+    /// this, `StartupRequirement::Optional` would only work for leaf services,
+    /// and any real optional subsystem — which always has dependants — would
+    /// still take the router down.
+    ///
+    /// Re-recording the peer is skipped for the same reason: the startup
+    /// disposition already stamped a typed degradation, and routing it through
+    /// `record_startup_completion` again would overwrite that with a
+    /// classification-derived `Failed` for a `Restartable` service.
+    fn observe_startup_peer(
+        &self,
+        current: &ServiceName,
+        output: &ManagerOutput,
+        degraded_at_startup: &BTreeSet<ServiceName>,
+        completions: &mut BTreeMap<ServiceName, ServiceCompletion>,
+    ) -> Option<ServiceCompletion> {
+        if degraded_at_startup.contains(&output.name) {
+            return None;
+        }
+        self.record_startup_completion(&output.name, &output.completion, completions);
+        if self.graph.service(&output.name).classification() == ServiceClassification::Essential
+            && output.completion.is_failure()
+        {
+            return Some(output.completion.clone());
+        }
+        if self
+            .graph
+            .service(current)
+            .dependencies()
+            .contains(&output.name)
+        {
+            return Some(ServiceCompletion::Failed(ServiceFailure::new(
+                ServiceFailureCategory::DependencyUnavailable,
+                None,
+            )));
+        }
+        None
+    }
+
+    /// Whether a startup failure for `spec` degrades this one service instead
+    /// of failing router startup.
+    ///
+    /// Two independent, explicitly registered policies can make startup
+    /// non-fatal, and both are decided at registration time rather than
+    /// inferred from the failure:
+    ///
+    /// 1. [`StartupRequirement::Optional`] — the service declared that the
+    ///    router does not need it to become ready. Graph validation has already
+    ///    refused this for an `Essential` service, so an optional service
+    ///    cannot silently downgrade a required one.
+    /// 2. [`RestartExhaustion::Degrade`] on a `Restartable` service — the
+    ///    service exhausted its bounded restart budget with a degrade
+    ///    disposition. This is the *same* disposition the steady-state handler
+    ///    already honours. Applying it only after startup completed would mean a
+    ///    service that breaks during its first seconds takes down a router that
+    ///    would have survived the identical failure a minute later, so
+    ///    exhaustion must not mean one thing during startup and another after.
+    fn degrades_startup_failure(&self, spec: &ServiceSpec, completion: &ServiceCompletion) -> bool {
+        if spec.startup_disposition() == StartupRequirement::Optional {
+            return true;
+        }
+        matches!(spec.classification(), ServiceClassification::Restartable)
+            && matches!(completion, ServiceCompletion::RestartBudgetExhausted)
+            && spec
+                .restart_config()
+                .is_some_and(|policy| policy.exhaustion() == RestartExhaustion::Degrade)
+    }
+
+    /// Publishes a non-fatal startup failure as a typed degradation and keeps
+    /// the completion available in the final shutdown report.
+    ///
+    /// The completion is deliberately *not* routed through
+    /// [`Self::record_completion`] or [`Self::record_startup_completion`]: both
+    /// classify by `ServiceClassification` alone and would stamp a service the
+    /// operator declared startup-optional as `Failed`, which is the very state
+    /// this path exists to avoid publishing.
+    ///
+    /// The observed restart count is carried through rather than reset. A
+    /// service that just exhausted a bounded budget of N attempts reporting
+    /// `restart_count: 0` would tell an operator the opposite of what happened,
+    /// and the count is already correct in health by the time a manager returns
+    /// `RestartBudgetExhausted`.
+    fn record_non_fatal_startup_failure(
+        &self,
+        name: &ServiceName,
+        completion: &ServiceCompletion,
+        completions: &mut BTreeMap<ServiceName, ServiceCompletion>,
+    ) {
+        let restart_count = self
+            .health
+            .get(name)
+            .map_or(0, |health| health.snapshot().restart_count());
+        self.set_health(
+            name,
+            LifecycleState::Degraded,
+            HealthState::Degraded(DegradationCode::LocalPolicy),
+            restart_count,
+            completion.category(),
+            None,
+        );
         completions.insert(name.clone(), completion.clone());
     }
 
@@ -1699,5 +1855,600 @@ mod tests {
             CancellationReason::OperatorRequest,
             CancellationReason::OperatorRequest
         );
+    }
+
+    /// Advances paused time until `predicate` holds, yielding between steps.
+    ///
+    /// Yielding *before* each advance matters: a service's readiness deadline
+    /// does not exist until its manager task has been polled once, so advancing
+    /// first would move the clock past a deadline that was registered later and
+    /// the service would wait a whole extra timeout.
+    async fn advance_until_ready(handle: &SupervisorHandle) {
+        for _ in 0..128 {
+            tokio::task::yield_now().await;
+            if handle.snapshot().lifecycle == RouterLifecycle::Ready {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(250)).await;
+        }
+    }
+
+    fn essential_and(service: ServiceSpec) -> ServiceGraph {
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder
+            .register(forever_service(
+                "essential",
+                ServiceClassification::Essential,
+            ))
+            .expect("register");
+        builder.register(service).expect("register");
+        builder.build().expect("graph")
+    }
+
+    /// The headline contract: a service the operator declared startup-optional
+    /// may never become ready and the router still starts, reports itself ready,
+    /// and publishes the broken service as a typed degradation rather than a
+    /// failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_startup_optional_service_that_never_signals_ready_does_not_abort_startup() {
+        let stuck = ServiceSpec::new(
+            name("optional-feature"),
+            ServiceClassification::Degradable,
+            |_context| async move { std::future::pending::<ServiceResult>().await },
+        )
+        .startup_requirement(StartupRequirement::Optional)
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let supervisor =
+            Supervisor::new(essential_and(stuck), Duration::from_secs(10)).expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        advance_until_ready(&handle).await;
+
+        let running = handle.snapshot();
+        assert_eq!(
+            running.lifecycle,
+            RouterLifecycle::Ready,
+            "an optional feature must not keep the router in Starting: {running:?}"
+        );
+        assert!(
+            running.ready,
+            "an optional feature that never became ready must not hold router readiness false: {running:?}"
+        );
+        let observed = running
+            .services
+            .iter()
+            .find(|service| service.service.as_str() == "optional-feature")
+            .expect("optional feature is visible in the snapshot");
+        assert_eq!(observed.startup_requirement, StartupRequirement::Optional);
+        assert_eq!(observed.classification, ServiceClassification::Degradable);
+        assert!(
+            matches!(
+                observed.health,
+                HealthState::Degraded(DegradationCode::LocalPolicy)
+            ),
+            "a startup-optional failure must be published as degraded, not failed: {observed:?}"
+        );
+        assert!(
+            running
+                .services
+                .iter()
+                .find(|service| service.service.as_str() == "essential")
+                .is_some_and(|service| service.health.is_ready()),
+            "the essential service must still be ready: {running:?}"
+        );
+
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert!(report.was_graceful(), "report: {report:?}");
+        assert_eq!(report.remaining_tasks(), 0);
+        assert_eq!(report.remaining_child_tasks(), 0);
+        assert_eq!(report.cleanup_failures(), 0);
+        assert_eq!(
+            report.completion(&name("optional-feature")),
+            Some(&ServiceCompletion::ReadinessTimeout),
+            "the degraded completion stays available in the shutdown report"
+        );
+    }
+
+    /// Regression guard: the default is `Required`, so a service that never
+    /// signals readiness still fails the whole graph. If this test ever passes
+    /// without an explicit `startup_requirement(StartupRequirement::Optional)`,
+    /// the opt-in has silently become the default.
+    #[tokio::test(start_paused = true)]
+    async fn a_required_service_that_never_signals_ready_still_fails_startup() {
+        let stuck = ServiceSpec::new(
+            name("required-feature"),
+            ServiceClassification::Degradable,
+            |_context| async move { std::future::pending::<ServiceResult>().await },
+        )
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let supervisor =
+            Supervisor::new(essential_and(stuck), Duration::from_secs(10)).expect("supervisor");
+        let Err(SupervisorError::StartupFailed {
+            service,
+            completion,
+            ..
+        }) = supervisor.run().await
+        else {
+            panic!("a required service that never signals ready must fail startup");
+        };
+        assert_eq!(service, name("required-feature"));
+        assert_eq!(completion, ServiceCompletion::ReadinessTimeout);
+    }
+
+    /// The opt-in half of the distinction pinned by
+    /// `restart_budget_exhaustion_degrades_during_startup_like_it_does_after`:
+    /// only an explicit `StartupRequirement::Optional` releases a
+    /// readiness-gating classification from the `ready` computation.
+    ///
+    /// This is the exact shape of Plan 369's `app-runtime` service —
+    /// `Restartable`, `RestartExhaustion::Degrade`, and startup-optional — and
+    /// it is the case where the two policies together are what keeps a usable
+    /// router from being reported as unready.
+    #[tokio::test(start_paused = true)]
+    async fn a_startup_optional_restartable_service_does_not_gate_readiness() {
+        let always_fails = ServiceSpec::new(
+            name("optional-restartable"),
+            ServiceClassification::Restartable,
+            |_context| async move {
+                ServiceResult::Failed(ServiceFailure::new(ServiceFailureCategory::Internal, None))
+            },
+        )
+        .restart_policy(
+            RestartPolicy::new(1, Duration::from_secs(1), Duration::from_secs(2))
+                .expect("policy")
+                .on_exhaustion(RestartExhaustion::Degrade),
+        )
+        .startup_requirement(StartupRequirement::Optional)
+        .timeouts(
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        );
+        let supervisor = Supervisor::new(essential_and(always_fails), Duration::from_secs(10))
+            .expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(4)).await;
+        }
+        advance_until_ready(&handle).await;
+
+        let running = handle.snapshot();
+        assert_eq!(
+            running.lifecycle,
+            RouterLifecycle::Ready,
+            "the optional service must not hold the router in Starting: {running:?}"
+        );
+        assert!(
+            running.ready,
+            "a startup-optional Restartable service that degraded must not gate router readiness: \
+             {running:?}"
+        );
+        let observed = running
+            .services
+            .iter()
+            .find(|service| service.service.as_str() == "optional-restartable")
+            .expect("optional restartable service is visible in the snapshot");
+        assert_eq!(observed.startup_requirement, StartupRequirement::Optional);
+        assert_eq!(
+            observed.health,
+            HealthState::Degraded(DegradationCode::LocalPolicy)
+        );
+
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert!(report.was_graceful(), "report: {report:?}");
+        assert_eq!(report.remaining_tasks(), 0);
+    }
+
+    /// `RestartExhaustion::Degrade` must mean the same thing during startup as
+    /// it does afterwards. Before this policy existed the budget was only
+    /// honoured after the router was already ready, so a restartable service
+    /// that broke in its first seconds killed a router that would have
+    /// survived the identical failure later.
+    #[tokio::test(start_paused = true)]
+    async fn restart_budget_exhaustion_degrades_during_startup_like_it_does_after() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_factory = Arc::clone(&attempts);
+        let always_fails = ServiceSpec::new(
+            name("exhausting"),
+            ServiceClassification::Restartable,
+            move |_context| {
+                let attempts = Arc::clone(&attempts_for_factory);
+                async move {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ServiceResult::Failed(ServiceFailure::new(
+                        ServiceFailureCategory::Internal,
+                        None,
+                    ))
+                }
+            },
+        )
+        .restart_policy(
+            RestartPolicy::new(2, Duration::from_secs(1), Duration::from_secs(2))
+                .expect("policy")
+                .on_exhaustion(RestartExhaustion::Degrade),
+        )
+        .timeouts(
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        );
+        let supervisor = Supervisor::new(essential_and(always_fails), Duration::from_secs(10))
+            .expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        for _ in 0..3 {
+            while attempts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(Duration::from_secs(4)).await;
+        }
+        advance_until_ready(&handle).await;
+
+        // 1 initial attempt + 2 replacement attempts.
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let running = handle.snapshot();
+        assert_eq!(
+            running.lifecycle,
+            RouterLifecycle::Ready,
+            "degrading a restartable service during startup must not fail the router: {running:?}"
+        );
+        let observed = running
+            .services
+            .iter()
+            .find(|service| service.service.as_str() == "exhausting")
+            .expect("exhausting service is visible in the snapshot");
+        assert_eq!(
+            observed.health,
+            HealthState::Degraded(DegradationCode::LocalPolicy),
+            "startup exhaustion must match the steady-state Degrade disposition: {observed:?}"
+        );
+        assert_eq!(
+            observed.restart_count, 2,
+            "the bounded restart budget is still respected during startup"
+        );
+        // `Restartable` gates `SupervisorSnapshot::ready` unconditionally, and
+        // `RestartExhaustion::Degrade` deliberately does *not* release it from
+        // that gate: degrading the service and releasing the router's readiness
+        // are two separate decisions, and only an explicit
+        // `StartupRequirement::Optional` makes the second one. This assertion
+        // pins the pre-existing contract that Plan 371 must not change; see
+        // `a_startup_optional_restartable_service_does_not_gate_readiness` for
+        // the opt-in half.
+        assert!(
+            !running.ready,
+            "a startup-required restartable service must keep gating readiness even after it \
+             degrades: {running:?}"
+        );
+
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert!(report.was_graceful(), "report: {report:?}");
+        assert_eq!(report.remaining_tasks(), 0);
+    }
+
+    /// `RestartExhaustion::Shutdown` is unchanged: budget exhaustion during
+    /// startup still fails the router, so this plan does not turn every broken
+    /// restartable service into a silent degradation.
+    #[tokio::test(start_paused = true)]
+    async fn restart_budget_exhaustion_with_shutdown_policy_still_fails_startup() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_factory = Arc::clone(&attempts);
+        let always_fails = ServiceSpec::new(
+            name("exhausting-hard"),
+            ServiceClassification::Restartable,
+            move |_context| {
+                let attempts = Arc::clone(&attempts_for_factory);
+                async move {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ServiceResult::Failed(ServiceFailure::new(
+                        ServiceFailureCategory::Internal,
+                        None,
+                    ))
+                }
+            },
+        )
+        .restart_policy(
+            RestartPolicy::new(1, Duration::from_secs(1), Duration::from_secs(2))
+                .expect("policy")
+                .on_exhaustion(RestartExhaustion::Shutdown),
+        )
+        .timeouts(
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        );
+        let supervisor = Supervisor::new(essential_and(always_fails), Duration::from_secs(10))
+            .expect("supervisor");
+        // The supervisor must be running before the attempt counter can advance:
+        // the service is only spawned by `run`.
+        let task = tokio::spawn(supervisor.run());
+        for _ in 0..8 {
+            while attempts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(Duration::from_secs(4)).await;
+        }
+        let result = task.await.expect("joined");
+
+        let Err(SupervisorError::StartupFailed { completion, .. }) = result else {
+            panic!("shutdown exhaustion must still fail startup");
+        };
+        assert_eq!(completion, ServiceCompletion::RestartBudgetExhausted);
+    }
+
+    /// A startup-optional service that is cancelled mid-startup must not leave
+    /// an owned task or child task behind. This is the Plan 371 stop condition
+    /// about draining an optional service's children.
+    #[tokio::test(start_paused = true)]
+    async fn a_startup_optional_service_is_drained_without_leaking_owned_tasks() {
+        let stuck = ServiceSpec::new(
+            name("optional-leaky"),
+            ServiceClassification::Degradable,
+            |context| async move {
+                context
+                    .children()
+                    .spawn(|cancellation| async move {
+                        cancellation.cancelled().await;
+                        Ok(())
+                    })
+                    .expect("child registered");
+                std::future::pending::<ServiceResult>().await
+            },
+        )
+        .startup_requirement(StartupRequirement::Optional)
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let supervisor =
+            Supervisor::new(essential_and(stuck), Duration::from_secs(10)).expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        advance_until_ready(&handle).await;
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert!(report.was_graceful(), "report: {report:?}");
+        assert_eq!(report.remaining_tasks(), 0);
+        assert_eq!(report.remaining_child_tasks(), 0);
+        assert_eq!(report.cleanup_failures(), 0);
+        assert_eq!(handle.snapshot().owned_service_tasks, 0);
+        assert_eq!(handle.snapshot().owned_child_tasks, 0);
+    }
+
+    /// A peer service exiting is **not** evidence that the service being started
+    /// has become ready.
+    ///
+    /// Regression guard. `wait_for_initial_ready` observes every manager output
+    /// that arrives while it waits, and a peer may finish while the current
+    /// service is still starting. Treating that observation as a successful wait
+    /// would let the current service clear its readiness gate without ever
+    /// signalling one — the Plan 360 defect class, reintroduced through the
+    /// Plan 371 peer-observation path.
+    ///
+    /// `alpha` signals readiness and then exits, so its output may still be queued
+    /// in the `JoinSet` while `beta`, which never signals, is being started.
+    /// `alpha` is `Optional` so that its clean exit is genuinely benign — an
+    /// `Essential` peer exiting is itself a startup failure, which is correct
+    /// pre-existing behaviour and a different case. Correct behaviour here is
+    /// that `beta` times out and fails startup.
+    #[tokio::test(start_paused = true)]
+    async fn a_benign_peer_exit_does_not_satisfy_another_services_readiness_gate() {
+        let alpha = ServiceSpec::new(
+            name("alpha"),
+            ServiceClassification::Optional,
+            |context| async move {
+                context.signal_ready().expect("ready");
+                ServiceResult::Completed
+            },
+        )
+        .timeouts(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        );
+        let beta = ServiceSpec::new(
+            name("beta"),
+            ServiceClassification::Essential,
+            |_context| async move { std::future::pending::<ServiceResult>().await },
+        )
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder
+            .register(forever_service(
+                "essential",
+                ServiceClassification::Essential,
+            ))
+            .expect("register");
+        builder.register(alpha).expect("register");
+        builder.register(beta).expect("register");
+        let supervisor = Supervisor::new(builder.build().expect("graph"), Duration::from_secs(10))
+            .expect("supervisor");
+
+        let result = supervisor.run().await;
+        let Err(SupervisorError::StartupFailed { service, .. }) = result else {
+            panic!("a peer's exit must not clear another service's readiness gate: {result:?}");
+        };
+        assert_eq!(
+            service,
+            name("beta"),
+            "the failure must name the service that never signalled readiness"
+        );
+    }
+
+    /// A service degraded **during startup** must not be processed a second
+    /// time by the steady-state handler.
+    ///
+    /// A manager's output can legitimately arrive *after* startup: the readiness
+    /// gate may be satisfied by the readiness signal while the failing output is
+    /// still queued behind it in the `JoinSet`. Re-running classification
+    /// semantics on that late output reports the same failure twice and — for a
+    /// `Degradable` service — calls `mark_dependents_degraded`, cancelling
+    /// dependents that startup deliberately allowed to run.
+    ///
+    /// The ordering is forced rather than raced: the optional service's only
+    /// child ignores cancellation for five seconds, so `run_attempt`'s child
+    /// join keeps the manager's output parked well past startup, while the
+    /// supervisor's own startup deadline expires at one second.
+    #[tokio::test(start_paused = true)]
+    async fn a_startup_degraded_service_is_not_reprocessed_by_the_steady_state_handler() {
+        let slow_parent = ServiceSpec::new(
+            name("optional-parent"),
+            ServiceClassification::Degradable,
+            |context| async move {
+                context
+                    .children()
+                    .spawn(|_| async move {
+                        // Deliberately ignores its cancellation token.
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        Ok(())
+                    })
+                    .expect("child registered");
+                std::future::pending::<ServiceResult>().await
+            },
+        )
+        .startup_requirement(StartupRequirement::Optional)
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let dependent = ServiceSpec::new(
+            name("dependent"),
+            ServiceClassification::Degradable,
+            |context| async move {
+                context.signal_ready().expect("ready");
+                context.cancellation().cancelled().await;
+                ServiceResult::RequestedShutdown
+            },
+        )
+        .depends_on(name("optional-parent"));
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder
+            .register(forever_service(
+                "essential",
+                ServiceClassification::Essential,
+            ))
+            .expect("register");
+        builder.register(slow_parent).expect("register");
+        builder.register(dependent).expect("register");
+        let supervisor = Supervisor::new(builder.build().expect("graph"), Duration::from_secs(30))
+            .expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        advance_until_ready(&handle).await;
+        // Well past the moment the parent manager's output becomes available.
+        for _ in 0..64 {
+            tokio::time::advance(Duration::from_millis(250)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let running = handle.snapshot();
+        assert_eq!(running.lifecycle, RouterLifecycle::Ready, "{running:?}");
+        let dependent_state = running
+            .services
+            .iter()
+            .find(|service| service.service.as_str() == "dependent")
+            .expect("dependent is visible in the snapshot");
+        assert_eq!(
+            dependent_state.health,
+            HealthState::Ready,
+            "a late startup failure must not cancel a dependent startup deliberately allowed to \
+             run: {dependent_state:?}"
+        );
+        let parent_state = running
+            .services
+            .iter()
+            .find(|service| service.service.as_str() == "optional-parent")
+            .expect("parent is visible in the snapshot");
+        assert_eq!(
+            parent_state.health,
+            HealthState::Degraded(DegradationCode::LocalPolicy),
+            "the parent's degradation must be reported once, not overwritten: {running:?}"
+        );
+
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert_eq!(report.remaining_tasks(), 0, "report: {report:?}");
+        assert_eq!(report.remaining_child_tasks(), 0, "report: {report:?}");
+    }
+
+    /// Startup order is dependency-first, so when an optional service degrades
+    /// none of its dependents have been spawned yet. A dependent must still get
+    /// its own attempt rather than being silently skipped.
+    #[tokio::test(start_paused = true)]
+    async fn a_dependent_of_a_degraded_optional_service_still_starts() {
+        let stuck = ServiceSpec::new(
+            name("optional-parent"),
+            ServiceClassification::Degradable,
+            |_context| async move { std::future::pending::<ServiceResult>().await },
+        )
+        .startup_requirement(StartupRequirement::Optional)
+        .timeouts(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        );
+        let dependent = ServiceSpec::new(
+            name("dependent"),
+            ServiceClassification::Degradable,
+            |context| async move {
+                context.signal_ready().expect("ready");
+                context.cancellation().cancelled().await;
+                ServiceResult::RequestedShutdown
+            },
+        )
+        .depends_on(name("optional-parent"));
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder
+            .register(forever_service(
+                "essential",
+                ServiceClassification::Essential,
+            ))
+            .expect("register");
+        builder.register(stuck).expect("register");
+        builder.register(dependent).expect("register");
+        let supervisor = Supervisor::new(builder.build().expect("graph"), Duration::from_secs(10))
+            .expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+
+        advance_until_ready(&handle).await;
+        let running = handle.snapshot();
+        assert_eq!(running.lifecycle, RouterLifecycle::Ready, "{running:?}");
+        assert_eq!(running.owned_service_tasks, 2, "{running:?}");
+        assert!(
+            running
+                .services
+                .iter()
+                .find(|service| service.service.as_str() == "dependent")
+                .is_some_and(|service| service.health.is_ready()),
+            "the dependent must still be started and readied: {running:?}"
+        );
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("joined").expect("shutdown");
+        assert!(report.was_graceful(), "report: {report:?}");
+        assert_eq!(report.remaining_tasks(), 0);
     }
 }

@@ -235,6 +235,27 @@ immediately, listener services signal **after** the bind succeeds, and periodic
 workers signal once their cadence loop exists. Readiness signals are
 owner-tracked; a listener service must never report ready before it has bound.
 
+A second startup defect was **closed by Plan 371**
+(see `plans/closure/managed-native-app-runtime/371-status.md`): the supervisor
+awaited initial readiness for *every* service and failed router startup for any
+that never signalled, **regardless of `ServiceClassification`**, and honoured
+`RestartExhaustion::Degrade` only after startup. So an optional subsystem could
+not be made non-blocking, and Plan 369 invariant 1 was unimplementable. The fix
+is a `StartupRequirement::{Required, Optional}` policy orthogonal to
+classification:
+
+- An optional subsystem the router must survive being broken registers
+  `.startup_requirement(StartupRequirement::Optional)`. It then degrades its own
+  feature instead of aborting startup, and is excluded from
+  `SupervisorSnapshot::ready` so a usable router is not reported as unready.
+- **`RestartExhaustion::Degrade` alone is not enough.** A `Restartable` service
+  that degraded still gates `ready`; degrading a service and releasing router
+  readiness are separate decisions, which is why `app-runtime` carries both.
+- `Required` is the default, and `Optional` + `Essential` is refused at graph
+  build. Never weaken that check to make a service register.
+- A dependency edge constrains start *order*, not *availability*: a service that
+  degraded at startup still lets its dependents start.
+
 ## Testing quirks agents miss
 
 - Runtime tests: prefer `#[tokio::test(start_paused = true)]` / manual clock + explicit bounded deadlines; never wall-clock sleeps for overload/state-machine tests. Socket tests use `127.0.0.1:0` (OS port) and loopback only.

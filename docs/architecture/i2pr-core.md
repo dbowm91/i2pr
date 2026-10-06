@@ -88,6 +88,11 @@ and `ResourceBudget::release` / `release_for_test` (:946-968).
 
 - `enum ServiceClassification` (160) — `Essential / Restartable /
   Degradable / Optional`.
+- `enum StartupRequirement` — `Required` (the `#[default]`) / `Optional`.
+  Deliberately **not** a fifth `ServiceClassification`: that enum describes how
+  a service behaves once the router is running, while this one describes
+  whether the router needs it ready before startup completes. The two are
+  orthogonal. `gates_readiness()` is the predicate the runtime snapshot uses.
 - `enum FailureCategory` (173) — 10-variant static taxonomy:
   `ServiceFailure`, `UnexpectedCleanExit`, `Panic`,
   `TaskJoinFailure`, `StartupTimeout`, `ReadinessTimeout`,
@@ -130,7 +135,11 @@ and `ResourceBudget::release` / `release_for_test` (:946-968).
   `transition_time = Duration::ZERO`; `for_service(..)` (:425) takes
   the full runtime-facing metadata (service, classification,
   lifecycle, state, restart count, last failure, sequence, time,
-  detail). Accessors: `service_name`, `classification`, `lifecycle`,
+  detail). `with_startup_requirement(..)` attaches the validated
+  startup-disposition policy; it is a builder rather than a new argument so an
+  existing `for_service` caller keeps the `Required` default instead of
+  silently acquiring optional startup semantics. Accessors:
+  `service_name`, `classification`, `startup_requirement`, `lifecycle`,
   `health`, `restart_count`, `last_failure`, `state`, `transition_sequence`,
   `transition_time`, `is_live`, `is_ready`, `detail`.
 
@@ -338,9 +347,10 @@ category`/`is_failure`, `ServiceName::as_str`/`Display`, or
 
 - [Overview](overview.md)
 - [i2pr-runtime.md](i2pr-runtime.md) — adds the wakeable
-  cancellation layer and supervision. It uses 24 of this crate's 28
+  cancellation layer and supervision. It uses 25 of this crate's 29
   public items: `LifecycleState`, `InvalidLifecycleTransition`,
   `ServiceName`, `ServiceNameError`, `ServiceClassification`,
+  `StartupRequirement`,
   `ServiceCompletion`, `ServiceFailure`, `ServiceFailureCategory`,
   `FailureCategory`, `HealthState`, `HealthSnapshot`, `HealthDetail`,
   `MAX_HEALTH_DETAIL_BYTES`, `DegradationCode`, `ShutdownReason`,

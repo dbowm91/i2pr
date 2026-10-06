@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures_util::FutureExt;
 use i2pr_core::{
     CancellationReason, DegradationCode, FailureCategory, HealthDetail, HealthSnapshot,
-    HealthState, LifecycleState, ServiceClassification, ServiceName,
+    HealthState, LifecycleState, ServiceClassification, ServiceName, StartupRequirement,
 };
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio::task::JoinSet;
@@ -132,6 +132,7 @@ impl HealthReceiver {
 struct SharedHealthState {
     service: ServiceName,
     classification: ServiceClassification,
+    startup_requirement: StartupRequirement,
     lifecycle: LifecycleState,
     health: HealthState,
     restart_count: u32,
@@ -152,6 +153,7 @@ impl SharedHealth {
     pub(crate) fn new(
         service: ServiceName,
         classification: ServiceClassification,
+        startup_requirement: StartupRequirement,
         description: Option<&'static str>,
         clock: Arc<RuntimeClock>,
     ) -> Arc<Self> {
@@ -166,12 +168,14 @@ impl SharedHealth {
             0,
             clock.now(),
             detail.clone(),
-        );
+        )
+        .with_startup_requirement(startup_requirement);
         let (sender, _) = watch::channel(initial);
         Arc::new(Self {
             state: Mutex::new(SharedHealthState {
                 service,
                 classification,
+                startup_requirement,
                 lifecycle: LifecycleState::Registered,
                 health: HealthState::Starting,
                 restart_count: 0,
@@ -227,7 +231,8 @@ impl SharedHealth {
             state.transition_sequence,
             state.clock.now(),
             state.detail.clone(),
-        );
+        )
+        .with_startup_requirement(state.startup_requirement);
         // `send` leaves a watch channel unchanged when there are no
         // subscribers. `send_replace` keeps the latest-state snapshot valid
         // for direct supervisor inspection as well as subscribers.

@@ -1,6 +1,6 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp2-landed-blocked-on-plan-371**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp3-unblocked**.
 
 Work packages landed: **WP1, WP2**. Remaining: WP3, WP4, WP5, WP6.
 
@@ -24,8 +24,13 @@ the **whole router's startup down**, which contradicts this plan's invariant 1
 down the router").
 
 This is not fixed inside Plan 369, because the fix is a generic `i2pr-runtime`
-substrate change. It is registered as **corrective Plan 371**
-(`plans/implementation/managed-native-app-runtime/371-optional-non-blocking-service-startup-corrective.md`).
+substrate change. It was registered as **corrective Plan 371**
+(`plans/implementation/managed-native-app-runtime/371-optional-non-blocking-service-startup-corrective.md`)
+and **Plan 371 has now passed**
+(`plans/closure/managed-native-app-runtime/371-status.md`): the `app-runtime`
+service is registered `StartupRequirement::Optional`, so a manager that is
+spawned and then rejected degrades the app runtime and the router starts.
+WP3–WP6 are unblocked.
 
 ### What WP2 does about it in the meantime
 
@@ -34,12 +39,19 @@ WP2 refuses to configure the router into a state it cannot start:
 - the composition root **preflights** the sibling manager and returns an
   actionable `DaemonError` when it cannot be resolved, so a missing
   `i2pr-appd` is a configuration error rather than an opaque startup failure;
-- the post-spawn rejection path is left explicitly unimplemented-safe and is
+- the post-spawn rejection path was left explicitly unimplemented-safe and was
   asserted as the **current** behaviour by
   `crates/i2pr-daemon/tests/app_runtime_supervision.rs`
-  (`a_manager_that_sends_the_wrong_magic_never_becomes_ready`). That test's doc
-  comment names the gap and states that it must be **replaced** by the
-  degradation assertion once Plan 371 lands. Do not weaken it to pass.
+  (`a_manager_that_sends_the_wrong_magic_never_becomes_ready`). As that test's
+  doc comment required, Plan 371 **replaced** it with
+  `a_manager_that_sends_the_wrong_magic_degrades_the_feature_not_the_router`,
+  which asserts the degradation rather than the gap.
+
+The composition preflight is **retained**, and its original justification is no
+longer true. The surviving reason is stronger: a *present but broken* manager
+should degrade, whereas an operator who enabled a feature without installing its
+manager should get an actionable configuration error rather than a router that
+silently runs without the feature they asked for.
 
 ### Defects found and corrected inside WP2
 

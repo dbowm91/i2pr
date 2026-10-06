@@ -193,6 +193,9 @@ deterministic (lexically ordered) topological sequence.
 - `InvalidTimeout { service, field }` — a timeout was zero or above the maximum.
 - `InvalidRestartPolicy { service, classification }` — a restartable service has
   no valid policy.
+- `ContradictoryStartupRequirement { service, classification }` — a service was
+  declared `StartupRequirement::Optional` while classified `Essential`. The two
+  statements contradict each other, so the graph refuses to resolve it silently.
 - `DescriptionTooLong { service }` — static diagnostic text exceeded the bound.
 
 A cycle or a missing dependency is therefore a **construction-time**
@@ -206,6 +209,48 @@ A cycle or a missing dependency is therefore a **construction-time**
 `MaximumBeforeInitial`, `DelayTooLong { maximum }`.
 `RestartExhaustion` is `Degrade` (keep running, publish degraded) or `Shutdown`
 (cancel the graph and fail the router).
+
+### Startup requirement (Plan 371)
+
+`ServiceClassification` describes how a service behaves **once the router is
+running**. `StartupRequirement` is a separate, orthogonal policy describing
+whether the router **needs it to become ready before startup completes**:
+
+- `StartupRequirement::Required` — the default. A service that never signals
+  readiness fails router startup exactly as before.
+- `StartupRequirement::Optional` — opt-in. A service that never signals
+  readiness is recorded as `Degraded`/`LocalPolicy`, startup continues, and the
+  service is excluded from `SupervisorSnapshot::ready`.
+
+Two independent policies can therefore make a startup failure non-fatal, and
+both are decided at registration time rather than inferred from the failure:
+
+1. `StartupRequirement::Optional`, for a service that may be unusable from the
+   start (a manager whose handshake never completes, an unresolvable executable);
+2. `RestartExhaustion::Degrade` on a `Restartable` service, which is honoured
+   **during startup as well as after**. Before Plan 371 the budget was only
+   consulted in the steady-state handler, so a restartable service that broke in
+   its first seconds took down a router that would have survived the identical
+   failure a minute later.
+
+Degrading a service and releasing the router's readiness are separate decisions:
+a `Restartable` service that degraded still gates `ready` unless it *also* opts
+into `StartupRequirement::Optional`. Plan 369's `app-runtime` service carries
+both, because those are exactly the two distinct failures it must survive.
+
+Two further semantics are load-bearing and pinned by tests:
+
+- **A dependency edge constrains start order, not availability.** Once a
+  dependency has degraded at startup, its dependents are still given their own
+  attempt rather than being failed on its behalf with
+  `DependencyUnavailable`. Without this, `Optional` would only work for leaf
+  services and any real optional subsystem — which always has dependants —
+  would still take the router down.
+- **`SupervisorSnapshot::ready` reports operator-usable truth.** It is computed
+  over services whose `startup_requirement` gates readiness *and* whose
+  classification is `Essential` or `Restartable`. `RouterLifecycle::Ready` and
+  `ready` are therefore consistent: an optional feature that never started does
+  not leave a usable router permanently reported as unready.
 
 ### Supervisor (`supervisor.rs`)
 
@@ -659,7 +704,7 @@ integration tests across the 4 files in `tests/` — 102 total.
 | `cancel.rs` | 4 async | first-reason-wins, parent reason visible to child, all waiters wake |
 | `channel.rs` | 11 (8 `start_paused`) | ordering + resource charge until processing finishes, `send_until` deadline/cancel, synthetic overload graph drains with no usage or task leak, request/latest-state paths |
 | `context.rs` | 3 | child scope join, bounded task limit, shutdown report |
-| `graph.rs` | 3 sync | lexical topological determinism, invalid graphs rejected before startup, restartable services require a policy |
+| `graph.rs` | 6 sync | lexical topological determinism, invalid graphs rejected before startup, restartable services require a policy, optional-startup and essential classification is a contradiction, startup requirement defaults to `Required` |
 | `ntcp2_data_oracle.rs` | 5 | bounded step budget, every negative bound, exact target correlation |
 | `ntcp2_driver.rs` | 6 (4 `start_paused`) | initiator/responder action fulfillment, padding bounds |
 | `ntcp2_handshake_observer.rs` | 2 | observer records metadata only, never payload |

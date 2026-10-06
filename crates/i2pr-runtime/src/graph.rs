@@ -6,7 +6,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use i2pr_core::{MAX_HEALTH_DETAIL_BYTES, ServiceClassification, ServiceFailure, ServiceName};
+use i2pr_core::{
+    MAX_HEALTH_DETAIL_BYTES, ServiceClassification, ServiceFailure, ServiceName, StartupRequirement,
+};
 
 use crate::context::{ChildFailurePolicy, ServiceContext};
 
@@ -170,6 +172,7 @@ impl std::error::Error for RestartPolicyError {}
 pub struct ServiceSpec {
     name: ServiceName,
     classification: ServiceClassification,
+    startup_requirement: StartupRequirement,
     dependencies: BTreeSet<ServiceName>,
     startup_timeout: Duration,
     readiness_timeout: Duration,
@@ -185,6 +188,7 @@ impl Clone for ServiceSpec {
         Self {
             name: self.name.clone(),
             classification: self.classification,
+            startup_requirement: self.startup_requirement,
             dependencies: self.dependencies.clone(),
             startup_timeout: self.startup_timeout,
             readiness_timeout: self.readiness_timeout,
@@ -203,6 +207,7 @@ impl std::fmt::Debug for ServiceSpec {
             .debug_struct("ServiceSpec")
             .field("name", &self.name)
             .field("classification", &self.classification)
+            .field("startup_requirement", &self.startup_requirement)
             .field("dependencies", &self.dependencies)
             .field("startup_timeout", &self.startup_timeout)
             .field("readiness_timeout", &self.readiness_timeout)
@@ -223,6 +228,7 @@ impl ServiceSpec {
         Self {
             name,
             classification,
+            startup_requirement: StartupRequirement::Required,
             dependencies: BTreeSet::new(),
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             readiness_timeout: DEFAULT_READINESS_TIMEOUT,
@@ -237,6 +243,20 @@ impl ServiceSpec {
     /// Adds a dependency by stable service identifier.
     pub fn depends_on(mut self, dependency: ServiceName) -> Self {
         self.dependencies.insert(dependency);
+        self
+    }
+
+    /// Declares whether startup may continue when this service never signals
+    /// readiness.
+    ///
+    /// The default is [`StartupRequirement::Required`], which preserves the
+    /// all-or-nothing startup contract. Opting into
+    /// [`StartupRequirement::Optional`] is the only supported way for a broken
+    /// subsystem to degrade its own feature rather than abort router startup,
+    /// and it is rejected at graph build for an `Essential` service because
+    /// those two statements contradict each other.
+    pub const fn startup_requirement(mut self, requirement: StartupRequirement) -> Self {
+        self.startup_requirement = requirement;
         self
     }
 
@@ -277,6 +297,10 @@ impl ServiceSpec {
 
     pub(crate) const fn classification(&self) -> ServiceClassification {
         self.classification
+    }
+
+    pub(crate) const fn startup_disposition(&self) -> StartupRequirement {
+        self.startup_requirement
     }
 
     pub(crate) fn dependencies(&self) -> &BTreeSet<ServiceName> {
@@ -342,6 +366,13 @@ pub enum GraphError {
         service: ServiceName,
         classification: ServiceClassification,
     },
+    /// A service declared an optional startup requirement while being
+    /// classified essential. The two are contradictory, so the graph refuses to
+    /// resolve the ambiguity silently.
+    ContradictoryStartupRequirement {
+        service: ServiceName,
+        classification: ServiceClassification,
+    },
     /// Static diagnostic text exceeded the health-detail bound.
     DescriptionTooLong { service: ServiceName },
 }
@@ -384,6 +415,15 @@ impl std::fmt::Display for GraphError {
                 write!(
                     formatter,
                     "service {service} has invalid restart policy for {classification:?}"
+                )
+            }
+            Self::ContradictoryStartupRequirement {
+                service,
+                classification,
+            } => {
+                write!(
+                    formatter,
+                    "service {service} cannot be startup-optional and {classification:?}"
                 )
             }
             Self::DescriptionTooLong { service } => {
@@ -488,6 +528,14 @@ impl ServiceGraphBuilder {
                     && service.restart_policy.is_some())
             {
                 return Err(GraphError::InvalidRestartPolicy {
+                    service: service.name.clone(),
+                    classification: service.classification,
+                });
+            }
+            if service.startup_requirement == StartupRequirement::Optional
+                && service.classification == ServiceClassification::Essential
+            {
+                return Err(GraphError::ContradictoryStartupRequirement {
                     service: service.name.clone(),
                     classification: service.classification,
                 });
@@ -644,5 +692,81 @@ mod tests {
             builder.build(),
             Err(GraphError::InvalidRestartPolicy { .. })
         ));
+    }
+
+    #[test]
+    fn a_startup_optional_service_may_not_also_be_essential() {
+        let mut builder = ServiceGraph::builder(2).expect("bound");
+        builder
+            .register(service("essential", ServiceClassification::Essential))
+            .expect("register");
+        builder
+            .register(
+                service("contradiction", ServiceClassification::Essential)
+                    .startup_requirement(StartupRequirement::Optional),
+            )
+            .expect("register");
+        assert!(matches!(
+            builder.build(),
+            Err(GraphError::ContradictoryStartupRequirement { .. })
+        ));
+    }
+
+    #[test]
+    fn startup_requirement_defaults_to_required_for_every_classification() {
+        // This is the guard for "no existing service changes behaviour without an
+        // explicit opt-in": a spec that never calls `startup_requirement` must
+        // keep gating readiness, whatever its classification.
+        for classification in [
+            ServiceClassification::Essential,
+            ServiceClassification::Restartable,
+            ServiceClassification::Degradable,
+            ServiceClassification::Optional,
+        ] {
+            assert_eq!(
+                service("defaulting", classification).startup_disposition(),
+                StartupRequirement::Required,
+                "{classification:?} must default to Required"
+            );
+            assert_eq!(StartupRequirement::default(), StartupRequirement::Required);
+        }
+    }
+
+    #[test]
+    fn optional_startup_is_accepted_for_every_non_essential_classification() {
+        let policy =
+            RestartPolicy::new(1, Duration::from_secs(1), Duration::from_secs(1)).expect("policy");
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder
+            .register(service("essential", ServiceClassification::Essential))
+            .expect("register");
+        builder
+            .register(
+                service("restartable", ServiceClassification::Restartable)
+                    .restart_policy(policy)
+                    .startup_requirement(StartupRequirement::Optional),
+            )
+            .expect("register");
+        builder
+            .register(
+                service("degradable", ServiceClassification::Degradable)
+                    .startup_requirement(StartupRequirement::Optional),
+            )
+            .expect("register");
+        builder
+            .register(
+                service("optional", ServiceClassification::Optional)
+                    .startup_requirement(StartupRequirement::Optional),
+            )
+            .expect("register");
+        let graph = builder.build().expect("graph");
+        for name in ["restartable", "degradable", "optional"] {
+            assert_eq!(
+                graph
+                    .service(&ServiceName::new(name).expect("valid name"))
+                    .startup_disposition(),
+                StartupRequirement::Optional
+            );
+        }
     }
 }

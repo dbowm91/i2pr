@@ -1,6 +1,6 @@
 # Plan 371 — optional, non-blocking service startup substrate corrective
 
-Status: **registered-not-started**.
+Status: **passed-optional-non-blocking-service-startup-corrective**.
 
 Classification: **runtime supervision substrate + correctness corrective**.
 
@@ -126,6 +126,10 @@ Plan 371 passes only when:
    `a_manager_that_sends_the_wrong_magic_never_becomes_ready` is **replaced**
    with the degradation assertion Plan 369 §5 requires;
 5. the full routine floor passes.
+
+## Closure
+
+Closed. See `plans/closure/managed-native-app-runtime/371-status.md`.
 
 ## Out of scope
 
