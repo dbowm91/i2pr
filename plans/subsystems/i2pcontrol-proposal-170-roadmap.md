@@ -643,3 +643,44 @@ Plan 348 replaces historical blocked Plan 328 for forward execution. Plan 328 is
 | 346 | passed | protocol/security corrective (ADR 0032, Proposal 170) | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
 | 347 | stopped at a classified boundary, 0 of 4 directions; its i2pr-side correctives (350, 349/351) have since passed, so its remaining work is reference-side harness plus a live lane | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
 | 348 | blocked on 347; Proposal 170/342 passed (scoped), so 347 is its only remaining hard dependency | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |
+
+## 16. Consumer-path correctives and config hygiene (Plans 349–352)
+
+Plan 347 stopped at a classified boundary with 0 of 4 directions, and named two independent causes:
+i2pr had **no type-5 consumer path** at all, and stock Java I2P refuses to dial i2pr without a
+bandwidth tier that ADR 0030 forbids inventing. Those are separable, so the i2pr-side half was
+corrective rather than left to a lane that could never run.
+
+| Plan | State | Classification | Handoff |
+|---|---|---|---|
+| 349 | superseded by 351 (its bounded owner landed; only the production caller was missing) | capability corrective | plans/closure/i2pcontrol-proposal-170/349-status.md (`superseded-by-plan351-with-caller-landed`) |
+| 350 | passed | capability/corrective | plans/closure/i2pcontrol-proposal-170/350-status.md |
+| 351 | passed (gate-scoped) | capability corrective — supplies the missing production caller | plans/closure/i2pcontrol-proposal-170/351-status.md (`passed-gate-scoped-els2-consumer-service-wiring-landed`) |
+| 352 | passed | invariant + security corrective — config secret hygiene | plans/closure/i2pcontrol-proposal-170/352-status.md (`passed-structural-toml-error-redaction-and-conditional-at-rest-mode-gate`) |
+
+Plan 351 made a `.b33` address a service-tunnel remote target under three measured gates
+(`DelayOpen`-only, I2PControl-only, no inline config secret), which closed the i2pr-side consumer
+half that Plan 347 identified.
+
+Plan 352 is **independent of that capability work** and of Plan 349 — it was found while scoping
+351's Gate 3 and was filed separately so 351's scope stayed honest about not owning the defect. It
+is a pre-existing leak, live today, unrelated to any ELS2 change. Both paths are closed
+**structurally**: a probe proved `deny_unknown_fields` leaks the offending key through `toml`'s own
+`message()`, so message filtering would have shipped a guard that passes while the secret still
+reaches stderr. `RedactedTomlError` resolves the byte span to a line/column pair, retains no
+content, and keeps the upstream error reachable via `Error::source`. The matching at-rest gap is
+closed by a conditional `& 0o077` gate in `Config::load`, whose decision is factored into a
+platform-independent function precisely so the **non-POSIX refusal is testable on a POSIX host**.
+That refusal is a deliberate Windows behaviour change: a password-bearing config now fails closed
+rather than loading on a platform that cannot be examined. No CI evidence exists for AC8; the local
+routine floor is 46/46 and the residual `Debug`/`Clone` exposures plus one observed load-sensitive
+flake are recorded in the closure record rather than smoothed over.
+
+**Where the Proposal 170 line now stands.** Plan 352 was the last plan in this line whose work does
+not require the external Java/i2pd lane. Everything still open here is blocked on external
+evidence, not on local work: Plan 347 is stopped at the classified boundary, Plan 348 is blocked on
+347 alone (its §1 re-freeze is executed and clean), and Plans 325/326/327/328 remain blocked.
+
+**No Encrypted LeaseSet2 interoperability or full-Proposal claim is promoted. Type 5 stays
+non-advertised.** Plan 352 hardened the configuration path; it changed no protocol behaviour, no
+capability advertisement, and no support surface.

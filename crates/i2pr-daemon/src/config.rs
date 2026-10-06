@@ -1687,6 +1687,13 @@ impl Config {
             }
         })?;
         let mut config = Self::parse(&contents).map_err(super::error::DaemonError::from)?;
+        // Plan 352 D2: a config carrying a plaintext password must not be
+        // readable by anyone but its owner. Checked *after* parsing so a
+        // secret-free config is never rejected -- the gate is conditional on
+        // there actually being a secret to protect.
+        if !config.i2pcontrol.password.is_empty() {
+            check_secret_file_permissions(path)?;
+        }
         config.source_path = Some(path.to_path_buf());
         Ok(config)
     }
@@ -1709,7 +1716,8 @@ impl Config {
 
     /// Parses, validates, and normalizes TOML configuration text.
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
-        let raw: RawConfig = toml::from_str(contents).map_err(ConfigError::Parse)?;
+        let raw: RawConfig = toml::from_str(contents)
+            .map_err(|error| ConfigError::Parse(RedactedTomlError::new(error, contents)))?;
         if raw.schema_version != CURRENT_SCHEMA_VERSION {
             return Err(ConfigError::UnsupportedSchemaVersion {
                 actual: raw.schema_version,
@@ -3191,12 +3199,169 @@ fn normalize_news(raw: &RawNewsConfig) -> Result<NewsConfig, ConfigError> {
     })
 }
 
+/// A TOML decode failure whose rendered form never carries source content.
+///
+/// # Why this type exists
+///
+/// `toml::de::Error`'s own `Display` renders the **offending source line**:
+/// `toml-1.1.6/src/de/error.rs` writes `line_num | ` followed by the whole
+/// `content` of that line. Its `message()` is not a safe substitute either — a
+/// `deny_unknown_fields` rejection embeds the rejected key *and* its value
+/// (a `deny_unknown_fields` rejection renders the rejected key *and* its value).
+///
+/// So redaction cannot be a filter over the upstream message. This type keeps
+/// only the diagnostic position, computed from the byte span, and drops the
+/// content. An operator still learns **which line failed**; they do not learn
+/// what was on it.
+///
+/// The underlying error is retained and returned by `Error::source`, so a caller
+/// that legitimately needs the full text can still reach it. That is a
+/// deliberate trade: the only current render path is `eprintln!("error: {e}")`
+/// in `main.rs`, which formats the top-level `Display` and does **not** walk the
+/// source chain. `scripts/check-config-secret-hygiene.sh` asserts that no
+/// chain-walking printer (`{:#}`, `anyhow`, `+`) is added to this path.
+pub struct RedactedTomlError {
+    /// Line number, 1-based, when the span could be resolved.
+    line: Option<usize>,
+    /// Column number, 1-based, when the span could be resolved.
+    column: Option<usize>,
+    /// Retained only for `Error::source`; never rendered by this type.
+    source: toml::de::Error,
+}
+
+impl RedactedTomlError {
+    /// Wraps `error`, resolving its byte span to a line/column pair.
+    ///
+    /// `contents` is the exact source that was decoded; it is used only to
+    /// count newlines and is never retained.
+    pub fn new(error: toml::de::Error, contents: &str) -> Self {
+        let (line, column) = match error.span() {
+            Some(span) => position_of(contents, span.start),
+            None => (None, None),
+        };
+        Self {
+            line,
+            column,
+            source: error,
+        }
+    }
+
+    /// Line the failure was anchored at, when known.
+    pub const fn line(&self) -> Option<usize> {
+        self.line
+    }
+
+    /// Column the failure was anchored at, when known.
+    pub const fn column(&self) -> Option<usize> {
+        self.column
+    }
+}
+
+/// Resolves a byte offset to a 1-based `(line, column)` pair.
+fn position_of(contents: &str, offset: usize) -> (Option<usize>, Option<usize>) {
+    if offset > contents.len() {
+        return (None, None);
+    }
+    let before = &contents.as_bytes()[..offset];
+    let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+    let column = match before.iter().rposition(|b| *b == b'\n') {
+        Some(index) => offset - index,
+        None => offset + 1,
+    };
+    (Some(line), Some(column))
+}
+
+impl std::fmt::Display for RedactedTomlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.line, self.column) {
+            (Some(line), Some(column)) => write!(
+                formatter,
+                "TOML parse error at line {line}, column {column}"
+            )?,
+            _ => formatter.write_str("TOML parse error")?,
+        }
+        formatter.write_str(" [source content redacted]")
+    }
+}
+
+impl std::fmt::Debug for RedactedTomlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
+}
+
+impl std::error::Error for RedactedTomlError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// The Plan 352 D2 permission decision, deliberately independent of platform.
+///
+/// # Why this is not inline in the `cfg` branches
+///
+/// Reading a mode is platform-specific, but the *decision* is not. Keeping the
+/// decision here means both outcomes — including the "no mode available" refusal
+/// — are testable on any host, instead of the non-POSIX branch being dead code
+/// that a Linux CI run can never execute. A `cfg`-gated row that cannot run on
+/// the host is a row that has never failed, which is a comment, not a test.
+///
+/// `mode` is `None` exactly when the platform exposes no POSIX mode to check.
+pub fn secret_file_permission_verdict(path: &Path, mode: Option<u32>) -> Result<(), ConfigError> {
+    match mode {
+        None => Err(ConfigError::InsecureConfigPermissionsUnsupported {
+            path: path.to_path_buf(),
+        }),
+        Some(mode) if mode & 0o077 != 0 => Err(ConfigError::InsecureConfigPermissions {
+            path: path.to_path_buf(),
+            mode,
+        }),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Rejects a configuration file that holds a password but is readable by
+/// group or other (Plan 352 D2).
+///
+/// Uses the same `& 0o077` idiom already enforced for every other secret file
+/// in the tree (`i2pr-storage/src/lib.rs:1083`,
+/// `i2pr-daemon/src/i2pcontrol_tunnels.rs:1022`). The config was the one
+/// secret-bearing file with no gate.
+#[cfg(unix)]
+fn check_secret_file_permissions(path: &Path) -> Result<(), super::error::DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata =
+        fs::metadata(path).map_err(|source| super::error::DaemonError::ConfigUnavailable {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mode = metadata.permissions().mode() & 0o7777;
+    secret_file_permission_verdict(path, Some(mode)).map_err(super::error::DaemonError::from)
+}
+
+/// Non-POSIX platforms have no mode to check, and Plan 352 forbids *silently
+/// passing*. So a password-bearing config is refused outright there, naming the
+/// file, rather than accepted on the assumption that an unexamined platform is
+/// safe.
+///
+/// This is a real behaviour change on Windows: enabling `[i2pcontrol]` with a
+/// password now requires the secret to move out of the config (see
+/// `outbound_secret.rs` for the sealing mechanism) or the platform gate to be
+/// designed. It is recorded as such in the Plan 352 closure record.
+#[cfg(not(unix))]
+fn check_secret_file_permissions(path: &Path) -> Result<(), super::error::DaemonError> {
+    secret_file_permission_verdict(path, None).map_err(super::error::DaemonError::from)
+}
+
 /// Configuration parse and semantic-validation failures.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// TOML syntax or schema decoding failed.
+    ///
+    /// The rendered form is position-only; see [`RedactedTomlError`].
     #[error("configuration parse failed: {0}")]
-    Parse(#[source] toml::de::Error),
+    Parse(#[source] RedactedTomlError),
     /// The file used a schema version not understood by this binary.
     #[error("unsupported schema_version {actual}; expected {CURRENT_SCHEMA_VERSION}")]
     UnsupportedSchemaVersion { actual: u64 },
@@ -3208,6 +3373,33 @@ pub enum ConfigError {
         /// Bounded reason suitable for human diagnostics.
         reason: &'static str,
     },
+    /// The file holds a password but is readable by group or other.
+    ///
+    /// Carries the **path** (not a secret) and the observed mode, so the
+    /// operator is told what to fix without any file content being echoed.
+    #[error(
+        "configuration file {path} holds a password and is group- or world-readable \
+         (mode {mode:o}); expected 0600"
+    )]
+    InsecureConfigPermissions {
+        /// The offending configuration file.
+        path: PathBuf,
+        /// Observed POSIX permission bits.
+        mode: u32,
+    },
+    /// The file holds a password on a platform with no POSIX mode to check.
+    ///
+    /// Recorded rather than silently passing: refusing is the only direction
+    /// that cannot be mistaken for a check that succeeded.
+    #[error(
+        "configuration file {path} holds a password but this platform exposes no POSIX \
+         file mode to check; refusing to accept a secret-bearing configuration without a \
+         permission gate"
+    )]
+    InsecureConfigPermissionsUnsupported {
+        /// The offending configuration file.
+        path: PathBuf,
+    },
 }
 
 impl ConfigError {
@@ -3217,7 +3409,12 @@ impl ConfigError {
             Self::Parse(_) | Self::UnsupportedSchemaVersion { .. } => {
                 super::error::ExitCode::ConfigParse
             }
-            Self::Semantic { .. } => super::error::ExitCode::ConfigSemantic,
+            Self::Semantic { .. } | Self::InsecureConfigPermissions { .. } => {
+                super::error::ExitCode::ConfigSemantic
+            }
+            Self::InsecureConfigPermissionsUnsupported { .. } => {
+                super::error::ExitCode::ConfigSemantic
+            }
         }
     }
 }

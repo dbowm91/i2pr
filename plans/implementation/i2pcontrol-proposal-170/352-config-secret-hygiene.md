@@ -1,6 +1,8 @@
 # Plan 352 — daemon config secret hygiene: parse-error echo and file-mode check
 
-Status: **registered-preexisting-config-secret-leak-paths; independent-of-351**
+Status: **passed-structural-toml-error-redaction-and-conditional-at-rest-mode-gate** (was
+`registered-preexisting-config-secret-leak-paths`; closure record
+[`352-status.md`](../../closure/i2pcontrol-proposal-170/352-status.md))
 
 Classification: invariant (a static-guard-backed security property that must always hold) +
 security corrective. Origin: found while scoping Plan 351's Gate 3; **pre-existing** and
@@ -29,13 +31,18 @@ outcome.
 
 ### D1 — a TOML parse error prints the entire offending source line
 
-`toml-1.1.6+spec-1.1.0/src/de/error.rs:138`:
+`toml-1.1.6+spec-1.1.0/src/de/error.rs:138-140`:
 
 ```rust
 // 1 | 00:32:00.a999999
-write!(f, "{line_num} | ")?;
-writeln!(f, "{content}")?;
+write!(f, "{line_num} | ")?;      // :138
+writeln!(f, "{content}")?;        // :140
 ```
+
+> Corrected at closure: this block was originally cited as `:138` as the line doing
+> `writeln!(f, "{content}")`. That statement is at **:140**; `:138` is the `write!` above it. The
+> substance — the whole source line printed verbatim — is unchanged. See
+> [`352-status.md`](../../closure/i2pcontrol-proposal-170/352-status.md).
 
 `content` is the whole source line, verbatim. Independently, a type mismatch prints the
 value: `serde-1.0.228/src/core/de/mod.rs:410`:

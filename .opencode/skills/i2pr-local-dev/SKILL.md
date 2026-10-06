@@ -45,9 +45,16 @@ lanes. Orientation only, as of this pass:
 
 ```text
 active_plan                        = plan284   (M12 floodfill, registry)
-ready (Proposal 170 outproxy lane) = plan342   (option surface + request paths + wire lane)
-ready (ELS2 transcript)            = plan346   (ELS2-only deployed-compatibility profile)
-ready (app runtime, parallel)      = plan345   (contract foundation only, no launcher/sandbox)
+Proposal 170 outproxy lane         = plan342 passed (scoped); live failover rotation
+                                     and a live restart remain unproven, so plan327
+                                     stays blocked and no outproxy capability is claimed
+ELS2 transcript                    = plan346 passed (ADR 0032); plan347 stopped at a
+                                     classified boundary, plan349 superseded by plan351
+                                     (passed); plan348 blocked on plan347 alone
+config secret hygiene              = plan352 passed (structural redaction; a
+                                     password-bearing config now also needs 0600,
+                                     and is REFUSED on non-POSIX by design)
+app runtime, parallel              = plans 345/349/352/353/354/355 closed
 M11 transit                        = one-family experimental qualification passed
                                      (Plan 268); transit stays non-advertised,
                                      TransitParticipation::Disabled is enforced
@@ -55,9 +62,17 @@ M12 floodfill                      = Plans 270-276 passed; 277/278/279/306 stopp
                                      with retained work; 283/284/285 passed;
                                      broad caps advertisement still forbidden
 Proposal 170 / I2PControl          = 319-321, 322(passed 2026-10-05), 323-324,
-                                     329-333, 337-341, 343-344 passed; 325/327/328
-                                     blocked; 326/335 blocked historical with
-                                     successors 346 -> 347 registered; 348 blocked
+                                     329-333, 337-342, 343-344, 346, 350, 351
+                                     passed; 325/327/328 blocked; 326/335 blocked
+                                     historical (335's interpretation superseded by
+                                     346); 347 stopped at a classified boundary;
+                                     348 blocked on 347 alone; 349 superseded by 351;
+                                     352 passed (config secret hygiene) — the
+                                     last plan in the Proposal 170 line whose
+                                     work is not external-lane-gated
+                                     NOTE: global numbers 349-352 are now held by more
+                                     than one subsystem; see
+                                     plans/global-number-collision-ledger.md
 Anonymity lane                     = 311-316, 318 passed; 308/310/317 blocked
                                      history; 313 ready; parallel, does not gate M12
 ```
@@ -482,9 +497,13 @@ records are the authority for which plans passed.
 - M6 Java full-router compatibility is **retained nonblocking debt** (ADR 0026,
   Plan 247). No Java result is relabeled. `milestone6_interoperable` is
   `not-yet-claimed`; full two-family router conformance is not claimed.
-- The Proposal 170 outproxy has **policy and a route owner but no reachable
-  request path** (`open_via_outproxy` has zero callers). It is infrastructure,
-  not capability, and there is no direct clearnet fallback.
+- The Proposal 170 outproxy **does have reachable request paths** as of Plan 342:
+  HTTP, CONNECT, and SOCKS5 all classify a clearnet target onto an I2P Streaming
+  route, and `crates/i2pr-daemon/tests/outproxy_loopback_wire.rs` proves it over a
+  real listener. It is still **not a capability claim**: live failover rotation
+  and a live restart remain unproven, so Plan 327 stays `blocked` and no outproxy
+  capability is advertised. There is no direct clearnet fallback, and none may be
+  added.
 - ELS2/Red25519 type-5 LeaseSets are implemented in-repo. The measured result
   stands: i2pd and Java I2P verify **each other's** type-11 signatures and both
   reject i2pr's former strict-only form, with blinded public keys identical

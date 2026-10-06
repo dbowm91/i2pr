@@ -165,6 +165,36 @@ reviewed implementations; deterministic randomness belongs only to tests and
 explicit reproducibility tooling. Plan 013's private Ed25519 and X25519
 wrappers zeroize on drop and expose bytes only to explicit storage methods.
 
+**The configuration path (Plan 352).** The rule above is not satisfied by the
+config file on its own, so two specific gates apply.
+
+*Parse errors are position-only.* A TOML decode failure is rendered by
+`RedactedTomlError`, which reports the **line and column** and nothing else. It
+exists because both upstream renderers leak: `toml::de::Error`'s `Display`
+prints the entire offending source line, and its `message()` embeds the rejected
+key *and value* on a `deny_unknown_fields` failure. Filtering the message would
+therefore not be a fix — the redaction is structural, and the marker
+`[source content redacted]` is always present. The upstream error is still
+reachable through `Error::source` for a caller that legitimately needs it, so
+nothing is silently destroyed; what is forbidden is rendering the source chain
+(`{error:#}` / `{error:?}`) on this path.
+
+*At rest.* `Config::load` refuses a file that holds a `[i2pcontrol] password`
+and is group- or world-readable, using the same `& 0o077` idiom as every other
+secret file in the tree (`i2pr-storage`, `i2pcontrol_tunnels.rs`,
+`addressbook.rs`). The check is **conditional on a password being present**, so
+an ordinary config is not affected, and it runs *after* parsing for that reason.
+The refusal names the path and the required mode and never echoes content.
+
+*Non-POSIX platforms.* Windows exposes no POSIX mode, and a gate that cannot
+run must not report success. A password-bearing config is therefore **refused**
+there rather than accepted unchecked. This is a deliberate behaviour change, not
+an oversight: enabling `[i2pcontrol]` with a password on Windows requires moving
+the secret out of the config (`outbound_secret.rs` holds the sealing mechanism)
+or designing a real platform gate. `scripts/check-config-secret-hygiene.sh`
+asserts all of this, and both outcomes of the platform decision are exercised on
+any host so the non-POSIX branch is never untested dead code.
+
 Plan 015 extends that boundary to transient ownership: generated and
 reconstructed seed buffers, serialized identity write buffers, file-read
 buffers, and decoded DatabaseLookup reply keys/tags use zeroizing owners where

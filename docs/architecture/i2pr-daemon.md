@@ -395,6 +395,24 @@ path** — operator intent is always explicit.
   `service_tunnels`, `addressbook`, `floodfill`.
 - `RouterProfile` has exactly one variant (`Balanced`); any other profile string is rejected.
   `LogFormat` has exactly one variant (`Text`).
+- **Config secret hygiene (Plan 352).** `ConfigError::Parse` carries a
+  `RedactedTomlError`, not a bare `toml::de::Error`. Its `Display` emits the
+  line, the column, and `[source content redacted]` — and nothing else, because
+  both upstream renderers leak: `toml`'s `Display` prints the whole offending
+  source line, and its `message()` embeds the rejected key and value on a
+  `deny_unknown_fields` failure. Line/column come from the byte span resolved by
+  `position_of`, so redaction costs no diagnostic. `Error::source` still returns
+  the upstream error for programmatic callers; rendering the source chain on this
+  path is what `check-config-secret-hygiene.sh` forbids.
+- `Config::load` additionally refuses a file that **holds a password and is
+  group- or world-readable** (`InsecureConfigPermissions`, naming the path and
+  the observed mode, expected `0600`), using the `& 0o077` idiom already enforced
+  by `i2pr-storage`, `i2pcontrol_tunnels.rs`, and `addressbook.rs`. The gate is
+  conditional on `!config.i2pcontrol.password.is_empty()` and runs after parsing,
+  so a secret-free config is unaffected. The decision itself is the
+  platform-independent `secret_file_permission_verdict(path, Option<u32>)`;
+  `None` (no POSIX mode, e.g. Windows) is **refused** rather than silently
+  passed, so a gate that cannot run never reports success.
 
 ### Defaults baked into config parsing
 
