@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345, 349, 352, 353, 354, and 355 are closed. The router now has a trusted app-principal capability gateway over private SAM/I2CP connections. A separate AppManager/package/process milestone is eligible to be planned against this boundary; it is not registered yet. Sandbox and broker work still require their own implementation and qualification. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, 352, 353, 354, and 355 are closed. Plan 368 is registered and ready for the private trusted-manager protocol/daemon bridge. Plan 369 is registered blocked on 368 and will add the separately supervised i2pr-appd/i2pr-apphost lifecycle foundation. Package trust/persistence, qualified OS sandboxing, brokered clearnet, UI hosting, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -15,7 +15,7 @@ Long-term references:
 
 Related ADRs:
 - [ADR 0032](../../docs/adr/0032-managed-native-app-process-and-capability-boundary.md) freezes the managed-app trust/process boundary and default-deny network-capability model.
-- The Plan-345 language-neutral wire/manifest contract is recorded in [Managed native application contract v1](../../specs/references/managed-native-app-runtime-v1.md). Plan 349 corrected its direction/reply semantics, broker reservation, and network-policy classification; Plan 352 closed the mapped-IPv6 canonicalization gap. Plan 354 owns the private protocol-transport substrate and Plan 355 owns the router-side principal/capability gateway.
+- The Plan-345 language-neutral wire/manifest contract is recorded in [Managed native application contract v1](../../specs/references/managed-native-app-runtime-v1.md). Plan 349 corrected its direction/reply semantics, broker reservation, and network-policy classification; Plan 352 closed the mapped-IPv6 canonicalization gap. Plan 354 owns the private protocol-transport substrate and Plan 355 owns the router-side principal/capability gateway. Plan 368 now owns the distinct private daemon↔AppManager protocol/bridge; Plan 369 consumes it for process/runtime lifecycle without claiming sandbox containment.
 
 ## 1. Purpose and ownership boundary
 
@@ -108,7 +108,7 @@ Future console UI assets are package-relative static resources under a distinct 
 
 ## 6. Dependency graph
 
-Plans 345, 349, 352, 353, 354, and 355 are closed. Later capability milestones receive global numbers only when their implementation plans are written.
+Plans 345, 349, 352, 353, 354, and 355 are closed. Plan 368 is ready; Plan 369 is registered blocked on Plan 368. Later capability milestones receive global numbers only when their implementation plans are written.
 
 ```text
 345 architecture + runtime-neutral app contract foundation (closed)
@@ -116,9 +116,11 @@ Plans 345, 349, 352, 353, 354, and 355 are closed. Later capability milestones r
        -> 352 mapped-IPv6 policy canonicalization corrective (closed)
             -> 354 listener-independent SAM/I2CP private connection seams (closed)
                  -> 355 router app-principal gateway (closed)
+                      -> 368 trusted AppManager protocol + daemon bridge (ready)
+                           -> 369 i2pr-appd + i2pr-apphost lifecycle foundation (blocked on 368)
+                                -> package trust + restart-safe local lifecycle + AppManager admin owner (future plan)
+                                     -> OS sandbox + process-tree/resource containment
                       -> scoped Proposal 170 adapter after its stable contract is ready
-                      -> package/lifecycle + AppManager administrative owner (eligible for a future plan)
-                           -> OS sandbox + process-tree/resource containment
                                 -> brokered clearnet policy/DNS/TCP
                                      -> SDK + embedded-UI host contract implementation
                                           -> adversarial cross-platform qualification
@@ -126,7 +128,7 @@ Plans 345, 349, 352, 353, 354, and 355 are closed. Later capability milestones r
 353 branch integration/planning-authority reconciliation (closed; integration hygiene, not a runtime capability)
 ```
 
-Plan 352 closed the mapped-address policy gap and Plan 353 completed the integration-hygiene gate. Plan 354 passed the listener-independent SAM/I2CP connection seams with managed-profile host-target denial. Plan 355 passed the principal/capability boundary over those seams without choosing package/process IPC. The gateway is infrastructure and does not establish process authentication or OS containment.
+Plan 352 closed the mapped-address policy gap and Plan 353 completed the integration-hygiene gate. Plan 354 passed the listener-independent SAM/I2CP connection seams with managed-profile host-target denial. Plan 355 passed the principal/capability boundary over those seams without choosing package/process IPC. Plan 368 is the next executable boundary: it freezes a private manager protocol and maps that protocol into the existing gateway without process launch. Plan 369 then adds the trusted manager/apphost process roles and fixture lifecycle; Secured launch must still fail closed until a later qualified OS backend exists.
 
 The scoped Proposal 170 adapter remains separately blocked on canonical Proposal 170 completion; the current registry still has Plan 348 blocked on Plans 342 and 347. OS sandbox, broker, SDK, and UI-host plans remain sequenced behind their runtime/gateway owners as shown above.
 
@@ -140,10 +142,12 @@ The scoped Proposal 170 adapter remains separately blocked on canonical Proposal
 | 353 | closed | `passed-plan349-branch-integration-and-planning-authority-reconciliation` | corrective invariant + polish/integration | `plans/implementation/managed-native-app-runtime/353-plan349-branch-integration-and-planning-authority-reconciliation.md` | `plans/closure/managed-native-app-runtime/353-status.md` |
 | 354 | closed | `passed-managed-app-private-client-transport-seams` | infrastructure + invariant | `plans/implementation/managed-native-app-runtime/354-listener-independent-sam-i2cp-private-connection-seams.md` | `plans/closure/managed-native-app-runtime/354-status.md` |
 | 355 | closed | `passed-managed-app-principal-gateway-private-client-seams` | infrastructure + invariant + bounded capability plumbing | `plans/implementation/managed-native-app-runtime/355-router-app-principal-gateway-over-private-client-seams.md` | `plans/closure/managed-native-app-runtime/355-status.md` |
+| 368 | ready | `registered-managed-app-manager-bridge-and-protocol-foundation` | invariant + infrastructure + capability boundary | `plans/implementation/managed-native-app-runtime/368-trusted-appmanager-bridge-and-manager-protocol-foundation.md` | future `plans/closure/managed-native-app-runtime/368-status.md` |
+| 369 | blocked | `blocked-managed-app-runtime-manager-foundation-on-plan368` | infrastructure + process lifecycle + capability plumbing | `plans/implementation/managed-native-app-runtime/369-trusted-application-runtime-manager-and-apphost-lifecycle-foundation.md` | future `plans/closure/managed-native-app-runtime/369-status.md` |
 
-Plans 354 and 355 are closed, so the router gateway boundary is concrete. A package/lifecycle/AppManager milestone can now be planned against it and must not invent a second SAM/I2CP path. No such successor is registered yet. Later capability classes remain sequenced behind their owners:
+Plans 354 and 355 are closed, so the router gateway boundary is concrete. Plans 368 and 369 now own the next trusted-runtime sequence: first the daemon↔manager protocol/bridge, then the supervised i2pr-appd/i2pr-apphost lifecycle consumer. Package trust/persistence and the administrator API stay unnumbered until this execution owner is concrete. Later capability classes remain sequenced behind their owners:
 - scoped Proposal-170 adapter after the canonical control contract is ready;
-- package/lifecycle manager and administrator API;
+- package trust, publisher verification, restart-safe local lifecycle, and administrator API;
 - Linux/macOS/Windows sandbox backends plus launch attestation;
 - brokered DNS/TCP clearnet egress and user-owned firewall policy;
 - Rust SDK plus language-neutral protocol documentation and embedded UI bridge;
@@ -224,4 +228,4 @@ Plan 352 passed as `passed-managed-app-mapped-ipv6-policy-canonicalization`: map
 
 Plan 354 passed: both loopback listeners and trusted private connections use one listener-independent protocol driver, and managed-app SAM denies `STREAM FORWARD`/host-target behavior. Plan 355 passed: trusted composition binds one `AppPrincipal` and immutable `EffectiveCapabilities` to isolated private SAM/I2CP contexts. Neither plan launches applications, implements package lifecycle, establishes sandbox containment, or promotes SAM/I2CP support. Proposal 170 integration remains gated on canonical Proposal 170 completion.
 
-Future app implementation must preserve the existing router ownership boundaries. Plans 354 and 355 provide the private transport and router authorization seams. A separately registered AppManager/package/process plan may now consume the gateway; OS sandbox, broker, SDK, and UI work remains downstream and separately qualified.
+Future app implementation must preserve the existing router ownership boundaries. Execute Plan 368 first, then Plan 369 after its hard dependency closes. Plan 368 may not launch processes; Plan 369 may not claim Secured containment or package trust. Package/persistence, OS sandbox, broker, SDK, UI, and scoped control work remain downstream and separately qualified.
