@@ -18,6 +18,13 @@
 use std::sync::Arc;
 
 use i2pr_daemon::config::Config;
+
+/// Plan 342: the fail-closed outbound-credential owner. These rows exercise the
+/// shared-manager wiring, not a credential, so the honest value is the one
+/// that refuses everything.
+fn test_outbound_secrets() -> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+    Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
+}
 use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_runtime::ServiceName;
 
@@ -164,6 +171,7 @@ fn plan337_a_control_owned_server_survives_a_restart_without_rotating_its_identi
     let first = i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(
         &config,
         Arc::clone(&first_manager),
+        test_outbound_secrets(),
     )
     .expect("control builds");
     let created = block_on(first.create(&request("restart-srv", "127.0.0.1:8080")));
@@ -184,6 +192,7 @@ fn plan337_a_control_owned_server_survives_a_restart_without_rotating_its_identi
     let second = i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(
         &config,
         Arc::clone(&second_manager),
+        test_outbound_secrets(),
     )
     .expect("control builds");
     let failures = block_on(async {
@@ -222,8 +231,12 @@ fn plan338_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering()
         .expect("builds")
         .expect("control implies a shared manager");
     let owned = Arc::clone(&manager);
-    let control = i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(&config, manager)
-        .expect("control builds");
+    let control = i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(
+        &config,
+        manager,
+        test_outbound_secrets(),
+    )
+    .expect("control builds");
 
     let lookup_secret = "plan338-lookup-secret-value";
     let client_key = "ab".repeat(32);

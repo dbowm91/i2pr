@@ -563,6 +563,45 @@ pub enum OutproxyRoute {
         /// Zero-based attempt index this selection represents.
         attempt: usize,
     },
+    /// The target is a clearnet authority and **no outproxy can carry it**.
+    ///
+    /// Plan 342. This variant exists because the enum previously had no way
+    /// to say "no", and its absence was a live hazard rather than a cosmetic
+    /// gap: when no outproxy was configured, or when an attempt index ran past
+    /// the end of the list, `route` and `route_attempt` returned
+    /// `DirectI2p` for a **clearnet** target. That is the direct-clearnet
+    /// fallback invariant 1 forbids, stated as a positive instruction to the
+    /// caller.
+    ///
+    /// The daemon's `open_via_outproxy` happened to refuse `DirectI2p` on
+    /// sight, so nothing was exploitable today — the guarantee lived in a
+    /// caller rather than in the type, which is exactly the shape that breaks
+    /// when the next caller arrives. Every route decision now says what it
+    /// means: `.i2p` is `DirectI2p`, a configured outproxy is `ViaOutproxy`,
+    /// and a clearnet target with nowhere to go is `Refused`.
+    ///
+    /// There is deliberately no variant meaning "try a direct clearnet
+    /// socket", because that is the branch this design must never have.
+    Refused(OutproxyFailure),
+}
+
+impl OutproxyRoute {
+    /// Whether this route runs through an outproxy.
+    ///
+    /// Named `is_via_outproxy` rather than `is_outproxy` because the other
+    /// two variants are refusals, not routes, and a caller reading
+    /// `route(...).is_outproxy()` would be asking the wrong question.
+    pub fn is_via_outproxy(&self) -> bool {
+        matches!(self, Self::ViaOutproxy { .. })
+    }
+
+    /// Whether this route was refused, and why.
+    pub fn refusal(&self) -> Option<OutproxyFailure> {
+        match self {
+            Self::Refused(failure) => Some(*failure),
+            _ => None,
+        }
+    }
 }
 
 /// Why an outproxy request could not be satisfied.
@@ -663,6 +702,12 @@ impl OutproxyConfig {
     /// That ordering is the guarantee: no provider is consulted, no list is
     /// scanned, and no outproxy is selected for a `.i2p` destination, so a
     /// misconfigured list cannot divert in-network traffic off-network.
+    ///
+    /// A clearnet target with no selectable outproxy is
+    /// [`OutproxyRoute::Refused`], never [`OutproxyRoute::DirectI2p`].
+    /// `DirectI2p` means "this is an I2P destination, connect to it", and a
+    /// caller that receives it for a clearnet authority would open a direct
+    /// clearnet socket — the fallback this design exists to prevent.
     pub fn route(&self, target: &OutproxyTarget) -> OutproxyRoute {
         if target.is_i2p() {
             return OutproxyRoute::DirectI2p;
@@ -674,12 +719,22 @@ impl OutproxyConfig {
                 kind: self.kind,
                 attempt,
             },
-            None => OutproxyRoute::DirectI2p,
+            // No outproxy can carry a clearnet target. Refuse. Do not
+            // substitute a direct route: there is no fourth outcome.
+            None => OutproxyRoute::Refused(OutproxyFailure::NotConfigured),
         }
     }
 
     /// Returns the outproxy to use for a later attempt, advancing the
     /// rotation by one entry.
+    ///
+    /// [`OutproxyList::select`] **wraps** its index, so an attempt past the
+    /// end of the list keeps cycling rather than running dry. `None` is
+    /// therefore only reachable with an empty list, which is
+    /// [`OutproxyFailure::NotConfigured`] — the same answer as `route`. The
+    /// retry **ceiling** is not decided here: it belongs to
+    /// [`OutproxyPolicy`] and to the caller's loop, and a client is not told
+    /// "attempts exhausted" by a selector that never exhausts.
     pub fn route_attempt(&self, target: &OutproxyTarget, attempt: usize) -> OutproxyRoute {
         if target.is_i2p() {
             return OutproxyRoute::DirectI2p;
@@ -690,7 +745,9 @@ impl OutproxyConfig {
                 kind: self.kind,
                 attempt,
             },
-            None => OutproxyRoute::DirectI2p,
+            // Empty list: a clearnet target has nowhere to go. Refuse. Do not
+            // substitute a direct route: there is no fourth outcome.
+            None => OutproxyRoute::Refused(OutproxyFailure::NotConfigured),
         }
     }
 
@@ -701,6 +758,59 @@ impl OutproxyConfig {
     /// default rather than "everything is allowed".
     pub fn permits_tunnelled(&self, endpoint: &OutproxyEndpoint) -> bool {
         self.tunnelled.endpoints().contains(endpoint)
+    }
+}
+
+/// What a client request target is, decided before any socket is opened.
+///
+/// Plan 342 makes this the single decision point for the HTTP, CONNECT, and
+/// SOCKS request paths. One function, three request paths, so the guarantee
+/// cannot hold in one of them and not another.
+///
+/// The order of the arms is the whole point:
+///
+/// 1. an `.i2p` destination or alias is [`Self::Direct`] and **no provider is
+///    consulted** — not even to check whether one exists, so a misconfigured
+///    list cannot divert in-network traffic off-network;
+/// 2. a clearnet label is [`Self::ViaOutproxy`], and the `Ok` carries a
+///    parsed target so the caller never re-parses the authority;
+/// 3. a clearnet label with no provider is [`Self::Refused`]. There is no
+///    fourth outcome and no fallback arm. A caller that receives
+///    [`Self::Direct`] for a clearnet host would open exactly the direct
+///    socket this design forbids, so that combination is unrepresentable
+///    rather than merely discouraged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientTargetClass {
+    /// Route directly to the tunnel's own I2P destination.
+    Direct(OutproxyTarget),
+    /// Route through an outproxy selected from the configured list.
+    ViaOutproxy(OutproxyTarget),
+    /// No route exists. The only reason this is reachable is a clearnet
+    /// target on a tunnel with no configured outproxy.
+    Refused(OutproxyFailure),
+}
+
+/// Classifies one client request target.
+///
+/// `host` is the host the request actually named and `port` its effective
+/// port (the caller applies the scheme default, so this function never has
+/// to know what an HTTP request is). Neither is a secret and neither is ever
+/// echoed into a typed failure.
+pub fn classify_client_target(
+    config: Option<&OutproxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<ClientTargetClass, OutproxyError> {
+    // One grammar for both arms, so the `.i2p` bypass is decided by the same
+    // validator that would otherwise carry a clearnet target. That is what
+    // makes `example.i2p.com` a rejection rather than a clearnet label.
+    let target = OutproxyTarget::parse_authority(&format!("{host}:{port}"))?;
+    if target.is_i2p() {
+        return Ok(ClientTargetClass::Direct(target));
+    }
+    match config {
+        Some(_config) => Ok(ClientTargetClass::ViaOutproxy(target)),
+        None => Ok(ClientTargetClass::Refused(OutproxyFailure::NotConfigured)),
     }
 }
 
@@ -1197,6 +1307,119 @@ mod tests {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Plan 342: `classify_client_target` — the one decision every client
+    // request path makes before it opens anything.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_i2p_target_is_direct_and_never_consults_a_provider() {
+        for (host, config) in [
+            (b32_outproxy(), Some(sample_config())),
+            (b32_outproxy(), None),
+        ] {
+            let class = classify_client_target(config.as_ref(), &host, 443).expect("classifiable");
+            assert_eq!(
+                class,
+                ClientTargetClass::Direct(
+                    OutproxyTarget::new(host.to_ascii_lowercase(), 443).expect("built")
+                ),
+                "an .i2p target must be direct whether or not a provider exists"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clearnet_target_with_a_provider_is_carried_by_it() {
+        let config = sample_config();
+        let class =
+            classify_client_target(Some(&config), "example.com", 443).expect("classifiable");
+        assert_eq!(
+            class,
+            ClientTargetClass::ViaOutproxy(
+                OutproxyTarget::new("example.com".to_owned(), 443).expect("built")
+            )
+        );
+    }
+
+    #[test]
+    fn a_clearnet_target_without_a_provider_is_refused_never_direct() {
+        // This is the row the whole "no direct clearnet fallback" guarantee
+        // reduces to. `Direct` for a clearnet host would be the bug.
+        let class = classify_client_target(None, "example.com", 443).expect("classifiable");
+        assert_eq!(
+            class,
+            ClientTargetClass::Refused(OutproxyFailure::NotConfigured)
+        );
+        assert!(
+            !matches!(class, ClientTargetClass::Direct(_)),
+            "a clearnet target must never classify as direct"
+        );
+    }
+
+    #[test]
+    fn a_mixed_suffix_host_is_a_parse_error_not_a_clearnet_label() {
+        // `example.i2p.com` ends in `.com`, so a grammar that checked the
+        // suffix last would carry it off-network. It must be refused.
+        for host in [
+            "example.i2p.com",
+            "a.b32.i2p.example.com",
+            "x.b32.i2p:not-base32",
+        ] {
+            assert!(
+                classify_client_target(None, host, 443).is_err(),
+                "{host} must not classify"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ip_literal_is_never_carried() {
+        // The client may name one; the outproxy route may not carry it. A
+        // refusal here is what stops a future implementation from handing a
+        // literal to something that would resolve it.
+        for host in ["127.0.0.1", "10.0.0.1", "[::1]", "1.2.3.4"] {
+            assert!(
+                classify_client_target(Some(&sample_config()), host, 443).is_err(),
+                "{host} must not classify"
+            );
+        }
+    }
+
+    #[test]
+    fn classification_is_identical_for_every_proxy_client_kind() {
+        // The function takes no "kind" parameter by construction. This row is
+        // what stops a future change from adding one.
+        let config = sample_config();
+        let direct = classify_client_target(Some(&config), "x.example.i2p", 80).expect("direct");
+        let via = classify_client_target(Some(&config), "x.example.com", 80).expect("via");
+        assert!(matches!(direct, ClientTargetClass::Direct(_)));
+        assert!(matches!(via, ClientTargetClass::ViaOutproxy(_)));
+    }
+
+    #[test]
+    fn a_refused_clearnet_target_is_the_only_outcome_a_bare_config_reaches() {
+        // An empty list is refused by `validate`, so `sample_config` with its
+        // list emptied stands in for "a provider that cannot carry anything".
+        // The classifier must still refuse rather than report a route that
+        // `route` would later reject.
+        let empty = OutproxyConfig {
+            list: OutproxyList::default(),
+            ..sample_config()
+        };
+        let class = classify_client_target(Some(&empty), "example.com", 443).expect("classifiable");
+        assert!(matches!(class, ClientTargetClass::ViaOutproxy(_)));
+        // The refusal lives one layer down, in `route`, and it is a refusal.
+        let target = match class {
+            ClientTargetClass::ViaOutproxy(target) => target,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(matches!(
+            empty.route(&target),
+            OutproxyRoute::Refused(OutproxyFailure::NotConfigured)
+        ));
+    }
+
     #[test]
     fn outproxy_type_is_a_closed_vocabulary() {
         assert_eq!(
@@ -1310,7 +1533,10 @@ mod tests {
                 assert_eq!(kind, OutproxyType::HttpConnect);
                 assert_eq!(attempt, 0);
             }
-            OutproxyRoute::DirectI2p => panic!("a clearnet target must not route directly"),
+            // Plan 342: `Refused` is now the only other answer. Before it
+            // existed this arm could only be `DirectI2p`, which for a
+            // clearnet target is a direct-clearnet instruction.
+            other => panic!("a clearnet target must not route directly, got {other:?}"),
         }
         match config.route_attempt(&target, 1) {
             OutproxyRoute::ViaOutproxy {
@@ -1319,7 +1545,7 @@ mod tests {
                 assert_eq!(endpoint.as_str(), SECOND);
                 assert_eq!(attempt, 1);
             }
-            OutproxyRoute::DirectI2p => panic!("a clearnet target must not route directly"),
+            other => panic!("a clearnet target must not route directly, got {other:?}"),
         }
     }
 
@@ -1376,7 +1602,7 @@ mod tests {
                 attempt,
             ) {
                 OutproxyRoute::ViaOutproxy { endpoint, .. } => endpoint,
-                OutproxyRoute::DirectI2p => panic!("expected a route"),
+                other => panic!("expected a route, got {other:?}"),
             };
             assert!(
                 !config.permits_tunnelled(&endpoint),
@@ -1719,6 +1945,121 @@ mod tests {
         assert_eq!(
             OutproxyEndpoint::parse("SECOND.EXAMPLE.I2P").expect("upper"),
             named
+        );
+    }
+
+    // --- Plan 342: the route decision cannot become a direct clearnet route ----------------------
+
+    /// The headline negative row: with **no outproxy configured**, a clearnet
+    /// target is refused, and the refusal is a distinct enum variant rather
+    /// than a `DirectI2p` a caller has to know to distrust.
+    ///
+    /// This is the row that justifies `OutproxyRoute::Refused`. Before Plan
+    /// 342 the selector had no way to say "no": an empty list made
+    /// `route`/`route_attempt` return `DirectI2p` for a clearnet authority,
+    /// which is a positive instruction to open a direct clearnet socket. The
+    /// daemon happened to refuse that arm, so nothing was exploitable — but
+    /// the guarantee lived in a caller instead of in the type, and the next
+    /// caller would not have inherited it.
+    #[test]
+    fn a_clearnet_target_with_no_outproxy_is_refused_never_routed_directly() {
+        let mut config = sample_config();
+        config.list = OutproxyList::default();
+        let target = OutproxyTarget::parse_authority("example.com:443").expect("clearnet target");
+
+        assert_eq!(
+            config.route(&target),
+            OutproxyRoute::Refused(OutproxyFailure::NotConfigured),
+            "an empty proxy list must produce a refusal, not a direct route"
+        );
+        assert_eq!(
+            config.route_attempt(&target, 0),
+            OutproxyRoute::Refused(OutproxyFailure::NotConfigured)
+        );
+        assert_eq!(
+            config.route_attempt(&target, 99),
+            OutproxyRoute::Refused(OutproxyFailure::NotConfigured),
+            "every attempt index must refuse identically; the index wraps, so an empty              list is empty at every index"
+        );
+
+        // And the same configuration still routes in-network traffic directly,
+        // which is what makes `Refused` a *meaningful* third outcome rather
+        // than a blanket rejection.
+        let i2p = OutproxyTarget::parse_authority(&format!("{}:443", b32_outproxy()))
+            .expect("i2p target");
+        assert_eq!(config.route(&i2p), OutproxyRoute::DirectI2p);
+    }
+
+    /// The same three outcomes for every shape of clearnet authority, so the
+    /// refusal cannot be dodged by spelling the target differently.
+    #[test]
+    fn no_clearnet_spelling_reaches_a_direct_route() {
+        let mut config = sample_config();
+        config.list = OutproxyList::default();
+        for authority in [
+            "example.com:443",
+            "EXAMPLE.com:443",
+            "xn--bcher-kva.example:80",
+            "very-long-subdomain-label.example.co.uk:8443",
+        ] {
+            let target = OutproxyTarget::parse_authority(authority)
+                .unwrap_or_else(|error| panic!("{authority} must parse: {error:?}"));
+            assert!(!target.is_i2p(), "{authority} is not an I2P name");
+            assert!(
+                matches!(config.route(&target), OutproxyRoute::Refused(_)),
+                "{authority} must be refused with no outproxy configured"
+            );
+        }
+
+        // IP literals are refused one step earlier, at parse. That is a
+        // strictly stronger property than a route-time refusal: a clearnet IP
+        // target cannot be *expressed*, so there is no value for a caller to
+        // mis-route. Asserted here because it is the same guarantee seen from
+        // the other end.
+        for authority in ["192.0.2.1:443", "[2001:db8::1]:443"] {
+            assert!(
+                OutproxyTarget::parse_authority(authority).is_err(),
+                "{authority} is an IP literal and must not become a target at all"
+            );
+        }
+    }
+
+    /// The I2P bypass holds with an outproxy configured *and* absent, at every
+    /// attempt index. A misconfigured list must not be able to divert
+    /// in-network traffic off-network, and this is the row that says so at
+    /// each index rather than only at zero.
+    #[test]
+    fn the_i2p_bypass_is_unconditional() {
+        let i2p = OutproxyTarget::parse_authority(&format!("{}:443", b32_outproxy()))
+            .expect("i2p target");
+        for list in [sample_config().list, OutproxyList::default()] {
+            let mut config = sample_config();
+            config.list = list;
+            assert_eq!(config.route(&i2p), OutproxyRoute::DirectI2p);
+            for attempt in 0..4 {
+                assert_eq!(
+                    config.route_attempt(&i2p, attempt),
+                    OutproxyRoute::DirectI2p,
+                    "attempt {attempt} must not divert an I2P destination"
+                );
+            }
+        }
+    }
+
+    /// A refusal is terminal: it carries a failure that must not read as
+    /// retryable, so a caller cannot spin on a target that can never be routed.
+    #[test]
+    fn an_unconfigured_refusal_is_not_retryable() {
+        let mut config = sample_config();
+        config.list = OutproxyList::default();
+        let target = OutproxyTarget::parse_authority("example.com:443").expect("clearnet target");
+        let OutproxyRoute::Refused(failure) = config.route(&target) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(failure, OutproxyFailure::NotConfigured);
+        assert!(
+            !failure.is_retryable(),
+            "retrying an unconfigured clearnet target can never succeed"
         );
     }
 }

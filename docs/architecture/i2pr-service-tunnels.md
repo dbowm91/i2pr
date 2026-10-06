@@ -88,6 +88,7 @@ Line counts are real `wc -l` output. Directory rows are the sum of their files.
 | `streamr` | `src/streamr.rs` | 187 | Plan 291 runtime-neutral Streamr profile options (loopback UDP endpoints, I2P port, refresh/expiry/subscriber/payload policy with freeze-derived defaults) | `StreamrOptions`, `DEFAULT_SUBSCRIBE_INTERVAL_MS`, `DEFAULT_SUBSCRIPTION_EXPIRY_MS`, `DEFAULT_MAX_SUBSCRIBERS`, `DEFAULT_PAYLOAD_LIMIT_BYTES`, `MAX_PAYLOAD_LIMIT_BYTES`, `MAX_SUBSCRIBER_CEILING`, `DEFAULT_STREAMR_I2P_PORT` |
 | `outbound_secret` | `src/outbound_secret.rs` | 277 | Plan 341 runtime-neutral *policy* half of outbound proxy-secret ownership: the `OutboundSecretStore` capability, the sealed stored-form framing, and a fail-closed default. Holds no cryptography | `OutboundSecret`, `OutboundSecretStore`, `NoOutboundSecrets`, `validate_stored_form`, `OUTBOUND_SECRET_MARKER`, `MAX_OUTBOUND_SECRET_LEN`, `MAX_OUTBOUND_SECRET_STORED_LEN` |
 | `outproxy` | `src/outproxy.rs` | 1724 | Plan 342/343 runtime-neutral outproxy **provider policy**: the closed `OutproxyType` dialect vocabulary, `OutproxyEndpoint` (I2P-destination-only outproxy identity), the operator-ordered `OutproxyList`, the opaque-label `OutproxyTarget` clearnet grammar, the bounded `OutproxyPolicy` retry/backoff, the credential header builder, the typed route/failure/error surface, and the bounded HTTP `CONNECT` / SOCKS5 / SOCKS4a request and reply codecs. Policy only — no socket, no resolver, no plugin loader | `OutproxyType`, `OutproxyEndpoint`, `OutproxyList`, `OutproxyTarget`, `OutproxyPolicy`, `OutproxyRoute`, `OutproxyFailure`, `OutproxyConfig`, `OutproxyAuthHeader`, `OutproxyProvider`, `NoOutproxyProvider`, `OutproxyWireBuffer`, `OutproxyError`, `build_http_connect_request`, `parse_http_connect_response`, `build_socks5_connect_request`, `build_socks4a_connect_request`, `parse_socks5_method_reply`, `parse_socks5_connect_reply`, `parse_socks4a_connect_reply`, `MAX_OUTPROXY_LIST_ENTRIES`, `MAX_OUTPROXY_LIST_LEN`, `MAX_OUTPROXY_HOST_LEN`, `MAX_OUTPROXY_HOST_LABEL_LEN`, `MAX_OUTPROXY_ATTEMPTS`, `DEFAULT_OUTPROXY_ATTEMPTS`, `OUTPROXY_BACKOFF_BASE_STEP_MS`, `MAX_OUTPROXY_BACKOFF_MS`, `DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS`, `MAX_OUTPROXY_CONNECT_TIMEOUT_MS`, `MAX_OUTPROXY_AUTH_HEADER_LEN`, `MAX_OUTPROXY_USERNAME_LEN`, `MAX_OUTPROXY_HANDSHAKE_BYTES`, `MAX_OUTPROXY_REQUEST_LINE_LEN`, `MAX_OUTPROXY_RESPONSE_HEAD_LEN` |
+| `target_policy` | `src/target_policy.rs` | 313 | Plan 342 **request-target policy**: `TargetPolicy::{I2pOnly, AllowsClearnet}` — whether a well-formed *non*-`.i2p` name is a parseable request target. `I2pOnly` is the `Default` and every pre-Plan-342 entry point is a thin wrapper over it, so nothing widened by accident and a caller must *name* the relaxed policy. Only the **suffix requirement** is policy-dependent: IP literals, `localhost`, userinfo, control bytes, length ceilings, zero port and scheme/form grammar stay refused under both. Mixed-suffix confusion is `outproxy::classify_client_target`'s decision, not the parser's — the parser decides syntax, the classifier decides routes. The daemon's `ServiceTunnelManager::target_policy` derives the parse policy from the **provider registry** so the two cannot disagree. No I/O | `TargetPolicy` |
 | `connect` | `src/connect.rs` | 111 | Plan 290 strict HTTP CONNECT-only client option surface (bounded allowed-port set, default 443). Parsing/validation live in `http`; the executor lives in the daemon | `ConnectClientOptions`, `CONNECT_OPTIONS_MAX_PORTS`, `CONNECT_DEFAULT_PORT` |
 
 ## Public surface
@@ -991,6 +992,54 @@ Plan 334 halves are **stale**: per the closure records, which win,
 and `334-status.md` was reclosed 2026-10-05 as
 `passed-mode-mapping-and-control-surface-complete`. Read the closure records, not that
 registry row, for Proposal 170 state.
+
+## Destination references and the encrypted-service kind (Plan 351)
+
+`DestinationRef` has four variants, and the fourth is not a kind of hash:
+
+| Variant | Carries |
+| --- | --- |
+| `Base32Hash` | a 52-character label and 32 bytes — the destination hash |
+| `StaticAlias` | a bounded `.i2p` alias name, resolved through `StaticAliasTable` |
+| `ConfiguredDestination` | bounded public Destination material, never private material |
+| `EncryptedService` | a validated `EncryptedServiceAddress` — **not a hash** |
+
+`EncryptedService` is dispatched by `EncryptedServiceAddress::is_encrypted_service_address`
+**before** the `.b32.i2p` branch. That ordering is load-bearing: without it a valid `.b33` is
+rejected as "Base32 label must be exactly 52 characters", which is true of the length and useless
+as a diagnosis. `EncryptedServiceAddress::from_text` is the whole parser — body length, alphabet,
+canonical trailing bits, CRC-32, both signature types, both flags — and this crate adds nothing to
+it, so it cannot weaken it.
+
+This crate **never** derives a blinded storage key and never sees the lookup secret. Both belong to
+the daemon's ELS2 owner. The variant exists so the *kind* is representable and so the containment
+rules below can be enforced on it.
+
+### Gate 1: an encrypted remote target requires a `DelayOpen` client
+
+`ServiceTunnelSpec::validate` refuses an encrypted `destination` unless the service is a client
+kind with `timeouts.delay_open` set.
+
+The rule is containment, not preference. Two of the three production callers of the
+router-material provisioning pass shut the manager down, cancel the operator token, and shut the
+SSU2 handle down on *any* resolution failure. An accepted `.b33` on an eager service would let one
+unreachable remote endpoint take down every configured service in the product. `DelayOpen` groups
+already carry proven per-destination isolation: a failed deferred activation stays confined to the
+oneshot that requested it.
+
+### The static-alias bypass is closed
+
+`StaticAliasTable::insert` refuses an alias whose target is an encrypted-service address.
+
+Gate 1 is a *per-service* property and an alias is global. If an alias could name a `.b33`, the
+rule would be enforced on the alias spelling rather than on the address the service resolves, and an
+eager service could reach the encrypted path by naming the alias instead of the address. Making the
+pair unrepresentable closes the bypass instead of trusting every caller to re-check after
+resolution.
+
+Both rules are asserted by `plan351_encrypted_target_requires_a_delay_open_client` and
+`plan351_a_static_alias_may_not_name_an_encrypted_address` in `src/config.rs`, and both are
+enforced statically by `scripts/check-encrypted-service-consumer-caller.sh`.
 
 ## Cross-references
 

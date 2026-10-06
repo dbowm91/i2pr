@@ -47,10 +47,12 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::destination_streaming::{PumpConfig, StreamPumpEndpoint, run_stream_pump};
+use crate::outproxy_route::open_client_route;
 use crate::service_tunnels::{
     ClientTarget, DestinationFailure, ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager,
     service_streaming_now_ms,
 };
+use i2pr_service_tunnels::outproxy::{ClientTargetClass, classify_client_target};
 
 /// Default ceiling for reading the SOCKS5 greeting section.
 const GREETING_READ_DEADLINE: Duration = Duration::from_secs(30);
@@ -181,11 +183,12 @@ async fn read_request<S>(
     initial: Vec<u8>,
     limits: Socks5Limits,
     deadline: Duration,
+    policy: i2pr_service_tunnels::target_policy::TargetPolicy,
 ) -> Result<RequestOutcome, Socks5Error>
 where
     S: AsyncRead + Unpin,
 {
-    let mut parser = RequestParser::new();
+    let mut parser = RequestParser::with_policy(policy);
     if !initial.is_empty()
         && let Some(outcome) = parser.advance(&initial, limits)?
     {
@@ -239,11 +242,12 @@ async fn read_socks4a_request<S>(
     initial: Vec<u8>,
     limits: Socks5Limits,
     deadline: Duration,
+    policy: i2pr_service_tunnels::target_policy::TargetPolicy,
 ) -> Result<Socks4aOutcome, Socks5Error>
 where
     S: AsyncRead + Unpin,
 {
-    let mut parser = Socks4aRequestParser::new();
+    let mut parser = Socks4aRequestParser::with_policy(policy);
     if !initial.is_empty()
         && let Some(outcome) = parser.advance(&initial, limits)?
     {
@@ -313,10 +317,16 @@ pub struct SocksNegotiation {
 /// SOCKS 4/4a/5 parity) and the `socks-irc` composition. The
 /// success reply is NOT emitted here: it goes out only after real
 /// Streaming establishment, per profile.
+/// `policy` is Plan 342's request-target policy. `TargetPolicy::AllowsClearnet`
+/// lets a well-formed clearnet domain through the grammar so the caller's
+/// `classify_client_target` can decide its route; `I2pOnly` is the pre-Plan-342
+/// behaviour and is what the `socks-irc` caller passes, because that kind
+/// refuses the outproxy block outright.
 pub async fn negotiate_socks_destination(
     stream: &mut TcpStream,
     limits: Socks5Limits,
     auth: Option<&ProxyCredentials>,
+    policy: i2pr_service_tunnels::target_policy::TargetPolicy,
 ) -> Result<SocksNegotiation, Socks5ConnectionOutcome> {
     // Version peek: SOCKS4a has no greeting, so the first byte
     // decides the negotiation path.
@@ -333,7 +343,7 @@ pub async fn negotiate_socks_destination(
             let _ = stream.shutdown().await;
             return Err(Socks5ConnectionOutcome::AuthFailed);
         }
-        return negotiate_socks4a(stream, limits).await;
+        return negotiate_socks4a(stream, limits, policy).await;
     }
     if version[0] != i2pr_service_tunnels::socks5::config::SOCKS_VERSION {
         let _ = stream.shutdown().await;
@@ -403,14 +413,21 @@ pub async fn negotiate_socks_destination(
         }
     }
     // Step 2: CONNECT request read + parse.
-    let request_outcome =
-        match read_request(stream, request_initial, limits, REQUEST_READ_DEADLINE).await {
-            Ok(value) => value,
-            Err(_error) => {
-                let _ = stream.shutdown().await;
-                return Err(Socks5ConnectionOutcome::BadRequest);
-            }
-        };
+    let request_outcome = match read_request(
+        stream,
+        request_initial,
+        limits,
+        REQUEST_READ_DEADLINE,
+        policy,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_error) => {
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::BadRequest);
+        }
+    };
     let (destination, leftover) = match request_outcome {
         RequestOutcome::ReadyToConnect {
             destination,
@@ -508,9 +525,11 @@ async fn auth_failed_closed(stream: &mut TcpStream) -> Socks5ConnectionOutcome {
 async fn negotiate_socks4a(
     stream: &mut TcpStream,
     limits: Socks5Limits,
+    policy: i2pr_service_tunnels::target_policy::TargetPolicy,
 ) -> Result<SocksNegotiation, Socks5ConnectionOutcome> {
     let outcome =
-        match read_socks4a_request(stream, vec![0x04], limits, REQUEST_READ_DEADLINE).await {
+        match read_socks4a_request(stream, vec![0x04], limits, REQUEST_READ_DEADLINE, policy).await
+        {
             Ok(value) => value,
             Err(_error) => {
                 let _ = stream.shutdown().await;
@@ -767,6 +786,84 @@ pub fn terminate_streaming(
 ///   negotiator, opens Streaming, sends the version-appropriate
 ///   success reply only after `Established`, and runs the shared
 ///   Plan 174 byte pump.
+///
+/// Plan 342: answers a SOCKS client with success and pumps the outproxy
+/// route.
+///
+/// Split out of `run_socks5_connection` because the success reply must be
+/// written only after the route exists, and because the pump endpoint has to
+/// be built with the handshake prefix and the **outproxy's** remote rather
+/// than the tunnel's. Getting either wrong silently corrupts the first
+/// exchange on every pipelining outproxy.
+///
+/// 1. The success reply is written only after the route exists.
+/// 2. The pump endpoint carries the outproxy's remote, not the tunnel's.
+/// 3. The handshake prefix is seeded into the pump's first read.
+async fn pump_via_outproxy(
+    mut stream: TcpStream,
+    manager: Arc<ServiceTunnelManager>,
+    runtime: Arc<ServiceRuntime>,
+    cancellation: CancellationToken,
+    session: crate::outproxy_route::OutproxySession,
+    leftover: Vec<u8>,
+    via_socks4a: bool,
+) -> Socks5ConnectionOutcome {
+    let success: [u8; 10] = if via_socks4a {
+        [0x00, 0x5a, 0, 0, 0, 0, 0, 0, 0, 0]
+    } else {
+        [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]
+    };
+    if stream.write_all(&success).await.is_err() {
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return Socks5ConnectionOutcome::BadRequest;
+    }
+    if stream.flush().await.is_err() {
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return Socks5ConnectionOutcome::BadRequest;
+    }
+    let endpoint: Arc<dyn StreamPumpEndpoint> =
+        Arc::new(ServicePumpEndpoint::new_client_with_prefix(
+            Arc::clone(&manager),
+            runtime.destination_id,
+            session.connection_id,
+            session.remote.clone(),
+            session.tunnel_prefix,
+        ));
+    let config = PumpConfig::defaults(BODY_CHUNK_BYTES);
+    let result = run_stream_pump(stream, leftover, endpoint, config, cancellation).await;
+    if let Err(error) = result {
+        debug!(error = %error, "socks5 outproxy pump failed");
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return Socks5ConnectionOutcome::BadGateway;
+    }
+    terminate_streaming(
+        &manager,
+        runtime.destination_id,
+        session.connection_id,
+        &session.remote,
+        false,
+    );
+    Socks5ConnectionOutcome::TunnelClosed
+}
+
 pub async fn run_socks5_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -778,11 +875,21 @@ pub async fn run_socks5_connection(
     let mut stream = stream;
     // Steps 1-2: version dispatch + negotiation (replies for
     // rejections are emitted inside the negotiator).
-    let negotiation =
-        match negotiate_socks_destination(&mut stream, limits, options.proxy_auth.as_ref()).await {
-            Ok(value) => value,
-            Err(outcome) => return outcome,
-        };
+    // Plan 342: the negotiator parses under the tunnel's target policy, decided
+    // by `ServiceTunnelManager::target_policy` from the provider registry. With
+    // no provider installed this is `I2pOnly`, so a clearnet domain is refused
+    // inside the negotiator exactly as before Plan 342.
+    let negotiation = match negotiate_socks_destination(
+        &mut stream,
+        limits,
+        options.proxy_auth.as_ref(),
+        manager.target_policy(&runtime.spec_id),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(outcome) => return outcome,
+    };
     let destination = negotiation.destination;
     let leftover = negotiation.leftover;
     let via_socks4a = negotiation.via_socks4a;
@@ -797,6 +904,107 @@ pub async fn run_socks5_connection(
         )
         .await;
         return Socks5ConnectionOutcome::Forbidden;
+    }
+    // Plan 342: the same classification the HTTP and CONNECT paths use.
+    //
+    // The order is the guarantee. An `.i2p` destination goes straight down
+    // and no provider is consulted; a clearnet name goes to the configured
+    // outproxy; a clearnet name with no outproxy is answered
+    // `HostUnreachable` and no socket is opened. There is no fourth branch,
+    // and in particular nothing that "tries the tunnel's own destination
+    // instead".
+    let outproxy_provider = manager.outproxy_provider(&runtime.spec_id);
+    let counters = manager.outproxy_counters();
+    let class = match classify_client_target(
+        outproxy_provider
+            .as_deref()
+            .map(i2pr_service_tunnels::OutproxyProvider::config),
+        &destination.host,
+        destination.port,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            reject_socks_request(
+                &mut stream,
+                via_socks4a,
+                i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable,
+            )
+            .await;
+            return Socks5ConnectionOutcome::BadGateway;
+        }
+    };
+    // An exhaustive `match`, not two `if let`s: anything that is neither
+    // `ViaOutproxy` nor `Refused` must not fall through to the direct path,
+    // or a fourth outcome added later would silently take it.
+    // `scripts/check-outproxy-request-path.sh` asserts this shape.
+    match class {
+        ClientTargetClass::ViaOutproxy(target) => {
+            let provider = outproxy_provider
+                .as_deref()
+                .expect("a ViaOutproxy classification implies a provider");
+            let route = match open_client_route(
+                &manager,
+                &runtime.spec_id,
+                runtime.destination_id,
+                Some(provider),
+                target.host(),
+                target.port(),
+                true,
+                &cancellation,
+                counters,
+            )
+            .await
+            {
+                Ok(crate::outproxy_route::ClientRoute::ViaOutproxy(session)) => session,
+                Ok(other) => {
+                    debug!(outcome = ?other, "socks5 outproxy route was not open");
+                    reject_socks_request(
+                        &mut stream,
+                        via_socks4a,
+                        i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable,
+                    )
+                    .await;
+                    return Socks5ConnectionOutcome::BadGateway;
+                }
+                Err(failure) => {
+                    debug!(
+                        failure = failure.as_str(),
+                        "socks5 outproxy route open failed"
+                    );
+                    reject_socks_request(
+                        &mut stream,
+                        via_socks4a,
+                        i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable,
+                    )
+                    .await;
+                    return Socks5ConnectionOutcome::BadGateway;
+                }
+            };
+            return pump_via_outproxy(
+                stream,
+                manager,
+                runtime,
+                cancellation,
+                route,
+                leftover,
+                via_socks4a,
+            )
+            .await;
+        }
+        ClientTargetClass::Refused(failure) => {
+            debug!(
+                failure = failure.as_str(),
+                "socks5 target refused before any route"
+            );
+            reject_socks_request(
+                &mut stream,
+                via_socks4a,
+                i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable,
+            )
+            .await;
+            return Socks5ConnectionOutcome::BadGateway;
+        }
+        ClientTargetClass::Direct(_) => {}
     }
     let target = match resolve_target_for_service(&manager, runtime.destination_id, &destination) {
         Ok(value) => value,

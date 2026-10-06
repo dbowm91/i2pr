@@ -357,7 +357,7 @@ Current graph (`passed` / `ready` / `blocked`):
    framing two bytes short. NOT reachable from any request path:
    infrastructure, not a capability.)
 
-342 registered  outproxy option surface + request paths + wire lane
+342 passed (scoped)  outproxy option surface + request paths + wire lane
   (Plan 342 retains the remainder after Plan 343: ProxyList /
    UseOutproxyPlugin / OutproxyAuth / OutproxyUsername /
    OutproxyPassword / OutproxyType / SSLProxies semantics with
@@ -365,8 +365,84 @@ Current graph (`passed` / `ready` / `blocked`):
    integration and the Proposal-applicable SOCKS families, and the
    self-composed in-tree loopback outproxy wire lane -- loopback
    evidence, NOT interoperability, per the Plan 339 decision.
-   Plan 327 stays BLOCKED: the provider exists but no client can
-   reach it.)
+
+   STEPS 1-3 LANDED. Step 1 closed the two structural gaps Plan 342 named:
+   `RouterIdentityBundle` gained a closure-based signing-seed accessor, and
+   the outbound secret store is derived once at the composition root and
+   threaded as a single `Arc`, so no second key exists. `OutproxyRoute` gained
+   a `Refused(OutproxyFailure)` variant, because the enum previously had no
+   way to say "no" and an empty proxy list made it claim `DirectI2p` for a
+   clearnet target. Step 2 admitted all seven canonical fields as ONE block:
+   a partial block is refused by name before any allocation, `outproxy_type`
+   is a closed vocabulary, `OutproxyPassword` is sealed into the Plan 341
+   stored form by `normalize_definition` and refuses the tunnel outright when
+   no owner is installed. Step 3 made the provider reachable: one
+   `classify_client_target` decides Direct / ViaOutproxy / Refused, all three
+   request paths match it exhaustively before opening anything, and the
+   outproxy handshake prefix is carried into the pump's INBOUND direction --
+   `run_stream_pump`'s `initial_bytes` feeds the opposite one, so putting it
+   there would have corrupted the first request on every pipelining outproxy.
+
+   STEP 4 LANDED, AND IT FOUND THAT STEPS 2-3 SHIPPED UNREACHABLE. Every
+   request-target grammar in the tree (Plan 176 HTTP absolute + authority form,
+   Plan 290 SOCKS5 + SOCKS4a) hard-required a `.i2p` suffix and refused a
+   clearnet authority BEFORE `classify_client_target` ran: `CONNECT
+   example.com:443` was answered 403 by the PARSER, and a SOCKS5 clearnet
+   target was answered `HostUnreachable` from inside the NEGOTIATOR. So
+   `ClientTargetClass::ViaOutproxy` was dead in production while its unit rows
+   -- which call the classifier directly -- passed. That is this plan's own
+   inert-acceptance failure one level deeper than the plan anticipated: not an
+   option surface with no route behind it, but a route with no reachable input.
+   A shape can be right while the path is dead, and only running it says so.
+
+   Fixed by `TargetPolicy { I2pOnly, AllowsClearnet }`, where `I2pOnly` is the
+   default and every pre-342 entry point is a thin wrapper over it, so nothing
+   widened by accident and a caller must NAME the relaxed policy. Only the
+   suffix requirement became policy-dependent: IP literals stay refused (a
+   numeric authority has no name to apply a Host policy to, so allowing it
+   would make the tunnel an open relay by address), `localhost` stays refused
+   (a foreign resolver must not be asked for loopback), and userinfo, control
+   bytes, ceilings, zero port and scheme/form grammar are untouched.
+   Mixed-suffix confusion is the classifier's decision, not the parser's.
+   `ServiceTunnelManager::target_policy(spec_id)` is the single decision point
+   and reads the PROVIDER REGISTRY, not the options value, so a provider
+   removed between reconciliation and a request cannot leave the parser and
+   the classifier disagreeing.
+
+   SCOPING SETTLED: `handle_proxy_request` IS in step 3's scope. The
+   seven-field block is admitted on `httpclient`, and a forward path that
+   ignored it would be inert acceptance at sub-path granularity -- accepted on
+   the kind, honoured on one of its two request forms. It is not a copy of the
+   direct path either: after `build_attempt` a session is a byte pipe to the
+   ORIGIN, not a forward proxy, so the request must be origin-form carrying
+   the CLEARNET authority in `Host:` and never the `b32.i2p` substitution the
+   direct path makes.
+
+   TWO MORE REAL DEFECTS, both found only by running the lane: the outproxy
+   opener never called `notify_outbound_signal`, so the queued SYN was not
+   routed and every route would have failed with `TargetUnreachable` in
+   production; and a control commit publishes `startup` + control-owned
+   definitions, so an outproxy endpoint living only in the manager's spec set
+   is dropped by the first `create` -- it must be startup-owned.
+
+   EVIDENCE: `crates/i2pr-daemon/tests/outproxy_loopback_wire.rs`, 8/8 rows.
+   The outproxy is reached through STREAMING via a service server tunnel whose
+   `ServerTarget` is `LoopbackTcp`, exactly as production reaches one, and the
+   fixture maps the requested authority onto a loopback origin it was given at
+   construction -- it never resolves a name, so the test process itself never
+   holds a clearnet capability, which would invert invariant 1 at the layer
+   meant to enforce it. Guards: `check-outproxy-request-path.sh` extended
+   24 -> 39/39 mutations, plus new `check-outproxy-wire-lane-evidence.sh` at
+   7/7 mutations with 2/2 deliberate NON-FLAGGING controls (comment-stripping
+   has a failure mode in the other direction too).
+
+   PLAN 327 STAYS BLOCKED, on a narrower thing than it was: the live failover
+   rotation between two configured outproxies, and a live restart carrying a
+   request, are UNPROVEN. Two rows were written for them and then REMOVED
+   rather than left ungreen; their names are machine-checked in
+   `DOCUMENTED_ABSENCES` so the absence cannot rot into a silent claim. No
+   interoperability evidence: the Java 2.13.0 and i2pd 2.61.0 pins are
+   untouched, and a loopback fixture is not an outproxy that answers.)
 
 PLAN 322 GAP CENSUS: ZERO. Plan 322 was amended to passed on
 2026-10-05; all 43 canonical RouterInfo additions now have a named
@@ -534,10 +610,17 @@ Forward graph:
     -> 347 blocked on 346
        real bidirectional Java+i2pd type-5 publication/lookup/application qualification
 
-342 ready
+342 passed (scoped)
   outproxy option surface + HTTP/CONNECT/SOCKS request paths + wire evidence
+    (option surface and request paths landed together, because the plan
+     forbids accepting the surface before the route behind it exists; the
+     loopback wire lane then landed and found that BOTH were unreachable,
+     because every request-target grammar refused a clearnet authority
+     before the classifier ran. Fixed by TargetPolicy. The live failover
+     rotation and a live restart remain unproven, so Plan 327 stays blocked
+     and no outproxy capability is claimed)
 
-342 passed + 347 passed
+342 passed (scoped) + 347 passed
   -> 348 fresh Proposal-170 full-conformance gate
        (re-freeze the then-current Open Proposal before any final claim)
 ```
@@ -557,4 +640,4 @@ Plan 348 replaces historical blocked Plan 328 for forward execution. Plan 328 is
 |---|---|---|---|
 | 346 | ready | protocol/security corrective | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
 | 347 | blocked on 346 | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
-| 348 | blocked on 342 + 347 | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |
+| 348 | blocked on 347 (and on any future Plan 342 interop row) | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |

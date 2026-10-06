@@ -24,6 +24,7 @@
 
 use super::error::{HttpError, HttpErrorKind};
 use crate::destination::{B32_SUFFIX, I2P_SUFFIX};
+use crate::target_policy::TargetPolicy;
 
 /// Length ceiling for the URI host portion of an absolute-form
 /// request-target.
@@ -90,6 +91,19 @@ impl TargetParseError {
 /// validated (URI grammar stays strict but path bytes are checked
 /// for control/space).
 pub fn parse_absolute_form(input: &str) -> Result<RequestTarget, TargetParseError> {
+    parse_absolute_form_with_policy(input, TargetPolicy::I2pOnly)
+}
+
+/// Parses one absolute-form request-target under an explicit target policy.
+///
+/// Plan 342: this is the entry point the `httpclient` forward request path
+/// uses. Under [`TargetPolicy::AllowsClearnet`] a well-formed clearnet
+/// authority parses, and the caller then classifies it — the parser never
+/// decides a route.
+pub fn parse_absolute_form_with_policy(
+    input: &str,
+    policy: TargetPolicy,
+) -> Result<RequestTarget, TargetParseError> {
     let rejected = |kind, reason| TargetParseError::new(kind, reason);
     if !input.starts_with("http://") {
         return Err(rejected(
@@ -109,7 +123,7 @@ pub fn parse_absolute_form(input: &str) -> Result<RequestTarget, TargetParseErro
         None => (remainder, ""),
     };
     let (host, port) = parse_authority(authority, false)?;
-    validate_host(&host)?;
+    validate_host_with_policy(&host, policy)?;
     let (path, query) = parse_path_query(path_query)?;
     Ok(RequestTarget {
         kind: TargetKind::Absolute,
@@ -133,6 +147,21 @@ pub fn parse_authority_form(
     input: &str,
     limits_connect_authority: usize,
 ) -> Result<RequestTarget, TargetParseError> {
+    parse_authority_form_with_policy(input, limits_connect_authority, TargetPolicy::I2pOnly)
+}
+
+/// Parses one authority-form `host:port` for `CONNECT` under an explicit
+/// target policy.
+///
+/// Plan 342: the `CONNECT` request path calls this with the tunnel's policy
+/// *before* it classifies, so a clearnet authority survives parsing and is
+/// handed to `classify_client_target`. Under [`TargetPolicy::I2pOnly`] the
+/// behaviour is byte-for-byte the pre-Plan-342 behaviour.
+pub fn parse_authority_form_with_policy(
+    input: &str,
+    limits_connect_authority: usize,
+    policy: TargetPolicy,
+) -> Result<RequestTarget, TargetParseError> {
     let rejected = |kind, reason| TargetParseError::new(kind, reason);
     if input.is_empty() {
         return Err(rejected(
@@ -153,7 +182,7 @@ pub fn parse_authority_form(
         ));
     }
     let (host, port) = parse_authority(input, true)?;
-    validate_host(&host)?;
+    validate_host_with_policy(&host, policy)?;
     if input.parse::<u16>().is_ok() {
         return Err(rejected(
             HttpErrorKind::MalformedTarget,
@@ -186,8 +215,20 @@ pub fn parse_authority_form(
 /// prefix. Origin-form callers must pre-strip and pass to
 /// [`parse_origin_form`].
 pub fn parse_request_target(input: &str) -> Result<RequestTarget, TargetParseError> {
+    parse_request_target_with_policy(input, TargetPolicy::I2pOnly)
+}
+
+/// Parses a request-target string under an explicit target policy.
+///
+/// Plan 342: the `httpclient` forward request path uses this so a clearnet
+/// absolute-form target parses and then reaches `classify_client_target`,
+/// instead of being refused here.
+pub fn parse_request_target_with_policy(
+    input: &str,
+    policy: TargetPolicy,
+) -> Result<RequestTarget, TargetParseError> {
     if input.starts_with("http://") {
-        return parse_absolute_form(input);
+        return parse_absolute_form_with_policy(input, policy);
     }
     Err(TargetParseError::new(
         HttpErrorKind::MalformedTarget,
@@ -297,6 +338,28 @@ fn parse_path_query(input: &str) -> Result<(String, String), TargetParseError> {
 /// Validates that the supplied host is an `.i2p` (Base32 or
 /// static-alias) authority.
 pub fn validate_host(host: &str) -> Result<(), TargetParseError> {
+    validate_host_with_policy(host, TargetPolicy::I2pOnly)
+}
+
+/// Validates a request host under an explicit target policy.
+///
+/// Plan 342. Only the suffix requirement is policy-dependent. Everything the
+/// strict policy refused for a *structural* reason is still refused under
+/// [`TargetPolicy::AllowsClearnet`], and deliberately so:
+///
+/// - **IP literals.** An outproxy may legitimately carry `example.com:80`, but
+///   a numeric authority has no name to apply a `Host`-based policy to, so
+///   allowing it would make the tunnel an open relay by address. Refused.
+/// - **`localhost` / `.localhost`.** Handing a loopback name to an outproxy
+///   asks the outproxy's resolver to resolve it, which is exactly the local
+///   access the `.i2p`-only policy exists to prevent. Refused.
+/// - **empty / overlong / control bytes.** Grammar, enforced by
+///   [`parse_authority`] before this is reached.
+///
+/// The suffix requirement is what moves: under `AllowsClearnet` a well-formed
+/// DNS label is accepted here and the *route* decision is made later, by
+/// `outproxy::classify_client_target`.
+pub fn validate_host_with_policy(host: &str, policy: TargetPolicy) -> Result<(), TargetParseError> {
     let rejected = |kind, reason| TargetParseError::new(kind, reason);
     if host.is_empty() {
         return Err(rejected(HttpErrorKind::NonI2pAuthority, "host is empty"));
@@ -313,6 +376,12 @@ pub fn validate_host(host: &str) -> Result<(), TargetParseError> {
             HttpErrorKind::NonI2pAuthority,
             "localhost authority is rejected",
         ));
+    }
+    if policy.admits_clearnet() {
+        // Plan 342: a clearnet name is structurally fine. The caller
+        // classifies it next; this function never decides a route, so there is
+        // no arm here that could treat a clearnet host as reachable directly.
+        return Ok(());
     }
     if !lowered.ends_with(I2P_SUFFIX) {
         return Err(rejected(

@@ -19,6 +19,14 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
+/// Plan 342: the fail-closed outbound-credential owner for a row that does not
+/// exercise a credential. No identity is loaded, so no store exists, and every
+/// credential field is refused rather than silently accepted.
+fn plan342_test_outbound_secrets()
+-> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+    Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
+}
+
 use i2pr_daemon::config::Config;
 use i2pr_daemon::i2pcontrol::I2pControlServiceState;
 use i2pr_daemon::i2pcontrol_inspection::InspectionHandles;
@@ -94,7 +102,8 @@ async fn start_service(
         .expect("shared manager builds")
         .expect("control implies a shared manager");
     let control = Arc::new(
-        TunnelControlState::for_config(config, manager).expect("control builds for config"),
+        TunnelControlState::for_config(config, manager, plan342_test_outbound_secrets())
+            .expect("control builds for config"),
     );
     let inspection = Arc::new(InspectionHandles::from_config(config));
     let state = Arc::new(

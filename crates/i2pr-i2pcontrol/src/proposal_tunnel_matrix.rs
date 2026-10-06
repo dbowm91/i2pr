@@ -14,6 +14,15 @@ pub enum ProposalTunnelCellDisposition {
     /// Proposal semantics do not apply to this tunnel type.
     NotApplicable { reason: &'static str },
     /// A deep capability plan owns the field.
+    ///
+    /// Retained as census vocabulary, not as a live disposition. Plan 342
+    /// closed the only two producers in this census — `ProxyList` /
+    /// `UseOutproxyPlugin` / `OutproxyAuth` / `OutproxyUsername` /
+    /// `OutproxyPassword` / `OutproxyType` and `SSLProxies`, both of which
+    /// had named Plan 327 as their deep prerequisite. No cell returns it
+    /// today; the variant is kept so the vocabulary of the census is
+    /// unchanged and a future deep prerequisite has a spelling to use
+    /// rather than silently reclassifying itself as an owner gap.
     DeepPrerequisite { plan: u16, reason: &'static str },
     /// A non-deep field has no operational owner yet.
     OwnerGap { owner_needed: &'static str },
@@ -72,7 +81,7 @@ pub fn proposal_tunnel_manager_matrix() -> impl Iterator<Item = ProposalTunnelMa
 }
 
 fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition {
-    use ProposalTunnelCellDisposition::{Apply, DeepPrerequisite, NotApplicable, OwnerGap};
+    use ProposalTunnelCellDisposition::{Apply, NotApplicable, OwnerGap};
 
     let applies = |types: &[&str]| types.contains(&tunnel_type);
     let owner = match field {
@@ -200,9 +209,10 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         "ProxyList" | "UseOutproxyPlugin" | "OutproxyAuth" | "OutproxyUsername"
         | "OutproxyPassword" | "OutproxyType" => {
             return if applies(CLIENTS) {
-                DeepPrerequisite {
-                    plan: 327,
-                    reason: "I2P-routed outproxy provider and routing policy",
+                Apply {
+                    owner: "Plan 342 outproxy provider block: i2pr_service_tunnels::outproxy::OutproxyConfig \
+                            reached from the HTTP, CONNECT, and SOCKS request paths through a Streaming \
+                            route to a configured I2P outproxy destination, with no direct-clearnet fallback",
                 }
             } else {
                 NotApplicable {
@@ -212,9 +222,10 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         }
         "SSLProxies" => {
             return if applies(PROXY_CLIENTS) {
-                DeepPrerequisite {
-                    plan: 327,
-                    reason: "safe I2P-routed SSL proxy provider semantics",
+                Apply {
+                    owner: "Plan 342 tunnelled-request subset of the outproxy list, required to be a \
+                            subset of ProxyList so a tunnelled outproxy is never one the bounded \
+                            failover policy never rotates into",
                 }
             } else {
                 NotApplicable {

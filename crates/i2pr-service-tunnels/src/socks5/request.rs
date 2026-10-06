@@ -27,6 +27,7 @@ use super::config::{
 use super::errors::{Socks5Error, Socks5ErrorKind};
 use super::limits::Socks5Limits;
 use crate::destination::{B32_SUFFIX, validate_static_alias};
+use crate::target_policy::TargetPolicy;
 
 /// Length of the fixed request header (`VER + CMD + RSV + ATYP`).
 pub const REQUEST_HEADER_LEN: usize = 4;
@@ -92,6 +93,10 @@ pub struct RequestParser {
     buffer: Vec<u8>,
     domain_length: usize,
     domain: Vec<u8>,
+    /// Plan 342: whether a well-formed clearnet domain is a parseable target.
+    /// Defaults to `.i2p`-only, so every pre-Plan-342 construction site keeps
+    /// its exact previous behaviour.
+    policy: TargetPolicy,
 }
 
 impl Default for RequestParser {
@@ -103,11 +108,23 @@ impl Default for RequestParser {
 impl RequestParser {
     /// Creates a fresh request parser.
     pub fn new() -> Self {
+        Self::with_policy(TargetPolicy::I2pOnly)
+    }
+
+    /// Creates a request parser under an explicit target policy.
+    ///
+    /// Plan 342: `TargetPolicy::AllowsClearnet` lets a well-formed clearnet
+    /// domain through this parser so the daemon's `classify_client_target` can
+    /// decide its route. It grants no egress on its own — with no provider
+    /// installed the classifier refuses, and the negotiator's reply is written
+    /// before any socket is opened.
+    pub fn with_policy(policy: TargetPolicy) -> Self {
         Self {
             state: InnerState::RequestHeader,
             buffer: Vec::with_capacity(REQUEST_HEADER_LEN + PORT_FIELD_LEN),
             domain_length: 0,
             domain: Vec::new(),
+            policy,
         }
     }
 
@@ -263,7 +280,7 @@ impl RequestParser {
                     // localhost, mixed-suffix confusion, and
                     // malformed alias spellings via the typed
                     // Rejected reply.
-                    if let Err(error) = validate_domain_policy(&self.domain) {
+                    if let Err(error) = validate_domain_policy(&self.domain, self.policy) {
                         let code = error.kind.reply_code().code();
                         return Ok(Some(RequestOutcome::Rejected { reply_code: code }));
                     }
@@ -311,7 +328,10 @@ impl RequestParser {
 ///
 /// Shared with the Plan 290 SOCKS4a parser (`super::socks4a`), which
 /// enforces the identical `.i2p`-only policy on 4a domains.
-pub(crate) fn validate_domain_policy(bytes: &[u8]) -> Result<(), Socks5Error> {
+pub(crate) fn validate_domain_policy(
+    bytes: &[u8],
+    policy: TargetPolicy,
+) -> Result<(), Socks5Error> {
     let rejected = |kind, reason| Socks5Error::new(kind, reason);
     if bytes.is_empty() {
         return Err(rejected(Socks5ErrorKind::ZeroDomain, "domain is empty"));
@@ -336,6 +356,15 @@ pub(crate) fn validate_domain_policy(bytes: &[u8]) -> Result<(), Socks5Error> {
         ));
     }
     if !host.ends_with(".i2p") {
+        if policy.admits_clearnet() {
+            // Plan 342: structurally fine, and deliberately so. The IP
+            // literal and `localhost` refusals above are not policy-gated,
+            // because an outproxy carrying a numeric authority has no name to
+            // apply a `Host`-based policy to, and one carrying a loopback name
+            // asks the outproxy's resolver for exactly the local access this
+            // policy exists to prevent.
+            return Ok(());
+        }
         return Err(rejected(
             Socks5ErrorKind::NonI2pTarget,
             "domain must end with .i2p",

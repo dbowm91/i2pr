@@ -176,6 +176,20 @@ pub struct RemoteDeliveryCounters {
     /// `unknown_peer` style outcomes reported for non-cached
     /// destinations that the manager could not route.
     pub unknown_peer: u64,
+    /// Plan 351 — a `.b33` encrypted-service target was fetched, unwrapped,
+    /// bound to the address signing key, validated, and installed under its
+    /// unblinded destination hash.
+    pub encrypted_target_resolved: u64,
+    /// Plan 351 — a `.b33` encrypted-service target did not resolve. Counted
+    /// separately from `remote_lookup_failed` so an encrypted failure is
+    /// distinguishable from an ordinary remote miss in the evidence layer.
+    pub encrypted_target_failed: u64,
+    /// Plan 351 — observation labels this helper does not recognise.
+    ///
+    /// Exists so an unrecognised label is counted rather than silently
+    /// discarded. Before this counter existed the fallthrough was `_ => {}`,
+    /// which made a typo indistinguishable from a deliberate rejection.
+    pub observations_rejected_unknown: u64,
     /// Plan 206 §10 — remote route attempts that found a cached
     /// LeaseSet2 in the authoritative store without a fresh lookup.
     /// The counter is advanced only by typed backend seams; the
@@ -427,6 +441,26 @@ impl ServiceDestinationDelivery {
             "unknown_peer" => {
                 counters.unknown_peer = counters.unknown_peer.saturating_add(1);
             }
+            // Plan 351 — encrypted-service target resolution. Two counters
+            // rather than one, because "the `.b33` resolved" and "the `.b33`
+            // failed" have to be distinguishable from an ordinary `.b32`
+            // failure at the evidence layer, and collapsing them into
+            // `remote_lookup_succeeded`/`_failed` would make a b33 failure
+            // indistinguishable from an ordinary remote miss.
+            //
+            // The counters are counts only. They never carry the lookup
+            // secret, the derived blinded storage key, the fetched record's
+            // bytes, or the destination hash — the per-service *reason* lives
+            // on `ServiceTunnelManager::encrypted_target_status`, whose
+            // variant set is closed and whose reasons are `&'static str`.
+            "encrypted_target_resolved" => {
+                counters.encrypted_target_resolved =
+                    counters.encrypted_target_resolved.saturating_add(1);
+            }
+            "encrypted_target_failed" => {
+                counters.encrypted_target_failed =
+                    counters.encrypted_target_failed.saturating_add(1);
+            }
             // Plan 206 §10 — operation-boundary counters reject this
             // helper. They advance only through typed backend seams
             // invoked from production code paths; an external test
@@ -435,7 +469,16 @@ impl ServiceDestinationDelivery {
             "remote_lookup_cache_hit"
             | "remote_outbound_composed"
             | "remote_inbound_dispatched" => {}
-            _ => {}
+            // Plan 351 — an unrecognised label is a **counted** no-op, not a
+            // silent one. The previous `_ => {}` made a typo'd label
+            // indistinguishable from a deliberately suppressed one, so a new
+            // counter that was never wired up would have looked identical to one
+            // that was deliberately rejected. A distinct counter makes that
+            // visible in the evidence layer instead of only in review.
+            _ => {
+                counters.observations_rejected_unknown =
+                    counters.observations_rejected_unknown.saturating_add(1);
+            }
         }
     }
 

@@ -336,13 +336,41 @@ pub enum LeaseStoreIngestOutcome {
     Continue,
     /// The state machine was already terminal; the response was ignored.
     Ignored,
+    /// Plan 351: a bounded **type-5** `DatabaseStore` arrived for a pending
+    /// encrypted lookup and is ready for the ELS2 owner.
+    ///
+    /// Deliberately a separate variant rather than a widened `Completed`: a
+    /// `Completed` outcome means "a `ValidatedLeaseSet2` is cached under the
+    /// destination hash you asked for", and an encrypted fetch has produced no
+    /// such thing. Collapsing the two would make it possible for a caller that
+    /// handles only `Completed` to believe it holds a record it has not
+    /// validated, unwrapped, or bound to the `.b33` signing key.
+    EncryptedLeaseSet2Ready {
+        /// Completed lookup identity.
+        lookup_id: LookupId,
+        /// Bounded type-5 record message for the ELS2 owner.
+        message: Box<i2pr_proto::DatabaseStoreMessage>,
+    },
 }
 
 /// One pending LeaseSet2 lookup tracked by the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingLeaseLookup {
     lookup_id: LookupId,
-    target: DestinationHash,
+    /// The key this lookup is filed under, verbatim (Plan 351).
+    ///
+    /// On the ordinary path this is `router_hash_from_destination(hash)`.
+    /// On the encrypted path it is the day's blinded storage key, which is
+    /// *not* a destination hash and must never be re-derived from one. The
+    /// ingest census compares a reply's key against this value, so it has to
+    /// be the real lookup key on both paths.
+    lookup_key: RouterHash,
+    /// The destination hash a fetched record must install under.
+    ///
+    /// `None` on the encrypted path: a type-5 record's destination hash only
+    /// exists after the envelope is unwrapped, and its inner record is what
+    /// names it. Nothing here may substitute the blinded storage key for this.
+    destination: Option<DestinationHash>,
     deadline_ms: u64,
     retries: u32,
 }
@@ -776,6 +804,57 @@ impl DestinationTunnelCoordinator {
         routing_key: &RouterHash,
         reply_path: ReplyPath,
     ) -> Result<(u64, LookupAction), DestinationTunnelError> {
+        self.begin_lease_lookup_inner(
+            router_hash_from_destination(target),
+            Some(target),
+            routing_key,
+            reply_path,
+        )
+    }
+
+    /// Plan 351 — begins one remote **encrypted** (type-5) LeaseSet2 lookup
+    /// filed under a daily blinded storage key.
+    ///
+    /// The sibling of [`Self::begin_lease_lookup`], and the reason that
+    /// function was split: the ordinary path re-derives its lookup key from a
+    /// `DestinationHash`, which is correct for a Standard LeaseSet2 (filed
+    /// under its own destination hash) and impossible for an encrypted record
+    /// (filed under a blinded storage key, with no `Destination` in hand to
+    /// hash). `storage_key` is therefore taken verbatim.
+    ///
+    /// Bounded identically to the ordinary path: the same
+    /// `MAX_CONCURRENT_LEASE_LOOKUPS` slot bound, the same retained reply-path
+    /// bound, and the same honest `NoEligibleCandidates` termination.
+    pub fn begin_encrypted_lease_lookup(
+        &mut self,
+        storage_key: i2pr_proto::Hash,
+        routing_key: &RouterHash,
+        reply_path: ReplyPath,
+    ) -> Result<(u64, LookupAction), DestinationTunnelError> {
+        // The blinded storage key is used as the lookup key verbatim. It is
+        // not a destination hash and is never passed through
+        // `router_hash_from_destination` or `DestinationHash`.
+        self.begin_lease_lookup_inner(
+            RouterHash::from_hash(storage_key),
+            None,
+            routing_key,
+            reply_path,
+        )
+    }
+
+    /// Shared body of [`Self::begin_lease_lookup`] and
+    /// [`Self::begin_encrypted_lease_lookup`].
+    ///
+    /// `destination` is `Some` only on the ordinary path, and is the value a
+    /// fetched Standard LeaseSet2 must bind to. It is `None` on the encrypted
+    /// path, where the binding is established after unwrapping.
+    fn begin_lease_lookup_inner(
+        &mut self,
+        lookup_key: RouterHash,
+        destination: Option<DestinationHash>,
+        routing_key: &RouterHash,
+        reply_path: ReplyPath,
+    ) -> Result<(u64, LookupAction), DestinationTunnelError> {
         if self.pending.len() >= MAX_CONCURRENT_LEASE_LOOKUPS {
             return Err(DestinationTunnelError::TooManyLookups);
         }
@@ -785,10 +864,10 @@ impl DestinationTunnelCoordinator {
             return Err(DestinationTunnelError::TooManyReplyPaths);
         }
         // The authoritative store must carry at least one eligible
-        // candidate; otherwise the lookup terminates honestly.
-        let target_hash = router_hash_from_destination(target);
+        // candidate; otherwise the lookup terminates honestly. The key is
+        // the one the lookup will actually be filed under, on both paths.
         let candidates =
-            select_floodfill_candidates(&self.store, &target_hash, routing_key, &[], &self.policy);
+            select_floodfill_candidates(&self.store, &lookup_key, routing_key, &[], &self.policy);
         if candidates.is_empty() {
             self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
             self.counters.floodfill_candidates_absent =
@@ -801,10 +880,10 @@ impl DestinationTunnelCoordinator {
         self.next_request_id = self.next_request_id.checked_add(1).expect("request id");
         self.seam
             .set_lease_set2_reply_path_provider(Box::new(LeaseReplyProvider { path: reply_path }));
-        let action = self.seam.begin_lease_set2_lookup_with_store(
+        let action = self.seam.begin_lease_set2_lookup_for_key_with_store(
             &self.store,
             request_id,
-            target,
+            lookup_key,
             routing_key,
         );
         match action {
@@ -814,7 +893,8 @@ impl DestinationTunnelCoordinator {
                     request_id,
                     PendingLeaseLookup {
                         lookup_id,
-                        target,
+                        lookup_key,
+                        destination,
                         deadline_ms,
                         retries: 0,
                     },
@@ -961,7 +1041,34 @@ impl DestinationTunnelCoordinator {
                         .key_hash()
                         .ok()
                         .map(i2pr_netdb::DestinationHash::from_hash);
-                    if resolved_hash == Some(pending.target) {
+                    if resolved_hash == pending.destination {
+                        self.counters.lookup_key_matches =
+                            self.counters.lookup_key_matches.saturating_add(1);
+                    } else {
+                        self.counters.lookup_key_mismatches =
+                            self.counters.lookup_key_mismatches.saturating_add(1);
+                    }
+                }
+                // Plan 351: a type-5 reply for an encrypted lookup. Counted as
+                // a decoded record and compared against the **lookup key** —
+                // today's blinded storage key — not against
+                // `pending.destination`, which is `None` here by design.
+                i2pr_proto::DatabaseStoreData::EncryptedLeaseSet(record) => {
+                    body_was_lease_set2 = true;
+                    self.counters.ls2_records_decoded =
+                        self.counters.ls2_records_decoded.saturating_add(1);
+                    // Size bound applied before the record is hashed or parsed
+                    // any further. The envelope itself was already decoded
+                    // under `MAX_I2NP_PAYLOAD_SIZE` by the caller, so this is
+                    // the tighter of the two bounds, not the only one.
+                    if record
+                        .encode_to_vec(i2pr_netdb::MAX_ELS2_RECORD_LENGTH)
+                        .is_err()
+                    {
+                        self.counters.ls2_records_decode_rejected =
+                            self.counters.ls2_records_decode_rejected.saturating_add(1);
+                    } else if store_message.key == Hash::from_bytes(*pending.lookup_key.as_bytes())
+                    {
                         self.counters.lookup_key_matches =
                             self.counters.lookup_key_matches.saturating_add(1);
                     } else {
@@ -998,7 +1105,7 @@ impl DestinationTunnelCoordinator {
                     lease_set2,
                 } => {
                     let validated = lease_set2.as_ref();
-                    if validated.key() != pending.target {
+                    if Some(validated.key()) != pending.destination {
                         self.counters.mismatched_rejected =
                             self.counters.mismatched_rejected.saturating_add(1);
                         return Err(DestinationTunnelError::LookupEngine(
@@ -1016,6 +1123,32 @@ impl DestinationTunnelCoordinator {
                     self.pending.remove(&request_id);
                     self.retained_paths.remove(&request_id);
                     Ok(LeaseStoreIngestOutcome::Completed { lookup_id, summary })
+                }
+                // Plan 351: a type-5 record arrived for a blinded storage key.
+                //
+                // Nothing is validated, decrypted, or installed here — the key
+                // match and the record-type check already happened inside the
+                // lookup engine, and ADR 0032's closed type-11 profile, the
+                // unwrap, and the b33 identity binding all belong to
+                // `EncryptedServiceResolver`. The coordinator's job here is to
+                // hand the bounded message up and release the pending slot, so
+                // a fetch that the owner then rejects still cannot strand the
+                // table.
+                i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { lookup_id, message } => {
+                    if pending.destination.is_some() {
+                        // An ordinary destination lookup must never accept a
+                        // type-5 record for it. Reject rather than install.
+                        self.counters.mismatched_rejected =
+                            self.counters.mismatched_rejected.saturating_add(1);
+                        return Err(DestinationTunnelError::LookupEngine(
+                            "type-5 record offered to an ordinary destination lookup".to_owned(),
+                        ));
+                    }
+                    self.counters.lookups_succeeded =
+                        self.counters.lookups_succeeded.saturating_add(1);
+                    self.pending.remove(&request_id);
+                    self.retained_paths.remove(&request_id);
+                    Ok(LeaseStoreIngestOutcome::EncryptedLeaseSet2Ready { lookup_id, message })
                 }
                 _ => {
                     self.counters.mismatched_rejected =

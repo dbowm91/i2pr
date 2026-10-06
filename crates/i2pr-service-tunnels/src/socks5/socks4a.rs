@@ -28,6 +28,7 @@
 use super::errors::{Socks5Error, Socks5ErrorKind};
 use super::limits::Socks5Limits;
 use super::request::{ConnectDestination, validate_domain_policy};
+use crate::target_policy::TargetPolicy;
 
 /// SOCKS4a version byte.
 pub const SOCKS4A_VERSION: u8 = 0x04;
@@ -94,6 +95,9 @@ pub struct Socks4aRequestParser {
     port: u16,
     userid: Vec<u8>,
     domain: Vec<u8>,
+    /// Plan 342: whether a well-formed clearnet domain is a parseable target.
+    /// Defaults to `.i2p`-only.
+    policy: TargetPolicy,
 }
 
 impl Default for Socks4aRequestParser {
@@ -105,12 +109,23 @@ impl Default for Socks4aRequestParser {
 impl Socks4aRequestParser {
     /// Creates a fresh 4a request parser.
     pub fn new() -> Self {
+        Self::with_policy(TargetPolicy::I2pOnly)
+    }
+
+    /// Creates a 4a request parser under an explicit target policy.
+    ///
+    /// Plan 342: same contract as `RequestParser::with_policy`. SOCKS4a has no
+    /// authentication stage, so a provider that needs a credential cannot be
+    /// used here; the classifier's refusal is the correct answer and the
+    /// capability is not enabled on this path.
+    pub fn with_policy(policy: TargetPolicy) -> Self {
         Self {
             state: InnerState::FixedHeader,
             buffer: Vec::with_capacity(SOCKS4A_FIXED_HEADER_LEN),
             port: 0,
             userid: Vec::new(),
             domain: Vec::new(),
+            policy,
         }
     }
 
@@ -227,7 +242,7 @@ impl Socks4aRequestParser {
                             ));
                         }
                     }
-                    if validate_domain_policy(&self.domain).is_err() {
+                    if validate_domain_policy(&self.domain, self.policy).is_err() {
                         return Ok(Some(Socks4aOutcome::Rejected));
                     }
                     let host = std::str::from_utf8(&self.domain).map_err(|_| {

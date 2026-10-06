@@ -415,7 +415,6 @@ impl EncryptedLeaseSet2 {
     pub fn signed_bytes(&self) -> &[u8] {
         &self.signed_bytes
     }
-
     /// Borrows the record signature.
     pub fn signature(&self) -> &[u8] {
         &self.signature
@@ -477,6 +476,53 @@ impl EncryptedLeaseSet2 {
         self.outer_ciphertext[..ENCRYPTED_LEASE_SET2_SALT_LENGTH]
             .try_into()
             .expect("outer ciphertext is at least one salt long")
+    }
+}
+
+/// The exact byte region a type-5 signature covers, obtainable only from a real
+/// encrypted-LeaseSet2 structure.
+///
+/// # Why this type exists
+///
+/// The deployed type-11 transcript that Java I2P and i2pd use has no hash-domain
+/// separator and no prefix-free message-length frame (ADR 0032). Its security therefore
+/// rests on the *caller* signing exactly one thing and nothing else. A function that took
+/// `&[u8]` would make that a convention; this type makes it structural: the only
+/// constructors take a decoded [`EncryptedLeaseSet2`] or
+/// [`EncryptedLeaseSet2OfflineKeys`], and there is no `from_bytes`, so no application
+/// message and no caller-selected transcript input can reach the ELS2 signer or verifier
+/// through this boundary.
+///
+/// The borrowed region is the same buffer [`EncryptedLeaseSet2::signed_bytes`] returns,
+/// store-type byte included. A verifier that omitted that byte would be checking a
+/// different message than the producer signed, which is why the byte is not optional here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Els2SignedRegion<'a>(&'a [u8]);
+
+impl<'a> Els2SignedRegion<'a> {
+    /// Wraps the signed region of a type-5 record.
+    pub fn of_record(record: &'a EncryptedLeaseSet2) -> Self {
+        Self(record.signed_bytes())
+    }
+
+    /// Wraps the signed region of a type-5 offline-key delegation block.
+    pub fn of_offline_keys(offline: &'a EncryptedLeaseSet2OfflineKeys) -> Self {
+        Self(offline.signed_bytes())
+    }
+
+    /// Borrows the region bytes.
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
+    /// Returns the region length, for a caller's own bound check.
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the region is empty, which no valid type-5 region ever is.
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

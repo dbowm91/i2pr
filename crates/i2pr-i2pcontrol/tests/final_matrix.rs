@@ -48,12 +48,12 @@ fn plan295_final_public_contract_census() {
     // AddressBook SetConfig: 13 frozen keys.
     assert_eq!(SET_CONFIG_KEYS.len(), 13);
 
-    // TunnelManager: 7 actions, 12 types, 46 options.
+    // TunnelManager: 7 actions, 12 types, 52 options.
     assert_eq!(TUNNEL_ACTIONS.len(), 7);
     assert_eq!(TUNNEL_TYPES.len(), 12);
-    assert_eq!(TUNNEL_OPTIONS.len(), 46);
+    assert_eq!(TUNNEL_OPTIONS.len(), 52);
 
-    // Type-by-option cells: 281 apply + 37 not-applicable + 18
+    // Type-by-option cells: 309 apply + 37 not-applicable + 16
     // explicit incompatibilities + 0 corrective-296
     // (Plan 296 closed every residual into an apply owner) +
     // 0 corrective-297 (Plan 297 closed the TLS residual).
@@ -61,9 +61,20 @@ fn plan295_final_public_contract_census() {
     // Plan 334 moved 12 cells: the three LeaseSet security options
     // (`encrypt_lease_set`, `leaseset_password`, `leaseset_client_auth`) on
     // the four publishing kinds went from incompatible to apply, because
-    // they now have the real ELS2 owners. `sig_type` (12 cells) and
-    // `use_outproxy_plugin` (2 cells) and `leaseset_blinding_secret`
-    // (4 cells) remain incompatible, which is 18.
+    // they now have the real ELS2 owners.
+    //
+    // Plan 342 added 26 cells and moved 2: the seven outproxy options
+    // (`use_outproxy_plugin`, `proxy_list`, `outproxy_auth`,
+    // `outproxy_username`, `outproxy_password`, `outproxy_type`,
+    // `ssl_proxies`) each apply to the four proxy client kinds, because the
+    // provider that makes them meaningful now exists. Plan 293's
+    // `use_outproxy_plugin` determination had been recorded against the
+    // narrower `httpclient | connectclient` mask, so its two cells moved and
+    // two more kinds gained the flag; the plan of record is not edited and
+    // the determination is carried forward as superseded.
+    //
+    // What remains incompatible is 16 cells: `sig_type` (12) and
+    // `leaseset_blinding_secret` (4).
     let mut apply = 0;
     let mut not_applicable = 0;
     let mut incompatible = 0;
@@ -81,10 +92,10 @@ fn plan295_final_public_contract_census() {
             },
         }
     }
-    assert_eq!(MATRIX.len(), 336);
-    assert_eq!(apply, 281);
+    assert_eq!(MATRIX.len(), 362);
+    assert_eq!(apply, 309);
     assert_eq!(not_applicable, 37);
-    assert_eq!(incompatible, 18);
+    assert_eq!(incompatible, 16);
     assert_eq!(corrective_296, 0);
     assert_eq!(corrective_297, 0);
     assert_eq!(

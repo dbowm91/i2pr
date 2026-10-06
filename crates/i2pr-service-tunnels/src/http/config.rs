@@ -154,6 +154,18 @@ pub struct HttpClientOptions {
     /// forwards Basic-verified requests; when unset, the listener
     /// stays open (pre-292 behavior).
     pub proxy_auth: Option<crate::auth::ProxyCredentials>,
+    /// Plan 342: the I2P-routed outproxy provider policy.
+    ///
+    /// **The policy only.** This is the route — which outproxies, in which
+    /// order, speaking which dialect — and deliberately not the credential:
+    /// the password lives in [`crate::outbound_secret::OutboundSecretStore`]
+    /// and is opened only while an outproxy header is being built. That is
+    /// what keeps this value safe to `Clone` into a snapshot and to `Debug`.
+    ///
+    /// `None` means no outproxy is configured, which is the fail-closed
+    /// default: a clearnet `CONNECT` target is then refused rather than
+    /// routed directly.
+    pub outproxy: Option<crate::outproxy::OutproxyConfig>,
 }
 
 impl HttpClientOptions {
@@ -165,6 +177,26 @@ impl HttpClientOptions {
     /// Validates the HTTP profile options structurally.
     pub fn validate(&self) -> Result<(), ServiceTunnelError> {
         self.privacy.validate()?;
+        // Plan 342: the outproxy block's own cross-field rules (non-empty
+        // list, complete credential declaration, tunnelled subset) are
+        // re-run here so a spec assembled outside the control plane cannot
+        // carry a policy that `route` would later contradict.
+        if let Some(outproxy) = &self.outproxy
+            && let Err(error) = outproxy.validate()
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: match error {
+                    crate::outproxy::OutproxyError::TunnelledNotInList => {
+                        "SSLProxies must be a subset of ProxyList"
+                    }
+                    crate::outproxy::OutproxyError::MalformedCredential { .. } => {
+                        "OutproxyAuth requires a complete OutproxyUsername/OutproxyPassword pair"
+                    }
+                    _ => "ProxyList is malformed or empty",
+                },
+            });
+        }
         if self.destination_ports.len() > HTTP_OPTIONS_MAX_PORTS {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id: String::new(),

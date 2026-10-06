@@ -50,6 +50,7 @@ pub mod chacha;
 pub mod ecies;
 pub mod hkdf;
 pub mod red25519;
+pub mod red25519_deployed;
 
 pub use chacha::{
     CHACHA20_BLOCK_LENGTH, CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, ChachaError,
@@ -341,6 +342,23 @@ impl RouterIdentityBundle {
     /// Returns the public RouterIdentity.
     pub const fn identity(&self) -> &RouterIdentity {
         &self.identity
+    }
+
+    /// Derives a domain-separated key from the router's persisted signing
+    /// seed, entirely inside a closure (Plan 342).
+    ///
+    /// **Closure-based on purpose, not a getter.** The signing seed is the
+    /// root of every router identity credential. A `signing_seed()` accessor
+    /// would return an owned `&[u8; 32]` that any caller could copy into a
+    /// struct, a log, a test assertion, or a snapshot that outlives the
+    /// derivation it was taken for. This form bounds the exposure to a single
+    /// expression: `bundle.with_signing_seed(|seed| derive(seed))`.
+    ///
+    /// `R` is unconstrained on purpose — the closure's return value is
+    /// whatever the caller's derivation produces, so nothing about the seed
+    /// escapes in the type either.
+    pub fn with_signing_seed<R>(&self, use_seed: impl FnOnce(&[u8; PRIVATE_KEY_LENGTH]) -> R) -> R {
+        use_seed(self.signing_key.secret_bytes())
     }
 
     /// Returns the private signing wrapper for signing or private storage.

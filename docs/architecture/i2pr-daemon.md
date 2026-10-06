@@ -232,7 +232,7 @@ under Key contracts for the lifecycle detail.
 | `src/service_tunnels_socks_irc.rs` | 337 | Plan 290 SOCKS+IRC composer: shared version-peek negotiation, target selection, then the IRC filtered loop with no raw bypass | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
 | `src/service_tunnels_streamr.rs` | 739 | Plan 291 Streamr subscriber/publisher executors: loopback UDP media source/target sockets, bounded subscribe cadence with terminal unsubscribe, authenticated subscriber table with expiry sweep and raw fanout, producer-bound media forwarding; Plan 292 adds the subscriber sink redirect | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
 | `src/service_tunnels_tls.rs` | 428 | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
-| `src/outproxy_route.rs` | 976 | **Plan 343 daemon half of the I2P-routed outproxy provider** — the *route owner*. Everything decidable without a socket lives in the runtime-neutral `i2pr-service-tunnels::outproxy`; this module adds only the two things the composition root can do: the I/O half (open a Streaming route to the selected I2P outproxy destination and speak the outproxy-facing handshake with bounded retry, a separate handshake deadline, and a bounded read) and the credential half (recover the sealed password through Plan 341's `OutboundSecretStore` and build the header). **Not reachable from any request path** — see **Outproxy provider** under Key contracts | `RouterOutproxyProvider` (impls `OutproxyProvider`), `OutproxySession`, `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`, `open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` |
+| `src/outproxy_route.rs` | 976 | **Plan 343 daemon half of the I2P-routed outproxy provider** — the *route owner*. Everything decidable without a socket lives in the runtime-neutral `i2pr-service-tunnels::outproxy`; this module adds only the two things the composition root can do: the I/O half (open a Streaming route to the selected I2P outproxy destination and speak the outproxy-facing handshake with bounded retry, a separate handshake deadline, and a bounded read) and the credential half (recover the sealed password through Plan 341's `OutboundSecretStore` and build the header). **Reachable from all four client request paths as of Plan 342** via the shared opener `open_client_route` — see **Outproxy provider** under Key contracts | `RouterOutproxyProvider` (impls `OutproxyProvider`), `OutproxySession`, `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`, `open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` |
 
 ---
 
@@ -316,10 +316,14 @@ pub use sam::{SamServiceError, SamServiceState, StreamingPools};
   `ServiceEls2Material`, `ServiceGeneration`.
 - **Outproxy route owner** — `RouterOutproxyProvider`, `OutproxySession`,
   `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`,
-  `async open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS`. These are reachable **only**
-  as `i2pr_daemon::outproxy_route::…`; none is re-exported at the crate root, and nothing in
-  `src/` calls `open_via_outproxy` (verified: the sole reference to the module outside itself
-  is the `pub mod` declaration at `src/lib.rs:31`).
+  `async open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS`. None is re-exported at the crate
+  root. **Plan 342 changed the reachability**: `open_via_outproxy` is now reached from all four
+  client request paths through the single shared opener `open_client_route`, which is itself
+  reached from `connect_via_outproxy` (`service_tunnels_http.rs`),
+  `forward_via_outproxy` (`service_tunnels_http.rs`), and `run_socks5_connection`
+  (`service_tunnels_socks5.rs`). The Plan 343 statement that "nothing in `src/` calls
+  `open_via_outproxy`" was true when written and is **false now**; it is retained in the Plan 343
+  closure record, not here.
 
 ---
 
@@ -730,17 +734,40 @@ service; `ServiceDestinationDelivery::new()` / `with_backend` / `has_backend` se
 `service_lifecycle.rs` is a **private** module holding only local Destination-group
 phase/timing policy — no secrets, no routing state.
 
-### Outproxy provider (Proposal 170) — policy and route owner landed, no reachable request path
+### Outproxy provider (Proposal 170) — reachable from all four request paths, loopback-evidenced only
 
-Read this before writing "outproxy supported" anywhere. **Both halves exist and are enforced;
-neither is reachable by a client.** Plan
-[`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) is
+Read this before writing "outproxy supported" anywhere.
+
+**Superseded as of Plan 342.** Plan
+[`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) recorded
 `passed-outproxy-provider-policy-and-route-owner-with-no-reachable-request-path`: *"No option
-can set an outproxy yet, and no request path consults the provider. The code is reachable only
-from its own tests."* There is still **no direct clearnet fallback** and **no direct clearnet
-capability anywhere in the design**. So a flat "no clearnet outproxy" is now **imprecise** — the
-policy and the route owner are real, typed, and guarded — while "outproxy supported" would be
-**wrong**, because the route owner has no caller. Both facts are true; keep them together.
+can set an outproxy yet, and no request path consults the provider."* That was accurate for
+Plan 343 and is retained in its own record; it is no longer accurate for this tree.
+
+What Plan [`342`](../../plans/closure/i2pcontrol-proposal-170/342-status.md)
+(`passed-loopback-wire-lane-landed-live-failover-rotation-unproven`) changed:
+
+- all seven canonical option fields are admitted as one **all-or-none** block on the four proxy
+  client kinds, with `OutproxyPassword` sealed into Plan 341's stored form;
+- the provider is installed by the real control-plane reconciliation into the manager's registry
+  and reached from **all four** client request paths — HTTP forward, HTTP `CONNECT`, the strict
+  `CONNECT` adapter, and SOCKS5 — through the single classifier `classify_client_target`;
+- there is still **no direct clearnet fallback** and **no direct clearnet capability anywhere in
+  the design**, and there is still **no direct-clearnet arm to remove later, because there is
+  never a fallback**.
+
+So "outproxy supported" is still **wrong** — but for a different reason than it was in Plan 343.
+It is wrong because the only evidence is the self-composed **loopback** lane
+(`crates/i2pr-daemon/tests/outproxy_loopback_wire.rs`, 8/8 rows), the live failover rotation and
+a live restart are **unproven**, and **no Java I2P or i2pd outproxy has ever been exercised**.
+Plan 327 remains `blocked` and **no outproxy capability is claimed**.
+
+One caveat that is specific to this tree and easy to get wrong: the request-target grammars
+only admit a clearnet authority when the tunnel has a provider installed. `TargetPolicy` (in
+`i2pr-service-tunnels`) is the policy value, and `ServiceTunnelManager::target_policy` derives it
+from the **provider registry** so the parser and the classifier cannot disagree. A reader who
+changes the parser without changing that derivation will silently make every clearnet request
+fail at the *parser* instead of at the route, with no compiler signal.
 
 **The seam, which is the whole architecture of this repository in miniature.** Everything
 decidable without a socket is runtime-neutral and lives in
@@ -1079,6 +1106,83 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     `Clone`, and `ConsolePasswordHash` has a redacting hand-written `Debug`.
 
 ---
+
+## The encrypted-service consumer path (Plan 351, ADR 0033)
+
+Plan 349 built `encrypted_service_resolver.rs` with **zero** production callers. Plan 351 supplies
+one, and this section exists because every layer here had a hidden assumption that a `.b33` broke.
+
+### The chain
+
+```text
+I2PControl definition options          target_destination = <b33>, delay_open = true,
+                                       leaseset_password = <optional lookup secret>
+        |  (Gate 2; symmetric with the publisher's slot)
+        v
+ServiceTunnelSpec::validate           Gate 1: encrypted target requires a DelayOpen client
+        |
+        v
+project_remote_target                  Three outcomes; a .b33 is never Remote or LocalCoOwned
+        |  EncryptedService(address)
+        v
+resolve_encrypted_destination_for_service
+        |
+        +--> EncryptedServiceResolver::begin        today's blinded storage key
+        +--> begin_encrypted_lease_lookup           key supplied VERBATIM, kind still LeaseSet2
+        +--> ingest_tunnel_lease_store             -> EncryptedLeaseSet2Ready
+        +--> resolver.ingest_store                  unwrap (ADR 0032 profile lives in here)
+        +--> bind_inner_to_address                  signing-key + sigtype gate
+        +--> ValidatedLeaseSet2 + install            under the INNER destination hash
+```
+
+### Three decisions a reader will otherwise get wrong
+
+**The lookup key is not a destination hash.** Every ordinary lookup derives its key from a
+`DestinationHash`; a blinded storage key cannot be derived from one, because no `Destination` exists
+at lookup time. `NetDbSeam::begin_lease_set2_lookup_for_key_with_store` takes the key verbatim
+instead. The lookup *kind* is unchanged — a reference client issues `LeaseSet2` (code `1`) for an
+encrypted service — so **no new wire type is introduced**.
+
+**The install key is the inner record's own destination hash, gated by a signature.** A `.b33`
+carries the unblinded signing public key, which is *not* a `Destination` hash: the address lacks the
+ECIES public key, the certificate, and the padding a `Destination` encoding needs. The hash can only
+come from the record. `bind_inner_to_address` therefore compares the inner `Destination`'s signing
+key and sigtype against the address, and only then returns the hash. Trust is transitive through a
+signature against a key obtained out of band — not "the record said so". Without the gate, any valid
+`LeaseSet2` for any destination would pass.
+
+**The type-7 relationship does not generalize.** `service_els2.rs` publishes type 7, where
+`DERIVE_PUBLIC(CONVERT_ED25519_PRIVATE(seed))` reproduces the destination's Ed25519 public key, so
+address and inner record agree by construction. A type-11 `.b33` has no such relationship. The
+binding is written against what production publishes, and
+`the_installed_hash_is_the_unblinded_destination_hash` asserts the premise before using it.
+
+### The failure cannot escape
+
+`resolve_encrypted_destination_for_service` returns `Result<(), EncryptedTargetStatus>` — never a
+`ServiceProductError`. That is a deliberate narrowing: this path runs where a propagated error shuts
+the product down, so what can escape is a closed enum whose reasons are `&'static str` and which
+cannot carry a secret, a derived key, or a fetched payload.
+`provision_encrypted_service_target` records the outcome and returns `()`.
+
+`EncryptedServiceResolver::cancel` runs on every early return, and `ingest_store` removes the
+request from its table before it can fail, so the in-flight lease is released on every outcome.
+
+### The secret
+
+The consumer lookup secret arrives through the I2PControl definition options in the same
+`leaseset_password` slot the publisher uses, is installed by the same reconciliation that installs
+publisher material, and is held as `Arc<LookupSecret>` — `Zeroizing`, not `Clone`, no serde, redacted
+`Debug`. It is never placed in `Config`, in a `Raw*Config` struct, or in a `DestinationRef`.
+`scripts/check-config-secret-hygiene.sh` enforces that, and also records the pre-existing leak paths
+that motivate it (see Plan 352).
+
+### What this does not claim
+
+No PSK/DH consumer authorization, no daily rollover re-resolution, no cross-router result, no Java
+or i2pd direction of Plan 347. The blinding rotates daily and there is no periodic re-resolution, so
+a resolution computed before a midnight boundary addresses the **wrong DHT key**.
+Type 5 stays `advertised = false`.
 
 ## Cross-references
 

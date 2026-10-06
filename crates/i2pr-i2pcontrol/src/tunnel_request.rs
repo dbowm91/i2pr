@@ -161,6 +161,20 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "TotalPeriod" => Some("total_period"),
         "TotalBanTime" => Some("total_ban_time"),
         "ProxyAuth" => Some("proxy_auth"),
+        // Plan 342: the seven canonical outproxy fields, added as a complete
+        // set or not at all. The daemon's `SUPPORTED_342_OPTIONS` mask plus
+        // the whole-block rule in `build_control_spec` refuse a partial
+        // block, because a tunnel that parses and stores a proxy list with
+        // no request path behind it looks egress-capable and is not. The
+        // snake_case slots are i2pr's internal names and match every other
+        // row in this table.
+        "ProxyList" => Some("proxy_list"),
+        "UseOutproxyPlugin" => Some("use_outproxy_plugin"),
+        "OutproxyAuth" => Some("outproxy_auth"),
+        "OutproxyUsername" => Some("outproxy_username"),
+        "OutproxyPassword" => Some("outproxy_password"),
+        "OutproxyType" => Some("outproxy_type"),
+        "SSLProxies" => Some("ssl_proxies"),
         "AllowUserAgent" => Some("allow_user_agent"),
         "AllowReferer" => Some("allow_referer"),
         "AllowAccept" => Some("allow_accept"),

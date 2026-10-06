@@ -83,6 +83,44 @@ pub enum LookupResult {
         /// Validated target `LeaseSet2`.
         lease_set2: Box<ValidatedLeaseSet2>,
     },
+    /// Plan 351: a `LeaseSet2`-kind lookup completed with a **type-5**
+    /// `EncryptedLeaseSet2` record filed under the day's blinded storage
+    /// key.
+    ///
+    /// The wire lookup type is unchanged (`LookupKind::LeaseSet2` codes to
+    /// `1`, and that is also what a reference client issues for an
+    /// encrypted service — the record is filed under its blinded storage
+    /// key rather than a destination hash). What is new is that the
+    /// lookup key is a `RouterHash` supplied verbatim instead of being
+    /// re-derived from a `DestinationHash`, because a blinded storage key
+    /// is not a destination hash and no `Destination` exists to derive one
+    /// from.
+    ///
+    /// This variant carries the **raw** message, not a
+    /// `ValidatedEncryptedLeaseSet2`. The key match and the record type are
+    /// the only checks applied here, deliberately:
+    ///
+    /// - the closed type-11 signature profile is **ADR 0032's** policy and
+    ///   stays with the ELS2 owner, so this layer neither validates nor
+    ///   unwraps;
+    /// - unwrapping needs the daily blinding material and, for an authorized
+    ///   service, per-client key material that the NetDB has no business
+    ///   holding;
+    /// - the identity binding — that the unwrapped record's destination
+    ///   signs with the unblinded public key named by the `.b33` address —
+    ///   cannot be checked here at all, because this layer never sees the
+    ///   address.
+    ///
+    /// A caller that matches only `LeaseSet2Success` therefore treats a
+    /// type-5 reply as a non-match and keeps waiting, which is the correct
+    /// fail-closed outcome for an ordinary consumer.
+    EncryptedLeaseSet2Success {
+        /// Lookup identity.
+        lookup_id: LookupId,
+        /// Bounded type-5 record message, for the ELS2 owner to validate
+        /// and unwrap.
+        message: Box<DatabaseStoreMessage>,
+    },
     /// The lookup terminated without finding a usable response.
     Failure {
         /// Lookup identity.
@@ -609,6 +647,36 @@ pub fn handle_database_store_lease_set2(
     let expected = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(*target_bytes));
     let ls2 = match &store_message.data {
         DatabaseStoreData::LeaseSet2(boxed) => boxed,
+        // Plan 351: a type-5 record for a `LeaseSet2`-kind lookup whose key
+        // is today's blinded storage key. The key already matched at line
+        // 606, which is the only thing this layer can meaningfully check —
+        // `ValidatedEncryptedLeaseSet2::validate` needs the blinded key
+        // itself, not just its hash, and needs the daily material and any
+        // per-client credential to unwrap. Every one of those belongs to the
+        // ELS2 owner, and the type-11 profile check is ADR 0032's policy.
+        // So this arm performs the bounded size check, keeps the message,
+        // and delegates; it deliberately does not validate, decrypt, or
+        // install anything.
+        DatabaseStoreData::EncryptedLeaseSet(record) => {
+            if record
+                .encode_to_vec(crate::els2::MAX_ELS2_RECORD_LENGTH)
+                .is_err()
+            {
+                return Ok(ResponseOutcome::Continue);
+            }
+            // No `store.insert`: the `LeaseSet2Store` is keyed by
+            // destination hash and a blinded storage key is not one. The
+            // unwrapped record is installed by the owner under the
+            // unblinded destination hash it carries.
+            lookup.active = None;
+            lookup.active_request_id = None;
+            return Ok(ResponseOutcome::Completed(Box::new(
+                LookupResult::EncryptedLeaseSet2Success {
+                    lookup_id,
+                    message: Box::new(store_message.clone()),
+                },
+            )));
+        }
         _ => return Ok(ResponseOutcome::Continue),
     };
     let validated =

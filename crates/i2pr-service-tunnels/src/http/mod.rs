@@ -87,6 +87,8 @@ pub use server::{
     filter_server_response, valid_spoofed_host, valid_user_agent_rules,
 };
 pub use target::{
-    RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_origin_form,
-    parse_request_target,
+    RequestTarget, TargetKind, TargetParseError, parse_absolute_form,
+    parse_absolute_form_with_policy, parse_authority_form, parse_authority_form_with_policy,
+    parse_origin_form, parse_request_target, parse_request_target_with_policy, validate_host,
+    validate_host_with_policy,
 };

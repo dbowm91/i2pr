@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329–334, 336–338 passed. Plan 335 remains an authoritative measured-negative record, but its earlier interpretation is superseded for forward execution. Java I2P and i2pd verify each other's type-11 signatures and reject i2pr's former strict-only ELS2 signature; i2pr rejects theirs. Historical source review shows a specification/deployment split rather than a simple missing implementation: Proposal 146 / standalone Red25519 uses `I2P_Red25519H(x)` plus length framing, while the Encrypted LeaseSet specification and deployed Java/i2pd use the randomized RedDSA transcript without those additions. Plan 346 is ready to correct only the ELS2 network profile; Plan 347 is blocked on 346 for real cross-router qualification. The branch is not complete.
+Status: Plans 329–334, 336–338, and 346 passed. Plan 335 remains an authoritative measured-negative record, but its forward interpretation is superseded: Proposal 146 / standalone Red25519 uses `I2P_Red25519H(x)` plus length framing, while the Encrypted LeaseSet specification and deployed Java I2P / i2pd use the randomized RedDSA transcript without those additions. **Plan 346 corrected exactly that ELS2 network profile** (ADR 0032) without touching the strict primitive: the deployed profile now cross-verifies against executed Java I2P and i2pd output in both directions, outbound records carry it, and inbound records accept it plus the strict transcript inside the bounded type-5 verifier. What is still missing is the **live** end-to-end cross-router evidence, so **Plan 347 is the sole remaining gate for this branch and is now ready**. The branch is not complete.
 
 Parent roadmap:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
@@ -53,14 +53,22 @@ Plan 329 must re-freeze all of these before implementation.
                            -> 335 blocked historical measurement: Java+i2pd share the
                                 deployed ELS2 type-11 transcript and reject i2pr's
                                 Proposal-146 strict transcript
-                                -> 346 ready  ELS2-only transcript/deployment corrective
-                                     -> 347 blocked  live bidirectional Java+i2pd ELS2 qualification
+                                -> 346 passed  ELS2-only transcript/deployment corrective
+                                     -> 347 ready  live bidirectional Java+i2pd ELS2 qualification
+                                          -> 350 passed  floodfill stores and serves type 5
+                                               -> 351 ready  ELS2 consumer as a service-tunnel
+                                                          remote target (three gates)
+                                                       -> 349 re-close  consumer owner gains a
+                                                                       production caller
+351 -> 352 ready  config secret hygiene (parse echo + mode check);
+                     independent of 351, live today for I2pControlPassword
 
 337 passed  one shared ServiceTunnelManager (corrective pass on Plan 289)
   -> 338 passed  one owner for the service identity store + transaction rollback
 ```
 
-Plan 347 is now the closure gate for the encrypted-LeaseSet/Red25519 branch. Historical Plan 322's
+Plan 347 is now the closure gate for the encrypted-LeaseSet/Red25519 branch, and Plan 346 passing
+makes it `ready`. Historical Plan 322's
 source gaps are closed by Plans 339/340. The outproxy branch still requires ready Plan 342 after
 Plans 341/343 supplied its secret owner and provider. Plan 348 is the fresh final Proposal-170 gate
 and waits on both Plan 342 and Plan 347 before any `full-proposal-conformant` claim.
@@ -134,6 +142,7 @@ No custom field/bignum/curve formulas are permitted.
 | 337 | passed | corrective pass on Plan 289: the composition root now builds the one `ServiceTunnelManager` and injects the same `Arc` into the control state and the product, so a control-created tunnel is the same runtime and publishes through the existing sweep (ADR 0031, closure: `plans/closure/i2pcontrol-proposal-170/337-status.md`) |
 | 338 | passed | corrective pass on Plans 289 and 334, found while implementing 337, and it **corrects Plan 337's own diagnosis**: every server group is already persistent, so a control-created server always had a persisted identity record — the ELS2 loader read `for_service` while the runtime wrote `for_group`. `ServiceTunnelManager` is now the single owner of that resolution, and `rollback_state` reconciles the shared manager as well as the mirror, so a failed transaction leaves no ghost runtime. Closure: `plans/closure/i2pcontrol-proposal-170/338-status.md` |
 | 336 | passed historical | Spec-first remains authoritative for standalone Proposal-146 Red25519; Plan 346 supersedes only the ELS2 network transcript decision. Closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md` |
+| 346 | passed | ELS2-only transcript/deployment corrective (ADR 0032). The strict Proposal-146 primitive is byte-exact; `i2pr_crypto::red25519_deployed` is a separate composition over the same `curve25519-dalek` arithmetic; `i2pr_netdb::els2_transcript` owns a typed four-state profile with a fail-closed `Ambiguous`; `i2pr_proto::Els2SignedRegion` is the structural compensating control; no generic dual-transcript type-11 verifier exists. Deployed profile cross-verifies against executed Java I2P (`93eef5db`) and i2pd (`2c694149`) output in **both** directions. Closure: `plans/closure/i2pcontrol-proposal-170/346-status.md` |
 
 ## 7. Completion boundary
 
@@ -174,14 +183,45 @@ deployment era.
 ### Forward rule
 
 Plan 346 keeps the generic Proposal-146 Red25519 primitive strict and adds any compatibility
-semantics only at the typed ELS2 type-5 boundary.
+semantics only at the typed ELS2 type-5 boundary. **Delivered** (ADR 0032): the deployed
+transcript is a separate composition, reachable only from the ELS2 type-5 verifier, with a
+typed signed region and no generic dual-transcript verifier.
 
-Plan 347 must then prove the real cross-router lifecycle, not only signature cross-verification.
+Plan 347 must then prove the real cross-router lifecycle, not only signature
+cross-verification. **It stopped at a classified boundary rather than passing**: the signature
+stage is closed, but the matrix needs an i2pr-side consumer path and a Java
+bandwidth-tier design that does not exist. **Plan 351 has since passed, and it was necessary but
+not sufficient.** The branch's remaining work is a Plan 347 re-attempt for the i2pd directions,
+which now needs a reference-side ELS2 driver; the Java directions were never about i2pr. The
+consumer work was split in two, and the split is measured rather than cosmetic: **Plan 350**
+delivered the server half (the floodfill both stores and serves type 5), **Plan 351** delivered
+the client half (a b33 address as a service-tunnel remote target, resolving through the real
+lookup transport), and **Plan 352** remains ready to close a pre-existing config-secret leak
+that Plan 351's own design was forced to route around.
+
+Plan 351 closed as `passed-gate-scoped-els2-consumer-service-wiring-landed` (ADR 0033) with two
+plan premises corrected at the plan that corrected them rather than absorbed: the unblinded
+destination hash is **not** derivable from a `.b33` — the address carries the unblinded *signing*
+key and lacks the ECIES key, certificate, and padding — so the install key comes from the inner
+record under a signature binding; and the address↔record key relationship holds for the **type-7**
+the publisher emits and does not generalize to type 11. Its acceptance criterion 4 (failure
+isolation through the real composition) is **partially met only** — proven at the configuration and
+status-surface level, not through a live multi-service composition — and is recorded as a
+limitation rather than counted. A signature
+harness — even one that cross-verifies against executed Java I2P and i2pd output in both
+directions, which Plan 346's is — is not sufficient: Plan 347 must show a real
+`DatabaseStore` publication, an independent-router NetDB store and lookup, layer-1/layer-2
+decrypt, inner LeaseSet2 validation, and an application payload round-trip, in all four
+i2pr↔reference directions.
 
 | Plan | State | Purpose |
 |---|---|---|
-| 346 | ready | ELS2 type-11 transcript authority + deployed Java/i2pd compatibility corrective |
-| 347 | blocked on 346 | bidirectional Java/i2pd DatabaseStore type-5 publication, lookup, decrypt, inner-LS2 and streaming/application qualification |
+| 346 | **passed** | ELS2 type-11 transcript authority + deployed Java/i2pd compatibility corrective. Delivered as ADR 0032. The cryptographic boundary is closed in both directions; the strict primitive is unchanged and still byte-exact. |
+| 347 | **stopped** (0 of 4 directions) | Bidirectional Java/i2pd type-5 publication, lookup, decrypt, inner-LS2 and streaming/application qualification. Closed with a stage-classified boundary: the **signature stage is closed** by Plan 346, and the pinned i2pd 2.61.0 `SignRedDSA` source confirms the deployed transcript. Blocked on (a) i2pr having **no type-5 consumer path** — `EncryptedLeaseSet2Resolver` has zero production callers, so `i2pd → i2pr` is structurally unreachable; and (b) the reference-side ELS2 drivers, which do not exist yet. **The Java caps boundary recorded here has since been corrected**: it is a *tunnel-peering* gate (`TunnelPeerSelector.shouldExclude` caps arity plus `allowAsIBGW`'s `R` requirement), **not** a bandwidth-tier gate, and neither Java row of the matrix needs Java to peer with i2pr — the existing `run-java-floodfill.sh` topology has Java reach i2pr purely as a queried floodfill, already proven by Plans 303/306. ADR 0030 is untouched and no tier letter is needed. Closure: `plans/closure/i2pcontrol-proposal-170/347-status.md` |
+| 350 | **passed** | Corrective from 347's boundary, and the cheapest one — but **two** failures, not one. The floodfill **refused** type 5 outright in `handle` (a deliberate hold-back from `53a404b` whose rationale expired with Plan 346), **and** omitted it from every `DatabaseLookup` candidate list, so a reference consumer's blinded-key lookup always missed. Both fixed, with named `SERVABLE_*` constants and `scripts/check-floodfill-type5-serve.sh` to prevent recurrence. Closure: `plans/closure/i2pcontrol-proposal-170/350-status.md` |
+| 349 | **in-progress** | Corrective from 347's boundary: the i2pr ELS2 **consumer** lookup path — address → secret → daily blinded key → storage key → `DatabaseLookup` over the existing key-agnostic composer → `ValidatedEncryptedLeaseSet2` → layer decrypt → inner `LeaseSet2` → service. Makes `i2pd → i2pr` reachable and `i2pr → i2pd` executable. Does **not** attempt the Java bandwidth-tier design. **In progress**: the bounded `EncryptedServiceResolver` owner and all 17 rows are done, but it has **no production caller** — a service-tunnel destination is a raw 32-byte `DestinationId`, so pointing one at a b33 address needs new config surface, secret storage, and tunnel-lifecycle integration. `EncryptedLeaseSet2Resolver` therefore still has zero production callers, which is the defect this plan exists to fix. Closure: `plans/closure/i2pcontrol-proposal-170/349-status.md` |
+| 351 | **passed** | Corrective on **349**, not on 347. Plan 349 cannot close as written: its Out-of-scope line forbids "new daemon configuration surface, I2PControl options" while its acceptance criterion 1 requires a production owner reaching an inner `LeaseSet2` a service can use, and its closure record then names configuration surface as remaining work item 1. Plan 351 re-scopes that explicitly and supplies the missing caller for both `EncryptedServiceResolver` and `i2pr_client::EncryptedLeaseSet2Resolver`. Three measured gates: **(1)** an encrypted remote target is permitted **only** on a `DelayOpen` client, because a failed remote lookup is fatal to the whole service-tunnel product today (two of three callers of `provision_all_service_router_material` run `manager.shutdown()` + `token.cancel` + `ssu2_handle.shutdown()`) while per-destination isolation already exists *and is tested* for deferred groups; **(2)** the surface is I2PControl, not TOML, because `delay_open` is unsettable from TOML — a TOML `encrypted_destination` field would be dead on arrival under Gate 1 — and because the publisher-side lookup secret already lives in the control definition's options map (`leaseset_password`), making this symmetric rather than a second secret channel; **(3)** no inline config secret and no daily-rollover claim. The measured blocker is deeper than wiring: `netdb_seam.rs:328-332` re-derives the lookup identity from a `DestinationHash` and `lookup_engine.rs:606-613` refuses anything but type 3, so a blinded key cannot be requested at all. **No new `LookupKind` is needed** — `LookupKind::LeaseSet2.wire_code() == 1` is exactly the lookup type a reference client issues for a blinded resolve (`floodfill_service.rs:372-375`) — and `RouterHash::from_hash` is `pub const` and does not re-hash, so `BlindedStorageKey` → `RouterHash` is lossless. The scoped netdb delta is one `LookupResult` variant plus one type-5 arm that delegates all ELS2 policy upward, so ADR 0032 stays in the owner. Two new guards delivered and **negative-tested**: 18/18 and 17/17 deliberate breaks detected. **Two premises were wrong and are recorded as findings, not absorbed:** (a) the unblinded hash is **not** derivable from the address, so the install key is the **inner record's own** hash gated on it signing with the unblinded public key the `.b33` names; (b) that address↔record key relationship holds for **type-7** only and does not generalize to type 11. Criterion 5 is still satisfied — the delivered key is the unblinded hash — and a row asserts the premise before relying on it. **Criterion 4 is partially met only** and recorded as a limitation. Also fixed: the silent `_ => {}` fallthrough in `record_observation` (now counted), and a pre-existing port flake in `tests/i2pcontrol_tunnels.rs` classified, not fixed, because it reproduces at base. Closure: `plans/closure/i2pcontrol-proposal-170/351-status.md` |
+| 352 | **ready** | Config secret hygiene. **Pre-existing and live today**, not caused by any ELS2 work, and filed separately so Plan 351's scope stays honest. `toml-1.1.6/src/de/error.rs:138` prints the **entire offending source line** on a syntax error and `serde-1.0.228/src/core/de/mod.rs:410` prints the **value** on a type mismatch; both reach `eprintln!("error: {error}")` at `main.rs:51` through `ConfigError::Parse` (`config.rs:2853`) and the transparent `DaemonError::Config` (`error.rs:70-71`), so a secret on a malformed line is printed to the terminal — and the likely operator response to a typo is to paste that output into a bug report. `I2pControlPassword` is exposed now. Separately `Config::load` (`config.rs:1485-1491`) is a bare `fs::read_to_string` with **no mode check**, making the config the only secret-bearing file in the daemon without the `& 0o077` gate that `i2pr-storage:1083`, `i2pcontrol_tunnels.rs:1022-1023`, and `addressbook.rs:808,879` all enforce. `ConfigError::Semantic { field: &'static str, reason: &'static str }` is already leak-proof and is the shape new rejections must use. Residual risk recorded rather than hidden: `Config` is `Clone + Debug` (`config.rs:1399`) and `CommandOutcome` derives `Debug + PartialEq` while embedding it (`lib.rs:76-84`), so any future `assert_eq!` would dump the whole config; removing those derives is out of scope and named as a follow-on. No dependency in either direction with Plan 351. Plan: `plans/implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md` |
 
 The Emissary source quarantine remains unchanged. Emissary may continue to serve as a post-freeze
 black-box strict-profile oracle, but Java+i2pd deployment interoperability is the external network

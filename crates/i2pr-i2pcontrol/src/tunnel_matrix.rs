@@ -279,11 +279,28 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
             limitation: "a second LeaseSet lookup secret has no distinct owner; Proposal 170 \
                          spells the single ELS2 lookup secret as OptionalLookup",
         },
-        // 45 use_outproxy_plugin: Plan 293 determination. No safe
-        // I2P-routed outproxy provider exists, and a provider would need
-        // a general clearnet subsystem the guardrails forbid.
-        45 => CellDisposition::ExplicitIncompatibility {
-            limitation: "outproxy provider semantics have no I2P-routed provider",
+        // 45 use_outproxy_plugin, 46 proxy_list, 47 outproxy_auth,
+        // 48 outproxy_username, 49 outproxy_password, 50 outproxy_type,
+        // 51 ssl_proxies: the Plan 342 outproxy provider block.
+        //
+        // Plan 293 recorded index 45 as an explicit incompatibility
+        // ("outproxy provider semantics have no I2P-routed provider").
+        // That limitation named the *missing provider*, and Plan 342
+        // supplied one: an I2P-routed, static, configured provider whose
+        // only route is Streaming to an I2P destination. The determination
+        // is therefore superseded rather than rewritten — the historical
+        // record stands in `specs/protocols/14-tunnel-deep-option-determinations.md`
+        // and Plan 293's closure record is not edited.
+        //
+        // All seven cells share one owner because they are one block. Plan
+        // 342 refuses a partial block, so a cell that applied to only some
+        // of the four proxy client kinds would make the block unusable
+        // rather than partially available.
+        45..=51 => CellDisposition::Apply {
+            owner: "i2pr_service_tunnels::outproxy::OutproxyConfig, resolved and validated as a \
+                     whole block by i2pr-daemon::i2pcontrol_tunnels and reached from the HTTP, \
+                     CONNECT, and SOCKS request paths through \
+                     RouterOutproxyProvider::open_via_outproxy",
         },
         // Unreachable for in-mask callers; never an apply.
         _ => CellDisposition::NotApplicable {

@@ -16,6 +16,7 @@ pub mod control_sources;
 pub mod destination_peers;
 pub mod destination_streaming;
 pub mod destination_tunnels;
+pub mod encrypted_service_resolver;
 pub mod error;
 pub mod exploratory_build;
 pub mod floodfill;
@@ -30,6 +31,7 @@ pub mod netdb_tunnels;
 mod news;
 pub mod outbound_lookup;
 pub mod outbound_secret;
+pub mod outproxy_options;
 pub mod outproxy_route;
 pub mod peer_test;
 pub mod router_i2np;
@@ -670,6 +672,37 @@ pub fn build_shared_service_manager(
     Ok(Some(Arc::new(manager)))
 }
 
+/// Builds the one outbound-credential owner for this router (Plan 342).
+///
+/// Derived **once**, here, and shared as the same `Arc` by the control plane
+/// (which seals a credential into a generation file) and every tunnel runtime
+/// (which opens it while building a header). Two derived keys would mean a
+/// credential sealed by one and opened by the other fails closed for a reason
+/// that looks like tampering, so "derive once" is a correctness requirement,
+/// not a tidiness one.
+///
+/// The signing seed is reached through
+/// [`RouterIdentityBundle::with_signing_seed`], a closure: the seed is the
+/// root of every router identity credential and is never named in a wider
+/// scope than the single HKDF derivation that consumes it.
+///
+/// Fails over to [`NoOutboundSecrets`] rather than erroring when the router
+/// identity cannot be loaded. The consequence is that every outproxy
+/// credential field is refused at create/edit time — before any listener or
+/// destination is allocated — rather than accepted and silently unusable.
+pub fn build_outbound_secret_store(
+    config: &Config,
+) -> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+    let identity = IdentityStore::in_data_dir(&config.router.data_dir).load();
+    let derived = identity.as_ref().ok().and_then(|bundle| {
+        crate::outbound_secret::RouterBoundOutboundSecrets::from_router_identity(bundle).ok()
+    });
+    match derived {
+        Some(store) => Arc::new(store),
+        None => Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets),
+    }
+}
+
 /// Whether the service-tunnel runtime must come up for this configuration.
 ///
 /// Plan 337: the destination-group product owns the one shared
@@ -719,14 +752,19 @@ fn register_i2pcontrol_service(
     // the router data dir. Construction touches only the filesystem;
     // definitions load and reconcile at service startup. A construction
     // failure fails the service fail-closed without touching the network.
-    let control = match i2pcontrol_tunnels::TunnelControlState::for_config(config, manager) {
-        Ok(control) => Arc::new(control),
-        Err(error) => {
-            return Err(DaemonError::RuntimeSupervisorFailed(format!(
-                "failed to register I2PControl service: {error}"
-            )));
-        }
-    };
+    // Plan 342: one derived owner, handed to the control plane. The same
+    // `Arc` reaches the per-tunnel runtimes through `control.outbound_secrets()`.
+    let outbound_secrets = build_outbound_secret_store(config);
+    let control =
+        match i2pcontrol_tunnels::TunnelControlState::for_config(config, manager, outbound_secrets)
+        {
+            Ok(control) => Arc::new(control),
+            Err(error) => {
+                return Err(DaemonError::RuntimeSupervisorFailed(format!(
+                    "failed to register I2PControl service: {error}"
+                )));
+            }
+        };
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
     let mut spec = ServiceSpec::new(

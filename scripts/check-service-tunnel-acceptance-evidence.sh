@@ -1058,16 +1058,32 @@ fi
 # `ReferencePeer` is router transport/bootstrap metadata only and
 # must NOT carry an application `destination_hash`. Per-service
 # remote target hashes derive from the service specs'
-# `DestinationRef` via `remote_target_hash_for_reference` +
+# `DestinationRef` via `project_remote_target` +
 # `resolve_remote_destination_for_service` (HTTP and IRC resolve
 # independently; no single hash applies to all services).
+#
+# Plan 351 renamed `remote_target_hash_for_reference` to
+# `project_remote_target`. The assertion is unchanged in substance: the
+# manager still owns the projection from one `DestinationRef` to a remote
+# target. What changed is the return type, because Plan 351 added a
+# reference kind with no destination hash at all (`EncryptedService`) that
+# `None` could not represent without being mistaken for a locally
+# co-owned destination.
 if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
    grep -q 'destination_hash: Option<\[u8; 32\]>\|reference\.destination_hash'; then
   echo "evidence check failed: Plan 212 §8 — ReferencePeer must not carry an application destination_hash (per-service DestinationRef resolution only)" >&2
   failures=$((failures + 1))
 fi
-if ! grep -q -F 'remote_target_hash_for_reference' "${SERVICE_TUNNELS_RS}"; then
-  echo "evidence check failed: Plan 212 §8 — ServiceTunnelManager must own remote_target_hash_for_reference" >&2
+if ! grep -q -F 'project_remote_target' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §8 — ServiceTunnelManager must own project_remote_target" >&2
+  failures=$((failures + 1))
+fi
+# Plan 351: the projection must keep all three outcomes. Collapsing
+# `EncryptedService` into `None` would make an encrypted target
+# indistinguishable from a locally co-owned one, silently routing an
+# unreachable remote endpoint to the local bridge.
+if ! grep -q -F 'EncryptedService(EncryptedServiceAddress)' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 351 — RemoteTargetProjection must keep the EncryptedService outcome" >&2
   failures=$((failures + 1))
 fi
 if ! grep -q -F 'resolve_remote_destination_for_service' "${SERVICE_PRODUCT_RS}"; then

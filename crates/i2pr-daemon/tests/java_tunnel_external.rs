@@ -4744,6 +4744,14 @@ async fn destination_message_plane_against_java() {
                     ),
                 );
             }
+            // Plan 351: an ordinary (b32) destination lookup must never
+            // receive a type-5 record. Reaching this arm means the lane's
+            // premise is wrong — the reference published an encrypted record
+            // under a blinded storage key — so it stops rather than counting
+            // it as a resolution.
+            LeaseStoreIngestOutcome::EncryptedLeaseSet2Ready { .. } => {
+                panic!("type-5 record offered to an ordinary destination lookup")
+            }
         }
     }
     #[allow(unused_variables)]
@@ -10167,6 +10175,14 @@ async fn streaming_through_java() {
                 lease_summary = Some(summary);
             }
             LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {}
+            // Plan 351: an ordinary (b32) destination lookup must never
+            // receive a type-5 record. Reaching this arm means the lane's
+            // premise is wrong — the reference published an encrypted record
+            // under a blinded storage key — so it stops rather than counting
+            // it as a resolution.
+            LeaseStoreIngestOutcome::EncryptedLeaseSet2Ready { .. } => {
+                panic!("type-5 record offered to an ordinary destination lookup")
+            }
         }
     }
     let summary = match lease_summary {

@@ -137,6 +137,11 @@ pub struct Socks5ClientOptions {
     /// and verify; when unset, no-authentication stays accepted
     /// (pre-292 behavior).
     pub proxy_auth: Option<crate::auth::ProxyCredentials>,
+    /// Plan 342: the I2P-routed outproxy provider policy.
+    ///
+    /// Route policy only, never the credential — see
+    /// [`crate::http::HttpClientOptions::outproxy`].
+    pub outproxy: Option<crate::outproxy::OutproxyConfig>,
 }
 
 impl Socks5ClientOptions {
@@ -148,6 +153,14 @@ impl Socks5ClientOptions {
     /// Validates the SOCKS5 profile options structurally.
     pub fn validate(&self) -> Result<(), ServiceTunnelError> {
         self.port_policy.validate()?;
+        if let Some(outproxy) = &self.outproxy
+            && let Err(_error) = outproxy.validate()
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "ProxyList is malformed, empty, or its SSLProxies subset is not within it",
+            });
+        }
         if self.destination_ports.len() > SOCKS5_OPTIONS_MAX_PORTS {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id: String::new(),

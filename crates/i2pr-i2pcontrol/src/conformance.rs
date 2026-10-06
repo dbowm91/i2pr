@@ -41,7 +41,7 @@ pub struct ContractInventory {
     pub tunnel_actions: usize,
     /// Frozen tunnel-type count (12).
     pub tunnel_types: usize,
-    /// Frozen tunnel-option count (46).
+    /// Frozen tunnel-option count (52).
     pub tunnel_options: usize,
     /// Frozen secret-classified option count (4).
     pub secret_options: usize,
@@ -96,8 +96,8 @@ pub fn assert_frozen_counts(inventory: &ContractInventory) -> bool {
         && PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS.len() == 13
         && inventory.tunnel_actions == 7
         && inventory.tunnel_types == 12
-        && inventory.tunnel_options == 46
-        && inventory.secret_options == 4
+        && inventory.tunnel_options == 52
+        && inventory.secret_options == 5
         && inventory.auth_errors == 6
         && inventory.jsonrpc_errors == 5
         && inventory.tunnel_statuses == 6
