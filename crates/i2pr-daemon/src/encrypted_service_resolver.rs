@@ -21,7 +21,7 @@
 //!
 //! It owns exactly the things an owner must own and nothing else: in-flight request identity,
 //! a bounded in-flight table, a deadline per request, cancellation, and the credential. It
-//! does **not** own the lookup transport — [`begin`] hands the caller the target key and the
+//! does **not** own the lookup transport — [`begin`](EncryptedServiceResolver::begin) hands the caller the target key and the
 //! request id, and the caller composes `DatabaseLookup` through its existing path
 //! (`netdb_tunnels` / `destination_tunnels`) rather than this module growing a second one.
 //!
@@ -34,13 +34,14 @@
 //! storage-key gate silently meaningless. One identity per request, held by one owner.
 //!
 //! The resolver is not `Debug`-leaking (it holds a private scalar through the schedule) and is
-//! never logged. A [`PendingEncryptedResolve`] is likewise not `Debug`, so a debug format of
+//! never logged. A `PendingEncryptedResolve` is likewise not `Debug`, so a debug format of
 //! the coordinator cannot print a private key or a credential.
 //!
 //! # Bounds and lifecycle
 //!
 //! [`MAX_CONCURRENT_ENCRYPTED_RESOLVES`] caps the in-flight table. Every request carries a
-//! deadline; [`expire`] releases a request whose deadline has passed; [`cancel`] releases one
+//! deadline; [`expire`](EncryptedServiceResolver::expire) releases a request whose deadline has
+//! passed; [`cancel`](EncryptedServiceResolver::cancel) releases one
 //! on explicit cancellation. A request is removed on success, on failure, on expiry, and on
 //! cancellation, and the retained reply path is released with it — the same lease discipline
 //! the type-3 lookup owner uses.

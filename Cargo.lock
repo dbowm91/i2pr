@@ -1151,6 +1151,7 @@ name = "i2pr-service-tunnels"
 version = "0.1.0"
 dependencies = [
  "base64ct",
+ "i2pr-proto",
  "sha2 0.10.9",
  "subtle",
  "thiserror",

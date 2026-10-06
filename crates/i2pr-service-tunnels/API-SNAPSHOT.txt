@@ -112,6 +112,7 @@ destination:const:MAX_STATIC_ALIAS_LEN
 destination:enum:DestinationRef
 destination:fn:as_str
 destination:fn:canonical_string
+destination:fn:encrypted_service
 destination:fn:get
 destination:fn:insert
 destination:fn:is_empty
@@ -214,10 +215,14 @@ http::target:enum:TargetKind
 http::target:fn:canonical_authority
 http::target:fn:origin_form
 http::target:fn:parse_absolute_form
+http::target:fn:parse_absolute_form_with_policy
 http::target:fn:parse_authority_form
+http::target:fn:parse_authority_form_with_policy
 http::target:fn:parse_origin_form
 http::target:fn:parse_request_target
+http::target:fn:parse_request_target_with_policy
 http::target:fn:validate_host
+http::target:fn:validate_host_with_policy
 http::target:struct:RequestTarget
 http::target:struct:TargetParseError
 idle:enum:IdleSweepAction
@@ -330,6 +335,7 @@ lib:mod:outbound_secret
 lib:mod:outproxy
 lib:mod:socks5
 lib:mod:streamr
+lib:mod:target_policy
 outbound_secret:const:MAX_OUTBOUND_SECRET_LEN
 outbound_secret:const:MAX_OUTBOUND_SECRET_STORED_LEN
 outbound_secret:const:OUTBOUND_SECRET_MARKER
@@ -357,6 +363,7 @@ outproxy:const:MAX_OUTPROXY_REQUEST_LINE_LEN
 outproxy:const:MAX_OUTPROXY_RESPONSE_HEAD_LEN
 outproxy:const:MAX_OUTPROXY_USERNAME_LEN
 outproxy:const:OUTPROXY_BACKOFF_BASE_STEP_MS
+outproxy:enum:ClientTargetClass
 outproxy:enum:OutproxyError
 outproxy:enum:OutproxyFailure
 outproxy:enum:OutproxyRoute
@@ -370,6 +377,7 @@ outproxy:fn:basic
 outproxy:fn:build_http_connect_request
 outproxy:fn:build_socks4a_connect_request
 outproxy:fn:build_socks5_connect_request
+outproxy:fn:classify_client_target
 outproxy:fn:connect_timeout_ms
 outproxy:fn:endpoints
 outproxy:fn:expose
@@ -379,6 +387,7 @@ outproxy:fn:is_empty
 outproxy:fn:is_i2p
 outproxy:fn:is_retryable
 outproxy:fn:is_tunnelled
+outproxy:fn:is_via_outproxy
 outproxy:fn:len
 outproxy:fn:new
 outproxy:fn:parse
@@ -391,6 +400,7 @@ outproxy:fn:permits_tunnelled
 outproxy:fn:port
 outproxy:fn:reason
 outproxy:fn:reference
+outproxy:fn:refusal
 outproxy:fn:route
 outproxy:fn:route_attempt
 outproxy:fn:select
@@ -496,9 +506,11 @@ root-use:http::filter_server_request
 root-use:http::filter_server_request_with_policy
 root-use:http::filter_server_response
 root-use:http::parse_authority_form
+root-use:http::parse_authority_form_with_policy
 root-use:http::parse_origin_form
 root-use:http::parse_request_head
 root-use:http::parse_request_target
+root-use:http::parse_request_target_with_policy
 root-use:http::proxy_auth_required
 root-use:http::rewrite_headers
 root-use:idle::IdleSweepAction
@@ -531,6 +543,7 @@ root-use:irc::encode_b32_label
 root-use:irc::is_allowed as is_irc_command_allowed
 root-use:irc::is_command_allowed as is_irc_command_allowed_alias
 root-use:irc::project_peer_hostname
+root-use:outproxy::ClientTargetClass
 root-use:outproxy::DEFAULT_OUTPROXY_ATTEMPTS
 root-use:outproxy::DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS
 root-use:outproxy::MAX_OUTPROXY_ATTEMPTS
@@ -554,6 +567,7 @@ root-use:outproxy::OutproxyProvider
 root-use:outproxy::OutproxyRoute
 root-use:outproxy::OutproxyTarget
 root-use:outproxy::OutproxyType
+root-use:outproxy::classify_client_target
 root-use:socks5::ConnectDestination
 root-use:socks5::ConnectPortPolicy
 root-use:socks5::GreetingOutcome
@@ -646,6 +660,7 @@ socks5::request:fn:domain
 socks5::request:fn:domain_length
 socks5::request:fn:new
 socks5::request:fn:retained
+socks5::request:fn:with_policy
 socks5::request:struct:ConnectDestination
 socks5::request:struct:RequestParser
 socks5::socks4a:const:SOCKS4A_CMD_CONNECT
@@ -661,6 +676,7 @@ socks5::socks4a:fn:advance
 socks5::socks4a:fn:build_socks4a_reply
 socks5::socks4a:fn:new
 socks5::socks4a:fn:retained
+socks5::socks4a:fn:with_policy
 socks5::socks4a:struct:Socks4aRequestParser
 streamr:const:DEFAULT_MAX_SUBSCRIBERS
 streamr:const:DEFAULT_PAYLOAD_LIMIT_BYTES
@@ -676,3 +692,5 @@ streamr:const:SUBSCRIBE_FAST_START_COUNT
 streamr:const:SUBSCRIBE_FAST_START_INTERVAL_MS
 streamr:fn:validate
 streamr:struct:StreamrOptions
+target_policy:enum:TargetPolicy
+target_policy:fn:admits_clearnet

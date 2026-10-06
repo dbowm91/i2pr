@@ -354,7 +354,7 @@ pub fn validate_host(host: &str) -> Result<(), TargetParseError> {
 ///   asks the outproxy's resolver to resolve it, which is exactly the local
 ///   access the `.i2p`-only policy exists to prevent. Refused.
 /// - **empty / overlong / control bytes.** Grammar, enforced by
-///   [`parse_authority`] before this is reached.
+///   `parse_authority` before this is reached.
 ///
 /// The suffix requirement is what moves: under `AllowsClearnet` a well-formed
 /// DNS label is accepted here and the *route* decision is made later, by

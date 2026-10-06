@@ -625,7 +625,7 @@ pub enum RemoteTargetProjection {
     /// Held by value, not by reference: `EncryptedServiceAddress` is `Copy`
     /// because it is four validated public fields with no secret and no
     /// allocation, so a borrow would buy nothing and would make the alias
-    /// arm of [`Self::project_remote_target`] unreturnable (an alias resolves
+    /// arm of `project_remote_target` unreturnable (an alias resolves
     /// through a table owned by `self`, so the resolved reference's lifetime
     /// is the manager's, not the caller's).
     EncryptedService(EncryptedServiceAddress),
@@ -3003,7 +3003,7 @@ impl ServiceTunnelManager {
     /// decisions could disagree. Deriving both from the registry makes the
     /// divergence unreachable rather than merely unlikely.
     ///
-    /// No provider means [`TargetPolicy::I2pOnly`], which is the refusal
+    /// No provider means `TargetPolicy::I2pOnly`, which is the refusal
     /// direction: the parser refuses the clearnet target before any routing
     /// decision is made.
     pub fn target_policy(

@@ -3,7 +3,7 @@
 
 Closure records and supporting documents may repeat a number within the
 owning subsystem. Cross-subsystem implementation ownership is forbidden,
-except for the two exact historical collisions recorded below.
+except for the exact historical collisions recorded below.
 """
 
 from __future__ import annotations
@@ -16,10 +16,6 @@ from pathlib import Path
 
 
 HISTORICAL_COLLISIONS = {
-    "349": {
-        "implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md",
-        "implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md",
-    },
     "296": {
         "implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md",
         "implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md",
@@ -27,6 +23,26 @@ HISTORICAL_COLLISIONS = {
     "297": {
         "implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md",
         "implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md",
+    },
+    # Three independent subsystem owners of 349: the ELS2 consumer lookup
+    # path, the portable service-tunnel boundary, and the managed native app
+    # v1 corrective. None is an alias or shared milestone of another.
+    "349": {
+        "implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md",
+        "implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md",
+        "implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md",
+    },
+    "350": {
+        "implementation/i2pcontrol-proposal-170/350-floodfill-type5-serve-path.md",
+        "implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md",
+    },
+    "351": {
+        "implementation/i2pcontrol-proposal-170/351-els2-consumer-service-wiring.md",
+        "implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md",
+    },
+    "352": {
+        "implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md",
+        "implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md",
     },
 }
 PLAN_NAME = re.compile(r"^(\d{3})-[^/]+\.md$")

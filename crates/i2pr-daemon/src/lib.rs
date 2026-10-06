@@ -687,7 +687,7 @@ pub fn build_shared_service_manager(
 /// root of every router identity credential and is never named in a wider
 /// scope than the single HKDF derivation that consumes it.
 ///
-/// Fails over to [`NoOutboundSecrets`] rather than erroring when the router
+/// Fails over to `NoOutboundSecrets` rather than erroring when the router
 /// identity cannot be loaded. The consequence is that every outproxy
 /// credential field is refused at create/edit time — before any listener or
 /// destination is allocated — rather than accepted and silently unusable.

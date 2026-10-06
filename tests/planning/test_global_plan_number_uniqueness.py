@@ -64,16 +64,24 @@ class GlobalPlanNumberUniquenessTests(unittest.TestCase):
     def test_exact_historical_collisions_are_allowed(self) -> None:
         self.add("implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md")
         self.add("implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md")
+        self.add("implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md")
         self.add("implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md")
         self.add("implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md")
         self.add("implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md")
         self.add("implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md")
+        self.add("implementation/i2pcontrol-proposal-170/350-floodfill-type5-serve-path.md")
+        self.add("implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md")
+        self.add("implementation/i2pcontrol-proposal-170/351-els2-consumer-service-wiring.md")
+        self.add("implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md")
+        self.add("implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md")
+        self.add("implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md")
         result = self.run_checker()
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unrecorded_plan_349_owner_fails(self) -> None:
         self.add("implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md")
         self.add("implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md")
+        self.add("implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md")
         extra = "implementation/example/349-extra-owner.md"
         self.add(extra)
         result = self.run_checker()

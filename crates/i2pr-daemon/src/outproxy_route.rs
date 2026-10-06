@@ -269,7 +269,7 @@ pub enum ClientRoute {
 /// Decides and, if needed, opens the route for one client request.
 ///
 /// One function for all three request paths, for the reason
-/// [`classify_client_target`](i2pr_service_tunnels::outproxy::classify_client_target)
+/// `i2pr_service_tunnels::outproxy::classify_client_target`
 /// has one: the guarantee is a property of the code, not of a convention
 /// three call sites follow.
 ///

@@ -605,10 +605,12 @@ deployed Java/i2pd ecosystem follows the Encrypted-LS2-spec transcript.
 Forward graph:
 
 ```text
-346 ready
+346 passed
   ELS2-only type-11 transcript authority / deployed-compatibility corrective
-    -> 347 blocked on 346
+    -> 347 stopped (classified boundary; 0 of 4 directions)
        real bidirectional Java+i2pd type-5 publication/lookup/application qualification
+       (its i2pr-side correctives 350 and 349/351 have since passed, so the
+        remaining work is reference-side harness plus the live lane)
 
 342 passed (scoped)
   outproxy option surface + HTTP/CONNECT/SOCKS request paths + wire evidence
@@ -638,6 +640,6 @@ Plan 348 replaces historical blocked Plan 328 for forward execution. Plan 328 is
 
 | Plan | State | Classification | Handoff |
 |---|---|---|---|
-| 346 | ready | protocol/security corrective | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
-| 347 | blocked on 346 | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
-| 348 | blocked on 347 (and on any future Plan 342 interop row) | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |
+| 346 | passed | protocol/security corrective (ADR 0032, Proposal 170) | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
+| 347 | stopped at a classified boundary, 0 of 4 directions; its i2pr-side correctives (350, 349/351) have since passed, so its remaining work is reference-side harness plus a live lane | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
+| 348 | blocked on 347; Proposal 170/342 passed (scoped), so 347 is its only remaining hard dependency | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |

@@ -32,7 +32,7 @@
 //!   speaking which dialect. It is `Clone`, `Debug`, and `Eq`, rides on the
 //!   `ServiceTunnelSpec`, and is safe to project into a status surface.
 //! - `credential` is the **plaintext password**, which exists only inside
-//!   [`parse`]'s return and is consumed immediately by the seal step. It is
+//!   `parse`'s return and is consumed immediately by the seal step. It is
 //!   `Zeroizing`, has no `Debug`, and no `Display` anywhere.
 //!
 //! Splitting them is what lets the definition file carry ciphertext while

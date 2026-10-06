@@ -2957,7 +2957,7 @@ pub fn normalize_definition(
 /// through `store`.
 ///
 /// `store` is the composition root's single
-/// [`OutboundSecretStore`](i2pr_service_tunnels::outbound_secret::OutboundSecretStore).
+/// `i2pr_service_tunnels::outbound_secret::OutboundSecretStore`.
 /// It is consulted for exactly one thing: sealing `outproxy_password` into
 /// its stored form before the definition reaches a generation file. A store
 /// that cannot seal makes creation and edit fail here — before any listener
