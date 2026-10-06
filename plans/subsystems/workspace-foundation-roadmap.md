@@ -96,3 +96,24 @@ Closed: M1/M2 closures plus targeted correctives are landed and retained.
 ## 12. Milestone status summary
 
 Full row history is §7. Current authority: Milestone 1/2 closures (Plans 010, 020) plus correctives (002, 015, 025).
+
+### 13. Parallel corrective lane (Plans 359–366)
+
+Milestones 1 and 2 remain **closed**. This lane does not reopen them; it fixes tooling and one
+product-path defect that outlived them.
+
+| Plan | State | Classification | Handoff |
+|---|---|---|---|
+| 359 | passed | boundary amendment | `plans/closure/portable-service-tunnels/359-*` (owned by portable-service-tunnels) |
+| 360 | passed | product-path defect corrective — `i2pr run` opened no listener | plans/closure/workspace-foundation/360-status.md (`passed-run-starts-binds-configured-listener-and-shuts-down-cleanly`) |
+| 361 | passed | invariant — ADR-number uniqueness guard | plans/closure/workspace-foundation/361-status.md (`passed-guard-live-in-floor-and-negative-tested`) |
+| 362 | partially delivered | invariant — `i2pr-api` section + grouped-import evasion (runtime half done; console half superseded by Plan 366) | plans/closure/workspace-foundation/362-status.md (`partially-delivered-runtime-half-complete-console-half-classified-stop-condition`) |
+| 364 | passed | invariant — stale Plan-281 floor (owned by floodfill) | plans/closure/floodfill/364-status.md (`passed-guard-green-in-floor-and-ci-with-nine-traced-assertions`) |
+| 365 | passed | invariant — CI workflow validity guard | plans/closure/workspace-foundation/365-status.md (`passed-workflow-validity-now-checked-in-the-routine-floor`) |
+| 366 | passed | invariant corrective — console rule 2 scanned 1 of 13 files | plans/closure/workspace-foundation/366-status.md (`passed-rule-2-now-scans-all-13-console-files`) |
+
+The theme worth carrying forward: **four of these were guards that read as enforcing a boundary
+while enforcing nothing.** Plan 366 was the worst — its awk latched a test-module flag and never
+reset it, so 12 of 13 console source files were never examined. Plan 365's premise came from a
+`ci.yml` that did not parse, which no floor step could see. A guard that has never failed is a
+comment; every assertion added by this lane carries a negative test and a mutation transcript.

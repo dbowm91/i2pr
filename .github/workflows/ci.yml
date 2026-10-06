@@ -81,7 +81,7 @@ jobs:
       - name: Check runtime boundaries
         if: runner.os == 'Linux'
         run: bash scripts/check-runtime-boundaries.sh
-- name: Check managed-app private client seams
+      - name: Check managed-app private client seams
         run: python3 scripts/check-managed-app-private-client-seams.py
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
@@ -140,6 +140,9 @@ jobs:
       - name: Check M12 floodfill qualification evidence integrity
         if: runner.os == 'Linux'
         run: bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test
+      - name: Check M12 floodfill boundaries
+        if: runner.os == 'Linux'
+        run: bash scripts/check-m12-floodfill-boundaries.sh --self-test
       - name: Check M11 transit boundaries
         if: runner.os == 'Linux'
         run: bash scripts/check-m11-transit-boundaries.sh

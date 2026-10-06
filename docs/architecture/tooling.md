@@ -41,7 +41,8 @@ lives in [interop-apparatus.md](interop-apparatus.md).
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
-| `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. | yes | yes |
+| `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. **Plan 362** adds (a) an `i2pr-api` section — 7 source rules (`tokio::`, `async fn`/`async_trait`, socket types, `std::fs`/`OpenOptions`/`File::`, unbounded channels, `JoinHandle`, `spawn(`) plus a manifest rule banning `i2pr-daemon\|runtime\|testkit\|console\|service-tunnels` — and (b) **brace normalisation**: a Python pass blanks comment bodies and literal contents, rewrites every `use` tree into flat leaves, and then re-applies the *same* alternations to the normalised text, so a grouped `use std::{fs, net};` is detected exactly like a flat import. The normalised scan is **additional** to the raw greps, which are untouched. It fails closed on unparseable `use` syntax. Positive controls cover grouped, nested, multi-line and glob groups. `std::net` address *values* remain permitted for `i2pr-api` (Plan 345 precedent). | yes | yes |
+| `scripts/check-console-boundaries.sh` | Router-console boundary guard (Plan 356): rule 1 manifest purity, rule 2 source purity, rule 3 daemon EggServe adapter, rule 4 no `eepsite` tree, rule 5 self-contained assets, rule 6 single HTTP substrate, rule 7 dependency-map covers every member, rule 6b Plan 358 local principal. **Rule 2 (Plan 366) was repaired and is now load-bearing.** It previously ran one `awk` whose `in_tests` flag was set on the first `#[cfg(test)]` and never reset, so it scanned `theme.rs` lines 1–1139 and **nothing else — 12 of 13 console source files were never examined**. It is now a single Python scanner (`console_source_scan`) that (a) normalises `use` trees before matching (Plan 362), (b) scopes each test region to the item it annotates instead of latching it, and (c) enforces a **socket-keyed** ban — `TcpListener`, `TcpStream`, `UdpSocket`, `UnixListener`, `UnixStream`, `Server::bind`, `axum::serve`, `spawn(`, `std::fs`, `fs::`, `tokio::` — plus an **enumerated** allow-set of exactly four `std::net` address values (`IpAddr`, `SocketAddr`, `Ipv4Addr`, `Ipv6Addr`). A bare `use std::net;`, a glob, or the `ToSocketAddrs` resolver stays forbidden. This is *more* enforcement, not less: the old rule rejected 0 socket types because it read nothing after `theme.rs:1139`, and its blanket `std::net` ban was unsatisfiable for a correct console. A zero-file scan fails rather than passing. `--trace` prints the per-file `production_lines_scanned` proof; `--self-test` drives the same scanner over fixture trees (every forbidden category probed in all 13 files, positive controls for the allow-set, allow-set-widening negatives, zero-file and fail-closed checks) rather than re-implementing the rule. | yes | yes |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. **Plans 349–350** add positive-controlled bans on runtime/I/O ownership and all direct workspace-crate dependencies. **Rules 9–11 (Plan 343)**: the outproxy policy/route-owner pair (`i2pr-service-tunnels/src/outproxy.rs` + `i2pr-daemon/src/outproxy_route.rs`) must both exist; neither may name a clearnet socket type, resolver, or TLS-to-clearnet client (`TcpStream\|TcpListener\|UdpSocket\|to_socket_addrs\|lookup_host\|TcpSocket\|openssl\|native_tls\|reqwest\|hyper`) — `std::net::IpAddr` is deliberately *not* matched, because parsing an address is how the target grammar refuses IP literals; neither may load a plugin or spawn a process (`libloading\|dlopen\|Library::new\|Command::new\|std::process`). **Rule 10 is a positive control** requiring a local listener reference in `service_tunnels_http.rs`. | yes | yes |
 | `scripts/check-m11-transit-boundaries.sh` | Plan 264/265 M11 transit runtime-neutrality and static boundary invariants. | yes | yes |
 | `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the LeaseSet2 type-5 deferred path must not enter server-authority NetDB storage. **Currently exits 1** — that type-5 rule is stale: Plans 332/333/334 legitimately put `EncryptedLeaseSet` into NetDB storage. Not in the floor or CI, so the failure is silent. Do not add it to the floor until a plan corrects the rule. | **no** | **no** |
@@ -53,6 +54,46 @@ lives in [interop-apparatus.md](interop-apparatus.md).
 | `scripts/interop/check-m6-java-response-source-lock.sh` | Plan 236 §6 read-only source lock over the exact-pinned Java I2P checkout, binding the `Connection.sendPacket` → `PacketQueue.enqueue` → `I2PSession.sendMessage` response path. Writes only sanitized class/method facts; never patches or builds the reference tree. Consumed by the M6 Java lane. | **no** | **no** |
 | `scripts/interop/check-p243-host-qualified.sh` | Plan 243 §4 host qualification gate for the M6 Java Streaming hosted stock-client-build lane: proves the execution host carries every artifact the frozen Plan 242 lane depends on *before* any counted attempt consumes the three-attempt budget. | **no** | **no** |
 | `scripts/interop/ubuntu/check-host.sh` | Plan 038 Ubuntu host preflight/postflight contract check. Invoked as `check-host.sh --pre-install` before setup and `--post-install` after. It is a host *contract* checker, not a boundary guardrail. | **no** | **no** |
+
+### Plan 362 findings that still need a plan-of-record
+
+Plan 362 closed the grouped-import evasion and added an `i2pr-api` section to
+`check-runtime-boundaries.sh`. Doing so surfaced three further gaps. None is a
+licence to add the forbidden edge, and none was absorbed by relaxing a rule.
+
+1. ~~**`check-console-boundaries.sh` rule 2 checks almost nothing**~~ — **CLOSED
+   by Plan 366.** The awk block set `in_tests = 1` on the first `#[cfg(test)]`
+   and never reset it, so the remaining **12 of 13** console source files were
+   never examined: `use std::net::TcpStream;` at line 2 of `theme.rs` failed
+   the script while the identical line in `security/mod.rs` passed. Rule 2 is
+   now a per-file scanner; `--trace` reports `production_lines_scanned` for
+   every file (**13/13 files, 4430 production lines**, versus `theme.rs`
+   1–1139 alone before).
+
+2. ~~**Console rule 2's `std::net` alternative is unsatisfiable**~~ — **CLOSED
+   by Plan 366.** The per-file reset surfaced two real hits,
+   `crates/i2pr-console/src/security/authority.rs:20`
+   (`use std::net::{IpAddr, SocketAddr};`) and `security/mod.rs:27`. Both are
+   address **values**, used to satisfy the AGENTS.md requirement that "requests
+   must match an exact `Host` authority including the port". Applying Plan 345's
+   precedent, the blanket `std::net` ban became a socket-keyed ban plus an
+   enumerated four-type address-value allow-set. The console crate is
+   **unchanged**; only the enforcement was repaired.
+
+3. **The transport `std::net` ban is already evaded** (medium, **OPEN**). The
+   transport rules forbid the string `std::net`, but
+   `crates/i2pr-transport-ntcp2/src/address.rs:9`,
+   `crates/i2pr-transport-ssu2/src/address.rs:21`, `block.rs:20`,
+   `state_machine.rs:20` and `token.rs:16` import `std::net::IpAddr` /
+   `std::net::SocketAddr` through a grouped `use`. Plan 362 deliberately did
+   **not** extend the normalised scan to the transport crates, and Plan 366 kept
+   that boundary in scope: doing so would fail the floor on a rule whose intent
+   ("no sockets") differs from its literal text. Resolving it needs a
+   transport-scoped plan, not a tooling fix.
+
+A fourth, benign observation: `crates/i2pr-api/src/sam/limits.rs:178,206` name
+`tokio::` in comments only. That is why the normalised scan masks comment bodies
+before matching.
 
 ### Fixture and vector checkers
 

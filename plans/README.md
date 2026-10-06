@@ -93,9 +93,12 @@ them. Renumbering would destroy traceability.
 - **ADR numbers are load-bearing in the same way.** The ledger also records the ADR
   0030, 0032, and 0033 collisions across the managed-app, portable-service-tunnel, and
   Proposal 170 lines. Prose discussing a colliding ADR must qualify it
-  (for example `ADR 0032 (Proposal 170)`). Known gap: no checker enforces ADR
-  uniqueness, so filing a new ADR requires manually checking `docs/adr/` for a free
-  number.
+  (for example `ADR 0032 (Proposal 170)`). Since Plan 361, ADR-number uniqueness is
+  enforced by `scripts/check-adr-number-uniqueness.py` alongside the plan-number check;
+  it tolerates exactly those three recorded collisions as explicit filenames and fails
+  closed on a duplicate, on an unparseable ADR filename, and on an exemption whose file
+  no longer exists. Filing a new ADR still needs a free number, but the floor now
+  catches a collision.
 - Early-era records kept as-is: `closure/<subsystem>/NNN-closure.md`,
   `NNN-closure-attempt.md`, `NNN-candidate.md`, status-amending `*-amendment-*.md` files.
 - Non-standard but authoritative: `closure/mixed-router-interop/193-streaming-status.md`.

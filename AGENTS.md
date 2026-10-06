@@ -88,6 +88,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
 python3 scripts/check-global-plan-number-uniqueness.py
+python3 scripts/check-adr-number-uniqueness.py
 python3 scripts/check-portable-service-tunnel-api.py
 bash scripts/check-portable-service-tunnel-consumer.sh
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
@@ -116,6 +117,7 @@ bash scripts/check-encrypted-service-consumer-caller.sh
 bash scripts/check-outproxy-request-path.sh
 bash scripts/check-outproxy-wire-lane-evidence.sh
 bash scripts/check-config-secret-hygiene.sh
+python3 scripts/check-workflow-validity.py
 bash scripts/check-floodfill-type5-serve.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh
 bash scripts/check-exploratory-tunnel-evidence.sh
@@ -124,6 +126,7 @@ bash scripts/check-destination-tunnel-evidence.sh
 bash scripts/check-streaming-tunnel-evidence.sh
 bash scripts/check-m6-mixed-router-acceptance-evidence.sh
 bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test
+bash scripts/check-m12-floodfill-boundaries.sh --self-test
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
 cargo deny check advisories bans sources
 ```
@@ -179,30 +182,53 @@ script.
 - ~~`tools/i2pr-interop` is unpoliced by the direction script~~ — **CLOSED by
   Plan 356** for production edges (see the entry above). It is still outside
   `check-runtime-boundaries.sh`, whose globs cover `crates/` only.
-- `scripts/check-runtime-boundaries.sh` has **no `i2pr-api` section**; its
-  "passed" result is not evidence for that crate. It also greps `std::net`
-  literally, so an import inside a grouped `use std::{…}` evades it. The
-  console has its own checker pair, but that pair greps `crates/i2pr-console`
-  explicitly — the grouped-import evasion applies to it too.
-- `scripts/check-m12-floodfill-boundaries.sh` currently **exits 1**: it still
-  enforces the Plan 281 "type 5 is deferred" floor, but Plans 332/333/334
-  legitimately populate `DatabaseStoreData::EncryptedLeaseSet`. It is in
-  neither this floor nor `ci.yml`, so the failure is silent. Do not add it to
-  the floor until the script is corrected by a plan.
-- ADR numbers are not uniqueness-checked. `docs/adr/` currently has **two**
-  `0030-*` records, both `Accepted`, which makes ADR 0029's "partially
-  superseded by ADR 0030" ambiguous. `check-global-plan-number-uniqueness.py`
-  scans `plans/` only.
+- ~~`scripts/check-runtime-boundaries.sh` has **no `i2pr-api` section**~~ —
+  **CLOSED by Plan 362.** The crate now has an 8-rule section with grouped-import
+  positive controls, and the script normalises `use … { … }` groups into flat
+  leaves before scanning, so `use std::{fs, net};` can no longer evade.
+- ~~a grouped `use std::{…}` evades the `std::net` scan~~ — **CLOSED for
+  `check-runtime-boundaries.sh` by Plan 362** (a `use`-tree parser, validated
+  over 493/493 repo `.rs` files with zero fail-open cases). The option-(b) regex
+  alternative was explicitly rejected: it is a small diff that leaves nested
+  groups working.
+- ~~`check-console-boundaries.sh` rule 2 enforces almost nothing~~ — **CLOSED by
+  Plan 366**, and it was the worst of these. Its awk latched `in_tests = 1` on
+  the first `#[cfg(test)]` and **never reset per file**; `find` returns
+  `theme.rs` first and its `#[cfg(test)]` is at line 1139, so **only
+  `theme.rs:1–1139` was ever scanned and 12 of 13 console files were never
+  examined**. A `TcpListener::bind` injected into `security/auth.rs` passed.
+  Rule 2 is now a per-file, brace-scoped scanner: 13/13 files, 4 416 production
+  lines (was 1 138). The blanket `std::net` string ban was replaced by a
+  socket-keyed ban plus an explicit 4-type address-value allow-set, because
+  `AGENTS.md`'s exact-`Host`-with-port rule requires `IpAddr`/`SocketAddr`.
+- ~~`scripts/check-m12-floodfill-boundaries.sh` exits 1~~ — **CLOSED by Plan
+  364.** The stale Plan-281 "type 5 is deferred" rule was replaced by 9 positive
+  assertions traced to the Plans 332/333/334/346 closure records, each
+  negative-tested. It is now in this floor and in `ci.yml`.
+- ~~ADR numbers are not uniqueness-checked~~ — **CLOSED by Plan 361.**
+  `scripts/check-adr-number-uniqueness.py` fails closed, and the three existing
+  duplicate pairs (`0030`, `0032`, `0033`) are an explicit, ledger-linked
+  tolerated set. No ADR was renumbered.
+- **CI workflow validity was unchecked, and a merge broke it.** Plan 365 adds
+  `scripts/check-workflow-validity.py` to the floor. It was not hypothetical:
+  `.github/workflows/ci.yml` did not parse as YAML at `2416c30`, because the
+  merge `0d50319` de-indented one step line — so the whole file was rejected and
+  the `quality`, `msrv`, and `dependency-policy` jobs never ran.
+- **Open: the transport crates already import `std::net` address values via
+  grouped `use`** (`i2pr-transport-ntcp2/src/address.rs` and four ssu2 files),
+  and the transport scan is deliberately excluded from the Plan 362 normaliser
+  for that reason. A transport-scoped plan should settle the socket-keyed rule
+  there the way Plan 366 did for the console.
 
-Separately, a product-path defect found 2026-10-05 (not a checker gap, but the
-same "verified, do not rediscover" category): **`i2pr run` does not start the
-router.** The Essential `lifecycle` service awaits cancellation and never
-signals initial readiness, so the supervisor's 30-second readiness timeout fires
-before `sam-bridge` starts and it exits with `ReadinessTimeout`. No listener is
-opened. `check-config`, `identity generate|inspect`, and `run --dry-run` all
-work. Use `cargo run --locked -p i2pr-daemon --example sam_loopback_listener --
---port 0` for a live SAM listener. Closing it needs a plan-of-record; details in
-`docs/architecture/i2pr-daemon.md` → "CLI and configuration".
+Separately, a product-path defect found 2026-10-05 was **closed by Plan 360**
+(see `plans/closure/workspace-foundation/360-status.md`): `i2pr run` used to
+exit `ReadinessTimeout` with no listener, because the Essential `lifecycle`
+service awaited cancellation and never signalled initial readiness. `i2pr run`
+now starts, binds its configured loopback listeners, and shuts down cleanly.
+The readiness contract is *"this service is running"* — anchors signal
+immediately, listener services signal **after** the bind succeeds, and periodic
+workers signal once their cadence loop exists. Readiness signals are
+owner-tracked; a listener service must never report ready before it has bound.
 
 ## Testing quirks agents miss
 

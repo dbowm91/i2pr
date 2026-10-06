@@ -76,6 +76,193 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Bounded startup deadline installed on every supervised daemon service.
+///
+/// The supervisor treats a startup or readiness timeout as fatal for the
+/// whole graph, so every service this composition root registers must
+/// report readiness inside this deadline. The value is reported verbatim in
+/// the startup diagnostic (Plan 360 scope item 2).
+const SERVICE_STARTUP_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Bounded deadline for the initial readiness signal of one service attempt.
+const SERVICE_READINESS_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Bounded graceful stop period for one supervised service.
+const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// Bounded deadline for one loopback listener bind.
+///
+/// Applies to `bind` only. The serving phase runs until cancellation: a
+/// timeout wrapped around the listener *lifetime* would abort a healthy
+/// service instead of starting one.
+const LISTENER_BIND_DEADLINE: Duration = Duration::from_secs(1);
+
+/// What one supervised service is waiting for when it reports readiness.
+///
+/// This is the single source of truth for the readiness contract in the
+/// composition root: it is installed as the service's bounded
+/// [`ServiceSpec::description`] and quoted in the startup diagnostic when a
+/// service fails to become ready. Readiness means **"this service is
+/// running"** — never "some unrelated task finished" and never "we hope":
+///
+/// * a cancellation-scoped lifetime anchor is up the instant it is
+///   scheduled, so it signals immediately;
+/// * a listener-owning service signals only once its loopback socket is
+///   actually bound, because an unbound listener is not a running service;
+/// * a periodic worker signals once its cadence loop is established, not
+///   once its first remote fetch happens to succeed.
+fn readiness_expectation(service: &str) -> &'static str {
+    match service {
+        LIFECYCLE_SERVICE_NAME => "cancellation-scoped lifetime anchor running",
+        NETDB_BOOTSTRAP_SERVICE_NAME => "long-lived NetDB observability owner running",
+        SAM_SERVICE_NAME => "loopback SAM listener bound and accepting",
+        I2CP_SERVICE_NAME => "loopback I2CP listener bound and accepting",
+        I2PCONTROL_SERVICE_NAME => "loopback I2PControl listener bound and accepting",
+        CONSOLE_SERVICE_NAME => "loopback router console listener bound and accepting",
+        ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
+        SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
+        SSU2_SERVICE_NAME => "controlled SSU2 router owner running",
+        _ => "supervised service running",
+    }
+}
+
+/// Builds a service spec carrying this composition root's bounded deadlines
+/// and its readiness expectation.
+fn service_spec<F, Fut>(
+    service: &'static str,
+    classification: ServiceClassification,
+    factory: F,
+) -> ServiceSpec
+where
+    F: Fn(i2pr_runtime::ServiceContext) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = i2pr_runtime::ServiceResult> + Send + 'static,
+{
+    ServiceSpec::new(
+        ServiceName::new(service).expect("static service name is valid"),
+        classification,
+        factory,
+    )
+    .timeouts(
+        SERVICE_STARTUP_DEADLINE,
+        SERVICE_READINESS_DEADLINE,
+        SERVICE_SHUTDOWN_GRACE,
+    )
+    .description(readiness_expectation(service))
+}
+
+/// Reports that one service is running, or fails the service loudly.
+///
+/// A service that cannot publish its own readiness must name itself in the
+/// diagnostic instead of letting the supervisor time it out anonymously.
+/// Returns the failure as a [`i2pr_runtime::ServiceResult`] so callers can
+/// either `return` it directly or propagate it with `?` from a service body
+/// or from [`bind_then_serve`].
+fn signal_running(
+    service: &'static str,
+    readiness: &i2pr_runtime::Readiness,
+) -> Result<(), i2pr_runtime::ServiceResult> {
+    readiness.signal_ready().map_err(|error| {
+        let detail =
+            i2pr_core::HealthDetail::new(format!("{service} could not report readiness: {error}"))
+                .ok();
+        i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+            i2pr_core::ServiceFailureCategory::Internal,
+            detail,
+        ))
+    })
+}
+
+/// Binds one supervised loopback listener, reports readiness, then serves.
+///
+/// Readiness is signalled **after** the bind succeeds, so a supervisor that
+/// observes readiness can prove a listener exists. `serve` is awaited
+/// unbounded: it owns the listener lifetime and returns when the token
+/// fires, so a timeout must never wrap the serving phase.
+async fn bind_then_serve<Bind, Serve, BindOk, BindErr, ServeFut>(
+    service: &'static str,
+    readiness: &i2pr_runtime::Readiness,
+    bind: Bind,
+    serve: Serve,
+) -> i2pr_runtime::ServiceResult
+where
+    Bind: std::future::Future<Output = Result<BindOk, BindErr>>,
+    BindErr: std::fmt::Display,
+    Serve: FnOnce(BindOk) -> ServeFut,
+    ServeFut: std::future::Future<Output = i2pr_runtime::ServiceResult>,
+{
+    let bound = i2pr_runtime::bounded_timeout(LISTENER_BIND_DEADLINE, bind).await;
+    let listener = match bound {
+        Ok(Ok(listener)) => listener,
+        Ok(Err(error)) => {
+            let detail =
+                i2pr_core::HealthDetail::new(format!("{service} bind failed: {error}")).ok();
+            return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                i2pr_core::ServiceFailureCategory::InvalidState,
+                detail,
+            ));
+        }
+        Err(_) => {
+            let detail = i2pr_core::HealthDetail::new(format!(
+                "{service} listener did not bind within {LISTENER_BIND_DEADLINE:?}"
+            ))
+            .ok();
+            return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                i2pr_core::ServiceFailureCategory::Internal,
+                detail,
+            ));
+        }
+    };
+    if let Err(failure) = signal_running(service, readiness) {
+        return failure;
+    }
+    serve(listener).await
+}
+
+/// Renders one supervised startup failure as an operator-facing diagnostic.
+///
+/// The supervisor reports the service and the completion variant; on its own
+/// that is a bare `ReadinessTimeout` with no deadline and no subject. Plan
+/// 360 scope item 2 requires the operator to learn **which service**, **which
+/// deadline**, and **what it awaited**.
+fn describe_startup_failure(
+    service: &i2pr_core::ServiceName,
+    completion: &i2pr_core::ServiceCompletion,
+) -> String {
+    let awaited = readiness_expectation(service.as_str());
+    let reason = match completion {
+        i2pr_core::ServiceCompletion::Failed(failure) => failure
+            .detail()
+            .map(|detail| detail.as_str().to_owned())
+            .unwrap_or_else(|| format!("{:?}", failure.category())),
+        i2pr_core::ServiceCompletion::ReadinessTimeout => {
+            "it never reported initial readiness".to_owned()
+        }
+        i2pr_core::ServiceCompletion::StartupTimeout => "it never completed startup".to_owned(),
+        other => format!("{other:?}"),
+    };
+    format!(
+        "service `{service}` failed during startup: {reason} \
+         (startup deadline {SERVICE_STARTUP_DEADLINE:?}, \
+         readiness deadline {SERVICE_READINESS_DEADLINE:?}; \
+         readiness means {awaited})"
+    )
+}
+
+/// Renders any supervisor error, enriching the startup case.
+fn describe_supervisor_error(error: &i2pr_runtime::SupervisorError) -> String {
+    match error {
+        i2pr_runtime::SupervisorError::StartupFailed {
+            service,
+            completion,
+            ..
+        } => format!(
+            "supervisor failed: {}",
+            describe_startup_failure(service, completion)
+        ),
+        other => format!("supervisor failed: {other}"),
+    }
+}
+
 /// Result of a successful side-effect-free validation command.
 #[derive(Debug, Eq, PartialEq)]
 pub enum CommandOutcome {
@@ -230,14 +417,24 @@ fn build_daemon_graph_inner(
         })?;
 
     let group_lifecycle = service_lifecycle.clone();
-    let lifecycle_name = ServiceName::new("lifecycle").expect("valid service name");
     builder
-        .register(ServiceSpec::new(
-            lifecycle_name,
+        .register(service_spec(
+            LIFECYCLE_SERVICE_NAME,
             ServiceClassification::Essential,
             move |ctx| {
                 let cancellation = ctx.cancellation().clone();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
+                    // Plan 360 readiness contract: this service owns no
+                    // listener and no work item — it is the cancellation-
+                    // scoped anchor that keeps the supervisor's lifetime
+                    // tied to the daemon. It is up the instant it is
+                    // scheduled, so reporting readiness immediately is
+                    // truthful. Reporting it only after cancellation would
+                    // time the service out and tear the whole graph down.
+                    if let Err(failure) = signal_running(LIFECYCLE_SERVICE_NAME, &readiness) {
+                        return failure;
+                    }
                     cancellation.cancelled().await;
                     i2pr_runtime::ServiceResult::RequestedShutdown
                 })
@@ -247,12 +444,13 @@ fn build_daemon_graph_inner(
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
-    let netdb_name = ServiceName::new("netdb-bootstrap").expect("valid service name");
     builder
-        .register(ServiceSpec::new(
-            netdb_name,
+        .register(service_spec(
+            NETDB_BOOTSTRAP_SERVICE_NAME,
             ServiceClassification::Essential,
-            |ctx| {
+            move |ctx| {
+                let cancellation = ctx.cancellation().clone();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
                     // The Plan 106 netdb-bootstrap service is a
                     // long-lived observability owner that keeps the
@@ -263,7 +461,16 @@ fn build_daemon_graph_inner(
                     // the CLI exit path. The service here is the
                     // cancellation-aware wait that ties the supervisor
                     // lifetime to the lifecycle signal.
-                    let cancellation = ctx.cancellation();
+                    //
+                    // Plan 360: readiness deliberately does **not** wait
+                    // on that pipeline, on NetDB population, or on a
+                    // reseed source. Those have already run (or failed
+                    // non-fatally) before the supervisor is constructed,
+                    // and a router with an empty NetDB is still a running
+                    // router. Readiness means "this service is running".
+                    if let Err(failure) = signal_running(NETDB_BOOTSTRAP_SERVICE_NAME, &readiness) {
+                        return failure;
+                    }
                     cancellation.cancelled().await;
                     i2pr_runtime::ServiceResult::RequestedShutdown
                 })
@@ -397,12 +604,11 @@ fn register_sam_service(
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
     let address = sam_config.bind_socket();
-    let sam_name = ServiceName::new("sam-bridge").expect("valid service name");
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
     builder
-        .register(ServiceSpec::new(
-            sam_name,
+        .register(service_spec(
+            SAM_SERVICE_NAME,
             ServiceClassification::Optional,
             move |ctx| {
                 let sam_config = sam_config.clone();
@@ -410,6 +616,7 @@ fn register_sam_service(
                 let addressbook = Arc::clone(&addressbook);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
                     let state = match SamServiceState::new(sam_config) {
                         Ok(state) => Arc::new(state),
@@ -433,24 +640,30 @@ fn register_sam_service(
                     // no-op empty cell unless the subsystem is active).
                     state.set_addressbook_handle(addressbook.shared());
                     let token = cancellation.clone();
-                    let join_result =
-                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
-                            state.run(address, children, token).await
-                        })
-                        .await;
-                    if join_result.is_err() {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "SAM listener failed to start within the bounded timeout",
-                        )
-                        .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::Internal,
-                                detail,
-                            ),
-                        );
-                    }
-                    i2pr_runtime::ServiceResult::RequestedShutdown
+                    let binder = Arc::clone(&state);
+                    bind_then_serve(
+                        SAM_SERVICE_NAME,
+                        &readiness,
+                        binder.bind(address),
+                        |(listener, _bound_address)| async move {
+                            match state.serve(listener, children, token).await {
+                                Ok(()) => i2pr_runtime::ServiceResult::RequestedShutdown,
+                                Err(error) => {
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "SAM serve failed: {error}"
+                                    ))
+                                    .ok();
+                                    i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::Internal,
+                                            detail,
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                    )
+                    .await
                 })
             },
         ))
@@ -475,14 +688,14 @@ fn register_console_service(
     let console_config = config.console.clone();
     let address = console_config.bind_socket();
     let inspection = Arc::clone(inspection);
-    let console_name = ServiceName::new(CONSOLE_SERVICE_NAME).expect("valid service name");
-    let spec = i2pr_runtime::ServiceSpec::new(
-        console_name,
+    let spec = service_spec(
+        CONSOLE_SERVICE_NAME,
         i2pr_runtime::ServiceClassification::Optional,
         move |ctx| {
             let console_config = console_config.clone();
             let inspection = Arc::clone(&inspection);
             let cancellation = ctx.cancellation().clone();
+            let readiness = ctx.readiness();
             Box::pin(async move {
                 let state =
                     match crate::console::ConsoleServiceState::new(console_config, inspection) {
@@ -500,49 +713,36 @@ fn register_console_service(
                             );
                         }
                     };
-                // Bind under a bounded timeout so an unusable address
+                // Bind under a bounded deadline so an unusable address
                 // fails the service promptly. The serving phase then runs
                 // until cancellation: wrapping the listener lifetime in a
                 // timeout would abort a healthy console after one second.
-                let bound =
-                    i2pr_runtime::bounded_timeout(Duration::from_secs(1), state.bind(address))
-                        .await;
-                let (listener, resolved) = match bound {
-                    Ok(Ok(bound)) => bound,
-                    Ok(Err(error)) => {
-                        let detail =
-                            i2pr_core::HealthDetail::new(format!("console bind failed: {error}"))
-                                .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::InvalidState,
-                                detail,
-                            ),
-                        );
-                    }
-                    Err(_) => {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "console listener failed to bind within the bounded timeout",
-                        )
-                        .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::Internal,
-                                detail,
-                            ),
-                        );
-                    }
-                };
+                // Plan 360: readiness is signalled after the bind succeeds
+                // and before serving, so a ready console provably owns a
+                // bound loopback socket.
                 let token = cancellation.clone();
-                if let Err(error) = state.serve(listener, resolved, token).await {
-                    let detail =
-                        i2pr_core::HealthDetail::new(format!("console serve failed: {error}")).ok();
-                    return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
-                        i2pr_core::ServiceFailureCategory::Internal,
-                        detail,
-                    ));
-                }
-                i2pr_runtime::ServiceResult::RequestedShutdown
+                let binder = Arc::clone(&state);
+                bind_then_serve(
+                    CONSOLE_SERVICE_NAME,
+                    &readiness,
+                    binder.bind(address),
+                    |(listener, resolved)| async move {
+                        match state.serve(listener, resolved, token).await {
+                            Ok(()) => i2pr_runtime::ServiceResult::RequestedShutdown,
+                            Err(error) => {
+                                let detail = i2pr_core::HealthDetail::new(format!(
+                                    "console serve failed: {error}"
+                                ))
+                                .ok();
+                                i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::Internal,
+                                    detail,
+                                ))
+                            }
+                        }
+                    },
+                )
+                .await
             })
         },
     );
@@ -564,17 +764,17 @@ fn register_i2cp_service(
 ) -> Result<(), DaemonError> {
     let i2cp_config = config.i2cp.clone();
     let address = i2cp_config.bind_socket();
-    let i2cp_name = ServiceName::new("i2cp-bridge").expect("valid service name");
     let inspection = Arc::clone(inspection);
     builder
-        .register(ServiceSpec::new(
-            i2cp_name,
+        .register(service_spec(
+            I2CP_SERVICE_NAME,
             ServiceClassification::Optional,
             move |ctx| {
                 let i2cp_config = i2cp_config.clone();
                 let inspection = Arc::clone(&inspection);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
                     let state = match I2cpServiceState::new(i2cp_config) {
                         Ok(state) => Arc::new(state),
@@ -595,24 +795,30 @@ fn register_i2cp_service(
                     // inspection plane (read-only snapshot access).
                     inspection.publish_i2cp(Arc::clone(&state));
                     let token = cancellation.clone();
-                    let join_result =
-                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
-                            state.run(address, children, token).await
-                        })
-                        .await;
-                    if join_result.is_err() {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "I2CP listener failed to start within the bounded timeout",
-                        )
-                        .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::Internal,
-                                detail,
-                            ),
-                        );
-                    }
-                    i2pr_runtime::ServiceResult::RequestedShutdown
+                    let binder = Arc::clone(&state);
+                    bind_then_serve(
+                        I2CP_SERVICE_NAME,
+                        &readiness,
+                        binder.bind(address),
+                        |(listener, _bound_address)| async move {
+                            match state.serve(listener, children, token).await {
+                                Ok(()) => i2pr_runtime::ServiceResult::RequestedShutdown,
+                                Err(error) => {
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "I2CP serve failed: {error}"
+                                    ))
+                                    .ok();
+                                    i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::Internal,
+                                            detail,
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                    )
+                    .await
                 })
             },
         ))
@@ -732,6 +938,17 @@ const SSU2_SERVICE_NAME: &str = "ssu2-router";
 /// Supervisor service name for the loopback router console (Plan 356).
 const CONSOLE_SERVICE_NAME: &str = "router-console";
 
+/// Stable identifiers of the remaining supervised services. Plan 360 keeps
+/// them in one place so the readiness contract and the registered graph
+/// cannot drift apart.
+const LIFECYCLE_SERVICE_NAME: &str = "lifecycle";
+const NETDB_BOOTSTRAP_SERVICE_NAME: &str = "netdb-bootstrap";
+const SAM_SERVICE_NAME: &str = "sam-bridge";
+const I2CP_SERVICE_NAME: &str = "i2cp-bridge";
+const I2PCONTROL_SERVICE_NAME: &str = "i2pcontrol";
+const ADDRESSBOOK_REFRESH_SERVICE_NAME: &str = "addressbook-refresh";
+const SIGNED_NEWS_REFRESH_SERVICE_NAME: &str = "signed-news-refresh";
+
 /// Registers the supervised I2PControl HTTPS service in the supplied
 /// builder. The factory captures the [`I2pControlServiceState`] so the
 /// per-connection tokio tasks own Arc clones that share the same token
@@ -747,7 +964,6 @@ fn register_i2pcontrol_service(
 ) -> Result<(), DaemonError> {
     let i2pcontrol_config = config.i2pcontrol.clone();
     let address = i2pcontrol_config.bind_socket();
-    let i2pcontrol_name = ServiceName::new("i2pcontrol").expect("valid service name");
     // Plan 289/337: the control state is built here over the **one**
     // shared manager the product layer also owns, with the store beneath
     // the router data dir. Construction touches only the filesystem;
@@ -768,8 +984,8 @@ fn register_i2pcontrol_service(
         };
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
-    let mut spec = ServiceSpec::new(
-        i2pcontrol_name,
+    let mut spec = service_spec(
+        I2PCONTROL_SERVICE_NAME,
         ServiceClassification::Optional,
         move |ctx| {
             let i2pcontrol_config = i2pcontrol_config.clone();
@@ -778,6 +994,7 @@ fn register_i2pcontrol_service(
             let control = Arc::clone(&control);
             let cancellation = ctx.cancellation().clone();
             let children = ctx.children();
+            let readiness = ctx.readiness();
             Box::pin(async move {
                 let state = match I2pControlServiceState::new_with_inspection(
                     i2pcontrol_config,
@@ -799,22 +1016,43 @@ fn register_i2pcontrol_service(
                 };
                 state.set_control_manager(Arc::clone(&control));
                 state.set_addressbook_manager(Arc::clone(&addressbook));
-                let token = cancellation.clone();
-                let join_result = i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
-                    state.run(address, children, token).await
-                })
-                .await;
-                if join_result.is_err() {
-                    let detail = i2pr_core::HealthDetail::new(
-                        "I2PControl listener failed to start within the bounded timeout",
-                    )
-                    .ok();
-                    return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
-                        i2pr_core::ServiceFailureCategory::Internal,
-                        detail,
-                    ));
+                // Plan 289 control startup runs before the listener binds so
+                // restored tunnels are serving when the control plane
+                // answers. Per-definition failures isolate; they never fail
+                // the service. (This is the same phase
+                // `I2pControlServiceState::run` performs; the composition
+                // root inlines it so readiness can be signalled between the
+                // bind and the serving phase.)
+                let failures = control.startup(&children, &cancellation).await;
+                for (name, reason) in failures {
+                    tracing::warn!(tunnel = %name, reason = %reason, "control tunnel failed at startup");
                 }
-                i2pr_runtime::ServiceResult::RequestedShutdown
+                control.spawn_idle_sweeper(&children, &cancellation);
+                // Plan 360: readiness after a successful bind, so a ready
+                // I2PControl service provably owns a bound loopback socket.
+                let token = cancellation.clone();
+                let binder = Arc::clone(&state);
+                bind_then_serve(
+                    I2PCONTROL_SERVICE_NAME,
+                    &readiness,
+                    binder.bind(address),
+                    |(listener, _bound_address)| async move {
+                        match state.serve(listener, children, token).await {
+                            Ok(()) => i2pr_runtime::ServiceResult::RequestedShutdown,
+                            Err(error) => {
+                                let detail = i2pr_core::HealthDetail::new(format!(
+                                    "I2PControl serve failed: {error}"
+                                ))
+                                .ok();
+                                i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::Internal,
+                                    detail,
+                                ))
+                            }
+                        }
+                    },
+                )
+                .await
             })
         },
     );
@@ -840,7 +1078,8 @@ fn register_addressbook_refresh_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
-    let worker_name = ServiceName::new("addressbook-refresh").expect("valid service name");
+    let worker_name =
+        ServiceName::new(ADDRESSBOOK_REFRESH_SERVICE_NAME).expect("valid service name");
     let manager = Arc::clone(addressbook);
     builder
         .register(ServiceSpec::new(
@@ -849,9 +1088,31 @@ fn register_addressbook_refresh_service(
             move |ctx| {
                 let manager = Arc::clone(&manager);
                 let cancellation = ctx.cancellation().clone();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
                     if !manager.is_active() {
-                        return i2pr_runtime::ServiceResult::RequestedShutdown;
+                        // Plan 360: an inactive subsystem is a real,
+                        // named reason this worker cannot run. Failing
+                        // loudly beats a service that quietly reports
+                        // ready while owning no cadence.
+                        let detail = i2pr_core::HealthDetail::new(
+                            "address-book refresh service is not active",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
+                    // Plan 360: readiness means the cadence loop is running.
+                    // It deliberately does not wait for a subscription fetch,
+                    // which is remote, bounded, and failure-tolerant.
+                    if let Err(failure) =
+                        signal_running(ADDRESSBOOK_REFRESH_SERVICE_NAME, &readiness)
+                    {
+                        return failure;
                     }
                     loop {
                         let hours = manager.refresh_interval_hours().max(1);
@@ -909,16 +1170,24 @@ fn register_news_refresh_service(
         fetcher,
     ));
     inspection.publish_news_manager(Arc::clone(&manager));
-    let service_name = ServiceName::new("signed-news-refresh").expect("valid service name");
     let interval = config.news.refresh_interval;
     builder
-        .register(ServiceSpec::new(
-            service_name,
+        .register(service_spec(
+            SIGNED_NEWS_REFRESH_SERVICE_NAME,
             ServiceClassification::Optional,
             move |ctx| {
                 let manager = Arc::clone(&manager);
                 let cancellation = ctx.cancellation().clone();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
+                    // Plan 360: readiness means the refresh cadence loop is
+                    // running. It deliberately does not wait for the first
+                    // remote fetch, whose outcome is non-fatal by design.
+                    if let Err(failure) =
+                        signal_running(SIGNED_NEWS_REFRESH_SERVICE_NAME, &readiness)
+                    {
+                        return failure;
+                    }
                     let _ = manager.refresh_once().await;
                     loop {
                         tokio::select! {
@@ -1135,11 +1404,10 @@ fn register_ssu2_service(
     let addressbook = Arc::clone(addressbook);
     let floodfill_enabled = config.floodfill.enabled;
     let floodfill_config_path = config.source_path.clone();
-    let ssu2_name = ServiceName::new(SSU2_SERVICE_NAME).expect("valid service name");
     let inspection = Arc::clone(inspection);
     builder
-        .register(ServiceSpec::new(
-            ssu2_name,
+        .register(service_spec(
+            SSU2_SERVICE_NAME,
             ServiceClassification::Optional,
             move |ctx| {
                 let ssu2_config = ssu2_config.clone();
@@ -1689,7 +1957,7 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         tokio::select! {
             result = &mut supervisor_run => {
                 break 'running result.map_err(|e| {
-                    DaemonError::RuntimeSupervisorFailed(format!("supervisor failed: {e}"))
+                    DaemonError::RuntimeSupervisorFailed(describe_supervisor_error(&e))
                 })?;
             }
             signal = tokio::signal::ctrl_c() => {
@@ -1701,7 +1969,7 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
                     tokio::select! {
                         result = &mut supervisor_run => {
                             break 'running result.map_err(|e| {
-                                DaemonError::RuntimeSupervisorFailed(format!("supervisor failed: {e}"))
+                                DaemonError::RuntimeSupervisorFailed(describe_supervisor_error(&e))
                             })?;
                         }
                         _ = tokio::signal::ctrl_c() => {
@@ -1960,5 +2228,97 @@ mod tests {
                 .iter()
                 .any(|service| service.as_str() == "ssu2-router")
         );
+    }
+
+    /// Plan 360 scope item 2: a startup failure must name the service, the
+    /// deadline, and what the service was awaiting — for every completion
+    /// variant, including the readiness timeout that produced the original
+    /// defect.
+    #[test]
+    fn startup_diagnostic_names_service_deadline_and_expectation() {
+        let service = ServiceName::new("sam-bridge").expect("valid service name");
+        for completion in [
+            i2pr_core::ServiceCompletion::ReadinessTimeout,
+            i2pr_core::ServiceCompletion::StartupTimeout,
+        ] {
+            let rendered = describe_startup_failure(&service, &completion);
+            assert!(
+                rendered.contains("sam-bridge"),
+                "must name the service: {rendered}"
+            );
+            assert!(
+                rendered.contains("readiness deadline"),
+                "must name the deadline: {rendered}"
+            );
+            assert!(
+                rendered.contains("startup deadline"),
+                "must name the startup deadline: {rendered}"
+            );
+            assert!(
+                rendered.contains(readiness_expectation("sam-bridge")),
+                "must name what the service awaited: {rendered}"
+            );
+        }
+    }
+
+    /// A readiness timeout must not degrade back to the bare variant name it
+    /// replaced; the diagnostic has to explain itself.
+    #[test]
+    fn readiness_timeout_diagnostic_explains_the_missing_signal() {
+        let service = ServiceName::new(LIFECYCLE_SERVICE_NAME).expect("valid service name");
+        let rendered =
+            describe_startup_failure(&service, &i2pr_core::ServiceCompletion::ReadinessTimeout);
+        assert!(
+            rendered.contains("never reported initial readiness"),
+            "must explain that no readiness signal arrived: {rendered}"
+        );
+        assert!(
+            !rendered.ends_with("ReadinessTimeout"),
+            "must not reduce to the bare variant: {rendered}"
+        );
+    }
+
+    /// A typed service failure must carry its bounded detail through.
+    #[test]
+    fn failed_service_detail_reaches_the_startup_diagnostic() {
+        let service = ServiceName::new(SAM_SERVICE_NAME).expect("valid service name");
+        let detail = i2pr_core::HealthDetail::new("sam-bridge bind failed: address in use")
+            .expect("bounded detail");
+        let completion = i2pr_core::ServiceCompletion::Failed(i2pr_core::ServiceFailure::new(
+            i2pr_core::ServiceFailureCategory::InvalidState,
+            Some(detail),
+        ));
+        let rendered = describe_startup_failure(&service, &completion);
+        assert!(
+            rendered.contains("address in use"),
+            "must carry the failure reason: {rendered}"
+        );
+    }
+
+    /// Every registered service must be able to describe itself, so the
+    /// contract table and the graph cannot drift apart.
+    #[test]
+    fn readiness_expectation_covers_every_supervised_service() {
+        for service in [
+            LIFECYCLE_SERVICE_NAME,
+            NETDB_BOOTSTRAP_SERVICE_NAME,
+            SAM_SERVICE_NAME,
+            I2CP_SERVICE_NAME,
+            I2PCONTROL_SERVICE_NAME,
+            CONSOLE_SERVICE_NAME,
+            ADDRESSBOOK_REFRESH_SERVICE_NAME,
+            SIGNED_NEWS_REFRESH_SERVICE_NAME,
+            SSU2_SERVICE_NAME,
+        ] {
+            let expectation = readiness_expectation(service);
+            assert_ne!(
+                expectation, "supervised service running",
+                "{service} has no specific readiness expectation"
+            );
+            assert!(
+                expectation.len() <= i2pr_core::MAX_HEALTH_DETAIL_BYTES,
+                "{service} expectation exceeds the bounded health-detail limit"
+            );
+        }
     }
 }

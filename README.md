@@ -136,19 +136,17 @@ Note that the console is currently unreachable from the product path, because
 `[console]` section; the behaviour is exercised by
 `cargo test -p i2pr-daemon --test console_loopback -- --test-threads=1`.
 
-## Known limitation: `i2pr run` fails startup
+## Running the router
 
-`i2pr run` (without `--dry-run`) starts, then shuts down after 30 seconds:
+`i2pr run --config <cfg>` starts the router, binds its configured loopback
+listeners, and stays up until signalled. **This did not work before Plan 360**:
+the run used to exit `ReadinessTimeout` with no listener bound, because the
+Essential `lifecycle` service awaited cancellation and never signalled initial
+readiness. See `plans/closure/workspace-foundation/360-status.md`.
 
-```text
-error: supervisor terminated: supervisor failed: service lifecycle failed during startup: ReadinessTimeout
-```
-
-The Essential `lifecycle` service awaits cancellation and never signals initial
-readiness, so the supervisor's readiness timeout fires before `sam-bridge` starts.
-**No listener is ever opened and the router does not run.** `check-config`,
-`identity generate|inspect`, and `run --dry-run` all work; use the
-`sam_loopback_listener` example above for a live SAM listener.
+`check-config`, `identity generate|inspect`, and `run --dry-run` all work. The
+`sam_loopback_listener` example above remains the quickest way to get a live SAM
+listener without writing a config.
 
 Exit codes: `0` success, `10` config unreadable, `11` bad TOML/schema, `12` config
 semantically invalid, `20` capability not in this milestone, `30` identity

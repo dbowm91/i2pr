@@ -76,10 +76,21 @@ This is the one renumbering performed in this reconciliation, and it was perform
 - `scripts/check-global-plan-number-uniqueness.py` encodes only the finite, explicitly
   recorded plan collisions above, as exact implementation paths; it does not
   grandfather additional owners or paths.
-- **Known coverage gap:** no equivalent guard exists for ADR numbers. Nothing
-  mechanically prevents a future ADR collision. Recording the 0032/0033 pair here is
-  therefore a documentation act, not an enforced invariant, and closing that gap needs
-  its own plan-of-record.
+- **The ADR-number coverage gap is closed (Plan 361).**
+  `scripts/check-adr-number-uniqueness.py` is now the ADR-side equivalent guard, run
+  with `python3` alongside `scripts/check-global-plan-number-uniqueness.py`. It encodes
+  **only** the three ADR-number collisions in the table above — 0030, 0032, and 0033 —
+  as a literal set of exact filenames, cross-referenced to this ledger. A collision is
+  tolerated only when the observed file set matches a recorded set **exactly**, so
+  neither a third claimant nor a renamed file is grandfathered in. Adding an
+  exemption requires editing that literal in the script, so it shows up in review;
+  there is no glob and no silent skip. An ADR filename the guard cannot parse is an
+  **error**, not a skip, and an exemption naming a file that no longer exists is
+  reported as stale so it is retired deliberately instead of decaying into a dead
+  skip. Nothing in this ledger changes the underlying fact that the three collisions
+  exist: ADR 0030 remains ambiguous, and resolving what ADR 0029 meant is still an
+  ADR-level decision, not a tooling fix. The guard enforces **identity only** — not
+  ADR content, status tokens, or supersession chains.
 
 ## Scope notes on the two Proposal 170/296 and /297 entries
 

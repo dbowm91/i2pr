@@ -145,6 +145,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 303 | passed | passed-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | plans/closure/floodfill/303-status.md |
 | 279 | stopped | stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | plans/closure/floodfill/279-status.md |
 | 306 | stopped | stopped-m12-java-requires-bandwidth-tier-beyond-reviewed-fR | plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md | plans/closure/floodfill/306-status.md |
+| 364 | passed | invariant corrective — the boundary guard for this milestone was silently failing | plans/implementation/floodfill/364-m12-boundary-guard-stale-floor.md | plans/closure/floodfill/364-status.md (`passed-guard-green-in-floor-and-ci-with-nine-traced-assertions`) |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 

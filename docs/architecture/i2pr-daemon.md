@@ -96,33 +96,61 @@ filesystem (53 rows).
 
 ### CLI and configuration
 
-**Verified defect (2026-10-05): `i2pr run` cannot start the router.** Without
-`--dry-run`, `run_daemon` registers `lifecycle` (Essential) before `sam-bridge`
-(Optional), and both the `lifecycle` and `netdb-bootstrap` service bodies are
-`cancellation.cancelled().await` — they never report initial readiness. The
-supervisor starts services in `startup_order()` and waits for each one's
-`wait_for_initial_ready`, so the 30-second readiness timeout on `lifecycle` fires
-first and, because the service is Essential, the supervisor tears the whole
-daemon down:
+**Plan 360 (2026-10-06): `i2pr run` starts the router.** `run_daemon` runs the bounded
+bootstrap pipeline synchronously, builds the graph, and drives the supervisor until
+SIGINT. A configured loopback listener is bound and the process stays up:
 
 ```text
-error: supervisor terminated: supervisor failed: service lifecycle failed during startup: ReadinessTimeout
+cargo run --locked -p i2pr-daemon -- run --config <cfg>     # stays up until Ctrl-C
 ```
 
-No listener is opened. `check-config`, `identity generate`, `identity inspect`,
-and `run --dry-run` all succeed. For a live SAM 3.1 listener use
-`cargo run --locked -p i2pr-daemon --example sam_loopback_listener -- --port 0`,
-which binds an ephemeral loopback port and prints `{"port":NNN,"pid":PPP}`.
-Closing this needs a plan-of-record: either the `lifecycle` service must signal
-readiness once the bootstrap pipeline is observably complete, or the graph must
-not gate `sam-bridge` behind a never-ready Essential service.
+The previously recorded defect — `error: supervisor terminated: supervisor failed:
+service lifecycle failed during startup: ReadinessTimeout`, with no listener opened —
+was caused by every service body awaiting cancellation without ever reporting
+readiness, so the supervisor's 30-second readiness deadline fired on `lifecycle`
+(Essential) and tore the graph down before `sam-bridge` started.
+
+**Readiness contract (Plan 360, shape b).** Readiness means **"this service is
+running"** — never "some task finished" and never "we hope". `readiness_expectation()`
+in `src/lib.rs` is the single source of truth: it is installed as each
+`ServiceSpec::description` and quoted in the startup diagnostic.
+
+| Service | Classification | Signals readiness when |
+| --- | --- | --- |
+| `lifecycle` | Essential | immediately — it owns no work; a cancellation-scoped lifetime anchor is up when scheduled |
+| `netdb-bootstrap` | Essential | immediately — the bootstrap pipeline already ran in `run_daemon` before the supervisor was constructed, and a router with an empty NetDB is still running |
+| `sam-bridge`, `i2cp-bridge`, `i2pcontrol`, `router-console` | Optional | **after** the loopback bind succeeds, so a ready service provably owns a bound socket |
+| `addressbook-refresh`, `signed-news-refresh` | Optional | once the cadence loop is established — deliberately not gated on a remote fetch, whose failure is non-fatal |
+| `ssu2-router` | Optional | after its controlled owner is up (pre-existing) |
+
+Listener services bind under a bounded 1s deadline (`LISTENER_BIND_DEADLINE`) and then
+serve **unbounded** until cancellation. A timeout wrapped around the serving phase
+would abort a healthy listener rather than start one — that is the shape the pre-Plan-360
+code used, and the console service already avoided it.
+
+Every service carries explicit bounded deadlines (`SERVICE_STARTUP_DEADLINE`,
+`SERVICE_READINESS_DEADLINE`, `SERVICE_SHUTDOWN_GRACE`). When readiness genuinely cannot
+be established, `describe_supervisor_error()` names the service, both deadlines, the
+reason, and what that service was awaiting:
+
+```text
+error: supervisor terminated: supervisor failed: service `sam-bridge` failed during startup: sam-bridge bind failed: failed to bind SAM listener on 127.0.0.1:17657: Address already in use (os error 98) (startup deadline 30s, readiness deadline 30s; readiness means loopback SAM listener bound and accepting)
+```
+
+No listener default changed: SAM/I2CP/I2PControl/service-tunnels/console remain
+loopback-only, disabled by default, and non-advertised. `run --dry-run`,
+`check-config`, `identity generate`, and `identity inspect` are unchanged. The
+`sam_loopback_listener` example still binds an ephemeral loopback port and prints
+`{"port":NNN,"pid":PPP}`, but it is no longer a workaround for the product path.
+Evidence: `crates/i2pr-daemon/tests/run_lifecycle_readiness.rs` (black-box through the
+CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 4 587 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time) | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
-| `src/lib.rs` | 1 824 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 2 324 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`) | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
