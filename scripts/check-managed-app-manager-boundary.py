@@ -252,7 +252,16 @@ require(
 # whole point of the protocol, so admitting it is a design fact, not a
 # relaxation: the list is an exact allow-set, so a third consumer (a tool, a
 # test fixture, an SDK) still fails here.
-ALLOWED_PROTOCOL_CONSUMERS = ["i2pr-appd", "i2pr-daemon"]
+# An exact allow-set, not a pattern: the manager protocol may be consumed by the
+# daemon bridge, the appd manager client, and the apphost host side of the
+# bootstrap, and by nothing else. A fourth consumer is a hard failure.
+#
+# Plan 369 WP3 added `i2pr-apphost`. It is the other end of the bootstrap
+# handshake defined by this protocol, so it is a legitimate consumer; it is in a
+# separate trust zone and is forbidden by the dependency-direction script from
+# depending on `i2pr-appd`, which is what keeps the zone split real.
+# Sorted: the comparison below is against `sorted(consumers)`.
+ALLOWED_PROTOCOL_CONSUMERS = ["i2pr-appd", "i2pr-apphost", "i2pr-daemon"]
 consumers = []
 for cargo_manifest in (ROOT / "crates").glob("*/Cargo.toml"):
     if "i2pr-app-manager-proto = { path =" in cargo_manifest.read_text():
@@ -260,8 +269,8 @@ for cargo_manifest in (ROOT / "crates").glob("*/Cargo.toml"):
 require(
     "1-one-way",
     sorted(consumers) == ALLOWED_PROTOCOL_CONSUMERS,
-    "the protocol may be consumed only as an implementation by the daemon bridge "
-    f"and the appd manager client; found {sorted(consumers)}",
+    "the protocol may be consumed only as an implementation by the daemon bridge, "
+    f"the appd manager client, and the apphost bootstrap host; found {sorted(consumers)}",
 )
 
 # -- rule 2: the contract crate reaches no owner ----------------------------

@@ -1,0 +1,36 @@
+[package]
+name = "i2pr-apphost"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Trusted application host: bounded direct-exec supervisor (Plan 369)"
+publish = false
+
+# Plan 369 §6: `i2pr-apphost` lives in the managed-application trust zone and may
+# depend on the managed-app contracts plus reviewed process/async primitives. It
+# must NOT depend on the router runtime, daemon, client, API, I2PControl, NetDB,
+# tunnel, or transport crates. `scripts/check-dependency-direction.sh` names this
+# crate explicitly, so an apphost -> daemon or apphost -> runtime edge is a hard
+# failure rather than an incidental dependency.
+#
+# The crate deliberately does NOT depend on `i2pr-appd` either. The two are
+# separate processes in separate trust zones; linking one into the other would
+# make the zone boundary a naming convention instead of a build constraint.
+[dependencies]
+i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lib]
+name = "i2pr_apphost"
+path = "src/lib.rs"
+
+[[bin]]
+name = "i2pr-apphost"
+path = "src/main.rs"
+
+[lints]
+workspace = true

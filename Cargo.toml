@@ -5,6 +5,7 @@ members = [
     "crates/i2pr-app-proto",
     "crates/i2pr-api",
     "crates/i2pr-appd",
+    "crates/i2pr-apphost",
     "crates/i2pr-crypto",
     "crates/i2pr-proto",
     "crates/i2pr-client",

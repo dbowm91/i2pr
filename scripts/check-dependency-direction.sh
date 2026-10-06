@@ -19,6 +19,12 @@ expected = {
     # `i2pr-appd -> i2pr-runtime` edge a hard failure instead of an unreviewed
     # way for the manager to reach router internals.
     "i2pr-appd": {"i2pr-app-manager-proto", "i2pr-app-proto"},
+    # Plan 369 §6: `i2pr-apphost` is the *other* side of that trust zone. It is
+    # not allowed to depend on `i2pr-appd` either: the two are separate
+    # processes, and linking one into the other would make the zone boundary a
+    # naming convention instead of a build constraint. Naming it here is what
+    # makes a future `i2pr-apphost -> i2pr-appd` edge a hard failure.
+    "i2pr-apphost": {"i2pr-app-manager-proto", "i2pr-app-proto"},
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},
     "i2pr-core": set(),

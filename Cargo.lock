@@ -965,6 +965,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-apphost"
+version = "0.1.0"
+dependencies = [
+ "i2pr-app-manager-proto",
+ "i2pr-app-proto",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "i2pr-client"
 version = "0.1.0"
 dependencies = [

@@ -39,6 +39,21 @@ pub const APPHOST_BOOTSTRAP_MAGIC: [u8; 4] = *b"I2PA";
 pub const APPHOST_HANDSHAKE_MAGIC: [u8; 4] = i2pr_app_proto::HANDSHAKE_MAGIC;
 
 pub const APPHOST_BOOTSTRAP_BYTES: usize = 9;
+
+/// Bytes reserved for the big-endian `u32` length prefix that frames the
+/// bootstrap payload behind the handshake.
+///
+/// The framing lives here rather than in either implementation because it *is*
+/// protocol: two independently-chosen constants in the manager and the host
+/// would drift into a handshake that works until it does not.
+pub const BOOTSTRAP_LENGTH_PREFIX_BYTES: usize = 4;
+
+/// Ceiling on one bootstrap payload, before any parsing.
+///
+/// Every field inside `LaunchRequest` is individually bounded, so this is a
+/// generous outer envelope whose job is to bound the *allocation*, not to
+/// describe the schema.
+pub const MAX_BOOTSTRAP_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const APPHOST_BOOTSTRAP_MAJOR: u8 = 1;
 pub const APPHOST_BOOTSTRAP_MINOR: u8 = 0;
 pub const APPHOST_ROLE_BYTE: u8 = 1;

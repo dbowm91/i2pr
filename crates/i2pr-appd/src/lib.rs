@@ -38,6 +38,7 @@
 //! - No decoder from application protocol messages, manifest bytes, or any
 //!   other peer-supplied bytes into authority.
 
+pub mod apphost_launch;
 pub mod transport;
 
 use std::collections::BTreeSet;

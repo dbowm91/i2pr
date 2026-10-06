@@ -1,8 +1,8 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp3-unblocked**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp3-landed**.
 
-Work packages landed: **WP1, WP2**. Remaining: WP3, WP4, WP5, WP6.
+Work packages landed: **WP1, WP2, WP3**. Remaining: WP4, WP5, WP6.
 
 ## WP2 outcome — and a stop condition this plan already predicted
 
