@@ -97,14 +97,27 @@ fn plan128_policy_flag_sets_match_current_m6_packet_shapes() {
 fn plan128_size_constants_separate_payload_from_packet_bounds() {
     // Minimum fixed header.
     assert_eq!(MIN_STREAMING_HEADER_BYTES, 22);
-    // Default advertised maximum is the current I2P payload default.
-    assert_eq!(DEFAULT_ADVERTISED_MAX_PAYLOAD, 1730);
-    // The negotiated-payload ceiling bounds the payload only; it must
-    // NOT be defined as the packet ceiling minus the header.
-    assert_eq!(MAX_STREAMING_PAYLOAD_BYTES, 1730);
+    // The advertised service profile is the Plan 313-qualified
+    // i2pd-compatible value, measured by Plan 312 against exact-pinned
+    // i2pd 2.61.0 (pin 635b013a612ff47278ef02acf8580a28e10e26c5).
+    assert_eq!(DEFAULT_ADVERTISED_MAX_PAYLOAD, 1812);
+    // The hard safety ceiling is declared independently of the profile
+    // (Plan 313 §5.3), so it is NOT equal to the advertised value and
+    // it is still not the packet ceiling minus the header.
+    assert_eq!(MAX_STREAMING_PAYLOAD_BYTES, 2048);
+    assert_ne!(
+        MAX_STREAMING_PAYLOAD_BYTES,
+        DEFAULT_ADVERTISED_MAX_PAYLOAD as usize
+    );
     assert_ne!(
         MAX_STREAMING_PAYLOAD_BYTES,
         MAX_STREAMING_PACKET_BYTES - MIN_STREAMING_HEADER_BYTES
+    );
+    // Plan 313 §5.3 invariant, asserted at runtime as well as at compile
+    // time: the profile must never exceed the hard safety ceiling.
+    assert!(
+        DEFAULT_ADVERTISED_MAX_PAYLOAD as usize <= MAX_STREAMING_PAYLOAD_BYTES,
+        "advertised Streaming profile must never exceed the hard safety ceiling"
     );
     // The full encoded packet ceiling covers header + NACKs + options
     // + payload as a checked sum of independent bounds.
@@ -122,6 +135,49 @@ fn plan128_size_constants_separate_payload_from_packet_bounds() {
             MIN_STREAMING_HEADER_BYTES + MAX_STREAMING_PAYLOAD_BYTES <= MAX_STREAMING_PACKET_BYTES
         )
     }
+}
+
+#[test]
+fn plan313_service_profile_is_decoupled_from_the_hard_safety_ceiling() {
+    // The advertised service Streaming profile is the value qualified by
+    // Plan 313 against exact-pinned i2pd 2.61.0 (pin
+    // 635b013a612ff47278ef02acf8580a28e10e26c5): Plan 312's matrix
+    // registered `max_payload` as the only remotely observable
+    // difference, in both roles.
+    assert_eq!(DEFAULT_ADVERTISED_MAX_PAYLOAD, 1812);
+
+    // The hard safety ceiling is an independent declaration. This
+    // assertion comes FIRST on purpose: if a later edit re-welds it to
+    // the advertised constant (the pre-Plan-313 shape,
+    // `MAX_STREAMING_PAYLOAD_BYTES = DEFAULT_ADVERTISED_MAX_PAYLOAD as
+    // usize`), the pair is equal again and this is the assertion that
+    // fires — rather than the value pin below silently carrying the
+    // test. The crate also carries a compile-time
+    // `advertised profile <= hard ceiling` assertion, but that one
+    // still holds under re-welding (1812 <= 1812), so this runtime
+    // assertion is the only thing that can catch the weld.
+    assert_ne!(
+        MAX_STREAMING_PAYLOAD_BYTES, DEFAULT_ADVERTISED_MAX_PAYLOAD as usize,
+        "the hard safety ceiling must stay a separate declaration from the advertised profile"
+    );
+    assert_eq!(MAX_STREAMING_PAYLOAD_BYTES, 2048);
+
+    // Direction of the invariant: we must be able to receive what we
+    // advertise, so the profile may never exceed the ceiling.
+    assert!(
+        DEFAULT_ADVERTISED_MAX_PAYLOAD as usize <= MAX_STREAMING_PAYLOAD_BYTES,
+        "advertised Streaming profile must never exceed the hard safety ceiling"
+    );
+
+    // The default receive/send limits both consume the hard ceiling,
+    // so the two defaults accept the qualified profile.
+    assert!(
+        StreamingReceiveLimit::default().max_payload_bytes
+            >= DEFAULT_ADVERTISED_MAX_PAYLOAD as usize
+    );
+    assert!(
+        StreamingSendLimit::default().max_payload_bytes >= DEFAULT_ADVERTISED_MAX_PAYLOAD as usize
+    );
 }
 
 #[test]
@@ -145,17 +201,17 @@ fn plan128_initial_syn_wire_layout_is_exact() {
         )
         .unwrap();
 
-    // Exact option-region layout: [destination][06 c2][64 zero bytes].
+    // Exact option-region layout: [destination][07 14][64 zero bytes].
     let mut expected_options = Vec::new();
     expected_options.extend_from_slice(&destination_bytes);
-    expected_options.extend_from_slice(&1730_u16.to_be_bytes());
+    expected_options.extend_from_slice(&1812_u16.to_be_bytes());
     expected_options.resize(expected_options.len() + SIG_LEN, 0_u8);
     assert_eq!(option_bytes, expected_options);
-    // MAX_PACKET_SIZE 1730 encodes exactly to 06 c2 big-endian and
+    // MAX_PACKET_SIZE 1812 encodes exactly to 07 14 big-endian and
     // sits immediately before the signature placeholder.
     assert_eq!(
         &option_bytes[destination_bytes.len()..destination_bytes.len() + 2],
-        &[0x06, 0xC2]
+        &[0x07, 0x14]
     );
 
     let nacks = encode_syn_replay_binding(&receiver_hash).to_vec();

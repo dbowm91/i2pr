@@ -68,14 +68,69 @@ use crate::common::{Destination, SigningPublicKey};
 /// Minimum fixed packet header size: `4 + 4 + 4 + 4 + 1 + 1 + 2 + 2`
 /// = 22 bytes (with `nackCount == 0`).
 pub const MIN_STREAMING_HEADER_BYTES: usize = 22;
-/// Default advertised maximum payload bytes carried by the
+/// Advertised maximum payload bytes carried by the
 /// `MAX_PACKET_SIZE_INCLUDED` option. This bounds the Streaming
 /// payload only, never the total packet size.
-pub const DEFAULT_ADVERTISED_MAX_PAYLOAD: u16 = 1730;
+///
+/// This is the **service Streaming profile**, qualified by Plan 313
+/// against exact-pinned i2pd 2.61.0 (pin
+/// `635b013a612ff47278ef02acf8580a28e10e26c5`). Plan 312's re-run
+/// comparison matrix registered `max_payload` as the only remotely
+/// observable dimension that differed, in **both** the client and the
+/// server role (i2pr 1730 vs i2pd 1812); the other three registered
+/// dimensions — flags, FROM inclusion, and initial payload length —
+/// already matched, and the remaining candidate dimensions (window /
+/// choke, ACK/NACK, RTO, loss/reorder, close/reset, terminal state)
+/// were classified `NotReliablyObservable` and are deliberately left
+/// untouched here.
+///
+/// This is a service-profile advertisement qualified against one
+/// pinned peer. It is **not** a claim of general interoperability, of
+/// Java I2P equivalence, or of any anonymity property.
+pub const DEFAULT_ADVERTISED_MAX_PAYLOAD: u16 = 1812;
 /// Hard ceiling on the application payload region inside one packet.
 /// This is the negotiated-payload ceiling only; the full encoded
 /// packet may be larger because of header, NACKs, and options.
-pub const MAX_STREAMING_PAYLOAD_BYTES: usize = DEFAULT_ADVERTISED_MAX_PAYLOAD as usize;
+///
+/// Plan 313 §5.3 requires the service profile to be centralized
+/// **separately** from hard safety ceilings, so this constant is
+/// declared independently of [`DEFAULT_ADVERTISED_MAX_PAYLOAD`] rather
+/// than aliased to it. The two must not be welded: a later profile
+/// tuning pass must not be able to drag the hostile-decode ceiling
+/// along with it, and a change to the safety ceiling must not silently
+/// become a wire-visible advertisement.
+///
+/// The value is the smallest defensible hard ceiling that still
+/// stands apart from the qualified profile:
+///
+/// - It must be at least [`DEFAULT_ADVERTISED_MAX_PAYLOAD`], because a
+///   peer that legitimately advertises the same 1812-byte profile may
+///   send us a full 1812-byte payload and we must be able to decode
+///   what we advertise.
+/// - It is a *hostile-decode* bound. 2048 is a power-of-two buffer
+///   boundary, so the worst-case single-packet decode allocation stays
+///   on a round number, and it leaves 236 bytes (13.0%) of headroom
+///   above the qualified 1812-byte profile for minor peer-profile
+///   variance.
+/// - It is deliberately **not** raised to the destination-path I2CP
+///   Data body ceiling (61,440). That bound exists only because the
+///   physical transport, not the codec, is what bounds a packet on the
+///   destination path; reusing it here would widen the per-packet
+///   hostile decode surface by roughly 30x for no measured benefit.
+///   Plan 312 measured exactly one divergence, at 1812, and Plan 313
+///   §5.4 requires the minimum change needed to match it.
+pub const MAX_STREAMING_PAYLOAD_BYTES: usize = 2048;
+
+/// Compile-time invariant (Plan 313 §5.3): the advertised service
+/// profile may never exceed the hard safety ceiling. The
+/// [`MAX_STREAMING_PAYLOAD_BYTES`] doc comment explains the
+/// relationship; this assertion is what makes the decoupling
+/// enforced rather than merely documented, so that a future edit
+/// cannot re-weld the two by value.
+const _: () = assert!(
+    DEFAULT_ADVERTISED_MAX_PAYLOAD as usize <= MAX_STREAMING_PAYLOAD_BYTES,
+    "advertised Streaming profile must never exceed the hard safety ceiling"
+);
 /// Hard ceiling on the option region size.
 ///
 /// The streaming packet format reserves up to 65535 bytes for the
@@ -266,15 +321,27 @@ impl Default for StreamingReceiveLimit {
 impl StreamingReceiveLimit {
     /// Receive bound for packets arriving through the destination
     /// path (Plan 193 §13 narrow wire-compatibility corrective).
-    /// Exact-pinned i2pd 2.61.0 emits streaming data payloads larger
-    /// than our 1730-byte advertisement (observed 1812 bytes on the
-    /// mixed-router lane); the reference packetizes by its own path
-    /// MTU and Java-heritage peers accept full-message-sized
-    /// packets. The destination path physically bounds every packet
-    /// by the I2CP Data body ungzipped-output ceiling, so this bound
-    /// accepts anything that can arrive while staying finite. The
-    /// send path is unchanged: we still advertise and emit at most
-    /// 1730 bytes per packet.
+    /// Exact-pinned i2pd 2.61.0 emits streaming data payloads at or
+    /// above the 1812-byte maximum payload it advertises (observed
+    /// 1812 bytes on the mixed-router lane); the reference packetizes
+    /// by its own path MTU and Java-heritage peers accept
+    /// full-message-sized packets. The destination path physically
+    /// bounds every packet by the I2CP Data body ungzipped-output
+    /// ceiling, so this bound accepts anything that can arrive while
+    /// staying finite.
+    ///
+    /// Plan 313 converged the advertised profile onto that same
+    /// 1812-byte value, so this wider bound is no longer what lets the
+    /// reference's own packets decode: [`StreamingReceiveLimit::default`]
+    /// now covers the qualified profile, because
+    /// [`DEFAULT_ADVERTISED_MAX_PAYLOAD`] sits inside
+    /// [`MAX_STREAMING_PAYLOAD_BYTES`]. `destination_path()` is
+    /// retained because it remains strictly wider than the default for
+    /// peers that legitimately negotiate a larger per-packet payload
+    /// than we advertise, and because it is pinned by the Plan 193
+    /// mixed-router evidence. It remains a *receive*-only bound; the
+    /// emission side is capped by
+    /// [`StreamingSendLimit::default`], i.e. by the hard ceiling.
     pub const fn destination_path() -> Self {
         Self {
             max_packet_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
@@ -1327,10 +1394,17 @@ mod tests {
     #[test]
     fn destination_path_accepts_reference_sized_payloads() {
         // Plan 193 §13: exact-pinned i2pd 2.61.0 emits streaming data
-        // payloads larger than our 1730-byte advertisement (observed
-        // 1812 bytes). The destination-path bound accepts them while
-        // the default bound keeps rejecting, and anything above the
-        // I2CP Data body ceiling stays rejected.
+        // payloads of 1812 bytes, which exceeded the then-1730-byte
+        // advertisement, and the destination-path bound was introduced
+        // to accept them.
+        //
+        // Plan 313 converged the advertisement onto that same 1812-byte
+        // value, so the default bound must now accept the reference's
+        // own packets too — we must be able to receive what we
+        // advertise. The default bound stays a real bound: it still
+        // rejects anything above the hard safety ceiling, and the
+        // destination-path bound still accepts the qualified profile
+        // while rejecting anything above the I2CP Data body ceiling.
         let builder = StreamingPacketBuilder {
             send_stream_id: 7,
             receive_stream_id: 9,
@@ -1340,7 +1414,7 @@ mod tests {
             resend_delay: 0,
             flags: StreamingFlags::empty(),
             option_bytes: Vec::new(),
-            payload: vec![0xA5u8; 1812],
+            payload: vec![0xA5u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)],
         };
         let encoded = encode_streaming_packet(
             &builder,
@@ -1352,15 +1426,13 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            decode_streaming_packet(
-                &encoded,
-                StreamingReceiveLimit::default(),
-                StreamingOptionDecodeContext::anonymous(),
-            )
-            .is_err(),
-            "default bound still rejects above-advertisement payloads"
-        );
+        let (default_decoded, _) = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("default bound accepts the qualified advertised profile");
+        assert_eq!(default_decoded.payload.len(), 1812);
         let (packet, _) = decode_streaming_packet(
             &encoded,
             StreamingReceiveLimit::destination_path(),
@@ -1369,6 +1441,39 @@ mod tests {
         .unwrap();
         assert_eq!(packet.payload.len(), 1812);
         assert_eq!(packet.sequence_num, 2);
+        // Above the hard safety ceiling the default bound still fails
+        // closed. Encoding uses the ceiling-bearing send limit so this
+        // asserts on the decode bound, not on the encoder.
+        let over_ceiling = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 7,
+                receive_stream_id: 9,
+                sequence_num: 2,
+                ack_through: 1,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::empty(),
+                option_bytes: Vec::new(),
+                payload: vec![0xA5u8; MAX_STREAMING_PAYLOAD_BYTES + 1],
+            },
+            StreamingSendLimit {
+                max_packet_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+                max_option_bytes: MAX_STREAMING_OPTION_BYTES,
+                max_nack_count: MAX_STREAMING_NACK_COUNT,
+                max_payload_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+            },
+        )
+        .unwrap();
+        let error = decode_streaming_packet(
+            &over_ceiling,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamingPacketError::PayloadOverflow { .. }
+        ));
         let huge = vec![0_u8; crate::MAX_I2CP_DATA_BODY_PAYLOAD + 1];
         let error = decode_streaming_packet(
             &huge,

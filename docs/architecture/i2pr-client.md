@@ -135,7 +135,7 @@ Line counts are `wc -l` at the audit date. 16 modules; 18,136 lines total
 | File | Lines | Responsibility |
 | --- | --- | --- |
 | [`mod.rs`](../../crates/i2pr-client/src/streaming/mod.rs) | 78 | Module wiring plus the re-export surface. |
-| [`manager.rs`](../../crates/i2pr-client/src/streaming/manager.rs) | 2664 | `StreamingManager`: per-destination connection tables, listener backlog, ACK/NACK, retransmit polling, delivered-byte ordering, Plan 152 receive-window gating, Plan 144 canonical/mirror split. |
+| [`manager.rs`](../../crates/i2pr-client/src/streaming/manager.rs) | 2665 | `StreamingManager`: per-destination connection tables, listener backlog, ACK/NACK, retransmit polling, delivered-byte ordering, Plan 152 receive-window gating, Plan 144 canonical/mirror split. |
 | [`local_delivery.rs`](../../crates/i2pr-client/src/streaming/local_delivery.rs) | 1326 | The runtime-neutral in-process delivery seam (`deliver`, `deliver_batched`). |
 | [`connection.rs`](../../crates/i2pr-client/src/streaming/connection.rs) | 610 | `StreamingConnection` state machine. |
 | [`recv_window.rs`](../../crates/i2pr-client/src/streaming/recv_window.rs) | 371 | Receive-window admission and `TooFarAhead` decisions. |
@@ -612,8 +612,11 @@ client crate owns the state machine that drives it. Verified from source:
   ordering (DELAY / FROM / MAX / SIGNATURE).
 - **No option TLVs** — the option area carries only the flag-defined fields.
 - **Payload-only `MAX_PACKET_SIZE`** — a 2-byte big-endian integer bounding the
-  *payload only*. `DEFAULT_ADVERTISED_MAX_PAYLOAD` = 1730; the full encoded
-  packet bound is an independent checked sum
+  *payload only*. `DEFAULT_ADVERTISED_MAX_PAYLOAD` = 1812 (the Plan
+  313-qualified i2pd-compatible service profile); the hard safety ceiling
+  `MAX_STREAMING_PAYLOAD_BYTES` = 2048 is declared separately from it and a
+  compile-time invariant rejects any profile that exceeds it; the full
+  encoded packet bound is an independent checked sum
   (`MAX_STREAMING_PACKET_BYTES`). Negotiation takes
   `min(local advertised, remote advertised)`.
 - **Raw final signatures** — variable-length, with the length coming from the

@@ -6,16 +6,46 @@
 //! streaming core. Every bound is enforced at configuration time so
 //! the runtime never needs to check ceilings after construction.
 
-/// Maximum application payload bytes inside one streaming packet.
+/// Hard ceiling on the application payload region inside one streaming
+/// packet: a hostile-decode and byte-budget bound, used to size
+/// window budgets (send window bytes, delivered-byte cap). It is
+/// **not** what we advertise and it is **not** what we negotiate.
 pub const MAX_PACKET_PAYLOAD_BYTES: usize = i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES;
+
+/// Per-packet payload bytes i2pr **advertises** in the SYN
+/// MAX_PACKET_SIZE option: the qualified i2pd-compatible service
+/// profile from Plan 312/313.
+///
+/// Plan 313 §5.3 requires the service profile to be centralized
+/// separately from hard safety ceilings, so this constant deliberately
+/// does not alias [`MAX_PACKET_PAYLOAD_BYTES`]. Any value that records
+/// or constrains what we *promise* (a connection's
+/// `local_advertised_max_payload`) must come from here; any value that
+/// bounds what we are willing to *decode* or *budget* must come from
+/// the ceiling. Seeding an advertisement from the ceiling would let
+/// `min(local, remote)` negotiate a per-packet payload larger than the
+/// advertisement this router actually put on the wire.
+pub const MAX_ADVERTISED_PACKET_PAYLOAD_BYTES: u16 =
+    i2pr_proto::streaming::DEFAULT_ADVERTISED_MAX_PAYLOAD;
+
+/// Compile-time invariant (Plan 313 §5.3): the advertised service
+/// profile may never exceed the hard safety ceiling, and the two must
+/// stay distinct values so the decoupling cannot silently collapse.
+/// Mirrors the invariant asserted in `i2pr-proto`.
+const _: () = assert!(
+    MAX_ADVERTISED_PACKET_PAYLOAD_BYTES as usize <= MAX_PACKET_PAYLOAD_BYTES,
+    "advertised Streaming profile must never exceed the hard safety ceiling"
+);
 
 /// Minimum negotiated streaming payload bytes per packet. A peer
 /// negotiation may not reduce the per-packet payload below this floor.
 pub const MIN_STREAMING_PAYLOAD_BYTES_PER_PACKET: usize = 128;
 
 /// Maximum negotiated streaming payload bytes per packet. The
-/// initial SYN advertises the local ceiling; the established
-/// connection uses `min(local, remote)`.
+/// initial SYN advertises [`MAX_ADVERTISED_PACKET_PAYLOAD_BYTES`] (not
+/// the ceiling); the established connection uses
+/// `min(local advertised, remote advertised)`, so the negotiated value
+/// never exceeds our own advertisement.
 pub const MAX_STREAMING_PAYLOAD_BYTES_PER_PACKET: usize = MAX_PACKET_PAYLOAD_BYTES;
 
 /// Hard ceiling on the number of inbound pending streams per local

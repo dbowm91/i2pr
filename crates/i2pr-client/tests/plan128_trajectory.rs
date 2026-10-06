@@ -540,6 +540,90 @@ fn plan128_negotiated_max_is_min_of_both_advertisements() {
     );
 }
 
+/// Plan 313 §5.3: a freshly constructed connection seeds its
+/// `local_advertised_max_payload` from the qualified service profile
+/// (`DEFAULT_ADVERTISED_MAX_PAYLOAD`, 1812), never from the hard
+/// decode ceiling (`MAX_STREAMING_PAYLOAD_BYTES`, 2048).
+///
+/// The two values are deliberately distinct. The ceiling sizes
+/// decode buffers and byte budgets; the profile is what i2pr puts in
+/// the SYN MAX_PACKET_SIZE option. Because
+/// `transition_established` computes `min(local, remote)`, seeding the
+/// advertisement from the ceiling would let a peer that advertises more
+/// than 1812 pull the negotiated per-packet payload up to 2048 — larger
+/// than the advertisement this router actually made.
+#[test]
+fn plan313_fresh_connection_advertises_service_profile_not_hard_ceiling() {
+    use i2pr_client::streaming::connection::{ConnectionId, StreamingConnection};
+
+    let profile = i2pr_proto::streaming::DEFAULT_ADVERTISED_MAX_PAYLOAD;
+    let ceiling = i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES;
+
+    // The client-side seam mirrors the two proto values exactly, so
+    // neither alias can drift into the other.
+    assert_eq!(
+        i2pr_client::streaming::config::MAX_ADVERTISED_PACKET_PAYLOAD_BYTES,
+        profile
+    );
+    assert_eq!(
+        i2pr_client::streaming::config::MAX_PACKET_PAYLOAD_BYTES,
+        ceiling
+    );
+
+    // The decoupling is only meaningful while the two are separate
+    // values; assert the gap explicitly so a future collapse fails.
+    assert!(
+        usize::from(profile) < ceiling,
+        "advertised profile must stay strictly below the hard ceiling"
+    );
+    assert_eq!(profile, 1812);
+    assert_eq!(ceiling, 2048);
+
+    let peer = build_destination(95);
+    let peer_signing_key = peer.destination().signing_key().clone();
+    let peer_hash: [u8; 32] = *peer.destination().hash().expect("peer hash").as_bytes();
+
+    for mut connection in [
+        StreamingConnection::new_outbound(
+            ConnectionId::new(0x313_0001),
+            StreamingConfig::balanced(),
+            7,
+            0,
+            peer_signing_key.clone(),
+            peer_hash,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            0,
+        ),
+        StreamingConnection::new_inbound(
+            ConnectionId::new(0x313_0002),
+            StreamingConfig::balanced(),
+            7,
+            9,
+            peer_signing_key,
+            peer_hash,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            0,
+        ),
+    ] {
+        // Both constructors record the profile, never the ceiling.
+        assert_eq!(connection.local_advertised_max_payload(), profile);
+        assert_eq!(connection.max_payload_size(), u32::from(profile));
+
+        // A peer advertising more than our own profile must not lift
+        // the negotiated payload above that profile.
+        connection
+            .transition_established(u32::from(u16::MAX), 1)
+            .expect("transition to Established");
+        assert!(
+            connection.max_payload_size() <= u32::from(connection.local_advertised_max_payload()),
+            "negotiated payload must never exceed our own advertisement"
+        );
+        assert_eq!(connection.max_payload_size(), u32::from(profile));
+    }
+}
+
 /// Plan 128 §12 / Plan 125 §6: the originator remains
 /// `OutboundSynSent` after connect and only transitions to
 /// `Established` once the valid signed SYN response is processed.

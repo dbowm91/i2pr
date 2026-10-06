@@ -187,9 +187,19 @@ impl StreamingConnection {
             peer_destination: None,
             local_port,
             remote_port,
-            local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
+            // Plan 313 §5.3: the local advertisement is the qualified
+            // service profile, never the hard decode ceiling. The
+            // ceiling bounds what we will decode and budget; the
+            // profile bounds what we promise to send. Seeding this
+            // from the ceiling would let `transition_established`
+            // negotiate `min(local, remote)` above our own wire
+            // advertisement.
+            local_advertised_max_payload:
+                crate::streaming::config::MAX_ADVERTISED_PACKET_PAYLOAD_BYTES,
             remote_advertised_max_payload: None,
-            max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
+            max_payload_size: u32::from(
+                crate::streaming::config::MAX_ADVERTISED_PACKET_PAYLOAD_BYTES,
+            ),
             last_activity_ms: now_ms,
             created_at_ms: now_ms,
         }
@@ -228,9 +238,15 @@ impl StreamingConnection {
             peer_destination: None,
             local_port,
             remote_port,
-            local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
+            // Same Plan 313 §5.3 seam as `new_outbound`: a freshly
+            // constructed connection records the service profile as
+            // its own advertisement, never the hard safety ceiling.
+            local_advertised_max_payload:
+                crate::streaming::config::MAX_ADVERTISED_PACKET_PAYLOAD_BYTES,
             remote_advertised_max_payload: None,
-            max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
+            max_payload_size: u32::from(
+                crate::streaming::config::MAX_ADVERTISED_PACKET_PAYLOAD_BYTES,
+            ),
             last_activity_ms: now_ms,
             created_at_ms: now_ms,
         }

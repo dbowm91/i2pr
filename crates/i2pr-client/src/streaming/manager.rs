@@ -565,9 +565,10 @@ impl StreamingManager {
     /// Builds the originator SYN packet and wraps it in a Streaming
     /// client payload frame. Plan 128 §7: the SYN carries
     /// `INITIAL_SYN_FLAGS` (`0x04A9`), advertises the default maximum
-    /// payload (1730), and carries eight replay-binding NACK words
-    /// holding the remote Destination hash. The signature covers the
-    /// replay hash through the canonical preimage.
+    /// payload ([`DEFAULT_ADVERTISED_MAX_PAYLOAD`]), and carries eight
+    /// replay-binding NACK words holding the remote Destination hash.
+    /// The signature covers the replay hash through the canonical
+    /// preimage.
     #[allow(clippy::too_many_arguments)]
     fn build_syn_packet(
         &self,

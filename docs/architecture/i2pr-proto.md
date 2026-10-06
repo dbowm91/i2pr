@@ -93,7 +93,7 @@ single-directory with **three** top-level submodules under `src/`
 | — | `src/ecies_payload.rs` | 800 | Bounded structural ECIES Garlic payload block codec (Plan 121, Plan 193 correction) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `MAX_ECIES_PAYLOAD_BYTES`, `MAX_ECIES_PAYLOAD_BLOCKS`, `MAX_GARLIC_CLOVE_BODY`, `MAX_PADDING_BODY`, `BLOCK_TYPE_*` |
 | — | `src/i2cp_data_body.rs` | 922 | i2pd-compatible I2CP-style Data body codec (Plan 192) | `I2cpDataBody`, `I2cpDataBodyDecodeError`, `I2cpDataBodyEncodeError`, `encode_i2cp_data_body`, `decode_i2cp_data_body`, `encode_destination_data_envelope`, `PROTOCOL_TYPE_STREAMING`/`_DATAGRAM`/`_RAW`/`_DATAGRAM2`/`_DATAGRAM3`, `I2CP_DATA_BODY_*`, `MAX_I2CP_DATA_BODY_PAYLOAD` |
 | `streaming` | `src/streaming/mod.rs` | 42 | Streaming module wiring; explicit `pub use` of the `packet` and `payload` surfaces | (re-exports only) |
-| `streaming::packet` | `src/streaming/packet.rs` | 1586 | Streaming packet wire codec (Plan 128 normative form) | `StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `StreamingHeaderPeek`, `SignatureLocation`, `StreamingPacketError`, `StreamingReceiveLimit`, `StreamingSendLimit`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `build_signature_preimage`, `install_packet_signature`, `install_packet_signature_at`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `validate_initial_syn`, `validate_syn_response`, `validate_signature_policy`, `MIN_STREAMING_HEADER_BYTES`, `DEFAULT_ADVERTISED_MAX_PAYLOAD`, `MAX_STREAMING_PAYLOAD_BYTES`, `MAX_STREAMING_OPTION_BYTES`, `MAX_STREAMING_NACK_COUNT`, `SYN_REPLAY_NACK_COUNT`, `MAX_STREAMING_PACKET_BYTES`, `FLAG_*`, `INITIAL_SYN_FLAGS`, `SYN_RESPONSE_FLAGS`, `CLOSE_FLAGS`, `RESET_FLAGS` |
+| `streaming::packet` | `src/streaming/packet.rs` | 1691 | Streaming packet wire codec (Plan 128 normative form) | `StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `StreamingHeaderPeek`, `SignatureLocation`, `StreamingPacketError`, `StreamingReceiveLimit`, `StreamingSendLimit`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `build_signature_preimage`, `install_packet_signature`, `install_packet_signature_at`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `validate_initial_syn`, `validate_syn_response`, `validate_signature_policy`, `MIN_STREAMING_HEADER_BYTES`, `DEFAULT_ADVERTISED_MAX_PAYLOAD`, `MAX_STREAMING_PAYLOAD_BYTES`, `MAX_STREAMING_OPTION_BYTES`, `MAX_STREAMING_NACK_COUNT`, `SYN_REPLAY_NACK_COUNT`, `MAX_STREAMING_PACKET_BYTES`, `FLAG_*`, `INITIAL_SYN_FLAGS`, `SYN_RESPONSE_FLAGS`, `CLOSE_FLAGS`, `RESET_FLAGS` |
 | `streaming::payload` | `src/streaming/payload.rs` | 745 | Protocol-6 gzip client payload envelope (Plan 125) | `ClientPayload`, `encode_client_payload`, `decode_client_payload`, `ClientPayloadDecodeError`, `ClientPayloadEncodeError`, `STREAMING_PROTOCOL_NUMBER`, `DEFAULT_DESTINATION_PORT`, `DEFAULT_SOURCE_PORT`, `MAX_CLIENT_PAYLOAD_BYTES`, `MAX_APPLICATION_PAYLOAD_BYTES`, `GZIP_MAGIC`, `GZIP_CM_DEFLATE` |
 
 Integration tests live in `tests/i2np_fixtures.rs` (I2NP hex-fixture
@@ -221,10 +221,11 @@ The ECIES payload codec has no dedicated error enum: it returns
 | `MAX_I2CP_DATA_BODY_PAYLOAD` | 61,440 | `i2cp_data_body.rs:94` |
 | `I2CP_DATA_BODY_TOTAL_OVERHEAD` | 27 (19 header + 8 trailer) | `i2cp_data_body.rs:121` |
 | `MIN_STREAMING_HEADER_BYTES` | 22 | `streaming/packet.rs:70` |
-| `DEFAULT_ADVERTISED_MAX_PAYLOAD` / `MAX_STREAMING_PAYLOAD_BYTES` | 1730 | `streaming/packet.rs:74`, `:78` |
-| `MAX_STREAMING_OPTION_BYTES` | 1024 | `streaming/packet.rs:86` |
-| `MAX_STREAMING_NACK_COUNT` | 64 | `streaming/packet.rs:88` |
-| `MAX_STREAMING_PACKET_BYTES` | 3032 (22 + 64·4 + 1024 + 1730) | `streaming/packet.rs:96` |
+| `DEFAULT_ADVERTISED_MAX_PAYLOAD` | 1812 | `streaming/packet.rs:90` |
+| `MAX_STREAMING_PAYLOAD_BYTES` | 2048 | `streaming/packet.rs:122` |
+| `MAX_STREAMING_OPTION_BYTES` | 1024 | `streaming/packet.rs:141` |
+| `MAX_STREAMING_NACK_COUNT` | 64 | `streaming/packet.rs:143` |
+| `MAX_STREAMING_PACKET_BYTES` | 3350 (22 + 64·4 + 1024 + 2048) | `streaming/packet.rs:151` |
 | `MAX_CLIENT_PAYLOAD_BYTES` | 61,440 | `streaming/payload.rs:97` |
 | `MAX_APPLICATION_PAYLOAD_BYTES` | 61,376 | `streaming/payload.rs:99` |
 

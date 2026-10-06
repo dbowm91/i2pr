@@ -68,13 +68,16 @@ before the signature) must never appear on the wire.
 
 The option value is a **2-byte big-endian integer bounding the
 Streaming payload only**. It is neither the total packet size nor the
-payload minus the 22-byte minimum header. The current I2P default is
-`1730` payload bytes (`DEFAULT_ADVERTISED_MAX_PAYLOAD`). Independent
+payload minus the 22-byte minimum header. The advertised service profile
+is `1812` payload bytes (`DEFAULT_ADVERTISED_MAX_PAYLOAD`), the value
+qualified by Plan 313 against exact-pinned i2pd 2.61.0; the hard safety
+ceiling is declared separately and must never be below it. Independent
 constants:
 
 ```text
 minimum fixed header size      = 22
-negotiated maximum payload     = e.g. 1730 (option default)
+negotiated maximum payload     = e.g. 1812 (option default)
+hard payload ceiling           = 2048 (MAX_STREAMING_PAYLOAD_BYTES)
 option-region ceiling          = 1024
 NACK ceiling                   = 64 entries
 full encoded packet ceiling    = header + NACKs + options + payload
