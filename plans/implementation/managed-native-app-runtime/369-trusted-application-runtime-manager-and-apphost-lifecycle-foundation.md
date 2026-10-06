@@ -1,6 +1,6 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp1-landed-wp4-gated-on-plan370**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp1-landed-no-gate**.
 
 Classification: **infrastructure + process lifecycle + capability plumbing**.
 
@@ -13,12 +13,15 @@ Hard dependency:
 Gating dependency:
 - Corrective Plan 370
   (`plans/implementation/managed-native-app-runtime/370-managed-app-v1-hello-instance-id-codec-corrective.md`)
-  gates **WP4 and acceptance criterion 7 only**. `AppToHostMessage::Hello`
-  currently encodes and then fails to decode for every `AppInstanceId`, because a
+  gated **WP4 and acceptance criterion 7**. `AppToHostMessage::Hello`
+  encoded and then failed to decode for every `AppInstanceId`, because a
   `u128` field inside a serde internally tagged enum cannot be reconstructed from
-  serde's `Content` buffer. §10 hello-first/exactly-once matching and criterion 7
-  cannot be satisfied or evidenced until 370 closes. **WP2, WP3, WP5, and WP6 are
-  not gated and may proceed.** On 370's closure this plan is unblocked for all WPs.
+  serde's `Content` buffer, so §10 hello-first/exactly-once matching and criterion
+  7 could not be satisfied or evidenced. **Plan 370 has closed**
+  (`plans/closure/managed-native-app-runtime/370-status.md`): `AppInstanceId` is
+  now a bounded canonical decimal-digit string and `hello` decodes at every valid
+  value, with every non-canonical spelling still failing closed. **This plan is
+  unblocked for every work package — WP2, WP3, WP4, WP5, and WP6.**
 
 Interface dependencies:
 - Plans 354/355 private SAM/I2CP gateway;

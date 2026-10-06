@@ -137,19 +137,73 @@ text_id!(AppId);
 text_id!(PublisherId);
 text_id!(AppVersion);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "u128", into = "u128")]
-pub struct AppInstanceId(u128);
+/// Maximum number of ASCII decimal digits in a canonical 128-bit identifier.
+/// `u128::MAX` is 39 digits, so this bound is exact and never truncates.
+pub const MAX_DECIMAL_DIGITS: usize = 39;
+
+/// Opaque, nonzero 128-bit application launch-instance id, carried on the wire
+/// as **canonical decimal digits**.
+///
+/// Managed-app v1 messages are internally tagged (`#[serde(tag = "type")]`), and
+/// serde deserializes such an enum by buffering the whole payload into
+/// `serde::__private::de::Content` before replaying it. That buffer has no
+/// `visit_u128`, so a `u128` field is **undecodable** in that position: every
+/// `hello` encoded cleanly and then failed to decode with `InvalidControl`, for
+/// every value including `1`. The magnitude was never the problem — the buffer
+/// was. Canonical decimal digits survive the buffer, are language-neutral,
+/// retain the full 128-bit range, and are the representation ADR 0035 already
+/// ratified for the private manager protocol, so the two contracts agree.
+///
+/// Canonical form is a **total function**: exactly one accepted spelling per id.
+/// Sign, whitespace, leading zeros, exponent and fractional forms, non-ASCII
+/// digits, `0`, and over-length input are all rejected. Two spellings of one id
+/// would be a wire defect, not a tolerance.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AppInstanceId(String);
+
 impl AppInstanceId {
     pub fn new(value: u128) -> Result<Self, ContractError> {
         if value == 0 {
             Err(ContractError::InvalidOpaqueId)
         } else {
-            Ok(Self(value))
+            Ok(Self(value.to_string()))
         }
     }
-    pub const fn get(self) -> u128 {
+
+    /// Parses the one canonical spelling of an instance id.
+    ///
+    /// Rejects the empty string, a length above [`MAX_DECIMAL_DIGITS`], any
+    /// non-ASCII-digit byte, and any multi-digit value with a leading zero.
+    /// `0` is rejected by [`AppInstanceId::new`] as an invalid id.
+    pub fn parse(value: &str) -> Result<Self, ContractError> {
+        if value.is_empty() || value.len() > MAX_DECIMAL_DIGITS {
+            return Err(ContractError::InvalidOpaqueId);
+        }
+        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ContractError::InvalidOpaqueId);
+        }
+        if value.len() > 1 && value.starts_with('0') {
+            return Err(ContractError::InvalidOpaqueId);
+        }
+        let parsed = value
+            .parse::<u128>()
+            .map_err(|_| ContractError::InvalidOpaqueId)?;
+        Self::new(parsed)
+    }
+
+    /// The canonical decimal-digit spelling, which is also the on-wire form.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn get(&self) -> u128 {
+        // Both constructors admit only a canonical decimal spelling of a nonzero
+        // `u128`, so this parse cannot fail. `expect` names the invariant rather
+        // than substituting a value that would silently truncate an id.
         self.0
+            .parse::<u128>()
+            .expect("AppInstanceId always holds canonical decimal digits")
     }
 }
 impl TryFrom<u128> for AppInstanceId {
@@ -158,9 +212,31 @@ impl TryFrom<u128> for AppInstanceId {
         Self::new(value)
     }
 }
-impl From<AppInstanceId> for u128 {
+impl TryFrom<&str> for AppInstanceId {
+    type Error = ContractError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+impl TryFrom<String> for AppInstanceId {
+    type Error = ContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+impl From<AppInstanceId> for String {
     fn from(value: AppInstanceId) -> Self {
         value.0
+    }
+}
+impl From<AppInstanceId> for u128 {
+    fn from(value: AppInstanceId) -> Self {
+        value.get()
+    }
+}
+impl std::fmt::Display for AppInstanceId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 

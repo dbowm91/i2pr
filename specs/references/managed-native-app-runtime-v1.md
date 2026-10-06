@@ -1,9 +1,12 @@
 # Managed native application contract v1
 
 Status: Plan 345 froze the initial unreleased draft; Plan 349 corrects that
-draft before any runtime owner or external consumer exists. The v1 contract is
-still pre-release and has never been shipped. No downstream consumer may rely
-on the superseded Plan-345 message shapes or policy algorithm. This document
+draft before any runtime owner or external consumer exists. Plan 370 corrects
+the `AppInstanceId` wire representation to canonical decimal digits, after
+Plan 345's own verification proved no runtime consumer could observe the
+defect; the contract is still pre-release and has never been shipped. No
+downstream consumer may rely on the superseded Plan-345 message shapes or
+policy algorithm. This document
 is the language-neutral contract; Rust enum tags, memory layout, and serializer
 defaults are not wire ABI. The implementation remains vocabulary and pure
 validation only. It does not provide an app runtime, transport, sandbox, DNS
@@ -25,6 +28,23 @@ They are case-sensitive and are not normalized. These are distinct types.
 `AppInstanceId` and `OwnedResourceId` are opaque nonzero 128-bit values. An
 `AppPrincipal` is an `AppId`, `AppInstanceId`, and optional `PublisherId`.
 None of these values is a router identity or I2P Destination.
+
+`AppInstanceId` appears on the wire as a **JSON string of canonical decimal
+digits**, at most 39 bytes (the exact digit count of `u128::MAX`). Canonical
+form is a total function: exactly one spelling per id is accepted. A JSON
+number, a sign, whitespace, leading zeros, exponent or fractional forms, and
+non-ASCII digits (including Arabic-Indic and full-width digits) are all
+rejected, as are the empty string, the value `0`, and any length above the
+bound. The spelling is identical in every position the id appears — `hello`,
+`AppPrincipal`, and any future field — so one id never has two encodings.
+
+This encoding is normative, not an implementation detail. Every message on this
+channel is internally tagged by `type`, which requires an implementation to
+buffer the whole object before decoding it; a 128-bit JSON *number* cannot
+survive that buffer, so `hello` would encode and then be undecodable at every
+value. Decimal digits survive it. The same rule and the same bound apply to the
+private manager protocol's instance id (`specs/references/managed-app-manager-protocol-v1.md`),
+so the two contracts cannot drift into disagreeing about one id.
 
 ## 2. Frame envelope
 
@@ -61,6 +81,7 @@ operation.
 **Application → host** messages:
 
 - `hello` `{type, request_id, app_id, instance_id, protocol_major, protocol_minor}`
+  — `instance_id` is the canonical decimal-digit **string** of §1, not a number.
 - `open` `{type, request_id, stream_id, service}`
 - `permission_request` `{type, request_id, capabilities[]}`
 - `close` `{type, stream_id}`

@@ -73,6 +73,9 @@ pub const MAX_SERVICE_STREAMS_PER_SESSION: usize = 128;
 pub const MAX_INFLIGHT_REQUESTS: usize = 64;
 pub const MAX_DIAGNOSTIC_BYTES: usize = 1_024;
 /// Bounded decimal digits for a 128-bit opaque id (39 digits is the maximum).
+///
+/// Mirrors `i2pr_app_proto::MAX_DECIMAL_DIGITS`. Both protocols now share one
+/// canonical id grammar, defined once by `AppInstanceId::parse`.
 pub const MAX_DECIMAL_DIGITS: usize = 39;
 /// Absolute ceiling a manager session may request for gateway connections.
 pub const MAX_GATEWAY_CONNECTIONS: u32 = 128;
@@ -172,12 +175,13 @@ manager_handle!(ManagerServiceStreamId, MAX_HANDLE);
 
 /// Opaque 128-bit application launch-instance id, carried as decimal digits.
 ///
-/// `AppInstanceId` in the application contract serialises as a JSON number, and
-/// `serde_json` **cannot** deserialize `u128` — so a manager principal written
-/// through `AppPrincipal` never reads back. Rather than change the closed Plan
-/// 345 contract (and its golden vectors), this protocol carries the value as a
-/// bounded decimal string, which is also the language-neutral encoding a 128-bit
-/// opaque id should have on the wire.
+/// The manager protocol keeps its own principal type so this crate's wire shape
+/// does not move when the application contract moves. Both now use the *same*
+/// canonical grammar: `AppInstanceId` itself adopted bounded decimal digits in
+/// managed-runtime Plan 370, which corrected the app v1 `hello` field from a
+/// JSON number. That Plan 368 fix was correct but had been applied only here,
+/// because the root cause — serde's internally tagged enum buffer, which has no
+/// `visit_u128` — was not recorded precisely; see ADR 0035 defect D1.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ManagerInstanceId(String);
@@ -187,25 +191,13 @@ impl ManagerInstanceId {
         Self(value.to_string())
     }
 
-    /// Parses bounded, ASCII decimal digits into an `AppInstanceId`.
+    /// Parses this id as an [`AppInstanceId`].
     ///
-    /// Leading zeros, an empty string, a sign, or any non-digit are rejected, so
-    /// the encoding is canonical: one id has exactly one spelling.
+    /// There is deliberately no second grammar here: `AppInstanceId::parse` is
+    /// the single definition of canonical form, so the two protocols cannot
+    /// drift into accepting different spellings of one id.
     pub fn to_app_instance_id(&self) -> Result<AppInstanceId, ManagerProtocolError> {
-        if self.0.is_empty() || self.0.len() > MAX_DECIMAL_DIGITS {
-            return Err(ManagerProtocolError::InvalidIdentifier);
-        }
-        if !self.0.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ManagerProtocolError::InvalidIdentifier);
-        }
-        if self.0.len() > 1 && self.0.starts_with('0') {
-            return Err(ManagerProtocolError::InvalidIdentifier);
-        }
-        let value: u128 = self
-            .0
-            .parse()
-            .map_err(|_| ManagerProtocolError::InvalidIdentifier)?;
-        AppInstanceId::new(value).map_err(|_| ManagerProtocolError::InvalidIdentifier)
+        AppInstanceId::parse(&self.0).map_err(|_| ManagerProtocolError::InvalidIdentifier)
     }
 }
 
@@ -231,11 +223,17 @@ impl From<AppInstanceId> for ManagerInstanceId {
     }
 }
 
+impl From<&AppInstanceId> for ManagerInstanceId {
+    fn from(value: &AppInstanceId) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
 /// The one application principal a manager session may bind.
 ///
-/// It deliberately is not `AppPrincipal`: this type can round-trip over JSON
-/// (see [`ManagerInstanceId`]) and is the only principal shape the bridge
-/// accepts from the wire.
+/// It deliberately is not `AppPrincipal`: this type is the only principal shape
+/// the bridge accepts from the wire. Both carry the same canonical decimal-digit
+/// instance id, so converting between them is total and lossless.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagerPrincipal {
@@ -259,7 +257,7 @@ impl From<&AppPrincipal> for ManagerPrincipal {
     fn from(value: &AppPrincipal) -> Self {
         Self {
             app_id: value.app_id.clone(),
-            instance_id: value.instance_id.into(),
+            instance_id: ManagerInstanceId::from(&value.instance_id),
             publisher_id: value.publisher_id.clone(),
         }
     }

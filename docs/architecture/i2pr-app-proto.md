@@ -43,6 +43,15 @@ future trusted transport owner must bind it to an authenticated process/IPC
 principal. Host-side stream-close/reset, capability, and health notices use
 host-to-app variants and cannot be parsed as app requests or replies.
 
+`AppInstanceId` is serialized as a bounded canonical decimal-digit string
+(managed-runtime Plan 370), identically in `hello` and in `AppPrincipal`. It was
+previously a JSON number, which encoded cleanly but could never be decoded back:
+every control message here is internally tagged, and serde must buffer the whole
+object before decoding it, and that buffer has no `visit_u128`. The private
+manager protocol had already adopted the decimal-digit form for the same reason,
+so the two contracts now share one id grammar. The correction is confined to
+that one field spelling; no other message's wire bytes changed.
+
 ## Security and limitations
 
 The pure policy defaults to deny. A hostname allow authorizes a globally
@@ -69,3 +78,10 @@ purpose IPv4/IPv6 boundaries, hostname/post-resolution policy and deny
 precedence, and required sandbox attestation properties. Fuzz smoke covers all
 four control decoders. The runtime-boundary checker includes an active positive
 control.
+
+Round-trip coverage is exhaustive by construction, not sampled: the
+`message_round_trip_exhaustive` integration test `match`es every variant of all
+four control enums, so adding a variant fails to compile until it is exercised.
+That guard exists because the sampled round trip Plan 345 shipped could not
+observe the undecodable-`hello` defect described above — the same shape of
+verification gap that Plan 370 corrects.

@@ -128,6 +128,26 @@ Control payloads are JSON objects with a `"type"` discriminator. Decoders:
 - reject trailing octets after the JSON value;
 - reject payloads above the control ceiling before parsing.
 
+### 4.5 Application instance id
+
+The application instance id carried in a session-create principal is a JSON
+**string of canonical decimal digits**, at most 39 bytes (the exact digit count
+of a 128-bit maximum). Canonical form is a total function: exactly one spelling
+per id is accepted. A JSON number, a sign, whitespace, leading zeros, exponent or
+fractional forms, and non-ASCII digits are all rejected, as are the empty
+string, the value `0`, and any length above the bound.
+
+This is deliberately the *same* grammar and the *same* bound as the application
+protocol's `AppInstanceId`
+(`specs/references/managed-native-app-runtime-v1.md` §1), and it is defined
+once, by that type. The two protocols therefore cannot drift into accepting
+different spellings of one id, and a principal crossing this boundary is not
+silently reinterpreted.
+
+The representation is normative because of the encoding rule above: an
+internally tagged object must be buffered whole before it can be decoded, and
+that buffer cannot carry a 128-bit JSON number. Decimal digits survive it.
+
 ## 5. Authority ceiling and validation
 
 The daemon enforces, in this order and before any backend allocation:

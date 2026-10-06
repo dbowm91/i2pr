@@ -1,6 +1,7 @@
 # Plan 370 — managed-app v1 hello instance-id codec corrective
 
-Status: **registered-managed-app-v1-hello-instance-id-codec-corrective**.
+Status: **passed-managed-app-v1-hello-instance-id-codec-corrective**.
+Closure record: `plans/closure/managed-native-app-runtime/370-status.md`.
 
 Classification: **corrective invariant + infrastructure**. This plan repairs one
 undecodable message in the unreleased managed-app v1 contract. It adds no
