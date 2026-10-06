@@ -176,10 +176,14 @@ script.
 
 - ~~`scripts/check-dependency-direction.sh` had 18 expected-map keys for 20
   workspace members~~ — **CLOSED by Plan 356.** `i2pr-tunnel` and
-  `tools/i2pr-interop` now have explicit allowlist entries, so the map has
-  **22 keys for 22 members**. `check-console-boundaries.sh` rule 7 now asserts
-  that every `i2pr-*` workspace member appears in the map, so the gap cannot
-  silently reopen when a crate is added.
+  `tools/i2pr-interop` now have explicit allowlist entries.
+  `check-console-boundaries.sh` rule 7 now asserts that every `i2pr-*`
+  workspace member appears in the map, so the gap cannot silently reopen when
+  a crate is added. **The count is now enforced, not asserted here**: after
+  Plan 369 added `i2pr-appd` the map holds **24 keys for 24 members**
+  (23 `crates/*` members plus `tools/i2pr-interop`). Do not re-state a count in
+  this file — verify it instead:
+  `cargo metadata --no-deps` set-membership against the map's keys.
 - ~~`tools/i2pr-interop` is unpoliced by the direction script~~ — **CLOSED by
   Plan 356** for production edges (see the entry above). It is still outside
   `check-runtime-boundaries.sh`, whose globs cover `crates/` only.

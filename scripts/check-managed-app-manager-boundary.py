@@ -243,15 +243,25 @@ require(
     'i2pr-app-proto = { path = "../i2pr-app-proto" }' in contract_manifest,
     "the contract crate must keep exactly the app-protto dependency",
 )
-# Only the daemon may consume the protocol as an implementation.
+# Exactly two implementations may consume the protocol, and no others.
+#
+# Plan 368 closed with a single consumer: `i2pr-daemon`, which owns the bridge.
+# Plan 369 WP2 adds the second and only other one, `i2pr-appd`, because the
+# manager process is the protocol's *client* — it is the party that speaks
+# manager-protocol to the daemon over the inherited transport. That is the
+# whole point of the protocol, so admitting it is a design fact, not a
+# relaxation: the list is an exact allow-set, so a third consumer (a tool, a
+# test fixture, an SDK) still fails here.
+ALLOWED_PROTOCOL_CONSUMERS = ["i2pr-appd", "i2pr-daemon"]
 consumers = []
 for cargo_manifest in (ROOT / "crates").glob("*/Cargo.toml"):
     if "i2pr-app-manager-proto = { path =" in cargo_manifest.read_text():
         consumers.append(cargo_manifest.parent.name)
 require(
     "1-one-way",
-    consumers == ["i2pr-daemon"],
-    f"only i2pr-daemon may consume the protocol as an implementation; found {consumers}",
+    sorted(consumers) == ALLOWED_PROTOCOL_CONSUMERS,
+    "the protocol may be consumed only as an implementation by the daemon bridge "
+    f"and the appd manager client; found {sorted(consumers)}",
 )
 
 # -- rule 2: the contract crate reaches no owner ----------------------------

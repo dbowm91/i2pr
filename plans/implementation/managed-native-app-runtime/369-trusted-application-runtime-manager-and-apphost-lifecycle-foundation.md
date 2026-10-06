@@ -1,6 +1,66 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp1-landed-no-gate**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp2-landed-blocked-on-plan-371**.
+
+Work packages landed: **WP1, WP2**. Remaining: WP3, WP4, WP5, WP6.
+
+## WP2 outcome — and a stop condition this plan already predicted
+
+WP2 landed the `i2pr-appd` crate, the inherited anonymous transport, and the
+daemon supervisor. Building it surfaced the **Stop condition** this plan
+already listed:
+
+> existing supervisor semantics cannot own/restart the manager without a new
+> generic process-supervision substrate.
+
+`Supervisor::run` awaits initial readiness for **every** service in
+`startup_order()` and returns `SupervisorError::StartupFailed` for any that
+never signals it — *regardless of classification*. The `RestartExhaustion::Degrade`
+path is reachable only for a service that fails **after** startup. So a manager
+that is spawned and then rejected (wrong greeting, immediate crash loop) takes
+the **whole router's startup down**, which contradicts this plan's invariant 1
+("Router stays functional if app runtime is disabled or broken") and §5
+("exhaustion degrades/disables the app-runtime feature rather than shutting
+down the router").
+
+This is not fixed inside Plan 369, because the fix is a generic `i2pr-runtime`
+substrate change. It is registered as **corrective Plan 371**
+(`plans/implementation/managed-native-app-runtime/371-optional-non-blocking-service-startup-corrective.md`).
+
+### What WP2 does about it in the meantime
+
+WP2 refuses to configure the router into a state it cannot start:
+
+- the composition root **preflights** the sibling manager and returns an
+  actionable `DaemonError` when it cannot be resolved, so a missing
+  `i2pr-appd` is a configuration error rather than an opaque startup failure;
+- the post-spawn rejection path is left explicitly unimplemented-safe and is
+  asserted as the **current** behaviour by
+  `crates/i2pr-daemon/tests/app_runtime_supervision.rs`
+  (`a_manager_that_sends_the_wrong_magic_never_becomes_ready`). That test's doc
+  comment names the gap and states that it must be **replaced** by the
+  degradation assertion once Plan 371 lands. Do not weaken it to pass.
+
+### Defects found and corrected inside WP2
+
+1. **Readiness deadlock (production).** The service pinned the bridge future
+   and then awaited the handshake channel without ever polling that future, so
+   the handshake could never be performed and every startup hit the 30 s
+   readiness deadline. Fixed by polling the bridge inside the same `select!`.
+2. **Unbounded stderr-drain lifetime (production).** The drain ran to EOF, but
+   Plan 369 §12 makes grandchild containment an explicit non-guarantee — a
+   surviving grandchild inherits the stderr write end, so the drain never saw
+   EOF and the service could not finish shutting down. The drain is now
+   **cancellable** in addition to byte-bounded, with `truncated_by_cancel`
+   reported so the truncation stays observable.
+3. **Excessive reap grace on failure paths.** A manager that already failed the
+   protocol was still given the full graceful-exit grace. Split into
+   `MANAGER_EXIT_GRACE` (cancellation) and `MANAGER_REAP_GRACE` (already-broken
+   transport).
+4. **Reverted regression:** adding the handshake signal to
+   `AppManagerBridge::run` initially dropped `teardown_all()`, breaking
+   `manager_transport_eof_tears_down_every_gateway_session`. Caught by the
+   existing bridge tests and fixed.
 
 Classification: **infrastructure + process lifecycle + capability plumbing**.
 

@@ -46,6 +46,8 @@ struct RawConfig {
     #[serde(default)]
     console: RawConsoleConfig,
     #[serde(default)]
+    app_runtime: RawAppRuntimeConfig,
+    #[serde(default)]
     sam: RawSamConfig,
     #[serde(default)]
     ssu2: RawSsu2Config,
@@ -450,6 +452,34 @@ impl Default for RawConsoleConfig {
             max_sessions: default_console_max_sessions(),
             login_max_failures: default_console_login_max_failures(),
             login_window_secs: default_console_login_window_secs(),
+        }
+    }
+}
+
+/// Raw managed-application runtime block (Plan 369).
+///
+/// This block carries **only** an activation switch. Plan 369 §4 and invariant 9
+/// make the manager executable a distribution-owned sibling of the daemon, so
+/// there is deliberately no `command`, `path`, `binary`, or `args` field here:
+/// a configurable executable path would let a configuration file choose which
+/// process the router hands a trusted capability transport to, which is exactly
+/// the authority handoff the inherited transport is supposed to prove.
+///
+/// `deny_unknown_fields` means a misspelled or out-of-policy key such as
+/// `manager_path` is a hard configuration error rather than a silently ignored
+/// setting, so an operator who believes they redirected the manager learns
+/// that they did not.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAppRuntimeConfig {
+    #[serde(default = "default_app_runtime_enabled")]
+    enabled: bool,
+}
+
+impl Default for RawAppRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_app_runtime_enabled(),
         }
     }
 }
@@ -890,6 +920,17 @@ fn default_news_proxy_host() -> String {
 }
 
 const fn default_console_enabled() -> bool {
+    false
+}
+
+/// The managed-application runtime is off unless an operator turns it on.
+///
+/// This is Plan 369 §5's activation switch. The default is `false` for the same
+/// reason SAM, I2CP, I2PControl, service tunnels, and the console are off by
+/// default: the feature is experimental, unsandboxed (Plan 369 §2 refuses
+/// `Secured` because no qualified backend exists), and must not be reachable
+/// without an explicit operator decision.
+const fn default_app_runtime_enabled() -> bool {
     false
 }
 
@@ -1454,6 +1495,31 @@ pub struct NewsConfig {
     pub refresh_interval: Duration,
 }
 
+/// Normalized managed-application runtime settings (Plan 369).
+///
+/// Experimental and disabled by default. Enabling this starts one supervised,
+/// restartable `i2pr-appd` child over an anonymous inherited transport. It does
+/// **not** enable a listener, does not grant any application capability, and
+/// does not make managed-app v1 a supported protocol — Plan 369 WP2's manager
+/// refuses every request because there is no launch-authority owner yet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AppRuntimeConfig {
+    /// Whether the supervised manager process is started at all.
+    pub enabled: bool,
+}
+
+/// Normalizes the managed-application runtime block.
+///
+/// The block has no runtime ceilings to check, because it owns no listener, no
+/// port, and no per-connection budget: its only bounded resources are the
+/// supervisor's restart policy and the manager's own frame limits. Validation
+/// therefore reduces to the activation switch itself.
+fn normalize_app_runtime(raw: &RawAppRuntimeConfig) -> AppRuntimeConfig {
+    AppRuntimeConfig {
+        enabled: raw.enabled,
+    }
+}
+
 /// Normalized router-console service configuration (Plan 356).
 ///
 /// The console is experimental, loopback-only, and disabled by default.
@@ -1624,6 +1690,9 @@ pub struct Config {
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
     pub console: ConsoleConfig,
+    /// Managed-application runtime settings (Plan 369; disabled by default,
+    /// no listener, distribution-owned manager binary).
+    pub app_runtime: AppRuntimeConfig,
     pub i2cp: I2cpConfig,
     /// I2PControl listener settings (Plan 287; disabled, loopback-only TLS).
     pub i2pcontrol: I2pControlConfig,
@@ -1788,6 +1857,7 @@ impl Config {
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
         let console = normalize_console(&raw.console, &raw.limits)?;
+        let app_runtime = normalize_app_runtime(&raw.app_runtime);
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
@@ -1817,6 +1887,7 @@ impl Config {
             netdb,
             reseed,
             console,
+            app_runtime,
             news,
             sam,
             ssu2,

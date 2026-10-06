@@ -13,6 +13,12 @@ packages = {package["name"]: package for package in metadata["packages"]}
 expected = {
     "i2pr-app-manager-proto": {"i2pr-app-proto"},
     "i2pr-app-proto": set(),
+    # Plan 369 §6: `i2pr-appd` is a separate runtime trust zone. It may reach the
+    # managed-app contracts and nothing else. The absent entries are the point:
+    # naming this crate is what makes a future `i2pr-appd -> i2pr-daemon` or
+    # `i2pr-appd -> i2pr-runtime` edge a hard failure instead of an unreviewed
+    # way for the manager to reach router internals.
+    "i2pr-appd": {"i2pr-app-manager-proto", "i2pr-app-proto"},
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},
     "i2pr-core": set(),

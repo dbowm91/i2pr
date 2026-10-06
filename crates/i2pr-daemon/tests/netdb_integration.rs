@@ -154,6 +154,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             login_max_failures: 5,
             login_window_secs: 300,
         },
+        app_runtime: i2pr_daemon::config::AppRuntimeConfig { enabled: false },
         i2pcontrol: i2pr_daemon::config::I2pControlConfig {
             enabled: false,
             bind_address: "127.0.0.1".parse().unwrap(),

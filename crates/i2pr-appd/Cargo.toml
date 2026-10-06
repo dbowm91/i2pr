@@ -1,0 +1,30 @@
+[package]
+name = "i2pr-appd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Trusted managed-application runtime manager process (Plan 369)"
+publish = false
+
+# Plan 369 §6: `i2pr-appd` is a separate runtime trust zone. It may depend on the
+# managed-app contracts and on reviewed process/async primitives. It must NOT
+# depend on the router runtime, daemon, client, API, I2PControl, NetDB, tunnel,
+# or transport crates -- `scripts/check-dependency-direction.sh` enforces the
+# allowlist and `scripts/check-app-runtime-boundaries.sh` enforces the ban.
+[dependencies]
+i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+thiserror.workspace = true
+tokio.workspace = true
+
+[lib]
+name = "i2pr_appd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "i2pr-appd"
+path = "src/main.rs"
+
+[lints]
+workspace = true

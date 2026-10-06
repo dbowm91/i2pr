@@ -10,6 +10,7 @@ pub mod addressbook;
 mod addressbook_fetch;
 pub mod app_gateway;
 pub mod app_manager_bridge;
+pub mod app_runtime;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
@@ -123,6 +124,9 @@ fn readiness_expectation(service: &str) -> &'static str {
         ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
         SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
         SSU2_SERVICE_NAME => "controlled SSU2 router owner running",
+        APP_RUNTIME_SERVICE_NAME => {
+            "i2pr-appd manager child spawned and manager handshake completed"
+        }
         _ => "supervised service running",
     }
 }
@@ -551,6 +555,10 @@ fn build_daemon_graph_inner(
         register_sam_service(&mut builder, config, inspection, &addressbook)?;
     }
 
+    if config.app_runtime.enabled {
+        register_app_runtime_service(&mut builder, config, &addressbook)?;
+    }
+
     if config.i2cp.enabled {
         register_i2cp_service(&mut builder, config, inspection)?;
     }
@@ -591,6 +599,79 @@ fn build_daemon_graph_inner(
     builder
         .build()
         .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
+}
+
+/// Registers the supervised managed-application manager child (Plan 369).
+///
+/// The service is `Restartable`, not `Essential`: invariant 1 requires the
+/// router to stay fully usable when the app runtime is disabled, absent, or
+/// broken, so a manager that cannot be resolved, cannot be spawned, or dies
+/// repeatedly must degrade this feature only. `RestartPolicy::Degrade` on
+/// exhaustion is what guarantees that — the alternative, shutting the router
+/// down because an application manager crashed, would turn an optional feature
+/// into an availability dependency.
+///
+/// It depends on the SAM and I2CP services only for their *configuration*: the
+/// bridge uses them to open backend connections for an application session, so
+/// a manager session that opened a SAM stream needs a SAM configuration to
+/// exist. There is no listener dependency and no loopback port is involved.
+fn register_app_runtime_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
+) -> Result<(), DaemonError> {
+    let inputs = crate::app_runtime::AppRuntimeInputs {
+        sam: config.sam.clone(),
+        i2cp: config.i2cp.clone(),
+        addressbook: addressbook.shared(),
+        manager_path_override: crate::app_runtime::manager_path_override(),
+    };
+    // Preflight the manager before registering the service.
+    //
+    // The supervisor awaits initial readiness for *every* registered service
+    // and aborts router startup if one never arrives, regardless of its
+    // classification. A missing sibling would therefore surface as an opaque
+    // startup failure several seconds later. Resolving it here turns that into
+    // an actionable configuration error at composition time, and it costs no
+    // authority: the same resolution the service will use is checked up front.
+    if let Err(error) = inputs.manager_path() {
+        return Err(DaemonError::RuntimeSupervisorFailed(format!(
+            "the managed-application runtime is enabled but unusable: {error}"
+        )));
+    }
+    let mut spec = service_spec(
+        APP_RUNTIME_SERVICE_NAME,
+        ServiceClassification::Restartable,
+        move |ctx| {
+            let inputs = inputs.clone();
+            Box::pin(async move { crate::app_runtime::run_manager_service(ctx, inputs).await })
+        },
+    );
+    spec = spec
+        .restart_policy(
+            i2pr_runtime::RestartPolicy::new(
+                APP_RUNTIME_RESTART_ATTEMPTS,
+                APP_RUNTIME_RESTART_INITIAL_DELAY,
+                APP_RUNTIME_RESTART_MAX_DELAY,
+            )
+            .map_err(|error| {
+                DaemonError::RuntimeSupervisorFailed(format!(
+                    "invalid app runtime restart policy: {error}"
+                ))
+            })?
+            .reset_after_ready(APP_RUNTIME_RESTART_RESET)
+            .map_err(|error| {
+                DaemonError::RuntimeSupervisorFailed(format!(
+                    "invalid app runtime restart reset: {error}"
+                ))
+            })?
+            .on_exhaustion(i2pr_runtime::RestartExhaustion::Degrade),
+        )
+        .depends_on(i2pr_runtime::ServiceName::new(LIFECYCLE_SERVICE_NAME).expect("static name"));
+    builder.register(spec).map_err(|error| {
+        DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {error}"))
+    })?;
+    Ok(())
 }
 
 /// Registers the supervised loopback SAM service in the supplied
@@ -938,6 +1019,24 @@ const SSU2_SERVICE_NAME: &str = "ssu2-router";
 
 /// Supervisor service name for the loopback router console (Plan 356).
 const CONSOLE_SERVICE_NAME: &str = "router-console";
+
+/// Supervisor service name for the managed-application manager child
+/// (Plan 369). This service owns no listener: its "running" state is a live
+/// `i2pr-appd` process that has completed the manager-protocol handshake over
+/// the inherited anonymous transport.
+const APP_RUNTIME_SERVICE_NAME: &str = "app-runtime";
+
+/// Bounded restart budget for the managed-application manager child.
+///
+/// These are deliberately small and short. A manager that cannot start is
+/// almost always a missing or mismatched sibling binary, which restarting
+/// cannot fix, so the budget exists to absorb a transient spawn failure and
+/// then degrade the feature rather than to keep hammering `exec`.
+const APP_RUNTIME_RESTART_ATTEMPTS: u32 = 3;
+const APP_RUNTIME_RESTART_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const APP_RUNTIME_RESTART_MAX_DELAY: Duration = Duration::from_secs(5);
+/// Sustained-ready window after which the attempt counter may reset.
+const APP_RUNTIME_RESTART_RESET: Duration = Duration::from_secs(300);
 
 /// Stable identifiers of the remaining supervised services. Plan 360 keeps
 /// them in one place so the readiness contract and the registered graph

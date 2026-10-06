@@ -62,7 +62,7 @@ use i2pr_app_proto::{
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::app_gateway::{
     AppGatewayAuthorization, AppGatewayComposition, AppGatewayError, AppGatewayLimits,
@@ -196,12 +196,38 @@ impl AppManagerBridge {
     where
         T: ManagerTransport + 'static,
     {
-        let result = self.drive(transport).await;
+        self.run_announcing_ready(transport, None).await
+    }
+
+    /// Drives one manager transport, publishing the handshake outcome on
+    /// `ready` before any request is served.
+    ///
+    /// Plan 369 §B requires that a supervised manager service report readiness
+    /// **only after** the manager-protocol handshake succeeds: a child process
+    /// that has been spawned is not yet a running manager. The bridge is the
+    /// only component that sees the handshake, so the owning service learns
+    /// the outcome here rather than inferring it from a timer.
+    ///
+    /// `ready` is fired exactly once, on either outcome. A dropped receiver
+    /// (the service already timed out and tore down) is not an error here.
+    pub(crate) async fn run_announcing_ready<T>(
+        self: &Arc<Self>,
+        transport: T,
+        ready: Option<oneshot::Sender<Result<(), AppManagerBridgeError>>>,
+    ) -> Result<(), AppManagerBridgeError>
+    where
+        T: ManagerTransport + 'static,
+    {
+        let result = self.drive(transport, ready).await;
         self.teardown_all().await;
         result
     }
 
-    async fn drive<T>(self: &Arc<Self>, transport: T) -> Result<(), AppManagerBridgeError>
+    async fn drive<T>(
+        self: &Arc<Self>,
+        transport: T,
+        ready: Option<oneshot::Sender<Result<(), AppManagerBridgeError>>>,
+    ) -> Result<(), AppManagerBridgeError>
     where
         T: ManagerTransport + 'static,
     {
@@ -228,8 +254,18 @@ impl AppManagerBridge {
         *self.outbound.lock().await = Some(OutboundWriter(sender));
 
         let result = match self.perform_handshake(&mut reader).await {
-            Ok(handshake) => self.serve(&handshake, &mut reader).await,
-            Err(error) => Err(error),
+            Ok(handshake) => {
+                if let Some(ready) = ready {
+                    let _ = ready.send(Ok(()));
+                }
+                self.serve(&handshake, &mut reader).await
+            }
+            Err(error) => {
+                if let Some(ready) = ready {
+                    let _ = ready.send(Err(error));
+                }
+                Err(error)
+            }
         };
         // Dropping the sender lets the writer drain and exit, so the transport is
         // never left half-written when the bridge returns.
