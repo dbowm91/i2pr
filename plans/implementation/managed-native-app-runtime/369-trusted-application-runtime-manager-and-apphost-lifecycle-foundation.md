@@ -1,6 +1,6 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **blocked-managed-app-runtime-manager-foundation-on-plan368**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp1-landed-wp4-gated-on-plan370**.
 
 Classification: **infrastructure + process lifecycle + capability plumbing**.
 
@@ -8,7 +8,17 @@ Roadmap:
 - plans/subsystems/managed-native-app-runtime-roadmap.md
 
 Hard dependency:
-- Plan 368 must close the private manager protocol and daemon bridge.
+- Plan 368 must close the private manager protocol and daemon bridge. **Met.**
+
+Gating dependency:
+- Corrective Plan 370
+  (`plans/implementation/managed-native-app-runtime/370-managed-app-v1-hello-instance-id-codec-corrective.md`)
+  gates **WP4 and acceptance criterion 7 only**. `AppToHostMessage::Hello`
+  currently encodes and then fails to decode for every `AppInstanceId`, because a
+  `u128` field inside a serde internally tagged enum cannot be reconstructed from
+  serde's `Content` buffer. §10 hello-first/exactly-once matching and criterion 7
+  cannot be satisfied or evidenced until 370 closes. **WP2, WP3, WP5, and WP6 are
+  not gated and may proceed.** On 370's closure this plan is unblocked for all WPs.
 
 Interface dependencies:
 - Plans 354/355 private SAM/I2CP gateway;
