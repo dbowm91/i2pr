@@ -39,6 +39,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod apphost;
+
 use std::collections::BTreeSet;
 
 use i2pr_app_proto::{AppId, AppInstanceId, AppPrincipal, Capability, PublisherId, RequestId};
