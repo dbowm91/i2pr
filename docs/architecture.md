@@ -131,20 +131,24 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-m12-floodfill-qualification-evidence.sh` | Plan 279 §9 M12 floodfill qualification evidence integrity (supports `--self-test`) |
 | `check-i2pcontrol-acceptance-evidence.sh` | Proposal 170 / I2PControl evidence integrity |
 
-Two gaps in this table are worth recording rather than hiding:
+One gap in this table is worth recording rather than hiding:
 
-- `scripts/check-m12-floodfill-boundaries.sh` **currently exits 1 on
-  repo head**. It still enforces the Plan 281 "type 5 is deferred"
-  floor by grepping `DatabaseStoreData::EncryptedLeaseSet` in
-  `crates/i2pr-netdb/src`, which Plans 332/333 now legitimately
-  populate. It is in neither the `AGENTS.md` routine floor nor
-  `.github/workflows/ci.yml`, so the failure is silent. Resolving it
-  needs a plan owner's call (retire the rule or re-scope it), not a
-  docs edit.
 - `scripts/check-plan095-workflow.sh` (Plan 095 manual live-wire
   workflow) was pruned by the Plan 099 harness reduction and is no
   longer on disk; historical references to it are audit context only
   and must not be linked as live commands.
+
+A former second entry in that list has been closed. Until **Plan 364**,
+`scripts/check-m12-floodfill-boundaries.sh` **exited 1 on repo head**:
+it still enforced the Plan 281 "type 5 is deferred" floor by grepping
+`DatabaseStoreData::EncryptedLeaseSet` in `crates/i2pr-netdb/src`, which
+Plans 332/333 now legitimately populate, and it sat in neither the
+`AGENTS.md` routine floor nor `.github/workflows/ci.yml`, so the
+failure was silent. Plan 364 replaced that stale rule with 9 positive
+assertions traced to the Plans 332/333/334/346 closure records
+(`--self-test` drives 11 deliberate breaks, each caught on its own
+gate), and the script now exits 0 and runs in **both** the floor and
+`ci.yml`. Nothing in `crates/i2pr-netdb` changed.
 
 Production crates do not depend on `i2pr-testkit`, and `i2pr-proto`
 does not depend on filesystem or crypto execution. The daemon is

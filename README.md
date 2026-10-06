@@ -76,9 +76,11 @@ configuration is valid; dry run complete (no network or persistent state was tou
 
 ### 5. Talk SAM 3.1 over loopback
 
-`i2pr run` does **not** currently reach a serving state — see *Known limitation*
-below. To exercise the real SAM 3.1 listener, use the harness example, which
-binds an ephemeral loopback port and prints it as JSON:
+Since **Plan 360**, `i2pr run` reaches a serving state and binds its configured
+loopback listeners; before that it exited `ReadinessTimeout` with nothing bound
+(see *Running the router* below). To get a SAM 3.1 listener without writing a
+config, use the harness example, which binds an ephemeral loopback port and
+prints it as JSON:
 
 ```sh
 cargo run --locked -p i2pr-daemon --example sam_loopback_listener -- --port 0
@@ -131,10 +133,13 @@ Its security posture is the point, not the pixels:
 - `i2pr-console` owns no socket and has zero workspace dependencies, so it
   cannot reach router state except through the `ControlClient` trait.
 
-Note that the console is currently unreachable from the product path, because
-`i2pr run` does not open any listener (see below). `check-config` validates the
-`[console]` section; the behaviour is exercised by
+Since **Plan 360** the console is no longer blocked by a router that refuses
+to serve: `i2pr run` binds its configured loopback listeners, and an enabled
+`[console]` section is registered into that composition. It stays **disabled by
+default**, and the end-to-end console behaviour is still exercised by driving
+`ConsoleServiceState` directly in
 `cargo test -p i2pr-daemon --test console_loopback -- --test-threads=1`.
+`check-config` validates the `[console]` section.
 
 ## Running the router
 

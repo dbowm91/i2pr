@@ -762,15 +762,19 @@ What is **not** claimed, stated explicitly:
   rows are **stale projections**; the `common.leaseset2-family` surface
   entry and the Plan 330–333 closure records are the later authority.
 
-> **Known boundary-checker drift (report, do not fix here).**
-> `scripts/check-m12-floodfill-boundaries.sh` still enforces the Plan 281
+> **Boundary-checker note (resolved by Plan 364).**
+> `scripts/check-m12-floodfill-boundaries.sh` used to enforce the Plan 281
 > floor with `rg 'DatabaseStoreData::EncryptedLeaseSet|ValidatedEncryptedLeaseSet|ServerEncryptedLeaseSet'
 > crates/i2pr-netdb/src`. Plans 332/333 added `els2.rs` / `els2_auth.rs`
-> and the type-5 server representation to this crate, so the script
-> **currently exits 1** on the repository head (verified locally). The
-> script is not in the `AGENTS.md` routine floor, so CI does not run it
-> today. Fixing either the script or the code is outside this document's
-> scope; flag it to the plan owner.
+> and the type-5 server representation to this crate, so that rule went stale
+> and the script **exited 1** on the repository head. It was in neither the
+> `AGENTS.md` routine floor nor `.github/workflows/ci.yml`, so the failure
+> was silent. **Plan 364** replaced the stale rule with 9 positive assertions
+> traced to the Plans 332/333/334/346 closure records, each negative-tested;
+> `--self-test` drives 11 deliberate breaks and every one is caught on its own
+> gate. The script now exits 0 and runs in **both** the routine floor and
+> `ci.yml`. No source in this crate was changed to make it pass — the fix was
+> to the rule, not the type-5 floor it policed.
 
 ### Every `MAX_*` / bound constant
 

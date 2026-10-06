@@ -348,8 +348,24 @@ pre-existing gap in `check-dependency-direction.sh`: the map now has one
 `expected` key per workspace member (22 for 22), and `check-console-boundaries.sh`
 rule 7 asserts that, so the gap cannot silently reopen.
 
-**Honest current posture.** The console has **no product-reachable path**, because
-`i2pr run` does not open any listener — the pre-existing Essential-`lifecycle`
-readiness defect recorded in `README.md` and `AGENTS.md`. The console is
+**Honest posture at the close of this line (Plans 356–358).** The console was
+**not reachable from the product path**, because `i2pr run` did not open any
+listener — the pre-existing Essential-`lifecycle` readiness defect. It was
 reachable only through tests and direct `ConsoleServiceState` use. Closing that
-defect needs its own plan-of-record and is not part of this line.
+defect needed its own plan-of-record and was correctly kept out of this line.
+
+> **Forward note (Plan 367, recording Plan 360).** The premise above was
+> superseded, not by this line but by
+> `plans/closure/workspace-foundation/360-status.md`: `i2pr run` now starts,
+> binds its configured loopback listeners, and answers SAM 3.1 with
+> `HELLO REPLY RESULT=OK VERSION=3.1`, so an enabled `[console]` section is
+> registered into a running router's composition instead of being unreachable.
+> The console remains **experimental, loopback-only, disabled by default, and
+> non-advertised**, and its end-to-end behaviour is still proven by driving
+> `ConsoleServiceState` directly rather than by a running router.
+>
+> **The Plan 356/357/358 closure records are deliberately not rewritten.** They
+> assert the posture quoted above, which Plan 360 made false. They stand as the
+> historical record and are corrected *forward* from here, in the same shape
+> `plans/registry.md` uses for Plan 335. Rewriting a closure record to hide a
+> defect is exactly the concealment the planning rules forbid.

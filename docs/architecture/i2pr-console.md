@@ -216,10 +216,14 @@ non-advertised**. It presents no router capability beyond what the
 canonical Proposal-170 dispatch already answers, and it promotes no
 support or conformance claim.
 
-It is also currently **unreachable from the product path**, because `i2pr run`
-does not open any listener (see `README.md` → "Known limitation"). The
-behaviour above is proven by `console_loopback.rs` and the crate's own suites,
-not by a running router.
+It was also **not reachable from the product path**, because `i2pr run` did
+not open any listener (see `README.md` → "Running the router"). **Plan 360**
+closed that router-readiness defect, so an enabled `[console]` section is now
+registered into a running router's composition
+(`crates/i2pr-daemon/src/lib.rs`, `if config.console.enabled`). It remains
+**disabled by default**. The behaviour above is still proven by
+`console_loopback.rs` and the crate's own suites, which drive
+`ConsoleServiceState` directly rather than a running router.
 
 ## 10. Cross-references
 

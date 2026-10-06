@@ -682,16 +682,18 @@ Disabled). The production SSU2 service graph does not start `run_floodfill_owner
 unimplemented/unclaimed** ([ADR
 `0027`](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)).
 
-> **Broken-script note (verified, not fixed).** `scripts/check-m12-floodfill-boundaries.sh`
-> **exits 1 on repo head.** Line 17 greps `crates/i2pr-netdb` for
+> **Boundary-checker note (resolved by Plan 364).** `scripts/check-m12-floodfill-boundaries.sh`
+> previously **exited 1 on repo head.** It grepped `crates/i2pr-netdb` for
 > `DatabaseStoreData::EncryptedLeaseSet|ValidatedEncryptedLeaseSet|ServerEncryptedLeaseSet`
 > — the Plan 281 type-5 deferral guard — and that pattern now legitimately matches, because
 > Plans 332/333/334 populated the type-5 Encrypted LeaseSet2 floor in NetDB storage
 > (`i2pr-netdb/src/els2.rs`, `lookup_engine.rs:523`, `floodfill_service.rs:739`,
-> `server_store.rs:31`, `store_message.rs:84`). The script is in **neither** `AGENTS.md`'s
-> routine floor **nor** `.github/workflows/ci.yml`, so the failure is invisible to CI. This
-> is a script lag, not a source violation. Do not weaken the script and do not "fix" it by
-> removing type-5 from NetDB.
+> `server_store.rs:31`, `store_message.rs:84`). It sat in **neither** `AGENTS.md`'s
+> routine floor **nor** `.github/workflows/ci.yml`, so the failure was invisible to CI.
+> **Plan 364** replaced the stale rule with 9 positive assertions traced to the
+> Plans 332/333/334/346 closure records (`--self-test`: 11/11 deliberate breaks
+> caught). The script now exits 0 and is in both the floor and `ci.yml`. The script
+> was never weakened and type-5 was never removed from NetDB.
 
 ### SAM and I2CP listeners
 

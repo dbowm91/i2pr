@@ -14,7 +14,8 @@ For doc/ADR navigation, load `i2pr-architecture`.
 carry is gone on purpose — it went ~90 plans stale while the closure records
 moved. Read `plans/registry.md` for current work and
 `plans/closure/<subsystem>/<newest>-status.md` for the authoritative token. The
-short summary below is orientation only.
+short summary below is orientation only: **re-derive every value in it from
+`plans/registry.md` before you rely on it, and never treat it as the authority.**
 
 Plan 236 is closed at
 `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. Its source-lock and

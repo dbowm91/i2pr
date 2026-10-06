@@ -27,11 +27,13 @@ lives in [interop-apparatus.md](interop-apparatus.md).
 
 ## `scripts/` — guardrail shells
 
-36 `check-*` files exist on disk, grouped below by what they catch. The
+49 `check-*` files exist on disk in `scripts/` (56 counting `scripts/interop/`),
+grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
 `.github/workflows/ci.yml` respectively. The full floor/CI matrix is in
-[Floor and CI coverage](#floor-and-ci-coverage).
+[Floor and CI coverage](#floor-and-ci-coverage), together with the
+counting method both numbers come from.
 
 ### Boundary checkers (static, source-scanning)
 
@@ -45,7 +47,7 @@ lives in [interop-apparatus.md](interop-apparatus.md).
 | `scripts/check-console-boundaries.sh` | Router-console boundary guard (Plan 356): rule 1 manifest purity, rule 2 source purity, rule 3 daemon EggServe adapter, rule 4 no `eepsite` tree, rule 5 self-contained assets, rule 6 single HTTP substrate, rule 7 dependency-map covers every member, rule 6b Plan 358 local principal. **Rule 2 (Plan 366) was repaired and is now load-bearing.** It previously ran one `awk` whose `in_tests` flag was set on the first `#[cfg(test)]` and never reset, so it scanned `theme.rs` lines 1–1139 and **nothing else — 12 of 13 console source files were never examined**. It is now a single Python scanner (`console_source_scan`) that (a) normalises `use` trees before matching (Plan 362), (b) scopes each test region to the item it annotates instead of latching it, and (c) enforces a **socket-keyed** ban — `TcpListener`, `TcpStream`, `UdpSocket`, `UnixListener`, `UnixStream`, `Server::bind`, `axum::serve`, `spawn(`, `std::fs`, `fs::`, `tokio::` — plus an **enumerated** allow-set of exactly four `std::net` address values (`IpAddr`, `SocketAddr`, `Ipv4Addr`, `Ipv6Addr`). A bare `use std::net;`, a glob, or the `ToSocketAddrs` resolver stays forbidden. This is *more* enforcement, not less: the old rule rejected 0 socket types because it read nothing after `theme.rs:1139`, and its blanket `std::net` ban was unsatisfiable for a correct console. A zero-file scan fails rather than passing. `--trace` prints the per-file `production_lines_scanned` proof; `--self-test` drives the same scanner over fixture trees (every forbidden category probed in all 13 files, positive controls for the allow-set, allow-set-widening negatives, zero-file and fail-closed checks) rather than re-implementing the rule. | yes | yes |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. **Plans 349–350** add positive-controlled bans on runtime/I/O ownership and all direct workspace-crate dependencies. **Rules 9–11 (Plan 343)**: the outproxy policy/route-owner pair (`i2pr-service-tunnels/src/outproxy.rs` + `i2pr-daemon/src/outproxy_route.rs`) must both exist; neither may name a clearnet socket type, resolver, or TLS-to-clearnet client (`TcpStream\|TcpListener\|UdpSocket\|to_socket_addrs\|lookup_host\|TcpSocket\|openssl\|native_tls\|reqwest\|hyper`) — `std::net::IpAddr` is deliberately *not* matched, because parsing an address is how the target grammar refuses IP literals; neither may load a plugin or spawn a process (`libloading\|dlopen\|Library::new\|Command::new\|std::process`). **Rule 10 is a positive control** requiring a local listener reference in `service_tunnels_http.rs`. | yes | yes |
 | `scripts/check-m11-transit-boundaries.sh` | Plan 264/265 M11 transit runtime-neutrality and static boundary invariants. | yes | yes |
-| `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the LeaseSet2 type-5 deferred path must not enter server-authority NetDB storage. **Currently exits 1** — that type-5 rule is stale: Plans 332/333/334 legitimately put `EncryptedLeaseSet` into NetDB storage. Not in the floor or CI, so the failure is silent. Do not add it to the floor until a plan corrects the rule. | **no** | **no** |
+| `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the type-5 floor is asserted positively. **Plan 364** replaced the stale Plan 281 "type 5 is deferred" grep — which legitimately matched once Plans 332/333/334 populated type-5 NetDB storage, and which made the script exit 1 — with 9 positive assertions traced to the Plans 332/333/334/346 closure records. Do not weaken the script and do not remove type-5 from NetDB to make it pass. | yes | yes |
 | `scripts/check-m11-per-epoch-composition.sh` | Plan 264 §work-package-A per-epoch fresh-mesh composition gate, extended by Plan 265 into the fixed-budget opportunity-qualified closure composer (three frozen scenario families, exactly eight retained fresh-mesh attempts). | yes | **no** |
 | `scripts/check-service-anonymity-boundaries.sh` | Plan 307 service-boundary matrix and leak regression checker: rejects `i2pr/<version>`-style product sentinels (`Proxy-Agent: i2pr`, `DEFAULT_QUIT_REASON`, product/build/router/transport/hostname/IP/path/destination-alias/raw-error sentinels) across the service-tunnel HTTP/SOCKS/IRC source set. | yes | **no** |
 | `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. | **no** | no — `ntcp2-interop-rootless.yml` only |
@@ -67,8 +69,11 @@ licence to add the forbidden edge, and none was absorbed by relaxing a rule.
    never examined: `use std::net::TcpStream;` at line 2 of `theme.rs` failed
    the script while the identical line in `security/mod.rs` passed. Rule 2 is
    now a per-file scanner; `--trace` reports `production_lines_scanned` for
-   every file (**13/13 files, 4430 production lines**, versus `theme.rs`
-   1–1139 alone before).
+   every file (**13/13 files, 4416 production lines**, versus `theme.rs`
+   1–1139 alone before). **Corrected by Plan 367:** this figure was recorded as
+   4430; the measured value is **4416**, which is what
+   `bash scripts/check-console-boundaries.sh --trace` prints in its
+   `TRACE … production_lines_scanned=` summary.
 
 2. ~~**Console rule 2's `std::net` alternative is unsatisfiable**~~ — **CLOSED
    by Plan 366.** The per-file reset surfaced two real hits,
@@ -135,7 +140,11 @@ evidence key.
 | --- | --- | --- | --- |
 | `scripts/check-java-source-lock-gating.sh` | Verifies the Plan 246 Java source-lock test set in `crates/i2pr-daemon/tests/java_tunnel_external.rs`, its driver `scripts/run-java-source-lock-tests.sh`, and the `ci.yml` wiring. Requires bash 4 `mapfile`. | **no** | yes |
 | `scripts/check-global-plan-number-uniqueness.py` | Global plan-number ownership across `plans/` — no duplicate plan numbers across the planning tree. | yes | yes |
+| `scripts/check-adr-number-uniqueness.py` | **Plan 361.** Fails closed on duplicate ADR numbers under `docs/adr/`, with an explicit, ledger-linked tolerated set for the three known duplicate pairs (`0030`, `0032`, `0033`). **No ADR was renumbered.** It was added to the floor because a merge once produced an unparseable workflow file, so unguarded CI-adjacent structure had no automated check at all. | yes | yes |
+| `scripts/check-workflow-validity.py` | **Plan 365.** Parses `.github/workflows/*.yml` as YAML and fails closed on an invalid file, so a bad indentation cannot silently disable the `quality`, `msrv`, and `dependency-policy` jobs. Not hypothetical: merge `0d50319` de-indented a step line in `ci.yml` at `2416c30` and the whole file stopped parsing, so those jobs never ran. | yes | yes |
 | `tests/planning/test_global_plan_number_uniqueness.py` | unittest coverage for the plan-number checker; run via `python3 -m unittest discover -s tests/planning -p 'test_*.py'`. | yes | yes |
+| `tests/planning/test_adr_number_uniqueness.py` | unittest coverage for the Plan 361 ADR-number checker, including the tolerated-duplicate set; same `unittest discover` invocation. | yes | yes |
+| `tests/planning/test_workflow_validity.py` | unittest coverage for the Plan 365 workflow-validity checker; same `unittest discover` invocation. | yes | yes |
 
 ### Opt-in runners (not in the floor, not in CI by design)
 
@@ -205,34 +214,111 @@ integrity. `fuzz-smoke.sh` delegates to `cargo fuzz run`.
 Every `AGENTS.md` floor command still maps to a script that exists —
 no floor entry is missing. The gaps run in the other direction.
 
-Recomputed from disk and both files on 2026-10-05: 25 floor checkers,
-22 in `ci.yml`, 33 `check-*` files on disk.
+### Counting method
 
-**In the floor but not in `ci.yml` (4):**
+Two conventions are in use in this file, and they answer different
+questions. Both are stated here so the numbers can be recomputed rather
+than trusted.
 
-- `bash scripts/check-service-tunnel-boundaries.sh`
-- `bash scripts/check-m11-transit-qualification-evidence.sh`
+**Method A — "invocation": what the floor and CI actually execute.**
+Counted from the command text, not from the tables below.
+
+```sh
+# floor steps in the AGENTS.md routine-floor block that invoke a checker
+sed -n '/^## Routine floor/,/^```$/p' AGENTS.md | grep -c 'scripts/check-'
+# distinct checkers executed by CI
+grep -oE '(bash|python3) scripts/check-[A-Za-z0-9._-]+' .github/workflows/ci.yml \
+  | grep -oE 'scripts/check-[A-Za-z0-9._-]+' | sort -u | wc -l
+# checkers on disk (non-recursive; add `find scripts -name 'check-*'` for the
+# scripts/interop/ ones)
+ls scripts/check-* | wc -l
+```
+
+**Method B — "inventory row": this document's own checker tables.**
+Count the rows in *Boundary checkers*, *Fixture and vector checkers*,
+*Evidence-integrity checkers*, and *Source-lock and planning hygiene*
+whose `Floor` / `CI` column reads `yes`. This is the convention the
+**gap lists** below use.
+
+Recomputed 2026-10-06 (Plan 367):
+
+| Figure | Method A | Method B |
+| --- | ---: | ---: |
+| Floor steps invoking a checker | 40 | 34 rows marked `Floor: yes` |
+| Total routine-floor steps | 49 | — |
+| Checkers executed by `ci.yml` | 30 | 32 rows marked `CI: yes` |
+| `check-*` files on disk | 49 (56 with `scripts/interop/`) | 44 checker rows |
+
+Method B counts the `tests/planning/` rows too, because those are floor
+steps in their own right.
+
+**What the previous figures counted, and why they were replaced.** The
+2026-10-05 line read *"25 floor checkers, 22 in `ci.yml`, 33
+`check-*` files on disk"*. That triple is **not reproducible under
+either method, even at its own commit** (`52c38bf`, the parent of the
+Plans 360–366 batch): Method A gives 37 / 29 / 47 and Method B gives
+28 / 26 / 39 rows. So the old absolute was already stale and undocumented
+when written — it used a narrower filter that this file never stated.
+It is not silently replaced with a different convention; both are
+recorded above and the gap lists below are Method B, as before.
+
+What did change, and is the real delta from Plans 360–366, is:
+
+| Figure | before (52c38bf) | now | change |
+| --- | ---: | ---: | --- |
+| Floor steps invoking a checker (A) | 37 | 40 | +3 |
+| Checkers executed by `ci.yml` (A) | 29 | 30 | +1 |
+| `check-*` files on disk (A) | 47 | 49 | +2 |
+| Checker rows in the four tables (B) | 39 | 44 | +5 |
+| Rows marked `Floor: yes` (B) | 28 | 34 | +6 |
+
+The +3 floor steps are the Plan 361 ADR-number guard, the Plan 365
+workflow-validity guard, and the Plan 364 m12 boundary guard entering
+the floor; the +2 files are the first two. Method B moves further than
+Method A because two guards were missing inventory rows entirely —
+the Plan 361 and Plan 365 checkers had **no row at all** despite being
+in the floor, which is the A3 finding this section now records — and
+because Plan 367 added their `tests/planning/` companions. The m12 row
+also moved from `**no**`/`**no**` to `yes`/`yes` in Plan 364.
+
+**In the floor but not in `ci.yml` (11):**
+(the previous "(4)" list was itself stale — it omitted `check-service-tunnel-boundaries.sh`, which *is* in `ci.yml`, and seven floor checkers that never were)
+
+- `bash scripts/check-adr-number-uniqueness.py` (Plan 361)
+- `bash scripts/check-config-secret-hygiene.sh`
+- `bash scripts/check-els2-type11-transcript-boundary.sh`
+- `bash scripts/check-encrypted-service-consumer-caller.sh`
+- `bash scripts/check-floodfill-type5-serve.sh`
 - `bash scripts/check-m11-per-epoch-composition.sh`
+- `bash scripts/check-m11-transit-qualification-evidence.sh`
+- `bash scripts/check-outproxy-request-path.sh`
+- `bash scripts/check-outproxy-wire-lane-evidence.sh`
 - `bash scripts/check-service-anonymity-boundaries.sh`
+- `bash scripts/check-workflow-validity.py` (Plan 365)
 
 **In `ci.yml` but not in the floor (1):**
 
 - `bash scripts/check-java-source-lock-gating.sh`
 
-**On disk but in neither the floor nor `ci.yml` (9):**
+**On disk but in neither the floor nor `ci.yml` (8 in `scripts/`, 11
+including `scripts/interop/`):**
 
-- `scripts/check-m12-floodfill-boundaries.sh` — **currently exits 1**; its
-  LeaseSet2 type-5 rule is stale against Plans 332/333/334. Keep it out of the
-  floor until a plan corrects it.
 - `scripts/check-streaming-fingerprint-evidence.sh` — takes a plan argument.
 - `scripts/check-http-anonymity-evidence.sh` and
   `scripts/check-http-anonymity-evidence.py` — need a Plan 308 manifest that
   does not exist (Plan 308 blocked).
+- `scripts/check-outproxy-request-path.py` and
+  `scripts/check-outproxy-wire-lane-evidence.py` — the Python halves of two
+  guards whose shell halves *are* in the floor.
+- `scripts/check-m6-final-closure-evidence.sh` — manual external workflow only.
 - `scripts/check-rootless-interop-boundary.sh`
 - `scripts/check-multipass-interop-boundary.sh` — both historical-lane
   checkers, green; they police closed Plans 046/048 lanes.
 - `scripts/interop/check-m6-java-response-source-lock.sh`
 - `scripts/interop/check-p243-host-qualified.sh`
+
+`scripts/check-m12-floodfill-boundaries.sh` has left this list: it is now
+in **both** the floor and `ci.yml`, green, per Plan 364.
 
 **In a manual external workflow only (3):**
 `check-rootless-interop-boundary.sh`
