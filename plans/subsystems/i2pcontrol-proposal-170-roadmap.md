@@ -642,14 +642,21 @@ Plan 348 replaces historical blocked Plan 328 for forward execution. Plan 328 is
 |---|---|---|---|
 | 346 | passed | protocol/security corrective (ADR 0032, Proposal 170) | plans/implementation/i2pcontrol-proposal-170/346-els2-type11-transcript-deployed-compatibility-corrective.md |
 | 347 | stopped at a classified boundary, 0 of 4 directions; its i2pr-side correctives (350, 349/351) have since passed, so its remaining work is reference-side harness plus a live lane | external interoperability/capability closure | plans/implementation/i2pcontrol-proposal-170/347-live-bidirectional-els2-cross-router-qualification.md |
-| 348 | blocked on 347; Proposal 170/342 passed (scoped), so 347 is its only remaining hard dependency | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |
+| 348 | **blocked historical**; its dependency model is now stale — 347 stopped rather than being able to pass, and 342 is passed-*scoped* rather than passed. Superseded forward by **Plan 378** | final conformance/evidence gate | plans/implementation/i2pcontrol-proposal-170/348-fresh-full-proposal170-conformance-gate.md |
 
 ## 16. Consumer-path correctives and config hygiene (Plans 349–352)
 
 Plan 347 stopped at a classified boundary with 0 of 4 directions, and named two independent causes:
-i2pr had **no type-5 consumer path** at all, and stock Java I2P refuses to dial i2pr without a
-bandwidth tier that ADR 0030 forbids inventing. Those are separable, so the i2pr-side half was
-corrective rather than left to a lane that could never run.
+i2pr had **no type-5 consumer path** at all, and stock Java I2P would not dial i2pr. Those are
+separable, so the i2pr-side half was corrective rather than left to a lane that could never run.
+
+**Both causes are corrected forward, and Plan 373 records that correction.** (a) The consumer-path
+gap is closed: Plan 351 gave both ELS2 resolvers production callers reached through a
+service-tunnel remote target. (b) The Java blocker was **not** a bandwidth-tier design, which is
+how 347 recorded it. It is a *tunnel-peering* gate — `TunnelPeerSelector.shouldExclude` caps arity
+plus `allowAsIBGW`'s `R` requirement — and neither Java row requires Java to select i2pr as
+OBEP/IBGW/participant. The queried-floodfill topology of Plans 303/306 already reaches i2pr as a
+floodfill. ADR 0030 is untouched and no tier letter is needed or invented.
 
 | Plan | State | Classification | Handoff |
 |---|---|---|---|
@@ -680,6 +687,11 @@ flake are recorded in the closure record rather than smoothed over.
 not require the external Java/i2pd lane. Everything still open here is blocked on external
 evidence, not on local work: Plan 347 is stopped at the classified boundary, Plan 348 is blocked on
 347 alone (its §1 re-freeze is executed and clean), and Plans 325/326/327/328 remain blocked.
+**Plan 373 reconciled this paragraph forward**, because the sentence above it had drifted: it still
+described the pre-350/351 world in which i2pr had no type-5 consumer path and Java needed a
+bandwidth tier, and its “Plan 348 is blocked on 347 alone” claim reads as though 347 were a plan
+that could pass. It is stopped. Plans 325/326/327/328 stay blocked as immutable historical records
+with successors named in §17.
 
 **No Encrypted LeaseSet2 interoperability or full-Proposal claim is promoted. Type 5 stays
 non-advertised.** Plan 352 hardened the configuration path; it changed no protocol behaviour, no
@@ -703,10 +715,10 @@ Current facts:
 Forward dependency graph:
 
 ```text
-373 ready  planning/support truth reconciliation
-  -> 374 blocked  stock i2pd bidirectional ELS2 lane
-  -> 375 blocked  stock Java I2P bidirectional ELS2 lane
-  -> 376 blocked  live outproxy failover + restart
+373 passed  planning/support truth reconciliation
+  -> 374 ready    stock i2pd bidirectional ELS2 lane
+  -> 375 ready    stock Java I2P bidirectional ELS2 lane
+  -> 376 ready    live outproxy failover + restart
 
 374 + 375
   -> 377 blocked  ELS2 external evidence convergence / successor closure
@@ -716,6 +728,8 @@ Forward dependency graph:
 ```
 
 Plans 374, 375, and 376 are intentionally independent after 373 and may execute in parallel.
+**Plan 373 passed**, so all three are `ready`: it was their only unmet hard dependency — each of
+374/375 also requires passed 346/350/351, and 376 requires passed 341/343 plus 342-passed-scoped.
 
 ### Why two ELS2 reference plans
 
@@ -738,9 +752,10 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 
 | Plan | State | Classification | Handoff |
 |---|---|---|---|
-| 373 | ready | planning/support corrective | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
-| 374 | blocked on 373 | external interoperability | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
-| 375 | blocked on 373 | external interoperability | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
-| 376 | blocked on 373 | capability/resilience closure | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
+| 373 | **passed** | planning/support corrective | plans/closure/i2pcontrol-proposal-170/373-status.md (`passed-authority-support-and-successor-state-reconciled-without-capability-promotion`) |
+| 373 (plan) | — | — | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
+| 374 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
+| 375 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
+| 376 | **ready** | capability/resilience closure | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
 | 378 | blocked on 373 + 376 + 377 | final conformance gate | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |

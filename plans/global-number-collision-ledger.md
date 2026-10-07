@@ -26,7 +26,7 @@ or shared milestone of another.
 | Proposal 170/349 | [`implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md`](implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md) | [`closure/i2pcontrol-proposal-170/349-status.md`](closure/i2pcontrol-proposal-170/349-status.md) |
 | Proposal 170/350 | [`implementation/i2pcontrol-proposal-170/350-floodfill-type5-serve-path.md`](implementation/i2pcontrol-proposal-170/350-floodfill-type5-serve-path.md) | [`closure/i2pcontrol-proposal-170/350-status.md`](closure/i2pcontrol-proposal-170/350-status.md) |
 | Proposal 170/351 | [`implementation/i2pcontrol-proposal-170/351-els2-consumer-service-wiring.md`](implementation/i2pcontrol-proposal-170/351-els2-consumer-service-wiring.md) | [`closure/i2pcontrol-proposal-170/351-status.md`](closure/i2pcontrol-proposal-170/351-status.md) |
-| Proposal 170/352 | [`implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md`](implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md) | not closed — `registered-preexisting-config-secret-leak-paths` |
+| Proposal 170/352 | [`implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md`](implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md) | [`closure/i2pcontrol-proposal-170/352-status.md`](closure/i2pcontrol-proposal-170/352-status.md) (`passed-structural-toml-error-redaction-and-conditional-at-rest-mode-gate`) |
 | Managed native app runtime/349 | [`implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md`](implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md) | [`closure/managed-native-app-runtime/349-status.md`](closure/managed-native-app-runtime/349-status.md) |
 | Managed native app runtime/352 | [`implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md`](implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md) | [`closure/managed-native-app-runtime/352-status.md`](closure/managed-native-app-runtime/352-status.md) |
 | Portable service-tunnels/349 | [`implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md`](implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md) | [`closure/portable-service-tunnels/349-status.md`](closure/portable-service-tunnels/349-status.md) |
@@ -90,9 +90,17 @@ This is the one renumbering performed in this reconciliation, and it was perform
   qualifier (for example `Proposal 170/351` or `ADR 0032 (Proposal 170)`).
 - New global implementation-plan numbers have exactly one owning subsystem. New ADR
   numbers must be checked against `docs/adr/` for a free number before filing.
-- `scripts/check-global-plan-number-uniqueness.py` encodes only the finite, explicitly
-  recorded plan collisions above, as exact implementation paths; it does not
-  grandfather additional owners or paths.
+- `scripts/check-global-plan-number-uniqueness.py` **derives** its tolerated exact sets
+  from the plan-collision table above rather than maintaining a second hand-written
+  allowlist. The table in this file is the single place a collision is declared, so a
+  new collision cannot be recorded here and forgotten in the guard. The exact-set
+  requirement is unchanged: a collision is tolerated only when the set of owners on disk
+  equals the set declared above, so a *third* owner of a recorded number, or a renamed
+  plan, still fails. Corrected by Plan 373; see
+  [`closure/i2pcontrol-proposal-170/373-status.md`](closure/i2pcontrol-proposal-170/373-status.md).
+  The guard also fails closed when this ledger cannot be read or has no
+  `## Plan-number collisions` section, rather than degrading to an empty or permissive
+  allowlist.
 - **The ADR-number coverage gap is closed (Plan 361).**
   `scripts/check-adr-number-uniqueness.py` is now the ADR-side equivalent guard, run
   with `python3` alongside `scripts/check-global-plan-number-uniqueness.py`. It encodes
