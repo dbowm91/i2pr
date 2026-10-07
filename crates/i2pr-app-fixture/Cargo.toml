@@ -1,0 +1,54 @@
+[package]
+name = "i2pr-app-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Plan 369 evidence tooling: purpose-built managed-app fixture (not a shipped application)"
+publish = false
+
+# Plan 369 §G. This crate is **evidence tooling**, not product code. It exists so
+# a real native process can be driven through the real
+# daemon -> i2pr-appd -> i2pr-apphost -> app -> SAM/I2CP path.
+#
+# It deliberately depends on `i2pr-app-manager-proto` rather than on
+# `i2pr-appd`, because it must run *as* the apphost sees an application: the
+# fixture speaks the bootstrap contract and app v1, it does not link the manager.
+# Keeping that direction honest is what makes the black-box test meaningful -- if
+# the fixture linked `i2pr-appd` it could not be exec'd by `i2pr-apphost` as a
+# separate process at all.
+#
+# `scripts/check-managed-app-manager-boundary.py` rule 1 keeps the protocol
+# consumer set exact, so this crate is added there explicitly and the checker
+# negative-tests that entry.
+[dependencies]
+i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+i2pr-appd = { path = "../i2pr-appd" }
+serde_json.workspace = true
+thiserror.workspace = true
+# The fixture *application* binary uses plain `std`. Only the fixture *manager*
+# binary needs an async runtime, and Cargo has no per-binary dependency table, so
+# the runtime is declared at package scope. `tokio.workspace` (rather than a
+# `tokio = ...` line) is also what keeps `scripts/check-runtime-boundaries.sh`'s
+# workspace-manifest rule satisfied, exactly as `i2pr-appd` and `i2pr-apphost`
+# do.
+tokio.workspace = true
+
+[lib]
+name = "i2pr_app_fixture"
+path = "src/lib.rs"
+
+# The fixture application itself. `i2pr-apphost` execs this binary directly.
+[[bin]]
+name = "i2pr-app-fixture"
+path = "src/main.rs"
+
+# The fixture manager. `i2pr-daemon` spawns this in place of the shipped
+# `i2pr-appd` sibling, through the existing test-only composition seam.
+[[bin]]
+name = "i2pr-app-fixture-manager"
+path = "src/bin/manager.rs"
+
+[lints]
+workspace = true

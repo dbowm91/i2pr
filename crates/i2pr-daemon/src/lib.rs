@@ -11,6 +11,8 @@ mod addressbook_fetch;
 pub mod app_gateway;
 pub mod app_manager_bridge;
 pub mod app_runtime;
+#[cfg(test)]
+mod app_runtime_qualification;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;

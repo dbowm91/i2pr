@@ -1,8 +1,112 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp4-landed**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp5-landed**.
 
-Work packages landed: **WP1, WP2, WP3, WP4**. Remaining: WP5, WP6.
+Work packages landed: **WP1, WP2, WP3, WP4, WP5**. Remaining: WP6.
+
+## WP5 outcome — the first run of the whole chain, and the defect only a real process could find
+
+WP5 adds the purpose-built native fixture application and drives the **entire**
+chain black-box: `i2pr-daemon` → `i2pr-appd` → `i2pr-apphost` → the fixture
+application → real SAM and I2CP backends.
+
+### The product defect: the manager link never flushed
+
+`manager_link::writer_task` wrote each frame with `write_all` and **never
+flushed**. The manager's write half is an anonymous pipe whose daemon end is
+`tokio::io::Stdout`, which is *line-buffered*; a length-prefixed control frame
+contains no newline, so every manager→daemon frame sat in the buffer until
+process exit. The effect was total: **every `CreateSession` timed out** with
+`AppdError::ManagerTimeout`, and no launch could ever have succeeded.
+
+The handshake escaped only because `Appd::write_handshake` flushes on its own.
+This is the failure mode that in-memory testing structurally cannot see — every
+WP2–WP4 test drives a `tokio::io::duplex` transport, which is unbuffered and
+therefore already "flushed". The defect was invisible until a real process with a
+real pipe was on the other end of the link. `writer_task` now flushes per frame,
+and `every_frame_is_flushed_without_waiting_for_a_newline` asserts it directly
+with a `FlushCounter` writer, so the regression fails the moment the flush is
+removed rather than inferring it from a timeout.
+
+### Why the fixture has two binaries, and why the manager is not a flag
+
+`crates/i2pr-app-fixture` contains both the application and a **fixture manager**.
+The manager is a separate binary because the shipped `i2pr-appd` refuses all
+arguments (WP3), and adding a flag would reopen precisely the hole Plan 369 §4
+closes: "the operator can make the router exec an arbitrary file". The fixture
+manager runs the **real** `i2pr_appd::Appd::with_catalog(FixtureCatalog)` over the
+**real** `i2pr_appd::inherited()` transport and gates every authority through the
+real `LaunchAuthority::new`, so what is qualified is the product manager, not a
+stand-in. The application binary depends only on the wire contracts, so it is a
+genuinely separate program with no route into router state.
+
+### Black-box qualification — 17 tests, ~2 minutes serially
+
+`crates/i2pr-daemon/src/app_runtime_qualification.rs` is a `#[cfg(test)]` module
+(in-crate because `AppManagerBridge` is `pub(crate)`). It spawns the real fixture
+manager over real `std::io::pipe()` anonymous pipes, then drives the real
+`AppManagerBridge`, the real `AppGatewaySession`, and the real SAM/I2CP
+backends. It deliberately does **not** reuse `run_manager_service`, which spawns
+with no arguments and a cleared environment and so cannot select a scenario.
+
+Coverage: SAM and I2CP happy paths; denied capability; denied service;
+wrong-identity hello; frame-before-hello; oversized frame; malformed frame; early
+close; shutdown hang; stderr flood; data-before-open; foreign stream id;
+duplicate stream id; two-instance isolation; duplicate SAM session id; and
+"the shipped manager cannot name the fixture".
+
+Two harness hazards are worth recording. **Stale siblings:** `cargo test -p
+i2pr-daemon` does not rebuild `target/debug/i2pr-app-fixture-manager` or
+`i2pr-apphost`, so a stale binary silently hides product changes — this is how
+the flush defect survived several iterations. The harness now asserts binary
+freshness against per-binary source lists (`assert_fresh`) rather than trusting
+the caller. **Teardown:** `AppManagerBridge::cancel()` alone does *not* end the
+read loop, and the manager's only exit signal is EOF on a write half the daemon
+holds — so it is always killed. Teardown mirrors production `terminate_manager`
+(cancel, drop/abort the bridge future, bounded 5 s grace, then `start_kill` and
+reap), and assertions say "terminated and reaped", never "exited cleanly".
+
+### The process-boundary checker, and two guards it made honest
+
+`scripts/check-managed-app-process-boundary.py` polices the property the
+crate-edge scripts cannot see: **which process execs what**. There are exactly
+three blessed process edges (daemon→manager, appd→apphost, apphost→application);
+the two distribution-owned ones resolve via `current_exe()`, never a shell and
+never a `PATH` lookup; no production source may name the fixture; no crate may
+depend on it; the shipped manager must refuse argv and must not reach
+`with_catalog`.
+
+Two guard weaknesses were found by its own controls and corrected rather than
+documented around:
+
+- **Rule 3 asserted a token, not a behaviour.** `"args_os" not in shipped`
+  passes a manager that reads argv, prints it, and carries on — which is exactly
+  the "silently tolerates arguments" failure the rule exists to prevent. It now
+  asserts the *shape*: an argv guard whose body returns. The structural limit is
+  stated in the script and recorded here: this cannot prove the guard's condition
+  is always true.
+- **A negative control that replaced whole files.** `expect_accepted` originally
+  overwrote a real file, deleting the production `current_exe()` lookup so rule 1b
+  fired; the control then passed by filtering on its own label while the tree it
+  scanned was nonsense. Controls now append, so each tests exactly one thing.
+
+### A coverage hole in `check-dependency-direction.sh`
+
+Negative mutation N11 removed the `i2pr-app-fixture` map entry and the script
+still printed `dependency direction: ok`. Its loop iterates the **map**, so a
+member with no entry is invisible — deleting an entry makes that crate's
+forbidden edges unreported rather than reported. `check-console-boundaries.sh`
+rule 7 asserted the same set, but the check belongs in the script that owns the
+map; a reader running only the dependency check was getting a false all-clear.
+That script now fails closed on unmapped members, and both checks pass.
+
+### Evidence
+
+**12 mutations, all caught** (N1 by a named unit test, N2–N10 by the process
+boundary checker, N11–N12 by the owning guard maps). N8 originally missed, which
+is what exposed the rule-3 weakness above; the mutation was then rewritten to the
+realistic shape (read argv, announce, carry on) and the strengthened rule catches
+it.
 
 ## WP4 outcome — the app v1 runtime consumer, and a direction defect it exposed
 

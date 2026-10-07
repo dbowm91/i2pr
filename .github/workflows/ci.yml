@@ -37,6 +37,16 @@ jobs:
         run: cargo check --locked --workspace
       - name: Check all workspace targets
         run: cargo check --locked --workspace --all-targets
+      # Plan 369: `cargo check`, `cargo test --all-targets` and `cargo clippy`
+      # all emit test harnesses under target/debug/deps, never the plain
+      # `target/debug/<name>` binaries. The managed-app black-box qualification
+      # in `i2pr-daemon` execs real sibling executables (`i2pr-appd`'s fixture
+      # manager and `i2pr-apphost`) out of target/debug, so without this step it
+      # would either run last week's binaries or, because its `assert_fresh`
+      # staleness guard exists, fail the build for the right reason and still
+      # not test what it claims to.
+      - name: Build managed-app black-box siblings
+        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when Cargo launches the workspace's
@@ -71,6 +81,10 @@ jobs:
         run: python3 scripts/check-managed-app-gateway-boundary.py
       - name: Check managed-app manager boundary
         run: python3 scripts/check-managed-app-manager-boundary.py
+      - name: Check managed-app process boundary
+        run: |
+          python3 scripts/check-managed-app-process-boundary.py
+          python3 scripts/check-managed-app-process-boundary.py --self-test
       - name: Check portable service-tunnel API snapshot
         run: python3 scripts/check-portable-service-tunnel-api.py
       - name: Check portable service-tunnel external consumer

@@ -260,8 +260,22 @@ require(
 # handshake defined by this protocol, so it is a legitimate consumer; it is in a
 # separate trust zone and is forbidden by the dependency-direction script from
 # depending on `i2pr-appd`, which is what keeps the zone split real.
+#
+# Plan 369 WP5 added `i2pr-app-fixture`. It is **evidence tooling**, and this is
+# the one place that says so in an executable way: the fixture application is
+# exec'd by `i2pr-apphost` as a real process, so it must be able to *decode* the
+# bootstrap contract and speak app v1 without linking the manager that produces
+# it. That is a decoder capability, not a manager implementation -- the fixture
+# has no `LaunchAuthority`, no catalog, and no way to originate a session.
+# `scripts/check-managed-app-process-boundary.py` is what keeps the difference
+# honest: it asserts no production module can name this crate at all.
 # Sorted: the comparison below is against `sorted(consumers)`.
-ALLOWED_PROTOCOL_CONSUMERS = ["i2pr-appd", "i2pr-apphost", "i2pr-daemon"]
+ALLOWED_PROTOCOL_CONSUMERS = [
+    "i2pr-app-fixture",
+    "i2pr-appd",
+    "i2pr-apphost",
+    "i2pr-daemon",
+]
 consumers = []
 for cargo_manifest in (ROOT / "crates").glob("*/Cargo.toml"):
     if "i2pr-app-manager-proto = { path =" in cargo_manifest.read_text():

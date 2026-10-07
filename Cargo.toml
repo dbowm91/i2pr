@@ -5,6 +5,10 @@ members = [
     "crates/i2pr-app-proto",
     "crates/i2pr-api",
     "crates/i2pr-appd",
+    # Plan 369 §G: evidence tooling, not product code. The fixture application is
+    # exec'd by i2pr-apphost; the fixture manager stands in for the shipped
+    # i2pr-appd sibling in black-box qualification only.
+    "crates/i2pr-app-fixture",
     "crates/i2pr-apphost",
     "crates/i2pr-crypto",
     "crates/i2pr-proto",

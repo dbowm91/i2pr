@@ -591,6 +591,18 @@ where
             .write_all(&bytes)
             .await
             .map_err(|_| AppdError::TransportClosed)?;
+        // Flush per frame. The manager's write half is a *pipe* on the real
+        // inherited transport, and `tokio::io::Stdout` is line-buffered: a
+        // length-prefixed control frame contains no newline, so without an
+        // explicit flush it would sit in the buffer until the process exited.
+        // The greeting did reach the daemon only because `Appd::write_handshake`
+        // flushes on its own -- which is exactly why an in-memory harness never
+        // saw this and a real black-box process does. See
+        // `plans/closure/managed-native-app-runtime/369-status.md`.
+        writer
+            .flush()
+            .await
+            .map_err(|_| AppdError::TransportClosed)?;
     }
     // Shutting the write half down lets the daemon observe the manager finishing
     // rather than waiting for its own teardown.
@@ -611,5 +623,85 @@ async fn wait_for_stop(stop: &mut watch::Receiver<bool>) {
             // longer arrive.
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+
+    /// A write half that records flushes.
+    ///
+    /// It deliberately does *not* buffer: the point is to observe how often the
+    /// writer asks for a flush, which is the only thing separating a framed pipe
+    /// from a line-buffered terminal.
+    #[derive(Clone, Default)]
+    struct FlushCounter {
+        flushes: Arc<AtomicUsize>,
+    }
+
+    impl AsyncWrite for FlushCounter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushes.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Plan 369 WP5 regression: every frame must reach the pipe immediately.
+    ///
+    /// The manager writes over an inherited anonymous pipe whose daemon end is a
+    /// `tokio::io::Stdout`, and that type is **line buffered**. A control frame
+    /// is a length prefix plus JSON, which contains no newline, so a writer that
+    /// omits the flush parks the frame in the buffer until the process exits.
+    /// The greeting escaped this only because `Appd::write_handshake` flushes
+    /// itself, which is precisely why the defect survived an in-memory test peer
+    /// and was first seen by the black-box qualification.
+    ///
+    /// This asserts the flush directly rather than inferring it, so it fails the
+    /// moment the flush is removed.
+    #[tokio::test]
+    async fn every_frame_is_flushed_without_waiting_for_a_newline() {
+        let counter = FlushCounter::default();
+        let (queue, receiver) = mpsc::channel(4);
+        let (_stop, stopped) = watch::channel(false);
+        let writer = tokio::spawn(writer_task(counter.clone(), receiver, stopped));
+
+        queue
+            .send(b"I2PM-len-prefixed-json-without-a-newline".to_vec())
+            .await
+            .expect("queue the frame");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while counter.flushes.load(Ordering::SeqCst) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the writer never flushed; a newline-free frame would sit in the \
+                 pipe's line buffer until the manager exited"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            counter.flushes.load(Ordering::SeqCst) >= 1,
+            "one queued frame must be flushed at least once"
+        );
+
+        drop(queue);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), writer).await;
     }
 }

@@ -25,6 +25,18 @@ expected = {
     # naming convention instead of a build constraint. Naming it here is what
     # makes a future `i2pr-apphost -> i2pr-appd` edge a hard failure.
     "i2pr-apphost": {"i2pr-app-manager-proto", "i2pr-app-proto"},
+    # Plan 369 §G: `i2pr-app-fixture` is evidence tooling, not product code. It is
+    # the *third* thing in the app trust zone and the only one that may depend on
+    # `i2pr-appd` -- the fixture manager has to run the real manager to qualify it.
+    # The allowlist is still the point: naming this crate here is what makes a
+    # future `i2pr-appd -> i2pr-app-fixture` edge (a production manager that could
+    # launch the fixture) a hard failure rather than an unreviewed one. No router
+    # crate may name it at all, which is asserted by the absence of any such entry.
+    "i2pr-app-fixture": {
+        "i2pr-app-manager-proto",
+        "i2pr-app-proto",
+        "i2pr-appd",
+    },
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},
     "i2pr-core": set(),
@@ -112,6 +124,24 @@ for name, allowed in expected.items():
         raise SystemExit(
             f"{name} has forbidden direct workspace dependencies: {sorted(unexpected)}"
         )
+
+# Fail closed in the other direction too. This loop iterates the *map*, so a
+# workspace member with no entry is invisible to it: deleting an entry would
+# make that crate the forbidden edges unreported rather than reported, which is
+# the same silent pass the map is supposed to prevent. `check-console-boundaries.sh`
+# rule 7 asserted the same set, but it belongs here, in the script that owns the
+# map -- otherwise a reader who runs only this check gets a false all-clear.
+# Plan 369 WP5 negative mutation N11 caught exactly this.
+unmapped = sorted(
+    name
+    for name in packages
+    if name.startswith("i2pr-") and name not in expected
+)
+if unmapped:
+    raise SystemExit(
+        f"workspace members absent from the expected map: {unmapped}; add an "
+        "explicit allowlist entry for each so its edges are actually checked"
+    )
 
 print("dependency direction: ok")
 '

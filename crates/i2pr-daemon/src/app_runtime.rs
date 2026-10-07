@@ -8,7 +8,7 @@
 //!    through `PATH`, never through a shell;
 //! 2. creates two anonymous pipes and hands the child the read end of one and
 //!    the write end of the other as its stdin/stdout (§3, §8);
-//! 3. drives the Plan-368 [`AppManagerBridge`] over those pipes and reports
+//! 3. drives the Plan-368 `AppManagerBridge` over those pipes and reports
 //!    readiness **only after** the manager handshake succeeds;
 //! 4. owns the direct child's whole lifetime: bounded drain of its stderr,
 //!    bounded graceful exit on shutdown, then a forced kill and a reap.
@@ -203,9 +203,10 @@ static MANAGER_PATH_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<PathBu
 /// Installs (or clears, with `None`) the fixture manager path for tests.
 ///
 /// Deliberately `#[doc(hidden)]` and named as a test seam: the guard against
-/// production use is that this symbol is never referenced from a non-test
-/// module in this workspace, and `scripts/check-app-runtime-boundaries.sh`
-/// asserts exactly that.
+/// production use is that no production caller may name it, and
+/// `scripts/check-managed-app-process-boundary.py` rule 4 asserts exactly that.
+/// (This comment previously named a `check-app-runtime-boundaries.sh` that does
+/// not exist; rule 4 is the check it was describing.)
 #[doc(hidden)]
 pub fn set_manager_path_override_for_tests(path: Option<PathBuf>) {
     let cell = MANAGER_PATH_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));

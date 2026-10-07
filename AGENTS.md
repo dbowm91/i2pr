@@ -82,6 +82,7 @@ Enforced by `scripts/check-dependency-direction.sh`, `scripts/check-runtime-boun
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
@@ -133,6 +134,18 @@ cargo deny check advisories bans sources
 ```
 
 macOS CI builds all test executables once then runs each with `--test-threads=1` (loopback suites flake under parallel Cargo). Use `--test-threads=1` locally for `i2pr-daemon`/`i2pr-runtime` suites. After changing committed fixture bytes, also run `bash scripts/check-fixture-manifest.sh`; after NTCP2/SSU2/I2CP fixture changes run the matching `check-*-vectors.sh`.
+
+**Why the floor builds `-p i2pr-app-fixture -p i2pr-apphost` explicitly.** Every
+other floor line emits only test harnesses under `target/debug/deps`;
+`cargo check`, `cargo test --all-targets` and `cargo clippy` never produce the
+plain `target/debug/<name>` binaries. Plan 369's black-box qualification in
+`crates/i2pr-daemon/src/app_runtime_qualification.rs` execs **real sibling
+executables** (the fixture manager and `i2pr-apphost`), so without that build
+line it would run whatever binaries were left over from the last build. Its
+`assert_fresh` staleness guard catches exactly this and fails closed — verified
+on 2026-10-07, when `cargo test --workspace --all-targets --no-run` left
+`target/debug/i2pr-app-fixture-manager` at its pre-existing mtime. Run the same
+build before any *focused* `-p i2pr-daemon` run, not just the full floor.
 
 **macOS/bash-3.2 trap.** Seven floor/evidence checkers need **bash 4+** and do not
 declare it. macOS ships bash 3.2.57, so on this host they exit 2 and the failure

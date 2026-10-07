@@ -7,7 +7,7 @@
 //! launched with one set of capabilities. Plan 369 has no such thing — no
 //! package store, no signature check, no grant persistence, no policy engine,
 //! and no administrator (Plan 369 "Out of scope"). So the shipped `i2pr-appd`
-//! binary owns [`LaunchCatalog::empty`], which yields nothing, and therefore
+//! binary owns [`EmptyCatalog`], which yields nothing, and therefore
 //! never launches anything.
 //!
 //! That is not a stub that gets filled in later. It is the whole reason a router
