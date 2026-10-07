@@ -174,6 +174,19 @@ The three daemon suites above were run because the counter-semantics change
 touches production code that `outproxy_control_plane`, `i2pcontrol_tunnels`,
 and `service_tunnels_local_roundtrip` also exercise.
 
+Full workspace floor, re-run after the unit-row correction:
+
+```text
+cargo test --locked --workspace --all-targets -- --test-threads=1
+    -> 177 suites, 4605 tests passed, 0 failed, 35 ignored (env-gated, as designed)
+cargo fmt --all --check                                              -> PASS
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings -> PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps  -> PASS
+cargo test --locked --workspace --doc                               -> PASS
+all 25 boundary/evidence checkers (see AGENTS.md floor)              -> PASS
+python3 -m unittest discover -s tests/planning -p 'test_*.py'        -> 51 tests, OK
+```
+
 ## Invariant review
 
 - **Dependency direction and runtime boundaries** unchanged — no new crate, no
