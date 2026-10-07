@@ -1,6 +1,6 @@
 # Plan 381 — Live ELS2 external driver lane (i2pd direction)
 
-Status: **in progress** — WP1 complete, WP2–WP5 open. See
+Status: **in progress** — WP1 and WP2 complete, WP3–WP5 open. See
 `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 WP1 execution **corrected two facts this plan recorded at registration**; both
@@ -24,6 +24,28 @@ corrections are made forward, not by rewriting this plan:
 WP1.3 (the static evidence checker) is **deliberately deferred to WP5**: its
 subject is the WP3 lane and the WP4 rows, and a checker written before them
 would either fail or be weakened to pass over something that does not exist.
+
+**WP2 execution retired stop condition 2.** The plan asked whether i2pd client
+tunnels can be made to work in the controlled mesh, and warned that if they
+cannot, the direction is blocked on topology rather than on code. They can: a
+stock i2pd client resolved a stock i2pd publisher's blinded address, fetched and
+decrypted its encrypted LeaseSet2, built a Streaming session, and carried an
+application payload to the publisher's server tunnel. The mesh is no longer an
+open question for this plan.
+
+WP2 also found a **defect in this plan's own WP1 validator**: every check it made
+compared the emitted configuration against the arguments it was given, so a
+caller passing an absolute `keys` path or a transposed port argument got a clean
+pass — and i2pd would then have silently minted a new key pair for the
+destination. Fixed in WP2 with 21 new contract rows. Recorded as finding 7 in the
+closure record rather than absorbed here.
+
+Seven reference facts were discovered by executing and are documented, cited and
+asserted in `tests/integration/els2/reference-freeze.md` §3.4. The two most
+expensive to learn: `keys` must be a **bare filename**, because
+`i2p::fs::DataDirPath` prepends the data dir; and a blinded address must carry a
+**`.b32.i2p`** suffix to reach i2pd, because `AddressBook::GetAddress` has no
+`.b33.i2p` branch and answers a b33-suffixed address with `INVALID_KEY`.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2 (shared number; see
 `plans/global-number-collision-ledger.md` convention — no collision here, 381 is

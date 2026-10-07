@@ -1,6 +1,6 @@
 # Plan 381 — status
 
-Status: **in progress** — WP1 complete; WP2–WP5 open.
+Status: **in progress** — WP1 and WP2 complete; WP3–WP5 open.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2.
 
@@ -9,9 +9,10 @@ closed hard dependency and it is satisfied: i2pr can present a client credential
 
 Plan: `plans/implementation/i2pcontrol-proposal-170/381-els2-live-external-driver-lane.md`
 
-This record is deliberately **not** a pass. It closes the cheap gate and retires
-two of the plan's six stop conditions by execution. The live mesh rows are not
-here and nothing below is offered in their place.
+This record is deliberately **not** a pass. It closes the cheap gate and the
+lane runner, and retires **three** of the plan's six stop conditions by
+execution. No row about i2pr exists yet and nothing below is offered in their
+place.
 
 ## What this plan inherited, and what was wrong with it
 
@@ -236,7 +237,38 @@ None of these are fixed by this plan; each is recorded rather than absorbed.
 | 3 | `tests/integration/floodfill/run-i2pd.sh` is in **no workflow at all** | low | Same as above; noted so the new `els2-external.yml` is not mistaken for covering it |
 | 4 | i2pd's daemon-mode web console is the only surface that renders a b33, and it renders it only once the destination holds an encrypted LeaseSet | low | Not a defect; it is why WP1 derives the b33 and does not scrape HTML |
 | 5 | `i2pr run`'s error projection collapses every `ContradictoryOptions` refusal to `"spec options contradict the kind"` | low | Operator-facing only; the specific reason is not actionable on the wire. Would need a user decision on whether to project reasons |
-| 6 | **Plan 380 widened `i2pr-service-tunnels`'s public API and never re-snapshotted it**, so `scripts/check-portable-service-tunnel-api.py` has been failing on this branch since `4bbc1ea9` | medium | **Fixed here, attributed forward** — see below |
+| 6 | **Plan 380 widened `i2pr-service-tunnels`'s public API and never re-snapshotted it**, so `scripts/check-portable-service-tunnel-api.py` has been failing on this branch since `4bbc1ea9` | medium | **Fixed in WP1, attributed forward** — see below |
+| 7 | **The WP1 `tunnels.conf` validator rubber-stamped a configuration i2pd cannot use.** Every check it made was of the form "the file says X and the caller said X", so a caller passing an absolute `keys` path or a swapped port argument got a clean pass. Found when the first WP2 probe did exactly that | medium | **Fixed in WP2, attributed forward** — see below |
+| 8 | i2pd's SAM rejects `SESSION CREATE` followed by `STREAM CONNECT` on one connection with `Socket already in use`, which reads as a port collision | low | Not a defect to fix; it is reference behaviour. Documented as fact 6 and driven around deliberately in `sam_b33_connect.py` |
+| 9 | The reference-to-reference control row is in `results.tsv` alongside real rows and is one label away from being counted as an acceptance row | low | Mitigated by recording it with the word "control" in its detail and by this record naming it; the evidence checker in WP5 must refuse to promote it |
+
+### Finding 7 — a validator that agreed with its own caller
+
+The WP1 validator checked `port` and `keys` by comparing the emitted file
+against the arguments it was given. That is not a check: if the caller is
+wrong, both sides are wrong identically and the configuration is validated into
+being wrong.
+
+This was not theoretical. The first WP2 probe called
+`write_els2_tunnels_conf "$path" ELS2PROBE ELS2PROBE.dat "$SCRATCH/ELS2PROBE.dat" …`
+— arguments transposed, `keys` given as an absolute path — and the validator
+returned **success**. i2pd would then have read `port = ELS2PROBE.dat` and
+resolved `keys` through `DataDirPath`, which prepends the data dir
+(`libi2pd/FS.h:175-181`), so the absolute path becomes `<datadir>//tmp/…`,
+fails to open, and i2pd **silently creates a brand-new key pair there**
+(`libi2pd_client/ClientContext.cpp:280-307`). The destination would have come up
+with a different identity than the lane configured, and every address derived
+from it would have been wrong for a reason that looks like a crypto defect.
+
+Fixed in WP2: `write_els2_tunnels_conf` and `validate_els2_tunnels_conf` now
+check the **shape** of each argument (a bare filename; a TCP port in 1–65535)
+and the validator additionally re-reads `port` and `keys` out of the file body
+and checks those independently, so a hand-edited config is caught even when the
+caller repeats the same mistake. 21 new contract rows cover the argument
+shapes, including the self-agreeing case.
+
+The general lesson is recorded because it is the same shape as finding 6: a
+check that compares a value against the value it came from is not a check.
 
 ### Finding 6 — the stale portable API snapshot, and why it was fixed rather than deferred
 
@@ -341,28 +373,156 @@ python3 scripts/check-global-plan-number-uniqueness.py    python3 scripts/check-
 bash scripts/check-portable-service-tunnel-consumer.sh
 ```
 
-**Not run, and why.** `tests/integration/els2/run-i2pd-els2.sh` does not exist —
-that is WP2, and it is the work this plan has not reached. The NTCP2/SSU2/I2CP
-vector and evidence checkers are unrelated to this change and were not
-re-run; the floor above is the set that can gate it.
+## WP2 — the lane runner, and stop condition 2 retired
 
-`check-portable-service-tunnel-consumer.sh` performs a `cargo` fetch of this
-repository from github.com. It hit a transient DNS failure and succeeded on
-retry within the same run; both pinned revisions passed their 8 and 11
-conformance rows.
+WP2 exists to answer one question before any i2pr code is written: **can an
+i2pd client consume a blinded destination in this controlled mesh at all?** Plan
+381 named that as stop condition 2 and warned that if the answer were no, the
+direction would be blocked on topology rather than on code.
+
+**It can. Stop condition 2 is retired by execution.**
+
+The answer was reached with a probe that deliberately involved **no i2pr at
+all**: one stock i2pd floodfill publishing an ELS2 destination from a generated
+`tunnels.conf`, one stock i2pd client with SAM on loopback, and the client
+issuing a real SAM stream connect to the publisher's blinded address. If that
+cannot work, no amount of i2pr work helps; that is why it was tested first. The
+result was `STREAM STATUS RESULT=OK` followed by the fixture's
+`ELS2-LANE-FIXTURE-OK` banner arriving back — a full round trip through a
+blinded lookup, an encrypted LeaseSet2 fetch, a Streaming session and a server
+tunnel.
+
+### The seven facts the reference forced
+
+Every one of these was found by executing, presents as a crypto or topology
+defect, and is now asserted in code so it cannot be re-learned. They are
+recorded in `tests/integration/els2/reference-freeze.md` §3.4 with citations.
+
+| # | Fact | Why it misleads |
+|---|---|---|
+| 1 | `keys` must be a **bare filename** | `DataDirPath` prepends the data dir (`libi2pd/FS.h:175-181`), so an absolute path is mangled and i2pd **silently mints a new key pair**. Every later address derivation is then wrong. |
+| 2 | The destination `.dat` is **not** a publication signal | It is key material, written at startup even with zero peers. A peerless first cycle produces one. |
+| 3 | Seed **one direction, never both** | Mutual seeding makes both sides emit a SessionRequest at once; the AEAD machines cross and the retry fails `Retry AEAD verification failed`. |
+| 4 | A blinded address needs a **`.b32.i2p`** suffix to reach i2pd | `AddressBook::GetAddress` has no `.b33.i2p` branch (`libi2pd_client/AddressBook.cpp:454-461`), so it falls through to base64 and SAM answers `INVALID_KEY`. |
+| 5 | SAM 3.1 `SESSION CREATE` **requires** `DESTINATION` | Base64 or the literal `TRANSIENT`; otherwise `INVALID_KEY` (`SAM.cpp:427-441`). |
+| 6 | `SESSION CREATE` and `STREAM CONNECT` need **separate connections** | A successful create marks that connection `Session` (`SAM.cpp:449`) and the connect is refused with `Socket already in use` (`SAM.cpp:529-533`). |
+| 7 | A connect is gated on the **client's own tunnel pool** | `IsReady()` needs non-empty outbound tunnels (`libi2pd/Destination.h:152`), and the failure surfaces as `INVALID_KEY`, not as "not ready". |
+
+Fact 1 was found because **the first probe passed an absolute `keys` path and
+swapped two arguments, and the WP1 validator returned success**. That is a real
+defect in committed work (`0edfbdaa`), not a probe typo, and it is described in
+the findings section below.
+
+### What the lane now does, and how it was run
+
+`tests/integration/els2/run-i2pd-els2.sh` brings up the two reference routers
+with the same fail-closed pin gates, `setsid` groups, `trap cleanup EXIT` and
+`MAX_ATTEMPTS=1` freeze that `run-i2pd.sh` uses, generates its `tunnels.conf`
+through the WP1 writer and validates it before any process starts, and then
+gates each stage on a real signal rather than on a file's existence.
+
+An executed run on this host produced **eight rows, all `passed`**:
+
+```text
+tunnels-conf-generated          passed
+mesh-identity-generation        passed
+mesh-peer-session               passed
+reference-els2-published        passed
+destination-derived             passed
+blinded-address-cross-check     passed
+client-tunnel-pool-ready        passed
+control-reference-els2-roundtrip passed
+```
+
+`blinded-address-cross-check` compares the derived 56-character base32 body
+against **i2pd's own rendering** of the same destination and requires them to be
+byte-identical. The suffix is deliberately excluded from that comparison,
+because fact 4 shows the suffix is a vocabulary choice and not part of the
+derivation.
+
+The lane then **fails closed with exit 1** because the WP3 driver does not exist
+yet. That is the designed outcome: a live reference mesh with nothing to drive
+it is not a partial matrix worth reporting, and recording it as anything other
+than a failure would be exactly the "half-run matrix as evidence" the plan
+forbids.
+
+### A reporting bug the run caught
+
+The first full lane run reported `mesh-peer-session`, `reference-els2-published`
+and `client-tunnel-pool-ready` as **failed** while every one of them had
+actually succeeded — the control round-trip had already returned the fixture
+banner and the cross-check had already matched. The poll loops carry `*_OK`
+flags where 1 means observed, which is the opposite of the 0-means-pass
+convention `record_guarded` expects. Fixed with an explicit `observed_rc`
+conversion at the reporting boundary rather than by flipping the flags, so the
+loops stay readable.
+
+This is worth naming because it is the failure mode this repository's rules
+exist to prevent: the lane *looked* like it had found three reference defects,
+and had that been recorded without reading the control row, three false
+findings would have entered the record.
+
+### WP2 deliverables
+
+- `tests/integration/els2/run-i2pd-els2.sh` — the lane runner and `--self-test`
+  gate. **11 self-test rows**, all green, with no i2pd invoked.
+- `tests/integration/els2/clients/sam_b33_connect.py` — the reference SAM
+  client, carrying facts 4, 5, 6 and 7 as explicit checks with cited reasons.
+- `tests/integration/els2/els2-tunnels-conf.sh` — hardened for fact 1.
+- `tests/integration/els2/test-tunnels-conf.sh` — 36 → **57 rows**.
+- `tests/integration/els2/clients/parse_i2pd_els2_destination.py` — emits
+  `dest_b33_i2pd`; 49 → **55 rows**.
+
+### WP2 commands run, on this host, 2026-10-07
+
+```text
+bash tests/integration/els2/test-tunnels-conf.sh                 # 57 rows, exit 0
+python3 tests/integration/els2/clients/parse_i2pd_els2_destination.py --self-test
+                                                                   # 55 rows, exit 0
+bash tests/integration/els2/run-i2pd-els2.sh --self-test         # 11 rows, exit 0
+bash tests/integration/els2/run-i2pd-els2.sh                      # 8 rows passed, exit 1 at the WP3 handoff
+```
+
+The full lane is **not** part of the routine floor — it starts external
+processes, like every other external lane — and it is environment-gated. It is
+recorded here as a local run with its exact exit status, not as a CI result.
+
+Full routine floor, re-run after WP2: green throughout. `cargo fmt --all
+--check`, `cargo check --locked --workspace --all-targets`, `cargo build
+--locked -p i2pr-app-fixture -p i2pr-apphost`, `cargo clippy --locked
+--workspace --all-targets --all-features -- -D warnings`,
+`RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`, 51
+planning tests, `check-global-plan-number-uniqueness.py`,
+`check-adr-number-uniqueness.py`, `check-portable-service-tunnel-api.py` (699
+declarations), `check-portable-service-tunnel-consumer.sh`,
+`check-managed-app-process-boundary.py` **with `--self-test`**, and the boundary
+/ evidence / hygiene set.
+
+The workspace tally is **4 646 passed, 0 failed, 35 ignored across 179
+binaries** — **byte-identical to the WP1 tally**, and it should be: WP2 adds no
+Rust test row, only shell and Python. That is stated as a checked equality
+rather than an inference, because a tally that moves without a corresponding
+test addition is the signature of a test that stopped being collected.
+
+**Not run, and why.** The WP3 driver does not exist, so the lane's own i2pr
+half cannot run; the lane reaches that point and fails closed by design. The
+NTCP2/SSU2/I2CP vector and evidence checkers are unrelated to this change and
+were not re-run; the floor is the set that can gate it.
 
 ## What remains unproven
 
 Named explicitly, because a partial pass is easy to read as a whole one:
 
-- **Everything about the live mesh.** No row in this plan moves an application
-  payload, resolves a destination over the network, or exercises a real
-  LeaseSet2 fetch. WP2 (the runner) and WP3 (the driver) have not been started.
+- **Anything about i2pr.** WP2 proves the *reference* half of the lane and
+  nothing about i2pr. No row in this plan moves an application payload through
+  i2pr, resolves a destination with i2pr, or exercises an i2pr LeaseSet2 fetch.
+  WP3 (the driver) and WP4 (the rows) have not been started.
 - **The i2pd auth-mode matrix.** None of the three modes has been exercised
-  against a live reference. WP1 pins the *configuration* for all three; it
-  proves nothing about whether PSK or DH authentication actually succeeds
-  end-to-end. Plan 381 requires an explicit statement of the matrix actually
-  executed, and that statement is currently **none of the three**.
+  against a live reference. WP1 pins the *configuration* for all three and the
+  lane runs auth `NONE`; it proves nothing about whether PSK or DH
+  authentication succeeds end-to-end. Plan 381 requires an explicit statement
+  of the matrix actually executed, and against i2pr that statement is currently
+  **none of the three**.
 - **The negative rows** — wrong credential refused, wrong lookup secret refused,
   a record for a different day refused. All WP4.
 - **The `.b32.i2p` authority row**, which exists to prove the lane has not broken
@@ -370,8 +530,19 @@ Named explicitly, because a partial pass is easy to read as a whole one:
 - **Plan 375's Java direction, Plan 377's convergence, and Plan 378's gate.**
   Untouched. This plan delivers the i2pd half of the driver work only, and 377
   still needs both halves.
-- **Stop condition 2** (i2pd client tunnels in the controlled mesh) is untested.
-  It is the remaining genuine unknown and it is the one most likely to block.
+- **Reproducibility of the reference citations on a fresh host.** The pinned
+  source tree is readable on this host, so every citation above is source-level,
+  but the tree lives in a scratch directory rather than in the cache. See the
+  standing finding below.
+
+### A control row that is deliberately not an acceptance row
+
+`control-reference-els2-roundtrip` proves that the mesh carries a blinded
+lookup and an application payload between two **stock reference routers**. It
+is not a row about i2pr, it cannot be promoted to one, and Plan 377 must not
+count it as cross-router convergence evidence when that plan needs *i2pr*
+against a reference. Its purpose is attribution: without it, a later i2pr row
+failing would not be distinguishable from the mesh being broken.
 
 ## Roadmap disposition
 
@@ -384,10 +555,29 @@ this plan's WP2–WP5.
 
 ## Resume point
 
-WP2, `tests/integration/els2/run-i2pd-els2.sh`, modelled on
-`tests/integration/floodfill/run-i2pd.sh` and generating its `tunnels.conf`
-through the WP1 writer and validator, which now exist and are proven. The first
-thing to attempt is the mesh itself, because it is stop condition 2 and the only
-remaining unknown that can stop the plan: if i2pd client tunnels cannot be made
-to work in the controlled mesh, the direction is blocked on topology and no
-amount of further WP1-style work changes that.
+WP3, `crates/i2pr-daemon/tests/els2_i2pd_external.rs`. The lane runner exists,
+brings the reference mesh up, and hands the following to the driver through the
+environment:
+
+```text
+I2PR_ELS2_REFERENCE_ROUTER_INFO          f's router.info, for i2pr's bootstrap
+I2PR_ELS2_REFERENCE_ENDPOINT             127.0.0.1:<f ssu2 port>
+I2PR_ELS2_REFERENCE_DEST_B32             the publisher's authority address
+I2PR_ELS2_REFERENCE_DEST_B33             the same, in i2pr's vocabulary
+I2PR_ELS2_REFERENCE_DEST_B33_I2PD        the same body, in i2pd's vocabulary
+I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT    c's SAM port, for the i2pr→i2pd row
+I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT    127.0.0.1:<c ssu2 port>
+I2PR_ELS2_EVIDENCE_DIR
+```
+
+The driver must go through the public surfaces only — start R, create the
+service over I2PControl, move a real payload, read a real result — with no
+private bridge, resolver, driver or pump API and no decoded-LeaseSet injection.
+The R-side shape is already proven by WP1.4's
+`i2pcontrol_els2_lane_consumer.rs`; the new part is the network round trip and
+the consumer-side reference row.
+
+**Stop condition 2 no longer constrains this work.** The mesh was the one
+remaining unknown that could have blocked the plan outright, and it is answered.
+The remaining open items are the ordinary ones: build the driver, produce the
+rows, write the evidence.

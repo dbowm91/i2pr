@@ -723,7 +723,7 @@ Forward dependency graph:
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
        |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
-       |  -> 381 in prog live ELS2 external driver lane (i2pd direction)
+       |  -> 381 in prog live ELS2 external driver lane (i2pd direction), WP1+WP2 done, stop condition 2 retired
        |                 ^ WP1 (cheap gate) done; WP2-WP5 open
        |                 ^ 380 is its closed hard dependency
        |
@@ -788,9 +788,29 @@ the indexed `i2cp.leaseSetClient.psk` spellings **are** accepted (the reader is 
 the freeze document's original indexed claim was right and its "correction" was wrong), and the
 real trap is that the value **must contain a colon** or `ReadAuthKey` drops it with no diagnostic.
 The pinned source tree also turned out to be present at the pin, so those citations are
-source-level rather than `strings`-level. What is *not* closed: WP2's mesh, WP3's driver, WP4's
-rows. **The auth-mode matrix actually executed is none of the three**, and i2pd client tunnels in
-the controlled mesh (stop condition 2) remains the one unknown that can still block the direction.
+source-level rather than `strings`-level.
+
+**WP2 has executed and retired stop condition 2.** A stock i2pd client in the controlled
+mesh resolved a stock i2pd publisher's blinded address, fetched and decrypted its encrypted
+LeaseSet2, built a Streaming session, and carried an application payload to the publisher's
+server tunnel — so the direction is not blocked on topology, and no i2pr code was needed to
+establish it. The lane runner (`tests/integration/els2/run-i2pd-els2.sh`) landed with **8
+executed rows green** and an 11-row `--self-test` that runs no i2pd at all; it then fails
+closed by design because the WP3 driver does not exist yet. Running it surfaced **seven
+reference facts**, each now cited and asserted so it cannot be re-learned: `keys` must be a
+bare filename (`i2p::fs::DataDirPath` prepends the data dir, so an absolute path is mangled and
+i2pd silently mints a *new* key pair); the destination `.dat` is not a publication signal;
+the mesh must be seeded in one direction only (mutual seeding makes both sides emit a
+SessionRequest at once and the AEAD retries collide); a blinded address needs a `.b32.i2p`
+suffix to reach i2pd, which has no `.b33.i2p` branch; SAM 3.1 `SESSION CREATE` requires
+`DESTINATION`; `SESSION CREATE` and `STREAM CONNECT` must use separate connections; and a
+connect is gated on the client's own tunnel pool. WP2 also found a defect in **WP1's own
+validator** — every check compared the file against the caller's arguments, so a wrong caller
+agreed with itself and an unusable `tunnels.conf` passed — now fixed with 21 new rows.
+
+What remains: WP3's driver, WP4's rows, WP5's evidence. **The auth-mode matrix actually
+executed is still none of the three**, and no row involves i2pr yet. Plan 381 still does
+**not** unblock 374.
 See `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 ### Why two ELS2 reference plans

@@ -268,6 +268,58 @@ else
   ok "writer refuses a short key"
 fi
 
+echo "== 6. the writer/validator refuse argument shapes i2pd cannot use =="
+
+# Plan 381 WP2 found these by executing the lane: the first probe passed
+# `ELS2PROBE.dat` as the port and an absolute path as the keys file, and the
+# validator returned success. Both comparisons it makes are "the file says X
+# and the caller said X", so a wrong caller agrees with itself. These rows
+# assert the *shape* of each argument, not its agreement with the file.
+
+for bad_port in "0" "65536" "99999" "-1" "18080x" "" "180 80" "http"; do
+  if write_els2_tunnels_conf "${SCRATCH}/bp.conf" "X" "${bad_port}" "x.dat" \
+       "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" 2>/dev/null; then
+    fail "writer accepted port '${bad_port}'"
+  else
+    ok "writer refuses port '${bad_port}'"
+  fi
+done
+
+for bad_keys in "/tmp/x/x.dat" "./x.dat" "sub/x.dat" ".." "." "" "a b.dat" "x.dat/" "x\$y.dat"; do
+  if write_els2_tunnels_conf "${SCRATCH}/bk.conf" "X" 18080 "${bad_keys}" \
+       "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" 2>/dev/null; then
+    fail "writer accepted keys '${bad_keys}'"
+  else
+    ok "writer refuses keys '${bad_keys}'"
+  fi
+done
+
+# The same two shapes, through the validator, including the self-agreeing case
+# where the caller and the file carry the *same* wrong value.
+write_els2_tunnels_conf "${SCRATCH}/shape-ok.conf" "X" 18080 "x.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" || fail "writer failed for the shape baseline"
+expect_pass "accepts a bare keys filename and a numeric port" \
+  "${SCRATCH}/shape-ok.conf" "X" 18080 "x.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}"
+
+ABSPATH="${SCRATCH}/abspath.conf"
+sed 's|^keys = x\.dat$|keys = /tmp/scratch/x.dat|' "${SCRATCH}/shape-ok.conf" > "${ABSPATH}"
+expect_fail "rejects an absolute keys path even when the caller repeats it" \
+  "${ABSPATH}" "X" 18080 "/tmp/scratch/x.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}"
+
+BADPORT="${SCRATCH}/badport.conf"
+sed 's|^port = 18080$|port = ELS2PROBE.dat|' "${SCRATCH}/shape-ok.conf" > "${BADPORT}"
+expect_fail "rejects a non-numeric port even when the caller repeats it" \
+  "${BADPORT}" "X" "ELS2PROBE.dat" "x.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}"
+
+OUTOFRANGE="${SCRATCH}/outofrange.conf"
+sed 's|^port = 18080$|port = 70000|' "${SCRATCH}/shape-ok.conf" > "${OUTOFRANGE}"
+expect_fail "rejects an out-of-range port" \
+  "${OUTOFRANGE}" "X" 70000 "x.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}"
+
 if [[ "${FAILURES}" -ne 0 ]]; then
   echo "FAIL: ${FAILURES} Plan 381 tunnels.conf contract violation(s)" >&2
   exit 1

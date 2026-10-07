@@ -90,6 +90,41 @@ els2_hex_to_base64() {
   printf '%s' "$1" | xxd -r -p | base64 -w0
 }
 
+# `keys` must be a **bare filename**, and this is a reference constraint rather
+# than a style choice. i2pd resolves it through `i2p::fs::DataDirPath`, which
+# *prepends* the data dir to whatever components it is given
+# (`libi2pd/FS.h:175-181`), and `ClientContext::LoadPrivateKeys` then opens that
+# concatenated path (`libi2pd_client/ClientContext.cpp:280`). An absolute path
+# therefore becomes `<datadir>//abs/...`, fails to open, and i2pd *silently
+# creates a brand-new key pair there* -- so the destination comes up with a
+# different identity than the lane believes it configured, and every later
+# address derivation is wrong for a reason that looks like a crypto defect.
+# Plan 214 uses a bare filename for the same reason.
+#
+# Found by executing Plan 381 WP2: the first lane probe passed an absolute
+# path, and the validator accepted it because it only compared the emitted
+# value against the same string the caller supplied. Comparing a value against
+# the value it came from is not a check.
+els2_is_bare_filename() {
+  local candidate="$1"
+  [[ -n "${candidate}" ]] || return 1
+  [[ "${candidate}" == */* ]] && return 1
+  [[ "${candidate}" == "." || "${candidate}" == ".." ]] && return 1
+  [[ "${candidate}" =~ [[:space:]] ]] && return 1
+  # No traversal, and no hidden/shell-ish characters that a config parser and a
+  # filesystem could disagree about.
+  [[ "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ "${candidate}" == *".."* ]] && return 1
+  return 0
+}
+
+els2_is_tcp_port() {
+  local candidate="$1"
+  [[ "${candidate}" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( candidate >= 1 && candidate <= 65535 )) || return 1
+  return 0
+}
+
 # write_els2_tunnels_conf <path> <section-name> <app-port> <keys-file>
 #                         <store-type> <auth-type> [client-key-hex]
 #
@@ -99,6 +134,17 @@ els2_hex_to_base64() {
 write_els2_tunnels_conf() {
   local path="$1" name="$2" app_port="$3" keys_file="$4"
   local store_type="$5" auth_type="$6" key_hex="${7:-}"
+
+  if ! els2_is_tcp_port "${app_port}"; then
+    echo "els2: app port must be an integer in 1-65535, got '${app_port}'" >&2
+    return 1
+  fi
+  if ! els2_is_bare_filename "${keys_file}"; then
+    echo "els2: keys must be a bare filename, got '${keys_file}'" >&2
+    echo "     (i2pd prepends the data dir via DataDirPath, so a path silently" >&2
+    echo "      becomes a different file and a new key pair)" >&2
+    return 1
+  fi
 
   case "${store_type}" in
     "${ELS2_STORE_TYPE_STANDARD}"|"${ELS2_STORE_TYPE_ENCRYPTED}") ;;
@@ -161,6 +207,20 @@ validate_els2_tunnels_conf() {
 
   _bad() { echo "  invalid: $1" >&2; rc=1; }
 
+  # --- the caller's own arguments ------------------------------------------
+  # These are checked first, and separately from the file, because the
+  # comparisons below are all of the form "the file says X and the caller said
+  # X". If the caller is wrong, those comparisons agree with each other and
+  # the config is validated into being wrong. Plan 381 WP2 tripped exactly
+  # this: an absolute `keys` path and a swapped port argument produced a
+  # "valid" config that i2pd could not provision.
+  if ! els2_is_tcp_port "${app_port}"; then
+    _bad "caller app port must be an integer in 1-65535, got '${app_port}'"
+  fi
+  if ! els2_is_bare_filename "${keys_file}"; then
+    _bad "caller keys must be a bare filename, got '${keys_file}'"
+  fi
+
   if [[ ! -s "${path}" ]]; then
     _bad "tunnels.conf is missing or empty: ${path}"
     return 1
@@ -180,6 +240,19 @@ validate_els2_tunnels_conf() {
   grep -qxF 'host = 127.0.0.1' <<<"${body}" || _bad "host must be loopback"
   grep -qxF "port = ${app_port}" <<<"${body}" || _bad "port must be ${app_port}"
   grep -qxF "keys = ${keys_file}" <<<"${body}" || _bad "keys must be ${keys_file}"
+
+  # --- the emitted values, checked on their own terms -----------------------
+  # Read back out of the file rather than compared against the arguments, so a
+  # hand-edited config is caught even when the caller repeats the same mistake.
+  local observed_port observed_keys
+  observed_port="$(sed -n -E 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' <<<"${body}" | head -1)"
+  observed_keys="$(sed -n -E 's/^[[:space:]]*keys[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' <<<"${body}" | head -1)"
+  if ! els2_is_tcp_port "${observed_port}"; then
+    _bad "emitted port is not a TCP port: '${observed_port}'"
+  fi
+  if ! els2_is_bare_filename "${observed_keys}"; then
+    _bad "emitted keys is not a bare filename: '${observed_keys}'"
+  fi
   grep -qxF 'inbound.length = 0' <<<"${body}" || _bad "inbound.length must be 0"
   grep -qxF 'outbound.length = 0' <<<"${body}" || _bad "outbound.length must be 0"
   grep -qxF "i2cp.leaseSetType = ${store_type}" <<<"${body}" || _bad "i2cp.leaseSetType must be ${store_type}"

@@ -330,6 +330,22 @@ def parse(path: str) -> dict:
     b33 = derive_b33(signing_pub, sig_type)
     verify_b33(b33, signing_pub, sig_type)
 
+    # The suffix is a *vocabulary*, not part of the derivation, and the two
+    # sides of the lane disagree about it.
+    #
+    # i2pd resolves any `.i2p` host through `AddressBook::GetAddress`, whose
+    # first branch is a literal `address.find(".b32.i2p")` and which has no
+    # `.b33.i2p` branch at all (`libi2pd_client/AddressBook.cpp:454-461`). A
+    # blinded address handed to i2pd under `.b33.i2p` therefore falls through
+    # to the full-base64 branch and is rejected -- SAM answers `INVALID_KEY`.
+    # What distinguishes a blinded address is its 35-byte body, not the suffix,
+    # and i2pd's own console renders the blinded form with a `.b32.i2p`
+    # suffix (`daemon/HTTPServer.cpp:479-496`).
+    #
+    # So both spellings are emitted. `dest_b33` is the i2pr-facing name (i2pr
+    # owns `.b33.i2p` as a kind, `i2pr-service-tunnels/src/destination.rs`),
+    # and `dest_b33_i2pd` is the same 56-character base32 body in the spelling
+    # the reference actually accepts. They differ only in the suffix.
     return {
         "pub_len": len(public),
         "extended_len": extended_len,
@@ -339,6 +355,7 @@ def parse(path: str) -> dict:
         "dest_hash": dest_hash.hex(),
         "dest_b32": f"{dest_b32}.b32.i2p",
         "dest_b33": f"{b33}.b33.i2p",
+        "dest_b33_i2pd": f"{b33}.b32.i2p",
         "dest_b33_raw": b33,
     }
 
@@ -461,6 +478,26 @@ def _self_test() -> int:
     check("b32 is SHA-256 over the full public length",
           base64.b32encode(hashlib.sha256(pub).digest()).decode().rstrip("=").lower()
           == base64.b32encode(hashlib.sha256(public).digest()).decode().rstrip("=").lower())
+
+    print("== the two address vocabularies differ only in the suffix ==")
+    # Found by executing Plan 381 WP2: handing i2pd the `.b33.i2p` spelling
+    # makes SAM answer INVALID_KEY, because AddressBook::GetAddress
+    # (libi2pd_client/AddressBook.cpp:454-461) matches `.b32.i2p` literally and
+    # has no `.b33.i2p` branch. What makes an address blinded is its 35-byte
+    # body, so the base32 body is identical across the two spellings.
+    fields = parse(_write_temp(raw))
+    body = fields["dest_b33_raw"]
+    check("the b33 body is 56 base32 characters", len(body) == 56)
+    check("the b33 body decodes to a 32-byte blinded signing key",
+          len(decode_b33(body)["signing_pub"]) == 32)
+    check("dest_b33 is the i2pr-facing .b33.i2p spelling",
+          fields["dest_b33"] == f"{body}.b33.i2p")
+    check("dest_b33_i2pd is the reference-facing .b32.i2p spelling",
+          fields["dest_b33_i2pd"] == f"{body}.b32.i2p")
+    check("the two spellings share one body",
+          fields["dest_b33"].split(".")[0] == fields["dest_b33_i2pd"].split(".")[0])
+    check("the b32 authority address is not the blinded address",
+          fields["dest_b32"] != fields["dest_b33_i2pd"])
 
     print("== a truncated file is refused ==")
     try:

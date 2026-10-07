@@ -207,7 +207,66 @@ That is six direction×mode success rows and twelve credential-failure rows
 before the nine negative rows, the persistence rows, and the rollover rows are
 counted.
 
-### 3.4 Java I2P 2.13.0
+### 3.4 Seven facts the live lane had to execute to discover
+
+Added by Plan 381 §WP2. None of these is guessable from the configuration
+document, and every one of them presents as something that looks like a crypto
+or topology defect. Each was found by running the lane and is now asserted in
+`run-i2pd-els2.sh`, `els2-tunnels-conf.sh` or `sam_b33_connect.py` so it cannot
+be re-learned by the next executor.
+
+1. **`keys` must be a bare filename.** `i2pd::fs::DataDirPath` *prepends* the
+   data dir (`libi2pd/FS.h:175-181`) and `ClientContext::LoadPrivateKeys` opens
+   the concatenation (`libi2pd_client/ClientContext.cpp:280`). An absolute path
+   becomes `<datadir>//abs/…`, fails to open, and i2pd **silently creates a
+   brand-new key pair there** — so the destination gets a different identity
+   than the lane configured and every later address derivation is wrong.
+   `els2-tunnels-conf.sh` now refuses a `keys` containing a path separator.
+
+2. **The destination `.dat` is not a publication signal.** It is key material,
+   written at startup even with zero peers. A peerless first cycle produces one.
+   Publication is `NetDb: LeaseSet2 updated` / `Publishing LeaseSet confirmed`.
+
+3. **Seed one direction, never both.** Mutual seeding makes both routers start
+   a SessionRequest simultaneously; the AEAD state machines cross and the retry
+   fails `Retry AEAD verification failed`. The client initiates; the floodfill
+   learns the client from the inbound session — the pattern
+   `tests/integration/floodfill/run-i2pd.sh` already uses. Identities must exist
+   before either can be seeded, hence two cycles.
+
+4. **A blinded address needs a `.b32.i2p` suffix to reach i2pd.**
+   `AddressBook::GetAddress` matches `.b32.i2p` literally and has no `.b33.i2p`
+   branch (`libi2pd_client/AddressBook.cpp:454-461`), so `.b33.i2p` falls through
+   to the base64 branch and SAM answers `INVALID_KEY`. What makes an address
+   blinded is its 35-byte body, not the suffix — and i2pd's own console renders
+   the blinded form as `.b32.i2p` (`daemon/HTTPServer.cpp:479-496`).
+   `parse_i2pd_els2_destination.py` therefore emits `dest_b33` (i2pr's
+   vocabulary) and `dest_b33_i2pd` (the reference's) side by side.
+
+5. **SAM 3.1 `SESSION CREATE` requires `DESTINATION`** — base64 or the literal
+   `TRANSIENT` — or it answers `INVALID_KEY`
+   (`libi2pd_client/SAM.cpp:427-441`).
+
+6. **`SESSION CREATE` and `STREAM CONNECT` need separate connections.** A
+   successful create marks *that connection's* socket type `Session`
+   (`SAM.cpp:449`) and `ProcessStreamConnect` then refuses it with
+   `Socket already in use` (`SAM.cpp:529-533`). Sessions are bridge-wide, so the
+   two commands go on two connections. Writing both on one connection is the
+   obvious thing to do and fails with a message that reads like a port clash.
+
+7. **A connect is gated on the client's own tunnel pool.**
+   `LeaseSetDestination::IsReady()` is `m_LeaseSet && !expired &&
+   m_Pool->GetOutboundTunnels().size() > 0` (`libi2pd/Destination.h:152`), and
+   `RequestDestinationWithEncryptedLeaseSet` returns false — which SAM turns into
+   `INVALID_KEY` — until then. Minting a `TRANSIENT` destination builds that
+   pool, so the `SESSION CREATE` read is legitimately slow.
+
+**Stop condition 2 of Plan 381 is retired by execution.** A stock i2pd client
+in the controlled mesh does resolve a blinded address, fetch and decrypt an ELS2
+LeaseSet2, build a Streaming session, and carry an application payload to a
+stock i2pd publisher's server tunnel. The direction is not blocked on topology.
+
+### 3.5 Java I2P 2.13.0
 
 `core/build/libs/i2p.jar` at the pin contains `net/i2p/data/EncryptedLeaseSet.class`
 and `net/i2p/crypto/eddsa/RedDSAEngine.class`. The ELS2 type-5 record type and
@@ -219,6 +278,14 @@ this pin, and nothing has been executed.
 
 Both plans are blocked by **the same specific, named gap**, and it is not an
 environmental one.
+
+> **Updated by Plan 381 §WP2.** Items 2 below and part of item 1 now exist:
+> `tests/integration/els2/run-i2pd-els2.sh` brings a stock i2pd pair up with
+> generated ELS2 configuration, and §3.4 records that a stock i2pd client does
+> consume a stock i2pd publisher's blinded destination with a real payload
+> crossing. What is **still** missing is the half that involves i2pr — the
+> driver and the rows — so the block stands. Plan 381 still does not unblock
+> 374, 375, 377 or 378.
 
 The repository has no ELS2 live driver. What exists is:
 
