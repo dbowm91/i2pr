@@ -11,6 +11,11 @@ requires it and own all connections, clocks, persistence, and lifecycle. See the
 and ADR 0033 (`docs/adr/0033-portable-service-tunnel-policy-core-and-adapters.md` in
 the i2pr repository).
 
-This crate is experimental and is not a standalone tunnel product. The repository has
-not selected a license; package publication remains disabled. No SAM protocol
-implementation is included.
+This crate is experimental and is not a standalone tunnel product. The i2pr repository is
+licensed under MIT. Package publication remains disabled for a technical reason rather
+than a licensing one: this crate declares `i2pr-proto` as a path-only dependency, and
+`cargo package` requires a version requirement on every dependency it stages, so the
+crate cannot currently be packaged. Consuming it from Git works today; see
+`docs/architecture/i2pr-service-tunnels.md` ("Distribution posture") in the i2pr
+repository for the full audit and the chain that would unblock a crates.io release. No
+SAM protocol implementation is included.

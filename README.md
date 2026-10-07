@@ -236,10 +236,13 @@ coverage gaps — is in [`AGENTS.md`](AGENTS.md). Plan-of-record:
 
 ## License
 
-No repository-wide license has been selected yet. Do not copy code from external
-router implementations unless provenance and compatibility have been reviewed
-and explicitly authorized. A narrow, project-owned exception is recorded in
+i2pr is licensed under the [MIT License](LICENSE).
+
+The license change does not relax the repository's clean-room and provenance
+rules. Do not copy code from external router implementations unless provenance
+and compatibility have been reviewed and explicitly authorized. A narrow,
+project-owned exception is recorded in
 [ADR 0028](docs/adr/0028-i2pcontrol-proposal-170-control-plane.md) for the
 Proposal 170 / I2PControl work in `eggstack/emissary`; it does not cover
 unrelated Emissary or upstream code, I2P+, i2pd, or Java I2P. Specifications and
-observed behavior remain valid clean-room sources.
+independently observed behavior remain valid clean-room sources.

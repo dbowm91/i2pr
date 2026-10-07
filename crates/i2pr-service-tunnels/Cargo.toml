@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Runtime-neutral I2P service-tunnel policy, destination groups, and protocol filters"
 readme = "README.md"
 keywords = ["i2p", "proxy", "tunnel"]

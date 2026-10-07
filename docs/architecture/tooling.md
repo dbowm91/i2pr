@@ -21,10 +21,10 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 54 | 52 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 55 | 53 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 55 | 52 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 36 | 34 `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 56 | 53 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 37 | 35 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
@@ -58,6 +58,7 @@ counting method both numbers come from.
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
 | `scripts/check-managed-app-process-boundary.py` | Plan 369 static guard for the property the crate-edge scripts cannot see — **which process execs what**. Rule 1 pins the three blessed spawn sites (daemon→manager, appd→apphost, apphost→application); rule 1b requires `current_exe()` sibling resolution for the two distribution-owned edges and forbids any shell launcher and any `PATH` lookup; rule 2 forbids production code naming the fixture and forbids any manifest depending on it; rule 3 requires the shipped manager to **refuse** argv (a guard whose body returns, not merely an `args_os` token) and to avoid `with_catalog`; rule 4 keeps the manager test seam definition-shaped, failing closed on any production *caller*. Strips comments and `#[cfg(test)]` regions before scanning, so a legal test-only use stays legal while a production caller does not. `--self-test` applies every mutation in memory and requires the scan to reject it, with negative controls so a rule wrong in the strict direction also fails. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
+| `scripts/check-license-metadata.py` | Plan 379 repository license-metadata drift guard. Asserts the MIT `LICENSE` shape, the root `[workspace.package] license`, and that **every** member manifest inherits or names MIT — then cross-checks the resolved `cargo metadata` values, so a `[workspace.package]` key nobody inherits cannot read as a declaration again. Also rejects any member `license-file` (a second, disagreeing source of truth) and keeps the README's clean-room/provenance clause. Regex-parsed rather than `tomllib` so it runs on macOS system Python; `--self-test` gives every rule a rejected mutation plus accepted controls for the strict direction. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. **Plan 362** adds (a) an `i2pr-api` section — 7 source rules (`tokio::`, `async fn`/`async_trait`, socket types, `std::fs`/`OpenOptions`/`File::`, unbounded channels, `JoinHandle`, `spawn(`) plus a manifest rule banning `i2pr-daemon\|runtime\|testkit\|console\|service-tunnels` — and (b) **brace normalisation**: a Python pass blanks comment bodies and literal contents, rewrites every `use` tree into flat leaves, and then re-applies the *same* alternations to the normalised text, so a grouped `use std::{fs, net};` is detected exactly like a flat import. The normalised scan is **additional** to the raw greps, which are untouched. It fails closed on unparseable `use` syntax. Positive controls cover grouped, nested, multi-line and glob groups. `std::net` address *values* remain permitted for `i2pr-api` (Plan 345 precedent). | yes | yes |
 | `scripts/check-console-boundaries.sh` | Router-console boundary guard (Plan 356): rule 1 manifest purity, rule 2 source purity, rule 3 daemon EggServe adapter, rule 4 no `eepsite` tree, rule 5 self-contained assets, rule 6 single HTTP substrate, rule 7 dependency-map covers every member, rule 6b Plan 358 local principal. **Rule 2 (Plan 366) was repaired and is now load-bearing.** It previously ran one `awk` whose `in_tests` flag was set on the first `#[cfg(test)]` and never reset, so it scanned `theme.rs` lines 1–1139 and **nothing else — 12 of 13 console source files were never examined**. It is now a single Python scanner (`console_source_scan`) that (a) normalises `use` trees before matching (Plan 362), (b) scopes each test region to the item it annotates instead of latching it, and (c) enforces a **socket-keyed** ban — `TcpListener`, `TcpStream`, `UdpSocket`, `UnixListener`, `UnixStream`, `Server::bind`, `axum::serve`, `spawn(`, `std::fs`, `fs::`, `tokio::` — plus an **enumerated** allow-set of exactly four `std::net` address values (`IpAddr`, `SocketAddr`, `Ipv4Addr`, `Ipv6Addr`). A bare `use std::net;`, a glob, or the `ToSocketAddrs` resolver stays forbidden. This is *more* enforcement, not less: the old rule rejected 0 socket types because it read nothing after `theme.rs:1139`, and its blanket `std::net` ban was unsatisfiable for a correct console. A zero-file scan fails rather than passing. `--trace` prints the per-file `production_lines_scanned` proof; `--self-test` drives the same scanner over fixture trees (every forbidden category probed in all 13 files, positive controls for the allow-set, allow-set-widening negatives, zero-file and fail-closed checks) rather than re-implementing the rule. | yes | yes |
@@ -273,10 +274,10 @@ by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 42 | 44 rows marked `Floor: yes` |
-| Total routine-floor steps | 52 | — |
-| Checkers executed by `ci.yml` | 34 | 37 rows marked `CI: yes` |
-| `check-*` files on disk | 52 (55 with `scripts/interop/`) | 54 checker rows |
+| Floor steps invoking a checker | 43 | 45 rows marked `Floor: yes` |
+| Total routine-floor steps | 53 | — |
+| Checkers executed by `ci.yml` | 35 | 38 rows marked `CI: yes` |
+| `check-*` files on disk | 53 (56 with `scripts/interop/`) | 55 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
