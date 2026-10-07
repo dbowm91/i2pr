@@ -310,6 +310,118 @@ reported as forced. No Plan 021 service binds sockets, connects to peers,
 performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
 advertises protocol capabilities.
 
+## Plan 369 managed-application process threats and controls
+
+Plan 369 adds a managed-application runtime that starts applications as real
+processes. It is **disabled by default** and, with the shipped binary, starts
+nothing at all. The controls below are what makes that state reachable rather
+than aspirational.
+
+### The three process edges are the whole trust model
+
+```text
+  i2pr-daemon  --spawn-->  i2pr-appd  --spawn-->  i2pr-apphost  --exec-->  application
+   (supervisor)              (manager)              (direct host)
+```
+
+Three spawn sites exist and no more.
+`scripts/check-managed-app-process-boundary.py` rule 1 pins that set, so a
+fourth edge — any component other than `i2pr-apphost` able to exec an
+application — is a hard failure.
+
+The two **distribution-owned** edges (daemon → manager, manager → apphost)
+resolve their executable as a `current_exe()` sibling. Nothing in configuration,
+argv, or `PATH` can substitute a different program, so possession of the
+inherited pipes is meaningful: a swapped binary would have to be a swapped
+*sibling*, which is an installation problem rather than a remote one. Rule 1b
+forbids a shell launcher and any `PATH` lookup outright, so no edge can be
+routed through `sh -c`.
+
+`i2pr-apphost`'s target is deliberately **not** a sibling — it is the
+root/entrypoint of a launch request the manager already validated — so it is
+governed by the containment rules below instead.
+
+### No discoverable endpoint
+
+The daemon ↔ manager link is two **inherited anonymous pipes** on file
+descriptors 0 and 1. There is no listener, no port, no discovery endpoint, and
+no way to run `i2pr-appd` standalone and have it mean anything: without an
+inherited transport it has nothing to talk to, and without a daemon on the other
+end it holds no authority. A local attacker cannot connect because there is
+nothing to connect to.
+
+### No input path into a launch
+
+Three independent facts hold together, and removing any one of them would open
+a path:
+
+1. The shipped `i2pr-appd` **refuses all arguments** and owns `EmptyCatalog`,
+   which yields no authority.
+2. The Plan-368 manager protocol has **no manager-receivable launch request**,
+   so the daemon cannot ask the manager to launch anything.
+3. `LaunchAuthority` / `AuthorityRequest` have **no decoder** and private
+   fields. Effective capabilities can only be assembled through
+   `GrantedCapability::from_administrator_policy`, so `BrokeredTcp` is
+   ungrantable and there is no `&mut` path to the capability set at all.
+
+The seal is asserted by **method resolution**, not by scanning for a
+`#[derive(Deserialize)]`: adding a derive makes the crate stop compiling rather
+than merely fail a test.
+
+### Containment is checked twice, and `Secured` fails closed
+
+`LaunchRequest::validate` rejects `..`, `.`, absolute, and backslash forms
+*structurally*, on strings, so it is testable without a filesystem. That is
+necessary but not sufficient — a symlink inside the root can still point outside
+it — so `resolve_command` canonicalises both paths and re-checks containment on
+the resolved result. A single check would leave either the obvious escape or the
+disguised one open.
+
+`LaunchProfile::Secured` is **refused before any exec**, and refused again at
+the exec site so no future refactor can quietly skip the gate. No sandbox
+backend is qualified in Plan 369, so reporting a successful `Secured` launch
+would be a forged containment claim. The failure mode is a refusal, not an
+approximation.
+
+The child environment is **constructed**, not inherited, so the router's
+environment does not leak into an application.
+
+### Failure degrades one feature, and children are bounded
+
+A manager that crashes, hangs, or answers wrongly takes down **the app runtime
+and nothing else**: Plan 371's `StartupRequirement::Optional` lets an optional
+subsystem degrade its own feature instead of aborting router startup, and
+`RestartExhaustion::Degrade` is honoured during startup as well as after. A
+dependency edge constrains start *order*, not *availability*, so a degraded
+service still lets its dependents start.
+
+Every wait is bounded: bootstrap grace, reply grace, hello grace, close grace,
+and forced-kill grace each have an explicit ceiling. The direct child is owned
+from `spawn` until it is reaped and is **killed rather than leaked** if its
+manager goes away first — "the pipe closed" must not mean "an application keeps
+running with nobody to talk to". stderr is drained continuously with a bounded
+retained snapshot and an uncapped byte total, so a flooding application cannot
+drive unbounded allocation.
+
+**No grandchild containment is claimed.** Only the direct child is owned. An
+application that forks is outside the guarantee, and saying otherwise would be
+a claim this plan cannot support.
+
+### Non-claims
+
+Stated plainly because each is a plausible misreading:
+
+- **No sandbox.** `Secured` is refused, not approximated.
+- **No package trust.** There is no package store, signature verification,
+  publisher-key identity, grant persistence, or transactional install. The next
+  milestone owns those.
+- **No administrator or general control credential** is exposed to a manager or
+  an application.
+- **No restart recovery.** Restart begins empty: no application or grant
+  recovery is claimed.
+- **No protocol support or advertisement change.** Managed-app v1 remains
+  unreleased; the router console does not gain an application principal.
+
 ## Transport contract threats and controls
 
 Plan 031 adds only the ownership vocabulary needed before NTCP2 wire work. The

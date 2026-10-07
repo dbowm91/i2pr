@@ -1,8 +1,30 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp5-landed**.
+Status: **passed-trusted-application-runtime-manager-and-apphost-lifecycle-foundation**.
 
-Work packages landed: **WP1, WP2, WP3, WP4, WP5**. Remaining: WP6.
+Closure: `plans/closure/managed-native-app-runtime/369-status.md`.
+Work packages landed: **WP1, WP2, WP3, WP4, WP5, WP6**.
+
+## WP6 outcome — guards, docs, floor, closure
+
+WP6 adds `scripts/check-managed-app-process-boundary.py` and its `--self-test`,
+registers the fixture crate in every dependency/console/runtime map, wires the
+new checker into the `AGENTS.md` floor and CI, writes the documentation set,
+runs the complete routine floor, performs the unblock audit, and records
+everything in `plans/closure/managed-native-app-runtime/369-status.md`.
+
+The documentation pass closed a real drift finding rather than only adding
+pages: `docs/architecture/i2pr-daemon.md` still described Plan 368's bridge as
+having "no production caller" and its module list predated Plans 368 and 369
+entirely. Two of the three crates Plan 369 introduced — `i2pr-appd` and
+`i2pr-apphost` — had **no per-crate deep dive at all**, and `i2pr-app-fixture`
+did not exist as one either; `AGENTS.md` promises one per workspace member.
+
+The Plan-368 manager reference gains a normative **§3.1** for the concrete
+inherited binding Plan 368 deliberately left open, and the managed-app v1
+reference gains the normative `hello` identity-binding clarification its §"A
+future trusted transport owner must bind that claim" sentence had been waiting
+for since Plan 345.
 
 ## WP5 outcome — the first run of the whole chain, and the defect only a real process could find
 

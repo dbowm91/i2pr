@@ -15,10 +15,14 @@ actual-vs-allowed notes below matter to a reviewer.
 
 Scope of enforcement:
 
-- The checker iterates the keys of `expected`, and
-  `scripts/check-console-boundaries.sh` rule 7 asserts that **every**
-  `i2pr-*` workspace member appears in `expected`. Adding a crate without a
-  map entry therefore fails CI rather than silently escaping the check.
+- The checker's main loop iterates the keys of `expected`, which on its own
+  would make a member with **no** entry invisible -- deleting an entry would
+  make that crate's forbidden edges unreported rather than reported.
+  `scripts/check-console-boundaries.sh` rule 7 caught that set, but Plan 369
+  WP5 negative mutation **N11** proved the gap was real (removing the
+  `i2pr-app-fixture` entry still printed `dependency direction: ok`), so the
+  dependency script now **also fails closed on any unmapped `i2pr-*` member**.
+  The console rule is retained as a redundant check.
 - The coverage gap recorded in `AGENTS.md` (missing `i2pr-tunnel` and
   `tools/i2pr-interop` keys) was **closed** when the console was added;
   both now have explicit allowlists.
@@ -39,6 +43,9 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-i2pcontrol` (Plan 286) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-proto` (Plan 345) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-manager-proto` (Plan 368) | `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
+| `i2pr-appd` (Plan 369) | `i2pr-app-manager-proto`, `i2pr-app-proto` | same | `thiserror`, `tokio` |
+| `i2pr-apphost` (Plan 369) | `i2pr-app-manager-proto`, `i2pr-app-proto` | same | `thiserror`, `tokio`, `tokio-util` |
+| `i2pr-app-fixture` (Plan 369 WP5, **evidence tooling**) | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-appd` | same | `serde_json`, `thiserror`, `tokio` |
 | `i2pr-crypto` | `i2pr-proto` | same | `chacha20`, `chacha20poly1305`, `curve25519-dalek` (Plan 330), `ed25519-dalek`, `elligator2` (Plan 131; replaces the retired `curve25519-elligator2 0.1.0-alpha.2`), `hmac`, `rand_core`, `sha2`, `subtle`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-addressbook` (Plan 294) | `i2pr-proto` | same | `base64ct`, `serde`, `serde_json`, `thiserror` |
 | `i2pr-storage` | `i2pr-crypto` | same | `rand_core`, `thiserror`, `zeroize` |
@@ -53,7 +60,7 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` | same | `futures-util`, `rand_core`, `tokio`, `tokio-util`, `tracing`, `zeroize` |
 | `i2pr-service-tunnels` (Plans 174/175; portability Plans 349–351) | `i2pr-client` | none — **`i2pr-client` is allowed-but-unused** | `base64ct`, `sha2`, `subtle`, `thiserror`, `zeroize` |
 | `i2pr-console` (Plans 356–358) | (none) | none | `argon2`, `axum` (built without `tokio`), `rand_core`, `serde`, `serde_json`, `toml`, `zeroize` |
-| `i2pr-daemon` | 17 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 17 | `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
+| `i2pr-daemon` | 18 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 18 | `chacha20poly1305`, `clap`, `eggserve-server`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
 | `i2pr-testkit` (test-only) | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` | same | `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 
 Notes on the allowlisted-but-unused and legacy rows:
@@ -80,7 +87,7 @@ Notes on the allowlisted-but-unused and legacy rows:
 ### `i2pr-daemon` composition root
 
 `i2pr-daemon` is the CLI/config/composition root and is the only crate
-allowed to see 17 workspace dependencies at once:
+allowed to see 18 workspace dependencies at once:
 
 1. `i2pr-addressbook`
 2. `i2pr-api`
@@ -231,6 +238,27 @@ hidden inside a branching drawing:
   i2pr-netdb   <-- i2pr-daemon
 ```
 
+Plan 369's three process crates are a **separate island**: they reach the wire
+contracts and nothing in the router core, and they are related to each other by
+a process rather than a crate edge.
+
+```text
+  i2pr-app-proto           <-- i2pr-appd          <-- i2pr-app-fixture
+  i2pr-app-proto           <-- i2pr-apphost            (evidence tooling)
+  i2pr-app-manager-proto   <-- i2pr-appd
+  i2pr-app-manager-proto   <-- i2pr-apphost
+  i2pr-app-manager-proto   <-- i2pr-app-fixture
+
+  i2pr-app-proto           <-- i2pr-daemon
+  i2pr-app-manager-proto   <-- i2pr-daemon
+```
+
+There is deliberately **no** `i2pr-apphost -> i2pr-appd` edge and none may be
+added. The manager starts the apphost as a child process over an inherited
+anonymous pipe; if the apphost could link the manager, the component that
+execs applications could also link the component that authorises them, and the
+trust zone would be a naming convention rather than a build constraint.
+
 `i2pr-transport-ntcp2` and `i2pr-transport-ssu2` are siblings that share
 `i2pr-transport`; there is deliberately **no** edge between them, and
 `check-runtime-boundaries.sh` forbids one. That is why the chains above
@@ -305,6 +333,18 @@ that makes each one non-obvious.
   `i2pr-daemon` may depend on it, and the daemon — not the console —
   owns the listener, the `ControlClient` implementation, and the control
   principal.
+- `i2pr-appd` may not depend on `i2pr-daemon`, `i2pr-runtime`, or any router
+  crate (Plan 369; it is a separate runtime trust zone whose only production
+  edges are the two wire contracts). Its `i2pr-app-manager-proto` +
+  `i2pr-app-proto` edges are the whole of its reach.
+- `i2pr-apphost` may not depend on `i2pr-appd`, `i2pr-daemon`, or `i2pr-runtime`.
+  The manager and the apphost are related by a **process**, not a crate edge;
+  naming `i2pr-appd` here would invert the trust zone by letting the component
+  that execs applications link the component that authorises them.
+- `i2pr-appd` and `i2pr-apphost` may not depend on `i2pr-app-fixture`, and **no
+  router crate may name the fixture at all** (Plan 369 WP5; it is evidence
+  tooling). `i2pr-app-fixture -> i2pr-appd` is the one allowed direction: the
+  fixture manager has to run the real manager to qualify it.
 - **No production crate may depend on `i2pr-testkit`.** This rule is
   *not* in `check-dependency-direction.sh`; see
   [`i2pr-testkit`](#i2pr-testkit).
@@ -391,6 +431,26 @@ these two manifests may name the crate".
   allowlist, but `check-runtime-boundaries.sh` still does not inspect
   `tools/`, so its Tokio usage remains outside the runtime-boundary
   policy.
+
+### `i2pr-app-fixture` (Plan 369 WP5)
+
+- **Position:** evidence tooling that lives in `crates/` but never reaches a
+  shipped build. It holds the native fixture application and the fixture
+  manager; the manager runs the real `i2pr_appd::Appd` against a test launch
+  catalog, which is why `i2pr-app-fixture -> i2pr-appd` is its one unusual
+  edge.
+- **Inbound rule: none may depend on it, and no production *source* may even
+  name it.** This is stronger than the `i2pr-testkit` rule because a production
+  crate does not need a dependency edge to name an executable on disk — and
+  naming the fixture manager binary is exactly how the shipped manager would be
+  talked into launching it.
+  `scripts/check-managed-app-process-boundary.py` rule 2 enforces both halves
+  (a manifest edge, and the tokens `i2pr-app-fixture` / `i2pr_app_fixture` in
+  production Rust). Its rule 1 additionally pins the three blessed spawn sites,
+  so the fixture can only be reached through `i2pr-apphost`, which is the only
+  component permitted to exec an application.
+- **Actual production edges:** `i2pr-app-manager-proto`, `i2pr-app-proto`,
+  `i2pr-appd`. External: `serde_json`, `thiserror`, `tokio`.
 
 ## Runtime boundaries (orthogonal enforcement)
 

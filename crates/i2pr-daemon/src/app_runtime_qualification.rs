@@ -114,7 +114,18 @@ mod tests {
     // -- harness ------------------------------------------------------------
 
     /// A temporary directory that owns one run's transcript.
-    struct Scratch(PathBuf);
+    ///
+    /// Ordinary runs delete their scratch directory on drop. Setting
+    /// `I2PR_APP_FIXTURE_EVIDENCE_DIR` keeps it instead, so a closure record can
+    /// quote a real transcript rather than a reconstruction of one. The
+    /// environment read is confined to this `#[cfg(test)]` module and changes
+    /// only *retention* -- the transcript content, the fixture, and every
+    /// assertion are identical either way, so retaining evidence cannot change
+    /// what a green run proves.
+    struct Scratch {
+        path: PathBuf,
+        retained: bool,
+    }
 
     impl Scratch {
         fn new(label: &str) -> Self {
@@ -122,21 +133,31 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("i2pr-app-fixture-{label}-{unique}"));
+            let name = format!("i2pr-app-fixture-{label}-{unique}");
+            let retained = std::env::var_os(EVIDENCE_DIR_VAR).is_some();
+            let path = match std::env::var_os(EVIDENCE_DIR_VAR) {
+                Some(root) => PathBuf::from(root).join(name),
+                None => std::env::temp_dir().join(name),
+            };
             std::fs::create_dir_all(&path).expect("scratch dir");
-            Self(path)
+            Self { path, retained }
         }
 
         fn transcript(&self) -> PathBuf {
-            self.0.join("transcript.jsonl")
+            self.path.join("transcript.jsonl")
         }
     }
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            if !self.retained {
+                let _ = std::fs::remove_dir_all(&self.path);
+            }
         }
     }
+
+    /// Opt-in evidence retention. See [`Scratch`].
+    const EVIDENCE_DIR_VAR: &str = "I2PR_APP_FIXTURE_EVIDENCE_DIR";
 
     /// The Cargo target directory these binaries were built into.
     ///

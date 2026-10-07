@@ -132,6 +132,20 @@ are distinct message types and cannot be decoded as replies.
 is not authentication proof. A future trusted transport owner must bind that
 claim to its authenticated process/IPC principal before authorizing access.
 
+**Normative clarification (Plan 369).** That trusted transport owner now exists,
+and the binding it performs is: the application is exec'd by `i2pr-apphost` with
+**managed-app v1 on stdin/stdout**, and the `hello` app id and instance id MUST
+match the identity the manager created for that launch exactly. A mismatch in
+either field kills the launch; it is not corrected, defaulted, or retried.
+stderr carries bounded diagnostics only and is never protocol.
+
+Identity binding is still not process-identity *proof* in the sense of an
+attested sandbox: nothing here claims the application cannot forge a `hello`.
+What the binding does provide is that the host rejects any session whose
+declared identity is not the one the manager already issued, so a process that
+cannot reach the launch authority cannot silently adopt another instance's
+identity.
+
 The Plan-345 `hello` without a request ID, `accept`, `permission_status`, and
 directionless role enums are not accepted aliases. Version 1 remains at
 major/minor `1.0` because Plan 345's form was explicitly an unreleased draft
@@ -314,7 +328,8 @@ Implementations may use lower operational limits but not higher wire ceilings.
 
 This contract does not launch or contain a process, open a socket, resolve a
 name, serve UI, install packages, adapt SAM/I2CP/Proposal 170, or enforce a
-firewall. It does not establish application capability, anonymity, privacy,
+firewall. (Plan 369 supplies the process owner for this contract; it does not
+change what this contract is, and no sandbox containment is claimed.) It does not establish application capability, anonymity, privacy,
 or clearnet safety. Unauthorized egress containment cannot prevent an app from
 encoding identifying data in traffic it is allowed to send. Proposal 170
 binding is a successor-plan interface dependency, not a Plan 345 capability.

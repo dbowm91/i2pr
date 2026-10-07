@@ -42,6 +42,7 @@ counting method both numbers come from.
 | `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
+| `scripts/check-managed-app-process-boundary.py` | Plan 369 static guard for the property the crate-edge scripts cannot see — **which process execs what**. Rule 1 pins the three blessed spawn sites (daemon→manager, appd→apphost, apphost→application); rule 1b requires `current_exe()` sibling resolution for the two distribution-owned edges and forbids any shell launcher and any `PATH` lookup; rule 2 forbids production code naming the fixture and forbids any manifest depending on it; rule 3 requires the shipped manager to **refuse** argv (a guard whose body returns, not merely an `args_os` token) and to avoid `with_catalog`; rule 4 keeps the manager test seam definition-shaped, failing closed on any production *caller*. Strips comments and `#[cfg(test)]` regions before scanning, so a legal test-only use stays legal while a production caller does not. `--self-test` applies every mutation in memory and requires the scan to reject it, with negative controls so a rule wrong in the strict direction also fails. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. **Plan 362** adds (a) an `i2pr-api` section — 7 source rules (`tokio::`, `async fn`/`async_trait`, socket types, `std::fs`/`OpenOptions`/`File::`, unbounded channels, `JoinHandle`, `spawn(`) plus a manifest rule banning `i2pr-daemon\|runtime\|testkit\|console\|service-tunnels` — and (b) **brace normalisation**: a Python pass blanks comment bodies and literal contents, rewrites every `use` tree into flat leaves, and then re-applies the *same* alternations to the normalised text, so a grouped `use std::{fs, net};` is detected exactly like a flat import. The normalised scan is **additional** to the raw greps, which are untouched. It fails closed on unparseable `use` syntax. Positive controls cover grouped, nested, multi-line and glob groups. `std::net` address *values* remain permitted for `i2pr-api` (Plan 345 precedent). | yes | yes |
@@ -911,6 +912,7 @@ is listed separately in [Opt-in runners](#opt-in-runners-not-in-the-floor-not-in
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
@@ -918,6 +920,8 @@ cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
 python3 scripts/check-managed-app-gateway-boundary.py
 python3 scripts/check-managed-app-manager-boundary.py
+python3 scripts/check-managed-app-process-boundary.py
+python3 scripts/check-managed-app-process-boundary.py --self-test
 python3 scripts/check-portable-service-tunnel-api.py
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'

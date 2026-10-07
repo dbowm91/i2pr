@@ -1500,8 +1500,15 @@ pub struct NewsConfig {
 /// Experimental and disabled by default. Enabling this starts one supervised,
 /// restartable `i2pr-appd` child over an anonymous inherited transport. It does
 /// **not** enable a listener, does not grant any application capability, and
-/// does not make managed-app v1 a supported protocol — Plan 369 WP2's manager
-/// refuses every request because there is no launch-authority owner yet.
+/// does not make managed-app v1 a supported protocol.
+///
+/// Enabling it also does not launch anything, and that is structural rather
+/// than pending: the shipped manager owns `EmptyCatalog`, so it yields no
+/// launch authority, and the Plan-368 protocol has no manager-receivable launch
+/// request for the daemon to send. The switch currently buys a supervised,
+/// bounded process and its health signal, nothing more. Plan 369's WP5 evidence
+/// reaches applications only through the fixture manager, which is evidence
+/// tooling and unreachable from production.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppRuntimeConfig {
     /// Whether the supervised manager process is started at all.

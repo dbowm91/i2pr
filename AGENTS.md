@@ -33,17 +33,42 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 - `i2pr-i2pcontrol` — Proposal 170 JSON-RPC 2.0 wire/domain contract (no I/O).
 - `i2pr-service-tunnels` — runtime-neutral tunnel config/policy (no sockets; daemon owns listeners).
 - `i2pr-console` — loopback router console substrate (HTML/CSS/JS assets, themes, browser security, read-only overview). Owns **no socket** and has **zero** workspace dependencies; `axum` is built without `tokio`, so the crate stays runtime-neutral. Daemon owns the listener.
-- `i2pr-runtime` — sole production owner of Tokio, sockets, timers, channels, cancellation.
+- `i2pr-runtime` — sole production owner of Tokio, sockets, timers, channels, cancellation **for the router's own services**. Two exceptions are deliberate and are separate *process* trust zones, not router libraries: `i2pr-appd` and `i2pr-apphost` each own a runtime for their own process lifecycle (Plan 369), and `i2pr-app-fixture` is evidence tooling. They own no router state, no listener, and no route into the router — see the dependency map. Note that `check-runtime-boundaries.sh`'s manifest rule for Tokio is keyed on `^tokio[[:space:]]*=`, which does **not** match this repo's `tokio.workspace = true` style, so it currently cannot fire; the "Tokio dependencies are confined to approved runtime/testkit manifests" allowlist is consequently stale (it names only `i2pr-runtime` and `i2pr-testkit`, while `i2pr-daemon` predates even that). Recorded as an open finding in `plans/closure/managed-native-app-runtime/369-status.md`; closing it needs its own plan-of-record, and the rule must be fixed rather than relaxed.
 - `i2pr-daemon` — CLI/config/composition root; owns SAM/I2CP/I2PControl/service-tunnel/console listeners.
 - `i2pr-testkit` — deterministic fixtures only; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher.
 
 Enforced by `scripts/check-dependency-direction.sh`, `scripts/check-runtime-boundaries.sh`, `scripts/check-console-boundaries.sh`, and `scripts/check-console-browser-security.sh`. Details: `docs/architecture/overview.md`.
 
+## Managed application runtime (Plans 368–371; experimental, disabled by default)
+
+`i2pr-appd` is the supervised manager process and `i2pr-apphost` is the **only**
+component that execs an application. Both are separate process trust zones that
+reach nothing but the two wire contracts, are spoken to over **inherited
+anonymous pipes** (no listener, no port, no discovery endpoint), and resolve
+their own siblings via `current_exe()` — never configuration, never a shell,
+never `PATH`. `i2pr-app-fixture` is **evidence tooling**: no production crate may
+name it or depend on it.
+
+`[app_runtime]` is `deny_unknown_fields` and defaults to disabled. **Enabling it
+launches nothing**, because the shipped manager owns an empty launch catalog and
+the private protocol has no manager-receivable launch request. `Secured` is
+**refused before exec** — there is no qualified sandbox backend, so there is no
+containment claim of any kind, and no grandchild containment claim either. A
+broken manager degrades the app runtime and nothing else.
+
+Do not describe managed-app v1 as released, stable, supported, or advertised.
+Do not run a focused `cargo test -p i2pr-daemon` qualification run without
+`cargo build --locked -p i2pr-app-fixture -p i2pr-apphost` first (see the floor).
+
+Guards: `scripts/check-managed-app-process-boundary.py` — **run it with
+`--self-test` as well** — plus the Plan-368 gateway, manager, and private-client
+seam checkers.
+
 ## Skills and architecture index
 
 - Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/I2PControl/tunnel/transit/floodfill code, `i2pr-planning` when registering or closing out an implementation plan (roadmap/registry/closure mechanics). The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
-- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow, capability snapshot); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives, one per workspace member); `docs/architecture/interop-apparatus.md` (closed NTCP2 apparatus, archaeology only); `docs/adr/` (decisions 0000–0034; note the duplicate `0030-*` pair); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory). Latest drift audit: `docs/architecture/audit/`.
+- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow, capability snapshot); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives, one per workspace member); `docs/architecture/interop-apparatus.md` (closed NTCP2 apparatus, archaeology only); `docs/adr/` (decisions 0000–0035; note the duplicate `0030-*`, `0032-*` and `0033-*` pairs); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory). Latest drift audit: `docs/architecture/audit/`.
 
 ## Hard boundaries (CI-enforced — fix code, never weaken scripts)
 

@@ -55,6 +55,31 @@ The daemon remains the validating party regardless. Transport possession
 authenticates the *manager process*; it does not exempt the manager from message
 validation or from the authority ceiling in §5.
 
+### 3.1 Concrete inherited binding (normative, Plan 369)
+
+Plan 368 fixed the transport as an anonymous inherited capability but chose no
+concrete binding. Plan 369 binds it normatively:
+
+- The daemon creates **two anonymous pipes** and hands the manager the read end
+  of the daemon→manager pipe on **file descriptor 0 (stdin)** and the write end
+  of the manager→daemon pipe on **file descriptor 1 (stdout)**. The manager's
+  read half is therefore stdin and its write half is stdout.
+- File descriptor 2 (stderr) is **reserved for the manager's own diagnostics**.
+  It is never protocol, and nothing in this contract interprets it as control.
+- The manager executable is **distribution-owned**: the `current_exe()` sibling
+  of the daemon, with platform suffix rules applied. No configuration value,
+  environment variable, or command-line argument may select it.
+- The manager MUST refuse **all** arguments rather than ignore them: an ignored
+  argument is indistinguishable, from the outside, from one that was understood
+  and ignored.
+- There is no socket, port, discovery endpoint, or standalone mode. A manager
+  started without an inherited transport has nothing to talk to and holds no
+  authority.
+
+`scripts/check-managed-app-process-boundary.py` enforces the executable
+resolution, the absence of a shell launcher and of any `PATH` lookup, and the
+argument refusal.
+
 ## 4. Wire format
 
 All integers are big-endian. Bytes are counted in octets.
@@ -238,9 +263,21 @@ For an authorised service open:
 | one session failure | does not close sibling sessions unless the transport itself failed |
 | max+1 session / stream / request | rejected synchronously |
 | daemon restart | all manager sessions lost; no persistence |
-| manager restart | recovery is out of scope for this boundary |
+| manager restart | recovery is out of scope for this boundary; restart begins empty |
+| manager hung / crashed | the app runtime degrades; the router stays usable |
 
 There is no unbounded queue and no automatic retry loop.
+
+Supervision is the daemon's, not the protocol's: the manager is spawned as a
+direct child, and on shutdown the daemon drops the pipe ends — which is EOF,
+which is the manager's only shutdown signal — then escalates to killing and
+reaping the direct child after a bounded grace. A manager that fails its
+handshake, violates the framing, or reaches EOF has already stopped speaking the
+protocol, so it takes the short reap path rather than the full graceful grace.
+
+**Non-goal:** grandchild containment. Only the manager is owned and reaped; the
+apphost it starts in turn owns and reaps the application. No claim is made about
+processes below that line.
 
 ## 10. Message and authority matrix summary
 

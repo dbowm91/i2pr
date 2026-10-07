@@ -141,6 +141,42 @@ default**, and the end-to-end console behaviour is still exercised by driving
 `cargo test -p i2pr-daemon --test console_loopback -- --test-threads=1`.
 `check-config` validates the `[console]` section.
 
+## Managed application runtime (experimental)
+
+Plan 369 added a managed-application runtime: the router can supervise a
+separate **manager** process, which in turn starts applications through a
+direct-exec host. It is **disabled by default**, and it currently launches
+nothing.
+
+```toml
+[app_runtime]
+enabled = true   # default: false
+```
+
+- The manager (`i2pr-appd`) is the router's own binary-directory **sibling**.
+  There is no configuration value, environment variable, or argument that can
+  select a different executable — the block is `deny_unknown_fields`, so a
+  `manager_path` key is a hard parse error rather than a silently ignored
+  setting.
+- The manager is spoken to over **two inherited anonymous pipes**. There is no
+  listener, no port, and no discovery endpoint, and it cannot be run standalone
+  and have it mean anything.
+- **Enabling it launches nothing**, and that is structural rather than pending:
+  the shipped manager owns an empty launch catalog, and the private manager
+  protocol has no manager-receivable launch request. Turning it on buys a
+  supervised, bounded process and its health signal.
+- `LaunchProfile::Secured` is **refused before any exec**. No qualified OS
+  sandbox backend exists, so there is no containment claim of any kind.
+- A broken manager degrades the app runtime and nothing else: the router stays
+  up and reports ready.
+
+Plan 369 WP5 qualified the whole chain black-box — daemon → manager → host →
+fixture application → real SAM and I2CP — with no loopback listener. That run
+found that the manager link never flushed its frames, which had made every
+launch fail; see
+[`plans/closure/managed-native-app-runtime/369-status.md`](plans/closure/managed-native-app-runtime/369-status.md).
+Managed-app v1 remains unreleased and is not advertised anywhere.
+
 ## Running the router
 
 `i2pr run --config <cfg>` starts the router, binds its configured loopback
@@ -167,7 +203,7 @@ storage, `46` supervisor terminated. Full set in
 | Per-crate deep dives | [`docs/architecture/`](docs/architecture/) |
 | Security boundaries, threat model | [`docs/security-model.md`](docs/security-model.md) |
 | Scripts, fixtures, evidence lanes, CI | [`docs/architecture/tooling.md`](docs/architecture/tooling.md) |
-| Architecture decisions (ADR 0000–0034) | [`docs/adr/`](docs/adr/) |
+| Architecture decisions (ADR 0000–0035) | [`docs/adr/`](docs/adr/) |
 | Controlled testnet boundary | [`docs/private-testnet.md`](docs/private-testnet.md) |
 | Contributing conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Non-negotiable guardrails | [`GUARDRAILS.md`](GUARDRAILS.md) |

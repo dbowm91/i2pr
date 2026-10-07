@@ -255,9 +255,56 @@ Properties the module holds:
 The normative contract is
 [`managed-app-manager-protocol-v1.md`](../../specs/references/managed-app-manager-protocol-v1.md).
 `scripts/check-managed-app-manager-boundary.py` and `scripts/check-runtime-boundaries.sh`
-enforce the boundary statically. As of Plan 368 this module has **no production
-caller** — that is Plan 369 — so its `#![allow(dead_code)]` is scoped and
-documented, and it must not be read as shipped capability.
+enforce the boundary statically. Plan 369 supplied the production caller this
+module previously lacked: `app_runtime` drives it over the inherited anonymous
+transport. The `#![allow(dead_code)]` remains scoped and documented, and must
+not be read as evidence that the bridge is unused.
+
+### Managed application runtime supervision (Plan 369)
+
+`app_runtime` is the daemon's half of the managed-app process: it creates the
+two anonymous pipes, resolves the manager executable, supervises the child, and
+runs the `AppManagerBridge` over those pipes.
+
+**Executable resolution is distribution-owned.** The manager is the
+`current_exe()` **sibling** of the daemon, with platform suffix rules applied
+(`i2pr.exe` on Windows, the bare name elsewhere — "a name that would otherwise
+need a shell to interpret is not a name we are willing to spawn"). There is
+deliberately no configuration counterpart to that constant: a configurable
+manager path is exactly the user-configurable-program hole Plan 369 closes.
+
+**There is no discoverable endpoint.** The manager's read end is the
+daemon→manager pipe's write end and vice versa; there is no listener and no
+port, and the manager cannot be reached by anything that did not inherit the
+pipes.
+
+**Teardown is bounded and always escalates.** The daemon drops the pipe ends,
+which is EOF, which is the manager's only shutdown signal. A manager that
+ignores it must not hold the daemon open, so after `MANAGER_EXIT_GRACE` the
+direct child is killed, and after a short `MANAGER_REAP_GRACE` it is reaped. A
+manager that already violated the protocol gets the short reap path instead —
+waiting the full graceful grace there would multiply the restart budget by an
+order of magnitude.
+
+**Failure never terminates the router.** Every `ManagerLaunchError` variant is
+fail-closed: the service returns a typed failure and the supervisor's bounded
+restart policy decides. The app runtime registers with
+`StartupRequirement::Optional` (Plan 371), so an optional subsystem degrades
+its own feature instead of aborting router startup, and it is excluded from
+`SupervisorSnapshot::ready` so a usable router is not reported as unready.
+Invariant 1 is the reason this is optional rather than a matter of taste.
+
+stderr is drained continuously with a bounded retained snapshot
+(`MAX_MANAGER_STDERR_SNAPSHOT_BYTES`) and an uncapped byte total, so a failing
+manager cannot drive unbounded allocation. The snapshot exists so an operator
+can see *why* a manager refused to start; it is never interpreted as protocol.
+
+**`set_manager_path_override_for_tests` is a test seam.** It is `#[doc(hidden)]
+pub` so a `#[cfg(test)]` module can point the supervisor at the fixture
+manager. A definition is inert, but a *caller* would turn it into "the router
+can be told which executable to start";
+`scripts/check-managed-app-process-boundary.py` rule 4 separates the two shapes
+and fails closed on any production caller.
 
 ### SAM 3.1
 
@@ -345,17 +392,19 @@ under Key contracts for the lifecycle detail.
 
 ## Public surface
 
-### The actual `pub mod` / `mod` declarations (`src/lib.rs:8–55`)
+### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–62`)
 
-44 `pub mod` + 4 private modules + 4 `sam/` submodules:
+50 `pub mod` + 4 private modules + 4 `sam/` submodules:
 
-`pub mod` — `addressbook`, `bootstrap`, `cli`, `config`, `console`,
-`control_sources`,
-`destination_peers`, `destination_streaming`, `destination_tunnels`, `error`,
-`exploratory_build`, `floodfill`, `i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
+`pub mod` — `addressbook`, `app_gateway`, `app_manager_bridge`, `app_runtime`,
+`bootstrap`, `cli`, `config`, `console`, `control_sources`,
+`destination_peers`, `destination_streaming`, `destination_tunnels`,
+`encrypted_service_resolver`, `error`, `exploratory_build`, `floodfill`,
+`i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
 `i2pcontrol_inspection`,
 `i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
-`outbound_lookup`, `outbound_secret`, `outproxy_route`, `peer_test`, `router_i2np`,
+`outbound_lookup`, `outbound_secret`, `outproxy_options`, `outproxy_route`,
+`peer_test`, `router_i2np`,
 `sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
 `service_tunnels`, `service_tunnels_http`, `service_tunnels_http_bidir`,
 `service_tunnels_http_server`, `service_tunnels_irc_client`,
@@ -363,10 +412,13 @@ under Key contracts for the lifecycle detail.
 `service_tunnels_streamr`, `service_tunnels_tls`, `transit_compose`, `transit_owner`,
 `transit_volume`, `tunnel_liveness`.
 
-`console` and `i2pcontrol_dispatch` were added by Plans 356–358.
+`console` and `i2pcontrol_dispatch` were added by Plans 356–358;
+`app_gateway`, `app_manager_bridge` by Plan 368 and `app_runtime` by Plan 369.
 
-Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`, `mod tests`
-(in-crate test module).
+Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`,
+`mod app_runtime_qualification` (the Plan 369 WP5 `#[cfg(test)]` black-box
+module; it compiles out of every real build, which is why it may name the
+fixture binaries freely), and `mod tests` (in-crate test module).
 
 ### The actual `pub use` re-exports (`src/lib.rs:57–65`)
 
