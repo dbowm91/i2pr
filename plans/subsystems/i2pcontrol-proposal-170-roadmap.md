@@ -756,6 +756,6 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 | 373 (plan) | — | — | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
 | 374 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
 | 375 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
-| 376 | **ready** | capability/resilience closure | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
+| 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
 | 378 | blocked on 373 + 376 + 377 | final conformance gate | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |
