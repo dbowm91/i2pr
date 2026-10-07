@@ -703,22 +703,96 @@ From `crates/i2pr-service-tunnels/Cargo.toml` — production dependencies only, 
 | Dependency | Why |
 | --- | --- |
 | `base64ct` (workspace) | RFC 7617 Basic credential decode in `auth.rs`; Basic encoding of the outproxy `Proxy-Authorization` value in `outproxy.rs` |
+| `i2pr-proto` (path) | `EncryptedServiceAddress` / `is_encrypted_service_address` in `destination.rs`, so a `.b33` encrypted-service address can be a service-tunnel remote target. Added by Proposal 170/351 and permitted by the Plan 359 amendment |
 | `sha2` (workspace) | SHA-256 credential verifiers (`auth.rs`) |
 | `subtle` (workspace) | Constant-time verifier comparison (`auth.rs`) |
 | `thiserror` (workspace) | `ServiceTunnelError` derive |
 | `zeroize` (workspace) | `Zeroizing` buffers in `outbound_secret.rs` and `outproxy.rs` (`OutproxyAuthHeader`, `OutproxyWireBuffer`) |
 
-The full source search found no `i2pr_proto` use in production or test code. Plan 350
-removed the unused path dependency, leaving no internal crate dependency. The dependency
-direction allowlist retains only the optional `i2pr-client` edge for future destination
-and Streaming reuse; the service-tunnel boundary checker rejects any `i2pr-*` manifest
-dependency other than that edge.
+**Corrected by Plan 379.** This section previously recorded the Plan 350 state —
+"the full source search found no `i2pr_proto` use … Plan 350 removed the unused path
+dependency, leaving no internal crate dependency." That was accurate when written and
+went stale when Plan 359 landed the one permitted edge on `main`. `i2pr-proto` is now a
+real production dependency used by `destination.rs`, and it brings `flate2`, a second
+`sha2` path, and `zeroize` transitively.
 
-`scripts/check-service-tunnel-boundaries.sh` rejects any direct `i2pr-*` dependency
-in this manifest; none is present.
+The `i2pr-proto` edge is a **path-only dependency with no `version` requirement**. That
+is deliberate for Git consumption — a Git consumer resolves it inside the same checkout
+— and it is the reason `cargo package` cannot stage this crate. See
+[Distribution posture](#distribution-posture-plan-379) below.
+
+`scripts/check-service-tunnel-boundaries.sh` rejects any direct `i2pr-*` dependency in
+this manifest other than the single `i2pr-proto` edge named above; it enforces the
+exception by name rather than by omission, and its positive control asserts that the
+permitted edge does **not** trip either rule.
 
 Reverse direction: `i2pr-daemon` depends on `i2pr-service-tunnels` (line 45 of the
 checker's `i2pr-daemon` allowlist) for the typed spec surface.
+
+## Distribution posture (Plan 379)
+
+**Status: `git-consumable`, and `crates.io-blocked-by-publishable-versioned-i2pr-proto`.**
+
+The owner selected the MIT license in the Plan 379 registration branch. That lifted the
+*legal* gate Plan 350 recorded — and it turned out not to be the only gate. Plan 379's
+package audit found a second, purely technical one.
+
+### What the audit actually ran
+
+```text
+$ cargo package --locked -p i2pr-service-tunnels --allow-dirty --no-verify
+error: failed to verify manifest at `crates/i2pr-service-tunnels/Cargo.toml`
+
+Caused by:
+  all dependencies must have a version requirement specified when packaging.
+  dependency `i2pr-proto` does not specify a version
+  Note: The packaged dependency will use the version from crates.io,
+  the `path` specification will be removed from the dependency declaration.
+```
+
+This is the named technical blocker, and it is **not** the license. The manifest declares
+
+```toml
+i2pr-proto = { path = "../i2pr-proto" }
+```
+
+with no `version` key. Cargo accepts that for a Git consumer — a dependency fetched from
+the same repository resolves its path inside the checkout — but `cargo package` must
+emit a registry-resolvable dependency, and a path-only edge cannot be staged. So
+`publish = false` stays, for a *different and more specific* reason than the one Plan 350
+gave.
+
+### The prerequisite is satisfiable, and that is the useful part
+
+```text
+$ cargo package --locked -p i2pr-proto --allow-dirty
+    Packaged 34 files, 509.6KiB (103.4KiB compressed)
+   Verifying i2pr-proto v0.1.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.16s
+```
+
+`i2pr-proto` **does** package and verify cleanly today. The blocker is a *policy* choice
+(`publish = false` on `i2pr-proto`), not an unpackageable crate. That is the difference
+between "crates.io is blocked" and "crates.io is deferred by decision", and it is worth
+recording precisely because the audit was run to find out rather than assumed.
+
+The full chain, none of which Plan 379 is authorized to perform:
+
+1. clear `publish = false` on `i2pr-proto` and publish it at `0.1.0`;
+2. add `version = "0.1"` to the `i2pr-proto` edge in this manifest;
+3. replace this crate's `publish = false` with a registry.
+
+Step 2 is a one-line manifest change, but it is a *public contract* change — it pins a
+minimum `i2pr-proto` version that external consumers will resolve — so it needs its own
+plan of record rather than a cleanup pass.
+
+### What this does not change
+
+Git consumption is unaffected and is proven separately by
+`bash scripts/check-portable-service-tunnel-consumer.sh`, which builds two standalone
+fixtures against fixed pushed revisions and asserts the resolved dependency tree contains
+only the reviewed public package graph. Nothing here is published; no crates.io
+publication is authorized by Plan 379.
 
 ## Tests
 

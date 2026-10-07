@@ -1,5 +1,7 @@
-# The project license has not been selected yet.  License allow-listing is
-# intentionally deferred; the CI job checks advisories, bans, and sources.
+# The project license is MIT (owner-selected, Plan 379). License allow-listing is
+# still deferred: enabling `cargo deny check licenses` means reviewing every
+# transitive dependency's license, which is a provenance exercise of its own. The
+# CI job continues to check advisories, bans, and sources.
 
 [graph]
 all-features = true
@@ -19,6 +21,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 [licenses]
 # The empty allow-list intentionally makes license checking fail closed once the
-# project enables `cargo deny check licenses`; populate it only after owner
-# selection and provenance review of the project license policy.
+# project enables `cargo deny check licenses`. Populating it is a separate plan:
+# the project license is selected, but reviewing each transitive dependency's
+# license is a provenance review, not a metadata change.
 allow = []
