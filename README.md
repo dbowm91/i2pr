@@ -143,10 +143,10 @@ default**, and the end-to-end console behaviour is still exercised by driving
 
 ## Managed application runtime (experimental)
 
-Plan 369 added a managed-application runtime: the router can supervise a
-separate **manager** process, which in turn starts applications through a
-direct-exec host. It is **disabled by default**, and it currently launches
-nothing.
+Plans 369 and 374 provide an experimental managed-application runtime: the
+router can supervise a separate **manager** process, which starts applications
+through a direct-exec host. It is **disabled by default** and not advertised or
+supported.
 
 ```toml
 [app_runtime]
@@ -161,10 +161,15 @@ enabled = true   # default: false
 - The manager is spoken to over **two inherited anonymous pipes**. There is no
   listener, no port, and no discovery endpoint, and it cannot be run standalone
   and have it mean anything.
-- **Enabling it launches nothing**, and that is structural rather than pending:
-  the shipped manager owns an empty launch catalog, and the private manager
-  protocol has no manager-receivable launch request. Turning it on buys a
-  supervised, bounded process and its health signal.
+- A package signature identifies its publisher key but does not establish
+  trust or grant permission. The offline `i2pr-appctl` administrator must
+  install the package, trust its publisher, select the exact artifact, choose a
+  profile, grant requested capabilities, and enable autostart before appd can
+  launch it. Mutations are refused while appd runs and apply after restart.
+- The private manager protocol has no manager-receivable launch request.
+- `UnsafeDirect` provides ordinary host networking without a sandbox and
+  requires explicit acknowledgement. `Secured` remains refused before exec.
+  Application exit does not trigger automatic restart.
 - `LaunchProfile::Secured` is **refused before any exec**. No qualified OS
   sandbox backend exists, so there is no containment claim of any kind.
 - A broken manager degrades the app runtime and nothing else: the router stays

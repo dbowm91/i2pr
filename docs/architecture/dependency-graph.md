@@ -43,7 +43,10 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-i2pcontrol` (Plan 286) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-proto` (Plan 345) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-manager-proto` (Plan 368) | `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
-| `i2pr-appd` (Plan 369) | `i2pr-app-manager-proto`, `i2pr-app-proto` | same | `thiserror`, `tokio` |
+| `i2pr-app-package` (Plan 373) | `i2pr-app-proto` | same | `ed25519-dalek`, `serde`, `serde_json`, `sha2`, `thiserror`, `zip` |
+| `i2pr-app-state` (Plan 374) | `i2pr-app-package`, `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
+| `i2pr-appctl` (Plan 374) | `i2pr-app-package`, `i2pr-app-proto`, `i2pr-app-state` | same | `clap` |
+| `i2pr-appd` (Plans 369/374) | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-app-state` | same | `rand_core`, `thiserror`, `tokio` |
 | `i2pr-apphost` (Plan 369) | `i2pr-app-manager-proto`, `i2pr-app-proto` | same | `thiserror`, `tokio`, `tokio-util` |
 | `i2pr-app-fixture` (Plan 369 WP5, **evidence tooling**) | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-appd` | same | `serde_json`, `thiserror`, `tokio` |
 | `i2pr-crypto` | `i2pr-proto` | same | `chacha20`, `chacha20poly1305`, `curve25519-dalek` (Plan 330), `ed25519-dalek`, `elligator2` (Plan 131; replaces the retired `curve25519-elligator2 0.1.0-alpha.2`), `hmac`, `rand_core`, `sha2`, `subtle`, `thiserror`, `x25519-dalek`, `zeroize` |
@@ -238,13 +241,16 @@ hidden inside a branching drawing:
   i2pr-netdb   <-- i2pr-daemon
 ```
 
-Plan 369's three process crates are a **separate island**: they reach the wire
-contracts and nothing in the router core, and they are related to each other by
+The managed-app trust zone is a **separate island** from router core. The
+package/state crates hold no process authority; appd alone consumes validated
+decisions and creates launch authority. The manager and apphost are related by
 a process rather than a crate edge.
 
 ```text
   i2pr-app-proto           <-- i2pr-appd          <-- i2pr-app-fixture
   i2pr-app-proto           <-- i2pr-apphost            (evidence tooling)
+  i2pr-app-proto           <-- i2pr-app-package <-- i2pr-app-state <-- i2pr-appctl
+  i2pr-app-package         <-- i2pr-app-state  <-- i2pr-appd
   i2pr-app-manager-proto   <-- i2pr-appd
   i2pr-app-manager-proto   <-- i2pr-apphost
   i2pr-app-manager-proto   <-- i2pr-app-fixture
@@ -334,9 +340,12 @@ that makes each one non-obvious.
   owns the listener, the `ControlClient` implementation, and the control
   principal.
 - `i2pr-appd` may not depend on `i2pr-daemon`, `i2pr-runtime`, or any router
-  crate (Plan 369; it is a separate runtime trust zone whose only production
-  edges are the two wire contracts). Its `i2pr-app-manager-proto` +
-  `i2pr-app-proto` edges are the whole of its reach.
+  crate (Plans 369/374). Its only production edges are the two wire contracts
+  and `i2pr-app-state`; only appd crosses a validated local policy decision to
+  launch authority.
+- `i2pr-app-package`, `i2pr-app-state`, and `i2pr-appctl` may not depend on
+  daemon/runtime/router protocol owners. Neither package nor policy code can
+  construct `LaunchAuthority`.
 - `i2pr-apphost` may not depend on `i2pr-appd`, `i2pr-daemon`, or `i2pr-runtime`.
   The manager and the apphost are related by a **process**, not a crate edge;
   naming `i2pr-appd` here would invert the trust zone by letting the component
@@ -352,7 +361,7 @@ that makes each one non-obvious.
 ## Coverage gaps
 
 `check-dependency-direction.sh` now has one `expected` key per workspace
-member: 22 keys for 22 members (21 crates under `crates/` plus
+member: 25 keys for 25 members (24 crates under `crates/` plus
 `tools/i2pr-interop`). There is no longer a crate whose production edges
 escape comparison.
 

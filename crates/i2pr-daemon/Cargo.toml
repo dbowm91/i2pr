@@ -51,8 +51,10 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 futures-executor.workspace = true
 i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-app-state = { path = "../i2pr-app-state" }
 i2pr-netdb = { path = "../i2pr-netdb" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-transport = { path = "../i2pr-transport" }
@@ -61,7 +63,9 @@ rand_chacha = "0.9"
 rand_core = { version = "0.9", features = ["std", "os_rng"] }
 rand_chacha_10 = { package = "rand_chacha", version = "0.10" }
 sad-rsa = { workspace = true, features = ["encoding"] }
+sha2.workspace = true
 tempfile = "3.14"
+zip.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 

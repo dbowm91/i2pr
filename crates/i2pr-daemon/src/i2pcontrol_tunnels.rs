@@ -7711,7 +7711,11 @@ mod tests {
         // listeners would collide at the boundary).
         let ports = distinct_ports(2);
         let mut options = client_options(&destination, ports[0]);
-        options.insert("idle_timeout".to_owned(), "1000".to_owned());
+        // This is an integration test of applying the manager decision, not
+        // the 1-second deadline edge (covered in i2pr-service-tunnels). Keep
+        // enough setup-time headroom that a slow serial workspace run cannot
+        // cross the deadline before the explicit early-sweep assertion.
+        options.insert("idle_timeout".to_owned(), "60000".to_owned());
         options.insert("close_on_idle".to_owned(), "true".to_owned());
         block_on(control.create(&create_request("idleclose", TunnelType::Client, options)))
             .expect("create runs");

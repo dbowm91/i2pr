@@ -20,6 +20,9 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 
 - `i2pr-proto` — bounded wire codecs, typed errors, no I/O.
 - `i2pr-app-proto` — runtime-neutral managed-app contract for identity, capabilities, framing, manifests, policy, and attestation; no OS/runtime ownership or production workspace dependencies.
+- `i2pr-app-package` — signed `.i2prapp` verification and immutable local store; no trust/grant/catalog/launch authority.
+- `i2pr-app-state` — persistent offline policy generations and package-verified launch decisions; cannot construct `LaunchAuthority`.
+- `i2pr-appctl` — offline package and policy administrator CLI; no router listeners, runtime, or network clients.
 - `i2pr-crypto` — protocol crypto wrappers (no local primitives).
 - `i2pr-storage` — identity/key persistence.
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
@@ -40,7 +43,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 
 Enforced by `scripts/check-dependency-direction.sh`, `scripts/check-runtime-boundaries.sh`, `scripts/check-console-boundaries.sh`, and `scripts/check-console-browser-security.sh`. Details: `docs/architecture/overview.md`.
 
-## Managed application runtime (Plans 368–371; experimental, disabled by default)
+## Managed application runtime (Plans 368–374; experimental, disabled by default)
 
 `i2pr-appd` is the supervised manager process and `i2pr-apphost` is the **only**
 component that execs an application. Both are separate process trust zones that
@@ -50,19 +53,26 @@ their own siblings via `current_exe()` — never configuration, never a shell,
 never `PATH`. `i2pr-app-fixture` is **evidence tooling**: no production crate may
 name it or depend on it.
 
-`[app_runtime]` is `deny_unknown_fields` and defaults to disabled. **Enabling it
-launches nothing**, because the shipped manager owns an empty launch catalog and
-the private protocol has no manager-receivable launch request. `Secured` is
-**refused before exec** — there is no qualified sandbox backend, so there is no
-containment claim of any kind, and no grandchild containment claim either. A
+`[app_runtime]` is `deny_unknown_fields` and defaults to disabled. Enabling it
+starts the production catalog, which can launch only explicitly trusted,
+selected, granted, profile-configured applications with autostart enabled in
+the offline policy store. Appd receives only the canonical managed-app root
+from the daemon after `env_clear`; the private protocol has no
+manager-receivable launch request. `UnsafeDirect` means ordinary host
+networking without a sandbox. `Secured` is **refused before exec** — there is
+no qualified sandbox backend, so there is no containment claim of any kind,
+including for grandchildren. Policy changes require app runtime restart. A
 broken manager degrades the app runtime and nothing else.
 
 Do not describe managed-app v1 as released, stable, supported, or advertised.
 Do not run a focused `cargo test -p i2pr-daemon` qualification run without
-`cargo build --locked -p i2pr-app-fixture -p i2pr-apphost` first (see the floor).
+`cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd` first
+(see the floor).
 
 Guards: `scripts/check-managed-app-process-boundary.py` — **run it with
-`--self-test` as well** — plus the Plan-368 gateway, manager, and private-client
+`--self-test` as well** — `scripts/check-managed-app-package-boundary.py`
+(`--self-test` too), `scripts/check-managed-app-policy-boundary.py`
+(`--self-test` too), plus the Plan-368 gateway, manager, and private-client
 seam checkers.
 
 ## Skills and architecture index
@@ -107,7 +117,7 @@ seam checkers.
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
@@ -123,6 +133,10 @@ bash scripts/check-console-boundaries.sh
 bash scripts/check-console-browser-security.sh
 python3 scripts/check-tooling-inventory.py
 python3 scripts/check-managed-app-private-client-seams.py
+python3 scripts/check-managed-app-package-boundary.py
+python3 scripts/check-managed-app-package-boundary.py --self-test
+python3 scripts/check-managed-app-policy-boundary.py
+python3 scripts/check-managed-app-policy-boundary.py --self-test
 bash scripts/check-service-tunnel-boundaries.sh
 python3 scripts/check-managed-app-gateway-boundary.py
 python3 scripts/check-managed-app-manager-boundary.py
@@ -161,13 +175,14 @@ cargo deny check advisories bans sources
 
 macOS CI builds all test executables once then runs each with `--test-threads=1` (loopback suites flake under parallel Cargo). Use `--test-threads=1` locally for `i2pr-daemon`/`i2pr-runtime` suites. After changing committed fixture bytes, also run `bash scripts/check-fixture-manifest.sh`; after NTCP2/SSU2/I2CP fixture changes run the matching `check-*-vectors.sh`.
 
-**Why the floor builds `-p i2pr-app-fixture -p i2pr-apphost` explicitly.** Every
+**Why the floor builds the managed-app sibling binaries explicitly.** Every
 other floor line emits only test harnesses under `target/debug/deps`;
 `cargo check`, `cargo test --all-targets` and `cargo clippy` never produce the
-plain `target/debug/<name>` binaries. Plan 369's black-box qualification in
+plain `target/debug/<name>` binaries. Plans 369/374's black-box qualification in
 `crates/i2pr-daemon/src/app_runtime_qualification.rs` execs **real sibling
-executables** (the fixture manager and `i2pr-apphost`), so without that build
-line it would run whatever binaries were left over from the last build. Its
+executables** (`i2pr-app-fixture-manager`, the production `i2pr-appd`, and
+`i2pr-apphost`), so without that build line it could run binaries left over
+from the last build. Its
 `assert_fresh` staleness guard catches exactly this and fails closed — verified
 on 2026-10-07, when `cargo test --workspace --all-targets --no-run` left
 `target/debug/i2pr-app-fixture-manager` at its pre-existing mtime. Run the same
@@ -219,9 +234,8 @@ script.
   `check-console-boundaries.sh` rule 7 now asserts that every `i2pr-*`
   workspace member appears in the map, so the gap cannot silently reopen when
   a crate is added. **The count is now enforced, not asserted here**: after
-  Plan 369 added `i2pr-appd` the map holds **24 keys for 24 members**
-  (23 `crates/*` members plus `tools/i2pr-interop`). Do not re-state a count in
-  this file — verify it instead:
+  Plans 373–374 added three managed-app crates. Do not re-state a count in
+  this file — verify the exact set instead:
   `cargo metadata --no-deps` set-membership against the map's keys.
 - ~~`tools/i2pr-interop` is unpoliced by the direction script~~ — **CLOSED by
   Plan 356** for production edges (see the entry above). It is still outside

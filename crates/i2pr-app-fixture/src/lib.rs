@@ -12,13 +12,13 @@
 //! It is **not** an application the router can be made to launch. Two independent
 //! facts keep it that way, and both are asserted rather than assumed:
 //!
-//! 1. The shipped `i2pr-appd` binary owns [`i2pr_appd::EmptyCatalog`], so no
-//!    authority ever names this executable. This crate is not a dependency of any
-//!    production crate, and `scripts/check-dependency-direction.sh` fails closed
-//!    on a new edge into it.
-//! 2. Only the **fixture manager** binary constructs an authority for it, and
-//!    that binary is evidence tooling too. `scripts/check-managed-app-process-boundary.py`
-//!    asserts that no production module can name it.
+//! 1. This crate is not a dependency of any production crate, and
+//!    `scripts/check-dependency-direction.sh` fails closed on a new edge into it.
+//! 2. The shipped manager never names or bundles this executable. It can only
+//!    run after an operator explicitly packages, signs, installs, trusts,
+//!    selects, grants, and enables autostart for it; the qualification does
+//!    those steps in a temporary local store. The process-boundary checker
+//!    asserts that no production module can name the fixture.
 //!
 //! # Why scenarios are data
 //!
@@ -275,6 +275,62 @@ impl FixtureArgs {
             app_id: app_id.ok_or(FixtureError::MissingOption("--app-id"))?,
             instance: instance.ok_or(FixtureError::MissingOption("--instance"))?,
             transcript: transcript.ok_or(FixtureError::MissingOption("--transcript"))?,
+        })
+    }
+
+    /// Parses only appd's reserved launch context for the Plan-374 persistent
+    /// catalog qualification. Scenario selection is derived from the signed
+    /// test package's AppId, and the transcript path is local evidence output;
+    /// neither value is supplied by launch authority.
+    pub fn parse_managed<I, S>(args: I) -> Result<Self, FixtureError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut app_id = None;
+        let mut instance = None;
+        for argument in args {
+            let argument = argument.as_ref();
+            let Some((key, value)) = argument.split_once('=') else {
+                return Err(FixtureError::UnsupportedArgument(argument.to_owned()));
+            };
+            let duplicate = match key {
+                "--i2pr-app-id" => app_id.replace(value.to_owned()).is_some(),
+                "--i2pr-app-instance" => {
+                    let parsed = value
+                        .parse::<u128>()
+                        .map_err(|_| FixtureError::UnsupportedArgument(argument.to_owned()))?;
+                    instance.replace(parsed).is_some()
+                }
+                _ => return Err(FixtureError::UnsupportedArgument(argument.to_owned())),
+            };
+            if duplicate {
+                return Err(FixtureError::ConflictingScenarios);
+            }
+        }
+        let app_id = app_id.ok_or(FixtureError::MissingOption("--i2pr-app-id"))?;
+        i2pr_app_proto::AppId::parse(app_id.clone())
+            .map_err(|_| FixtureError::UnsupportedArgument("--i2pr-app-id".to_owned()))?;
+        let instance = instance.ok_or(FixtureError::MissingOption("--i2pr-app-instance"))?;
+        i2pr_app_proto::AppInstanceId::new(instance)
+            .map_err(|_| FixtureError::UnsupportedArgument("--i2pr-app-instance".to_owned()))?;
+        let scenario = if app_id.ends_with(".i2cp") {
+            Scenario::I2cpHappyPath
+        } else if app_id.ends_with(".sam") {
+            Scenario::SamHappyPath
+        } else {
+            return Err(FixtureError::UnsupportedArgument(
+                "--i2pr-app-id".to_owned(),
+            ));
+        };
+        let transcript = std::env::temp_dir().join(format!(
+            "i2pr-app-fixture-managed-{app_id}-{instance}.jsonl"
+        ));
+        Ok(Self {
+            scenario,
+            app_id,
+            instance,
+            transcript: transcript.to_string_lossy().into_owned(),
         })
     }
 }

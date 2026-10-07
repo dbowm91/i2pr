@@ -1,0 +1,23 @@
+[package]
+name = "i2pr-app-package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Signed managed-application package verification and immutable local store"
+publish = false
+
+[dependencies]
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
