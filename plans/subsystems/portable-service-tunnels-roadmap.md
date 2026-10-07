@@ -1,6 +1,6 @@
 # Portable Service-Tunnel Core Roadmap
 
-Status: complete — Plans 349–351 and 359 closed. The owner selected MIT (Plan 379), so the legal-selection gate Plan 350 recorded is lifted; publication remains disabled for a different, named **technical** reason (see §12). This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
+Status: complete — Plans 349–351, 359, and 379 all closed. The owner selected MIT, so the legal-selection gate Plan 350 recorded is lifted; publication remains disabled for a different, named **technical** reason (see §12). This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -119,7 +119,7 @@ Plans 349–351 passed, Plan 359 amended the boundary to permit exactly one `i2p
 | 350 | closed | `passed-portable-service-tunnel-package-api-stabilization-publication-blocked-by-license-selection` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | `plans/closure/portable-service-tunnels/350-status.md` |
 | 351 | closed | `passed-portable-service-tunnel-external-adapter-conformance-and-sam-handoff` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | `plans/closure/portable-service-tunnels/351-status.md` |
 | 359 | closed | `passed-portable-core-boundary-one-permitted-proto-edge-amendment` | invariant + planning amendment | `plans/implementation/portable-service-tunnels/359-portable-core-boundary-proto-edge-amendment.md` | `plans/closure/portable-service-tunnels/359-status.md` (executed inline in `2416c30b`, not as a dedicated pass; Plan 379 wrote the record additively) |
-| 379 | ready | `registered-mit-license-and-portable-service-tunnel-cleanup` | polish + infrastructure + invariant preservation | `plans/implementation/portable-service-tunnels/379-mit-license-and-portable-service-tunnel-cleanup.md` | — |
+| 379 | closed | `passed-mit-license-and-portable-service-tunnel-cleanup-with-named-crates-io-blocker` | polish + infrastructure + invariant preservation | `plans/implementation/portable-service-tunnels/379-mit-license-and-portable-service-tunnel-cleanup.md` | `plans/closure/portable-service-tunnels/379-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -180,3 +180,25 @@ Plan 350 passed its package/API stabilization. Its closure correctly records the
 Plan 351 passed. `bash scripts/check-portable-service-tunnel-consumer.sh` proves the public boundary from true external-consumer fixtures — the historical Plan 350 revision and, since Plan 379, a second fixture pinned to a post-Plan-359 revision — and the downstream SAM handoff assigns identity, filtering, lifecycle, and wire/runtime ownership to `dbowm91/i2pr-sam`.
 
 Plan 359's one-edge amendment is on `main` and now has a conventional closure record, written additively by Plan 379; the record re-runs the amendment's mutation evidence rather than inheriting it. No SAM implementation or new user-visible tunnel product is authorized in i2pr by these registrations.
+
+Plan 379 passed. Two findings changed the picture rather than confirming it. First, the
+MIT license had never reached Cargo: `[workspace.package] license` existed but no member
+manifest inherited it, so `cargo metadata` reported `license = null` for all 26
+packages. All now inherit MIT, and `scripts/check-license-metadata.py` asserts both the
+static manifest metadata and the resolved values, so the gap cannot reopen silently.
+
+Second, MIT was **not** the only publication gate. `cargo package -p
+i2pr-service-tunnels` fails because the Plan 359 `i2pr-proto` edge is path-only with no
+`version` requirement. The posture is `git-consumable`, and
+`crates.io-blocked-by-publishable-versioned-i2pr-proto` — a policy choice rather than an
+unpackageable crate, since `i2pr-proto` itself packages and verifies cleanly today.
+Clearing it is not authorized here and needs its own plan of record.
+
+A second external-consumer fixture, pinned past the Plan 359 edge, proves that edge is
+reachable from outside the workspace; the Plan 351 pin is retained unchanged as the
+before/after comparison. Plan 359's closure record was written additively. The obsolete
+`plans/349-351-portable-service-tunnels` branch was classified (10 of 11 commits
+patch-equivalent on `main`, the 11th superseded, its one unique file a byte-identical ADR
+duplicate) and deleted; its 409 generated `target/` artifacts were never on `main` and a
+new guard asserts none is ever tracked. No SAM implementation or new user-visible tunnel
+product is authorized in i2pr, and nothing was published.
