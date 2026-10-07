@@ -287,6 +287,10 @@ echo "==> attempt budget: ${MAX_ATTEMPTS} (frozen)"
 freeport() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
 F_PORT="$(freeport)"; C_PORT="$(freeport)"
 C_SAM="$(freeport)"; FIX_PORT="$(freeport)"; F_HTTP="$(freeport)"
+# R's own fixed loopback bind. The controlled profile rejects port = 0 because
+# the in-band RouterInfo carries the port, so this one is allocated up front
+# and handed to the driver rather than discovered.
+R_PORT="${I2PR_ELS2_SSRU2_BIND_PORT:-$(freeport)}"
 
 write_conf() { # name port floodfill samport httpport
   local name="$1" port="$2" ff="$3" sam="$4" http="$5"
@@ -416,7 +420,7 @@ python3 "${SCRATCH}/fixture.py" "${FIX_PORT}" "ELS2-LANE-FIXTURE-OK" \
 PIDS+=("$!")
 sleep 1
 
-echo "==> f ssu2 ${F_PORT}  c ssu2 ${C_PORT}  c sam ${C_SAM}  f http ${F_HTTP}  fixture ${FIX_PORT}"
+echo "==> f ssu2 ${F_PORT}  c ssu2 ${C_PORT}  c sam ${C_SAM}  f http ${F_HTTP}  fixture ${FIX_PORT}  R ssu2 ${R_PORT}"
 
 # ---- cycle 1: identity generation (fact 3) --------------------------------
 write_conf f "${F_PORT}" true 0 "${F_HTTP}"
@@ -571,6 +575,7 @@ I2PR_ELS2_REFERENCE_DEST_B33="${DEST_B33}" \
 I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \
 I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
+I2PR_ELS2_SSU2_BIND="127.0.0.1:${R_PORT}" \
 I2PR_ELS2_EVIDENCE_DIR="${EVIDENCE_DIR}" \
 timeout --foreground 1800 cargo test --locked -p i2pr-daemon \
   --test "${DRIVER_TEST}" -- --ignored --exact --nocapture --test-threads=1 \

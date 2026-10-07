@@ -808,9 +808,18 @@ connect is gated on the client's own tunnel pool. WP2 also found a defect in **W
 validator** — every check compared the file against the caller's arguments, so a wrong caller
 agreed with itself and an unusable `tunnels.conf` passed — now fixed with 21 new rows.
 
-What remains: WP3's driver, WP4's rows, WP5's evidence. **The auth-mode matrix actually
-executed is still none of the three**, and no row involves i2pr yet. Plan 381 still does
-**not** unblock 374.
+**WP3 has since added the driver** `els2_i2pd_external.rs`, in the in-process composition the
+user chose over the shipped daemon — `RawNetDbConfig` exposes only `enabled`, `max_records`,
+`max_encoded_bytes`, `min_router_infos` and `min_floodfill_advertisers`, so there is no way to
+inject a named peer and a real-`i2pr run` lane cannot learn the reference RouterInfo without a
+production change outside this plan's scope. Executed: the `.b33` client is created over a real
+TLS I2PControl listener with `DelayOpen` and its local listener binds, but **the payload row
+fails**. `encrypted_target_status` is `None` and every `RemoteDeliveryCounters` field is zero,
+so no lookup was ever attempted for a service created over I2PControl after `start`. A product
+gap and a missing driver step are **not yet separated**, and no product defect is claimed.
+
+What remains: making that row pass, then WP4's rows and WP5's evidence. **The auth-mode matrix
+actually executed is still none of the three**. Plan 381 still does **not** unblock 374.
 See `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 ### Why two ELS2 reference plans

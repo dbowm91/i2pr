@@ -1,6 +1,6 @@
 # Plan 381 — status
 
-Status: **in progress** — WP1 and WP2 complete; WP3–WP5 open.
+Status: **in progress** — WP1 and WP2 complete; WP3 driver written but its payload row fails; WP4–WP5 open.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2.
 
@@ -509,7 +509,108 @@ half cannot run; the lane reaches that point and fails closed by design. The
 NTCP2/SSU2/I2CP vector and evidence checkers are unrelated to this change and
 were not re-run; the floor is the set that can gate it.
 
+## WP3 — the driver exists; the payload row does not pass
+
+WP3 is `crates/i2pr-daemon/tests/els2_i2pd_external.rs`, added after the user
+chose the **in-process** composition over the shipped daemon. That decision was
+needed because `RawNetDbConfig` exposes only `enabled`, `max_records`,
+`max_encoded_bytes`, `min_router_infos` and `min_floodfill_advertisers` — there
+is **no configuration surface for injecting one named peer** — so a
+real-`i2pr run` lane cannot learn the reference's RouterInfo without a production
+change that is outside this plan's scope.
+
+The composition reuses what already exists rather than re-deriving it:
+`ServiceProductSpec::reference` takes a `ReferencePeer` and the product dials
+it, bootstraps the RouterInfo and builds real tunnels, and `shared_manager`
+hands the *same* `Arc<ServiceTunnelManager>` to the I2PControl control state, so
+a service created over JSON-RPC lands in the one manager that owns the runtime.
+That is Plan 213 §C1's composition, reused.
+
+### What runs
+
+An executed lane run produced **eight `passed` rows and one `failed`**:
+
+```text
+tunnels-conf-generated             passed
+mesh-identity-generation           passed
+mesh-peer-session                  passed
+reference-els2-published           passed
+destination-derived                passed
+blinded-address-cross-check        passed
+client-tunnel-pool-ready           passed
+control-reference-els2-roundtrip   passed
+i2pr-rows                          failed
+```
+
+Two driver milestones were reached against the live reference mesh: the
+`.b33` client was **created over a real TLS I2PControl listener** with
+`DelayOpen` and no JSON-RPC error, and its **local listener bound**.
+
+### The precise failure, and what is *not* yet claimed
+
+The payload did not return, and the driver's own typed surfaces say exactly
+why:
+
+```text
+b33-client-listener-bound   45819
+encrypted-target-status     None
+remote-counters             { … every field 0 … }
+```
+
+`encrypted_target_status` is `None` and `encrypted_target_resolved`,
+`encrypted_target_failed` and `remote_lookup_started` are all **zero**. So no
+lookup was ever attempted: the encrypted-target resolution path did not run for
+a service created over I2PControl after `ServiceProduct::start`, even though the
+same service bound its listener. That is the difference between "the lookup
+happened and the record did not unwrap" and "the lookup never happened", and it
+is why `EncryptedTargetStatus` and `RemoteDeliveryCounters` were added to the
+evidence before anything was asserted about the payload.
+
+**This record does not claim a product defect.** Two things are consistent with
+the observation and have not been separated:
+
+1. the product provisions services that exist at `start` and services whose
+   destination enters through `deferred_destination_ids`, and a service that
+   appears later in the shared manager is bound but may never be routed into
+   either; or
+2. the driver is missing a step that registers the control-created service with
+   the product before polling.
+
+Distinguishing them is the first thing WP3 has to do. Until it is done, the
+honest statement is the observed one, and the row stays failed.
+
+### WP3 deliverables
+
+- `crates/i2pr-daemon/tests/els2_i2pd_external.rs` — the driver, compiling
+  clean under `-D warnings`. Environment-gated `#[ignore]`, missing environment
+  fails.
+- `tests/integration/els2/run-i2pd-els2.sh` — gained the `R` bind port
+  allocation and `I2PR_ELS2_SSU2_BIND`, because the controlled profile rejects
+  `port = 0` and the port has to be allocated before the process starts.
+- `I2PR_ELS2_SSU2_BIND` is now part of the documented hand-off in the resume
+  point below.
+
 ## What remains unproven
+
+Two defects in **this driver's own first draft** were found by executing it and
+fixed: the tunnel identifier field is `Name`, not `ID` (`unknown TunnelManager
+field ID`), and the listener read needed the product's inbound pump selected
+alongside the socket read, because a control-created service is delivered by the
+same poll loop that provisions it.
+
+### WP3 floor
+
+`cargo test --locked --workspace --all-targets -- --test-threads=1` → exit 0,
+**180 binaries, 4 646 passed, 0 failed, 36 ignored**. The signature is exactly
+what a new environment-gated external test should produce: one more binary than
+WP2's 179, one more ignored row than WP2's 35, and **no change to the passed
+count** — which is the check that the new target is collected by the floor
+rather than merely compiling, and that its one test did not quietly run
+un-ignored. fmt, clippy `-D warnings`, 51 planning tests, dependency direction,
+tooling inventory, workflow validity and config secret hygiene all pass.
+
+The lane run itself is a local, environment-gated run and is **not** part of the
+routine floor, exactly like every other external lane.
 
 Named explicitly, because a partial pass is easy to read as a whole one:
 
@@ -555,29 +656,24 @@ this plan's WP2–WP5.
 
 ## Resume point
 
-WP3, `crates/i2pr-daemon/tests/els2_i2pd_external.rs`. The lane runner exists,
-brings the reference mesh up, and hands the following to the driver through the
-environment:
+**WP3's remaining row.** The driver runs, the reference mesh is green, the
+`.b33` client is created over I2PControl and binds — but no lookup is attempted
+for it. The first thing to establish is which of the two explanations holds:
 
-```text
-I2PR_ELS2_REFERENCE_ROUTER_INFO          f's router.info, for i2pr's bootstrap
-I2PR_ELS2_REFERENCE_ENDPOINT             127.0.0.1:<f ssu2 port>
-I2PR_ELS2_REFERENCE_DEST_B32             the publisher's authority address
-I2PR_ELS2_REFERENCE_DEST_B33             the same, in i2pr's vocabulary
-I2PR_ELS2_REFERENCE_DEST_B33_I2PD        the same body, in i2pd's vocabulary
-I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT    c's SAM port, for the i2pr→i2pd row
-I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT    127.0.0.1:<c ssu2 port>
-I2PR_ELS2_EVIDENCE_DIR
-```
+1. the product routes services that exist at `start` (and those whose
+   destination enters through `deferred_destination_ids`) into
+   `provision_all_service_router_material`, and a service that appears later in
+   the shared manager is bound but never routed into either; or
+2. the driver is missing a registration step.
 
-The driver must go through the public surfaces only — start R, create the
-service over I2PControl, move a real payload, read a real result — with no
-private bridge, resolver, driver or pump API and no decoded-LeaseSet injection.
-The R-side shape is already proven by WP1.4's
-`i2pcontrol_els2_lane_consumer.rs`; the new part is the network round trip and
-the consumer-side reference row.
+The typed surfaces already distinguish the outcomes to look for:
+`manager.encrypted_target_status(SERVICE_ID)` moving off `None`, and
+`RemoteDeliveryCounters::remote_lookup_started` leaving zero. Whichever
+explanation survives, the row must not be written as passing until the banner
+comes back through the reference's server tunnel.
+
+**Then** WP4's rows (both directions, the three auth modes on the i2pr side,
+the negatives, the `.b32.i2p` authority row) and WP5's evidence and closure.
 
 **Stop condition 2 no longer constrains this work.** The mesh was the one
 remaining unknown that could have blocked the plan outright, and it is answered.
-The remaining open items are the ordinary ones: build the driver, produce the
-rows, write the evidence.
