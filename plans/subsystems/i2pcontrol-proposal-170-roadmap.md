@@ -684,3 +684,63 @@ evidence, not on local work: Plan 347 is stopped at the classified boundary, Pla
 **No Encrypted LeaseSet2 interoperability or full-Proposal claim is promoted. Type 5 stays
 non-advertised.** Plan 352 hardened the configuration path; it changed no protocol behaviour, no
 capability advertisement, and no support surface.
+
+
+## 17. External qualification and terminal closure phase (Plans 373–378)
+
+The previous final-gate graph is superseded for forward execution by this section. Historical
+closures remain unchanged.
+
+Current facts:
+- Proposal 170/346 closed the ELS2 type-11 transcript policy.
+- Proposal 170/350 and /351 closed the missing i2pr type-5 floodfill/consumer plumbing.
+- Proposal 170/347 therefore no longer describes a current local blocker; it remains the stopped
+  historical attempt with 0/4 external directions.
+- Proposal 170/342 passed scoped but explicitly left live multi-outproxy failover and a post-restart
+  routed request unproven.
+- Proposal 170/348 is a historical blocked final gate. Its Proposal re-freeze was clean.
+
+Forward dependency graph:
+
+```text
+373 ready  planning/support truth reconciliation
+  -> 374 blocked  stock i2pd bidirectional ELS2 lane
+  -> 375 blocked  stock Java I2P bidirectional ELS2 lane
+  -> 376 blocked  live outproxy failover + restart
+
+374 + 375
+  -> 377 blocked  ELS2 external evidence convergence / successor closure
+
+373 + 376 + 377
+  -> 378 blocked  final Proposal-170 conformance gate
+```
+
+Plans 374, 375, and 376 are intentionally independent after 373 and may execute in parallel.
+
+### Why two ELS2 reference plans
+
+Java and i2pd share the deployed type-11 transcript but have different configuration/harness
+surfaces. One combined plan would make it possible for one reference family to consume the entire
+execution budget before the other direction was constructed. Plans 374/375 each own exactly two of
+the four mandatory directions. Plan 377 is the only place allowed to converge them into an external
+ELS2 claim.
+
+### Why outproxy has a successor after scoped Plan 342
+
+Proposal 170/342 deliberately removed rather than waived two ungreen rows: multi-endpoint live
+failover and post-restart request success. Plan 376 owns exactly those residuals. A scoped pass is
+not a Plan-327 closure.
+
+### Final claim
+
+Historical Plans 328 and 348 remain blocked records. Plan 378 is the only forward terminal gate and
+the only plan in this phase allowed to set `full-proposal-conformant`.
+
+| Plan | State | Classification | Handoff |
+|---|---|---|---|
+| 373 | ready | planning/support corrective | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
+| 374 | blocked on 373 | external interoperability | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
+| 375 | blocked on 373 | external interoperability | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
+| 376 | blocked on 373 | capability/resilience closure | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
+| 377 | blocked on 374 + 375 | ELS2 external convergence | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
+| 378 | blocked on 373 + 376 + 377 | final conformance gate | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |

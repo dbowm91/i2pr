@@ -226,3 +226,38 @@ i2pr↔reference directions.
 The Emissary source quarantine remains unchanged. Emissary may continue to serve as a post-freeze
 black-box strict-profile oracle, but Java+i2pd deployment interoperability is the external network
 closure criterion for Plan 347.
+
+
+## 9. Reference-specific live qualification successors (Plans 373–377)
+
+Proposal 170/347 remains the stopped historical four-direction attempt. Its local i2pr blockers
+were subsequently closed by Proposal 170/350 (type-5 floodfill store/serve) and Proposal 170/351
+(production B33 consumer). The remaining ELS2 work is external evidence.
+
+After the authority/support reconciliation in Plan 373:
+
+```text
+374  stock i2pd:  i2pr -> i2pd, i2pd -> i2pr
+375  stock Java:  i2pr -> Java, Java -> i2pr
+  \               /
+   \             /
+      377 external ELS2 convergence
+```
+
+Each reference plan must prove a real DatabaseStore/DatabaseLookup/decrypt/inner-LS2/application
+trajectory. Neither crypto fixtures nor local decoded-record injection count.
+
+Plan 375 explicitly uses Java as a requester/publisher through a controlled i2pr floodfill and its
+own Java relay peers. It must not invent a bandwidth tier and does not require Java to select i2pr
+as a tunnel peer.
+
+Plan 377 closes the branch only when all four mandatory directions pass and records the exact auth
+mode overlap per reference. It may promote the exact ELS2 subset in support metadata, but it cannot
+claim whole-Proposal conformance; parent-roadmap Plan 378 owns that.
+
+| Plan | State | Purpose |
+|---|---|---|
+| 373 | ready | reconcile support/planning truth before external qualification |
+| 374 | blocked on 373 | stock i2pd bidirectional live ELS2 qualification |
+| 375 | blocked on 373 | stock Java I2P bidirectional live ELS2 qualification |
+| 377 | blocked on 374 + 375 | converge all four directions and close historical 326/347 forward blocker |
