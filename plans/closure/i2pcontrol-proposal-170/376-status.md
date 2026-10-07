@@ -201,6 +201,23 @@ and `service_tunnels_local_roundtrip` also exercise.
   operator: their configured failover list was accepted, reported, and partly
   inert.
 - **medium: one**, fixed — the uncounted superseded attempt failure.
+
+  Its fix was itself caught by the **workspace** suite rather than by the
+  focused lane: one unit row,
+  `an_exhausted_request_records_both_its_last_reason_and_the_exhaustion`,
+  encoded the *old* contract in which `note_exhausted` recorded both the last
+  reason and the exhaustion. Moving the per-attempt reason to the failure site
+  changed that helper's job, and the row failed. That is the row working: it
+  asserted a real contract and the contract genuinely changed. The row was
+  updated to test the **composition** rather than the helper in isolation,
+  which keeps its original intent against the new shape, and a second row
+  (`a_retryable_failure_is_counted_even_when_a_later_attempt_succeeds`) pins
+  the defect directly — a retryable failure followed by a success leaves
+  `target_unreachable == 1` and `attempts_exhausted == 0`.
+
+  Recorded because it is a useful signal about this repo: a focused lane run
+  would have shipped the counter-semantics change with a stale unit row still
+  describing the old behaviour. The full workspace run was what surfaced it.
 - **low, recorded, not fixed here:**
   - **The same credential is offered to every configured outproxy.** A 407 is
     retryable under the frozen taxonomy, so a `ProxyList` of *n* endpoints is
