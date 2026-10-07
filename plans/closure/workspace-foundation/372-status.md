@@ -262,7 +262,7 @@ for real during implementation, on the eleven scripts listed above.
 | 8 | An undocumented checker fails | injection test + 11 real rule-3 violations found and fixed |
 | 9 | The guard is in the floor and in `ci.yml` | `AGENTS.md` routine floor + two `ci.yml` steps |
 | 10 | R1, R4, the inert Tokio rule, and the m11 failure stay recorded open | untouched; listed under *Limitations* |
-| 11 | Full routine floor green | **54/54 PASS** locally |
+| 11 | Full routine floor green | **54/54 PASS** locally, re-run after the merge |
 | 12 | Exact-head routine CI green | runs `37585830152` (`df2e7d5c`) and `37588523792` (`6bb202ed`), both success |
 
 ## Verification commands
@@ -299,6 +299,54 @@ Floor log: `/tmp/floor372.log`. Floor runner: `/tmp/p372-floor.sh`.
 `ci.yml` steps (the guard and its `--self-test`). The floor is now **52 steps**, 42 of
 which invoke a checker. `check-tooling-inventory.py` enforces that figure, so the two
 cannot disagree.
+
+## Plan 368 collision, recorded at merge
+
+`origin/main` advanced with four SAM commits (a SAM 3.3 Plan 368) while this
+branch was open, so integrating it into `main` created the **first-ever coexistence of
+two independent Plan 368s**:
+
+| Qualified plan | Owner | Scope |
+|---|---|---|
+| **SAM/368** | SAM | SAM 3.1 wire profile, `specs/support.toml` |
+| **Managed native app runtime/368** | managed native app runtime | private daemon-to-`AppManager` protocol, its bridge, ADR 0035 |
+
+Both were numbered from the same next-free global number by two parallel lines, and the
+collision became observable only when both landed on `main`.
+`check-global-plan-number-uniqueness.py` fails closed on it, and it is in the routine
+floor and in `ci.yml`, so the merge could not be pushed unresolved.
+
+Resolved exactly as `plans/README.md` and the ledger prescribe: a subsystem-qualified row
+per owner in `plans/global-number-collision-ledger.md`, **neither plan renumbered, neither
+authority rewritten, neither made an alias of the other**. This is the same mechanism that
+produced the 13 pre-existing rows for 296/297 and 349–352.
+
+### Fixing it exposed a second instance of this plan's own subject
+
+The guard's tolerated-collision set was a **hardcoded dict that duplicated the ledger's
+table exactly**. A collision therefore had to be recorded in two places by hand — and
+adding the ledger row alone left the guard red, which is precisely how the split became
+visible in the first place. This is the defect class this plan was registered to close,
+appearing inside the fix for it.
+
+The guard now **derives its allowlist from the ledger**, so the ledger is the single place
+a collision is declared. Three properties were verified against the real tree rather than
+assumed:
+
+| Case | Result |
+|---|---|
+| A **third** owner of 368 | **fails** (exit 1) |
+| A **renamed** tolerated plan | **fails** (exit 1) |
+| **Missing** ledger | **fails closed** (exit 2) |
+| **Empty** collision table | **passes** — a repo with no collisions is legitimate, and its correct allowlist is the empty set |
+
+The empty-table case is worth stating because the first draft failed it: refusing to run
+would make the guard unusable for exactly the repository it exists to protect. Only a
+*missing section* fails closed, since that means the parser is reading nothing rather than
+reading "none".
+
+`tests/planning/test_global_plan_number_uniqueness.py` went from 7 to **11** tests, and the
+`tests/planning` suite from 47 to **51**.
 
 ## Dependency review
 
