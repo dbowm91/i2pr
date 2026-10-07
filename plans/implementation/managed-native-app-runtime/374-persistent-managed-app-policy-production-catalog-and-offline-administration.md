@@ -1,6 +1,6 @@
 # Plan 374 — persistent managed-app policy, production launch catalog, and offline administration
 
-Status: **registered-managed-app-persistent-policy-production-catalog-and-offline-administration**.
+Status: **in-progress-managed-app-persistent-policy-production-catalog-and-offline-administration**.
 
 Classification: **invariant + capability + persistence/lifecycle**.
 
