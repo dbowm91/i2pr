@@ -22,6 +22,7 @@ pub mod destination_peers;
 pub mod destination_streaming;
 pub mod destination_tunnels;
 pub mod encrypted_service_resolver;
+pub mod encrypted_target_credential;
 pub mod error;
 pub mod exploratory_build;
 pub mod floodfill;
@@ -995,9 +996,15 @@ pub fn build_shared_service_manager(
 /// identity cannot be loaded. The consequence is that every outproxy
 /// credential field is refused at create/edit time — before any listener or
 /// destination is allocated — rather than accepted and silently unusable.
+///
+/// Plan 380 widens the return type to `RouterSecretOwner`, the supertrait that
+/// adds the ELS2 consumer-credential domain. One derivation, one `Arc`, two
+/// sealed domains: the composition root still derives the owner exactly once,
+/// and a caller that only needs the outproxy half keeps an ordinary
+/// `Arc<dyn OutboundSecretStore>` by upcasting.
 pub fn build_outbound_secret_store(
     config: &Config,
-) -> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+) -> Arc<dyn i2pr_service_tunnels::outbound_secret::RouterSecretOwner> {
     let identity = IdentityStore::in_data_dir(&config.router.data_dir).load();
     let derived = identity.as_ref().ok().and_then(|bundle| {
         crate::outbound_secret::RouterBoundOutboundSecrets::from_router_identity(bundle).ok()

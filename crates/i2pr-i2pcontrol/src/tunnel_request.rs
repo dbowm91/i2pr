@@ -338,6 +338,51 @@ pub fn decode_tunnel_request(
                 {
                     return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
                 }
+                // Plan 380: the typed i2pr extension seam.
+                //
+                // This branch sits ahead of `canonical_option` because the extension is not a
+                // Proposal option and must never be treated as one. It replaces the historical
+                // blanket refusal of this key — but only for the *typed object* form. A value
+                // that is not an object is the Proposal 170 untyped I2CP pass-through, and that
+                // is still refused with the very same error, because the reason it was refused
+                // (an arbitrary `Key=Value` blob reaching an I2CP adapter) has not changed.
+                if key == "CustomOptions" {
+                    match crate::extension_options::decode_extension_options(value) {
+                        // The untyped form. Reported under the field's own name so the error a
+                        // client sees is the one it saw before Plan 380.
+                        Err(crate::extension_options::ExtensionError::Untyped) => {
+                            return Err(TunnelRequestError::RejectedOption(key.to_owned()));
+                        }
+                        Err(error) => {
+                            return Err(match error {
+                                // An unrecognised extension name has no safe typed owner, which
+                                // is precisely the historical reason for refusing this key. Same
+                                // error, now reached from the direction that deserves it.
+                                crate::extension_options::ExtensionError::UnknownKey => {
+                                    TunnelRequestError::RejectedOption(key.to_owned())
+                                }
+                                crate::extension_options::ExtensionError::ValueOverBound => {
+                                    TunnelRequestError::ValueOverBound(key.to_owned())
+                                }
+                                // Every remaining variant is a shape fault on a field whose type
+                                // the Proposal defines loosely, so it is reported as a bad value
+                                // for that field rather than as a missing name.
+                                _ => TunnelRequestError::BadValue(key.to_owned()),
+                            });
+                        }
+                        Ok(decoded) => {
+                            for (internal, text) in decoded {
+                                if options.insert(internal.to_owned(), text).is_some() {
+                                    return Err(TunnelRequestError::DuplicateAlias(
+                                        internal.to_owned(),
+                                    ));
+                                }
+                            }
+                            options_seen = true;
+                            continue;
+                        }
+                    }
+                }
                 crate::proposal_wire::validate_proposal_tunnel_value(key, value)
                     .map_err(|_| TunnelRequestError::BadValue(key.to_owned()))?;
                 let alias = canonical_wire_alias(key);
@@ -483,9 +528,6 @@ pub fn decode_tunnel_request(
                     continue;
                 }
                 let Some(option_key) = canonical_option(key) else {
-                    if key == "CustomOptions" {
-                        return Err(TunnelRequestError::RejectedOption(key.to_owned()));
-                    }
                     unavailable_option.get_or_insert_with(|| key.to_owned());
                     options_seen = true;
                     continue;

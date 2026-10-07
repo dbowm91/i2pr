@@ -26,7 +26,7 @@ use std::sync::Arc;
 /// Plan 342: the fail-closed outbound-credential owner for a row that does not
 /// exercise a credential. No identity is loaded, so no store exists.
 fn plan342_test_outbound_secrets()
--> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+-> Arc<dyn i2pr_service_tunnels::outbound_secret::RouterSecretOwner> {
     Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
 }
 

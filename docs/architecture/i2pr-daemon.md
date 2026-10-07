@@ -375,6 +375,7 @@ under Key contracts for the lifecycle detail.
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
 | `src/service_product.rs` | 4 063 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:895`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
+| `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
 | `src/service_lifecycle.rs` | 360 | Bounded normal-daemon Destination-group startup and retirement policy — local phase/timing only, no secrets and no routing state (private module) | (private module) |
 | `src/service_tunnels_http.rs` | 1 050 | HTTP proxy executor, one loopback listener per `http-client` spec; Plan 290 adds the strict-CONNECT client executor and the shared SOCKS version-peek negotiator; Plan 292 adds guarded-listener proxy authentication (407 challenge) | HTTP executor types |
@@ -1357,12 +1358,81 @@ publisher material, and is held as `Arc<LookupSecret>` — `Zeroizing`, not `Clo
 `scripts/check-config-secret-hygiene.sh` enforces that, and also records the pre-existing leak paths
 that motivate it (see Plan 352).
 
+### The consumer client credential (Plan 380)
+
+A `.b33` that declares `B32_FLAG_REQUIRES_CLIENT_KEY` needs the PSK or DH key its publisher
+authorised this router to use. That value is the operator's and is not derivable from the address:
+for PSK the client holds the same pre-shared key the publisher listed in `LeaseSetClientAuths`, and
+for DH it holds the private half of the key pair whose public half the publisher listed. It is
+carried as one more option, `leaseset_client_credential`, with a closed grammar —
+`psk:<64 lowercase hex>` or `dh:<64 lowercase hex>`. The DH form carries the private key only; the
+public key is derived from it, because the record names the client's own public key and a
+configuration able to state a mismatched pair would be a credential that can never authorize
+anything, for a reason the operator could not see.
+
+**It has no Proposal 170 field.** Proposal spells the *publisher's* authorized-client list and
+expects a consumer to already hold the matching secret out of band. So the value crosses the wire
+inside `CustomOptions` as `{"i2pr": {"LeasesetClientCredential": "..."}}`, shaped by
+`i2pr-i2pcontrol::extension_options`. The untyped `CustomOptions` blob form stays refused for the
+reason it always was, the frozen `PROPOSAL_TUNNEL_MANAGER_FIELDS` inventory is untouched, and an
+unrecognised extension name is refused rather than ignored.
+
+**Where the plaintext exists.** In exactly one place: `normalize_definition_with_filter_root`, which
+parses it for its grammar and hands it to the secret owner before the definition can reach a
+generation file. The manager holds only `SealedEncryptedTargetCredential` — ciphertext plus the
+owner that can open it — and its install signature takes that type, so "the manager never holds the
+key" is a property of the signature rather than a rule. The plaintext is opened once more in
+`resolve_encrypted_destination_for_service`, scoped to one resolution, and dropped zeroized when
+that function returns. It is not in `Config`, in any `Raw*Config` struct, in a `DestinationRef`, in
+`SECRET_OPTIONS`, or in any status surface: `get` and `rawConfig` report
+`clientCredentialConfigured` and nothing else.
+
+**It is a second sealed domain, not a reuse of the first.** Plan 341's router-bound owner derives
+its key from `i2pr:outproxy:secret-box:v1`; the credential derives from
+`i2pr:els2-consumer-credential:secret-box:v1`, and each carries its own stored-form marker
+(`$i2pr1o$` / `$i2pr1e$`) used as AEAD associated data. Sharing one key would let a stored outproxy
+credential copied into this slot open successfully there. Both domains come from one `Arc` —
+`RouterSecretOwner` is a supertrait — so "derive once from the router identity" stays literally
+true and the outproxy runtime keeps an ordinary `Arc<dyn OutboundSecretStore>` by upcasting.
+
+**Both seal steps are idempotent.** `edit` merges the stored options with the request's, so
+`normalize_definition_with_filter_root` runs again over a value that is already a stored form. Each
+seal step recognises its own marker and passes the form through. See *The seal is not idempotent*
+below for why that is a correctness property and not a nicety.
+
+### The seal is not idempotent (defect found and corrected by Plan 380)
+
+`edit` merges options, so the seal step runs a second time over the credential the definition
+already holds. Before Plan 380 corrected this, that re-sealed the stored form **in both domains**:
+
+- The ELS2 credential's seal step tried to parse its own ciphertext as a plaintext credential, so
+  *every* edit of a credential-bearing service failed outright.
+- The Plan 342 outproxy credential re-sealed silently. The stored form became sealed twice; opening
+  it once returned the *previous stored form as text*, which `RouterOutproxyProvider` then presented
+  to the outproxy as the HTTP proxy password. The outproxy answers 407 and no status surface says
+  why.
+
+Plan 342's rows could not see the second case because they exercised generation round trips — which
+do not re-run the seal step — and no Plan 342 or Plan 376 row ever edited an outproxy tunnel.
+`plan342_sealed_block_survives_a_generation_round_trip` carried the comment "so an untouched
+credential survives an edit"; the first clause was true and the second was untested. Both claims are
+now tested, by `plan380_an_unrelated_edit_leaves_the_sealed_credential_unchanged`, and both seal
+steps are pinned by `scripts/check-encrypted-service-consumer-caller.sh`.
+
+### Removing a credential
+
+`edit` merges, so an edit that omits the credential does **not** remove it — the same limitation
+Plan 376 found and pinned for the outproxy block, with the same remedy: `delete` the definition and
+`create` it again. `sync_encrypted_target_credentials` drops the credential when a definition stops
+naming an encrypted target, when the option is absent from the merged options, and in a sweep for
+definitions no longer in the map. A deleted definition therefore leaves nothing behind.
+
 ### What this does not claim
 
-No PSK/DH consumer authorization, no daily rollover re-resolution, no cross-router result, no Java
-or i2pd direction of Plan 347. The blinding rotates daily and there is no periodic re-resolution, so
-a resolution computed before a midnight boundary addresses the **wrong DHT key**.
-Type 5 stays `advertised = false`.
+No daily rollover re-resolution, no cross-router result, no Java or i2pd direction of Plan 347. The
+blinding rotates daily and there is no periodic re-resolution, so a resolution computed before a
+midnight boundary addresses the **wrong DHT key**. Type 5 stays `advertised = false`, and Plan 380
+adds no support surface: the credential is i2pr-local configuration, not an advertised capability.
 
 ## Cross-references
 

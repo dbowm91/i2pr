@@ -22,7 +22,7 @@ use i2pr_daemon::config::Config;
 /// Plan 342: the fail-closed outbound-credential owner. These rows exercise the
 /// shared-manager wiring, not a credential, so the honest value is the one
 /// that refuses everything.
-fn test_outbound_secrets() -> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+fn test_outbound_secrets() -> Arc<dyn i2pr_service_tunnels::outbound_secret::RouterSecretOwner> {
     Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
 }
 use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};

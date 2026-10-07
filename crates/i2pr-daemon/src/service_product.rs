@@ -3761,27 +3761,69 @@ async fn resolve_encrypted_destination_for_service(
             .min(u128::from(u64::MAX)) as u64,
     );
 
-    // Step 1 — the consumer credential. `None` is legal and means the address
-    // alone derives today's key; it is not an error.
+    // Step 1 — the consumer credential and the lookup secret.
+    //
+    // Both are optional and independent. A `.b33` may demand no credential, a
+    // credential, a lookup secret, or both; the address's own flags say which
+    // of the two it insists on, and the configuration supplies the rest.
+    //
+    // The lookup secret is *borrowed* as `Option<&str>` through the secret
+    // type's single accessor, which Plan 352's guard pins to exactly one call
+    // site in the daemon — this one. The credential is **opened** here and
+    // nowhere else in the product: this is the single point at which client key
+    // material becomes a live value, and it is scoped to this resolution — the
+    // opened credential drops at the end of the function, zeroized, and is
+    // never stored back.
     let secret = manager.encrypted_target_secret(spec_id);
+    let credential = match manager.encrypted_target_credential(spec_id) {
+        Some(sealed) => Some(
+            sealed
+                .open()
+                .map_err(|_| EncryptedTargetStatus::ClientCredentialUnusable)?,
+        ),
+        None => None,
+    };
 
     // Step 2 — one resolver per attempt. It is `!Sync` by construction
     // (`PskClientKey` / `X25519PrivateKey` inside), so it stays on this task's
     // stack and is dropped with it.
     let mut resolver = EncryptedServiceResolver::default();
     let secret_option = secret.as_ref().and_then(|held| held.as_option());
-    let (resolve_id, storage_key) = resolver
-        .begin(&address, secret_option, now_secs, deadline_ms)
-        .map_err(|error| match error {
-            // A `b33` that requires per-client authorization cannot be
-            // resolved without a credential. Plan 351 defers consumer
-            // credentials (PSK/DH) on purpose, so this is reported as a
-            // resolution failure rather than pretending it succeeded.
-            EncryptedServiceConsumerError::CredentialNotCopyable(_)
-            | EncryptedServiceConsumerError::NotAuthorized => EncryptedTargetStatus::UnwrapFailed,
-            EncryptedServiceConsumerError::TooManyResolves => EncryptedTargetStatus::DispatchFailed,
-            _ => EncryptedTargetStatus::StorageKeyUnavailable,
-        })?;
+    // Plan 380: the branch is selected by what the router holds, not by what
+    // the address asks for. `begin_authorized` is correct for **both** cases —
+    // it delegates to the same builder with the address's own
+    // `requires_client_key` flag — so a credential supplied to a `.b33` that
+    // does not demand one is presented and simply ignored by a record with no
+    // authorization block, rather than being rejected for being present. The
+    // converse is not symmetric and is the fail-closed case below.
+    let (resolve_id, storage_key) = match credential.as_ref() {
+        Some(credential) => resolver.begin_authorized(
+            &address,
+            secret_option,
+            credential.as_borrowed(),
+            now_secs,
+            deadline_ms,
+        ),
+        None => resolver.begin(&address, secret_option, now_secs, deadline_ms),
+    }
+    .map_err(|error| match error {
+        // The address itself declared `B32_FLAG_REQUIRES_CLIENT_KEY` and no
+        // credential is configured. `begin` refuses such an address outright,
+        // so this is raised **before** any lookup is composed — no network
+        // round trip happens for a configuration that could only be refused.
+        EncryptedServiceConsumerError::InvalidAddress(
+            i2pr_client::EncryptedLeaseSetError::ClientAuthorizationRequired,
+        ) => EncryptedTargetStatus::ClientCredentialRequired,
+        // A credential was supplied but could not be retained for the request.
+        EncryptedServiceConsumerError::CredentialNotCopyable(_) => {
+            EncryptedTargetStatus::ClientCredentialUnusable
+        }
+        EncryptedServiceConsumerError::NotAuthorized => {
+            EncryptedTargetStatus::ClientCredentialRejected
+        }
+        EncryptedServiceConsumerError::TooManyResolves => EncryptedTargetStatus::DispatchFailed,
+        _ => EncryptedTargetStatus::StorageKeyUnavailable,
+    })?;
     let storage_key_hash = *storage_key.as_hash();
 
     // Step 3 — the lookup. `routing_key` is the same value: a blinded storage
@@ -3959,7 +4001,15 @@ async fn resolve_encrypted_destination_for_service(
                 EncryptedServiceConsumerError::RecordRejected { .. } => {
                     EncryptedTargetStatus::LeaseSetValidationFailed
                 }
-                EncryptedServiceConsumerError::NotAuthorized => EncryptedTargetStatus::UnwrapFailed,
+                EncryptedServiceConsumerError::NotAuthorized => {
+                    // Plan 380: a credential was presented and the record's
+                    // layer-1 authorization block refused it. Deliberately the
+                    // same status whether the key was wrong or the record was
+                    // built for a different client — distinguishing them would
+                    // make this surface an oracle for probing which credential
+                    // a service accepts.
+                    EncryptedTargetStatus::ClientCredentialRejected
+                }
                 _ => EncryptedTargetStatus::UnwrapFailed,
             });
         }

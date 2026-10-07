@@ -40,6 +40,7 @@ pub mod auth;
 pub mod client_services;
 pub mod conformance;
 pub mod errors;
+pub mod extension_options;
 pub mod jsonrpc;
 pub mod limits;
 pub mod methods;

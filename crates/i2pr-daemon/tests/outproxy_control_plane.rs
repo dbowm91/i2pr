@@ -24,7 +24,7 @@ use std::sync::Arc;
 use i2pr_daemon::i2pcontrol_tunnels::{
     ControlError, build_control_spec, normalize_definition_with_filter_root,
 };
-use i2pr_service_tunnels::outbound_secret::{NoOutboundSecrets, OutboundSecretStore};
+use i2pr_service_tunnels::outbound_secret::{NoOutboundSecrets, RouterSecretOwner};
 
 /// A real Base32 destination, built with the service-tunnel crate's encoder.
 fn b32(byte: u8) -> String {
@@ -36,7 +36,7 @@ fn b32(byte: u8) -> String {
 
 /// A router-bound secret owner, so a credential row cannot pass against a
 /// stub that stores plaintext.
-fn router_bound_store() -> Arc<dyn OutboundSecretStore> {
+fn router_bound_store() -> Arc<dyn RouterSecretOwner> {
     let mut rng = i2pr_crypto::OsRng;
     let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("identity bundle");
     Arc::new(

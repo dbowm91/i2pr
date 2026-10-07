@@ -40,7 +40,8 @@ use i2pr_crypto::RouterIdentityBundle;
 use i2pr_crypto::{OsRng, Zeroizing, hkdf_sha256_extract_and_expand};
 use i2pr_service_tunnels::errors::ServiceTunnelError;
 use i2pr_service_tunnels::outbound_secret::{
-    MAX_OUTBOUND_SECRET_LEN, OUTBOUND_SECRET_MARKER, OutboundSecret, OutboundSecretStore,
+    ELS2_CONSUMER_CREDENTIAL_MARKER, MAX_OUTBOUND_SECRET_LEN, OUTBOUND_SECRET_MARKER,
+    OutboundSecret, OutboundSecretStore, RouterSecretOwner, validate_els2_credential_form,
     validate_stored_form,
 };
 use rand_core::TryCryptoRng;
@@ -55,6 +56,16 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 /// colliding with another derived key, and it is why the label is a constant
 /// rather than a parameter a caller could vary.
 pub const OUTBOUND_SECRET_KEY_INFO: &[u8] = b"i2pr:outproxy:secret-box:v1";
+
+/// Plan 380: HKDF context label for the ELS2 consumer-credential domain.
+///
+/// Distinct from [`OUTBOUND_SECRET_KEY_INFO`] and mandatory to be so. Sharing
+/// one label would mean one key sealing two unrelated secrets, and a stored
+/// outproxy credential copied into the consumer-credential slot would then open
+/// successfully there. It would still fail closed downstream — the plaintext
+/// would not parse as a credential — but "opens successfully" is exactly the
+/// property a sealed form should not have across domains.
+pub const ELS2_CONSUMER_CREDENTIAL_KEY_INFO: &[u8] = b"i2pr:els2-consumer-credential:secret-box:v1";
 
 /// AEAD key length in bytes.
 pub const OUTBOUND_SECRET_KEY_LEN: usize = 32;
@@ -75,16 +86,22 @@ pub struct OutboundSecretKey(Zeroizing<[u8; OUTBOUND_SECRET_KEY_LEN]>);
 impl OutboundSecretKey {
     /// Derives the key from the router's persisted signing seed.
     pub fn from_router_signing_seed(seed: &[u8; 32]) -> Result<Self, ServiceTunnelError> {
-        let derived = hkdf_sha256_extract_and_expand(
-            b"",
-            seed,
-            OUTBOUND_SECRET_KEY_INFO,
-            OUTBOUND_SECRET_KEY_LEN,
-        )
-        .map_err(|_| ServiceTunnelError::ContradictoryOptions {
-            id: String::new(),
-            reason: "outbound secret key derivation failed",
-        })?;
+        Self::for_domain(seed, OUTBOUND_SECRET_KEY_INFO)
+    }
+
+    /// Plan 380: derives the key for one named domain.
+    ///
+    /// The label is the whole of the separation. Two secrets sealed under one
+    /// key would be interchangeable — a stored form lifted from one slot into
+    /// the other would open cleanly and be authenticated by the same Poly1305
+    /// tag — so every domain names its own constant and a caller cannot pass an
+    /// arbitrary label through a public parameter.
+    fn for_domain(seed: &[u8; 32], key_info: &[u8]) -> Result<Self, ServiceTunnelError> {
+        let derived = hkdf_sha256_extract_and_expand(b"", seed, key_info, OUTBOUND_SECRET_KEY_LEN)
+            .map_err(|_| ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "outbound secret key derivation failed",
+            })?;
         if derived.len() != OUTBOUND_SECRET_KEY_LEN {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id: String::new(),
@@ -112,6 +129,11 @@ impl Drop for OutboundSecretKey {
 /// The router-bound outbound secret store.
 pub struct RouterBoundOutboundSecrets {
     key: OutboundSecretKey,
+    /// Plan 380: the ELS2 consumer-credential domain's key. Held here rather
+    /// than derived on demand so that "derive once from the router identity"
+    /// stays literally true for both domains — a second derivation site is a
+    /// second place a signing seed could be named.
+    credential_key: OutboundSecretKey,
 }
 
 impl RouterBoundOutboundSecrets {
@@ -119,6 +141,7 @@ impl RouterBoundOutboundSecrets {
     pub fn from_router_signing_seed(seed: &[u8; 32]) -> Result<Self, ServiceTunnelError> {
         Ok(Self {
             key: OutboundSecretKey::from_router_signing_seed(seed)?,
+            credential_key: OutboundSecretKey::for_domain(seed, ELS2_CONSUMER_CREDENTIAL_KEY_INFO)?,
         })
     }
 
@@ -143,15 +166,46 @@ impl OutboundSecretStore for RouterBoundOutboundSecrets {
     /// and forfeits authentication. The nonce is drawn from the injected
     /// cryptographic RNG and never from a counter or a clock.
     fn seal(&self, secret: &OutboundSecret) -> Result<String, ServiceTunnelError> {
-        seal_with_rng(&self.key, secret, &mut OsRng)
+        seal_with_rng(&self.key, secret, OUTBOUND_SECRET_MARKER, &mut OsRng)
     }
 
     fn open(&self, stored: &str) -> Result<OutboundSecret, ServiceTunnelError> {
-        open_with_key(&self.key, stored)
+        open_with_key(
+            &self.key,
+            stored,
+            OUTBOUND_SECRET_MARKER,
+            validate_stored_form,
+        )
     }
 
     fn is_available(&self) -> bool {
         true
+    }
+}
+
+/// Plan 380: the consumer-credential half of the same owner.
+///
+/// Identical construction to the outproxy half and separated from it in exactly
+/// two places — the HKDF label and the associated-data marker. Every other
+/// property Plan 341 established carries over unchanged: restart-safe, not
+/// transferable to another router, and not the signing key.
+impl RouterSecretOwner for RouterBoundOutboundSecrets {
+    fn seal_credential(&self, secret: &OutboundSecret) -> Result<String, ServiceTunnelError> {
+        seal_with_rng(
+            &self.credential_key,
+            secret,
+            ELS2_CONSUMER_CREDENTIAL_MARKER,
+            &mut OsRng,
+        )
+    }
+
+    fn open_credential(&self, stored: &str) -> Result<OutboundSecret, ServiceTunnelError> {
+        open_with_key(
+            &self.credential_key,
+            stored,
+            ELS2_CONSUMER_CREDENTIAL_MARKER,
+            validate_els2_credential_form,
+        )
     }
 }
 
@@ -160,6 +214,7 @@ impl OutboundSecretStore for RouterBoundOutboundSecrets {
 fn seal_with_rng<R: TryCryptoRng + ?Sized>(
     key: &OutboundSecretKey,
     secret: &OutboundSecret,
+    marker: &str,
     rng: &mut R,
 ) -> Result<String, ServiceTunnelError> {
     let cipher = ChaCha20Poly1305::new(key.as_key());
@@ -177,7 +232,10 @@ fn seal_with_rng<R: TryCryptoRng + ?Sized>(
             nonce,
             Payload {
                 msg: plaintext,
-                aad: OUTBOUND_SECRET_MARKER.as_bytes(),
+                // The marker doubles as the associated data, so a frame cannot
+                // be replayed into the other domain even if the keys were ever
+                // mistakenly shared.
+                aad: marker.as_bytes(),
             },
         )
         .map_err(|_| ServiceTunnelError::ContradictoryOptions {
@@ -189,16 +247,18 @@ fn seal_with_rng<R: TryCryptoRng + ?Sized>(
     ));
     frame.extend_from_slice(&nonce_bytes[..]);
     frame.extend_from_slice(&ciphertext);
-    Ok(format!("{OUTBOUND_SECRET_MARKER}{}", to_hex(&frame)))
+    Ok(format!("{marker}{}", to_hex(&frame)))
 }
 
 /// Opening under a fixed key, split out for the same reason.
 fn open_with_key(
     key: &OutboundSecretKey,
     stored: &str,
+    marker: &str,
+    validate: fn(&str) -> Result<(), ServiceTunnelError>,
 ) -> Result<OutboundSecret, ServiceTunnelError> {
-    validate_stored_form(stored)?;
-    let body = &stored[OUTBOUND_SECRET_MARKER.len()..];
+    validate(stored)?;
+    let body = &stored[marker.len()..];
     let frame = from_hex(body).ok_or_else(|| ServiceTunnelError::ContradictoryOptions {
         id: String::new(),
         reason: "stored outbound secret body is not valid hex",
@@ -223,7 +283,7 @@ fn open_with_key(
                 Nonce::from_slice(nonce_bytes),
                 Payload {
                     msg: ciphertext,
-                    aad: OUTBOUND_SECRET_MARKER.as_bytes(),
+                    aad: marker.as_bytes(),
                 },
             )
             .map_err(|_| ServiceTunnelError::ContradictoryOptions {
@@ -299,6 +359,7 @@ mod tests {
         seal_with_rng(
             &store.key,
             &OutboundSecret::new(plaintext).expect("secret"),
+            OUTBOUND_SECRET_MARKER,
             &mut rng,
         )
         .expect("sealed")
@@ -334,7 +395,9 @@ mod tests {
         let plaintext = OutboundSecret::new("same-credential").expect("secret");
         let sealed_by_bundle = seal_with(&from_bundle, "same-credential", 9);
         let mut rng = ChaCha8Rng::seed_from_u64(9);
-        let sealed_by_seed = seal_with_rng(&expected.key, &plaintext, &mut rng).expect("sealed");
+        let sealed_by_seed =
+            seal_with_rng(&expected.key, &plaintext, OUTBOUND_SECRET_MARKER, &mut rng)
+                .expect("sealed");
 
         assert_eq!(
             sealed_by_bundle, sealed_by_seed,

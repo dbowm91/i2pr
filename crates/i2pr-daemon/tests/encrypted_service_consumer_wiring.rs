@@ -484,3 +484,567 @@ fn a_record_from_another_day_is_refused() {
         "the lease must be released on failure too"
     );
 }
+
+// ==================================================================================================
+// Plan 380: the ELS2 **consumer client credential**.
+//
+// Plan 351 closed the gap where `EncryptedServiceResolver::begin_authorized` had no production
+// caller: the product always took `begin`, and every `.b33` that declared
+// `B32_FLAG_REQUIRES_CLIENT_KEY` was therefore unresolvable. Plan 380 adds the missing input —
+// the operator's own PSK or DH key — and wires it to the branch.
+//
+// # What the rows below are and are not
+//
+// They drive the real publisher, the real owner, and a real router-bound secret owner. Every
+// authorized row goes derive → blinded-key lookup → `DatabaseStore` reply → owner ingest →
+// unwrap → bind, with no decoded-LeaseSet injection anywhere: the record the consumer unwraps is
+// the one the publisher built, byte for byte.
+//
+// They do **not** exercise the network, the SSU2 handle, or the destination tunnels. That is
+// deliberate and is the same boundary Plan 351 drew: what is under test is the wiring and the
+// policy — which branch is taken, which secret is opened, and what is refused — and a loopback
+// socket would add no evidence for any of those. The live cross-router proof remains Plan 374's,
+// and is still blocked for want of a driver.
+// ==================================================================================================
+
+use i2pr_client::generate_client_dh_keypair;
+use i2pr_daemon::encrypted_target_credential::SealedEncryptedTargetCredential;
+use i2pr_daemon::outbound_secret::RouterBoundOutboundSecrets;
+use i2pr_daemon::service_tunnels::{
+    EncryptedTargetStatus, ServiceTunnelManager, ServiceTunnelManagerConfig,
+};
+use i2pr_netdb::Els2AuthorizationServerConfig;
+use i2pr_proto::B32_FLAG_REQUIRES_CLIENT_KEY;
+use i2pr_service_tunnels::outbound_secret::RouterSecretOwner;
+use i2pr_service_tunnels::{ServiceTunnelSet, StaticAliasTable};
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// A real router-bound secret owner, so a sealing row cannot pass against a stub that stores
+/// plaintext. Generated per call so rows that need "a different router" have one.
+fn plan380_secret_owner() -> Arc<dyn RouterSecretOwner> {
+    let mut rng = rand_core::OsRng;
+    let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("identity bundle");
+    Arc::new(RouterBoundOutboundSecrets::from_router_identity(&bundle).expect("router-bound owner"))
+}
+
+/// A manager with no specs, which is all the credential registry needs: the registry is keyed by
+/// spec id and does not require the id to exist in the spec set.
+fn plan380_manager(data_dir: &std::path::Path) -> Arc<ServiceTunnelManager> {
+    Arc::new(
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 8,
+            per_service_connection_ceiling: 4,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds"),
+    )
+}
+
+/// A scratch data directory, unique per caller so concurrent rows cannot collide.
+fn plan380_data_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("i2pr-plan380-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch data dir");
+    dir
+}
+
+/// Seals one credential value under `owner`, the way the control plane does.
+fn plan380_seal(
+    owner: &Arc<dyn RouterSecretOwner>,
+    value: &str,
+) -> SealedEncryptedTargetCredential {
+    SealedEncryptedTargetCredential::seal(value, Arc::clone(owner)).expect("seals")
+}
+
+// --- the credential itself ----------------------------------------------------------------------
+
+/// The credential option's value never appears in the stored form.
+#[test]
+fn a_sealed_credential_holds_ciphertext_and_not_its_value() {
+    let owner = plan380_secret_owner();
+    let value = format!("psk:{}", "a7".repeat(32));
+    let sealed = plan380_seal(&owner, &value);
+
+    assert!(
+        !sealed.sealed_form().contains("aaaa"),
+        "the stored form must not contain a run of the plaintext's bytes"
+    );
+    let stored = sealed_debug_is_opaque(&sealed);
+    assert!(
+        stored.contains("configured: true"),
+        "Debug must report presence: {stored}"
+    );
+    assert!(
+        !stored.contains(&value) && !stored.contains("psk:"),
+        "Debug must never print the credential or even its scheme prefix: {stored}"
+    );
+    // And it still opens to exactly the value that went in.
+    assert_eq!(sealed.open().expect("opens").to_option_value(), value);
+}
+
+/// Renders the sealed form's `Debug`, which is the only string an operator or a log can get from
+/// it. Kept as a helper so the row above reads as a statement about the type rather than as a
+/// statement about `format!`.
+fn sealed_debug_is_opaque(sealed: &SealedEncryptedTargetCredential) -> String {
+    format!("{sealed:?}")
+}
+
+/// A credential sealed by one router does not open under another.
+///
+/// This is the row that makes "sealed under the router identity" mean something. A stored form is
+/// portable on disk — it can be copied between data directories — so the only thing stopping it
+/// from being portable *as a usable credential* is that the receiving router derives a different
+/// key. The failure is refused at adoption, not at first use, so it surfaces as a failed control
+/// transaction rather than as a service that silently never resolves.
+#[test]
+fn a_credential_is_not_transferable_to_another_router() {
+    let value = format!("psk:{}", "b8".repeat(32));
+    let sealed = plan380_seal(&plan380_secret_owner(), &value);
+    // Round-trip is byte-exact, so a generation file that survives a restart reopens. Compared
+    // through the rendered spelling rather than `PartialEq`: the credential type deliberately has
+    // neither, because it holds key material.
+    assert_eq!(
+        sealed.open().expect("opens").to_option_value(),
+        value,
+        "seal then open must be the identity, so a restart needs no second rendering"
+    );
+
+    let other_router = plan380_secret_owner();
+    assert!(
+        SealedEncryptedTargetCredential::from_sealed(
+            sealed.sealed_form(),
+            Arc::clone(&other_router)
+        )
+        .is_err(),
+        "a stored form copied from another router must not be adopted"
+    );
+    // The owner's own two domains do not substitute for each other either: the outproxy
+    // credential domain cannot open a consumer credential, and vice versa.
+    assert!(
+        other_router.open_credential(sealed.sealed_form()).is_err(),
+        "a consumer credential must not open in the outproxy domain"
+    );
+}
+
+// --- the manager registry -----------------------------------------------------------------------
+
+/// The registry holds per-spec credentials, isolates them, and drops them.
+#[test]
+fn the_manager_registry_is_per_spec_and_fail_closed_on_removal() {
+    let manager = plan380_manager(&plan380_data_dir("registry"));
+    let owner = plan380_secret_owner();
+
+    assert!(
+        manager.encrypted_target_credential("alpha").is_none(),
+        "nothing is installed before an install"
+    );
+
+    manager.install_encrypted_target_credential(
+        "alpha",
+        Arc::new(plan380_seal(&owner, &format!("psk:{}", "11".repeat(32)))),
+    );
+    manager.install_encrypted_target_credential(
+        "beta",
+        Arc::new(plan380_seal(&owner, &format!("dh:{}", "22".repeat(32)))),
+    );
+
+    let alpha = manager
+        .encrypted_target_credential("alpha")
+        .expect("alpha installed");
+    let beta = manager
+        .encrypted_target_credential("beta")
+        .expect("beta installed");
+    assert_eq!(
+        alpha.open().expect("alpha opens").to_option_value(),
+        format!("psk:{}", "11".repeat(32))
+    );
+    assert_eq!(
+        beta.open().expect("beta opens").to_option_value(),
+        format!("dh:{}", "22".repeat(32))
+    );
+    assert_eq!(
+        manager.installed_encrypted_target_credentials().len(),
+        2,
+        "two specs, two credentials"
+    );
+
+    // Replacing one spec's credential must not disturb the other.
+    manager.install_encrypted_target_credential(
+        "alpha",
+        Arc::new(plan380_seal(&owner, &format!("psk:{}", "33".repeat(32)))),
+    );
+    assert_eq!(
+        manager
+            .encrypted_target_credential("alpha")
+            .expect("alpha still installed")
+            .open()
+            .expect("replacement opens")
+            .to_option_value(),
+        format!("psk:{}", "33".repeat(32))
+    );
+    assert_eq!(
+        manager
+            .encrypted_target_credential("beta")
+            .expect("beta untouched")
+            .open()
+            .expect("beta opens")
+            .to_option_value(),
+        format!("dh:{}", "22".repeat(32)),
+        "a per-spec registry must not leak one spec's credential into another's slot"
+    );
+
+    // Removal drops it, and is idempotent.
+    manager.remove_encrypted_target_credential("alpha");
+    assert!(manager.encrypted_target_credential("alpha").is_none());
+    assert!(manager.encrypted_target_credential("beta").is_some());
+    manager.remove_encrypted_target_credential("alpha");
+
+    manager.clear_encrypted_target_credentials();
+    assert!(manager.installed_encrypted_target_credentials().is_empty());
+}
+
+// --- the authorized resolution ------------------------------------------------------------------
+
+/// The PSK row: publisher authorizes `psk`, consumer presents it, record unwraps and binds.
+#[test]
+fn an_authorized_psk_credential_resolves_through_the_owner() {
+    let schedule = owner_schedule_from_seed([0x81; 32]);
+    let inner = signed_ls2(&router_from_seed([0x82; 32]));
+    let key = [0x31_u8; 32];
+    let config =
+        Els2AuthorizationServerConfig::psk(vec![i2pr_netdb::PskClientKey::from_bytes(key)])
+            .expect("psk config");
+    let mut rng = ChaCha8Rng::seed_from_u64(0x83);
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (_, message) = publisher
+        .build_authorized_database_store(&config, &inner, PUBLISHED, PUBLISHED + 3_600, &mut rng)
+        .expect("publish");
+    let address = publisher.authorized_address(false).expect("address");
+    assert_eq!(
+        address.flags() & B32_FLAG_REQUIRES_CLIENT_KEY,
+        B32_FLAG_REQUIRES_CLIENT_KEY
+    );
+
+    // The credential travels as it will in production: an option value, sealed by the router-bound
+    // owner, and reopened only at the resolve site.
+    let owner = plan380_secret_owner();
+    let sealed = plan380_seal(&owner, &format!("psk:{}", "31".repeat(32)));
+    let credential = sealed.open().expect("opens");
+
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, _) = resolver
+        .begin_authorized(
+            &address,
+            None,
+            credential.as_borrowed(),
+            PUBLISHED,
+            DEADLINE_MS,
+        )
+        .expect("begin authorized");
+    assert_eq!(
+        resolver
+            .ingest_store(id, &message, PUBLISHED)
+            .unwrap_or_else(|error| panic!("authorized psk client must resolve: {error:?}"))
+            .inner_lease_set2(),
+        &inner,
+    );
+    assert_eq!(resolver.in_flight(), 0);
+}
+
+/// The DH row: the consumer's private key derives the public key the record was published for.
+#[test]
+fn an_authorized_dh_credential_resolves_through_the_owner() {
+    let schedule = owner_schedule_from_seed([0x84; 32]);
+    let inner = signed_ls2(&router_from_seed([0x85; 32]));
+    let mut rng = ChaCha8Rng::seed_from_u64(0x86);
+    let (private, public) = generate_client_dh_keypair(&mut rng).expect("dh keypair");
+    let config = Els2AuthorizationServerConfig::dh(vec![public]).expect("dh config");
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (_, message) = publisher
+        .build_authorized_database_store(&config, &inner, PUBLISHED, PUBLISHED + 3_600, &mut rng)
+        .expect("publish");
+    let address = publisher.authorized_address(false).expect("address");
+
+    // The option carries only the private half. Its public half is re-derived and must equal the
+    // one the record was published for, which is the property that makes the configuration able to
+    // authorize at all.
+    let private_hex: String = private
+        .secret_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let owner = plan380_secret_owner();
+    let credential = plan380_seal(&owner, &format!("dh:{private_hex}"))
+        .open()
+        .expect("opens");
+
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, _) = resolver
+        .begin_authorized(
+            &address,
+            None,
+            credential.as_borrowed(),
+            PUBLISHED,
+            DEADLINE_MS,
+        )
+        .expect("begin authorized");
+    assert_eq!(
+        resolver
+            .ingest_store(id, &message, PUBLISHED)
+            .unwrap_or_else(|error| panic!("authorized dh client must resolve: {error:?}"))
+            .inner_lease_set2(),
+        &inner,
+    );
+}
+
+/// A publisher schedule built over a lookup **secret**, so the record lands on a secret-derived
+/// storage key.
+///
+/// The other fixtures deliberately pass `None`, which is why an ordinary row can compare a
+/// consumer's derived key against a published record's key at all. A row about the two secrets
+/// doing different jobs needs the publisher and the consumer to agree on the secret, or it would
+/// be testing "these keys differ" and calling it cooperation.
+fn plan380_schedule_with_secret(seed: u64, secret: Option<&str>) -> BlindingSchedule {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let private: Red25519PrivateScalar = generate_private(&mut rng).expect("red25519 key");
+    let public = i2pr_crypto::red25519::derive_public_key(&private);
+    let identity = BlindingIdentity::new(public, SigningKeyType::RedDsaSha512Ed25519, secret)
+        .expect("identity");
+    BlindingSchedule::new_owner(identity, private, BlindingScheduleConfig::new(2, true))
+}
+
+/// Both secrets at once: the lookup secret picks the storage key and the credential authorizes the
+/// unwrap. Neither substitutes for the other, and the row proves both are in play.
+#[test]
+fn a_lookup_secret_and_a_credential_each_do_their_own_job() {
+    const SECRET: &str = "the lookup secret";
+    let schedule = plan380_schedule_with_secret(0x91, Some(SECRET));
+    let inner = signed_ls2(&router_from_seed([0x92; 32]));
+    let config =
+        Els2AuthorizationServerConfig::psk(vec![i2pr_netdb::PskClientKey::from_bytes([0x41; 32])])
+            .expect("psk config");
+    let mut rng = ChaCha8Rng::seed_from_u64(0x93);
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (key, message) = publisher
+        .build_authorized_database_store(&config, &inner, PUBLISHED, PUBLISHED + 3_600, &mut rng)
+        .expect("publish");
+    // The address declares that the lookup secret is required, so a consumer must present one.
+    let address = publisher
+        .authorized_address(true)
+        .expect("authorized address");
+
+    let credential = plan380_seal(&plan380_secret_owner(), &format!("psk:{}", "41".repeat(32)))
+        .open()
+        .expect("opens");
+
+    // Both right: the derived key matches the published key and the record authorizes.
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, derived) = resolver
+        .begin_authorized(
+            &address,
+            Some(SECRET),
+            credential.as_borrowed(),
+            PUBLISHED,
+            DEADLINE_MS,
+        )
+        .expect("begin authorized");
+    assert_eq!(
+        derived.as_hash(),
+        key.as_hash(),
+        "the lookup secret is what derives the storage key"
+    );
+    assert_eq!(
+        resolver
+            .ingest_store(id, &message, PUBLISHED)
+            .unwrap_or_else(|error| panic!(
+                "secret and credential together must resolve: {error:?}"
+            ))
+            .inner_lease_set2(),
+        &inner
+    );
+
+    // Right credential, wrong secret: the record is addressed by a different key and is never
+    // found. This is the property that must survive — a valid credential cannot substitute for
+    // the lookup secret, so the secret is a real discovery control.
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, derived) = resolver
+        .begin_authorized(
+            &address,
+            Some("the wrong secret"),
+            credential.as_borrowed(),
+            PUBLISHED,
+            DEADLINE_MS,
+        )
+        .expect("begin authorized");
+    assert_ne!(derived.as_hash(), key.as_hash());
+    assert!(
+        matches!(
+            resolver.ingest_store(id, &message, PUBLISHED),
+            Err(
+                i2pr_daemon::encrypted_service_resolver::EncryptedServiceConsumerError::KeyMismatch
+            )
+        ),
+        "a valid credential must not make a wrongly addressed record resolvable"
+    );
+    assert_eq!(resolver.in_flight(), 0, "the lease must be released");
+
+    // The mirror — a correctly addressed record whose credential is wrong — is the
+    // `a_wrong_credential_is_refused_and_releases_its_lease` row. Together the two say what these
+    // blocks individually cannot: the secret finds the record, the credential opens it, and
+    // getting either wrong fails in its own distinct way.
+}
+
+/// The fail-closed row that is the whole reason for the new status arm: a `.b33` that requires a
+/// client key cannot even *compose* a lookup without one, so nothing is sent.
+#[test]
+fn a_required_credential_that_is_absent_fails_before_a_lookup_is_composed() {
+    let schedule = owner_schedule_from_seed([0x8a; 32]);
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let address = publisher.authorized_address(false).expect("address");
+    assert_eq!(
+        address.flags() & B32_FLAG_REQUIRES_CLIENT_KEY,
+        B32_FLAG_REQUIRES_CLIENT_KEY
+    );
+
+    let mut resolver = EncryptedServiceResolver::default();
+    let error = resolver
+        .begin(&address, Some("a secret"), PUBLISHED, DEADLINE_MS)
+        .expect_err("an authorized address must refuse to begin without a credential");
+    assert!(
+        matches!(
+            error,
+            i2pr_daemon::encrypted_service_resolver::EncryptedServiceConsumerError::InvalidAddress(
+                i2pr_client::EncryptedLeaseSetError::ClientAuthorizationRequired
+            )
+        ),
+        "the refusal must be the address's own demand, not a side effect: {error:?}"
+    );
+    assert_eq!(
+        resolver.in_flight(),
+        0,
+        "no lookup may be composed for an address this router cannot satisfy"
+    );
+}
+
+/// A wrong credential is refused by the record's authorization block, and the lease is released.
+#[test]
+fn a_wrong_credential_is_refused_and_releases_its_lease() {
+    let schedule = owner_schedule_from_seed([0x8b; 32]);
+    let inner = signed_ls2(&router_from_seed([0x8c; 32]));
+    let config =
+        Els2AuthorizationServerConfig::psk(vec![i2pr_netdb::PskClientKey::from_bytes([0x51; 32])])
+            .expect("psk config");
+    let mut rng = ChaCha8Rng::seed_from_u64(0x8d);
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (_, message) = publisher
+        .build_authorized_database_store(&config, &inner, PUBLISHED, PUBLISHED + 3_600, &mut rng)
+        .expect("publish");
+    let address = publisher.authorized_address(false).expect("address");
+
+    let wrong = plan380_seal(&plan380_secret_owner(), &format!("psk:{}", "52".repeat(32)))
+        .open()
+        .expect("opens");
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, _) = resolver
+        .begin_authorized(&address, None, wrong.as_borrowed(), PUBLISHED, DEADLINE_MS)
+        .expect("begin authorized");
+    assert!(
+        matches!(
+            resolver.ingest_store(id, &message, PUBLISHED),
+            Err(i2pr_daemon::encrypted_service_resolver::EncryptedServiceConsumerError::NotAuthorized)
+        ),
+        "the record must refuse a client it did not publish for"
+    );
+    assert_eq!(
+        resolver.in_flight(),
+        0,
+        "a refused authorization must still release the lease"
+    );
+}
+
+/// A credential presented to a `.b33` that does **not** require one is not an error.
+///
+/// This is the asymmetry that makes "select the branch by what the router holds" safe:
+/// `begin_authorized` delegates to the same builder with the address's own flag, so an
+/// unnecessary credential is presented and ignored rather than rejected for being present.
+#[test]
+fn a_credential_on_an_unauthorized_address_is_harmless() {
+    let schedule = owner_schedule_from_seed([0x8e; 32]);
+    let inner = signed_ls2(&router_from_seed([0x8f; 32]));
+    let mut rng = ChaCha8Rng::seed_from_u64(0x90);
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (key, message) = publisher
+        .build_database_store(&inner, PUBLISHED, PUBLISHED + 3_600, &mut rng)
+        .expect("publish");
+    let address = publisher.address(false).expect("address");
+    assert_eq!(
+        address.flags() & B32_FLAG_REQUIRES_CLIENT_KEY,
+        0,
+        "this address must not demand a client key"
+    );
+
+    let credential = plan380_seal(&plan380_secret_owner(), &format!("psk:{}", "61".repeat(32)))
+        .open()
+        .expect("opens");
+    let mut resolver = EncryptedServiceResolver::default();
+    let (id, derived) = resolver
+        .begin_authorized(
+            &address,
+            None,
+            credential.as_borrowed(),
+            PUBLISHED,
+            DEADLINE_MS,
+        )
+        .expect("an unauthorized address must accept an unused credential");
+    assert_eq!(
+        derived.as_hash(),
+        key.as_hash(),
+        "an unused credential must not perturb the derived storage key"
+    );
+    assert_eq!(
+        resolver
+            .ingest_store(id, &message, PUBLISHED)
+            .expect("still resolves")
+            .inner_lease_set2(),
+        &inner
+    );
+}
+
+/// The three new status arms are distinct, static, and carry no value.
+///
+/// Distinct because the operator's next action differs for each: configure a credential, fix the
+/// credential, or fix the router/data directory. Static because a status string reaches a client
+/// reply and a log line, so a reason built from the credential would leak it.
+#[test]
+fn the_credential_status_arms_are_distinct_and_static() {
+    let arms = [
+        (
+            EncryptedTargetStatus::ClientCredentialRequired,
+            "client credential required",
+        ),
+        (
+            EncryptedTargetStatus::ClientCredentialRejected,
+            "client credential rejected",
+        ),
+        (
+            EncryptedTargetStatus::ClientCredentialUnusable,
+            "client credential could not be opened",
+        ),
+    ];
+    for (status, reason) in arms {
+        assert_eq!(status.reason(), reason);
+    }
+    let reasons: std::collections::BTreeSet<&str> =
+        arms.iter().map(|(status, _)| status.reason()).collect();
+    assert_eq!(
+        reasons.len(),
+        arms.len(),
+        "each credential failure needs its own reason string"
+    );
+}

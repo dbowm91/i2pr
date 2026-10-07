@@ -40,6 +40,17 @@ use crate::errors::ServiceTunnelError;
 /// missing this marker is rejected rather than reinterpreted.
 pub const OUTBOUND_SECRET_MARKER: &str = "$i2pr1o$";
 
+/// Marker prefix on every persisted ELS2 consumer-credential form.
+///
+/// Plan 380 adds a second sealed secret under the same router identity, and it
+/// gets its own marker for the same reason [`OUTBOUND_SECRET_MARKER`] is
+/// distinct from [`crate::auth::PROXY_VERIFIER_MARKER`]: three kinds of value
+/// that must never be mistaken for one another. A stored form carrying this
+/// marker is a consumer credential and cannot be opened by the outproxy
+/// domain, because the two are derived under different labels and authenticate
+/// different associated data.
+pub const ELS2_CONSUMER_CREDENTIAL_MARKER: &str = "$i2pr1e$";
+
 /// Longest plaintext this interface will seal, in bytes.
 ///
 /// Matches the inbound password ceiling in [`crate::auth`] so a credential
@@ -156,6 +167,33 @@ pub trait OutboundSecretStore: Send + Sync {
     fn is_available(&self) -> bool;
 }
 
+/// A router-bound owner of **both** sealed secret domains (Plan 380).
+///
+/// Plan 341 established one router-bound key for the outbound proxy credential.
+/// Plan 380 needs a second sealed secret — the ELS2 consumer client credential
+/// — under the same router identity, but deliberately **not** under the same
+/// key: the concrete implementation derives each domain from a distinct HKDF
+/// label and authenticates a distinct marker, so a stored form from one domain
+/// fails to open in the other rather than being silently interchangeable.
+///
+/// This is a supertrait rather than a second field on the composition root's
+/// configuration so that "derive once, share one `Arc`" stays true: one owner,
+/// two capabilities, no second key and no second `Arc` to keep in step. The
+/// `OutboundSecretStore` half is inherited unchanged, which is what lets the
+/// outproxy runtime keep holding a plain `Arc<dyn OutboundSecretStore>`.
+///
+/// Every method is total and fallible, exactly as on the parent trait. There is
+/// no best-effort path: a credential that cannot be opened is refused, because
+/// the alternative is presenting a client with a service it is not authorized
+/// for.
+pub trait RouterSecretOwner: OutboundSecretStore {
+    /// Seals an ELS2 consumer credential into its stored form.
+    fn seal_credential(&self, secret: &OutboundSecret) -> Result<String, ServiceTunnelError>;
+
+    /// Opens an ELS2 consumer credential's stored form back into plaintext.
+    fn open_credential(&self, stored: &str) -> Result<OutboundSecret, ServiceTunnelError>;
+}
+
 /// The default store: refuses everything.
 ///
 /// Used wherever no composition root installed a real owner — tests, and any
@@ -180,6 +218,22 @@ impl OutboundSecretStore for NoOutboundSecrets {
     }
 }
 
+/// Plan 380: the fail-closed default refuses the consumer credential too, and
+/// the reason is deliberately the same one an operator sees for an outproxy
+/// credential. "No secret owner is installed" is a composition-root fact, and
+/// the two domains are not distinguishable to an operator who has not fixed the
+/// router identity — naming the domain here would tell them a secret was
+/// involved when the real problem is that nothing can seal one.
+impl RouterSecretOwner for NoOutboundSecrets {
+    fn seal_credential(&self, _secret: &OutboundSecret) -> Result<String, ServiceTunnelError> {
+        Err(unavailable("no outbound secret owner is installed"))
+    }
+
+    fn open_credential(&self, _stored: &str) -> Result<OutboundSecret, ServiceTunnelError> {
+        Err(unavailable("no outbound secret owner is installed"))
+    }
+}
+
 /// The single error every unavailable-owner path returns.
 fn unavailable(reason: &'static str) -> ServiceTunnelError {
     ServiceTunnelError::ContradictoryOptions {
@@ -195,13 +249,32 @@ fn unavailable(reason: &'static str) -> ServiceTunnelError {
 /// error instead of reaching a decoder. The check is intentionally
 /// conservative: it proves the shape, never the contents.
 pub fn validate_stored_form(stored: &str) -> Result<(), ServiceTunnelError> {
+    validate_sealed_form(stored, OUTBOUND_SECRET_MARKER)
+}
+
+/// The Plan 380 counterpart of [`validate_stored_form`] for the ELS2 consumer
+/// credential domain.
+///
+/// Separate rather than parameterized at the call sites so that the marker is
+/// never a value a caller can choose: passing the wrong domain's marker would
+/// accept a frame belonging to the other domain.
+///
+/// The reason strings are deliberately identical to the outproxy domain's. The
+/// two are told apart by which marker they accept, not by what they say, so a
+/// stored form cannot be probed for its domain by comparing error text.
+pub fn validate_els2_credential_form(stored: &str) -> Result<(), ServiceTunnelError> {
+    validate_sealed_form(stored, ELS2_CONSUMER_CREDENTIAL_MARKER)
+}
+
+/// The shared shape check both domains apply.
+fn validate_sealed_form(stored: &str, marker: &str) -> Result<(), ServiceTunnelError> {
     if stored.is_empty() || stored.len() > MAX_OUTBOUND_SECRET_STORED_LEN {
         return Err(ServiceTunnelError::ExceedsCeiling {
             field: "outbound_secret_stored",
             reason: "stored outbound secret must be non-empty and bounded",
         });
     }
-    let Some(body) = stored.strip_prefix(OUTBOUND_SECRET_MARKER) else {
+    let Some(body) = stored.strip_prefix(marker) else {
         return Err(ServiceTunnelError::ContradictoryOptions {
             id: String::new(),
             reason: "stored outbound secret must carry the sealed-secret marker",

@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// exercise a credential. No identity is loaded, so no store exists, and every
 /// credential field is refused rather than silently accepted.
 fn plan342_test_outbound_secrets()
--> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+-> Arc<dyn i2pr_service_tunnels::outbound_secret::RouterSecretOwner> {
     Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
 }
 

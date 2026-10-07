@@ -460,6 +460,22 @@ pub struct ServiceTunnelManager {
     /// independent copy, and the only way for the product layer to reach
     /// the value is to borrow the one installed here.
     encrypted_target_secrets: Mutex<HashMap<String, Arc<i2pr_crypto::red25519::LookupSecret>>>,
+    /// Plan 380: per-spec ELS2 **consumer client credential**, in sealed
+    /// stored form.
+    ///
+    /// A separate registry from `encrypted_target_secrets` because the two are
+    /// different values with different lifetimes and different secrets rules.
+    /// The lookup secret is the publisher's `OptionalLookup` value and reaches
+    /// the resolver as a `&str` borrow; the client credential is the operator's
+    /// own PSK or DH key and must never be opened here at all — only inside
+    /// the resolve path.
+    ///
+    /// The map holds ciphertext plus the `Arc` that can open it, exactly like
+    /// Plan 342's outproxy provider registry, so a value installed for a spec
+    /// is usable after a restart without this map ever holding plaintext.
+    encrypted_target_credentials: Mutex<
+        HashMap<String, Arc<crate::encrypted_target_credential::SealedEncryptedTargetCredential>>,
+    >,
     /// Plan 351: per-spec outcome of the last encrypted-target
     /// provisioning attempt.
     ///
@@ -535,6 +551,36 @@ pub enum EncryptedTargetStatus {
     DispatchFailed,
     /// The lookup completed without producing a record.
     LookupExhausted,
+    /// Plan 380: the `.b33` declares `B32_FLAG_REQUIRES_CLIENT_KEY` and no
+    /// consumer credential is configured for this spec.
+    ///
+    /// A distinct arm rather than a generic unwrap failure, and the reason is
+    /// the whole point of it: **no lookup was issued**. The address told this
+    /// router, before any fetch, that it would need a credential it does not
+    /// have, so the correct operator action is to configure one — and
+    /// collapsing this into `UnwrapFailed` would report a network or crypto
+    /// problem for a configuration omission.
+    ClientCredentialRequired,
+    /// Plan 380: a consumer credential was configured, presented, and the
+    /// record refused it.
+    ///
+    /// Kept separate from `UnwrapFailed` because the two have opposite causes
+    /// and opposite fixes, and from `ClientCredentialRequired` because the
+    /// operator did supply a credential. What it deliberately does **not**
+    /// distinguish is a wrong credential from a record built for a different
+    /// client: reporting that difference would turn the status surface into a
+    /// oracle for probing which credential a service accepts.
+    ClientCredentialRejected,
+    /// Plan 380: a credential is installed but the secret owner could not
+    /// open it.
+    ///
+    /// Kept distinct from both neighbours because the operator's next action
+    /// differs from each. This is the "copied data directory" case — the
+    /// sealed form was produced under a different router identity — or a
+    /// corrupt generation, and neither is fixed by supplying a different
+    /// credential. The reconciliation refuses to install such a value, so
+    /// reaching this arm means the store changed under a running router.
+    ClientCredentialUnusable,
 }
 
 impl EncryptedTargetStatus {
@@ -551,6 +597,9 @@ impl EncryptedTargetStatus {
             Self::NoFloodfillCandidate => "no floodfill candidate",
             Self::DispatchFailed => "dispatch failed",
             Self::LookupExhausted => "lookup exhausted",
+            Self::ClientCredentialRequired => "client credential required",
+            Self::ClientCredentialRejected => "client credential rejected",
+            Self::ClientCredentialUnusable => "client credential could not be opened",
         }
     }
 }
@@ -687,6 +736,7 @@ impl ServiceTunnelManager {
             deferred_activation_enabled: AtomicBool::new(false),
             els2_materials: Mutex::new(HashMap::new()),
             encrypted_target_secrets: Mutex::new(HashMap::new()),
+            encrypted_target_credentials: Mutex::new(HashMap::new()),
             encrypted_target_status: Mutex::new(HashMap::new()),
             outproxy_providers: Mutex::new(HashMap::new()),
             outproxy_counters: Mutex::new(crate::outproxy_route::OutproxyCounters::default()),
@@ -2848,6 +2898,75 @@ impl ServiceTunnelManager {
             .ok()?
             .get(spec_id)
             .cloned()
+    }
+
+    /// Plan 380 — installs the sealed ELS2 consumer client credential for one
+    /// spec, or drops it when the spec no longer names an encrypted target.
+    ///
+    /// The argument is the **sealed** form, never a plaintext credential. That
+    /// is the structural half of the discipline: there is no signature on this
+    /// manager by which a plaintext credential could be installed, so "the
+    /// manager never holds the key" is a property of the type rather than a
+    /// rule a future caller has to remember.
+    pub fn install_encrypted_target_credential(
+        &self,
+        spec_id: &str,
+        credential: Arc<crate::encrypted_target_credential::SealedEncryptedTargetCredential>,
+    ) {
+        self.encrypted_target_credentials
+            .lock()
+            .expect("encrypted target credential registry poisoned")
+            .insert(spec_id.to_owned(), credential);
+    }
+
+    /// Plan 380 — drops the sealed consumer credential for one spec.
+    ///
+    /// Mandatory on every path that invalidates the value, for the reason
+    /// [`Self::remove_encrypted_target_secret`] gives: a stale sealed form is
+    /// still a live credential for a spec that no longer needs it.
+    pub fn remove_encrypted_target_credential(&self, spec_id: &str) {
+        self.encrypted_target_credentials
+            .lock()
+            .expect("encrypted target credential registry poisoned")
+            .remove(spec_id);
+    }
+
+    /// Plan 380 — returns the sealed consumer credential for one spec.
+    ///
+    /// `Arc`, and sealed: the caller reaches the key material only by calling
+    /// `open` on the returned value, which happens inside the resolve path and
+    /// nowhere else.
+    pub fn encrypted_target_credential(
+        &self,
+        spec_id: &str,
+    ) -> Option<Arc<crate::encrypted_target_credential::SealedEncryptedTargetCredential>> {
+        self.encrypted_target_credentials
+            .lock()
+            .ok()?
+            .get(spec_id)
+            .cloned()
+    }
+
+    /// Plan 380 — the spec ids that currently hold a sealed consumer
+    /// credential.
+    ///
+    /// Names only. Exists so the control plane can drop credentials for
+    /// definitions that no longer exist, which is the deleted-definition arm of
+    /// the fail-closed rule.
+    pub fn installed_encrypted_target_credentials(&self) -> Vec<String> {
+        self.encrypted_target_credentials
+            .lock()
+            .map(|registry| registry.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Plan 380 — drops every sealed consumer credential. Used by shutdown and
+    /// by tests so a credential cannot outlive the manager that owns it.
+    pub fn clear_encrypted_target_credentials(&self) {
+        self.encrypted_target_credentials
+            .lock()
+            .expect("encrypted target credential registry poisoned")
+            .clear();
     }
 
     /// Plan 351 — records the outcome of one encrypted-target

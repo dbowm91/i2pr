@@ -64,11 +64,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::encrypted_target_credential::{
+    EncryptedTargetCredential, EncryptedTargetCredentialError, SealedEncryptedTargetCredential,
+};
 use i2pr_i2pcontrol::proposal_leaseset_mode::{LeaseSetClientAuthScheme, LeaseSetSecurityPlan};
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
-use i2pr_service_tunnels::outbound_secret::{NoOutboundSecrets, OutboundSecretStore};
+use i2pr_service_tunnels::outbound_secret::{
+    NoOutboundSecrets, OutboundSecret, RouterSecretOwner, validate_els2_credential_form,
+};
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationPolicy, DestinationRef,
     IdleSweepAction, LocalListenerSpec, MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS,
@@ -242,6 +247,21 @@ pub const SUPPORTED_334_OPTIONS: [&str; 3] = [
 /// could be stored but never block-validated would be exactly the inert
 /// acceptance Plan 342 forbids.
 pub const SUPPORTED_342_OPTIONS: [&str; 7] = crate::outproxy_options::OUTPROXY_BLOCK_KEYS;
+
+/// Plan 380: the ELS2 **consumer** client credential, admitted here rather
+/// than in the frozen Proposal 170 option inventory.
+///
+/// Proposal 170 has no such field, and adding one would advertise a Proposal
+/// option that does not exist. On the publisher side Proposal already spells
+/// the authorized clients (`LeaseSetClientAuths`, i.e. `leaseset_client_auth`);
+/// a consumer is expected to hold the matching PSK or DH key out of band, so
+/// this key is an i2pr-local configuration surface and never reaches a Proposal
+/// projection.
+///
+/// Opt-in and absent by default: a definition that does not set it is byte-for-
+/// byte the Plan 351 definition it was before this plan.
+pub const SUPPORTED_380_OPTIONS: [&str; 1] =
+    [crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -391,6 +411,16 @@ pub fn lease_set_security_projection(definition: &ControlDefinition) -> serde_js
         "clientAuthCount": plan.client_count(),
         "requiresBlindingSecret": flags.requires_blinding_secret(),
         "requiresClientKey": flags.requires_client_key(),
+        // Plan 380: the **consumer** credential, which is a different value
+        // from `clientAuthCount` above — that is how many clients the
+        // *publisher* admits, this is whether *this* router holds one of them.
+        // A boolean only: the value is raw key material, its length is
+        // constant across both schemes, and its scheme is already public in
+        // the `.b33` address flags, so there is nothing else worth returning.
+        "clientCredentialConfigured": definition
+            .options
+            .get(crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION)
+            .is_some_and(|value| !value.is_empty()),
     })
 }
 
@@ -2338,6 +2368,12 @@ pub fn build_control_spec_with_filter_root(
             // these arms bind nothing, so the block parser below re-reads the
             // values from `definition.options` in one place.
             key if SUPPORTED_342_OPTIONS.contains(&key) => {}
+            // Plan 380: the consumer client credential is consumed whole, by
+            // the sync pass and then by the resolve path, and the M10 traffic
+            // spec has nothing to project from it. Like the outproxy block it
+            // binds no variable here; its cross-field rule is enforced once,
+            // after this loop, because `target_destination` sorts after it.
+            key if SUPPORTED_380_OPTIONS.contains(&key) => {}
             other => {
                 // Secret-classified keys are rejected here even though
                 // they never reach storage: belt and suspenders against
@@ -2769,6 +2805,31 @@ pub fn build_control_spec_with_filter_root(
             reason: "leaseset_password on a client tunnel requires target_destination to be an encrypted-service address (.b33.i2p)",
         });
     }
+    // Plan 380 — the consumer credential's own pairing rule, and a *stricter*
+    // one than the lookup secret's above.
+    //
+    // A `leaseset_password` with an ordinary target is refused too, but the
+    // objection there is that the secret is useless. A
+    // `leaseset_client_credential` with an ordinary target is worse than
+    // useless: it would be sealed, stored, restarted, and then never read,
+    // because no `.b32` target can ever present a layer-1 authorization block
+    // to refuse. So it is refused outright rather than parked.
+    //
+    // The rule is also unconditional on tunnel kind, unlike the lookup secret's
+    // rule which is scoped to client kinds. A credential is only ever consumed
+    // by the encrypted-service consumer path, and that path requires
+    // `delay_open` (Gate 1), so a credential on any other kind is a
+    // configuration that cannot be honoured.
+    if definition
+        .options
+        .contains_key(crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION)
+        && !matches!(destination, Some(DestinationRef::EncryptedService { .. }))
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "leaseset_client_credential requires target_destination to be an encrypted-service address (.b33.i2p)",
+        });
+    }
     let mut destination_policy = if let Some(key_reference) = priv_key_file {
         DestinationPolicy::KeyReference(key_reference)
     } else {
@@ -2901,13 +2962,37 @@ fn rejected_option_reason(tunnel_type: TunnelType, key: &str) -> String {
 /// and the caller returns an error rather than continuing.
 fn seal_outproxy_credential(
     name: &str,
-    store: &dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore,
+    store: &dyn RouterSecretOwner,
     credential: Option<zeroize::Zeroizing<String>>,
     persisted: &mut BTreeMap<String, String>,
 ) -> Result<(), ControlError> {
     let Some(credential) = credential else {
         return Ok(());
     };
+    // Idempotence, corrected forward by Plan 380.
+    //
+    // `edit` merges the stored options with the request's, so this function runs again with the
+    // value that is already this owner's stored form. Before this arm it re-sealed that ciphertext,
+    // so **every edit of an outproxy tunnel carrying an OutproxyPassword silently destroyed the
+    // credential**: the stored form became sealed-twice, and opening it once returned the previous
+    // stored form *as text*, which the provider then presented to the outproxy as the password. The
+    // outproxy answers 407 and there is nothing in any status surface to say why.
+    //
+    // Plan 342's rows could not see this because they exercised a generation round trip, which
+    // never re-runs the seal step, and no Plan 342 or Plan 376 row edited an outproxy tunnel.
+    // `plan342_sealed_block_survives_a_generation_round_trip` carried the comment "so an untouched
+    // credential survives an edit" — the first clause was true and the second was untested. It is
+    // tested now, by `plan380_an_unrelated_edit_leaves_the_sealed_credential_unchanged`.
+    //
+    // Re-sealing would also be wrong on its own terms: a fresh nonce would change the stored bytes
+    // after an edit that changed nothing about the credential.
+    if credential.starts_with(i2pr_service_tunnels::outbound_secret::OUTBOUND_SECRET_MARKER) {
+        return i2pr_service_tunnels::outbound_secret::validate_stored_form(&credential)
+            .map_err(|_| ControlError::OutproxyBlockRejected(format!(
+                "{name}: the stored OutproxyPassword form is malformed; the tunnel was not created \
+                 and no listener or destination was allocated"
+            )));
+    }
     // Plan 342 invariant 3, enforced here and nowhere else: a credential that
     // cannot be sealed fails the transaction before any listener or
     // destination is allocated. Falling back to plaintext storage is not an
@@ -2933,6 +3018,103 @@ fn seal_outproxy_credential(
         crate::outproxy_options::OUTPROXY_PASSWORD_KEY.to_owned(),
         sealed,
     );
+    Ok(())
+}
+
+/// Plan 380 — seals an ELS2 consumer client credential into `persisted`,
+/// replacing the plaintext before the definition can reach a generation file.
+///
+/// The grammar is checked here rather than at the sync pass, so a malformed
+/// credential is refused by the same transaction that would have stored it —
+/// not accepted now and discovered broken on the next restart.
+///
+/// Only the **stored form** is produced here. The `SealedEncryptedTargetCredential`
+/// that owns it — and therefore the `Arc` to the secret owner that can open it
+/// — is built later, in the sync pass, where the composition root's `Arc` is
+/// in hand. Sealing through a borrowed capability and adopting the stored form
+/// through the owned one keeps exactly one place that holds an `Arc`, which is
+/// the property Plan 341's "derive once" discipline is actually about.
+///
+/// Every reason is a literal naming the rule, never the offending value. That
+/// matters more here than for the outproxy credential: the value is raw key
+/// material, and an error string that echoed it would put a pre-shared key into
+/// a client reply and a log line in one step.
+fn seal_encrypted_target_credential(
+    name: &str,
+    plaintext: &str,
+    store: &dyn RouterSecretOwner,
+    persisted: &mut BTreeMap<String, String>,
+) -> Result<(), ControlError> {
+    let option = || crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION.to_owned();
+
+    // Idempotence, which a sealing step in a merge-capable normalize path must have.
+    //
+    // `edit` merges the stored options with the request's, so this function is called again with
+    // a value that is *already* this owner's stored form. Without this arm the seal step would try
+    // to parse its own ciphertext as a plaintext credential and every edit of a credential-bearing
+    // service would fail. Re-sealing instead would be no better: it would churn the nonce, so the
+    // stored bytes would differ after an unrelated edit and a generation round trip would stop
+    // being byte-stable.
+    //
+    // The framing is still checked, so a value that merely *begins* like a stored form cannot slip
+    // past — it has to be a frame this owner could actually have produced.
+    if plaintext.starts_with(i2pr_service_tunnels::outbound_secret::ELS2_CONSUMER_CREDENTIAL_MARKER)
+    {
+        return validate_els2_credential_form(plaintext).map_err(|_| ControlError::InvalidOption {
+            option: option(),
+            reason: "client credential stored form is malformed",
+        });
+    }
+    // Parsed for its grammar, then dropped before this function returns. The
+    // plaintext's lifetime is one call, not the life of the definition.
+    let credential = EncryptedTargetCredential::parse(plaintext).map_err(|error| {
+        ControlError::InvalidOption {
+            option: option(),
+            reason: match error {
+                EncryptedTargetCredentialError::OverBound => {
+                    "client credential exceeds the bounded length"
+                }
+                EncryptedTargetCredentialError::UnknownScheme => {
+                    "client credential scheme must be psk: or dh:"
+                }
+                EncryptedTargetCredentialError::MalformedKey => {
+                    "client credential key must be exactly 64 lowercase hex characters"
+                }
+                EncryptedTargetCredentialError::NoSecretOwner
+                | EncryptedTargetCredentialError::CannotOpen => {
+                    "client credential could not be sealed by the outbound secret owner"
+                }
+            },
+        }
+    })?;
+    // Sealed from the re-rendered canonical spelling rather than from the
+    // client's bytes. `parse` rejects every non-canonical spelling, so the
+    // render is the identity — but stating it means a future lenient parser
+    // still could not seal a value that would not parse back identically.
+    let sealed = store
+        .seal_credential(
+            &OutboundSecret::new(credential.to_option_value().as_str()).map_err(|_| {
+                ControlError::InvalidOption {
+                    option: option(),
+                    reason: "client credential exceeds the bounded length",
+                }
+            })?,
+        )
+        .map_err(|_| ControlError::InvalidOption {
+            option: option(),
+            reason: "client credential could not be sealed by the outbound secret owner",
+        })?;
+    // Prove the framing this owner produced before it becomes durable state.
+    // A failure here means the owner is not the one that sealed the value, and
+    // storing it would defer that to the first resolve.
+    if validate_els2_credential_form(&sealed).is_err() {
+        return Err(ControlError::InvalidOption {
+            option: option(),
+            reason: "client credential could not be sealed by the outbound secret owner",
+        });
+    }
+    persisted.insert(option(), sealed);
+    let _ = name;
     Ok(())
 }
 
@@ -2969,7 +3151,7 @@ pub fn normalize_definition_with_filter_root(
     options: &BTreeMap<String, String>,
     start_on_load: bool,
     filter_root: Option<&Path>,
-    store: &dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore,
+    store: &dyn RouterSecretOwner,
 ) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
     if !tunnel_type.has_plan291_backend() {
@@ -2985,6 +3167,7 @@ pub fn normalize_definition_with_filter_root(
             && !SUPPORTED_324_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_334_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_342_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_380_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -3040,6 +3223,20 @@ pub fn normalize_definition_with_filter_root(
         // `seal_outproxy_credential`, and `block.config` is a policy value
         // the spec build re-derives from `persisted` rather than carrying
         // across, so nothing observable escapes this arm.
+    }
+    // Plan 380: seal the ELS2 consumer client credential, by the same rule and
+    // for the same reason as the outproxy credential above — a value that
+    // cannot be sealed fails the transaction before any listener or
+    // destination is allocated, and falling back to plaintext storage is never
+    // an option.
+    //
+    // It runs after the outproxy arm and before the spec build so that the
+    // grammar is checked before the pairing rule fires in `build_control_spec`
+    // and before any allocation. The plaintext exists only between the parse
+    // and the seal, both of which are in this function body.
+    if let Some(plaintext) = options.get(crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION)
+    {
+        seal_encrypted_target_credential(name, plaintext, store, &mut persisted)?;
     }
     let mut explicit_start_on_load = start_on_load;
     if let Some(value) = persisted.get("start_on_load") {
@@ -3100,7 +3297,7 @@ pub struct TunnelControlState {
     /// `NoOutboundSecrets` is the fail-closed default: a control plane
     /// without an installed owner refuses every credential rather than
     /// silently degrading to an unauthenticated request.
-    outbound_secrets: Arc<dyn OutboundSecretStore>,
+    outbound_secrets: Arc<dyn RouterSecretOwner>,
     /// Serializes all mutations (same-name and cross-name).
     op_lock: tokio::sync::Mutex<()>,
     /// Current durable intent mirror (rebuilt from the store at startup).
@@ -3173,7 +3370,7 @@ impl TunnelControlState {
         store: ControlStore,
         startup: ServiceTunnelSet,
         manager: Arc<ServiceTunnelManager>,
-        outbound_secrets: Arc<dyn OutboundSecretStore>,
+        outbound_secrets: Arc<dyn RouterSecretOwner>,
     ) -> Self {
         Self {
             store,
@@ -3204,7 +3401,7 @@ impl TunnelControlState {
     pub fn for_config(
         config: &crate::config::Config,
         manager: Arc<ServiceTunnelManager>,
-        outbound_secrets: Arc<dyn OutboundSecretStore>,
+        outbound_secrets: Arc<dyn RouterSecretOwner>,
     ) -> Result<Self, ControlError> {
         let store = ControlStore::open(&config.router.data_dir).map_err(ControlError::Store)?;
         Ok(Self::new(
@@ -3219,7 +3416,7 @@ impl TunnelControlState {
     ///
     /// Public because the runtime that actually opens a credential needs the
     /// same `Arc`; it is the owner, not a capability any caller may invent.
-    pub fn outbound_secrets(&self) -> Arc<dyn OutboundSecretStore> {
+    pub fn outbound_secrets(&self) -> Arc<dyn RouterSecretOwner> {
         self.outbound_secrets.clone()
     }
 
@@ -3577,6 +3774,22 @@ impl TunnelControlState {
                 reconciled_back: back,
             });
         }
+        // Plan 380: the sealed ELS2 consumer credential joins the same
+        // reconciliation with the same rollback semantics, for a sharper
+        // reason than the outproxy case above. A published definition whose
+        // credential the resolve path cannot find does not merely fail every
+        // request with "secret owner unavailable" — it would resolve the
+        // `.b33` as a **no-credential** consumer, against a record that
+        // requires one, and report the failure as an unwrap error. Rolling
+        // back is what keeps "configured" and "will actually be presented"
+        // the same state.
+        if let Err(error) = self.sync_encrypted_target_credentials() {
+            let back = self.reconcile_back().await;
+            return Err(ControlError::PublishFailed {
+                reason: static_control_reason(&error),
+                reconciled_back: back,
+            });
+        }
         self.verify_agreement()?;
         Ok((staged, outcome.diff))
     }
@@ -3683,7 +3896,12 @@ impl TunnelControlState {
                 .cloned();
             let provider = crate::outproxy_route::RouterOutproxyProvider::new(
                 block.config,
-                Arc::clone(&store),
+                // Upcast to the parent capability. `RouterSecretOwner` is a
+                // supertrait, so this is a view of the same `Arc` and the same
+                // derived key — the provider does not get a second store, it
+                // gets a narrower handle on the one the composition root built.
+                Arc::clone(&store)
+                    as Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore>,
                 sealed,
             )
             .map_err(|_| ControlError::Manager("outproxy provider is not usable"))?;
@@ -3754,6 +3972,82 @@ impl TunnelControlState {
             })?;
             self.manager
                 .install_encrypted_target_secret(name, Arc::new(secret));
+        }
+        Ok(())
+    }
+
+    /// Plan 380 — installs the sealed ELS2 **consumer credential** for every
+    /// control-owned definition that names an encrypted-service target, and
+    /// drops it for every definition that does not.
+    ///
+    /// The exact mirror image of [`Self::sync_encrypted_target_secrets`], and
+    /// it runs in the same reconciliation, so the two cannot drift: a
+    /// definition that stops naming a `.b33` loses its lookup secret and its
+    /// credential in the same pass, and a deleted definition loses both.
+    ///
+    /// Two things are worth stating because they are where this differs from
+    /// the lookup-secret arm:
+    ///
+    /// - the value read here is **already ciphertext**. `normalize_definition`
+    ///   sealed it before the definition could reach a generation file, so this
+    ///   pass adopts a stored form rather than handling plaintext. That is the
+    ///   whole point: the reconciliation is the last place that sees the option
+    ///   map, and it has nothing sensitive left in it to leak.
+    /// - a definition that supplies a credential the store cannot adopt is an
+    ///   **error**, not a skip. `normalize_definition` already proved the owner
+    ///   could seal, so failing to open here means the stored form was written
+    ///   by a different router identity than the one now running — which is
+    ///   precisely the "copied data directory" case, and it must fail loudly
+    ///   rather than resolving as an unauthenticated client.
+    fn sync_encrypted_target_credentials(&self) -> Result<(), ControlError> {
+        let definitions = lock(&self.definitions).clone();
+        for (name, definition) in definitions.iter() {
+            // Same re-parse as the lookup-secret arm: `ControlDefinition` keeps
+            // only the option map, so an unparseable target reads as "not an
+            // encrypted target", which drops the credential and fails closed.
+            let names_encrypted_target = definition
+                .options
+                .get("target_destination")
+                .and_then(|value| DestinationRef::parse(value).ok())
+                .is_some_and(|reference| {
+                    matches!(reference, DestinationRef::EncryptedService { .. })
+                });
+            let Some(stored) = definition
+                .options
+                .get(crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION)
+                .filter(|value| !value.is_empty())
+            else {
+                self.manager.remove_encrypted_target_credential(name);
+                continue;
+            };
+            if !names_encrypted_target {
+                // `normalize_definition` already rejects this pairing, so
+                // reaching it means a stored definition predates the rule.
+                // Drop the credential rather than install a value nothing can
+                // ever present.
+                self.manager.remove_encrypted_target_credential(name);
+                continue;
+            }
+            let sealed =
+                SealedEncryptedTargetCredential::from_sealed(stored, self.outbound_secrets())
+                    .map_err(|_| {
+                        // Static reason only. A stored form that will not open could be
+                        // a foreign router's, a tampered generation, or a corrupt one,
+                        // and none of those distinctions may be reported through a
+                        // string that reaches a client reply.
+                        ControlError::Manager("encrypted consumer credential is not usable")
+                    })?;
+            self.manager
+                .install_encrypted_target_credential(name, Arc::new(sealed));
+        }
+        // Deletion sweep, exactly as `sync_outproxy_providers` does it: a
+        // definition removed from the map must not leave a live credential
+        // installed against a spec id nothing owns any more.
+        let known: BTreeSet<String> = definitions.keys().cloned().collect();
+        for spec_id in self.manager.installed_encrypted_target_credentials() {
+            if !known.contains(&spec_id) {
+                self.manager.remove_encrypted_target_credential(&spec_id);
+            }
         }
         Ok(())
     }
@@ -5380,7 +5674,7 @@ mod tests {
     /// is the honest value: no identity was loaded, so no store exists. A test
     /// that *does* exercise a credential installs a real router-bound store,
     /// so an inert-acceptance bug cannot hide behind this helper.
-    fn test_outbound_secrets() -> Arc<dyn OutboundSecretStore> {
+    fn test_outbound_secrets() -> Arc<dyn RouterSecretOwner> {
         Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
     }
 
@@ -8457,7 +8751,7 @@ mod tests {
 
     /// A real router-bound store, so a sealing test cannot pass against a
     /// stub that stores plaintext.
-    fn plan342_store() -> Arc<dyn OutboundSecretStore> {
+    fn plan342_store() -> Arc<dyn RouterSecretOwner> {
         let mut rng = i2pr_crypto::OsRng;
         let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("bundle");
         Arc::new(
@@ -8760,6 +9054,122 @@ mod tests {
         );
     }
 
+    /// Plan 380, correcting forward: an edit that changes nothing about a sealed credential must
+    /// leave the sealed form **byte-identical**, for both sealed-credential domains.
+    ///
+    /// This is the row Plan 342 and Plan 376 could not write. Both exercised generation round
+    /// trips and restarts, neither of which re-runs the seal step; neither edited an outproxy
+    /// tunnel at all. A probe during Plan 380 showed what an edit actually did to the outproxy
+    /// credential: the stored form was sealed a second time, so opening it once returned the
+    /// previous stored form as *text*, which the provider then presented to the outproxy as the
+    /// password. The credential was destroyed by an edit, silently.
+    ///
+    /// The assertion is byte equality rather than "still opens", because a re-seal produces a form
+    /// that still opens — it just opens to the wrong thing.
+    #[test]
+    fn plan380_an_unrelated_edit_leaves_the_sealed_credential_unchanged() {
+        let store = plan342_store();
+
+        // Domain one: the Plan 342 outproxy credential.
+        let outproxy_options = plan342_http_options(Some(("operator", "s3cret!")));
+        let outproxy = normalize_definition_with_filter_root(
+            "editoutproxy",
+            TunnelType::HttpClient,
+            &outproxy_options,
+            false,
+            None,
+            store.as_ref(),
+        )
+        .expect("normalizes");
+        let sealed_outproxy = outproxy
+            .options
+            .get("outproxy_password")
+            .expect("a credential was sealed")
+            .clone();
+
+        // Domain two: the Plan 380 ELS2 consumer credential.
+        // A real `.b33`, not a well-shaped string: the pairing rule parses it, so a synthetic
+        // label would be refused before the seal step ever ran and this row would prove nothing.
+        let target = i2pr_proto::EncryptedServiceAddress::new(
+            i2pr_proto::B32_UNBLINDED_SIGTYPE_RED25519,
+            i2pr_proto::B32_BLINDED_SIGTYPE,
+            [0x3c; 32],
+            true,
+            true,
+        )
+        .expect("an authorized service address")
+        .to_text()
+        .expect("address text");
+        let credential_options = BTreeMap::from([
+            ("target_destination".to_owned(), target.clone()),
+            ("delay_open".to_owned(), "true".to_owned()),
+            (
+                crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION.to_owned(),
+                format!("psk:{}", "5b".repeat(32)),
+            ),
+        ]);
+        let credential = normalize_definition_with_filter_root(
+            "editcredential",
+            TunnelType::Client,
+            &credential_options,
+            false,
+            None,
+            store.as_ref(),
+        )
+        .expect("normalizes");
+        let sealed_credential = credential
+            .options
+            .get(crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION)
+            .expect("a credential was sealed")
+            .clone();
+
+        // `edit` merges the stored options with the request's and re-normalizes the whole
+        // candidate, which is the only place the seal step runs twice. A description change is the
+        // smallest such edit that is still a real one.
+        for (name, tunnel_type, options, key, sealed) in [
+            (
+                "editoutproxy",
+                TunnelType::HttpClient,
+                outproxy.options.clone(),
+                "outproxy_password",
+                sealed_outproxy.clone(),
+            ),
+            (
+                "editcredential",
+                TunnelType::Client,
+                credential.options.clone(),
+                crate::encrypted_target_credential::ELS2_CREDENTIAL_OPTION,
+                sealed_credential.clone(),
+            ),
+        ] {
+            let mut merged = options;
+            merged.insert("description".to_owned(), "changed".to_owned());
+            let edited = normalize_definition_with_filter_root(
+                name,
+                tunnel_type,
+                &merged,
+                false,
+                None,
+                store.as_ref(),
+            )
+            .unwrap_or_else(|error| panic!("{name}: an unrelated edit must not fail: {error}"));
+            assert_eq!(
+                edited.options.get(key),
+                Some(&sealed),
+                "{name}: an unrelated edit must not re-seal {key}; a fresh nonce would change the \
+                 stored bytes for a definition whose credential did not change"
+            );
+        }
+
+        // And the outproxy credential still yields the operator's password, not a stored form.
+        let opened = store.open(&sealed_outproxy).expect("opens");
+        let reopened = opened.expose_str().expect("utf-8");
+        assert_eq!(
+            reopened, "s3cret!",
+            "one open of a once-sealed form must be the plaintext, never another stored form"
+        );
+    }
+
     /// A stored definition reloads with a complete block, which is the row
     /// that proves the sealed password survives a restart.
     #[test]
@@ -8790,7 +9200,11 @@ mod tests {
         assert_eq!(
             reloaded.options.get("outproxy_password"),
             definition.options.get("outproxy_password"),
-            "the sealed form must round-trip byte-identically so an untouched credential survives an edit"
+            "the sealed form must round-trip byte-identically. This row covers the *file* round \
+             trip only: a generation reload does not re-run the seal step. That the same property \
+             holds across an `edit` — which merges options and therefore does re-run it — is a \
+             separate row, `plan380_an_unrelated_edit_leaves_the_sealed_credential_unchanged`, \
+             written by Plan 380 after it found that the claim did not hold."
         );
         // And it still builds: a stored definition is re-validated by the same
         // block rule, so a generation written under a different rule fails

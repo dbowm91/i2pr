@@ -462,6 +462,20 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
 - **`encrypt_lease_set` changes from Boolean to String.** Plan 293 carried the inventory type as
   divergence item 1; Proposal 170's value is an enumeration string, so the inventory type was
   wrong and is corrected.
+- **The ELS2 *consumer* client credential is i2pr-local and reaches the control plane through the
+  typed `CustomOptions` seam (Plan 380).** Proposal 170 defines no field for it: the publisher side
+  spells the authorized clients as `LeaseSetClientAuths`, and a consumer is expected to already
+  hold the matching PSK or DH key out of band. So the credential travels as
+  `{"CustomOptions": {"i2pr": {"LeasesetClientCredential": "..."}}}`, and
+  `i2pr-i2pcontrol::extension_options` owns that shape. Three consequences, all deliberate:
+  the frozen `PROPOSAL_TUNNEL_MANAGER_FIELDS` inventory is unchanged, so this router still claims
+  exactly the Proposal options Proposal defines; the **untyped** `CustomOptions` blob form stays
+  refused with the historical "no safe typed allowlist" error, because the reason it was refused
+  has not changed; and an unrecognised extension name is refused rather than ignored, so a
+  mistyped setting cannot leave a service in a posture nobody chose. The value is secret material,
+  so it is sealed under the router identity before the definition can reach a generation file, it is
+  reported on `get`/`rawConfig` as a boolean and nothing else, and it is not in
+  `SPECRET_OPTIONS` — that inventory is the frozen Proposal option set.
 - **A real type-5 record is built from the service's own identity, with no new stored secret.**
   The blinding identity is the Red25519 conversion of the service's existing Ed25519 signing seed,
   which is what the published address must name for a client to verify the inner LeaseSet2. Six

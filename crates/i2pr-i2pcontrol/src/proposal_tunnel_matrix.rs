@@ -233,9 +233,13 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
                 }
             };
         }
+        // Plan 380: still fail-closed, and for the same reason — but the refusal is now only
+        // half the story. The untyped I2CP blob form remains refused outright; what is added is
+        // a closed, namespaced, typed extension object for i2pr's own options. The owner text
+        // names both halves so this row cannot be read as "CustomOptions is refused" later.
         "CustomOptions" => {
             return Apply {
-                owner: "fail-closed rejection of untyped custom values",
+                owner: "typed i2pr extension seam; untyped custom values stay refused",
             };
         }
         "ProxyAuth" | "ProxyUsername" | "ProxyPassword" => {

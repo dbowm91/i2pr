@@ -176,4 +176,104 @@ resolve_sig="$(awk '/^async fn resolve_encrypted_destination_for_service\(/{flag
   "$daemon/service_product.rs")"
 [ -n "$resolve_sig" ] || fail "resolve_encrypted_destination_for_service must return the closed status enum"
 
+# --- 5. Plan 380: the ELS2 consumer credential -----------------------------------------------
+
+# Plan 351 closed the gap where `begin_authorized` had no production caller. Three things would
+# silently put it back, and none would fail a test on their own.
+
+# 5a. The authorized branch must actually be reachable from the product. Before Plan 380 the
+# product only ever called `begin`, so every `.b33` declaring `B32_FLAG_REQUIRES_CLIENT_KEY` was
+# unresolvable and the branch was owner-only.
+rg -Fq 'resolver.begin_authorized(' "$daemon/service_product.rs" \
+  || fail "the product layer must call begin_authorized; Plan 380's whole point is the branch"
+# …and the no-credential branch must still be there. Selection is by what the router holds, so
+# dropping `begin` would make every consumer authorized, including ones with no credential.
+rg -Fq 'resolver.begin(&address, secret_option' "$daemon/service_product.rs" \
+  || fail "the no-credential begin branch must remain; selection is by credential presence"
+
+# 5b. The credential must be secret material, not a String. `Debug` is the whole hazard: one
+# derived `Debug` on the manager or on a containing struct would print the key. `Clone` is the
+# second: a clone puts a second copy in memory that nothing wipes.
+credential_type="$(awk '/^pub enum EncryptedTargetCredential \{/{flag=1} flag{print} flag && /^\}$/{exit}' \
+  "$daemon/encrypted_target_credential.rs")"
+[ -n "$credential_type" ] || fail "EncryptedTargetCredential is missing"
+credential_code="$(printf '%s\n' "$credential_type" | sed 's://.*::')"
+if printf '%s\n' "$credential_code" | rg -q 'String|Vec<|#\[derive'; then
+  fail "EncryptedTargetCredential must hold key material directly, with no derived trait"
+fi
+# The trailing ` {` matters: without it the error type's own `Display` — whose name begins with
+# the credential's — would match and the guard would fire on correct code.
+for forbidden in 'impl core::fmt::Debug for EncryptedTargetCredential {' \
+                 'impl core::fmt::Display for EncryptedTargetCredential {' \
+                 'impl Clone for EncryptedTargetCredential {'; do
+  if rg -Fq "$forbidden" "$daemon/encrypted_target_credential.rs"; then
+    fail "EncryptedTargetCredential must not gain $forbidden — key material has no rendering"
+  fi
+done
+
+# 5c. The manager may hold only the sealed form. `install_encrypted_target_credential` taking a
+# `SealedEncryptedTargetCredential` is what makes "the manager never holds the key" structural;
+# a `&str` parameter would make it a rule, and a rule is what gets forgotten.
+install_sig="$(awk '/    pub fn install_encrypted_target_credential\(/{flag=1} flag{print} flag && /^    \}$/{exit}' \
+  "$daemon/service_tunnels.rs")"
+[ -n "$install_sig" ] || fail "the manager's credential install entry point is missing"
+printf '%s\n' "$install_sig" | rg -q 'SealedEncryptedTargetCredential' \
+  || fail "the manager must install only the sealed form; a plaintext parameter would be a leak"
+# And the registry field must hold the sealed type, not the credential itself.
+registry="$(awk '/^    encrypted_target_credentials:/{flag=1} flag{print} flag && /,$/{exit}' \
+  "$daemon/service_tunnels.rs")"
+[ -n "$registry" ] || fail "the manager has no credential registry"
+printf '%s\n' "$registry" | rg -q 'SealedEncryptedTargetCredential' \
+  || fail "the credential registry must hold SealedEncryptedTargetCredential"
+
+# 5d. Sealing happens before storage, and under a key that is not the outproxy key. The two
+# domains must not share one, or a stored outproxy credential copied into this slot would open.
+rg -Fq 'fn seal_encrypted_target_credential' "$daemon/i2pcontrol_tunnels.rs" \
+  || fail "the control plane must seal the credential before the definition is stored"
+rg -Fq 'pub const ELS2_CONSUMER_CREDENTIAL_MARKER: &str = "$i2pr1e$"' \
+  "$root/crates/i2pr-service-tunnels/src/outbound_secret.rs" \
+  || fail "the consumer credential needs its own stored-form marker"
+rg -Fq 'i2pr:els2-consumer-credential:secret-box:v1' "$daemon/outbound_secret.rs" \
+  || fail "the consumer credential needs its own HKDF label"
+if [ "$(rg -c 'ELS2_CONSUMER_CREDENTIAL_MARKER' "$daemon/outbound_secret.rs")" -lt 2 ]; then
+  fail "the consumer-credential marker must be used in both the seal and the open arm"
+fi
+
+# 5d-bis. Both seal steps must be idempotent, because `edit` re-runs them.
+#
+# `edit` merges the stored options with the request's, so `normalize_definition_with_filter_root`
+# sees a credential that is *already* the owner's stored form. Re-sealing it is silent credential
+# destruction: the form is sealed twice, opening it once yields the previous stored form as text,
+# and that text is what the owner then presents. Plan 342 could not see this — its rows covered
+# generation round trips, which never re-run the seal step, and no row edited an outproxy tunnel.
+for seal_fn in seal_outproxy_credential seal_encrypted_target_credential; do
+  # The signature wraps across lines, so match on the name and the open paren only.
+  seal_impl="$(awk "/^fn ${seal_fn}[(]/{flag=1} flag{print} flag && /^}$/{exit}" \
+    "$daemon/i2pcontrol_tunnels.rs")"
+  [ -n "$seal_impl" ] || fail "$seal_fn is missing"
+  if ! printf '%s\n' "$seal_impl" | rg -q 'starts_with'; then
+    fail "$seal_fn must recognise its own stored form; re-sealing it destroys the credential on \
+      every edit of the tunnel"
+  fi
+done
+
+# 5e. No advertisement change. The credential is an i2pr-local option; if it were ever added to
+# either frozen Proposal 170 inventory this router would claim to accept a Proposal field that
+# Proposal does not define, and `full-proposal-conformant` would become a false statement.
+for frozen in crates/i2pr-i2pcontrol/src/proposal_wire.rs crates/i2pr-i2pcontrol/src/tunnel_options.rs; do
+  if rg -Fq '"leaseset_client_credential"' "$root/$frozen"; then
+    fail "leaseset_client_credential must not appear in $frozen — that is the frozen Proposal inventory"
+  fi
+done
+
+# 5f. The required-but-absent case must fail closed before any lookup is composed, and must be
+# distinguishable from a crypto or storage failure. Collapsing it back into a generic status would
+# tell an operator to chase a network problem for a missing configuration value.
+for arm in ClientCredentialRequired ClientCredentialRejected ClientCredentialUnusable; do
+  rg -q "    $arm," "$daemon/service_tunnels.rs" \
+    || fail "EncryptedTargetStatus lost the $arm arm"
+done
+rg -Fq 'EncryptedLeaseSetError::ClientAuthorizationRequired' "$daemon/service_product.rs" \
+  || fail "the required-but-absent case must be mapped from the address's own demand"
+
 echo "encrypted-service consumer wiring OK"

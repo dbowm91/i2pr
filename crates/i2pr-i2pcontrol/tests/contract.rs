@@ -985,7 +985,9 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
 
 #[test]
 fn plan289_tunnel_request_envelope_rules() {
-    use i2pr_i2pcontrol::{TunnelAction, TunnelRequestError, TunnelType, decode_tunnel_request};
+    use i2pr_i2pcontrol::{
+        TunnelAction, TunnelManagerRequest, TunnelRequestError, TunnelType, decode_tunnel_request,
+    };
 
     for (key, value) in [
         ("ClientPerMinute", serde_json::json!(2)),
@@ -1005,6 +1007,23 @@ fn plan289_tunnel_request_envelope_rules() {
 
     fn params(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
         value.as_object().expect("object").clone()
+    }
+
+    /// Decodes a `create` carrying only the given `CustomOptions` shape.
+    ///
+    /// Everything else the decoder needs is fixed here, so a row about the extension's shape
+    /// cannot be confounded by a different field failing first.
+    fn decode_extension_request(
+        shape: serde_json::Value,
+    ) -> Result<TunnelManagerRequest, TunnelRequestError> {
+        let params = params(serde_json::json!({
+            "Token": "t", "Action": "create", "Name": "a", "Type": "client",
+            "TargetDestination":
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b33.i2p",
+            "DelayOpen": true,
+            "CustomOptions": shape,
+        }));
+        decode_tunnel_request(&params)
     }
 
     // Canonical get requires a name; whole-inventory get is a nonstandard
@@ -1484,6 +1503,64 @@ fn plan289_tunnel_request_envelope_rules() {
         )),
         "arbitrary CustomOptions are explicitly rejected without a typed allowlist"
     );
+    // Plan 380: the *typed object* form is the one exception, and it is narrow on purpose.
+    // These rows sit beside the refusal above so the two are read together — the untyped blob is
+    // still refused, and what is accepted in its place is a closed, namespaced allowlist.
+    let credential = decode_extension_request(serde_json::json!({
+        "i2pr": {"LeasesetClientCredential": "psk:00"}
+    }))
+    .expect("a typed i2pr extension decodes");
+    assert_eq!(
+        credential
+            .options
+            .get("leaseset_client_credential")
+            .map(String::as_str),
+        Some("psk:00"),
+        "the extension entry becomes an ordinary bounded option entry"
+    );
+    // An empty namespace is legal: a caller that builds the object conditionally should not have
+    // to remove the field to send a valid request.
+    assert!(
+        decode_extension_request(serde_json::json!({"i2pr": {}})).is_ok(),
+        "an empty namespace must not be an error"
+    );
+    // Everything else about the shape is refused rather than partially honoured.
+    for (label, shape, expected) in [
+        (
+            "wrong namespace",
+            serde_json::json!({"I2PR": {"LeasesetClientCredential": "psk:00"}}),
+            TunnelRequestError::BadValue("CustomOptions".to_owned()),
+        ),
+        (
+            "two namespaces",
+            serde_json::json!({
+                "i2pr": {"LeasesetClientCredential": "psk:00"},
+                "other": {"X": "y"},
+            }),
+            TunnelRequestError::BadValue("CustomOptions".to_owned()),
+        ),
+        (
+            "unknown extension name",
+            serde_json::json!({"i2pr": {"NoSuchThing": "psk:00"}}),
+            TunnelRequestError::RejectedOption("CustomOptions".to_owned()),
+        ),
+        (
+            "non-string value",
+            serde_json::json!({"i2pr": {"LeasesetClientCredential": 1}}),
+            TunnelRequestError::BadValue("CustomOptions".to_owned()),
+        ),
+        (
+            "namespace is not an object",
+            serde_json::json!({"i2pr": "psk:00"}),
+            TunnelRequestError::BadValue("CustomOptions".to_owned()),
+        ),
+    ] {
+        assert_eq!(
+            decode_extension_request(shape.clone()),
+            Err(expected),
+            "{label} must be refused: {shape}"
+        );
+    }
     let key_file = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "a", "Type": "server",
         "PrivKeyFile": "operator-key",

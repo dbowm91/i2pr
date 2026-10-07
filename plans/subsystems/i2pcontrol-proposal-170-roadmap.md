@@ -720,11 +720,11 @@ Forward dependency graph:
   -> 375 blocked  stock Java I2P bidirectional ELS2 lane (freeze partial; driver not written)
   -> 376 passed  live outproxy failover + restart
        |
-       +-> 380 ready    i2pr authorized (PSK/DH) consumer production path
-       |                 ^ the only production gap behind 374's block
+       +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
+       |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
-            ^ 374 needs 381 (external driver), which needs 380
+            ^ 374 needs 381 (external driver); 380 is now a closed dependency
             |
             +-> 378 blocked  final conformance gate (needs 377; 373/376 done)
 
@@ -748,16 +748,32 @@ itself was **verified running on this host**, so the external lane is not blocke
 environment; it is blocked by unwritten external-integration engineering. The freeze record
 lives in `tests/integration/els2/reference-freeze.md` so the next pass does not repeat it.
 
-**Source-level research after those four closures narrowed the block to one production gap.**
+**Source-level research after those four closures narrowed the block to one production gap, and
+Plan 380 has now closed it.**
 Every mechanism both directions need is present and reachable: stock i2pd resolves a b33 through
 `SAM.cpp:847` → `RequestDestinationWithEncryptedLeaseSet` (`Destination.cpp:778`) and publishes
 type-5 from `tunnels.conf` (`ClientContext.cpp:496-512`, `:563`); i2pr publishes through
 `publish_service_ls2_for_service` and consumes through
-`resolve_encrypted_destination_for_service`. **The one thing missing is that i2pr has no authorized
-(PSK/DH) consumer caller** — `begin_authorized` is referenced only from tests, and no
-configuration surface carries a per-client credential. **Plan 380 owns that**, and Plan 381 is
-the remaining external driver scope (the `R` role, a lane profile with SAM/I2CP/HTTP enabled,
-loopback application payloads, the negative rows, and the evidence artifact).
+`resolve_encrypted_destination_for_service`. **The one thing missing was that i2pr had no
+authorized (PSK/DH) consumer caller** — `begin_authorized` was referenced only from tests, and no
+configuration surface carried a per-client credential. **Plan 380 closed that.**
+
+**The credential's ingress was a real boundary, and Plan 380 escalated it rather than routing around
+it.** Proposal 170 defines no consumer-credential field, so there was nothing to map one onto, and
+adding a name to the frozen `PROPOSAL_TUNNEL_MANAGER_FIELDS` would have made the audited conformance
+matrix a false statement. The chosen answer is a **typed i2pr extension seam** on Proposal 170's
+`CustomOptions` field: one namespace key, a closed allowlist, string-only values, and the untyped
+blob form still refused for the reason it always was. The frozen inventory stays at 75 and no
+support surface was added.
+
+Plan 380 also found and fixed a **pre-existing** defect: `edit` merges options, so the seal step
+re-ran over the value it already held — silently sealing the Plan 342 outproxy credential twice,
+which made the router present the previous stored form *as text* as the proxy password. No Plan 342
+or Plan 376 row had ever edited an outproxy tunnel.
+
+Plan 381 is the remaining external driver scope (the `R` role, a lane profile with SAM/I2CP/HTTP
+enabled, loopback application payloads, the negative rows, and the evidence artifact). Its
+authorization rows are now writable: Plan 380 is a closed hard dependency.
 
 ### Why two ELS2 reference plans
 

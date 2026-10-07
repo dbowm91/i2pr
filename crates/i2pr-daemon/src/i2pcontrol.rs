@@ -1643,7 +1643,17 @@ fn destination_b32_address(destination: &str) -> Option<String> {
 /// Whether an internal option name contains a secret value.
 fn is_tunnel_secret_key(key: &str) -> bool {
     i2pr_i2pcontrol::SECRET_OPTIONS.contains(&key)
-        || matches!(key, "outproxy_password" | "private_key_file")
+        // Plan 380: the ELS2 consumer client credential is named here rather
+        // than in `SECRET_OPTIONS` because that inventory is the frozen
+        // Proposal 170 option set and this key is i2pr-local. It is still a
+        // secret on every axis that matters here, so it is skipped from
+        // `rawConfig` exactly like one: an operator learns whether a
+        // credential is configured from the ELS2 status projection, which
+        // reports a boolean and never a byte.
+        || matches!(
+            key,
+            "outproxy_password" | "private_key_file" | "leaseset_client_credential"
+        )
 }
 
 /// The exact Proposal 170 field a Plan 334 LeaseSet secret slot projects to.

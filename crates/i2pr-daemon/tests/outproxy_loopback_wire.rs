@@ -158,7 +158,7 @@ use std::time::{Duration, Instant};
 use i2pr_i2pcontrol::tunnel::{TunnelAction, TunnelType};
 use i2pr_i2pcontrol::tunnel_request::TunnelManagerRequest;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
-use i2pr_service_tunnels::outbound_secret::OutboundSecretStore;
+use i2pr_service_tunnels::outbound_secret::RouterSecretOwner;
 use i2pr_service_tunnels::{
     DestinationRef, ServerTarget, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind,
     ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
@@ -570,7 +570,7 @@ fn client_options(
 
 /// A router-bound secret owner, so a credential row cannot pass against a stub
 /// that stores plaintext.
-fn secret_store() -> Arc<dyn OutboundSecretStore> {
+fn secret_store() -> Arc<dyn RouterSecretOwner> {
     let mut rng = i2pr_crypto::OsRng;
     let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("identity bundle");
     Arc::new(
@@ -1708,7 +1708,7 @@ fn router_identity() -> i2pr_crypto::RouterIdentityBundle {
 }
 
 /// The secret owner a restarted router rebuilds: same identity, fresh owner.
-fn secret_owner_for(bundle: &i2pr_crypto::RouterIdentityBundle) -> Arc<dyn OutboundSecretStore> {
+fn secret_owner_for(bundle: &i2pr_crypto::RouterIdentityBundle) -> Arc<dyn RouterSecretOwner> {
     Arc::new(
         i2pr_daemon::outbound_secret::RouterBoundOutboundSecrets::from_router_identity(bundle)
             .expect("router-bound secret owner"),
