@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345, 349, 352–355, 368–371 and 373 are closed. Plan 373 established signed immutable `.i2prapp` packages and their local store. Plan 374 is active for persistent publisher trust/grants, exact package selection, offline administration, and the production restart-safe launch catalog. Qualified OS sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, 352–355, 368–371 and 373–374 are closed. Plan 373 established signed immutable `.i2prapp` packages and their local store; Plan 374 added persistent publisher trust/grants, exact package selection, offline administration, and the production restart-safe launch catalog. Qualified OS sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream and unregistered. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -121,7 +121,7 @@ Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, and 371 are closed. Later cap
                                 -> 369 i2pr-appd + i2pr-apphost lifecycle foundation (passed)
                                      -> 371 optional non-blocking startup substrate corrective (closed; lifted 369's invariant-1/§5 blocker)
                                      -> 373 signed immutable package + local store foundation (ready)
-                                          -> 374 persistent trust/grants + production catalog + offline admin (blocked on 373)
+                                          -> 374 persistent trust/grants + production catalog + offline admin (closed)
                                                -> OS sandbox + process-tree/resource containment
                                                -> live AppManager administrator API (future plan)
                       -> scoped Proposal 170 adapter after its stable contract is ready
@@ -151,7 +151,7 @@ The scoped Proposal 170 adapter remains separately blocked on canonical Proposal
 | 371 | closed | `passed-optional-non-blocking-service-startup-corrective` | runtime supervision substrate corrective | `plans/implementation/managed-native-app-runtime/371-optional-non-blocking-service-startup-corrective.md` | `plans/closure/managed-native-app-runtime/371-status.md` |
 | 370 | closed | `passed-managed-app-v1-hello-instance-id-codec-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/370-managed-app-v1-hello-instance-id-codec-corrective.md` | `plans/closure/managed-native-app-runtime/370-status.md` |
 | 373 | closed | `passed-managed-app-signed-package-store-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/373-signed-immutable-managed-app-package-and-local-store-foundation.md` | `plans/closure/managed-native-app-runtime/373-status.md` |
-| 374 | active | `in-progress-managed-app-persistent-policy-production-catalog-and-offline-administration` | invariant + capability + persistence/lifecycle | `plans/implementation/managed-native-app-runtime/374-persistent-managed-app-policy-production-catalog-and-offline-administration.md` | future `plans/closure/managed-native-app-runtime/374-status.md` |
+| 374 | closed | `passed-managed-app-persistent-policy-production-catalog-and-offline-administration` | invariant + capability + persistence/lifecycle | `plans/implementation/managed-native-app-runtime/374-persistent-managed-app-policy-production-catalog-and-offline-administration.md` | `plans/closure/managed-native-app-runtime/374-status.md` |
 
 Plans 354 and 355 are closed, so the router gateway boundary is concrete. Plan 368 closed the daemon↔manager protocol/bridge with **no production caller**, which is what Plan 369 supplied and is now closed: the supervised i2pr-appd/i2pr-apphost lifecycle consumer over the inherited anonymous transport. One Plan 368 limitation was carried into Plan 369's scope and resolved: the protocol's 128-streams-per-session ceiling exceeds what the runtime child-task ceiling admits, so admission fails closed rather than reaching the protocol number.
 
@@ -263,4 +263,4 @@ Plan 352 passed as `passed-managed-app-mapped-ipv6-policy-canonicalization`: map
 
 Plan 354 passed: both loopback listeners and trusted private connections use one listener-independent protocol driver, and managed-app SAM denies `STREAM FORWARD`/host-target behavior. Plan 355 passed: trusted composition binds one `AppPrincipal` and immutable `EffectiveCapabilities` to isolated private SAM/I2CP contexts. Neither plan launches applications, implements package lifecycle, establishes sandbox containment, or promotes SAM/I2CP support. Proposal 170 integration remains gated on canonical Proposal 170 completion.
 
-Future app implementation must preserve the existing router ownership boundaries. Plans 368–371 are closed. Execute Plan 373 first, then Plan 374 after its hard dependency closes. Plan 373 may not create trust/grants/launch authority; Plan 374 may not claim Secured containment or add a live administrator endpoint. OS sandbox, broker, SDK, UI, remote repository/update, live admin, and scoped control work remain downstream and separately qualified.
+Future app implementation must preserve the existing router ownership boundaries. Plans 368–371 and 373–374 are closed. Plan 373 created no trust/grants/launch authority; Plan 374 added persistent local authority but did not claim Secured containment or add a live administrator endpoint. OS sandbox, broker, SDK, UI, remote repository/update, live admin, and scoped control work remain downstream and separately qualified.
