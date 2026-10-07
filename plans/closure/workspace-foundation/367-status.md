@@ -87,8 +87,8 @@ not, and no local action could change that: `Quality (macos-latest)` was red bec
 and nothing installed it, so it exited 2 by design on every macOS run. That defect, and
 the fact that `main` was red for the same reason, were outside Plan 367's scope.
 
-Plan 372 provisioned the dependency and **unblocked this criterion**: CI run **`37585830152`
-on `df2e7d5c` is green on all four jobs**, including the macOS leg that had been red since
+Plan 372 provisioned the dependency and **unblocked this criterion**: CI runs **`37585830152`** (`df2e7d5c`) and
+**`37588523792`** (exact head, `6bb202ed`) are green on all four jobs**, including the macOS leg that had been red since
 Plan 365 landed.
 
 Recording this rather than claiming criterion 5 was met by Plan 367 alone is the point:
@@ -105,7 +105,7 @@ All five criteria were re-checked against `df2e7d5c` rather than assumed from `2
 | 2 | `git diff --name-only a6d82299~1..HEAD -- plans/closure/ docs/architecture/audit/` → **0 files** |
 | 3 | present |
 | 4 | present |
-| 5 | run `37585830152`, success |
+| 5 | runs `37585830152`, `37588523792`, success |
 
 ## Verification commands
 
@@ -117,7 +117,7 @@ All five criteria were re-checked against `df2e7d5c` rather than assumed from `2
 | `python3 scripts/check-workflow-validity.py` | PASS |
 | `python3 scripts/check-tooling-inventory.py` | PASS |
 | Full `AGENTS.md` routine floor | **54/54 PASS** locally |
-| CI run `37585830152` on `df2e7d5c` | **success** (CI) |
+| CI runs `37585830152` (`df2e7d5c`), `37588523792` (`6bb202ed`, exact head) | **success** (CI) |
 
 ## Findings recorded rather than fixed
 

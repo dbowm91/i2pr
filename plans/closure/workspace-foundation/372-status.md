@@ -18,9 +18,23 @@ Subsystem: `workspace-foundation`.
 | `63658cdc` | `--user` added to the provisioning step after CI run `37582892609` measured PEP 668 |
 | `df2e7d5c` | `--break-system-packages` added after CI run `37585213074` measured that `--user` alone is not a PEP 668 exemption in current pip |
 
-Exact-head CI run: **`37585830152` on `df2e7d5c` — success**, all four jobs
-(`Quality (ubuntu-latest)`, `Quality (macos-latest)`, `MSRV (Ubuntu)`,
-`Dependency policy`).
+CI runs, in order:
+
+| Run | Commit | Conclusion |
+|---|---|---|
+| `37582892609` | `a6d82299` | failure — `Quality (macos-latest)`, PEP 668 |
+| `37585213074` | `63658cdc` | failure — `Quality (macos-latest)`, PEP 668 with `--user` alone |
+| `37585830152` | `df2e7d5c` | **success** — all four jobs |
+| `37588523792` | `6bb202ed` | **success** — all four jobs; this is the exact head |
+
+Jobs in each green run: `Quality (ubuntu-latest)`, `Quality (macos-latest)`,
+`MSRV (Ubuntu)`, `Dependency policy`.
+
+The last two runs differ only by this closure record and the Plan 372/367 planning
+surfaces. `37588523792` is cited as the exact-head run because a closure record that
+names its own run id cannot be the commit that run validated; the honest statement is
+that `df2e7d5c` validated the implementation and `6bb202ed` validated the same tree
+plus documentation.
 
 ## What this plan found
 
@@ -239,7 +253,7 @@ for real during implementation, on the eleven scripts listed above.
 | # | Requirement | Evidence |
 |---|---|---|
 | 1 | `ci.yml` provisions PyYAML on every runner | `a6d82299`; two failed attempts measured, fixed in `63658cdc` + `df2e7d5c` |
-| 2 | `Quality (macos-latest)` green on exact-head CI | run **`37585830152`** on `df2e7d5c`, all four jobs success; `PyYAML 6.0.2` imported |
+| 2 | `Quality (macos-latest)` green on exact-head CI | runs **`37585830152`** (`df2e7d5c`) and **`37588523792`** (`6bb202ed`), all four jobs success; `PyYAML 6.0.2` imported |
 | 3 | The Plan 365 guard is never made to skip | it still exits 2 with the import blocked (above); no change to that script |
 | 4 | Every published figure matches the tree | `check-tooling-inventory.py` green; 21-row table above |
 | 5 | Each corrected sentence names its cause | every correction names the responsible plan or commit |
@@ -249,7 +263,7 @@ for real during implementation, on the eleven scripts listed above.
 | 9 | The guard is in the floor and in `ci.yml` | `AGENTS.md` routine floor + two `ci.yml` steps |
 | 10 | R1, R4, the inert Tokio rule, and the m11 failure stay recorded open | untouched; listed under *Limitations* |
 | 11 | Full routine floor green | **54/54 PASS** locally |
-| 12 | Exact-head routine CI green | run `37585830152` |
+| 12 | Exact-head routine CI green | runs `37585830152` (`df2e7d5c`) and `37588523792` (`6bb202ed`), both success |
 
 ## Verification commands
 
@@ -274,7 +288,8 @@ All run locally on Linux unless labelled otherwise.
 | 30 further boundary/evidence checkers | PASS (see floor log) |
 | `cargo deny check advisories bans sources` | PASS |
 | **Full `AGENTS.md` routine floor** | **54/54 PASS** |
-| **CI run `37585830152` on `df2e7d5c`** | **success** (CI) |
+| CI run `37585830152` on `df2e7d5c` | **success** (CI) |
+| CI run `37588523792` on `6bb202ed` (exact head) | **success** (CI) |
 
 Floor log: `/tmp/floor372.log`. Floor runner: `/tmp/p372-floor.sh`.
 
