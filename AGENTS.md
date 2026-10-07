@@ -122,6 +122,7 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-console-boundaries.sh
 bash scripts/check-console-browser-security.sh
 python3 scripts/check-tooling-inventory.py
+python3 scripts/check-license-metadata.py
 python3 scripts/check-managed-app-private-client-seams.py
 bash scripts/check-service-tunnel-boundaries.sh
 python3 scripts/check-managed-app-gateway-boundary.py

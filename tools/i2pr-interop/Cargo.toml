@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Non-production Plan 038 NTCP2 interoperability launcher seam"
 publish = false
 
