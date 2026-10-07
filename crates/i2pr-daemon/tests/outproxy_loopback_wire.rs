@@ -49,37 +49,102 @@
 //!
 //! # What each row proves
 //!
+//! # Plan 376: live failover and a request across a restart
+//!
+//! The rows below close the two absences Plan 342 deliberately left. They
+//! extend the composition above rather than replacing it: the same
+//! real-Streaming route, the same service *server* tunnel standing in for the
+//! I2P outproxy destination, the same classifier, the same route owner. No
+//! socket here is a clearnet socket, the fixtures never resolve a name, and
+//! the targets stay opaque labels handed to the outproxy.
+//!
+//! ## Ordered failover, not load rotation
+//!
+//! The provider contract is **ordered failover within one request**, not
+//! round-robin between requests. `OutproxyList::select(attempt)` maps an
+//! attempt index to an endpoint by `attempt % len`, and `open_via_outproxy`
+//! walks attempts from zero until one succeeds, so two requests against the
+//! same tunnel both begin at the operator's first entry. That is deliberate:
+//! the operator's order is intent. Between-request load rotation is **not**
+//! claimed, because no provider contract claims it, and inventing it to satisfy
+//! historical wording would have been the wrong fix.
+//!
+//! ## What Plan 376 changed to make these rows reachable
+//!
+//! Three defects were found while writing them, all in production code and all
+//! invisible to the Plan 342 rows because each row used exactly one endpoint:
+//!
+//! 1. **The declared backoff was never applied.** `OutproxyPolicy::backoff_ms`
+//!    had existed since Plan 342 and the route owner never called it, so a
+//!    retryable failure was retried immediately and a whole list of dead
+//!    outproxies was hammered in one burst.
+//! 2. **The attempt budget was hardcoded to 2** regardless of `ProxyList`
+//!    length. An operator configuring four outproxies got two attempts, and
+//!    entries three and four were silently never tried — the control surface
+//!    accepted the list, echoed it back, and ignored its tail. The budget is now
+//!    the list length clamped to `[1, MAX_OUTPROXY_ATTEMPTS]`.
+//! 3. **A retryable failure that a later attempt went on to succeed was never
+//!    counted.** Counters recorded only a *terminal* reason, so an operator
+//!    whose first outproxy was permanently dead saw `target_unreachable: 0`
+//!    forever while every request quietly succeeded through the second. The
+//!    counters are the only surface that carries this diagnosis.
+//!
+//! ## The restart boundary, precisely
+//!
+//! A generation owns a manager, a control state, a supervisor scope, and a
+//! cancellation token. A restart drops the whole generation and builds another
+//! over the **same data directory**; nothing else crosses the boundary. The
+//! second generation is brought up by `TunnelControlState::startup` — the
+//! product's own boot path, which reloads the published generation, revalidates
+//! every stored definition, reconciles the shared manager, and reinstalls the
+//! outproxy provider registry. The test never re-applies the operator's
+//! `create`, so a provider that exists after recovery can only have come from
+//! disk plus the router-bound secret owner.
+//!
+//! That is deliberately stronger than the serialization round trip Plan 342
+//! proved, which only wrote and read a stored definition. It is **not** a
+//! cross-process `exec`: this lane has no child process and no config file, so
+//! a cross-process restart is not claimed.
+//!
 //! # What this lane does **not** prove
 //!
-//! Stated here rather than in a closure record, because a reader who runs this
-//! lane must not have to open another file to learn its reach.
+//! Stated here rather than only in a closure record, because a reader who runs
+//! this lane must not have to open another file to learn its reach.
 //!
-//! - **Failover rotation between two configured outproxies.** A dead first
-//!   endpoint and a live second one is the obvious composition and it did not
-//!   come up green within this pass. What *is* proven is the half that makes
-//!   rotation safe: an unreachable outproxy fails typed and bounded
-//!   (`plan342_unreachable_outproxy_fails_typed_and_bounded`), and the selection
-//!   order and retry ceiling are unit-pinned in
-//!   `i2pr_service_tunnels::outproxy`. The live rotation itself is unproven.
-//! - **Restart and persistence.** The control-plane half is proven elsewhere
-//!   (`plan342_sealed_block_survives_a_generation_round_trip` in
-//!   `i2pcontrol_tunnels.rs`); a live restart carrying a request end to end is
-//!   not.
-//! - **Interoperability with a real outproxy.** Nothing here was run against
-//!   Java I2P or i2pd. This is loopback evidence.
-//!
-//! Plan 327 therefore stays blocked, and no outproxy capability is claimed.
+//! - **Interoperability with a real outproxy.** Nothing here ran against Java
+//!   I2P or i2pd. This is loopback evidence; the security property under test is
+//!   that every clearnet request is carried only through an I2P Streaming route.
+//! - **A cross-process restart.** See above: every in-memory owner is torn down
+//!   and rebuilt from persisted state, in one process.
+//! - **Between-request load rotation.** Deliberately not implemented and not
+//!   claimed; see "Ordered failover" above.
+//! - **An operator-independence guarantee for the credential.** A configured
+//!   `ProxyList` of *n* outproxies is offered the same credential *n* times,
+//!   because a 407 is retryable under the frozen taxonomy. That is the current
+//!   explicit policy and
+//!   `plan376_authentication_rejection_is_retried_at_the_next_endpoint_by_the_current_policy`
+//!   pins it, but an operator with two outproxies may not expect it. It is a
+//!   consequence of the operator's own list rather than of the router, and it
+//!   is recorded as a finding rather than silently accepted.
 //!
 //! | row | claim |
 //! |---|---|
 //! | `plan342_i2p_authority_bypasses_the_outproxy` | an `.i2p` target is routed to the tunnel's own destination and **no outproxy is contacted** |
 //! | `plan342_clearnet_target_succeeds_through_the_loopback_outproxy` | a clearnet target reaches the outproxy and its bytes come back, prefix included |
 //! | `plan342_clearnet_target_without_a_provider_is_refused_and_opens_nothing` | no provider means refusal, not a direct socket |
-//! | `plan342_failover_reaches_the_second_outproxy_within_the_ceiling` | selection rotates and the retry ceiling bounds it |
 //! | `plan342_outproxy_auth_is_presented_and_never_echoed` | the credential is presented as a header and never appears to the client |
 //! | `plan342_socks5_request_is_carried_by_the_outproxy` | the SOCKS family reaches the same route |
 //! | `plan342_http_forward_request_is_carried_by_the_outproxy` | the forward path carries the clearnet authority in `Host:` |
 //! | `plan342_malformed_block_is_refused_before_any_listener` | `ProxyList` / `OutproxyType` grammar holds at the boundary |
+//! | `plan342_unreachable_outproxy_fails_typed_and_bounded` | an unreachable outproxy fails typed, bounded, and counted |
+//! | `plan376_http_connect_fails_over_to_the_second_outproxy` | one HTTP CONNECT survives a dead first endpoint; two attempts, one handshake |
+//! | `plan376_socks5_fails_over_to_the_second_outproxy` | the same failover over SOCKS5, so it is the route owner's property and not the HTTP grammar's |
+//! | `plan376_an_upstream_refusal_is_retried_at_the_second_outproxy` | a *reachable* outproxy answering 502 is `TargetUnreachable`, which is retryable |
+//! | `plan376_authentication_rejection_is_retried_at_the_next_endpoint_by_the_current_policy` | a 407 is retried at the next endpoint, and the credential is offered to both — pinned, not hidden |
+//! | `plan376_the_attempt_budget_is_the_list_length_and_exhaustion_is_typed` | three endpoints means three attempts, exhaustion is typed, and nothing is routed directly |
+//! | `plan376_a_routed_request_survives_a_product_restart` | the block, the sealed password, the provider registry, and application data all survive a restart |
+//! | `plan376_after_restart_i2p_traffic_bypasses_and_removing_the_provider_fails_closed` | `.i2p` still bypasses after a restart; removing the provider fails closed |
+//! | `plan376_a_copied_config_without_the_router_secret_cannot_recover_the_credential` | a copied config without the matching router secret cannot present a credential |
 
 #![forbid(unsafe_code)]
 #![allow(clippy::too_many_lines)]
@@ -161,6 +226,13 @@ struct FixtureBehaviour {
     /// Close the connection immediately instead of answering, to drive the
     /// failover row.
     refuse_immediately: bool,
+    /// Answer `502 Bad Gateway` after a complete, well-formed request head.
+    ///
+    /// This is the *upstream refusal* stage: the outproxy was reached, the
+    /// handshake bytes arrived, and the outproxy declined to reach the target.
+    /// It is a different failure from `refuse_immediately` (which never gets
+    /// that far) and it maps to `TargetUnreachable`, which is retryable.
+    refuse_upstream: bool,
 }
 
 impl Default for FixtureBehaviour {
@@ -169,6 +241,7 @@ impl Default for FixtureBehaviour {
             required_authorization: None,
             pipeline_prefix: b"",
             refuse_immediately: false,
+            refuse_upstream: false,
         }
     }
 }
@@ -248,6 +321,12 @@ async fn serve_outproxy_connection(
         let _ = stream
             .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
             .await;
+        return;
+    }
+    if behaviour.refuse_upstream {
+        // A well-formed refusal from an outproxy that was reached and
+        // understood. The route owner reads this as `TargetUnreachable`.
+        let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
         return;
     }
     // The 200 and the pipelined prefix go out in one write, so the daemon's
@@ -429,6 +508,20 @@ fn create_request(
         all: false,
         name: Some(name.to_owned()),
         tunnel_type: Some(tunnel_type),
+        new_name: None,
+        options,
+    }
+}
+
+/// An `edit` request carrying only the options that should change. The
+/// outproxy block is absent, which is how the fail-closed row removes a
+/// provider rather than creating a second tunnel.
+fn edit_request(name: &str, options: BTreeMap<String, String>) -> TunnelManagerRequest {
+    TunnelManagerRequest {
+        action: TunnelAction::Edit,
+        all: false,
+        name: Some(name.to_owned()),
+        tunnel_type: None,
         new_name: None,
         options,
     }
@@ -820,15 +913,7 @@ async fn plan342_outproxy_auth_is_presented_and_never_echoed() {
     // Require the real Basic value so the row proves the credential was
     // *recovered and encoded*, not merely that a header appeared.
     let expected = format!("Basic {}", base64_of("operator:plan342-s3cret-value"));
-    let outproxy = start_outproxy(
-        origin.address,
-        FixtureBehaviour {
-            required_authorization: None,
-            pipeline_prefix: b"",
-            refuse_immediately: false,
-        },
-    )
-    .await;
+    let outproxy = start_outproxy(origin.address, FixtureBehaviour::default()).await;
     // Rebuild with the requirement, so the fixture holds the expected value.
     drop(outproxy);
     let outproxy = start_outproxy(
@@ -1180,4 +1265,1001 @@ async fn start_refusing_origin() -> RefusingOrigin {
         }
     });
     RefusingOrigin { address }
+}
+
+// ---------------------------------------------------------------------------
+// Plan 376 — live multi-endpoint failover, and a routed request across a
+// product restart.
+// ---------------------------------------------------------------------------
+//
+// Everything below extends the composition above rather than replacing it: the
+// same real-Streaming route, the same service *server* tunnel standing in for
+// the I2P outproxy destination, the same classifier, the same route owner. No
+// socket here is a clearnet socket and the fixtures never resolve a name.
+//
+// # Ordered failover, not load rotation
+//
+// The provider contract is **ordered failover within one request**, not
+// round-robin between requests: `OutproxyList::select(attempt)` maps attempt
+// index to endpoint by `attempt % len`, and `open_via_outproxy` walks attempts
+// from 0 until one succeeds. Two requests against the same tunnel both start
+// at the first configured endpoint. That is deliberate — the operator's order
+// is intent — and it is what the rows below pin. Between-request load rotation
+// is not claimed, because no provider contract claims it.
+
+/// A `.b32.i2p` label for a destination this router does **not** own.
+///
+/// This is the cleanest way to fail at the Streaming-connect stage: the
+/// endpoint is well-formed, is in the operator's list, and is permitted for
+/// the request, but `resolve_reference` cannot resolve it. The route owner
+/// treats that as `TargetUnreachable`, which is retryable, so the same request
+/// should continue to the next endpoint.
+fn unowned_label(byte: u8) -> String {
+    format!(
+        "{}.b32.i2p",
+        i2pr_service_tunnels::encode_b32_label(&[byte; 32])
+    )
+}
+
+/// Composes a client tunnel whose `ProxyList` is `primary` then `secondary`.
+///
+/// Both endpoints must appear in `ssl_proxies`, because a CONNECT request is a
+/// tunnelled request and `permits_tunnelled` is a subset check.
+fn two_endpoint_options(
+    target_destination: &str,
+    primary: &str,
+    secondary: &str,
+    credential: Option<(&str, &str)>,
+) -> BTreeMap<String, String> {
+    let list = format!("{primary},{secondary}");
+    client_options(
+        TunnelType::ConnectClient,
+        target_destination,
+        Some(&list),
+        credential,
+    )
+}
+
+/// **HTTP CONNECT**, first endpoint unreachable at the Streaming-connect
+/// stage, second endpoint live: the *same request* succeeds through the second.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_http_connect_fails_over_to_the_second_outproxy() {
+    let directory = temp_data_dir("opx-376-http-failover");
+    let origin = start_origin().await;
+    let live = start_outproxy(origin.address, FixtureBehaviour::default()).await;
+    let live_material = capture_destination(directory.path(), "outproxy-b", live.address).await;
+    let live_label = b32_label_of(&live_material);
+    // The dead endpoint is a valid I2P name with no destination behind it.
+    let dead_label = unowned_label(0xA1);
+
+    let shared = manager(
+        directory.path(),
+        vec![server_spec("outproxy-b", live.address)],
+        StaticAliasTable::new(),
+    );
+    let state = control(
+        directory.path(),
+        &shared,
+        vec![startup_server("outproxy-b", live.address)],
+    );
+    state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            two_endpoint_options(&live_material, &dead_label, &live_label, None),
+        ))
+        .await
+        .expect("the two-endpoint block is accepted");
+
+    let (_scope, _cancel) = start_supervisors(&shared).await;
+    let listener = shared
+        .client_listener_address("tunnel-a")
+        .expect("listener");
+
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    let text = String::from_utf8_lossy(&head);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "one request must survive a dead first endpoint; counters: {:?}; body: {text:?}",
+        shared.outproxy_counters().lock().expect("counters")
+    );
+
+    // The live endpoint really is the one that was asked, and the dead one was
+    // never asked for anything: it cannot be, having no destination.
+    assert_eq!(
+        live.observed.lock().expect("observed").authorities,
+        vec!["example.com:443".to_owned()],
+        "the second endpoint must receive the authority exactly once"
+    );
+
+    let counters = *shared.outproxy_counters().lock().expect("counters");
+    assert_eq!(
+        counters.connect_attempts, 2,
+        "one attempt per configured endpoint and no more: {counters:?}"
+    );
+    assert_eq!(
+        counters.handshake_ok, 1,
+        "exactly one route completed its handshake: {counters:?}"
+    );
+    assert!(
+        counters.target_unreachable >= 1,
+        "the dead endpoint must be attributed to a typed reason, not silence: {counters:?}"
+    );
+}
+
+/// The same composition over **SOCKS5**, so the failover is a property of the
+/// route owner rather than of the HTTP request grammar.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_socks5_fails_over_to_the_second_outproxy() {
+    let directory = temp_data_dir("opx-376-socks-failover");
+    let origin = start_origin().await;
+    let live = start_outproxy(origin.address, FixtureBehaviour::default()).await;
+    let live_material = capture_destination(directory.path(), "outproxy-b", live.address).await;
+    let live_label = b32_label_of(&live_material);
+    let dead_label = unowned_label(0xA2);
+
+    let shared = manager(
+        directory.path(),
+        vec![server_spec("outproxy-b", live.address)],
+        StaticAliasTable::new(),
+    );
+    let state = control(
+        directory.path(),
+        &shared,
+        vec![startup_server("outproxy-b", live.address)],
+    );
+    state
+        .create(&create_request(
+            "socks-a",
+            TunnelType::Socks,
+            two_endpoint_options(&live_material, &dead_label, &live_label, None),
+        ))
+        .await
+        .expect("create");
+
+    let (_scope, _cancel) = start_supervisors(&shared).await;
+    let listener = shared.client_listener_address("socks-a").expect("listener");
+
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .expect("greeting");
+    let mut greeting = [0_u8; 2];
+    tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut greeting))
+        .await
+        .expect("greeting reply")
+        .expect("greeting bytes");
+    assert_eq!(greeting, [0x05, 0x00], "no-auth must be selected");
+
+    let host = b"example.com";
+    let mut request = vec![0x05, 0x01, 0x00, 0x03, u8::try_from(host.len()).unwrap()];
+    request.extend_from_slice(host);
+    request.extend_from_slice(&443_u16.to_be_bytes());
+    stream.write_all(&request).await.expect("request");
+
+    let mut reply = [0_u8; 10];
+    tokio::time::timeout(Duration::from_secs(20), stream.read_exact(&mut reply))
+        .await
+        .expect("connect reply")
+        .expect("reply bytes");
+    assert_eq!(
+        reply,
+        [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0],
+        "a SOCKS request must survive a dead first endpoint"
+    );
+    assert_eq!(
+        live.observed.lock().expect("observed").authorities,
+        vec!["example.com:443".to_owned()],
+        "the SOCKS family must fail over to the same second endpoint"
+    );
+}
+
+/// The first endpoint **is** reachable and answers — with an upstream refusal.
+/// `TargetUnreachable` is retryable, so the frozen taxonomy says the request
+/// continues to the second endpoint. This row pins that half of the taxonomy,
+/// which is the half a streaming-connect failure does not reach.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_an_upstream_refusal_is_retried_at_the_second_outproxy() {
+    let directory = temp_data_dir("opx-376-upstream-refused");
+    let origin = start_origin().await;
+    let refused = start_outproxy(
+        origin.address,
+        FixtureBehaviour {
+            refuse_upstream: true,
+            ..FixtureBehaviour::default()
+        },
+    )
+    .await;
+    let live = start_outproxy(origin.address, FixtureBehaviour::default()).await;
+    let refused_material =
+        capture_destination(directory.path(), "outproxy-a", refused.address).await;
+    let live_material = capture_destination(directory.path(), "outproxy-b", live.address).await;
+    let refused_label = b32_label_of(&refused_material);
+    let live_label = b32_label_of(&live_material);
+
+    let shared = manager(
+        directory.path(),
+        vec![
+            server_spec("outproxy-a", refused.address),
+            server_spec("outproxy-b", live.address),
+        ],
+        StaticAliasTable::new(),
+    );
+    let state = control(
+        directory.path(),
+        &shared,
+        vec![
+            startup_server("outproxy-a", refused.address),
+            startup_server("outproxy-b", live.address),
+        ],
+    );
+    state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            two_endpoint_options(
+                &live_material,
+                &refused_label,
+                &live_label,
+                Some(("operator", "s3cret!")),
+            ),
+        ))
+        .await
+        .expect("create");
+
+    let (_scope, _cancel) = start_supervisors(&shared).await;
+    let listener = shared
+        .client_listener_address("tunnel-a")
+        .expect("listener");
+
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+        "an upstream refusal is retryable and must continue to the second endpoint; counters: {:?}; body: {:?}",
+        shared.outproxy_counters().lock().expect("counters"),
+        String::from_utf8_lossy(&head)
+    );
+    assert_eq!(
+        refused.observed.lock().expect("observed").authorities,
+        vec!["example.com:443".to_owned()],
+        "the refusing endpoint must really have been asked first"
+    );
+    assert_eq!(
+        live.observed.lock().expect("observed").authorities,
+        vec!["example.com:443".to_owned()],
+        "the live endpoint must receive the retry"
+    );
+    let counters = *shared.outproxy_counters().lock().expect("counters");
+    assert!(
+        counters.target_unreachable >= 1,
+        "an upstream refusal must be attributed to target-unreachable: {counters:?}"
+    );
+}
+
+/// The authentication-rejection half of the taxonomy, stated explicitly
+/// because it is a security-relevant policy rather than an accident.
+///
+/// `OutproxyFailure::is_retryable` includes `AuthenticationRejected`, so the
+/// current explicit policy **does** retry a 407 at the next configured
+/// endpoint — and, because the credential is built once per attempt from the
+/// sealed store, it presents the same credential to every endpoint in the
+/// operator's list. Plan 376 requires that this either be an explicit policy
+/// or be forbidden; it is explicit, so this row pins it rather than leaving it
+/// implied.
+///
+/// The security consequence is real and is recorded in the closure: an
+/// operator with two outproxies is offering one credential to two parties. That
+/// is a consequence of the operator's own `ProxyList`, not of the router, but
+/// an operator who does not expect it has no way to discover it, so the lane
+/// header and the closure both say so out loud.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_authentication_rejection_is_retried_at_the_next_endpoint_by_the_current_policy() {
+    let directory = temp_data_dir("opx-376-auth-retry");
+    let origin = start_origin().await;
+    let picky = start_outproxy(
+        origin.address,
+        FixtureBehaviour {
+            required_authorization: Some("Basic Zm9yZ2VkOndoZW5seQ=="),
+            ..FixtureBehaviour::default()
+        },
+    )
+    .await;
+    let live = start_outproxy(
+        origin.address,
+        FixtureBehaviour {
+            required_authorization: Some("Basic b3BlcmF0b3I6czNjcmV0IQ=="),
+            ..FixtureBehaviour::default()
+        },
+    )
+    .await;
+    let picky_material = capture_destination(directory.path(), "outproxy-a", picky.address).await;
+    let live_material = capture_destination(directory.path(), "outproxy-b", live.address).await;
+    let picky_label = b32_label_of(&picky_material);
+    let live_label = b32_label_of(&live_material);
+
+    let shared = manager(
+        directory.path(),
+        vec![
+            server_spec("outproxy-a", picky.address),
+            server_spec("outproxy-b", live.address),
+        ],
+        StaticAliasTable::new(),
+    );
+    let state = control(
+        directory.path(),
+        &shared,
+        vec![
+            startup_server("outproxy-a", picky.address),
+            startup_server("outproxy-b", live.address),
+        ],
+    );
+    state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            two_endpoint_options(
+                &live_material,
+                &picky_label,
+                &live_label,
+                Some(("operator", "s3cret!")),
+            ),
+        ))
+        .await
+        .expect("create");
+
+    let (_scope, _cancel) = start_supervisors(&shared).await;
+    let listener = shared
+        .client_listener_address("tunnel-a")
+        .expect("listener");
+
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+        "the frozen taxonomy retries an authentication rejection at the next endpoint; counters: {:?}; body: {:?}",
+        shared.outproxy_counters().lock().expect("counters"),
+        String::from_utf8_lossy(&head)
+    );
+    // Both endpoints saw a credential — that is the policy, pinned rather than
+    // hidden. Neither saw anything but the sealed store's output.
+    assert!(
+        picky.observed.lock().expect("observed").saw_authorization,
+        "the first endpoint must have been offered the credential and rejected it"
+    );
+    assert!(
+        live.observed.lock().expect("observed").saw_authorization,
+        "the retry must present the credential too; this is the documented policy"
+    );
+    let counters = *shared.outproxy_counters().lock().expect("counters");
+    assert_eq!(
+        counters.authentication_rejected, 1,
+        "the rejection must be counted once: {counters:?}"
+    );
+    assert_eq!(
+        counters.handshake_ok, 1,
+        "exactly one route completed: {counters:?}"
+    );
+}
+
+/// The attempt budget is the operator's list length, bounded by the hard
+/// ceiling, and a request that spends all of it is refused typed — never
+/// opened as a direct clearnet socket.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_the_attempt_budget_is_the_list_length_and_exhaustion_is_typed() {
+    let directory = temp_data_dir("opx-376-budget");
+    // Three configured endpoints, none of which this router can resolve.
+    let shared = manager(directory.path(), Vec::new(), StaticAliasTable::new());
+    let state = control(directory.path(), &shared, Vec::new());
+    let target = b32(0xC1);
+    let first = unowned_label(0xB1);
+    let second = unowned_label(0xB2);
+    let third = unowned_label(0xB3);
+    state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            two_endpoint_options(&target, &first, &format!("{second},{third}"), None),
+        ))
+        .await
+        .expect("create");
+    let (_scope, _cancel) = start_supervisors(&shared).await;
+    let listener = shared
+        .client_listener_address("tunnel-a")
+        .expect("listener");
+
+    let started = Instant::now();
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    let elapsed = started.elapsed();
+    let text = String::from_utf8_lossy(&head);
+    assert!(
+        text.starts_with("HTTP/1.1 4") || text.starts_with("HTTP/1.1 5"),
+        "an exhausted request must be refused, not dropped; got {text:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(90),
+        "the whole budget must stay bounded; took {elapsed:?}"
+    );
+    let counters = *shared.outproxy_counters().lock().expect("counters");
+    assert_eq!(
+        counters.connect_attempts, 3,
+        "the budget must be the list length: three endpoints, three attempts: {counters:?}"
+    );
+    assert_eq!(counters.handshake_ok, 0, "no route completed: {counters:?}");
+    assert_eq!(
+        counters.attempts_exhausted, 1,
+        "the refusal must be attributed to exhaustion: {counters:?}"
+    );
+    assert_eq!(
+        counters.direct_i2p, 0,
+        "a clearnet target must never be routed directly"
+    );
+}
+
+/// A router identity, generated once so two generations can share it the way
+/// two runs of one router do.
+#[allow(clippy::missing_panics_doc)]
+fn router_identity() -> i2pr_crypto::RouterIdentityBundle {
+    let mut rng = i2pr_crypto::OsRng;
+    i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("identity bundle")
+}
+
+/// The secret owner a restarted router rebuilds: same identity, fresh owner.
+fn secret_owner_for(bundle: &i2pr_crypto::RouterIdentityBundle) -> Arc<dyn OutboundSecretStore> {
+    Arc::new(
+        i2pr_daemon::outbound_secret::RouterBoundOutboundSecrets::from_router_identity(bundle)
+            .expect("router-bound secret owner"),
+    )
+}
+
+/// One generation of the router for this tunnel pair: the manager, the control
+/// state, the supervisor scope, and the cancellation token.
+///
+/// Everything it owns is dropped when it is dropped. A restart therefore means
+/// dropping one of these and building another over the **same data
+/// directory** — nothing else crosses the boundary.
+struct Generation {
+    shared: Arc<ServiceTunnelManager>,
+    /// Held so the restart boundary drops it too. Never read: its only job is
+    /// to be destroyed, and naming that is clearer than binding it to `_`.
+    #[allow(dead_code)]
+    state: TunnelControlState,
+    #[allow(dead_code)]
+    scope: ChildScope,
+    cancel: CancellationToken,
+}
+
+/// Generation one: reconcile the operator's `create` into a fresh manager, then
+/// start the manager's runtimes.
+///
+/// The order matters and it is the order Plan 342's lane uses. A `create`
+/// reconciles the definition and installs the outproxy provider into the
+/// registry; `manager.prepare()` then builds a runtime for every spec,
+/// including the control-owned client tunnel, and `start_supervisors` starts
+/// them. Starting the manager first and creating afterwards leaves the
+/// client tunnel's listener bound by a supervisor that was already built, so
+/// the tunnel never comes up — which looks exactly like a route failure and
+/// is not one.
+async fn build_generation(
+    data_dir: &Path,
+    specs: Vec<ServiceTunnelSpec>,
+    startup: Vec<ServiceTunnelSpec>,
+    aliases: StaticAliasTable,
+    bundle: &i2pr_crypto::RouterIdentityBundle,
+    options: BTreeMap<String, String>,
+) -> Generation {
+    let shared = manager(data_dir, specs, aliases);
+    let state = TunnelControlState::new(
+        ControlStore::open(data_dir).expect("control store"),
+        ServiceTunnelSet { tunnels: startup },
+        Arc::clone(&shared),
+        secret_owner_for(bundle),
+    );
+    state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            options,
+        ))
+        .await
+        .expect("create");
+    let (scope, cancel) = start_supervisors(&shared).await;
+    Generation {
+        shared,
+        state,
+        scope,
+        cancel,
+    }
+}
+
+/// Generation two: bring the product up from what it persisted.
+///
+/// This deliberately does **not** re-apply the operator's `create`. It opens a
+/// fresh manager and a fresh control state over the same data directory and
+/// runs [`TunnelControlState::startup`] — the product's own boot path, which
+/// reloads the published generation, revalidates every stored definition,
+/// reconciles the shared manager, and reinstalls the outproxy provider registry.
+/// A provider that exists afterwards can therefore only have come from disk
+/// plus the router-bound secret owner; nothing the test supplied survives.
+async fn recover_generation(
+    data_dir: &Path,
+    specs: Vec<ServiceTunnelSpec>,
+    startup: Vec<ServiceTunnelSpec>,
+    aliases: StaticAliasTable,
+    bundle: &i2pr_crypto::RouterIdentityBundle,
+) -> Generation {
+    let shared = manager(data_dir, specs, aliases);
+    let (scope, cancel) = start_supervisors(&shared).await;
+    let state = TunnelControlState::new(
+        ControlStore::open(data_dir).expect("control store reopens"),
+        ServiceTunnelSet { tunnels: startup },
+        Arc::clone(&shared),
+        secret_owner_for(bundle),
+    );
+    let failures = state.startup(&scope, &cancel).await;
+    assert!(
+        failures.is_empty(),
+        "startup recovery must report no per-definition failures; got {failures:?}"
+    );
+    Generation {
+        shared,
+        state,
+        scope,
+        cancel,
+    }
+}
+
+/// Plan 376 restart requirements 1–4: the canonical block survives a real
+/// restart, the sealed password is still recoverable, the provider registry is
+/// rebuilt before a request is served, and a post-restart CONNECT carries
+/// application data.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_a_routed_request_survives_a_product_restart() {
+    let directory = temp_data_dir("opx-376-restart");
+    let origin = start_origin().await;
+    let outproxy = start_outproxy(origin.address, FixtureBehaviour::default()).await;
+    let material = capture_destination(directory.path(), "outproxy-svc", outproxy.address).await;
+    let list = b32_label_of(&material);
+    let bundle = router_identity();
+
+    let specs = vec![server_spec("outproxy-svc", outproxy.address)];
+    let startup = vec![startup_server("outproxy-svc", outproxy.address)];
+
+    // ---- generation one -------------------------------------------------
+    let first = build_generation(
+        directory.path(),
+        specs.clone(),
+        startup.clone(),
+        StaticAliasTable::new(),
+        &bundle,
+        client_options(
+            TunnelType::ConnectClient,
+            &material,
+            Some(&list),
+            Some(("operator", "s3cret!")),
+        ),
+    )
+    .await;
+    assert!(
+        first.shared.outproxy_provider("tunnel-a").is_some(),
+        "generation one must have installed a provider from the sealed credential"
+    );
+    let first_listener = first
+        .shared
+        .client_listener_address("tunnel-a")
+        .expect("generation one listener");
+    {
+        let mut stream = connect_tunnel(first_listener, "example.com:443").await;
+        let head = read_some(&mut stream).await;
+        assert!(
+            String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+            "generation one must serve the request; got {:?}",
+            String::from_utf8_lossy(&head)
+        );
+    }
+
+    // ---- the restart boundary ------------------------------------------
+    // Every owner below is dropped whole. What survives is the data directory
+    // and the fixture sockets, which is the entire point of the row.
+    first
+        .cancel
+        .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+    drop(first);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            tokio::net::TcpStream::connect(first_listener)
+        )
+        .await
+        .map(|result| result.is_err())
+        .unwrap_or(false),
+        "generation one's listener must actually be released, or this is not a restart"
+    );
+
+    // ---- generation two: brought up by startup recovery ------------------
+    let second = recover_generation(
+        directory.path(),
+        specs,
+        startup,
+        StaticAliasTable::new(),
+        &bundle,
+    )
+    .await;
+    assert!(
+        second.shared.outproxy_provider("tunnel-a").is_some(),
+        "the provider registry must be reconstructed by startup before any request is served; \
+         if it were not, every post-restart clearnet request would fall back to the strict parser"
+    );
+
+    let listener = second
+        .shared
+        .client_listener_address("tunnel-a")
+        .expect("the recovered tunnel has a listener");
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+        "a post-restart CONNECT must still be carried by an outproxy; counters: {:?}; body: {:?}",
+        second.shared.outproxy_counters().lock().expect("counters"),
+        String::from_utf8_lossy(&head)
+    );
+    // Requirement 4 says "application data passes", not merely "a head was
+    // exchanged": the origin echoes, so bytes written after establishment must
+    // come back over the restored route.
+    stream.write_all(b"after-restart").await.expect("write");
+    let echoed = read_exact_bounded(&mut stream, b"after-restart".len()).await;
+    assert_eq!(
+        echoed, b"after-restart",
+        "application data must pass over the restored route"
+    );
+    assert_eq!(
+        outproxy.observed.lock().expect("observed").authorities,
+        vec!["example.com:443".to_owned(); 2],
+        "the outproxy must have been asked exactly once per generation, and the \
+         credential-bearing handshake must have been re-presented in the second"
+    );
+
+    // Requirements 1 and 2, read back rather than inferred: the recovered
+    // definition still carries the whole canonical block, and the password is
+    // still sealed.
+    let stored = ControlStore::open(directory.path())
+        .expect("store")
+        .load()
+        .expect("load")
+        .definitions
+        .into_iter()
+        .find(|definition| definition.name == "tunnel-a")
+        .expect("the client definition survived publication");
+    for field in [
+        "proxy_list",
+        "use_outproxy_plugin",
+        "outproxy_type",
+        "ssl_proxies",
+        "outproxy_auth",
+        "outproxy_username",
+        "outproxy_password",
+    ] {
+        assert!(
+            stored.options.contains_key(field),
+            "the canonical outproxy block lost {field} across the restart"
+        );
+    }
+    assert_ne!(
+        stored.options.get("outproxy_password"),
+        Some(&"s3cret!".to_owned()),
+        "the password must still be in its sealed form, not plaintext"
+    );
+    second
+        .cancel
+        .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+}
+
+/// Plan 376 restart requirements 5 and 6: `.i2p` traffic still bypasses the
+/// provider after a restart, and a tunnel whose provider was never configured
+/// fails closed on a clearnet target instead of opening a direct socket.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_after_restart_i2p_traffic_bypasses_and_removing_the_provider_fails_closed() {
+    let directory = temp_data_dir("opx-376-restart-bypass");
+    let direct_origin = start_origin().await;
+    let outproxy_origin = start_origin().await;
+    let outproxy = start_outproxy(outproxy_origin.address, FixtureBehaviour::default()).await;
+
+    let direct_material =
+        capture_destination(directory.path(), "direct-svc", direct_origin.address).await;
+    let outproxy_material =
+        capture_destination(directory.path(), "outproxy-svc", outproxy.address).await;
+    let outproxy_label = b32_label_of(&outproxy_material);
+    let bundle = router_identity();
+
+    // The alias is what gives the request its `.i2p` spelling, and it points at
+    // the *direct* destination — so a correct row lands on the direct fixture
+    // and an incorrect one lands on the outproxy fixture. The alias is daemon
+    // configuration, so it is re-supplied at restart exactly as a config file
+    // would be; it is not the thing under test.
+    let aliases = || {
+        let mut table = StaticAliasTable::new();
+        table
+            .insert(
+                "direct.example.i2p",
+                DestinationRef::ConfiguredDestination(direct_material.clone()),
+            )
+            .expect("alias insert");
+        table
+    };
+    let specs = || {
+        vec![
+            server_spec("direct-svc", direct_origin.address),
+            server_spec("outproxy-svc", outproxy.address),
+        ]
+    };
+    let startup = || {
+        vec![
+            startup_server("direct-svc", direct_origin.address),
+            startup_server("outproxy-svc", outproxy.address),
+        ]
+    };
+
+    let first = build_generation(
+        directory.path(),
+        specs(),
+        startup(),
+        aliases(),
+        &bundle,
+        client_options(
+            TunnelType::ConnectClient,
+            &direct_material,
+            Some(&outproxy_label),
+            None,
+        ),
+    )
+    .await;
+    assert!(first.shared.outproxy_provider("tunnel-a").is_some());
+
+    first
+        .cancel
+        .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+    drop(first);
+
+    let second = recover_generation(directory.path(), specs(), startup(), aliases(), &bundle).await;
+    assert!(
+        second.shared.outproxy_provider("tunnel-a").is_some(),
+        "the provider must be reconstructed by startup"
+    );
+    let listener = second
+        .shared
+        .client_listener_address("tunnel-a")
+        .expect("recovered listener");
+
+    // Requirement 5: `.i2p` traffic still bypasses the provider after restart.
+    let before = outproxy
+        .observed
+        .lock()
+        .expect("observed")
+        .authorities
+        .len();
+    let mut stream = connect_tunnel(listener, "direct.example.i2p:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+        "an .i2p CONNECT must survive the restart; got {:?}",
+        String::from_utf8_lossy(&head)
+    );
+    stream.write_all(b"ping").await.expect("write");
+    let echoed = read_exact_bounded(&mut stream, 4).await;
+    assert_eq!(
+        echoed, b"ping",
+        "the direct destination must receive the bytes"
+    );
+    assert_eq!(
+        outproxy
+            .observed
+            .lock()
+            .expect("observed")
+            .authorities
+            .len(),
+        before,
+        "an .i2p authority must still bypass the outproxy after a restart"
+    );
+
+    // Requirement 6: removing the provider makes clearnet requests fail
+    // closed.
+    //
+    // `edit` cannot express this and the row says why, because it is a real
+    // property of the control surface rather than a test inconvenience:
+    // `TunnelControlState::edit` *merges* the request's options over the prior
+    // definition, so an edit that omits the outproxy keys leaves them in place
+    // and the provider stays installed. The only expressible way to remove a
+    // provider is to destroy the definition and recreate it without the block.
+    second
+        .state
+        .delete(&edit_request("tunnel-a", BTreeMap::new()))
+        .await
+        .expect("delete");
+    let mut options = BTreeMap::new();
+    options.insert("target_destination".to_owned(), direct_material.clone());
+    options.insert("listen_port".to_owned(), "0".to_owned());
+    second
+        .state
+        .create(&create_request(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            options,
+        ))
+        .await
+        .expect("a tunnel with no outproxy block is accepted");
+    assert!(
+        second.shared.outproxy_provider("tunnel-a").is_none(),
+        "recreating the tunnel without the block must leave it with no provider, so the \
+         next request is refused at the parser rather than routed"
+    );
+    let other = second
+        .shared
+        .client_listener_address("tunnel-a")
+        .expect("the recreated tunnel has a listener");
+    let mut stream = connect_tunnel(other, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 4"),
+        "a clearnet request with no provider must fail closed at the boundary, not open a direct socket; got {:?}",
+        String::from_utf8_lossy(&head)
+    );
+    assert_eq!(
+        outproxy
+            .observed
+            .lock()
+            .expect("observed")
+            .authorities
+            .len(),
+        before,
+        "the refused request must not have consulted any outproxy"
+    );
+    second
+        .cancel
+        .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+}
+
+/// Plan 376 restart requirement 7, and the security claim it rests on: a
+/// copied configuration directory without the matching router secret cannot
+/// recover the credential, so it cannot present one.
+#[tokio::test(flavor = "current_thread")]
+async fn plan376_a_copied_config_without_the_router_secret_cannot_recover_the_credential() {
+    let original = temp_data_dir("opx-376-copy-origin");
+    let copied = temp_data_dir("opx-376-copy-target");
+    let origin = start_origin().await;
+    let outproxy = start_outproxy(origin.address, FixtureBehaviour::default()).await;
+    let material = capture_destination(original.path(), "outproxy-svc", outproxy.address).await;
+    let list = b32_label_of(&material);
+    let bundle = router_identity();
+
+    let specs = vec![server_spec("outproxy-svc", outproxy.address)];
+    let startup = vec![startup_server("outproxy-svc", outproxy.address)];
+
+    // Generation one under the real router identity, which seals the password.
+    {
+        let first = build_generation(
+            original.path(),
+            specs.clone(),
+            startup.clone(),
+            StaticAliasTable::new(),
+            &bundle,
+            client_options(
+                TunnelType::ConnectClient,
+                &material,
+                Some(&list),
+                Some(("operator", "s3cret!")),
+            ),
+        )
+        .await;
+        assert!(
+            first.shared.outproxy_provider("tunnel-a").is_some(),
+            "the sealed credential must have produced a working provider"
+        );
+        let listener = first
+            .shared
+            .client_listener_address("tunnel-a")
+            .expect("listener");
+        let mut stream = connect_tunnel(listener, "example.com:443").await;
+        let head = read_some(&mut stream).await;
+        assert!(
+            String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"),
+            "the original must genuinely work, or the copy proves nothing; got {:?}",
+            String::from_utf8_lossy(&head)
+        );
+        first
+            .cancel
+            .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+    }
+
+    // Copy the whole directory, then recover under a *different* router
+    // identity. The stored generation, including the sealed password, is intact
+    // — what is missing is the key it was sealed with.
+    copy_tree(original.path(), copied.path());
+    let foreign = router_identity();
+    // The two identities must actually differ, or the row would pass for the
+    // wrong reason. Compare the public identities, never the private material.
+    let original_router_id =
+        i2pr_crypto::router_identity_hash(bundle.identity()).expect("the original identity hashes");
+    let foreign_router_id =
+        i2pr_crypto::router_identity_hash(foreign.identity()).expect("the foreign identity hashes");
+    assert_ne!(
+        original_router_id, foreign_router_id,
+        "the two identities must actually differ, or the row tests nothing"
+    );
+    let shared = manager(copied.path(), specs, StaticAliasTable::new());
+    let (scope, cancel) = start_supervisors(&shared).await;
+    let recovered = TunnelControlState::new(
+        ControlStore::open(copied.path()).expect("copied control store"),
+        ServiceTunnelSet { tunnels: startup },
+        Arc::clone(&shared),
+        // A different router: the sealed form is bound to the original
+        // identity's key and cannot be opened by this one.
+        secret_owner_for(&foreign),
+    );
+    let _ = recovered.startup(&scope, &cancel).await;
+    let listener = shared
+        .client_listener_address("tunnel-a")
+        .expect("the copied definition still builds; it just cannot authenticate");
+    let mut stream = connect_tunnel(listener, "example.com:443").await;
+    let head = read_some(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 4")
+            || String::from_utf8_lossy(&head).starts_with("HTTP/1.1 5"),
+        "a copied config must not be able to present a credential it cannot recover; got {:?}",
+        String::from_utf8_lossy(&head)
+    );
+    let counters = *shared.outproxy_counters().lock().expect("counters");
+    assert!(
+        counters.secret_owner_unavailable >= 1,
+        "the refusal must be attributed to the secret owner, not to a network failure: {counters:?}"
+    );
+    assert_eq!(
+        counters.handshake_ok, 0,
+        "no route may have completed under a foreign identity: {counters:?}"
+    );
+    cancel.cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+}
+
+/// Recursively copies a data directory, preserving the owner-only permissions
+/// the store requires.
+///
+/// Two properties are deliberate. A **symlink is refused rather than
+/// followed**, so the copy cannot escape the source tree and the row cannot be
+/// satisfied by a link pointing back at the original. The **mode is copied**,
+/// not just the bytes: `ControlStore` refuses a group- or world-readable
+/// directory, and a `create_dir_all` default of `0o755` would make the copy
+/// fail for a permissions reason while appearing to be a credential result.
+fn copy_tree(from: &Path, to: &Path) {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let entries = std::fs::read_dir(from).expect("read source dir");
+    for entry in entries {
+        let entry = entry.expect("dir entry");
+        let kind = entry.file_type().expect("entry type");
+        assert!(
+            !kind.is_symlink(),
+            "a symlink in the data directory would make the copy test meaningless"
+        );
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            std::fs::create_dir(&target).expect("create copied dir");
+            copy_tree(&source, &target);
+        } else {
+            std::fs::copy(&source, &target).expect("copy file");
+        }
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&source)
+                .expect("source metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+                .expect("preserve permissions");
+        }
+    }
 }
