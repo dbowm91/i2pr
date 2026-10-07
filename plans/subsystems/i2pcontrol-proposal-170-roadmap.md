@@ -716,9 +716,13 @@ Forward dependency graph:
 
 ```text
 373 passed  planning/support truth reconciliation
-  -> 374 ready    stock i2pd bidirectional ELS2 lane
-  -> 375 ready    stock Java I2P bidirectional ELS2 lane
-  -> 376 ready    live outproxy failover + restart
+  -> 374 blocked  stock i2pd bidirectional ELS2 lane (freeze done; driver not written)
+  -> 375 blocked  stock Java I2P bidirectional ELS2 lane (freeze partial; driver not written)
+  -> 376 passed  live outproxy failover + restart
+       |
+       +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
+            |
+            +-> 378 blocked  final conformance gate (needs 377; 373/376 done)
 
 374 + 375
   -> 377 blocked  ELS2 external evidence convergence / successor closure
@@ -728,8 +732,17 @@ Forward dependency graph:
 ```
 
 Plans 374, 375, and 376 are intentionally independent after 373 and may execute in parallel.
-**Plan 373 passed**, so all three are `ready`: it was their only unmet hard dependency — each of
-374/375 also requires passed 346/350/351, and 376 requires passed 341/343 plus 342-passed-scoped.
+**Plan 373 passed**, so all three became `ready`: it was their only unmet hard dependency — each
+of 374/375 also requires passed 346/350/351, and 376 requires passed 341/343 plus 342-passed-scoped.
+
+**376 has since passed, and 374/375 are blocked.** Both ELS2 lanes completed their
+pre-execution freeze and then stopped at the same named point: the repository has no
+ELS2 live driver. It has the Plan 303/306 controlled floodfill mesh (type 1/3/7 only),
+Plan 350/351's i2pr-internal type-5 path, and Plan 346's crypto-boundary transcript check —
+none of which is a live ELS2 row, and the plans forbid substituting any of them. The mesh
+itself was **verified running on this host**, so the external lane is not blocked by the
+environment; it is blocked by unwritten external-integration engineering. The freeze record
+lives in `tests/integration/els2/reference-freeze.md` so the next pass does not repeat it.
 
 ### Why two ELS2 reference plans
 
@@ -754,8 +767,8 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 |---|---|---|---|
 | 373 | **passed** | planning/support corrective | plans/closure/i2pcontrol-proposal-170/373-status.md (`passed-authority-support-and-successor-state-reconciled-without-capability-promotion`) |
 | 373 (plan) | — | — | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
-| 374 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
-| 375 | **ready** | external interoperability | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
+| 374 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/374-status.md. Freeze executed; controlled mesh verified running here; both directions reference-feasible and all three auth modes implemented. Blocker: no ELS2 live driver exists. | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
+| 375 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/375-status.md. Build verified at the pin (JDK 21 required); source proof recorded incomplete; same unwritten-driver blocker. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
-| 377 | blocked on 374 + 375 | ELS2 external convergence | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
-| 378 | blocked on 373 + 376 + 377 | final conformance gate | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |
+| 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
+| 378 | blocked on 377 alone (373 + 376 passed) | final conformance gate. Closure: `plans/closure/i2pcontrol-proposal-170/378-status.md`. §1 re-freeze executed live and MET; §2/§5 green; §3/§4 blocked; `full-proposal-conformant` NOT SET. | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |
