@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload sanitized M10 evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: service-tunnels-external-evidence-${{ github.run_id }}
           path: target/interop/service-tunnels-evidence
@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload sanitized Plan 213 generic evidence
         if: always() && (github.event.inputs.lane == 'router-generic' || github.event.inputs.lane == 'full')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: plan213-generic-evidence-${{ github.run_id }}
           path: target/interop/plan213-generic-evidence
@@ -113,7 +113,7 @@ jobs:
       # evidence.
       - name: Upload sanitized Plan 214 application evidence (umbrella-retained path)
         if: always() && github.event.inputs.lane == 'full'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: plan214-applications-evidence-${{ github.run_id }}
           path: target/interop/service-tunnels-evidence/plan214
