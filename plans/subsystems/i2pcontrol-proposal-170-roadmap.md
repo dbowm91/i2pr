@@ -723,8 +723,9 @@ Forward dependency graph:
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
        |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
-       |  -> 381 ready   live ELS2 external driver lane (i2pd direction)
-       |                 ^ 374's remaining scope; 380 is its closed hard dependency
+       |  -> 381 in prog live ELS2 external driver lane (i2pd direction)
+       |                 ^ WP1 (cheap gate) done; WP2-WP5 open
+       |                 ^ 380 is its closed hard dependency
        |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
             ^ 374 needs 381 (external driver); 380 is now a closed dependency
@@ -777,6 +778,20 @@ or Plan 376 row had ever edited an outproxy tunnel.
 Plan 381 is the remaining external driver scope (the `R` role, a lane profile with SAM/I2CP/HTTP
 enabled, loopback application payloads, the negative rows, and the evidence artifact). Its
 authorization rows are now writable: Plan 380 is a closed hard dependency.
+
+**WP1 has executed.** The cheap gate landed with no i2pd process at all: the `tunnels.conf`
+writer/validator (36 rows), the b33 extractor whose independent recompute ties the address to the
+`.dat`'s signing key and whose b32 agrees byte-for-byte with a second unrelated implementation
+(49 rows), and the R-side lane consumer over loopback I2PControl (6 rows). Two of the plan's own
+recorded "established" facts turned out to be wrong and are corrected forward: both the bare and
+the indexed `i2cp.leaseSetClient.psk` spellings **are** accepted (the reader is a prefix match, so
+the freeze document's original indexed claim was right and its "correction" was wrong), and the
+real trap is that the value **must contain a colon** or `ReadAuthKey` drops it with no diagnostic.
+The pinned source tree also turned out to be present at the pin, so those citations are
+source-level rather than `strings`-level. What is *not* closed: WP2's mesh, WP3's driver, WP4's
+rows. **The auth-mode matrix actually executed is none of the three**, and i2pd client tunnels in
+the controlled mesh (stop condition 2) remains the one unknown that can still block the direction.
+See `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 ### Why two ELS2 reference plans
 

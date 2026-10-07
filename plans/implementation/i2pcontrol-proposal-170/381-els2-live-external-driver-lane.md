@@ -1,6 +1,29 @@
 # Plan 381 — Live ELS2 external driver lane (i2pd direction)
 
-Status: **ready**
+Status: **in progress** — WP1 complete, WP2–WP5 open. See
+`plans/closure/i2pcontrol-proposal-170/381-status.md`.
+
+WP1 execution **corrected two facts this plan recorded at registration**; both
+corrections are made forward, not by rewriting this plan:
+
+- The plan's stop condition 1 asked whether `i2cp.leaseSetClient.psk` is settable
+  from `tunnels.conf`, and the registration claimed the indexed `.nnn` spelling
+  was not available. **Both spellings are accepted** — the reader is a prefix
+  match (`libi2pd_client/ClientContext.cpp:465-473`). The real trap is that the
+  value **must contain a `:`**: `libi2pd/Destination.cpp:1612-1620` keeps only
+  the bytes after the first colon and drops a colon-less entry with no
+  diagnostic at all. Verified six ways against the pinned binary. The keys
+  **are** settable from `tunnels.conf`, so the publisher role keeps its shape.
+- The plan's stop condition 3 said the pinned source tree is not retained and a
+  source-level claim needs a re-fetch. **The tree is present** at exactly
+  `635b013a612ff47278ef02acf8580a28e10e26c5` / `2.61.0`, so every source
+  citation in this plan is source-level. What is not retained is
+  *reproducibility on a fresh host*, which is recorded as a finding needing its
+  own plan-of-record.
+
+WP1.3 (the static evidence checker) is **deliberately deferred to WP5**: its
+subject is the WP3 lane and the WP4 rows, and a checker written before them
+would either fail or be weakened to pass over something that does not exist.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2 (shared number; see
 `plans/global-number-collision-ledger.md` convention — no collision here, 381 is

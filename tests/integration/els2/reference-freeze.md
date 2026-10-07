@@ -121,17 +121,79 @@ configuration keys: `i2cp.leaseSetPrivKey` (PSK decryption key),
 PSK key. `Destination.cpp:82` bounds the accepted type to
 `NONE..PSK`.
 
-**Corrected by Plan 381.** This line previously read
-`i2cp.leaseSetClient.psk[.nnn]`, implying an indexed group. Reading the strings
+**Corrected by Plan 381, then corrected again by Plan 381 §WP1.** The original
+line read `i2cp.leaseSetClient.psk[.nnn]`, implying an indexed group. Plan 381
+first "corrected" that to a single bare key on the strength of reading strings
 out of the pinned 2.61.0 binary
-(`target/interop/cache/ssu2/i2pd/635b013a…/bin/i2pd`) shows **no indexed
-variant** — only the single key `i2cp.leaseSetClient.psk`, alongside
-`i2cp.leaseSetClient.dh`. The indexed spelling is corrected here rather than left
-in place because it would have produced a `tunnels.conf` that i2pd silently
-ignored, producing an authentication failure indistinguishable from a crypto
-defect. This is a **binary-string** observation, not a source proof: the pinned
-source tree is not retained in the cache, which holds only `bin/`, `logs/` and
-build metadata. Treat it as the weaker claim it is.
+(`target/interop/cache/ssu2/i2pd/635b013a…/bin/i2pd`), which contains the
+literal `i2cp.leaseSetClient.psk` once and never a `.nnn` spelling.
+
+**That correction was wrong, and it is corrected forward here rather than left
+to mislead.** `strings` could not have shown otherwise: the implementation
+never contains an indexed spelling as a literal, because the reader is a
+**prefix match**, not a keyed lookup. `libi2pd_client/ClientContext.cpp:465-473`:
+
+```c++
+void ClientContext::ReadI2CPOptionsGroup (const Section& section, const std::string& group,
+    i2p::util::Mapping& options) const
+{
+    for (auto it: section.second)
+    {
+        if (it.first.length () >= group.length () && !it.first.compare (0, group.length (), group))
+            options.Insert (it.first, it.second.get_value (""));
+    }
+}
+```
+
+`libi2pd/Destination.cpp:1607-1622` matches the same way. So **both** the bare
+`i2cp.leaseSetClient.psk` **and** the indexed `i2cp.leaseSetClient.psk.0` are
+accepted; the `[.nnn]` in the original line was right all along. The source
+comment at `libi2pd/Destination.h:82` says so outright: `// group of
+i2cp.leaseSetClient.psk.nnn`.
+
+**The real constraint is the colon, and it is much worse than a wrong key
+name.** `ReadAuthKey` takes everything *after* the first `:` as the base64
+key and **silently skips any entry whose value has no colon**:
+
+```c++
+auto pos = it.second.find (':');
+if (pos != std::string::npos)
+{ /* ... AuthPublicKey::FromBase64(it.second.substr (pos + 1)) ... */ }
+// no else: a colon-less value is dropped with no diagnostic at all
+```
+
+Verified by running the pinned binary against a generated `tunnels.conf`, one
+variant per key spelling, reading `Destination: <N> auth keys read` out of the
+log:
+
+| `tunnels.conf` line | i2pd 2.61.0 result |
+|---|---|
+| `i2cp.leaseSetClient.psk = <base64>` | **no auth keys read** |
+| `i2cp.leaseSetClient.psk = 0:<base64>` | 1 auth key read |
+| `i2cp.leaseSetClient.psk.0 = <base64>` | **no auth keys read** |
+| `i2cp.leaseSetClient.psk.0 = 0:<base64>` | 1 auth key read |
+| *(no client key line)* | no auth keys read |
+| `i2cp.leaseSetAuthType = 0`, no key line | no auth-key line at all |
+
+The `<n>:` prefix is discarded; only the part after the colon is the key. A
+plain base64 value is therefore accepted by the config, dropped without
+diagnostic, and the destination publishes with an empty auth-key set — which
+surfaces later as an authentication failure indistinguishable from a crypto
+defect. That is the failure this freeze document exists to prevent, and it is
+a *worse* trap than a misspelled key, because a misspelled key at least
+changes the file.
+
+**The plan-number group is also mode-coupled and must be paired correctly.**
+`libi2pd/Destination.cpp:1088-1091` selects the group *by auth type*, so a PSK
+key must be paired with `i2cp.leaseSetAuthType = 2` (`PSK`); paired with `1`
+(`DH`) i2pd reads `i2cp.leaseSetClient.dh` instead and finds nothing. The
+modes are `NONE = 0`, `DH = 1`, `PSK = 2` (`libi2pd/LeaseSet.h:290-292`).
+
+**Source-level, not `strings`-level.** The pinned tree **is** readable at
+`635b013a612ff47278ef02acf8580a28e10e26c5` (`git describe` → `2.61.0`), so
+Plan 381's other recorded caveat — that the source tree is not retained and a
+source-level claim would need a re-fetch — is **retired**. Every line number
+above is a source citation.
 
 The stock configuration surface is `i2cp.leaseSetType` = 5 with
 `i2cp.leaseSetAuthType` in {0, 1, 2} plus the lookup-secret (subcredential)

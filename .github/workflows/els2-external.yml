@@ -1,0 +1,59 @@
+name: ELS2 external interoperability
+
+# Plan 381 §WP1.
+#
+# This workflow currently runs the ELS2 lane's **cheap gate** only — the parts
+# that need no i2pd process at all. That is the whole of what exists today, and
+# the name says so: the live mesh rows (WP2/WP3) land here when
+# `tests/integration/els2/run-i2pd-els2.sh` does.
+#
+# It is wired separately from `ci.yml` because `ci.yml` runs on every push and
+# this lane builds and starts reference routers; the other external lanes
+# (`sam-external.yml`, `ssu2-external.yml`, `i2cp-external.yml`,
+# `service-tunnels-external.yml`, `m6-mixed-router-external.yml`,
+# `m11-transit-external.yml`) are `workflow_dispatch` for the same reason.
+#
+# `scripts/check-els2-type11-transcript-boundary.sh` is deliberately NOT run
+# here. It is in the `AGENTS.md` floor and in `ci.yml`'s scope, but it had no
+# `ci.yml` line at all; Plan 381 records that drift rather than fixing it,
+# because the fix is a boundary change and not this plan's business.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  els2-external:
+    name: ELS2 external interop (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: ELS2 tunnels.conf writer and validator contract
+        # No i2pd, no network, no reference binary: this is the cheap gate, and
+        # it is what proves the configuration grammar WP2 will depend on.
+        run: bash tests/integration/els2/test-tunnels-conf.sh
+
+      - name: ELS2 destination extractor contract
+        run: python3 tests/integration/els2/clients/parse_i2pd_els2_destination.py --self-test
+
+      - name: Plan 380 consumer-path guard
+        # The cheap gate is only meaningful over an unmutated request path. A
+        # green configuration contract over a broken consumer path proves
+        # nothing about the lane.
+        run: bash scripts/check-encrypted-service-consumer-caller.sh
+
+      - name: R-side lane consumer shape
+        run: |
+          cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
+          cargo test --locked -p i2pr-daemon --test i2pcontrol_els2_lane_consumer \
+            -- --test-threads=1

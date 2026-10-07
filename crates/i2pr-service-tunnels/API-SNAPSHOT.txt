@@ -336,6 +336,7 @@ lib:mod:outproxy
 lib:mod:socks5
 lib:mod:streamr
 lib:mod:target_policy
+outbound_secret:const:ELS2_CONSUMER_CREDENTIAL_MARKER
 outbound_secret:const:MAX_OUTBOUND_SECRET_LEN
 outbound_secret:const:MAX_OUTBOUND_SECRET_STORED_LEN
 outbound_secret:const:OUTBOUND_SECRET_MARKER
@@ -344,10 +345,12 @@ outbound_secret:fn:expose_str
 outbound_secret:fn:is_empty
 outbound_secret:fn:len
 outbound_secret:fn:new
+outbound_secret:fn:validate_els2_credential_form
 outbound_secret:fn:validate_stored_form
 outbound_secret:struct:NoOutboundSecrets
 outbound_secret:struct:OutboundSecret
 outbound_secret:trait:OutboundSecretStore
+outbound_secret:trait:RouterSecretOwner
 outproxy:const:DEFAULT_OUTPROXY_ATTEMPTS
 outproxy:const:DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS
 outproxy:const:MAX_OUTPROXY_ATTEMPTS
