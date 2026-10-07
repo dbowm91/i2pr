@@ -32,6 +32,8 @@ or shared milestone of another.
 | Portable service-tunnels/349 | [`implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md`](implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md) | [`closure/portable-service-tunnels/349-status.md`](closure/portable-service-tunnels/349-status.md) |
 | Portable service-tunnels/350 | [`implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md`](implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md) | [`closure/portable-service-tunnels/350-status.md`](closure/portable-service-tunnels/350-status.md) |
 | Portable service-tunnels/351 | [`implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md`](implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md) | [`closure/portable-service-tunnels/351-status.md`](closure/portable-service-tunnels/351-status.md) |
+| SAM/368 | [`implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`](implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md) | not closed — `registered`; SAM 3.1 Plan 151 remains the closed authority until a 3.3 profile is independently qualified |
+| Managed native app runtime/368 | [`implementation/managed-native-app-runtime/368-trusted-appmanager-bridge-and-manager-protocol-foundation.md`](implementation/managed-native-app-runtime/368-trusted-appmanager-bridge-and-manager-protocol-foundation.md) | [`closure/managed-native-app-runtime/368-status.md`](closure/managed-native-app-runtime/368-status.md) (`passed-trusted-appmanager-bridge-and-manager-protocol-foundation`) |
 | Anonymity/296 | [`implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md`](implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md) | [`closure/anonymity/296-status.md`](closure/anonymity/296-status.md) |
 | Anonymity/297 | [`implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md`](implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md) | [`closure/anonymity/297-status.md`](closure/anonymity/297-status.md) |
 
@@ -41,6 +43,21 @@ separate milestones that happen to share a number. Proposal 170/349 was supersed
 Proposal 170/351 (`superseded-by-plan351`); that supersession chain is **within**
 Proposal 170 and is unaffected by the collision. Similarly
 `superseded-by-plan350`-style chains elsewhere stay inside their owning subsystem.
+
+**Plan 368 has two independent owners, recorded 2026-10-07.** The SAM 3.3
+primary/subsession shared-destination profile and the managed native app runtime's
+trusted AppManager bridge and manager protocol foundation are unrelated milestones
+that were numbered from the same next-free global number by two parallel lines, and
+the collision became observable only when both landed on `main`. The
+managed-application line was integrated from
+`plans/368-369-managed-app-runtime-foundation`; the SAM line was already on `main`.
+
+Neither plan is renumbered and neither authority is rewritten or made an alias of the
+other. Cite them subsystem-qualified — **SAM/368** and **Managed native app
+runtime/368** — and read the owning subsystem's roadmap and registry rows for status.
+The two are unrelated in scope, ownership, and evidence: SAM/368 concerns the SAM 3.1
+wire profile and `specs/support.toml`, while Managed native app runtime/368 concerns
+the private daemon-to-`AppManager` protocol, its bridge, and ADR 0035.
 
 ## ADR-number collisions
 

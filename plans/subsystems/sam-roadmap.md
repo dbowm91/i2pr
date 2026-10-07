@@ -1,6 +1,6 @@
-# SAM 3.1 Roadmap
+# SAM Roadmap — SAM 3.1 Closed, SAM 3.3 Extension Active
 
-Status: closed
+Status: SAM 3.1 closed; Plan 368 SAM 3.3 extension ready
 
 Long-term references:
 
@@ -19,9 +19,17 @@ Related ADRs:
 
 ## 1. Purpose and ownership boundary
 
-SAM 3.1 protocol/private-destination foundation, loopback server + session lifecycle, STREAM connect/accept bridge, FORWARD/naming hardening, independent-client closure, self-composing local product, final acceptance + CI hygiene.
+SAM 3.1 protocol/private-destination foundation, loopback server + session
+lifecycle, STREAM connect/accept bridge, FORWARD/naming hardening,
+independent-client closure, self-composing local product, final acceptance +
+CI hygiene are closed through the historic 135–153 line.
 
-Historic plans: 135–153 (global i2pr numbers, preserved).
+Plan 368 is a parallel extension. It adds SAM 3.3 PRIMARY/subsession
+shared-Destination semantics so one application identity can expose STREAM plus
+protocol-17 repliable DATAGRAM and protocol-18 RAW children without moving
+I2P Streaming into the application.
+
+Historic plans: 135–153. Active extension: 368.
 
 ## 2. Work classification
 
@@ -32,21 +40,51 @@ Historic plans: 135–153 (global i2pr numbers, preserved).
 
 ## 3. Non-goals
 
-- No non-loopback SAM exposure; SAM stays disabled by default. No M6 interop claim (see Plan 152 note in `destination-streaming`).
+- No non-loopback SAM exposure; ordinary SAM stays disabled by default.
+- No M6 interoperability claim (see Plan 152 note in `destination-streaming`).
+- Plan 368 does not replace I2CP, implement BitTorrent DHT, or add
+  torrent-specific router APIs.
+- Managed-app DATAGRAM/RAW semantics must not grant host UDP authority.
+- Datagram2/3 are not claimed unless Plan 368 independently completes their
+  full substrate and interoperability evidence.
 
 ## 4. Current state
 
-Plan 151 (`passed-m7-sam31-final-acceptance-evidence-correction`) — Milestone 7 final-acceptance authority.
+Plan 151 (`passed-m7-sam31-final-acceptance-evidence-correction`) remains
+Milestone 7 SAM 3.1 final-acceptance authority.
+
+Plan 368 is **ready** as a parallel extension:
+`plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`.
+
+No SAM 3.3 support claim exists until Plan 368 closes with the required
+Java I2P, i2pd, self-product, and private managed-app evidence.
 
 ## 5. Target architecture
 
-Retained historical subsystem: no new architecture is planned here. Changes require a new plan-of-record
-in this subsystem, following `plans/README.md`.
+Plan 368 is the new plan-of-record for this subsystem's extension:
+
+```text
+one SAM 3.3 primary/control owner
+        -> one existing i2pr Destination + tunnel set
+             +-> STREAM child -> existing StreamingManager
+             +-> DATAGRAM child -> existing protocol 17 DatagramManager
+             +-> RAW child -> existing protocol 18 raw datagram path
+```
+
+The primary owns lifetime. Children share its Destination and may be removed
+without destroying siblings. Primary loss tears down all children. The adapter
+must reuse existing destination/streaming/datagram owners rather than create a
+second data plane.
 
 ## 6. Dependency graph
 
 ```text
-135 -> 136..140 -> 141..145 correctives -> 146..150 requalification -> 151 acceptance -> 152/153 hygiene.
+135 -> 136..140 -> 141..145 correctives -> 146..150 requalification
+    -> 151 acceptance -> 152/153 hygiene     [SAM 3.1 closed]
+
+151 + existing Destination/Streaming/Datagram substrate
+    -> 368 SAM 3.3 PRIMARY/subsessions       [ready]
+         -> downstream i2pr-tc C003
 ```
 
 ## 7. Milestones
@@ -75,6 +113,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 151 | closed | passed-m7-sam31-final-acceptance-evidence-correction | `plans/implementation/sam/151-m7-sam31-final-acceptance-evidence-correction.md` | `plans/closure/sam/151-status.md` |
 | 152 | closed | passed-m6-session-streaming-robustness-corrective | `plans/implementation/sam/152-m6-session-streaming-robustness-corrective.md` | `plans/closure/sam/152-status.md` |
 | 153 | closed | passed-post-m7-authority-and-ci-hygiene | — | `plans/closure/sam/153-m7-closure-authority-and-ci-hygiene.md`; `plans/closure/sam/153-status.md` |
+| 368 | ready | registered-sam33-primary-subsession-shared-destination-profile | `plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md` | closure pending: `plans/closure/sam/368-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -91,12 +130,25 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- None open; independent-client rows stay loopback-only.
+- PRIMARY versus MASTER behavior differs across deployed implementations and
+  must be dispositioned by evidence, not assumption.
+- SAM 3.3 support is not advertised until shared STREAM/DATAGRAM/RAW identity
+  and lifecycle pass against Java I2P and i2pd.
+- If canonical protocol-17/18 delivery cannot be reused without a parallel
+  router data plane, Plan 368 must stop.
+- Independent external rows stay loopback/private-client only; no public SAM
+  bind is introduced.
 
 ## 11. Completion definition
 
-Closed via Plan 151; Plan 152 (M6 robustness corrective discovered by 151, normalized by 153) retained.
+SAM 3.1 remains closed via Plan 151; Plan 152 (M6 robustness corrective
+discovered by 151, normalized by 153) is retained.
+
+The 3.3 extension closes only through Plan 368's own closure record and support
+inventory update.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 151 (`passed-m7-sam31-final-acceptance-evidence-correction`) — Milestone 7 final-acceptance authority.
+Full row history is §7. Current SAM 3.1 authority: Plan 151
+(`passed-m7-sam31-final-acceptance-evidence-correction`). Current extension
+authority: Plan 368, ready.
