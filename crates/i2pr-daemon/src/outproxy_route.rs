@@ -1100,13 +1100,45 @@ mod tests {
     #[test]
     fn an_exhausted_request_records_both_its_last_reason_and_the_exhaustion() {
         let counters = std::sync::Mutex::new(OutproxyCounters::default());
+        // Plan 376 changed where the two facts are recorded. The per-attempt
+        // reason is now noted where the attempt fails -- so that a failure a
+        // later attempt went on to succeed past is not silently lost -- and
+        // `note_exhausted` adds only the exhaustion. Testing the composition
+        // rather than the helper in isolation is what keeps the intent intact:
+        // a wrong password N times is the diagnosis, and "exhausted" alone
+        // would hide it.
+        note(&counters, |c| {
+            c.note(OutproxyFailure::AuthenticationRejected)
+        });
         note_exhausted(&counters, OutproxyFailure::AuthenticationRejected);
         let guard = counters.lock().expect("counters");
-        // A wrong password N times is the diagnosis; "exhausted" alone would
-        // hide it, so both facts are recorded.
-        assert_eq!(guard.authentication_rejected, 1);
+        assert_eq!(
+            guard.authentication_rejected, 1,
+            "the last reason must survive the exhaustion exactly once"
+        );
         assert_eq!(guard.attempts_exhausted, 1);
         assert_eq!(guard.connect_attempts, 0);
+    }
+
+    #[test]
+    fn a_retryable_failure_is_counted_even_when_a_later_attempt_succeeds() {
+        // The defect Plan 376 fixed: the counters used to record only a
+        // *terminal* reason, so an operator whose first outproxy was
+        // permanently dead saw a permanently zero here while every request
+        // quietly succeeded through the second endpoint. This is the shape
+        // that made the failure invisible, so it is pinned directly.
+        let counters = std::sync::Mutex::new(OutproxyCounters::default());
+        note(&counters, |c| c.connect_attempts += 1);
+        note(&counters, |c| c.note(OutproxyFailure::TargetUnreachable));
+        note(&counters, |c| c.connect_attempts += 1);
+        note(&counters, |c| c.handshake_ok += 1);
+        let guard = counters.lock().expect("counters");
+        assert_eq!(
+            guard.target_unreachable, 1,
+            "a superseded attempt's failure must remain visible to an operator"
+        );
+        assert_eq!(guard.handshake_ok, 1, "the request itself did succeed");
+        assert_eq!(guard.attempts_exhausted, 0, "and it was not an exhaustion");
     }
 
     #[test]
