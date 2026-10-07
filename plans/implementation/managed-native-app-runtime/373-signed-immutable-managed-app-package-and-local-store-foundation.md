@@ -1,6 +1,6 @@
 # Plan 373 — signed immutable managed-app package and local store foundation
 
-Status: **in-progress-managed-app-signed-package-store-foundation**.
+Status: **passed-managed-app-signed-package-store-foundation**.
 
 Classification: **invariant + infrastructure**.
 
