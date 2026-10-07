@@ -43,7 +43,19 @@ jobs:
         # making the guard skip when PyYAML is missing would re-open the
         # Plan 365 defect, where a floor step passes while checking
         # nothing. Provisioned or the job fails.
-        run: python3 -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.2'
+        #
+        # `--user` is required and is not decoration. macOS runners put a
+        # Homebrew Python on PATH, which is PEP 668 "externally managed":
+        # a bare `pip install` there exits 1 with
+        # `error: externally-managed-environment` -- verified on run
+        # 37582892609, where the first attempt failed exactly that way.
+        # Homebrew's own remedy text names `--user` and, failing that,
+        # `--break-system-packages`. `--user` is used because it installs
+        # into `~/.local` and leaves the managed interpreter untouched;
+        # `--break-system-packages` can corrupt the Homebrew installation,
+        # and a CI image is still a real machine. The flag is accepted
+        # harmlessly by the Ubuntu runner, which is not externally managed.
+        run: python3 -m pip install --user --disable-pip-version-check --quiet 'PyYAML==6.0.2'
       - name: Verify the workflow-validity guard can actually run here
         # A provisioning step that silently fails would restore exactly
         # the defect this fixes: the guard would be skipped and the job
