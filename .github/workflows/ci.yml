@@ -44,18 +44,27 @@ jobs:
         # Plan 365 defect, where a floor step passes while checking
         # nothing. Provisioned or the job fails.
         #
-        # `--user` is required and is not decoration. macOS runners put a
-        # Homebrew Python on PATH, which is PEP 668 "externally managed":
-        # a bare `pip install` there exits 1 with
-        # `error: externally-managed-environment` -- verified on run
-        # 37582892609, where the first attempt failed exactly that way.
-        # Homebrew's own remedy text names `--user` and, failing that,
-        # `--break-system-packages`. `--user` is used because it installs
-        # into `~/.local` and leaves the managed interpreter untouched;
-        # `--break-system-packages` can corrupt the Homebrew installation,
-        # and a CI image is still a real machine. The flag is accepted
-        # harmlessly by the Ubuntu runner, which is not externally managed.
-        run: python3 -m pip install --user --disable-pip-version-check --quiet 'PyYAML==6.0.2'
+        # `--break-system-packages --user` is what makes this work, and both
+        # halves are load-bearing. macOS runners put a Homebrew Python on
+        # PATH, which is PEP 668 "externally managed", so pip refuses to
+        # install at all. Two CI runs measured this directly: 37582892609
+        # failed with `error: externally-managed-environment`, and
+        # 37585213074 failed the same way with `--user` alone, because
+        # current pip does not treat `--user` as a PEP 668 exemption.
+        #
+        # Homebrew's own remedy text names exactly this pair. The earlier
+        # draft of this comment preferred `--user` alone on the grounds that
+        # `--break-system-packages` can corrupt a Homebrew installation;
+        # that reasoning does not hold here. This is an ephemeral CI runner
+        # discarded at job end, and the package is a pure-Python leaf with no
+        # compiled extension that could be overwritten in place. The risk
+        # that motivated the avoidance applies to a developer's machine, not
+        # to this one. `--user` is kept alongside it so nothing lands in the
+        # managed interpreter's own site-packages.
+        #
+        # The flag is accepted harmlessly by the Ubuntu runner, where PyYAML
+        # is already present and pip reports it as satisfied.
+        run: python3 -m pip install --break-system-packages --user --disable-pip-version-check --quiet 'PyYAML==6.0.2'
       - name: Verify the workflow-validity guard can actually run here
         # A provisioning step that silently fails would restore exactly
         # the defect this fixes: the guard would be skipped and the job
