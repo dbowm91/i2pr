@@ -1,6 +1,8 @@
 # Plan 367 — documentation alignment after Plans 360–366
 
-Status: **registered-unblock-audit-found-eleven-stale-claims**
+Status: **passed-eleven-stale-claims-corrected-with-closure-and-audit-snapshots-untouched**
+
+Closure record: [`plans/closure/workspace-foundation/367-status.md`](../../closure/workspace-foundation/367-status.md)
 
 Classification: **documentation corrective**. No production change, no new behaviour.
 

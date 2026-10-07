@@ -111,6 +111,19 @@ product-path defect that outlived them.
 | 364 | passed | invariant — stale Plan-281 floor (owned by floodfill) | plans/closure/floodfill/364-status.md (`passed-guard-green-in-floor-and-ci-with-nine-traced-assertions`) |
 | 365 | passed | invariant — CI workflow validity guard | plans/closure/workspace-foundation/365-status.md (`passed-workflow-validity-now-checked-in-the-routine-floor`) |
 | 366 | passed | invariant corrective — console rule 2 scanned 1 of 13 files | plans/closure/workspace-foundation/366-status.md (`passed-rule-2-now-scans-all-13-console-files`) |
+| 367 | passed | documentation corrective — eleven stale claims after Plans 360–366 | plans/closure/workspace-foundation/367-status.md (`passed-eleven-stale-claims-corrected-with-closure-and-audit-snapshots-untouched`) |
+| 372 | passed | invariant — provision the CI guard's own dependency; make inventory drift fail closed | plans/closure/workspace-foundation/372-status.md (`passed-ci-guard-dependencies-provisioned-and-inventory-drift-now-fails-closed`) |
+
+**Plan 372 extends the same theme one level further up.** The Plan 365 guard was
+correct, and it still never ran on macOS: it needs PyYAML, nothing installed it, and it
+fails closed by design, so `Quality (macos-latest)` was red on `main` too. A guard's
+*dependency* is part of its contract, and nothing in the floor asserted the environment
+could execute it. Plan 372 fixed that by provisioning — never by making the guard skip —
+and in the same plan found that the published inventory had drifted on three surfaces,
+including a workspace roster missing six crates and an MSRV job documented at a toolchain
+Plan 357 had retired. Its corrective is deliberately **a guard, not another recount**, because
+a hand recount is the mechanism that produced the defect: Plan 372 itself published a
+Method B tally from memory and got all three figures wrong.
 
 The theme worth carrying forward: **four of these were guards that read as enforcing a boundary
 while enforcing nothing.** Plan 366 was the worst — its awk latched a test-module flag and never

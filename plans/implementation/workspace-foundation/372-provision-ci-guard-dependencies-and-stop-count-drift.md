@@ -1,6 +1,8 @@
 # Plan 372 — provision the CI guard dependencies, and make inventory drift fail closed
 
-Status: **registered-ci-guard-dependency-unprovisioned-and-inventory-counts-rotted-again**
+Status: **passed-ci-guard-dependencies-provisioned-and-inventory-drift-now-fails-closed**
+
+Closure record: [`plans/closure/workspace-foundation/372-status.md`](../../closure/workspace-foundation/372-status.md)
 
 Classification: **invariant** (CI provisioning + a guard that makes doc-vs-source drift
 detectable) plus **documentation corrective**. No product behaviour change.
@@ -287,3 +289,25 @@ dependency of its own. Nothing else moves to `ready` as a result.
 
 The audit also confirms Plan 369 closed nothing else: Plans 370 and 371 are closed, and no
 registered plan names Plan 369 or Plan 372 as a hard or interface dependency.
+
+## Outcome
+
+Closed as `passed-ci-guard-dependencies-provisioned-and-inventory-drift-now-fails-closed`.
+The full record, including the 21-row before/after table, the 11/11 rule-mutation
+evidence, the three bugs this plan's own self-test found in its controls, and the exact-head
+CI run id, is in
+[`plans/closure/workspace-foundation/372-status.md`](../../closure/workspace-foundation/372-status.md).
+
+Three things are worth carrying forward:
+
+- **The CI fix took three attempts, and the first two were measured rather than
+  reasoned.** `37582892609` established PEP 668; `37585213074` established that `--user`
+  alone is not an exemption in current pip; only then did `--break-system-packages
+  --user` pass. Both failed run ids are recorded in `ci.yml` and in the closure record so
+  the diagnosis is checkable.
+- **A guard and its negative control can share a blind spot.** Rule 10's pattern and its
+  mutation were wrong in the same direction, so the control passed over a rule that never
+  fired. The self-test reduces this; it does not eliminate it.
+- **A hand recount is the mechanism, not the carelessness.** This plan published a Method
+  B tally from memory and got all three figures wrong, which is the evidence for rule 5b
+  existing.
