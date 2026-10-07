@@ -255,8 +255,10 @@ reviewed `curve25519-dalek` arithmetic. Its status is:
 Authority: Plans 329–331, the Plan 336 spec-first conformance decision
 (`plans/closure/i2pcontrol-proposal-170/336-closure.md`), and Plan 346 / ADR 0032
 (`plans/closure/i2pcontrol-proposal-170/346-status.md`). Plan 335's measured-negative boundary is
-preserved as history and is superseded for forward execution by Plans 346–347; Plan 346 passes does
-not itself claim cross-router interoperability, which is Plan 347's evidence.
+preserved as history and is superseded for forward execution by Plan 346; Plan 346 passing does
+not itself claim cross-router interoperability. Plan 347 stopped at 0 of 4 directions and is not
+the forward owner either — the live rows belong to Plans 374 (i2pd) and 375 (Java), converged by
+Plan 377.
 
 #### The two type-11 transcripts (ADR 0032)
 
@@ -316,19 +318,26 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
   reserved flag bits in both layer 0 and layer 1, truncated and oversized inputs, unsupported
   signature types, per-client layer-1 flags (refused, not guessed at), and an unknown storage key
   are all rejected.
-- **Not accepted on the wire, not advertised, not live-verified.** No `specs/support.toml` entry
-  exists, no daemon configuration exposes it, and no publication driver sends or fetches a type-5
-  record. `i2pr-client` *builds* the `DatabaseStoreMessage`; the daemon still has nothing that
-  publishes it. Per-client authorization is implemented (see below) but remains unreachable from
-  any daemon configuration.
-- **Known interop limitation, corrected at the policy level by Plan 346; end-to-end proof is still
-  Plan 347.** Under the strict-only decision an i2pr-signed type-5 record was unverifiable by
+- **Published, served, and consumed locally; still not advertised and not live-verified against a
+  reference.** The wire-layer gaps this bullet used to record are closed: a daemon configuration
+  now publishes type-5 records (Plan 334 reclosed after 337/338), the controlled floodfill stores
+  and serves type 5 under its blinded storage key (Plan 350), and both ELS2 resolvers have
+  production callers reached through a service-tunnel remote target (Plan 351 / ADR 0033). Type 5
+  remains `advertised = false`, and the local capability above the crypto boundary is still an
+  i2pr-to-i2pr statement.
+- **Known interop limitation, corrected at the policy level by Plan 346; live cross-router proof is
+  Plans 374/375.** Under the strict-only decision an i2pr-signed type-5 record was unverifiable by
   `i2pd` and Java I2P. Plan 346 makes the ELS2 use of type 11 an explicit bounded compatibility
-  profile (ADR 0032): i2pr now publishes the deployed transcript and accepts both. That is a
-  **cryptographic-boundary** result, measured against executed Java I2P and i2pd output. It is not
-  yet a **live** result: no stock router has published, stored, looked up, decrypted, and used a
-  type-5 record end to end in either direction. Plan 347 owns that evidence, and until it passes
-  no cross-router ELS2 interoperability is claimed and `advertised` stays `false`.
+  profile (ADR 0032 (Proposal 170)): i2pr now publishes the deployed transcript and accepts both.
+  That is a **cryptographic-boundary** result, measured against executed Java I2P and i2pd output.
+  **Crypto-boundary cross-verification is not interoperability** — it compares signatures over
+  controlled inputs and exercises no router, no NetDB, and no tunnel. Real ELS2 interoperability
+  requires the whole chain in one row: a real `DatabaseStore` type 5, storage under the blinded
+  key, a real blinded-key `DatabaseLookup`, outer deployed-profile verification, authorization and
+  decrypt, inner LS2 validation, and a streaming/application payload. No such row exists yet.
+  Plan 347 is the stopped historical attempt; Plans 374 (i2pd) and 375 (Java) own the two
+  reference-specific directions and Plan 377 converges them. Until Plan 377 passes, no
+  cross-router ELS2 interoperability is claimed and `advertised` stays `false`.
 - **The lookup secret is a discovery control, not a content control.** It changes the daily blinded
   key and therefore the DHT storage key, so a party with the address but not the secret cannot find
   the record. It does not enter the credential or subcredential, so a party that already holds both
@@ -358,7 +367,7 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
     failure is recorded on a closed per-service status surface and never propagated into the
     provisioning pass — two of its three production callers tear the product down on any error.
   - **Not claimed:** PSK/DH consumer authorization; daily rollover re-resolution; a cross-router
-    result; any Java or i2pd direction of Plan 347. The blinding rotates daily and there is no
+    result; any Java or i2pd live direction. The blinding rotates daily and there is no
     periodic re-resolution, so a resolution computed before a midnight boundary addresses the
     **wrong DHT key**. That is a recorded limitation, not rollover support.
 
@@ -503,7 +512,8 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
   record these control-created services publish carries the transcript both routers verify, and a
   record either of them publishes is readable by i2pr. What is still unexecuted is the **live**
   path — stock routers publishing, storing, looking up, decrypting, and using a type-5 record end
-  to end — which is Plan 347. A control-created encrypted service is therefore *implemented* but
+  to end — which belongs to Plan 374 (i2pd), Plan 375 (Java), and Plan 377 (convergence). A
+  control-created encrypted service is therefore *implemented* but
   still **non-advertised** and not live-qualified, and the same is true of ordinary type 7/3
   publication, whose external lane is unexecuted for unrelated reasons.
 
@@ -626,21 +636,28 @@ What is claimed, and what is not:
   at-rest scheme was not verified, so no interoperability claim about credential
   storage format is made.
 
-## I2P-routed outproxy provider (Plan 343)
+## I2P-routed outproxy provider (Plan 343; request paths Plan 342; live resilience Plan 376)
 
-Plan 327 was blocked on a missing outproxy. The provider now exists in both
-halves — a runtime-neutral policy layer and a daemon route owner — so a later
-plan has something to wire a request path to. See
+Plan 327 was blocked on a missing outproxy. The provider exists in both halves —
+a runtime-neutral policy layer and a daemon route owner — Plan 342 wired the
+request paths and landed loopback wire evidence, and Plan 376 owns the remaining
+live failover and post-restart rows. See
 [`specs/references/proposal-170-outproxy-provider.md`](references/proposal-170-outproxy-provider.md).
 
 What is claimed, and what is not:
 
-- **The provider exists; no request path uses it.** No Proposal 170 option sets
-  an outproxy and no HTTP or SOCKS handler consults the provider, so the code is
-  exercised only by its own tests. This is infrastructure, **not** a capability:
-  the option surface, the request-path integration, and the loopback outproxy
-  wire lane are Plan 342, and **Plan 327 remains blocked**. No outproxy
-  capability is advertised in `specs/support.toml`.
+- **Superseded in part: the option surface, the request paths, and a loopback
+  wire lane all landed at Plan 342.** The sentence this bullet replaced said no
+  Proposal 170 option sets an outproxy and no handler consults the provider.
+  That is false as of Plan 342 (`passed-loopback-wire-lane-landed-live-failover-rotation-unproven`),
+  which wired all canonical fields and all four request paths. What Plan 342
+  proved is a **loopback wire lane**, and **loopback evidence is not live
+  failover/restart evidence**: the lane exercises one configured outproxy
+  fixture, so within-request failover across two configured outproxies, and a
+  routed request carried across a real daemon restart, remain unproven and are
+  owned by Plan 376. Plan 327 therefore stays blocked, but on the narrower
+  residual Plan 342 recorded rather than on its original missing-provider
+  diagnosis. No outproxy capability is advertised in `specs/support.toml`.
 - **No direct clearnet capability exists, in any path, including failures.**
   There is no fallback branch because there is never a fallback. This is
   enforced three ways: `OutproxyEndpoint::parse` refuses any outproxy entry that
