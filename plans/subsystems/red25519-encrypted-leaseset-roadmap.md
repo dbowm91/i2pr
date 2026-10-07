@@ -262,5 +262,6 @@ claim whole-Proposal conformance; parent-roadmap Plan 378 owns that.
 |---|---|---|
 | 373 | **passed** | reconcile support/planning truth before external qualification. Closure: `plans/closure/i2pcontrol-proposal-170/373-status.md`. No capability promotion, zero production change; its unblock audit moved 374/375/376 to `ready`. |
 | 374 | **blocked** | stock i2pd bidirectional live ELS2 qualification. Closure: `plans/closure/i2pcontrol-proposal-170/374-status.md`. Freeze executed; controlled mesh verified running; both directions reference-feasible; all three auth modes implemented. Blocker: no ELS2 live driver exists. |
+| 380 | **ready** | i2pr ELS2 **authorized** consumer production path (PSK/DH). Plan: `plans/implementation/i2pcontrol-proposal-170/380-els2-authorized-consumer-production-path.md`. Closes the deferral Plan 351 made on purpose, and is the only production-code gap behind 374/375's block. Local-only by design so it can close without a reference router. |
 | 375 | **blocked** | stock Java I2P bidirectional live ELS2 qualification. Closure: `plans/closure/i2pcontrol-proposal-170/375-status.md`. Build verified at the pin (JDK 21 required); source proof incomplete; same blocker. |
 | 377 | blocked on 374 + 375 | converge all four directions and close historical 326/347 forward blocker |

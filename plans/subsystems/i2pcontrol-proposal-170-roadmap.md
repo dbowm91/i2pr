@@ -720,7 +720,11 @@ Forward dependency graph:
   -> 375 blocked  stock Java I2P bidirectional ELS2 lane (freeze partial; driver not written)
   -> 376 passed  live outproxy failover + restart
        |
+       +-> 380 ready    i2pr authorized (PSK/DH) consumer production path
+       |                 ^ the only production gap behind 374's block
+       |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
+            ^ 374 needs 381 (external driver), which needs 380
             |
             +-> 378 blocked  final conformance gate (needs 377; 373/376 done)
 
@@ -743,6 +747,17 @@ none of which is a live ELS2 row, and the plans forbid substituting any of them.
 itself was **verified running on this host**, so the external lane is not blocked by the
 environment; it is blocked by unwritten external-integration engineering. The freeze record
 lives in `tests/integration/els2/reference-freeze.md` so the next pass does not repeat it.
+
+**Source-level research after those four closures narrowed the block to one production gap.**
+Every mechanism both directions need is present and reachable: stock i2pd resolves a b33 through
+`SAM.cpp:847` → `RequestDestinationWithEncryptedLeaseSet` (`Destination.cpp:778`) and publishes
+type-5 from `tunnels.conf` (`ClientContext.cpp:496-512`, `:563`); i2pr publishes through
+`publish_service_ls2_for_service` and consumes through
+`resolve_encrypted_destination_for_service`. **The one thing missing is that i2pr has no authorized
+(PSK/DH) consumer caller** — `begin_authorized` is referenced only from tests, and no
+configuration surface carries a per-client credential. **Plan 380 owns that**, and Plan 381 is
+the remaining external driver scope (the `R` role, a lane profile with SAM/I2CP/HTTP enabled,
+loopback application payloads, the negative rows, and the evidence artifact).
 
 ### Why two ELS2 reference plans
 
@@ -771,4 +786,5 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 | 375 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/375-status.md. Build verified at the pin (JDK 21 required); source proof recorded incomplete; same unwritten-driver blocker. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
+| 380 | **ready** | capability | plans/implementation/i2pcontrol-proposal-170/380-els2-authorized-consumer-production-path.md | Closes the Plan 351 deferral: the authorized consumer (`begin_authorized`) and the whole crypto already exist and are tested, but the product's own consumer calls plain `begin()` and there is no credential *source*. Deliberately local-only so it can close without an external router. |
 | 378 | blocked on 377 alone (373 + 376 passed) | final conformance gate. Closure: `plans/closure/i2pcontrol-proposal-170/378-status.md`. §1 re-freeze executed live and MET; §2/§5 green; §3/§4 blocked; `full-proposal-conformant` NOT SET. | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |
