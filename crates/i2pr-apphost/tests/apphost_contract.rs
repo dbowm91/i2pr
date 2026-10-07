@@ -24,17 +24,29 @@ use tokio::time::timeout;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
+/// A process-unique suffix, not a bare timestamp.
+///
+/// Two threads can observe the same `clock_gettime` value, and two tests that then
+/// build the same path race one test's write against the other's `execve` — which
+/// surfaces as `ETXTBSY` inside the code under test. The sequence number makes the
+/// name unique regardless of clock resolution.
+fn unique_suffix() -> String {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos:x}-{sequence:x}")
+}
+
 /// A scratch directory that cleans itself up, so a failing test cannot leave an
 /// executable behind for the next one.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("i2pr-apphost-{label}-{unique}"));
+        let path = std::env::temp_dir().join(format!("i2pr-apphost-{label}-{}", unique_suffix()));
         std::fs::create_dir_all(&path).expect("scratch directory");
         Self(path)
     }

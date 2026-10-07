@@ -1,8 +1,104 @@
 # Plan 369 — trusted application runtime/manager and apphost lifecycle foundation
 
-Status: **in-progress-managed-app-runtime-manager-foundation-wp3-landed**.
+Status: **in-progress-managed-app-runtime-manager-foundation-wp4-landed**.
 
-Work packages landed: **WP1, WP2, WP3**. Remaining: WP4, WP5, WP6.
+Work packages landed: **WP1, WP2, WP3, WP4**. Remaining: WP5, WP6.
+
+## WP4 outcome — the app v1 runtime consumer, and a direction defect it exposed
+
+WP4 adds the managed-app v1 consumer that WP2 deliberately lacked: launch
+authority, the manager-protocol client, the bounded session registry, and the
+session that speaks v1 to an application and maps its logical stream ids onto
+daemon manager-protocol handles.
+
+### The defect WP4 found in WP2: the manager protocol was read backwards
+
+WP2's manager loop decoded inbound frames with
+`decode_manager_to_daemon_control`, and WP2's test peer **also sent
+manager-direction frames**. The two mistakes cancelled, so the test asserted the
+inverted contract and passed.
+
+The two control vocabularies share no tags, so a direction mistake is not a
+mis-parse — it is `InvalidControl`. Against the real Plan-368 bridge, the first
+reply the manager read would have ended the transport, and nothing before that
+point would have revealed it. This is the most expensive mistake available in
+this protocol: it is invisible to every test that shares the implementation's
+assumption.
+
+`manager_link` therefore decodes inbound frames as `DaemonToManagerMessage`, and
+`tests/manager_contract.rs` now drives its peer in the **daemon's** direction.
+`inbound_decodes_daemon_to_manager_vocabulary` and
+`manager_direction_bytes_are_not_daemon_bytes` are the regression guards. The
+manager also now **fails closed on any correlated reply for a request it never
+sent**, which is the property a confused or hostile daemon would violate.
+
+### What else WP4 adds
+
+- **`authority`** — `LaunchAuthority` and `AuthorityRequest`, with private
+  fields and **no decoder**. Effective capabilities can only be assembled
+  through `GrantedCapability::from_administrator_policy`, so `BrokeredTcp` is
+  ungrantable, and there is no `&mut` path to the capability set at all. Every
+  gate that can be evaluated without a filesystem runs here, including the
+  `Secured` refusal, so no authority value can exist for a launch apphost would
+  refuse at exec time.
+- **`catalog`** — the trusted source of authority. The shipped `i2pr-appd` owns
+  `EmptyCatalog` and therefore launches nothing. There is **no**
+  manager-receivable launch request in the protocol, so the daemon cannot ask
+  either: the absence of a launch path is structural, not a policy.
+- **`manager_link`** — the concurrent manager client: one reader, one writer, a
+  single-writer queue, a bounded in-flight ledger, per-session routing. The
+  reader performs route registration *before* delivering a reply, which removes
+  the window in which a notification emitted between "reply delivered" and
+  "caller registered its route" would be dropped.
+- **`session`** — greeting, hello-first/exactly-once with an exact identity
+  match, immutable capability presentation, deterministic permission denial,
+  `SessionLimits`, SAM/I2CP mapping, exact-octet forwarding in both directions,
+  backend close/reset mapping, and EOF teardown that releases the daemon session.
+- **`runtime`** — the bounded instance registry and launch pipeline. The global
+  ceiling is `MAX_MANAGER_SESSIONS`, the same constant the daemon enforces,
+  rather than a third independently chosen number.
+
+### Evidence
+
+**15 mutations, all caught by a named test** (M1–M14 failing assertions; M15 a
+build failure). M15 is the point worth reading twice: the authority seal is
+asserted by **method resolution**, not by scanning for `#[derive(Deserialize)]`,
+so adding a derive makes the crate stop compiling rather than merely failing a
+test. Writing that probe took two attempts and **both earlier attempts were
+vacuous** — an associated const is resolved to the trait fallback rather than
+the inherent impl, and behind a generic helper function the receiver type is
+unresolved so rustc must pick the candidate valid for every `T`. Both produced a
+file that compiled, passed, and proved nothing. The positive control
+(`the_probe_must_be_able_to_detect_a_real_decoder`) is what exposed them and is
+kept for that reason.
+
+### A test-harness defect found and fixed
+
+WP4's negative-evidence harness restored mutated files with `shutil.copy2`,
+which **preserves mtime**. Cargo fingerprints on mtime, so the run after a
+mutation was tested against the *mutated* build. This surfaced as two session
+tests failing with exactly M14's signature; re-applying M14 by hand reproduced
+those two failures exactly, and restoring with a fresh mtime turned them green
+again. The harness now stamps restored files. Worth recording because a negative
+suite that cannot trust its own restores will eventually report a phantom
+product defect — or hide a real one.
+
+### `ETXTBSY` in the launcher tests
+
+The apphost-launcher tests write a `#!/bin/sh` stub into `/tmp` and exec it
+milliseconds later. On this host that fails roughly one spawn in fifty with
+`ETXTBSY`, reproducibly, and **only** when several tests spawn concurrently. It
+was reduced rather than papered over: it does not occur under
+`--test-threads=1` (0/10), does not occur spawning a pre-existing binary
+(0/320), does not occur from the same write-then-exec pattern driven from Python
+(0/1740), is unaffected by `fsync` or by renaming the file into place, and
+scanning `/proc` at the moment of failure finds no process holding the file
+open. The mechanism is therefore an OS/kernel-level transient around exec of a
+very recently written file, and the fixture materialises by rename and tolerates
+that one errno with a bounded retry. The retry is in the **fixture, not in
+`launch_apphost`**: in production the apphost is a distribution-owned sibling
+that is installed rather than written-then-exec'd, so the condition cannot arise
+there, and a retry in product code would be hiding something that cannot happen.
 
 ## WP2 outcome — and a stop condition this plan already predicted
 

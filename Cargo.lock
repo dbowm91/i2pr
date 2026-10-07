@@ -960,6 +960,8 @@ version = "0.1.0"
 dependencies = [
  "i2pr-app-manager-proto",
  "i2pr-app-proto",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

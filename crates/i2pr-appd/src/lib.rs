@@ -7,25 +7,28 @@
 //! protocol internals, no NetDB/tunnel/transport state, no Proposal-170
 //! administrator credential, and no sandbox enforcement.
 //!
-//! # What it does own
+//! # What it owns
 //!
-//! - the outer managed-app v1 handshake/frame/session state (Plan 369 WP4);
-//! - application launch-instance identity;
-//! - mapping application logical stream ids to daemon manager-protocol handles
-//!   (Plan 369 WP4);
-//! - process lifecycle for `i2pr-apphost` children (Plan 369 WP3);
-//! - effective-capability presentation to applications (Plan 369 WP4);
+//! - [`authority`]: manager-created launch authority, and nothing that can
+//!   decode one from wire bytes;
+//! - [`catalog`]: the trusted source of that authority — empty in production;
+//! - [`manager_link`]: the manager side of the Plan 368 private protocol;
+//! - [`apphost_launch`]: process lifecycle for `i2pr-apphost` children;
+//! - [`runtime`]: the bounded instance registry and launch pipeline;
+//! - [`session`]: managed-app v1 for one application, and the mapping of its
+//!   logical stream ids to daemon manager-protocol handles;
 //! - bounded diagnostics.
 //!
-//! # WP2 scope
+//! # The direction of the manager protocol
 //!
-//! This file implements WP2 only: the transport, the state machine's first
-//! three states, and the manager-protocol handshake. It **refuses every
-//! request**, with a typed reason, because Plan 369 has no package or grant
-//! owner. That refusal is the load-bearing security property of this work
-//! package, not a stub: Plan 369 §9 requires that launch authority be
-//! manager-created and that no decoder from wire bytes ever produce one. With no
-//! authority owner, the only correct answer is no.
+//! The two control vocabularies are disjoint by direction, and getting it wrong
+//! is a protocol failure rather than a mis-parse. WP2 decoded inbound frames with
+//! the *outbound* vocabulary while its test peer also sent outbound-vocabulary
+//! frames, so the test asserted the inverted contract and the two mistakes
+//! cancelled. [`manager_link`] decodes inbound frames as daemon-to-manager, and
+//! `tests/manager_contract.rs` drives its peer in the daemon's direction. This is
+//! recorded because it is the single most expensive mistake available here: it
+//! only surfaces against the real daemon, after everything else works.
 //!
 //! # Security posture
 //!
@@ -35,53 +38,105 @@
 //! - No sandbox attestation type exists anywhere in this crate, and none may be
 //!   fabricated. `LaunchProfile::Secured` is refused by the bootstrap contract
 //!   before any exec (Plan 369 §2).
-//! - No decoder from application protocol messages, manifest bytes, or any
-//!   other peer-supplied bytes into authority.
+//! - No decoder from application protocol messages, manifest bytes, or any other
+//!   peer-supplied bytes into authority.
+//! - Nothing in the manager protocol can make the manager launch an application.
+//!   Every request in the vocabulary travels manager → daemon; the inbound
+//!   direction carries only replies and notifications. There is deliberately no
+//!   manager-receivable launch request.
 
 pub mod apphost_launch;
+pub mod authority;
+pub mod catalog;
+pub mod manager_link;
+pub mod runtime;
+pub mod session;
 pub mod transport;
 
-use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use i2pr_app_manager_proto::apphost::{ApphostBootstrapError, ApphostFailureReason};
 use i2pr_app_manager_proto::{
-    DaemonToManagerMessage, Frame, FrameKind, Handshake, MANAGER_PROTOCOL_MAJOR,
-    MANAGER_PROTOCOL_MINOR, MAX_CONTROL_BYTES, ManagerError, ManagerErrorCode,
-    ManagerProtocolError, ManagerRole, ManagerToDaemonMessage, decode_manager_to_daemon_control,
-    encode_daemon_to_manager_control,
+    Handshake, MANAGER_PROTOCOL_MAJOR, MANAGER_PROTOCOL_MINOR, ManagerProtocolError, ManagerRole,
 };
-use i2pr_app_proto::RequestId;
+use i2pr_app_proto::ContractError;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
+pub use catalog::{EmptyCatalog, LaunchCatalog};
 pub use transport::{DuplexTransport, inherited};
 
-/// Bound on one accepted frame's declared payload. The protocol ceiling is
-/// re-checked by [`Frame::decode`]; this is the manager's own second bound so a
-/// hostile length cannot reach an allocation before the codec sees it.
-const MAX_ACCEPTED_FRAME_BYTES: usize = MAX_CONTROL_BYTES;
+/// Why an apphost launch produced no transport.
+///
+/// [`apphost_launch::ApphostLaunchError`] carries OS error strings, which
+/// [`AppdError`] deliberately does not: a manager failure has to stay comparable
+/// in a test without comparing message text. The strings remain available on the
+/// launcher itself, so nothing is lost to a human reading a real failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchFailure {
+    /// The sibling `i2pr-apphost` could not be resolved as an absolute regular
+    /// file next to this process.
+    SiblingUnavailable,
+    /// The apphost process could not be started.
+    Spawn,
+    /// The apphost never produced a typed reply.
+    Bootstrap,
+    /// The apphost refused the launch, with its own reason.
+    Refused(ApphostFailureReason),
+    /// The apphost could not be terminated or reaped.
+    Teardown,
+}
 
-/// Read granularity for the transport. Fixed, so the inbound buffer's growth is
-/// governed solely by the frame ceiling above.
-const READ_CHUNK_BYTES: usize = 8 * 1024;
+impl std::fmt::Display for LaunchFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SiblingUnavailable => write!(formatter, "sibling i2pr-apphost is unavailable"),
+            Self::Spawn => write!(formatter, "the apphost process could not be started"),
+            Self::Bootstrap => write!(formatter, "the apphost never produced a reply"),
+            Self::Refused(reason) => write!(formatter, "the apphost refused: {reason:?}"),
+            Self::Teardown => write!(formatter, "the apphost could not be terminated or reaped"),
+        }
+    }
+}
 
-/// Typed manager failures. No variant carries payload bytes or secrets.
+/// Typed manager failures. No variant carries payload bytes or secrets, so the
+/// whole type stays `Clone + Eq` and a failure can be asserted without matching
+/// on message text.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AppdError {
     #[error("manager transport closed")]
     TransportClosed,
+    #[error("manager reply did not arrive within the bound")]
+    ManagerTimeout,
     #[error("manager protocol violation: {0}")]
     Protocol(#[from] ManagerProtocolError),
+    #[error("apphost bootstrap refused: {0}")]
+    Bootstrap(#[from] ApphostBootstrapError),
+    #[error("application launch refused: {0}")]
+    Launch(LaunchFailure),
+    #[error("launch authority refused: {0}")]
+    Authority(ContractError),
+    #[error("application contract violation: {0}")]
+    Contract(ContractError),
+    /// A launch or session the manager refused on its own terms. These strings
+    /// are chosen, not derived from peer input, so they carry no attacker
+    /// controlled text.
+    #[error("managed application refused: {0}")]
+    App(&'static str),
+    #[error("application instance ceiling reached")]
+    InstanceCeiling,
     #[error("invalid lifecycle transition: {0} -> {1}")]
     InvalidTransition(&'static str, &'static str),
 }
 
-/// The manager lifecycle states that Plan 369 §C defines.
+/// The lifecycle states Plan 369 §C defines.
 ///
-/// WP2 implements `Starting`, `ConnectedToRouter`, and `Idle`. `Launching`,
-/// `AwaitingHello`, `Running`, `Stopping`, and `Closed` arrive with WP4, which
-/// owns the apphost child and the application session. The enum is declared in
-/// full now so a later work package extends the machine rather than replacing
-/// it, and so `transition` can be written once against the real shape.
+/// The manager itself occupies `Starting`, `ConnectedToRouter`, `Idle`, and
+/// `Closed`. `Launching`, `AwaitingHello`, `Running`, and `Stopping` belong to a
+/// single application session — several may hold them concurrently — so
+/// [`session::AppSession`] owns them and walks the *same* [`transition`] machine.
+/// One frozen table, used by both levels, is what stops the two from disagreeing
+/// about what a legal lifecycle is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppdState {
     Starting,
@@ -131,53 +186,16 @@ pub fn transition(from: AppdState, to: AppdState) -> Result<AppdState, AppdError
     }
 }
 
-/// Bounded accounting of one in-flight request ledger.
-///
-/// A manager never emits an uncorrelated reply, so every request id is recorded
-/// on arrival and retired exactly once. The bound keeps a hostile peer from
-/// growing this set without limit.
-#[derive(Debug, Default)]
-pub struct RequestLedger {
-    in_flight: BTreeSet<u32>,
-}
-
-impl RequestLedger {
-    /// Admit one request id, refusing zero and duplicates.
-    pub fn admit(&mut self, request_id: RequestId) -> Result<(), AppdError> {
-        let raw = u32::from(request_id);
-        if raw == 0 || !self.in_flight.insert(raw) {
-            return Err(AppdError::Protocol(ManagerProtocolError::InvalidHandle));
-        }
-        Ok(())
-    }
-
-    /// Retire one request id, refusing an unknown or already-retired id.
-    pub fn retire(&mut self, request_id: RequestId) -> Result<(), AppdError> {
-        if !self.in_flight.remove(&u32::from(request_id)) {
-            return Err(AppdError::Protocol(ManagerProtocolError::UnmatchedRequest));
-        }
-        Ok(())
-    }
-
-    pub fn len(&self) -> usize {
-        self.in_flight.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.in_flight.is_empty()
-    }
-}
-
 /// The trusted manager process body.
 ///
-/// It owns one transport, one state machine, and one bounded request ledger.
-/// It holds no authority in WP2: every request is refused with a typed reason,
-/// so a manager that somehow received a `create_session` still allocates
-/// nothing.
+/// It owns one transport, one state machine, one launch catalog, and the bounded
+/// instance registry. With the production catalog — the only value the shipped
+/// binary uses — it launches nothing, so a clean return and a failed return leave
+/// the router in exactly the same place.
 pub struct Appd {
     state: AppdState,
-    ledger: RequestLedger,
-    rejected: u64,
+    catalog: Box<dyn LaunchCatalog>,
+    launched: u64,
 }
 
 impl Default for Appd {
@@ -188,10 +206,20 @@ impl Default for Appd {
 
 impl Appd {
     pub fn new() -> Self {
+        Self::with_catalog(EmptyCatalog)
+    }
+
+    /// A manager with an explicit authority source.
+    ///
+    /// Tests and a later package/grant owner use this. The shipped binary calls
+    /// [`Appd::new`], and there is no configuration, flag, or wire message that
+    /// reaches this constructor — see [`catalog`] for why that is the whole
+    /// security property rather than an omission.
+    pub fn with_catalog(catalog: impl LaunchCatalog + 'static) -> Self {
         Self {
             state: AppdState::Starting,
-            ledger: RequestLedger::default(),
-            rejected: 0,
+            catalog: Box::new(catalog),
+            launched: 0,
         }
     }
 
@@ -199,15 +227,11 @@ impl Appd {
         self.state
     }
 
-    /// Number of requests this manager refused. WP2 refuses all of them; the
-    /// counter is what makes "refused everything" an observable claim rather
-    /// than an assertion.
-    pub const fn rejected(&self) -> u64 {
-        self.rejected
-    }
-
-    pub fn in_flight(&self) -> usize {
-        self.ledger.len()
+    /// Authorities this manager has spent. An authority is consumed whether or not
+    /// the launch succeeded: a failed launch is a spent launch, and retrying it
+    /// would be an autostart semantic Plan 369 does not have.
+    pub const fn launched(&self) -> u64 {
+        self.launched
     }
 
     /// Writes the frozen 9-byte manager handshake.
@@ -240,144 +264,88 @@ impl Appd {
 
     /// Drives one transport to EOF or to a protocol violation.
     ///
-    /// On return the manager has emitted at most one typed refusal per request
-    /// and holds no authority, so a clean return and a failed return leave the
-    /// router in the same place.
+    /// The order is deliberate: greet, start the link, launch whatever authority
+    /// owner exists, then wait for the transport to end. On return every session
+    /// has been torn down, so no application outlives the manager.
     pub async fn run<T>(&mut self, mut transport: T) -> Result<(), AppdError>
     where
-        T: AsyncRead + AsyncWrite + Unpin,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         self.write_handshake(&mut transport).await?;
 
-        let mut buffered: Vec<u8> = Vec::new();
-        let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
-        loop {
-            // Try to consume every whole frame already buffered before reading
-            // more. A partial frame stays buffered; the ceiling below is what
-            // stops that buffer from growing.
-            loop {
-                if buffered.is_empty() {
-                    break;
-                }
-                match Frame::decode(&buffered) {
-                    Ok((frame, consumed)) => {
-                        buffered.drain(..consumed);
-                        let reply = self.handle_frame(frame).await?;
-                        self.write_frame(&mut transport, reply).await?;
-                    }
-                    Err(ManagerProtocolError::TruncatedFrame) => break,
-                    Err(error) => {
-                        self.state = AppdState::Closed;
-                        return Err(AppdError::Protocol(error));
-                    }
-                }
-            }
-            if buffered.len()
-                > MAX_ACCEPTED_FRAME_BYTES + i2pr_app_manager_proto::FRAME_HEADER_BYTES
-            {
-                self.state = AppdState::Closed;
-                return Err(AppdError::Protocol(ManagerProtocolError::LimitExceeded(
-                    "control",
-                )));
-            }
+        let (read, write) = tokio::io::split(transport);
+        let (link, driver) = manager_link::ManagerLink::drive(read, write);
+        let link = Arc::new(link);
+        let runtime = runtime::AppdRuntime::new(Arc::clone(&link));
 
-            let read = transport
-                .read(&mut chunk)
-                .await
-                .map_err(|_| AppdError::TransportClosed)?;
-            if read == 0 {
-                // EOF is the daemon's teardown signal and the manager's only
-                // shutdown path. There is no second, discoverable channel.
-                self.state = AppdState::Closed;
-                return Ok(());
+        while let Some(authority) = self.catalog.next_launch() {
+            self.launched += 1;
+            if let Err(error) = runtime.launch(authority).await {
+                // A refused launch is a spent launch, not a fatal manager error:
+                // one application failing must not take the manager, or the
+                // router, down with it. The typed reason goes to stderr, which is
+                // diagnostics and never protocol.
+                eprintln!("i2pr-appd launch refused: {error}");
             }
-            buffered.extend_from_slice(&chunk[..read]);
         }
-    }
 
-    async fn handle_frame(&mut self, frame: Frame) -> Result<DaemonToManagerMessage, AppdError> {
-        if frame.kind != FrameKind::Control {
-            // The manager-protocol control vocabulary has no manager->daemon
-            // data frame. A data frame here is a direction error, not noise.
-            return Err(AppdError::Protocol(ManagerProtocolError::MalformedFrame));
-        }
-        let message =
-            decode_manager_to_daemon_control(&frame.payload).map_err(AppdError::Protocol)?;
-        self.dispatch(message).await
-    }
-
-    async fn write_frame<W>(
-        &self,
-        writer: &mut W,
-        reply: DaemonToManagerMessage,
-    ) -> Result<(), AppdError>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let encoded = encode_daemon_to_manager_control(&reply).map_err(AppdError::Protocol)?;
-        let out = Frame::control(encoded)
-            .encode()
-            .map_err(AppdError::Protocol)?;
-        writer
-            .write_all(&out)
+        let outcome = driver
             .await
-            .map_err(|_| AppdError::TransportClosed)?;
-        writer.flush().await.map_err(|_| AppdError::TransportClosed)
-    }
+            .map_err(|_| AppdError::TransportClosed)?
+            .and(Ok(()));
 
-    /// Handles exactly one request, and refuses exactly one.
-    ///
-    /// WP2 has no package or grant owner, so there is no way to hold a launch
-    /// authority. Every variant therefore maps to the same typed refusal. The
-    /// `match` is exhaustive so WP4 must make each case deliberate rather than
-    /// inheriting this blanket answer by accident.
-    async fn dispatch(
-        &mut self,
-        message: ManagerToDaemonMessage,
-    ) -> Result<DaemonToManagerMessage, AppdError> {
-        let request_id = match &message {
-            ManagerToDaemonMessage::CreateSession { request_id, .. }
-            | ManagerToDaemonMessage::CloseSession { request_id, .. }
-            | ManagerToDaemonMessage::OpenService { request_id, .. }
-            | ManagerToDaemonMessage::CloseService { request_id, .. }
-            | ManagerToDaemonMessage::ResetService { request_id, .. }
-            | ManagerToDaemonMessage::Health { request_id }
-            | ManagerToDaemonMessage::Shutdown { request_id, .. } => *request_id,
-        };
-        self.ledger.admit(request_id)?;
-        let reply = self.refuse(request_id, &message);
-        self.ledger.retire(request_id)?;
-        Ok(reply)
+        runtime.shutdown().await;
+        link.close().await;
+        self.state = AppdState::Closed;
+        outcome
     }
+}
 
-    /// The typed refusal. WP2's whole authority surface.
-    fn refuse(
-        &mut self,
-        request_id: RequestId,
-        message: &ManagerToDaemonMessage,
-    ) -> DaemonToManagerMessage {
-        self.rejected += 1;
-        let reason = match message {
-            ManagerToDaemonMessage::CreateSession { .. } => {
-                "no launch authority owner exists in Plan 369"
-            }
-            ManagerToDaemonMessage::Health { .. } => "manager health is reported by the daemon",
-            _ => "operation is unavailable until a launch authority owner exists",
-        };
-        DaemonToManagerMessage::Rejected {
-            request_id,
-            error: ManagerError {
-                code: ManagerErrorCode::UnsupportedOperation,
-                diagnostic: Some(reason.to_owned()),
-            },
+/// Bounded accounting of one in-flight request ledger.
+///
+/// A manager never emits an uncorrelated reply, so every request id is recorded on
+/// arrival and retired exactly once. The bound keeps a hostile peer from growing
+/// this set without limit.
+///
+/// This is the manager's *own* ledger over requests it has sent, distinct from
+/// [`manager_link`]'s, which is keyed the same way but lives inside the reader
+/// task so a cancelled request can be retired from there.
+#[derive(Debug, Default)]
+pub struct RequestLedger {
+    in_flight: std::collections::BTreeSet<u32>,
+}
+
+impl RequestLedger {
+    /// Admits one request id, refusing zero and duplicates.
+    pub fn admit(&mut self, request_id: i2pr_app_proto::RequestId) -> Result<(), AppdError> {
+        let raw = u32::from(request_id);
+        if raw == 0 || !self.in_flight.insert(raw) {
+            return Err(AppdError::Protocol(ManagerProtocolError::InvalidHandle));
         }
+        Ok(())
+    }
+
+    /// Retires one request id, refusing an unknown or already-retired id.
+    pub fn retire(&mut self, request_id: i2pr_app_proto::RequestId) -> Result<(), AppdError> {
+        if !self.in_flight.remove(&u32::from(request_id)) {
+            return Err(AppdError::Protocol(ManagerProtocolError::UnmatchedRequest));
+        }
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.in_flight.is_empty()
     }
 }
 
 /// Convenience for a process body that owns an inherited transport.
 pub async fn serve<T>(transport: T) -> Result<(), AppdError>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     Appd::new().run(transport).await
 }

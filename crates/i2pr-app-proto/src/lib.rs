@@ -31,7 +31,10 @@ pub const MAX_UI_MESSAGE_BYTES: usize = 16_384;
 pub const MAX_DIAGNOSTIC_BYTES: usize = 1_024;
 pub const MAX_RESOURCE_REQUEST: u64 = 1_099_511_627_776;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+/// `Clone` is load-bearing: `i2pr-appd` classifies a contract failure into its
+/// own comparable manager error, and a fieldless error enum should not force
+/// every classifier to stringify it first.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ContractError {
     #[error("invalid identifier")]
     InvalidIdentifier,
@@ -538,6 +541,12 @@ pub struct Handshake {
     pub minor: u8,
 }
 pub const HANDSHAKE_MAGIC: [u8; 4] = *b"I2PA";
+/// Bytes in one greeting, fixed by [`Handshake::encode`].
+///
+/// The manager protocol already publishes the same constant; this crate lacked
+/// it, and a host that had to hard-code `9` next to a greeting this crate
+/// produces is exactly how the two lengths drift apart.
+pub const HANDSHAKE_BYTES: usize = 9;
 impl Handshake {
     pub fn encode(&self) -> [u8; 9] {
         [

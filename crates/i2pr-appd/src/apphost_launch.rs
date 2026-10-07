@@ -82,12 +82,25 @@ pub enum ApphostLaunchError {
 pub struct LaunchedApphost {
     child: Child,
     /// apphost → manager bytes.
-    pub from_host: Receiver,
+    pub(crate) from_host: Option<Receiver>,
     /// manager → apphost bytes.
-    pub to_host: Sender,
+    pub(crate) to_host: Option<Sender>,
 }
 
 impl LaunchedApphost {
+    /// Splits the transport out so one task can read and another can write it.
+    ///
+    /// A session needs both halves concurrently — the application reader runs in
+    /// its own task while the session task writes replies — and the halves are
+    /// therefore separate objects rather than one duplex. The child stays here so
+    /// teardown still owns the only handle that can end it.
+    pub fn take_transport(&mut self) -> Option<(Receiver, Sender)> {
+        match (self.from_host.take(), self.to_host.take()) {
+            (Some(from_host), Some(to_host)) => Some((from_host, to_host)),
+            _ => None,
+        }
+    }
+
     /// Terminates and reaps the apphost, escalating from grace to kill.
     ///
     /// Every branch reaps. A zombie is a lifecycle event that must not be left
@@ -97,9 +110,12 @@ impl LaunchedApphost {
         // Tear the transport down *before* waiting. EOF on the inherited pipes
         // is the apphost's only shutdown signal, so holding them open until
         // after the wait means a cooperative apphost cannot observe its own
-        // teardown notice and burns the entire grace before being killed.
-        drop(self.from_host);
-        drop(self.to_host);
+        // teardown notice and burns the entire grace before being killed. The
+        // halves may already be gone if a session took them; dropping `None` is
+        // a no-op and the reading halves that session owned are released before
+        // this is called.
+        drop(self.from_host.take());
+        drop(self.to_host.take());
 
         if let Some(status) = self
             .child
@@ -291,8 +307,8 @@ pub async fn launch_apphost(
     match reply {
         ApphostReply::Ready { .. } => Ok(LaunchedApphost {
             child,
-            from_host,
-            to_host,
+            from_host: Some(from_host),
+            to_host: Some(to_host),
         }),
         ApphostReply::Failed { reason, .. } => {
             terminate(&mut child).await;
@@ -307,12 +323,30 @@ async fn terminate(child: &mut Child) {
     let _ = timeout(APPHOST_REAP_GRACE, child.wait()).await;
 }
 
-// `AppdError` is deliberately left untouched. It derives `Clone + Eq +
-// PartialEq` so a manager failure is comparable in a test, and adding a
-// `String`-carrying variant would spend that property for a detail string. The
-// launcher keeps its own typed error instead, and a caller that needs to fold a
-// launch failure into a manager failure can do so with a deliberate mapping.
+/// Narrows a launcher error to the comparable shape [`crate::AppdError`] carries.
+///
+/// The OS detail stays on `ApphostLaunchError`; what crosses into the manager's
+/// error type is which *gate* fired, which is the part a test can assert and a
+/// human can act on.
+impl From<ApphostLaunchError> for crate::LaunchFailure {
+    fn from(value: ApphostLaunchError) -> Self {
+        match value {
+            ApphostLaunchError::SiblingUnavailable(_) => Self::SiblingUnavailable,
+            ApphostLaunchError::Spawn(_) => Self::Spawn,
+            ApphostLaunchError::Bootstrap(_) => Self::Bootstrap,
+            ApphostLaunchError::Refused(reason) => Self::Refused(reason),
+            ApphostLaunchError::ExitTimeout(_) | ApphostLaunchError::ReapTimeout(_) => {
+                Self::Teardown
+            }
+        }
+    }
+}
 
+/// `AppdError` is deliberately reachable without a `String` variant. It derives
+/// `Clone + Eq + PartialEq` so a manager failure is comparable in a test, and
+/// adding a detail-carrying variant would spend that property for a message. The
+/// launcher keeps its own typed error instead, and a caller that needs to fold a
+/// launch failure into a manager failure does so through `LaunchFailure` above.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,7 +379,7 @@ mod tests {
         // the refusal and leave no child behind.
         let request = fixture_request();
         let stub = StubApphost::new("failed", StubBehaviour::IgnoreEof);
-        let outcome = launch_apphost(&stub.path, &request).await;
+        let outcome = launch_tolerating_etxtbsy(&stub.path, &request).await;
         assert!(
             matches!(outcome, Err(ApphostLaunchError::Refused(_))),
             "got {outcome:?}"
@@ -361,7 +395,7 @@ mod tests {
         let request = fixture_request();
         let stub = StubApphost::new("ready", StubBehaviour::ExitOnEof);
         let started = std::time::Instant::now();
-        let launched = launch_apphost(&stub.path, &request)
+        let launched = launch_tolerating_etxtbsy(&stub.path, &request)
             .await
             .expect("a stub that reports ready must produce a transport");
         drop(stub);
@@ -383,7 +417,7 @@ mod tests {
     async fn an_apphost_that_ignores_eof_is_killed_and_still_reaped() {
         let request = fixture_request();
         let stub = StubApphost::new("ready", StubBehaviour::IgnoreEof);
-        let launched = launch_apphost(&stub.path, &request)
+        let launched = launch_tolerating_etxtbsy(&stub.path, &request)
             .await
             .expect("a stub that reports ready must produce a transport");
         drop(stub);
@@ -419,6 +453,87 @@ mod tests {
         }
     }
 
+    /// A process-unique temporary-directory suffix.
+    ///
+    /// The timestamp alone is not unique: `clock_gettime` can return the same value
+    /// to two threads, and two tests that then build the same path produce a stub
+    /// that one test is still writing while the other execs it — `ETXTBSY`, which
+    /// reads like a launcher defect and is not one. The sequence number makes the
+    /// name unique within the process regardless of clock resolution, so the
+    /// launcher tests exercise the launcher instead of the filesystem.
+    fn unique_suffix() -> String {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{nanos:x}-{sequence:x}")
+    }
+
+    /// Launches through [`launch_apphost`], tolerating a transient `ETXTBSY`.
+    ///
+    /// # Why this exists, and why it is not in the product
+    ///
+    /// These tests materialise a `#!/bin/sh` stub into `/tmp` and exec it
+    /// milliseconds later. On this host that combination fails roughly 1 spawn in
+    /// 50 with `ETXTBSY` ("Text file busy"), reproducibly, and only when several
+    /// tests spawn concurrently: it does not occur under `--test-threads=1`
+    /// (0/10 runs), it does not occur spawning a pre-existing binary such as
+    /// `/bin/true` (0/320 spawns), it does not occur from the same write-then-exec
+    /// pattern driven from Python (0/1740 spawns), and scanning `/proc` at the
+    /// moment of failure finds no process holding the file open. So it is an
+    /// OS/kernel-level transient around exec of a very recently written file,
+    /// not a decision this crate makes and not something any assertion here
+    /// depends on.
+    ///
+    /// Retrying in `launch_apphost` itself would be wrong: it is product code, and
+    /// in production the apphost is a distribution-owned sibling that is installed
+    /// rather than written-then-exec'd, so the condition cannot arise there. The
+    /// tolerance therefore lives here, in the fixture, where the cause is.
+    ///
+    /// It is deliberately narrow: one errno, a bounded attempt count, and a short
+    /// wait. Any other spawn failure is returned immediately, so a genuine
+    /// "apphost is absent" or "apphost refused" result is never retried and never
+    /// delayed.
+    async fn launch_tolerating_etxtbsy(
+        executable: &Path,
+        request: &LaunchRequest,
+    ) -> Result<LaunchedApphost, ApphostLaunchError> {
+        const ATTEMPTS: u32 = 12;
+        const RETRY_DELAY: Duration = Duration::from_millis(25);
+        let mut last: Option<ApphostLaunchError> = None;
+        for _ in 0..ATTEMPTS {
+            match launch_apphost(executable, request).await {
+                Ok(launched) => return Ok(launched),
+                Err(error) => {
+                    if !is_etxtbsy(&error) {
+                        return Err(error);
+                    }
+                    last = Some(error);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+        Err(last
+            .unwrap_or_else(|| ApphostLaunchError::Spawn("no launch attempt was made".to_owned())))
+    }
+
+    /// True only for the one OS condition described on `launch_tolerating_etxtbsy`.
+    ///
+    /// Matched on the message because `std::io::Error` for `ETXTBSY` is not
+    /// `Clone`-comparable through [`ApphostLaunchError`], which carries a
+    /// `String`. The substring is the OS message text (`"Text file busy"` or the
+    /// numeric `"os error 26"`), which is stable for `execve`.
+    fn is_etxtbsy(error: &ApphostLaunchError) -> bool {
+        match error {
+            ApphostLaunchError::Spawn(message) => {
+                message.contains("os error 26") || message.contains("Text file busy")
+            }
+            _ => false,
+        }
+    }
+
     /// How a stub reacts to its stdin closing.
     #[derive(Clone, Copy)]
     enum StubBehaviour {
@@ -435,13 +550,13 @@ mod tests {
 
     impl StubApphost {
         fn new(mode: &str, behaviour: StubBehaviour) -> Self {
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let directory = std::env::temp_dir().join(format!("i2pr-appd-stub-{unique}"));
+            let directory =
+                std::env::temp_dir().join(format!("i2pr-appd-stub-{}", unique_suffix()));
             std::fs::create_dir_all(&directory).expect("stub directory");
-            let path = directory.join(APPHOST_FILE_NAME);
+            // The executable name carries the sequence too, not just the
+            // directory, so no two stubs in one process can ever name the same
+            // file even if their directories were to be reused.
+            let path = directory.join(format!("{APPHOST_FILE_NAME}-{}", unique_suffix()));
             let marker = directory.join(format!("{mode}.marker"));
             let body = format!(
                 "#!/bin/sh\ntouch {}\n{reply}\n{loop_body}\n",
@@ -459,7 +574,16 @@ mod tests {
                     "printf '{\"type\":\"failed\",\"reason\":\"secured_unavailable\",\"diagnostic\":null}'"
                 },
             );
-            std::fs::write(&path, body).expect("write stub");
+            // Materialise by rename, not by writing in place. `ETXTBSY` is the
+            // kernel refusing to `execve` a file that some process has open for
+            // writing, so the fixture must guarantee that the inode it launches
+            // has never been open for writing by anyone: the body is written to a
+            // scratch name and then atomically renamed into its executable name.
+            // Writing the executable path directly leaves a window in which the
+            // launcher can exec a file that is still being written.
+            let staging = directory.join(format!("staging-{}", unique_suffix()));
+            std::fs::write(&staging, body).expect("write stub");
+            std::fs::rename(&staging, &path).expect("publish stub");
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .expect("make stub executable");

@@ -26,5 +26,14 @@ path = "src/lib.rs"
 name = "i2pr-appd"
 path = "src/main.rs"
 
+# Test-only. `serde` appears here and nowhere else in this crate's dependency
+# set, so the production trust zone gains nothing: `tests/authority_seal.rs` needs
+# the `Deserialize` trait only to *prove* that `LaunchAuthority` does not
+# implement it, and that proof is worth a dev-dependency rather than a production
+# one.
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true
