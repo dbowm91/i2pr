@@ -117,9 +117,21 @@ const int ENCRYPTED_LEASESET_AUTH_TYPE_PSK  = 2;
 `layer1Flags |= 0x01` for DH (scheme 0, auth bit 1) and `layer1Flags |= 0x03`
 for PSK (scheme 1, auth bit 1). `Destination.h:80-83` exposes the I2CP
 configuration keys: `i2cp.leaseSetPrivKey` (PSK decryption key),
-`i2cp.leaseSetAuthType`, and `i2cp.leaseSetClient.psk[.nnn]` for the per-client
-PSK group. `Destination.cpp:82` bounds the accepted type to
+`i2cp.leaseSetAuthType`, and `i2cp.leaseSetClient.psk` for the per-client
+PSK key. `Destination.cpp:82` bounds the accepted type to
 `NONE..PSK`.
+
+**Corrected by Plan 381.** This line previously read
+`i2cp.leaseSetClient.psk[.nnn]`, implying an indexed group. Reading the strings
+out of the pinned 2.61.0 binary
+(`target/interop/cache/ssu2/i2pd/635b013a…/bin/i2pd`) shows **no indexed
+variant** — only the single key `i2cp.leaseSetClient.psk`, alongside
+`i2cp.leaseSetClient.dh`. The indexed spelling is corrected here rather than left
+in place because it would have produced a `tunnels.conf` that i2pd silently
+ignored, producing an authentication failure indistinguishable from a crypto
+defect. This is a **binary-string** observation, not a source proof: the pinned
+source tree is not retained in the cache, which holds only `bin/`, `logs/` and
+build metadata. Treat it as the weaker claim it is.
 
 The stock configuration surface is `i2cp.leaseSetType` = 5 with
 `i2cp.leaseSetAuthType` in {0, 1, 2} plus the lookup-secret (subcredential)

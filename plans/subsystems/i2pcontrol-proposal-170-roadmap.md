@@ -723,6 +723,9 @@ Forward dependency graph:
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
        |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
+       |  -> 381 ready   live ELS2 external driver lane (i2pd direction)
+       |                 ^ 374's remaining scope; 380 is its closed hard dependency
+       |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
             ^ 374 needs 381 (external driver); 380 is now a closed dependency
             |
