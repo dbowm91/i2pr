@@ -228,11 +228,32 @@ class MutationTest(unittest.TestCase):
         return GUARD.scan(self.root)
 
     def test_published_count_that_no_longer_matches_is_rejected(self) -> None:
+        """Rule 4 must reject a wrong `ci.yml` invocation count.
+
+        The published figure is *derived*, not typed in. An earlier draft of this
+        test replaced the literal string `| Checker invocations in `ci.yml` | 36`,
+        so the mutation silently became a no-op the first time a plan legitimately
+        changed the count -- Plan 379 added a checker and the published figure
+        moved to 37. The test then passed with an empty violation list, which is
+        indistinguishable from a guard that stopped working. Deriving the number
+        from `ci.yml` keeps the mutation meaningful no matter how the count moves.
+        """
+        ci = (self.root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        published = GUARD.ci_checker_invocations(ci)
         path = self.root / "docs" / "architecture" / "tooling.md"
+        text = path.read_text()
+        self.assertIn(
+            f"| Checker invocations in `ci.yml` | {published} |",
+            text,
+            "the published figure the mutation targets is not where it was "
+            "expected; update this test rather than weakening it",
+        )
         path.write_text(
-            path.read_text().replace(
-                "| Checker invocations in `ci.yml` | 36",
-                "| Checker invocations in `ci.yml` | 2",
+            text.replace(
+                f"| Checker invocations in `ci.yml` | {published} |",
+                "| Checker invocations in `ci.yml` | 2 |",
                 1,
             ),
             encoding="utf-8",

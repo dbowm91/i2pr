@@ -2,11 +2,15 @@
 
 Status: downstream design contract; no SAM implementation is included in i2pr.
 
+Downstream owner: **`dbowm91/i2pr-sam`**. SAM client, wire, and runtime ownership lives
+there. This document is what that repository consumes; i2pr keeps the policy core and
+nothing on the SAM side.
+
 This document assigns the work needed for a separate SAM library and tunnel manager. `i2pr-service-tunnels` remains a runtime-neutral policy and filtering core. The adapter validates policy before starting resources, supplies authenticated transport metadata, invokes core filters, and owns all I/O and lifecycle.
 
 ## Responsibilities outside i2pr
 
-A future separate repository owns SAM HELLO/version/capability negotiation; command/reply codecs and state machines; STREAM connect, accept, and forwarding; DATAGRAM/RAW and DATAGRAM2/3 where implemented; PRIMARY/MASTER and shared-session compatibility; naming lookup; Destination generation and persistence integration; router capability/quirk profiles; reconnect, backoff, and session teardown; async runtime and blocking facade; C ABI/Python bindings; and tunnel daemon, configuration syntax, WebUI, and application-sidecar packaging. It must not copy the policy/filter implementation from this crate.
+A separate repository owns SAM HELLO/version/capability negotiation; command/reply codecs and state machines; STREAM connect, accept, and forwarding; DATAGRAM/RAW and DATAGRAM2/3 where implemented; PRIMARY/MASTER and shared-session compatibility; naming lookup; Destination generation and persistence integration; router capability/quirk profiles; reconnect, backoff, and session teardown; async runtime and blocking facade; C ABI/Python bindings; and tunnel daemon, configuration syntax, WebUI, and application-sidecar packaging. It must not copy the policy/filter implementation from this crate.
 
 ## Identity and linkability mapping
 
@@ -67,4 +71,21 @@ Raw SAM streams must never be wired directly to local applications when the sele
 
 ## Conformance evidence
 
-The external fixture and its matrix are in `tests/portable-service-tunnel-consumer/`. The fixture pins the Plan 350 supported Git revision and imports only the public crate. It is deterministic and does not exercise live SAM interoperability. Revisit this handoff if the external transport cannot provide authenticated peer identity or cannot preserve explicit group ownership; do not add SAM-specific types to the core as a workaround.
+Two external fixtures and their matrices live under `tests/`:
+
+- `tests/portable-service-tunnel-consumer/` — the historical Plan 351 fixture, pinned
+  to the Plan 350 supported Git revision. Kept unchanged: it is the evidence that the
+  portable boundary held *before* the `i2pr-proto` edge existed.
+- `tests/portable-service-tunnel-consumer-current/` — the Plan 379 fixture, pinned to a
+  post-Plan-359 revision. It proves the same boundary against today's package,
+  including the one permitted `i2pr-proto` edge.
+
+Both import only the public crate, stay outside the i2pr workspace, and build through a
+temporary `CARGO_TARGET_DIR` so no generated artifact is ever tracked. They are
+deterministic and do not exercise live SAM interoperability. Revisit this handoff if the
+external transport cannot provide authenticated peer identity or cannot preserve
+explicit group ownership; do not add SAM-specific types to the core as a workaround.
+
+If `dbowm91/i2pr-sam` finds a genuinely missing transport-neutral policy seam, file a new
+corrective in i2pr with an external failing fixture. Do not move SAM ownership back into
+this repository.
