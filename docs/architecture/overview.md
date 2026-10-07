@@ -35,7 +35,7 @@ support claim.
 
 `i2pr` is an experimental I2P router written in Rust, organized as a
 **modular monolith**: one daemon process, one crate per subsystem, a
-strictly enforced dependency DAG. 20 workspace crates plus one
+strictly enforced dependency DAG. 25 workspace crates plus one
 non-production launcher tool.
 
 Five conceptual planes cut across the crates:

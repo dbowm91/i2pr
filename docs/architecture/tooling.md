@@ -10,24 +10,38 @@ describes is the same one summarized in
 [dependency-graph.md](dependency-graph.md); the harness-level contract
 lives in [interop-apparatus.md](interop-apparatus.md).
 
-**Inventory at a glance** (verified against disk):
+**Inventory at a glance** (recomputed 2026-10-07 by Plan 372).
+
+Every count here is **derived from the tree and checked by
+`scripts/check-tooling-inventory.py`**, which is in the routine floor. If a
+guard, lane, or crate is added without updating this table, that guard
+fails. The two rows that can be inflated by build artifacts — the
+`scripts/` file counts — are `git ls-files`-scoped, because an unfiltered
+`find` also matches gitignored `__pycache__/*.pyc`.
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 35 | 33 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 54 | 52 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 36 | 33 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 24 | 22 `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 55 | 52 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 36 | 34 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
-| Fuzz targets | 24 | `fuzz/fuzz_targets/*.rs` (+1 shared `support.rs`) |
+| Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
 | CI workflows | 10 | 1 ordinary gate + 9 `workflow_dispatch` lanes |
-| Workspace members | 20 | 19 `crates/*` + `tools/i2pr-interop` |
+| Workspace members | 26 | 25 `crates/*` + `tools/i2pr-interop` |
+
+Corrected by Plan 372, each against the plan that made the figure false:
+the `scripts/`, `check-*`, `ci.yml`, fuzz-target and workspace-member
+figures had all been left at their pre-Plan-369 values — the member count
+said 20 while `cargo metadata` reported 26, so six crates, including the
+whole managed-application runtime and the operator console, were missing
+from this document's roster.
 | Skill bundles | 6 | `.opencode/skills/` |
 
 ## `scripts/` — guardrail shells
 
-49 `check-*` files exist on disk in `scripts/` (56 counting `scripts/interop/`),
+52 `check-*` files exist on disk in `scripts/` (55 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -47,6 +61,18 @@ counting method both numbers come from.
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. **Plan 362** adds (a) an `i2pr-api` section — 7 source rules (`tokio::`, `async fn`/`async_trait`, socket types, `std::fs`/`OpenOptions`/`File::`, unbounded channels, `JoinHandle`, `spawn(`) plus a manifest rule banning `i2pr-daemon\|runtime\|testkit\|console\|service-tunnels` — and (b) **brace normalisation**: a Python pass blanks comment bodies and literal contents, rewrites every `use` tree into flat leaves, and then re-applies the *same* alternations to the normalised text, so a grouped `use std::{fs, net};` is detected exactly like a flat import. The normalised scan is **additional** to the raw greps, which are untouched. It fails closed on unparseable `use` syntax. Positive controls cover grouped, nested, multi-line and glob groups. `std::net` address *values* remain permitted for `i2pr-api` (Plan 345 precedent). | yes | yes |
 | `scripts/check-console-boundaries.sh` | Router-console boundary guard (Plan 356): rule 1 manifest purity, rule 2 source purity, rule 3 daemon EggServe adapter, rule 4 no `eepsite` tree, rule 5 self-contained assets, rule 6 single HTTP substrate, rule 7 dependency-map covers every member, rule 6b Plan 358 local principal. **Rule 2 (Plan 366) was repaired and is now load-bearing.** It previously ran one `awk` whose `in_tests` flag was set on the first `#[cfg(test)]` and never reset, so it scanned `theme.rs` lines 1–1139 and **nothing else — 12 of 13 console source files were never examined**. It is now a single Python scanner (`console_source_scan`) that (a) normalises `use` trees before matching (Plan 362), (b) scopes each test region to the item it annotates instead of latching it, and (c) enforces a **socket-keyed** ban — `TcpListener`, `TcpStream`, `UdpSocket`, `UnixListener`, `UnixStream`, `Server::bind`, `axum::serve`, `spawn(`, `std::fs`, `fs::`, `tokio::` — plus an **enumerated** allow-set of exactly four `std::net` address values (`IpAddr`, `SocketAddr`, `Ipv4Addr`, `Ipv6Addr`). A bare `use std::net;`, a glob, or the `ToSocketAddrs` resolver stays forbidden. This is *more* enforcement, not less: the old rule rejected 0 socket types because it read nothing after `theme.rs:1139`, and its blanket `std::net` ban was unsatisfiable for a correct console. A zero-file scan fails rather than passing. `--trace` prints the per-file `production_lines_scanned` proof; `--self-test` drives the same scanner over fixture trees (every forbidden category probed in all 13 files, positive controls for the allow-set, allow-set-widening negatives, zero-file and fail-closed checks) rather than re-implementing the rule. | yes | yes |
+| `scripts/check-console-browser-security.sh` | Plan 357 strengthening guard for the browser boundary: exact `Host` authority, Origin validation on unsafe methods, `HttpOnly`/`SameSite=Strict` session cookies, CSRF, and a centralized no-`unsafe-inline` CSP. Where a rule cannot be expressed as a grep, the named test must exist and be present in the suite. | yes | yes |
+| `scripts/check-config-secret-hygiene.sh` | Plan 352 guard for two pre-existing config-secret leak paths. Inverted from "assert the hazard is present" to "assert the fixed state", so reverting the fix fails here: no secret content in `RedactedTomlError` output, and a password-bearing config is refused when group/world-readable. | yes | **no** |
+| `scripts/check-els2-type11-transcript-boundary.sh` | Plan 346 guard keeping the deployed ELS2 type-11 transcript confined to the encrypted-LeaseSet2 type-5 owner. That correction is only safe while the confinement holds; three changes would silently undo it. | yes | **no** |
+| `scripts/check-encrypted-service-consumer-caller.sh` | Plan 351 guard on the encrypted-service (`.b33`) consumer wiring. Plan 349 landed `EncryptedServiceResolver` with no production caller, and adding one was only acceptable because of a containment this checks; three things would silently undo it. | yes | **no** |
+| `scripts/check-outproxy-request-path.sh` | Plan 342 guard for the I2P-routed outproxy request-path boundary: no direct-clearnet capability on any of the four client request paths, **including failure paths**. Wrapper; execs the `.py` beside it because the checks resolve named function bodies by brace matching. | yes | **no** |
+| `scripts/check-outproxy-request-path.py` | Implementation of `check-outproxy-request-path.sh`, holding the brace-matched function-body checks. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
+| `scripts/check-outproxy-wire-lane-evidence.sh` | Plan 342 evidence-integrity check for the self-composed loopback outproxy wire lane. Wrapper; execs the `.py` beside it. | yes | **no** |
+| `scripts/check-outproxy-wire-lane-evidence.py` | Implementation of `check-outproxy-wire-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
+| `scripts/check-managed-app-private-client-seams.py` | Plan 354 guard for the listener-independent SAM/I2CP connection seams: managed-profile host-target denial, and that both loopback listeners and trusted private connections drive one protocol driver. | yes | yes |
+| `scripts/check-floodfill-type5-serve.sh` | Plan 350 guard for the floodfill's servable record types. The bug it prevents is silent and data-only: `database_store_for_answer` and `lookup_body` each need a type-5 arm, and omitting either stores records nobody can fetch. | yes | **no** |
+| `scripts/check-ntcp2-interoperability.sh` | Plan 099 NTCP2 interoperability static boundary check, enforcing the durable invariants the retained development interop surface relies on. It enforces **no** behaviour and does not make NTCP2 an advertised transport. | yes | yes |
+| `scripts/check-tooling-inventory.py` | **Plan 372.** Derives every published inventory figure in this document from the tree — floor-step counts, `check-*` files, `ci.yml` invocations, workspace members, `rust-version`, the MSRV toolchain, fuzz targets, and the root `tests/` `.rs` count — and **fails closed** when one stops matching. Rule 3 requires every `check-*` script to have a row here, so adding a guard without documenting it is a failure. `--self-test` proves each rule rejects the violation it claims to detect. | yes | yes |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. **Plans 349–350** add positive-controlled bans on runtime/I/O ownership and all direct workspace-crate dependencies. **Rules 9–11 (Plan 343)**: the outproxy policy/route-owner pair (`i2pr-service-tunnels/src/outproxy.rs` + `i2pr-daemon/src/outproxy_route.rs`) must both exist; neither may name a clearnet socket type, resolver, or TLS-to-clearnet client (`TcpStream\|TcpListener\|UdpSocket\|to_socket_addrs\|lookup_host\|TcpSocket\|openssl\|native_tls\|reqwest\|hyper`) — `std::net::IpAddr` is deliberately *not* matched, because parsing an address is how the target grammar refuses IP literals; neither may load a plugin or spawn a process (`libloading\|dlopen\|Library::new\|Command::new\|std::process`). **Rule 10 is a positive control** requiring a local listener reference in `service_tunnels_http.rs`. | yes | yes |
 | `scripts/check-m11-transit-boundaries.sh` | Plan 264/265 M11 transit runtime-neutrality and static boundary invariants. | yes | yes |
 | `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the type-5 floor is asserted positively. **Plan 364** replaced the stale Plan 281 "type 5 is deferred" grep — which legitimately matched once Plans 332/333/334 populated type-5 NetDB storage, and which made the script exit 1 — with 9 positive assertions traced to the Plans 332/333/334/346 closure records. Do not weaken the script and do not remove type-5 from NetDB to make it pass. | yes | yes |
@@ -152,7 +178,7 @@ evidence key.
 
 | Script | Posture |
 | --- | --- |
-| `scripts/fuzz-smoke.sh` | Opt-in smoke run of **all 24 fuzz targets** for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
+| `scripts/fuzz-smoke.sh` | Opt-in smoke run of **all 25 fuzz targets** for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 | `scripts/run-java-source-lock-tests.sh` | Java source-lock test driver. Fails closed unless `I2PR_M6_JAVA_SOURCE_ROOT` names a Git checkout at the exact Java I2P 2.13.0 pin `9134f808337b401e8e53c73734c81fab04280c9d`. Driven by `scripts/check-java-source-lock-gating.sh`. |
 
 ### Pruned / historical (not on disk)
@@ -242,14 +268,15 @@ Count the rows in *Boundary checkers*, *Fixture and vector checkers*,
 whose `Floor` / `CI` column reads `yes`. This is the convention the
 **gap lists** below use.
 
-Recomputed 2026-10-06 (Plan 367):
+Recomputed 2026-10-07 (Plan 372; Plan 367's figures were already stale
+by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 40 | 34 rows marked `Floor: yes` |
-| Total routine-floor steps | 49 | — |
-| Checkers executed by `ci.yml` | 30 | 32 rows marked `CI: yes` |
-| `check-*` files on disk | 49 (56 with `scripts/interop/`) | 44 checker rows |
+| Floor steps invoking a checker | 42 | 44 rows marked `Floor: yes` |
+| Total routine-floor steps | 52 | — |
+| Checkers executed by `ci.yml` | 34 | 37 rows marked `CI: yes` |
+| `check-*` files on disk | 52 (55 with `scripts/interop/`) | 54 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
@@ -593,12 +620,23 @@ forbidden files, and attributable host firewall or route changes. The
 workflow and helper apparatus expose this manual lane, but documentation
 of the contract is not a claim that the lane has passed.
 
-### Zero Rust integration test files
+### Rust integration test files under `tests/`
 
-There are **zero `.rs` files** under `tests/`. All decode/encode
-verification lives inside the crates (typically in `#[cfg(test)]`
-modules). The `tests/` tree is purely fixture data, lane drivers, and
-the interoperability manifest — a deliberate separation.
+**Corrected by Plan 372.** This section previously asserted "there are
+**zero** `.rs` files under `tests/`", and repeated the claim under
+*Distinctive design choices*. It was false, and false in the direction
+that hides a real dependency edge:
+`tests/portable-service-tunnel-consumer/tests/conformance.rs` is tracked,
+so the portable service-tunnel consumer is exercised through an
+integration test outside its own crate rather than an in-crate
+`#[cfg(test)]` module.
+
+That is **1 tracked `.rs` file** under the root `tests/` tree, out of 145
+`.rs` files across `crates/*/tests/` plus in-crate modules. The
+separation this section describes is otherwise intact: decode/encode
+verification does live inside the crates, and the root `tests/` tree is
+still fixture data, lane drivers, and the interoperability manifest.
+`scripts/check-tooling-inventory.py` rule 10 now derives this count.
 
 ## `fuzz/` — opt-in fuzz workspace
 
@@ -608,9 +646,9 @@ the interoperability manifest — a deliberate separation.
   `[package.metadata] cargo-fuzz = true`.
 - **Dependencies**: `i2pr-crypto`, `i2pr-proto`, `i2pr-storage`,
   `i2pr-transport-ntcp2`, `libfuzzer-sys 0.4`.
-- **24 fuzz targets** declared as `[[bin]]` in `fuzz/Cargo.toml`, each
+- **25 fuzz targets** declared as `[[bin]]` in `fuzz/Cargo.toml`, each
   with a matching `fuzz/fuzz_targets/*.rs`, plus one shared
-  `support.rs` module (25 `.rs` files in the directory).
+  `support.rs` module (26 `.rs` files in the directory).
 
 | Area | Targets |
 | --- | --- |
@@ -633,7 +671,7 @@ for subsystems that have no target on disk.
 rustup toolchain install nightly
 cargo install cargo-fuzz
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run --fuzz-dir fuzz ntcp2_handshake -- -runs=10000
-bash scripts/fuzz-smoke.sh   # all 24 targets, 32 iterations each
+bash scripts/fuzz-smoke.sh   # all 25 targets, 32 iterations each
 ```
 
 `fuzz-smoke.sh` is opt-in: it is **not** in the AGENTS.md floor and
@@ -700,7 +738,7 @@ Ten workflows exist. One is the ordinary gate; the other nine are
 | Job | OS | Steps |
 | --- | --- | --- |
 | **Quality** | ubuntu-latest + macos-latest (matrix, `fail-fast: false`) | Checkout → ripgrep install (Linux only) → Rust 1.95.0 + rustfmt + clippy → Cargo cache → `cargo fmt --all --check` → `cargo check --locked --workspace` → `cargo check --locked --workspace --all-targets` → tests → `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` → `cargo doc --locked --workspace --no-deps` (with `RUSTDOCFLAGS: -D warnings`) → 24 checker invocations |
-| **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --locked --workspace --all-targets` |
+| **MSRV** | ubuntu-latest | Rust **1.89.0** → `cargo check --locked --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | `cargo deny check advisories bans sources` (via `EmbarkStudios/cargo-deny-action@v2`) |
 
 Triggers: `on: push`, `on: pull_request` (all branches).
@@ -854,20 +892,30 @@ source of truth for harness detail.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (19 crates + 1 non-production binary = 20)
+### Members (25 crates + 1 non-production binary = 26)
+
+Recomputed 2026-10-07 by Plan 372 from `cargo metadata --no-deps`; the roster
+below was six crates short, missing the whole operator console and the entire
+managed-application runtime (`i2pr-app-proto`, `i2pr-app-manager-proto`,
+`i2pr-appd`, `i2pr-apphost`, and the `i2pr-app-fixture` evidence crate).
 
 ```text
 crates/i2pr-addressbook, crates/i2pr-api, crates/i2pr-crypto,
-crates/i2pr-proto, crates/i2pr-client, crates/i2pr-core,
-crates/i2pr-daemon, crates/i2pr-i2pcontrol, crates/i2pr-netdb,
-crates/i2pr-netdb-persist, crates/i2pr-runtime,
+crates/i2pr-proto, crates/i2pr-client, crates/i2pr-console,
+crates/i2pr-core, crates/i2pr-daemon, crates/i2pr-i2pcontrol,
+crates/i2pr-netdb, crates/i2pr-netdb-persist, crates/i2pr-runtime,
 crates/i2pr-service-tunnels, crates/i2pr-storage, crates/i2pr-su3,
 crates/i2pr-testkit, crates/i2pr-transport,
 crates/i2pr-transport-ntcp2, crates/i2pr-transport-ssu2,
-crates/i2pr-tunnel, tools/i2pr-interop
+crates/i2pr-tunnel,
+crates/i2pr-app-proto, crates/i2pr-app-manager-proto,
+crates/i2pr-appd, crates/i2pr-apphost, crates/i2pr-app-fixture,
+tools/i2pr-interop
 ```
 
-`resolver = "2"`, `edition = "2024"`, `rust-version = "1.88"`,
+`resolver = "2"`, `edition = "2024"`, `rust-version = "1.89"`,
+the MSRV raised from `1.88` by Plan 357 because every published
+`eggserve-server` release declares `rust-version = "1.89"`,
 workspace version `0.1.0`. `crates/i2pr-testkit` and
 `tools/i2pr-interop` are non-production crates (`publish = false`), and
 no production crate may depend on the testkit.
@@ -965,11 +1013,14 @@ rely on CI.
 
 ## Distinctive design choices
 
-1. **Zero Rust integration test files under `tests/`.** All
-   verification lives inside the crates.
+1. **Almost no Rust integration test files under `tests/`.** Exactly one
+   is tracked — `tests/portable-service-tunnel-consumer/tests/conformance.rs`,
+   added for the Plan 350 portable-core boundary. Decode/encode
+   verification otherwise lives inside the crates.
 2. **Dual-toolchain CI.** Production builds use 1.95.0; MSRV
-   verification runs 1.88.0 separately. The toolchain is pinned in
-   `rust-toolchain.toml`.
+   verification runs 1.89.0 separately. The toolchain is pinned in
+   `rust-toolchain.toml`. (Plan 372 corrected this row: it read 1.88.0,
+   which was the floor before Plan 357 raised it for `eggserve-server`.)
 3. **Python in several checkers.** `check-dependency-direction.sh` and
    the planning checker use Python 3 stdlib for JSON/YAML-free
    parsing, alongside the bash-4 vector checkers.

@@ -1,6 +1,6 @@
 # Router Console Roadmap
 
-Status: parallel — **Plans 356, 357, and 358 are all passed.** The initial console foundation milestone is implemented. This line establishes a localhost-only, self-contained web console over I2PControl / Proposal 170 without changing router protocol support or exposing router internals. The console remains experimental, loopback-only, disabled by default, and non-advertised, and is not reachable through `i2pr run` while that pre-existing startup defect stands.
+Status: parallel — **Plans 356, 357, and 358 are all passed.** The initial console foundation milestone is implemented. This line establishes a localhost-only, self-contained web console over I2PControl / Proposal 170 without changing router protocol support or exposing router internals. The console remains experimental, loopback-only, disabled by default, and non-advertised, and is reachable through `i2pr run`. Plan 372 corrected a stale claim here: it read "not reachable through `i2pr run` while that pre-existing startup defect stands", but Plan 360 closed that defect, and this roadmap's own forward note already recorded the correction -- the sequence bullet below it had not been brought forward.
 
 Long-term references:
 - `GUARDRAILS.md`
