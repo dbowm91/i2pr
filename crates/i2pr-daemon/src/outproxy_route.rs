@@ -76,8 +76,18 @@ pub struct OutproxyCounters {
     /// Requests that exhausted every permitted attempt.
     pub attempts_exhausted: u64,
     /// Attempts where the outproxy rejected the presented credential.
+    ///
+    /// Plan 376: counted **per attempt**, including one that a later attempt
+    /// went on to succeed past. Previously a retryable failure was recorded
+    /// only when it was terminal, so an operator whose first outproxy was
+    /// permanently dead saw a permanently zero here while every request
+    /// quietly succeeded through the second endpoint. The counters are the
+    /// only surface that carries this, and "the first entry is always down" is
+    /// exactly the diagnosis an operator needs.
     pub authentication_rejected: u64,
     /// Attempts where the outproxy could not reach the requested target.
+    ///
+    /// Per attempt, for the same reason as [`Self::authentication_rejected`].
     pub target_unreachable: u64,
     /// Requests refused by policy before any route was opened.
     pub not_permitted: u64,
@@ -555,9 +565,35 @@ pub async fn open_via_outproxy(
             }
             Err(failure) => {
                 last = failure;
+                // Plan 376: record the failed attempt itself, retryable or
+                // not, before deciding whether to continue. Recording only a
+                // terminal failure lost the entire history of any endpoint
+                // that kept failing while a later endpoint kept succeeding.
+                note(counters, |c| c.note(failure));
                 if !failure.is_retryable() {
-                    note(counters, |c| c.note(failure));
                     return Err(failure);
+                }
+                // Plan 376: back off before the next endpoint.
+                //
+                // The policy has declared a bounded, saturating schedule since
+                // Plan 342 (`OutproxyPolicy::backoff_ms`), and this loop did
+                // not consult it at all — a retryable failure was retried
+                // immediately against the next endpoint, so a whole list of
+                // dead outproxies was hammered in one burst. The schedule is
+                // applied *between* attempts only: the first attempt never
+                // waits, and a zero step (`attempt <= 1`) costs nothing.
+                //
+                // The wait is cancellation-aware and holds no lock, so a
+                // shutdown during the backoff window frees the request
+                // immediately instead of sitting out the remaining schedule.
+                let delay_ms = config.policy.backoff_ms(attempt);
+                if delay_ms > 0 && attempt + 1 < attempts {
+                    tokio::select! {
+                        () = cancellation.cancelled() => {
+                            return Err(OutproxyFailure::NotPermitted);
+                        }
+                        () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                    }
                 }
             }
         }
@@ -570,12 +606,16 @@ pub async fn open_via_outproxy(
     Err(OutproxyFailure::AttemptsExhausted)
 }
 
-/// Records an exhausted request: the terminal reason of the last attempt and
-/// the exhaustion itself. Split out so the composition is testable without a
-/// live route.
-fn note_exhausted(counters: &std::sync::Mutex<OutproxyCounters>, last: OutproxyFailure) {
+/// Records an exhausted request.
+///
+/// Plan 376: this adds **only** the exhaustion. The last attempt's typed
+/// reason was already recorded where the attempt failed, so noting it again
+/// here would double-count the final failure. `last` is kept in the signature
+/// because it is the value a reader of this function wants and dropping it
+/// would invite exactly that double-count back in a later edit; the parameter
+/// is deliberately unused rather than silently folded into the closure.
+fn note_exhausted(counters: &std::sync::Mutex<OutproxyCounters>, _last: OutproxyFailure) {
     note(counters, |c| {
-        c.note(last);
         c.attempts_exhausted += 1;
     });
 }

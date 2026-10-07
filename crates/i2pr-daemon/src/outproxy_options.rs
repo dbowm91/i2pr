@@ -54,7 +54,8 @@ use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
 use i2pr_service_tunnels::outproxy::{
-    OutproxyConfig, OutproxyError, OutproxyList, OutproxyPolicy, OutproxyType,
+    DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS, MAX_OUTPROXY_BACKOFF_MS, OutproxyConfig, OutproxyError,
+    OutproxyList, OutproxyPolicy, OutproxyType,
 };
 
 use crate::i2pcontrol_tunnels::ControlError;
@@ -235,6 +236,29 @@ pub fn parse_outproxy_block(
         });
     }
 
+    // Plan 376: the attempt budget follows the operator's list.
+    //
+    // This was `OutproxyPolicy::default()`, whose attempt count is 2. An
+    // operator who configured four outproxies therefore got exactly two
+    // attempts, and entries three and four were silently never tried — the
+    // control surface accepted the list, echoed it back, and ignored its
+    // tail. `OutproxyList::select`'s wrap semantics were unreachable for the
+    // same reason: with attempts pinned at 2 the index never reached a third
+    // pass.
+    //
+    // The budget is now the list length clamped to
+    // `[1, MAX_OUTPROXY_ATTEMPTS]`: every configured endpoint gets exactly one
+    // bounded chance, a single-endpoint list does not retry itself, and the
+    // hard ceiling still bounds the total. One attempt per endpoint is also
+    // the honest reading of ordered failover — silently re-trying the same
+    // dead endpoint before moving on would burn the budget on a list the
+    // operator already ordered.
+    let policy = OutproxyPolicy::new(
+        list.len(),
+        DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS,
+        MAX_OUTPROXY_BACKOFF_MS,
+    );
+
     let config = OutproxyConfig {
         list,
         kind: kind_value,
@@ -245,7 +269,7 @@ pub fn parse_outproxy_block(
             None
         },
         tunnelled,
-        policy: OutproxyPolicy::default(),
+        policy,
     };
     config
         .validate()

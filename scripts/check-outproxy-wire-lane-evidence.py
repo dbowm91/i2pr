@@ -58,14 +58,33 @@ REQUIRED_ROWS = [
     "plan342_http_forward_request_is_carried_by_the_outproxy",
     # The block grammar holds, and a refused block allocates no listener.
     "plan342_malformed_block_is_refused_before_any_listener",
+    # -- Plan 376. The two absences this file used to record, now closed. --
+    # Failover, over HTTP CONNECT and again over SOCKS5 so it is a property of
+    # the route owner rather than of the HTTP request grammar.
+    "plan376_http_connect_fails_over_to_the_second_outproxy",
+    "plan376_socks5_fails_over_to_the_second_outproxy",
+    # Both halves of the retryable taxonomy, and the attempt budget.
+    "plan376_an_upstream_refusal_is_retried_at_the_second_outproxy",
+    "plan376_authentication_rejection_is_retried_at_the_next_endpoint_by_the_current_policy",
+    "plan376_the_attempt_budget_is_the_list_length_and_exhaustion_is_typed",
+    # A restart that carries a real request, through the product's own
+    # `TunnelControlState::startup` recovery path rather than a re-applied
+    # `create`, plus the bypass, fail-closed, and copied-config rows.
+    "plan376_a_routed_request_survives_a_product_restart",
+    "plan376_after_restart_i2p_traffic_bypasses_and_removing_the_provider_fails_closed",
+    "plan376_a_copied_config_without_the_router_secret_cannot_recover_the_credential",
 ]
 
 # Rows the lane deliberately does not have. Recorded so that someone who later
 # writes one knows it was a considered absence and not an oversight, and so the
 # module header's limitation list has a machine-checked counterpart.
-DOCUMENTED_ABSENCES = [
-    "plan342_failover_reaches_the_second_outproxy_within_the_ceiling",
-    "plan342_route_survives_a_restart",
+#
+# Plan 376 removed the two Plan 342 entries (`..._failover_reaches_the_second...`
+# and `..._route_survives_a_restart`) only after their replacement rows actually
+# passed. What remains below is absent by decision, not by omission.
+DOCUMENTED_ABSENCES: list[str] = [
+    "plan376_between_request_load_rotation",
+    "plan376_cross_process_restart",
 ]
 
 # Forbidden in the lane: the property is "this process never holds a clearnet
@@ -92,6 +111,31 @@ FORBIDDEN_IN_LANE = [
 # The lane must be `#![forbid(unsafe_code)]`. Checked separately because the
 # attribute itself contains the word, so the body has to be read with it removed.
 REQUIRED_LANE_ATTRIBUTES = ["#![forbid(unsafe_code)]"]
+
+# Plan 376: the three production properties the new rows depend on. Each was a
+# real defect before Plan 376, and each is invisible to a single-endpoint row,
+# so a silent regression would restore a green lane and a broken router.
+REQUIRED_IN_PRODUCTION: list[tuple[str, str, str]] = [
+    (
+        "crates/i2pr-daemon/src/outproxy_route.rs",
+        "backoff_ms",
+        "Plan 376: the policy's bounded backoff schedule must actually be consulted "
+        "by the retry loop. It was declared and never called, so a retryable "
+        "failure was retried immediately and a dead list was hammered in one burst",
+    ),
+    (
+        "crates/i2pr-daemon/src/outproxy_route.rs",
+        "cancellation.cancelled()",
+        "Plan 376: the retry backoff must be cancellation-aware, or a shutdown "
+        "during the backoff window sits out the remaining schedule",
+    ),
+    (
+        "crates/i2pr-daemon/src/outproxy_options.rs",
+        "list.len()",
+        "Plan 376: the attempt budget must follow the operator's ProxyList length. "
+        "It was hardcoded to 2, so entries 3..N were silently never tried",
+    ),
+]
 
 # Forbidden in production: Plan 342 invariant 5.
 FORBIDDEN_IN_PRODUCTION = [
@@ -274,6 +318,22 @@ def check(report: Report) -> None:
         source = strip_comments(read(rel))
         for needle, why in FORBIDDEN_IN_PRODUCTION:
             report.forbid("invariant 5", source, needle, rel)
+    for rel, needle, why in REQUIRED_IN_PRODUCTION:
+        report.require("Plan 376", strip_comments(read(rel)), needle, rel)
+
+    # The retry loop must not hold the counter lock across an await. The
+    # counters are a plain `Mutex`, so holding it across an await would let one
+    # pending attempt block every status projection in the router.
+    route = strip_comments(read("crates/i2pr-daemon/src/outproxy_route.rs"))
+    for match in re.finditer(r"lock\(\)[^;]*?\.await", route, re.DOTALL):
+        window = match.group(0)
+        # `note(counters, ...)` takes and releases inside one statement; a lock
+        # guard binding that survives into an await is the shape being ruled out.
+        if "let _guard" in window or "let mut guard" in window:
+            report.failures.append(
+                "Plan 376: a counter lock guard appears to be held across an await "
+                "in outproxy_route.rs"
+            )
 
     # ------------------------------------------------------------------
     # 5. The request-path guard must still pass.
