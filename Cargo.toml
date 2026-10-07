@@ -37,6 +37,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 repository = "https://github.com/dbowm91/i2pr"
+license = "MIT"
 
 [workspace.dependencies]
 aes = { version = "0.8.4", default-features = false }

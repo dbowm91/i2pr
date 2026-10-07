@@ -66,7 +66,7 @@ M10 is closed at Plan 215. The reusable core already exists and is unusually clo
 - Its modules include access/auth/config/connect/destination/events/generation/http/irc/socks5/streamr/outproxy and related privacy/resource policy.
 - The package is currently `publish = false`.
 - At registration, its Cargo manifest declared `i2pr-proto`; the Plan 350 full-tree audit will determine whether that dependency is dead before removal.
-- The repository explicitly has no selected repository-wide license. Public package publication therefore cannot be enabled merely as a mechanical Cargo change.
+- The owner selected the MIT license in the Plan 379 registration branch. This lifts the legal-selection gate but does not prove crates.io packageability; the current `i2pr-proto` path dependency and package graph still require an explicit audit.
 - External-consumer conformance is not currently part of the test floor; existing verification is primarily workspace/internal composition.
 
 The intended future SAM repository does not yet belong to this roadmap. It is a downstream consumer once the portability contract closes.
@@ -109,7 +109,7 @@ Destination-group semantics are part of the portable contract. A downstream adap
             -> future separate SAM repository (unregistered here)
 ```
 
-Plans 349–351 passed. The public core boundary is frozen, the package/API is Git-consumable, and Plan 351 records the downstream adapter contract. Package publication remains license-gated.
+Plans 349–351 passed and Plan 359 later amended the boundary to permit exactly one `i2pr-proto` edge for canonical encrypted-service parsing. The public core is Git-consumable. Plan 379 is ready to reconcile the newly selected MIT license, current external-consumer pin, package-distribution posture, Plan 359 closure shape, and obsolete branch cleanup.
 
 ## 7. Milestones
 
@@ -118,6 +118,8 @@ Plans 349–351 passed. The public core boundary is frozen, the package/API is G
 | 349 | closed | `passed-portable-service-tunnel-boundary-and-ownership-contract` | invariant + infrastructure | `plans/implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md` | `plans/closure/portable-service-tunnels/349-status.md` |
 | 350 | closed | `passed-portable-service-tunnel-package-api-stabilization-publication-blocked-by-license-selection` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | `plans/closure/portable-service-tunnels/350-status.md` |
 | 351 | closed | `passed-portable-service-tunnel-external-adapter-conformance-and-sam-handoff` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | `plans/closure/portable-service-tunnels/351-status.md` |
+| 359 | passed inline / closure normalization pending | `executed-inline-with-the-main-merge; amendment landed and mutation-tested` | invariant + planning amendment | `plans/implementation/portable-service-tunnels/359-portable-core-boundary-proto-edge-amendment.md` | Plan 379 will add the conventional additive status record |
+| 379 | ready | `registered-mit-license-and-portable-service-tunnel-cleanup` | polish + infrastructure + invariant preservation | `plans/implementation/portable-service-tunnels/379-mit-license-and-portable-service-tunnel-cleanup.md` | — |
 
 ## 8. Cross-cutting requirements
 
@@ -129,7 +131,7 @@ Plans 349–351 passed. The public core boundary is frozen, the package/API is G
 - Peer-based server filters operate on authenticated I2P Destination identity/hash supplied by the adapter. Unauthenticated metadata may not be promoted to authenticated peer identity.
 - HTTP privacy/server filters, SOCKS/IRC policy, and access/rate limits must remain transport-independent.
 - No external implementation source is copied into this work line. Specifications and independently observed behavior remain valid references.
-- Package publication cannot be enabled until licensing is explicitly selected by the repository owner and represented in Cargo/repository metadata.
+- MIT is now owner-selected. Package publication still requires a separate technical package-graph audit and must remain disabled unless that audit passes; Plan 379 performs the audit but does not publish.
 - Public API stabilization must minimize accidental commitment to M10-internal naming or plan-number vocabulary.
 - Compatibility with Rust MSRV/workspace policy remains required.
 
@@ -173,8 +175,8 @@ This workstream is complete when:
 
 Plan 349 passed. ADR 0033 and the portable-core reference freeze the ownership/public-contract boundary; no internal crate split is required.
 
-Plan 350 passed its package/API stabilization. The package remains unpublished with `publish = false` until the owner selects a license.
+Plan 350 passed its package/API stabilization. Its closure correctly records the then-current license blocker and remains immutable. The owner has since selected MIT; Plan 379 owns current Cargo-license convergence and the remaining technical packageability audit.
 
 Plan 351 passed. `bash scripts/check-portable-service-tunnel-consumer.sh` proves the public boundary from a true external-consumer fixture, and the downstream SAM handoff assigns identity, filtering, lifecycle, and wire/runtime ownership to a future independent repository.
 
-No SAM implementation or new user-visible tunnel product is authorized by these registrations.
+Plan 359's one-edge amendment is already present on main but lacks a conventional closure record; Plan 379 will normalize that record additively. The downstream SAM repository now exists at `dbowm91/i2pr-sam` and owns SAM client/wire/runtime work. No SAM implementation or new user-visible tunnel product is authorized in i2pr by these registrations.
