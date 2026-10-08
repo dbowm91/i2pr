@@ -35,7 +35,7 @@ support claim.
 
 `i2pr` is an experimental I2P router written in Rust, organized as a
 **modular monolith**: one daemon process, one crate per subsystem, a
-strictly enforced dependency DAG. 25 workspace crates plus one
+strictly enforced dependency DAG. 28 workspace crates plus one
 non-production launcher tool.
 
 Five conceptual planes cut across the crates:
@@ -80,6 +80,9 @@ crates/
   i2pr-core/                Runtime-neutral contracts/budgets/health (zero deps)
   i2pr-app-proto/           Runtime-neutral managed-app protocol/capability contract (no I/O)
   i2pr-app-manager-proto/   Private trusted AppManager protocol contract (no I/O)
+  i2pr-app-package/         Signed managed-app package verifier and immutable local store
+  i2pr-app-state/           Persistent offline app policy and verified launch decisions
+  i2pr-appctl/              Offline managed-app administration binary
   i2pr-proto/               Bounded wire codecs, typed errors, no I/O
   i2pr-crypto/              Protocol crypto wrappers (no local primitives)
   i2pr-su3/                 Bounded SU3 framing + RSA signature verification
@@ -182,7 +185,10 @@ Flattened allowlist (the exact set the checker enforces per crate):
 | `i2pr-i2pcontrol` | — |
 | `i2pr-app-proto` | — |
 | `i2pr-app-manager-proto` | — |
-| `i2pr-appd` | `i2pr-app-manager-proto`, `i2pr-app-proto` |
+| `i2pr-app-package` | `i2pr-app-proto` |
+| `i2pr-app-state` | `i2pr-app-package`, `i2pr-app-proto` |
+| `i2pr-appctl` | `i2pr-app-package`, `i2pr-app-proto`, `i2pr-app-state` |
+| `i2pr-appd` | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-app-state` |
 | `i2pr-apphost` | `i2pr-app-manager-proto`, `i2pr-app-proto` |
 | `i2pr-app-fixture` | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-appd` (evidence tooling) |
 | `i2pr-crypto` | `i2pr-proto` |
@@ -236,9 +242,23 @@ design choices. Every workspace crate appears exactly once.
 | 23 | Interop apparatus | Harness boundary | Reference-router harness, evidence classes, sanitization, Multipass/rootless lanes (historical NTCP2 surface). | [interop-apparatus.md](interop-apparatus.md) |
 | 25 | `i2pr-app-manager-proto` | AppManager contract | Private router/AppManager protocol: handshake, bounded frames, strict directional control vocabulary, opaque daemon-assigned handles, pure bounded accounting. Authority ceiling below Proposal 170; no administrator vocabulary. Plan 368. | [i2pr-app-manager-proto.md](i2pr-app-manager-proto.md) |
 | 24 | `i2pr-app-proto` | App contract | Managed native-app v1 protocol, capabilities, manifest, default-deny policy and sandbox attestation vocabulary. No OS/runtime owner. | [i2pr-app-proto.md](i2pr-app-proto.md) |
-| 26 | `i2pr-appd` | App manager process | Trusted manager process: sealed launch authority, empty production catalog, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plan 369. | [i2pr-appd.md](i2pr-appd.md) |
+| 26 | `i2pr-appd` | App manager process | Trusted manager process: persistent policy catalog, reverified package launch authority, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plans 369/374. | [i2pr-appd.md](i2pr-appd.md) |
 | 27 | `i2pr-apphost` | Direct-exec supervisor | One-shot bounded supervisor: single launch request, double-checked root containment, direct no-shell exec, `Secured` refused before exec, byte-transparent relay, direct-child cleanup. Plan 369. | [i2pr-apphost.md](i2pr-apphost.md) |
-| 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Unreachable from production. Plan 369 WP5. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |
+| 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Production source does not name or bundle it; qualification installs it only through an explicit temporary signed policy. Plans 369/374. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |
+| 29 | `i2pr-app-package` | Signed package/store | Bounded Stored-only package verifier, Ed25519 publisher identity, signed inventory, immutable local installation. Plan 373. | [i2pr-app-package.md](i2pr-app-package.md) |
+| 30 | `i2pr-app-state` | Persistent policy | Strict generation store, offline policy mutation, exact package re-verification, validated launch decisions. Plan 374. | [i2pr-app-state.md](i2pr-app-state.md) |
+| 31 | `i2pr-appctl` | Offline administrator CLI | Package verify/install/list/inspect/remove and restart-applied publisher/app policy. Plan 374. | [i2pr-appctl.md](i2pr-appctl.md) |
+
+### 4.24 Managed application package and policy (Plans 373–374)
+
+`i2pr-app-package` proves signed package integrity and publisher-key identity;
+it makes no trust or launch decision. `i2pr-app-state` persists explicit local
+publisher trust, exact package selection, grants, profile, and autostart in
+immutable generations. `i2pr-appctl` is the offline mutation surface. The
+production `i2pr-appd` catalog re-verifies selected packages, holds one policy
+snapshot under a lifetime runtime lock, and launches only explicit autostarts.
+`UnsafeDirect` means ordinary host networking without a sandbox; `Secured`
+remains unavailable. See [policy v1](../../specs/references/managed-app-policy-v1.md).
 
 ## 4. Discrete module overviews
 
@@ -540,18 +560,21 @@ capabilities, or creates interop evidence. Detail:
 
 `i2pr-appd` is the separately supervised process the router starts. It is a
 **separate runtime trust zone**: its only production `i2pr-*` dependencies are
-the two wire contracts, and it may not reach `i2pr-daemon` or `i2pr-runtime`.
+the two wire contracts and `i2pr-app-state`, and it may not reach
+`i2pr-daemon` or `i2pr-runtime`.
 
 It is launched as a child over two **inherited anonymous pipes** on file
 descriptors 0 and 1 — no listener, no port, no discovery endpoint — and the
 executable is resolved as a `current_exe()` sibling, so nothing in configuration
 or argv can substitute a different program.
 
-There is no input path into a launch: the shipped binary refuses all arguments
-and owns `EmptyCatalog`, and the Plan-368 protocol has no manager-receivable
-launch request, so the daemon cannot ask either. `LaunchAuthority` is sealed with
-**no decoder**, asserted by method resolution rather than by scanning for a
-derive. Full detail in [i2pr-appd.md](i2pr-appd.md).
+The shipped binary refuses all arguments and uses a persistent catalog. It
+loads explicit offline policy after the inherited-pipe handshake, re-verifies
+each selected package, and launches only trusted autostart records. The
+Plan-368 protocol has no manager-receivable launch request, so the daemon
+cannot ask it to select an executable. `LaunchAuthority` is sealed with **no
+decoder**, asserted by method resolution rather than by scanning for a derive.
+Full detail in [i2pr-appd.md](i2pr-appd.md).
 
 ### 4.22 `i2pr-apphost` — the direct-exec application supervisor
 
@@ -625,7 +648,8 @@ Managed-app trust zones (Plan 368/369):
   apphost→application), `current_exe()` sibling resolution for the two
   distribution-owned ones, no shell launcher, no `PATH` lookup, no
   production source naming the fixture, no crate depending on it, an
-  argument-refusing and catalog-less shipped manager, and no production
+  argument-refusing shipped manager with a persistent catalog that launches
+  nothing until an operator supplies explicit local policy, and no production
   caller of the manager test seam. Ships `--self-test`, which applies each
   mutation in memory and requires the scan to reject it.
 

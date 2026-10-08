@@ -3,6 +3,9 @@ members = [
     "crates/i2pr-addressbook",
     "crates/i2pr-app-manager-proto",
     "crates/i2pr-app-proto",
+    "crates/i2pr-app-package",
+    "crates/i2pr-app-state",
+    "crates/i2pr-appctl",
     "crates/i2pr-api",
     "crates/i2pr-appd",
     # Plan 369 §G: evidence tooling, not product code. The fixture application is

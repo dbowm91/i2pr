@@ -1,0 +1,20 @@
+[package]
+name = "i2pr-appctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Offline administrator CLI for managed application packages and policy"
+publish = false
+
+[dependencies]
+i2pr-app-package = { path = "../i2pr-app-package" }
+i2pr-app-proto = { path = "../i2pr-app-proto" }
+i2pr-app-state = { path = "../i2pr-app-state" }
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

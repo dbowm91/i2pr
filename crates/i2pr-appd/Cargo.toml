@@ -8,14 +8,17 @@ license.workspace = true
 description = "Trusted managed-application runtime manager process (Plan 369)"
 publish = false
 
-# Plan 369 §6: `i2pr-appd` is a separate runtime trust zone. It may depend on the
-# managed-app contracts and on reviewed process/async primitives. It must NOT
+# Plans 369/374: `i2pr-appd` is a separate runtime trust zone. It may depend on
+# the managed-app contracts, validated local policy, and reviewed
+# process/async primitives. It must NOT
 # depend on the router runtime, daemon, client, API, I2PControl, NetDB, tunnel,
 # or transport crates -- `scripts/check-dependency-direction.sh` enforces the
 # allowlist and `scripts/check-app-runtime-boundaries.sh` enforces the ban.
 [dependencies]
 i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
 i2pr-app-proto = { path = "../i2pr-app-proto" }
+i2pr-app-state = { path = "../i2pr-app-state" }
+rand_core = { workspace = true, features = ["os_rng"] }
 thiserror.workspace = true
 tokio.workspace = true
 
@@ -33,8 +36,12 @@ path = "src/main.rs"
 # implement it, and that proof is worth a dev-dependency rather than a production
 # one.
 [dev-dependencies]
+ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

@@ -1,25 +1,27 @@
 # `i2pr-appd` — the trusted application manager process
 
-`i2pr-appd` (Plan 369) owns the **manager** side of the managed native
+`i2pr-appd` (Plans 369 and 374) owns the **manager** side of the managed native
 application runtime: the separately supervised process the router starts, which
 holds manager-created launch authority and is the only component that starts an
 `i2pr-apphost`.
 
 It is a **separate runtime trust zone**. Its only production `i2pr-*`
 dependencies are the two wire contracts, `i2pr-app-manager-proto` and
-`i2pr-app-proto`. It may not reach `i2pr-daemon`, `i2pr-runtime`, or any router
+`i2pr-app-proto`, plus `i2pr-app-state` for persistent local policy. It may not
+reach `i2pr-daemon`, `i2pr-runtime`, or any router
 crate, and that is asserted by `scripts/check-dependency-direction.sh` rather
 than left to review.
 
 ## What it is not
 
-There is no input path into a launch. The shipped binary refuses **all**
-arguments, owns `EmptyCatalog`, and therefore yields no authority. The
-Plan-368 manager protocol has no manager-receivable launch request, so the
-daemon cannot ask it to launch anything either. This is the whole reason a
-router running Plan 369 cannot be talked into starting an application: the
-absence of a launch path is structural, not a policy that could be
-misconfigured.
+The shipped binary refuses **all** arguments and uses
+`PersistentLaunchCatalog`. After the authenticated inherited-pipe handshake,
+the catalog reads the daemon-bound `I2PR_APP_STATE_ROOT`, holds `runtime.lock`,
+and loads one validated policy snapshot. It launches only explicitly selected,
+trusted, autostart applications, after re-verifying their package. The manager
+protocol still has no manager-receivable launch request, so daemon messages
+cannot select an executable or create authority. With no operator-approved
+autostart state, the catalog yields no authority.
 
 ## Process and transport
 
@@ -36,8 +38,9 @@ different program. `scripts/check-managed-app-process-boundary.py` rule 1b
 asserts the `current_exe()` lookup, and rules 1b/1b-path forbid a shell
 launcher and any `PATH` lookup outright.
 
-`i2pr-appd` takes no arguments, and `Appd::with_catalog` is confined to the
-fixture manager. Both are asserted by rule 3 of that script.
+`i2pr-appd` takes no arguments, and `Appd::with_catalog` remains confined to
+the fixture manager. The process checker also requires the daemon to clear the
+manager environment and bind the canonical state root only.
 
 ## Modules
 
@@ -45,7 +48,7 @@ fixture manager. Both are asserted by rule 3 of that script.
 | --- | --- |
 | `transport` | `DuplexTransport` (both halves in one object, so `tokio::io::split` cannot separate them) and `inherited()` |
 | `authority` | sealed `LaunchAuthority` / `AuthorityRequest`, **no decoder** |
-| `catalog` | `LaunchCatalog` trait and the production `EmptyCatalog` |
+| `catalog` | `LaunchCatalog`, test `EmptyCatalog`, and production `PersistentLaunchCatalog` |
 | `manager_link` | the concurrent manager client: one reader, one writer, a single-writer queue, a bounded in-flight ledger, per-session routing |
 | `session` | the app v1 session: greeting, hello-first, capability presentation, permission denial, SAM/I2CP mapping, stream-id mapping |
 | `apphost_launch` | resolving and starting the `i2pr-apphost` sibling |

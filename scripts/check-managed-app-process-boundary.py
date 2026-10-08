@@ -6,8 +6,11 @@ crates*. They cannot see the property Plan 369's trust model actually rests on,
 which is about **which process execs what**:
 
 * `i2pr-apphost` is the only component that execs an application;
-* the fixture application and fixture manager are unreachable from production;
-* the shipped manager takes no arguments and owns an empty catalog.
+* production source neither names nor bundles the fixture application or
+  manager; a local administrator may launch a fixture only by installing and
+  authorizing its signed package like any other application;
+* the shipped manager takes no arguments, reads its exact daemon-owned state
+  root after handshake, and owns the persistent policy catalog.
 
 Each rule below fails closed: a missing file, an unreadable tree, or a changed
 layout is a failure, never a skip. A guard that quietly stops looking is worse
@@ -278,13 +281,17 @@ def scan(sources: dict[str, str]) -> list[str]:
                 "Plan 369 forbids"
             )
 
-    # -- rule 3: the shipped manager is argument-less and catalog-less -------
+    # -- rule 3: the shipped manager uses only the persistent local catalog ---
     shipped = rust_sources.get(SHIPPED_MANAGER)
     if shipped is not None:
-        if "with_catalog" in shipped:
+        if "Appd::with_catalog" in shipped or "EmptyCatalog" in shipped:
             violations.append(
-                f"rule 3: {SHIPPED_MANAGER} names `with_catalog`; the shipped binary "
-                "must reach its empty catalog only through `serve`/`Appd::new`"
+                f"rule 3: {SHIPPED_MANAGER} selects an arbitrary or empty catalog; "
+                "the shipped binary must use PersistentLaunchCatalog"
+            )
+        if "serve_with_catalog" not in shipped or "PersistentLaunchCatalog::new()" not in shipped:
+            violations.append(
+                f"rule 3: {SHIPPED_MANAGER} does not compose the persistent local-policy catalog"
             )
         # An argv *read* is not enough -- reading argv and carrying on is
         # exactly the "silently tolerates arguments" behaviour this rule
@@ -303,6 +310,20 @@ def scan(sources: dict[str, str]) -> list[str]:
                 "inspected argv and carried on would be indistinguishable from one "
                 "that never saw it"
             )
+
+    # -- rule 5: the daemon passes only the canonical state-root binding ------
+    daemon_spawn = rust_sources.get("crates/i2pr-daemon/src/app_runtime.rs")
+    if daemon_spawn is not None:
+        if ".env_clear()" not in daemon_spawn:
+            violations.append("rule 5: manager spawn does not clear the inherited environment")
+        if not re.search(r"\.env\s*\(\s*STATE_ROOT_ENV\s*,\s*state_root\s*\)", daemon_spawn):
+            violations.append("rule 5: manager spawn omits the exact I2PR_APP_STATE_ROOT binding")
+        if re.search(r"\.envs?\s*\(", daemon_spawn.replace(".env(", "")):
+            violations.append("rule 5: manager spawn forwards arbitrary environment entries")
+        if 'STATE_ROOT_ENV: &str = "I2PR_APP_STATE_ROOT"' not in daemon_spawn:
+            violations.append("rule 5: manager state-root variable name changed")
+        if "std::fs::canonicalize(&managed)" not in daemon_spawn or "from_mode(0o700)" not in daemon_spawn:
+            violations.append("rule 5: daemon state root is not canonicalized and owner-private")
 
     return violations
 
@@ -410,7 +431,7 @@ def self_test(sources: dict[str, str]) -> list[str]:
         },
     )
 
-    # Rule 3 — the shipped manager reaching for a catalog.
+    # Rule 3 — the shipped manager selecting a custom catalog.
     expect_rejected(
         "rule 3: the shipped manager selecting a catalog",
         lambda: {
@@ -439,7 +460,7 @@ def self_test(sources: dict[str, str]) -> list[str]:
             )
         },
     )
-    # ...and the legal shape must stay clean: read argv, refuse, return.
+    # ...and the legal argv refusal shape remains intact in the real source.
     expect_accepted(
         "rule 3: the shipped manager refusing argv",
         {
@@ -475,6 +496,20 @@ def self_test(sources: dict[str, str]) -> list[str]:
                 "fn s() { set_manager_path_override_for_tests(None); }\n"
             )
         },
+    )
+
+    # Rule 5 — the manager may receive only the daemon-created canonical root.
+    expect_rejected(
+        "rule 5: inherited environment is not cleared",
+        lambda: {"crates/i2pr-daemon/src/app_runtime.rs": sources["crates/i2pr-daemon/src/app_runtime.rs"].replace(".env_clear()", "")},
+    )
+    expect_rejected(
+        "rule 5: arbitrary environment forwarding",
+        lambda: {"crates/i2pr-daemon/src/app_runtime.rs": sources["crates/i2pr-daemon/src/app_runtime.rs"].replace(".env(STATE_ROOT_ENV, state_root)", ".env(STATE_ROOT_ENV, state_root).envs(std::env::vars())")},
+    )
+    expect_rejected(
+        "rule 5: missing root binding",
+        lambda: {"crates/i2pr-daemon/src/app_runtime.rs": sources["crates/i2pr-daemon/src/app_runtime.rs"].replace(".env(STATE_ROOT_ENV, state_root)", "")},
     )
     expect_accepted(
         "rule 4: an inline cfg(test) block using the manager test seam",

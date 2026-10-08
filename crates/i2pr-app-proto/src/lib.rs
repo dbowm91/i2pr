@@ -301,22 +301,52 @@ impl PrincipalOwnedResource {
     }
 }
 
-/// Attribution for a caller that a future AppManager transport has already
-/// authenticated as an administrator. This type does not authenticate its
-/// caller; the value must be created only at that trusted boundary.
+/// Non-serializable attribution for an authenticated administrator session or
+/// a validated local policy generation. This type does not authenticate its
+/// caller; each value must be created only at its trusted boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AdministratorPrincipal {
-    session_id: u128,
+    provenance: AdministratorProvenance,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum AdministratorProvenance {
+    AuthenticatedSession(u128),
+    TrustedLocalPolicy(u64),
 }
 impl AdministratorPrincipal {
     pub fn from_authenticated_session(session_id: u128) -> Result<Self, ContractError> {
         if session_id == 0 {
             return Err(ContractError::InvalidOpaqueId);
         }
-        Ok(Self { session_id })
+        Ok(Self {
+            provenance: AdministratorProvenance::AuthenticatedSession(session_id),
+        })
     }
-    pub const fn session_id(&self) -> u128 {
-        self.session_id
+
+    /// Records that a launch decision came from one validated committed local
+    /// policy generation. This constructor is provenance, not authentication;
+    /// callers must already have loaded and validated the protected state root.
+    pub fn from_trusted_local_policy(generation: u64) -> Result<Self, ContractError> {
+        if generation == 0 {
+            return Err(ContractError::InvalidOpaqueId);
+        }
+        Ok(Self {
+            provenance: AdministratorProvenance::TrustedLocalPolicy(generation),
+        })
+    }
+
+    pub const fn session_id(&self) -> Option<u128> {
+        match self.provenance {
+            AdministratorProvenance::AuthenticatedSession(id) => Some(id),
+            AdministratorProvenance::TrustedLocalPolicy(_) => None,
+        }
+    }
+
+    pub const fn policy_generation(&self) -> Option<u64> {
+        match self.provenance {
+            AdministratorProvenance::AuthenticatedSession(_) => None,
+            AdministratorProvenance::TrustedLocalPolicy(generation) => Some(generation),
+        }
     }
 }
 

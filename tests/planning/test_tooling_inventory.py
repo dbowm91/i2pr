@@ -277,7 +277,7 @@ class MutationTest(unittest.TestCase):
         path = self.root / "docs" / "architecture" / "tooling.md"
         path.write_text(
             path.read_text().replace(
-                "### Members (25 crates + 1 non-production binary = 26)",
+                "### Members (28 crates + 1 non-production binary = 29)",
                 "### Members (19 crates + 1 non-production binary = 20)",
                 1,
             ),

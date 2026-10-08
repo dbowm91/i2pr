@@ -632,10 +632,13 @@ fn register_app_runtime_service(
     config: &Config,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
+    let state_root = crate::app_runtime::prepare_state_root(&config.router.data_dir)
+        .map_err(DaemonError::RuntimeSupervisorFailed)?;
     let inputs = crate::app_runtime::AppRuntimeInputs {
         sam: config.sam.clone(),
         i2cp: config.i2cp.clone(),
         addressbook: addressbook.shared(),
+        state_root,
         manager_path_override: crate::app_runtime::manager_path_override(),
     };
     // Preflight the manager before registering the service.

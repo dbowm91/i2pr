@@ -51,6 +51,7 @@ use crate::config::{I2cpConfig, SamConfig};
 /// The distribution-owned manager executable name, resolved next to the
 /// daemon. There is no configuration counterpart to this constant by design.
 pub(crate) const MANAGER_BINARY_NAME: &str = "i2pr-appd";
+pub(crate) const STATE_ROOT_ENV: &str = "I2PR_APP_STATE_ROOT";
 
 /// Platform suffix applied to the sibling name.
 ///
@@ -255,6 +256,33 @@ struct SpawnedManager {
     stderr: Option<ChildStderr>,
 }
 
+/// Establish the daemon-owned state root before the manager is spawned.
+/// Relative router data paths are resolved against this process's startup cwd.
+pub(crate) fn prepare_state_root(data_dir: &Path) -> Result<PathBuf, String> {
+    let data_dir = if data_dir.is_absolute() {
+        data_dir.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "cannot resolve router data directory against cwd".to_owned())?
+            .join(data_dir)
+    };
+    let managed = data_dir.join("managed-apps");
+    std::fs::create_dir_all(&managed)
+        .map_err(|_| "cannot create managed-apps state root".to_owned())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "cannot make managed-apps state root private".to_owned())?;
+    }
+    let canonical = std::fs::canonicalize(&managed)
+        .map_err(|_| "cannot canonicalize managed-apps state root".to_owned())?;
+    if !canonical.is_absolute() || !canonical.is_dir() {
+        return Err("managed-apps state root is not an absolute directory".to_owned());
+    }
+    Ok(canonical)
+}
+
 /// Spawns the manager over two anonymous inherited pipes.
 ///
 /// The child receives exactly three descriptors: fd 0 (daemon→manager), fd 1
@@ -267,8 +295,14 @@ struct SpawnedManager {
 /// environment variable and takes no argument, so it needs none, and an
 /// inherited environment is one more channel through which a future change
 /// could accidentally start being load-bearing.
-async fn spawn_manager(path: &Path) -> Result<SpawnedManager, ManagerLaunchError> {
+async fn spawn_manager(
+    path: &Path,
+    state_root: &Path,
+) -> Result<SpawnedManager, ManagerLaunchError> {
     if !path.is_absolute() {
+        return Err(ManagerLaunchError::ManagerPathNotAbsolute);
+    }
+    if !state_root.is_absolute() {
         return Err(ManagerLaunchError::ManagerPathNotAbsolute);
     }
     // daemon→manager, then manager→daemon.
@@ -287,6 +321,7 @@ async fn spawn_manager(path: &Path) -> Result<SpawnedManager, ManagerLaunchError
 
     let mut child = Command::new(path)
         .env_clear()
+        .env(STATE_ROOT_ENV, state_root)
         .stdin(Stdio::from(child_stdin))
         .stdout(Stdio::from(child_stdout))
         .stderr(Stdio::piped())
@@ -394,6 +429,8 @@ pub(crate) struct AppRuntimeInputs {
     pub(crate) sam: SamConfig,
     pub(crate) i2cp: I2cpConfig,
     pub(crate) addressbook: crate::addressbook::SharedAddressBook,
+    /// Canonical daemon-owned `<router.data_dir>/managed-apps` root.
+    pub(crate) state_root: PathBuf,
     /// Test-only override for the resolved manager path (Plan 369 §4).
     ///
     /// Production composition never sets this, so the daemon always resolves
@@ -467,7 +504,7 @@ async fn drive_manager(
         }
     };
 
-    let spawned = match spawn_manager(&path).await {
+    let spawned = match spawn_manager(&path, &inputs.state_root).await {
         Ok(spawned) => spawned,
         Err(error) => {
             return failed(ServiceFailureCategory::InvalidState, error.to_string());
@@ -673,7 +710,9 @@ mod tests {
     #[tokio::test]
     async fn a_relative_manager_path_is_refused_before_any_spawn() {
         assert_eq!(
-            spawn_manager(Path::new("i2pr-appd")).await.err(),
+            spawn_manager(Path::new("i2pr-appd"), Path::new("/tmp/managed-apps"))
+                .await
+                .err(),
             Some(ManagerLaunchError::ManagerPathNotAbsolute)
         );
     }

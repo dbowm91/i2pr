@@ -88,8 +88,8 @@ jobs:
       # would either run last week's binaries or, because its `assert_fresh`
       # staleness guard exists, fail the build for the right reason and still
       # not test what it claims to.
-      - name: Build managed-app black-box siblings
-        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
+      - name: Build managed-app runtime and admin binaries
+        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appctl
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when Cargo launches the workspace's
@@ -128,6 +128,14 @@ jobs:
         run: |
           python3 scripts/check-managed-app-process-boundary.py
           python3 scripts/check-managed-app-process-boundary.py --self-test
+      - name: Check managed-app package boundary
+        run: |
+          python3 scripts/check-managed-app-package-boundary.py
+          python3 scripts/check-managed-app-package-boundary.py --self-test
+      - name: Check managed-app policy boundary
+        run: |
+          python3 scripts/check-managed-app-policy-boundary.py
+          python3 scripts/check-managed-app-policy-boundary.py --self-test
       - name: Check portable service-tunnel API snapshot
         run: python3 scripts/check-portable-service-tunnel-api.py
       - name: Check portable service-tunnel external consumer
