@@ -723,9 +723,8 @@ Forward dependency graph:
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
        |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
-       |  -> 381 in prog live ELS2 external driver lane (i2pd direction), WP1+WP2 done, stop condition 2 retired
-       |                 ^ WP1 (cheap gate) done; WP2-WP5 open
-       |                 ^ 380 is its closed hard dependency
+       |  -> 381 in prog live ELS2 external driver lane (i2pd direction), WP1–WP5 executed, merge onto main pending
+       |                 ^ WP1–WP5 done; reverse + i2pr-authority rows parked for successor; 380 is its closed hard dependency
        |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
             ^ 374 needs 381 (external driver); 380 is now a closed dependency
@@ -822,6 +821,15 @@ What remains: making that row pass, then WP4's rows and WP5's evidence. **The au
 actually executed is still none of the three**. Plan 381 still does **not** unblock 374.
 See `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
+**WP3–WP5 have since executed (2026-10-08).** The payload row passes (NONE, i2pd→i2pr)
+after an 8-defect chain fixed forward; the WP4 consumer matrix is green live (PSK + DH
+payload rows, wrong-credential → `ClientCredentialRejected` and wrong-secret →
+`LookupExhausted` negatives, different-day unit row, mesh authority control every run);
+WP5 landed `scripts/check-els2-live-lane-evidence.{py,sh}` plus packaged
+`evidence.json`/`evidence.md`. The reverse direction (i2pr publishes) and the i2pr-side
+`.b32` authority row are parked for a named successor with firing absence guards — so
+374/375/377/378 stay blocked on that successor, not on this lane.
+
 ### Why two ELS2 reference plans
 
 Java and i2pd share the deployed type-11 transcript but have different configuration/harness
@@ -849,5 +857,6 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 | 375 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/375-status.md. Build verified at the pin (JDK 21 required); source proof recorded incomplete; same unwritten-driver blocker. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
-| 380 | **ready** | capability | plans/implementation/i2pcontrol-proposal-170/380-els2-authorized-consumer-production-path.md | Closes the Plan 351 deferral: the authorized consumer (`begin_authorized`) and the whole crypto already exist and are tested, but the product's own consumer calls plain `begin()` and there is no credential *source*. Deliberately local-only so it can close without an external router. |
+| 380 | **passed** | capability | plans/closure/i2pcontrol-proposal-170/380-status.md (`passed-authorized-consumer-production-path-closed-with-two-defects-found-and-fixed`) | Closed the Plan 351 deferral: the authorized consumer (`begin_authorized`) now has a production caller and a typed `CustomOptions` credential seam; also fixed a pre-existing Plan 342 double-seal defect. Deliberately local-only. |
+| 381 | **in progress** (WP1–WP5 executed; main merge pending) | external interoperability | plans/closure/i2pcontrol-proposal-170/381-status.md | Plan 374's remaining external driver scope (i2pd direction): NONE/PSK/DH payload rows green live, two live negatives, parked reverse + i2pr-authority rows with named successor. |
 | 378 | blocked on 377 alone (373 + 376 passed) | final conformance gate. Closure: `plans/closure/i2pcontrol-proposal-170/378-status.md`. §1 re-freeze executed live and MET; §2/§5 green; §3/§4 blocked; `full-proposal-conformant` NOT SET. | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |

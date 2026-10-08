@@ -279,13 +279,15 @@ this pin, and nothing has been executed.
 Both plans are blocked by **the same specific, named gap**, and it is not an
 environmental one.
 
-> **Updated by Plan 381 §WP2.** Items 2 below and part of item 1 now exist:
-> `tests/integration/els2/run-i2pd-els2.sh` brings a stock i2pd pair up with
-> generated ELS2 configuration, and §3.4 records that a stock i2pd client does
-> consume a stock i2pd publisher's blinded destination with a real payload
-> crossing. What is **still** missing is the half that involves i2pr — the
-> driver and the rows — so the block stands. Plan 381 still does not unblock
-> 374, 375, 377 or 378.
+> **Updated by Plan 381 WP3–WP5 (2026-10-08).** The i2pd-direction half now exists:
+> `tests/integration/els2/run-i2pd-els2.sh` plus the driver
+> `crates/i2pr-daemon/tests/els2_i2pd_external.rs` carry NONE/PSK/DH payload
+> rows, two live negatives, and a mesh authority control, with packaged
+> `evidence.json`/`evidence.md` and `scripts/check-els2-live-lane-evidence.sh`
+> as the guard. What is **still** missing is the reverse direction
+> (i2pr publishes), the i2pr-side authority row, and all of Java — so the
+> block stands for 374/375/377/378 pending the named successor. Plan 381
+> still does not unblock them.
 
 The repository has no ELS2 live driver. What exists is:
 

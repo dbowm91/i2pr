@@ -1,4 +1,4 @@
-//! Plan 369 — `i2pr-appd`, the trusted managed-application runtime manager.
+//! Plans 369/374 — `i2pr-appd`, the trusted managed-application runtime manager.
 //!
 //! This crate is a **separate runtime trust zone** (Plan 369 §6). It may depend
 //! on the managed-app contracts and on reviewed process/async primitives. It
@@ -11,7 +11,8 @@
 //!
 //! - [`authority`]: manager-created launch authority, and nothing that can
 //!   decode one from wire bytes;
-//! - [`catalog`]: the trusted source of that authority — empty in production;
+//! - [`catalog`]: the trusted source of that authority, backed by validated
+//!   offline policy and reverified installed packages in production;
 //! - [`manager_link`]: the manager side of the Plan 368 private protocol;
 //! - [`apphost_launch`]: process lifecycle for `i2pr-apphost` children;
 //! - [`runtime`]: the bounded instance registry and launch pipeline;
@@ -63,7 +64,7 @@ use i2pr_app_proto::ContractError;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-pub use catalog::{EmptyCatalog, LaunchCatalog};
+pub use catalog::{EmptyCatalog, LaunchCatalog, PersistentLaunchCatalog};
 pub use transport::{DuplexTransport, inherited};
 
 /// Why an apphost launch produced no transport.
@@ -125,6 +126,8 @@ pub enum AppdError {
     App(&'static str),
     #[error("application instance ceiling reached")]
     InstanceCeiling,
+    #[error("persistent managed-application catalog could not be loaded")]
+    Catalog,
     #[error("invalid lifecycle transition: {0} -> {1}")]
     InvalidTransition(&'static str, &'static str),
 }
@@ -189,9 +192,9 @@ pub fn transition(from: AppdState, to: AppdState) -> Result<AppdState, AppdError
 /// The trusted manager process body.
 ///
 /// It owns one transport, one state machine, one launch catalog, and the bounded
-/// instance registry. With the production catalog — the only value the shipped
-/// binary uses — it launches nothing, so a clean return and a failed return leave
-/// the router in exactly the same place.
+/// instance registry. The shipped binary supplies `PersistentLaunchCatalog`;
+/// tests and fixture tooling may supply `EmptyCatalog` or an explicit test
+/// catalog.
 pub struct Appd {
     state: AppdState,
     catalog: Box<dyn LaunchCatalog>,
@@ -211,10 +214,10 @@ impl Appd {
 
     /// A manager with an explicit authority source.
     ///
-    /// Tests and a later package/grant owner use this. The shipped binary calls
-    /// [`Appd::new`], and there is no configuration, flag, or wire message that
-    /// reaches this constructor — see [`catalog`] for why that is the whole
-    /// security property rather than an omission.
+    /// Tests and fixture tooling use this to supply an explicit authority
+    /// source. The shipped binary wires the trusted persistent catalog through
+    /// `serve_with_catalog`; no configuration, flag, or wire message can replace
+    /// that catalog.
     pub fn with_catalog(catalog: impl LaunchCatalog + 'static) -> Self {
         Self {
             state: AppdState::Starting,
@@ -227,9 +230,8 @@ impl Appd {
         self.state
     }
 
-    /// Authorities this manager has spent. An authority is consumed whether or not
-    /// the launch succeeded: a failed launch is a spent launch, and retrying it
-    /// would be an autostart semantic Plan 369 does not have.
+    /// Authorities this manager has spent. An authority is consumed whether or
+    /// not the launch succeeded; app exit or failure does not trigger a retry.
     pub const fn launched(&self) -> u64 {
         self.launched
     }
@@ -278,7 +280,16 @@ impl Appd {
         let link = Arc::new(link);
         let runtime = runtime::AppdRuntime::new(Arc::clone(&link));
 
-        while let Some(authority) = self.catalog.next_launch() {
+        let mut catalog_error = None;
+        loop {
+            let authority = match self.catalog.next_launch() {
+                Ok(Some(authority)) => authority,
+                Ok(None) => break,
+                Err(error) => {
+                    catalog_error = Some(error);
+                    break;
+                }
+            };
             self.launched += 1;
             if let Err(error) = runtime.launch(authority).await {
                 // A refused launch is a spent launch, not a fatal manager error:
@@ -289,6 +300,10 @@ impl Appd {
             }
         }
 
+        if catalog_error.is_some() {
+            link.close().await;
+        }
+
         let outcome = driver
             .await
             .map_err(|_| AppdError::TransportClosed)?
@@ -297,6 +312,9 @@ impl Appd {
         runtime.shutdown().await;
         link.close().await;
         self.state = AppdState::Closed;
+        if let Some(error) = catalog_error {
+            return Err(error);
+        }
         outcome
     }
 }
@@ -348,4 +366,16 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     Appd::new().run(transport).await
+}
+
+/// Serves with an explicit authority source. Production uses persistent local
+/// administrator policy; fixtures provide their private test catalog.
+pub async fn serve_with_catalog<T>(
+    transport: T,
+    catalog: impl LaunchCatalog + 'static,
+) -> Result<(), AppdError>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    Appd::with_catalog(catalog).run(transport).await
 }

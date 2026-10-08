@@ -146,7 +146,9 @@ struct FixtureCatalog {
 }
 
 impl i2pr_appd::LaunchCatalog for FixtureCatalog {
-    fn next_launch(&self) -> Option<i2pr_appd::authority::LaunchAuthority> {
+    fn next_launch(
+        &self,
+    ) -> Result<Option<i2pr_appd::authority::LaunchAuthority>, i2pr_appd::AppdError> {
         use std::sync::atomic::Ordering;
 
         let ceiling = self.instances.min(FIXTURE_MAX_INSTANCES);
@@ -155,20 +157,20 @@ impl i2pr_appd::LaunchCatalog for FixtureCatalog {
         // starve the launches that follow it.
         if self.yielded.fetch_add(1, Ordering::SeqCst) >= ceiling {
             self.yielded.fetch_sub(1, Ordering::SeqCst);
-            return None;
+            return Ok(None);
         }
         let index = self.yielded.load(Ordering::SeqCst) - 1;
         let instance = self.first_instance + index as u128;
         let mut app_args = self.app_args.clone();
         app_args.instance = instance;
-        build_authority(
+        Ok(build_authority(
             &self.app_root,
             &self.entrypoint,
             &self.capabilities,
             app_args,
             instance,
         )
-        .ok()
+        .ok())
     }
 }
 

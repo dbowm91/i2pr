@@ -13,12 +13,19 @@ packages = {package["name"]: package for package in metadata["packages"]}
 expected = {
     "i2pr-app-manager-proto": {"i2pr-app-proto"},
     "i2pr-app-proto": set(),
+    # Plan 382: signed package verification is a leaf trust-zone owner. Its
+    # cryptographic/parser/filesystem dependencies are external only.
+    "i2pr-app-package": {"i2pr-app-proto"},
     # Plan 369 §6: `i2pr-appd` is a separate runtime trust zone. It may reach the
     # managed-app contracts and nothing else. The absent entries are the point:
     # naming this crate is what makes a future `i2pr-appd -> i2pr-daemon` or
     # `i2pr-appd -> i2pr-runtime` edge a hard failure instead of an unreviewed
     # way for the manager to reach router internals.
-    "i2pr-appd": {"i2pr-app-manager-proto", "i2pr-app-proto"},
+    "i2pr-appd": {"i2pr-app-manager-proto", "i2pr-app-proto", "i2pr-app-state"},
+    # Plan 383 policy evaluation may use the verified package store and app
+    # protocol types, but cannot construct appd launch authority.
+    "i2pr-app-state": {"i2pr-app-package", "i2pr-app-proto"},
+    "i2pr-appctl": {"i2pr-app-package", "i2pr-app-proto", "i2pr-app-state"},
     # Plan 369 §6: `i2pr-apphost` is the *other* side of that trust zone. It is
     # not allowed to depend on `i2pr-appd` either: the two are separate
     # processes, and linking one into the other would make the zone boundary a

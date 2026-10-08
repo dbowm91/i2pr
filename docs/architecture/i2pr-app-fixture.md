@@ -1,26 +1,29 @@
 # `i2pr-app-fixture` — the managed-app black-box fixture (evidence tooling)
 
-`i2pr-app-fixture` (Plan 369 WP5) is **evidence tooling, not product code**. It
-holds the two binaries Plan 369 needs to exercise the managed-app chain as real
-processes:
+`i2pr-app-fixture` is **evidence tooling, not production code**. It holds the
+native application and a separate fixture manager used to exercise the chain as
+real processes:
 
 | Binary | Role |
 | --- | --- |
 | `i2pr-app-fixture` | the native fixture **application** |
 | `i2pr-app-fixture-manager` | a fixture **manager** that runs the real `Appd` against a test launch catalog |
 
-No production crate may name it or depend on it.
+No production crate may name it or depend on it. A local administrator can
+still explicitly package, sign, install, trust, select, grant, and enable
+autostart for its binary, as for any package. Plan 383's qualification does that
+in a temporary state root; it does not add a built-in fixture launch path.
 `scripts/check-managed-app-process-boundary.py` rule 2 enforces both, and
 `check-dependency-direction.sh` carries the crate's allowlist so that a future
 `i2pr-appd -> i2pr-app-fixture` edge is a hard failure.
 
 ## Why the manager is a separate binary
 
-The shipped `i2pr-appd` refuses **all** arguments (rule 3 asserts this), which
-is deliberate: an argument that could select an executable, a root, or a launch
-profile would reopen exactly the user-configurable-program hole Plan 369 closes.
-Adding a fixture flag to it would therefore have undone the property it exists
-to protect.
+The shipped `i2pr-appd` refuses **all** arguments, which is deliberate: an
+argument that could select an executable, a root, or a launch profile would
+reopen exactly the user-configurable-program hole Plan 369 closes. Its
+production catalog uses the daemon-provided state root and validated persistent
+policy; adding a fixture flag would bypass that decision boundary.
 
 The fixture manager is a different program that runs the **real**
 `i2pr_appd::Appd::with_catalog(FixtureCatalog)` over the **real**
@@ -74,10 +77,11 @@ mistake would prove nothing except that the host can be OOM-killed:
 
 ## Evidence channel
 
-The fixture writes a JSONL transcript whose path arrives through launch
-`argv`. That is the only channel available that is inert, per-run, and outside
-every product path — so evidence collection adds no coupling to the thing being
-qualified.
+The Plan-369 fixture scenarios write JSONL transcripts whose paths arrive
+through test launch `argv`. In Plan 383's production-catalog case, the fixture
+receives only appd's two reserved identity arguments and derives a temporary
+transcript path locally. Both channels remain outside product state and carry
+no launch authority.
 
 The manager completes the application's argv itself rather than accepting it:
 the instance id is a manager-created value and the catalog re-derives it per
@@ -91,10 +95,12 @@ harnesses under `target/debug/deps` — never the plain `target/debug/<name>`
 binaries this crate exists to produce. Run
 
 ```text
-cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl
 ```
 
 before any focused `-p i2pr-daemon` qualification run. It is line 3 of the
-`AGENTS.md` routine floor and a CI step for exactly this reason. The
+`AGENTS.md` routine floor and a CI step for exactly this reason. Plan 383's
+black-box case also execs the shipped appd, so that plain binary must be fresh.
+The
 qualification harness asserts binary freshness itself and fails closed rather
 than silently testing last week's code.

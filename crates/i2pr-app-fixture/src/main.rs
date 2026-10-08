@@ -74,7 +74,15 @@ fn sam_reply_succeeded(line: &str, expected_version: &str) -> bool {
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let request = match FixtureArgs::parse(argv) {
+    let managed_catalog_context = argv.len() == 2
+        && argv.iter().all(|arg| {
+            arg.starts_with("--i2pr-app-id=") || arg.starts_with("--i2pr-app-instance=")
+        });
+    let request = match if managed_catalog_context {
+        FixtureArgs::parse_managed(argv)
+    } else {
+        FixtureArgs::parse(argv)
+    } {
         Ok(request) => request,
         Err(error) => {
             eprintln!("i2pr-app-fixture: {error}");

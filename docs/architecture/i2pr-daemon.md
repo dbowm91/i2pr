@@ -260,11 +260,18 @@ module previously lacked: `app_runtime` drives it over the inherited anonymous
 transport. The `#![allow(dead_code)]` remains scoped and documented, and must
 not be read as evidence that the bridge is unused.
 
-### Managed application runtime supervision (Plan 369)
+### Managed application runtime supervision (Plans 369–371 and 382–383)
 
 `app_runtime` is the daemon's half of the managed-app process: it creates the
 two anonymous pipes, resolves the manager executable, supervises the child, and
 runs the `AppManagerBridge` over those pipes.
+
+When the optional service starts, the daemon resolves `data_dir` against the
+startup cwd, creates `<data_dir>/managed-apps` with owner-private permissions,
+canonicalizes the directory, clears the child environment, and supplies only
+`I2PR_APP_STATE_ROOT=<canonical-path>` to the sibling manager. That root is
+local administrator policy input; appd still requires the inherited pipes and
+cannot be given a listener or a router protocol endpoint.
 
 **Executable resolution is distribution-owned.** The manager is the
 `current_exe()` **sibling** of the daemon, with platform suffix rules applied
@@ -293,6 +300,13 @@ restart policy decides. The app runtime registers with
 its own feature instead of aborting router startup, and it is excluded from
 `SupervisorSnapshot::ready` so a usable router is not reported as unready.
 Invariant 1 is the reason this is optional rather than a matter of taste.
+
+Appd's production catalog reads this state root after the private handshake,
+holds the runtime lock for the manager lifetime, loads one strict policy
+generation, and re-verifies each selected package before creating authority.
+No persistent launch policy belongs to the daemon or router config. See
+[managed-app policy v1](../../specs/references/managed-app-policy-v1.md) and
+[Plan 383 app state](i2pr-app-state.md).
 
 stderr is drained continuously with a bounded retained snapshot
 (`MAX_MANAGER_STDERR_SNAPSHOT_BYTES`) and an uncapped byte total, so a failing

@@ -15,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use i2pr_appd::{inherited, serve};
+use i2pr_appd::{PersistentLaunchCatalog, inherited, serve_with_catalog};
 
 fn main() -> ExitCode {
     // Refuse unknown arguments instead of tolerating them: an ignored argument
@@ -37,7 +37,10 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(serve(inherited())) {
+    match runtime.block_on(serve_with_catalog(
+        inherited(),
+        PersistentLaunchCatalog::new(),
+    )) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Diagnostics go to stderr only. stderr is never protocol and is

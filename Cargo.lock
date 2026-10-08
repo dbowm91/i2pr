@@ -958,6 +958,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-app-package"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "i2pr-app-proto",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
 name = "i2pr-app-proto"
 version = "0.1.0"
 dependencies = [
@@ -967,15 +981,47 @@ dependencies = [
 ]
 
 [[package]]
-name = "i2pr-appd"
+name = "i2pr-app-state"
 version = "0.1.0"
 dependencies = [
- "i2pr-app-manager-proto",
+ "ed25519-dalek",
+ "i2pr-app-package",
  "i2pr-app-proto",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
+name = "i2pr-appctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "i2pr-app-package",
+ "i2pr-app-proto",
+ "i2pr-app-state",
+ "tempfile",
+]
+
+[[package]]
+name = "i2pr-appd"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "i2pr-app-manager-proto",
+ "i2pr-app-proto",
+ "i2pr-app-state",
+ "rand_core 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "tokio",
+ "zip",
 ]
 
 [[package]]
@@ -1051,6 +1097,7 @@ version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "clap",
+ "ed25519-dalek",
  "eggserve-server",
  "flate2",
  "futures-executor",
@@ -1058,6 +1105,7 @@ dependencies = [
  "i2pr-api",
  "i2pr-app-manager-proto",
  "i2pr-app-proto",
+ "i2pr-app-state",
  "i2pr-client",
  "i2pr-console",
  "i2pr-core",
@@ -1083,6 +1131,7 @@ dependencies = [
  "sad-rsa",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "subtle",
  "tempfile",
  "thiserror",
@@ -1095,6 +1144,7 @@ dependencies = [
  "x25519-dalek",
  "x509-parser",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

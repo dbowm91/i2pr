@@ -310,12 +310,12 @@ reported as forced. No Plan 021 service binds sockets, connects to peers,
 performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
 advertises protocol capabilities.
 
-## Plan 369 managed-application process threats and controls
+## Managed-application process and policy threats (Plans 369–374)
 
-Plan 369 adds a managed-application runtime that starts applications as real
-processes. It is **disabled by default** and, with the shipped binary, starts
-nothing at all. The controls below are what makes that state reachable rather
-than aspirational.
+Plans 369–374 add a managed-application runtime that can start applications
+as real processes after explicit local policy. It is **disabled by default**
+and remains experimental, unsupported, and unadvertised. The controls below
+define the narrow authority path and its remaining non-claims.
 
 ### The three process edges are the whole trust model
 
@@ -350,15 +350,17 @@ inherited transport it has nothing to talk to, and without a daemon on the other
 end it holds no authority. A local attacker cannot connect because there is
 nothing to connect to.
 
-### No input path into a launch
+### Only persistent local policy can select an autostart
 
 Three independent facts hold together, and removing any one of them would open
 a path:
 
-1. The shipped `i2pr-appd` **refuses all arguments** and owns `EmptyCatalog`,
-   which yields no authority.
+1. The shipped `i2pr-appd` **refuses all arguments** and loads
+   `PersistentLaunchCatalog` only after the authenticated inherited-pipe
+   handshake. It consumes one local policy snapshot under a lifetime lock.
 2. The Plan-368 manager protocol has **no manager-receivable launch request**,
-   so the daemon cannot ask the manager to launch anything.
+   so the daemon cannot ask the manager to select an executable or grant a
+   capability.
 3. `LaunchAuthority` / `AuthorityRequest` have **no decoder** and private
    fields. Effective capabilities can only be assembled through
    `GrantedCapability::from_administrator_policy`, so `BrokeredTcp` is
@@ -367,6 +369,30 @@ a path:
 The seal is asserted by **method resolution**, not by scanning for a
 `#[derive(Deserialize)]`: adding a derive makes the crate stop compiling rather
 than merely fail a test.
+
+The daemon derives `<data-dir>/managed-apps`, canonicalizes it and clears the
+manager environment before binding only `I2PR_APP_STATE_ROOT`. Appd still needs
+the inherited anonymous pipes; setting that environment variable alone cannot
+give a standalone process router authority.
+
+### Signed content is not trusted content
+
+The Plan-373 package verifier checks exact signed manifest/inventory bytes,
+Ed25519 publisher-key fingerprint, archive structure, and every payload hash
+before the store commit. It copies an untrusted source once into private
+staging and parses only that copy. Package paths are validated and files are
+materialized manually; there is no install hook, generic extract-all, network
+fetch, or exec path. Appd re-verifies selected packages before constructing
+authority.
+
+These checks prove key possession and content integrity only. Publisher trust,
+selection, grants, profile, and autostart are distinct persistent decisions.
+They are stored outside package trees in strict immutable policy generations.
+A malformed highest committed generation fails closed. Offline mutations take
+the runtime lock nonblocking, so they cannot race appd's snapshot; untrust
+clears grants, profile, and autostart so retrust cannot resurrect authority.
+Only Sam and I2cp can be granted, and only when the exact selected manifest
+requests them.
 
 ### Containment is checked twice, and `Secured` fails closed
 
@@ -411,10 +437,18 @@ a claim this plan cannot support.
 
 Stated plainly because each is a plausible misreading:
 
-- **No sandbox.** `Secured` is refused, not approximated.
-- **No package trust.** There is no package store, signature verification,
-  publisher-key identity, grant persistence, or transactional install. The next
-  milestone owns those.
+- **No secured sandbox.** `Secured` remains refused. `UnsafeDirect` provides
+  ordinary host networking, and resource ceilings are descriptive only.
+- **No automatic update or rollback ordering.** Operators explicitly select an
+  exact artifact; version strings are not ordered.
+- **No app crash auto-restart.** Exit is terminal for that application during
+  the current appd lifetime; approved autostarts run after a later manager
+  restart with fresh random instance ids.
+- **No live administrator endpoint.** Filesystem access to the managed-app
+  state root is the local administrator boundary; mutations apply after
+  restart.
+- **No remote repository/TUF claim.** Package verification is local and
+  offline; repository rollback/freeze security belongs to a future plan.
 - **No administrator or general control credential** is exposed to a manager or
   an application.
 - **No restart recovery.** Restart begins empty: no application or grant

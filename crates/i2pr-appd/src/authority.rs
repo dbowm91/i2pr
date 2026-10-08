@@ -11,18 +11,18 @@
 //! [`AuthorityRequest`], whose fields are public only so a Rust caller can
 //! assemble one. Nothing turns wire bytes into either.
 //!
-//! [`AuthorityRequest`]'s fields are public because a launch owner in a later
-//! plan will need to build one from a package record; that is a Rust call, not a
-//! decode. The property that matters is asserted at compile time by
+//! [`AuthorityRequest`]'s fields are public because the trusted production
+//! catalog builds one from a reverified package and validated local policy;
+//! that is a Rust call, not a decode. The property that matters is asserted at compile time by
 //! `tests/authority_seal.rs`, so a later `#[derive(Deserialize)]` cannot quietly
 //! reopen it.
 //!
 //! # What the administrator gate does and does not prove
 //!
-//! `AdministratorPrincipal::from_authenticated_session` is a **typed** gate, not
-//! an authorization gate: Plan 369 has no administrator, no grant store, and no
-//! policy engine, so any caller can construct one. Stating that plainly matters
-//! more than pretending otherwise. What the gate does buy is narrow and real:
+//! `AdministratorPrincipal` now records either an authenticated session or the
+//! generation of validated trusted local policy. The local-policy provenance
+//! is not itself authentication; filesystem access to the managed-app root is
+//! the offline administrator boundary. What the gate buys is narrow and real:
 //!
 //! - effective capabilities can only be assembled through
 //!   `GrantedCapability::from_administrator_policy`, which refuses
@@ -31,9 +31,9 @@
 //! - a capability the operator never listed is not in `EffectiveCapabilities`,
 //!   so the session cannot open a service that requires it.
 //!
-//! The outer gate — that nothing in production ever calls [`LaunchAuthority::new`]
-//! at all — is `LaunchCatalog::empty()` being the only value the shipped
-//! `i2pr-appd` binary owns. See [`crate::catalog`].
+//! The outer gate is that only the sealed production catalog calls
+//! [`LaunchAuthority::new`], after package and policy validation. Package and
+//! state crates cannot reach this type. See [`crate::catalog`].
 
 use std::collections::BTreeSet;
 

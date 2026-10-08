@@ -24,12 +24,12 @@ fails. The two rows that can be inflated by build artifacts — the
 | Top-level `scripts/` files | 57 | 55 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
 | `check-*` on disk (all classes) | 58 | 55 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 37 | 35 `check-*` + 2 `python3` test discoveries |
+| Checker invocations in `ci.yml` | 39 | 37 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
 | CI workflows | 10 | 1 ordinary gate + 9 `workflow_dispatch` lanes |
-| Workspace members | 26 | 25 `crates/*` + `tools/i2pr-interop` |
+| Workspace members | 29 | 28 `crates/*` + `tools/i2pr-interop` |
 
 Corrected by Plan 372, each against the plan that made the figure false:
 the `scripts/`, `check-*`, `ci.yml`, fuzz-target and workspace-member
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-52 `check-*` files exist on disk in `scripts/` (55 counting `scripts/interop/`),
+54 `check-*` files exist on disk in `scripts/` (57 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -56,7 +56,9 @@ counting method both numbers come from.
 | `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
-| `scripts/check-managed-app-process-boundary.py` | Plan 369 static guard for the property the crate-edge scripts cannot see — **which process execs what**. Rule 1 pins the three blessed spawn sites (daemon→manager, appd→apphost, apphost→application); rule 1b requires `current_exe()` sibling resolution for the two distribution-owned edges and forbids any shell launcher and any `PATH` lookup; rule 2 forbids production code naming the fixture and forbids any manifest depending on it; rule 3 requires the shipped manager to **refuse** argv (a guard whose body returns, not merely an `args_os` token) and to avoid `with_catalog`; rule 4 keeps the manager test seam definition-shaped, failing closed on any production *caller*. Strips comments and `#[cfg(test)]` regions before scanning, so a legal test-only use stays legal while a production caller does not. `--self-test` applies every mutation in memory and requires the scan to reject it, with negative controls so a rule wrong in the strict direction also fails. | yes | yes |
+| `scripts/check-managed-app-process-boundary.py` | Plans 369/383 static guard for **which process execs what**. Rule 1 pins the three blessed spawn sites (daemon→manager, appd→apphost, apphost→application); rule 1b requires `current_exe()` sibling resolution for the two distribution-owned edges and forbids shell launch and `PATH` lookup; rule 2 forbids production code naming or depending on the fixture; rule 3 requires the shipped manager to refuse argv and use the persistent policy catalog; rule 4 keeps the manager test seam definition-shaped, failing closed on any production caller. Strips comments and `#[cfg(test)]` regions before scanning, so test-only qualification can exercise the real catalog without adding a production fixture edge. `--self-test` applies each mutation in memory and requires rejection, with negative controls. | yes | yes |
+| `scripts/check-managed-app-package-boundary.py` | Plan 382 package trust-zone guard: confines package code to the app protocol contract and rejects router/runtime, network, process execution, and launch-authority seams. `--self-test` proves each source/dependency rule with in-memory mutations and positive controls. | yes | yes |
+| `scripts/check-managed-app-policy-boundary.py` | Plan 383 policy/CLI/appd guard: constrains the app-state/appctl dependencies and keeps `LaunchAuthority` construction in appd, verifies persistent-catalog wiring, and checks the daemon's state-root handoff. `--self-test` proves the seam rules with source mutations. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
 | `scripts/check-license-metadata.py` | Plan 379 repository license-metadata drift guard. Asserts the MIT `LICENSE` shape, the root `[workspace.package] license`, and that **every** member manifest inherits or names MIT — then cross-checks the resolved `cargo metadata` values, so a `[workspace.package]` key nobody inherits cannot read as a declaration again. Also rejects any member `license-file` (a second, disagreeing source of truth) and keeps the README's clean-room/provenance clause. Regex-parsed rather than `tomllib` so it runs on macOS system Python; `--self-test` gives every rule a rejected mutation plus accepted controls for the strict direction. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
@@ -276,9 +278,9 @@ by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 44 | 46 rows marked `Floor: yes` |
-| Total routine-floor steps | 54 | — |
-| Checkers executed by `ci.yml` | 35 | 38 rows marked `CI: yes` |
+| Floor steps invoking a checker | 47 | 47 rows marked `Floor: yes` |
+| Total routine-floor steps | 57 | — |
+| Checkers executed by `ci.yml` | 37 | 40 rows marked `CI: yes` |
 | `check-*` files on disk | 55 (58 with `scripts/interop/`) | 57 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
@@ -896,12 +898,13 @@ source of truth for harness detail.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (25 crates + 1 non-production binary = 26)
+### Members (28 crates + 1 non-production binary = 29)
 
 Recomputed 2026-10-07 by Plan 372 from `cargo metadata --no-deps`; the roster
 below was six crates short, missing the whole operator console and the entire
 managed-application runtime (`i2pr-app-proto`, `i2pr-app-manager-proto`,
-`i2pr-appd`, `i2pr-apphost`, and the `i2pr-app-fixture` evidence crate).
+`i2pr-app-package`, `i2pr-app-state`, `i2pr-appctl`, `i2pr-appd`,
+`i2pr-apphost`, and the `i2pr-app-fixture` evidence crate).
 
 ```text
 crates/i2pr-addressbook, crates/i2pr-api, crates/i2pr-crypto,
@@ -913,6 +916,7 @@ crates/i2pr-testkit, crates/i2pr-transport,
 crates/i2pr-transport-ntcp2, crates/i2pr-transport-ssu2,
 crates/i2pr-tunnel,
 crates/i2pr-app-proto, crates/i2pr-app-manager-proto,
+crates/i2pr-app-package, crates/i2pr-app-state, crates/i2pr-appctl,
 crates/i2pr-appd, crates/i2pr-apphost, crates/i2pr-app-fixture,
 tools/i2pr-interop
 ```
@@ -964,7 +968,7 @@ is listed separately in [Opt-in runners](#opt-in-runners-not-in-the-floor-not-in
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo build --locked -p i2pr-app-fixture -p i2pr-apphost
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appctl
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps

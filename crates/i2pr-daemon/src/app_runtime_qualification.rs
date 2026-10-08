@@ -33,6 +33,9 @@
 //! Spawning the same real binary over the same real pipes keeps every part of
 //! the chain under test while letting each case name its own behavior.
 
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -110,6 +113,11 @@ const STDERR_CEILING: usize = 256 * 1024;
 mod tests {
     use super::*;
     use crate::addressbook::SharedAddressBook;
+    use ed25519_dalek::{Signer, SigningKey};
+    use i2pr_app_proto::{AppId, Capability, LaunchProfile};
+    use i2pr_app_state::{AppPolicy, AppStateStore, ResourceCeilings};
+    use sha2::{Digest, Sha256};
+    use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
     // -- harness ------------------------------------------------------------
 
@@ -184,6 +192,156 @@ mod tests {
             path.display()
         );
         path
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn signed_fixture_package(path: &Path, app_id: &AppId, application: &[u8]) -> String {
+        let signing = SigningKey::from_bytes(&[73; 32]);
+        let key = signing.verifying_key().to_bytes();
+        let publisher = sha256_hex(&key);
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "app_id": app_id,
+            "publisher_id": publisher,
+            "version": "1.0.0",
+            "name": "managed catalog fixture",
+            "description": "",
+            "host_protocol_min": {"major": 1, "minor": 0},
+            "host_protocol_max": {"major": 1, "minor": 0},
+            "entrypoints": [{"target": i2pr_app_state::target_triple().unwrap(), "path": "bin/app"}],
+            "requested_capabilities": ["sam", "i2cp"],
+            "resources": [],
+            "ui": null,
+            "autostart_requested": false,
+            "restart_requested": false
+        });
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        let inventory = serde_json::json!([{
+            "path": "bin/app",
+            "size": application.len(),
+            "sha256": sha256_hex(application),
+            "executable": true
+        }]);
+        let inventory = serde_json::to_vec(&inventory).unwrap();
+        let mut transcript = b"I2PR-APP-PACKAGE-V1\0".to_vec();
+        transcript.extend_from_slice(&(manifest.len() as u32).to_be_bytes());
+        transcript.extend_from_slice(&manifest);
+        transcript.extend_from_slice(&(inventory.len() as u32).to_be_bytes());
+        transcript.extend_from_slice(&inventory);
+        transcript.extend_from_slice(&key);
+        let signature = signing.sign(&transcript).to_bytes();
+        let mut zip = ZipWriter::new(File::create(path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, bytes) in [
+            ("manifest.json", manifest.as_slice()),
+            ("inventory.json", inventory.as_slice()),
+            ("publisher.ed25519", key.as_slice()),
+            ("signature.ed25519", signature.as_slice()),
+            ("payload/bin/app", application),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        publisher
+    }
+
+    fn prepare_persistent_catalog(root: &Path, fixture_binary: &Path) -> (PathBuf, Vec<AppId>) {
+        let managed_root = root.join("managed-apps");
+        let store = AppStateStore::open(&managed_root).expect("state store opens");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let app_ids = [
+            AppId::parse(format!("catalog.{nonce}.sam")).expect("SAM fixture app id"),
+            AppId::parse(format!("catalog.{nonce}.i2cp")).expect("I2CP fixture app id"),
+        ];
+        let broken_app_id =
+            AppId::parse(format!("catalog.{nonce}.bad")).expect("broken fixture app id");
+        let application = std::fs::read(fixture_binary).expect("fixture application bytes");
+        let mut installed = Vec::new();
+        let mut publisher = None;
+        let mut broken_package = None;
+        for (index, app_id) in app_ids.iter().chain([&broken_app_id]).enumerate() {
+            let archive = root.join(format!("catalog-{index}.i2prapp"));
+            let current_publisher = signed_fixture_package(&archive, app_id, &application);
+            if let Some(expected) = &publisher {
+                assert_eq!(expected, &current_publisher);
+            } else {
+                publisher = Some(current_publisher.clone());
+            }
+            let package = store
+                .install_package(&archive)
+                .expect("signed fixture installs");
+            assert_eq!(package.identity.app_id, *app_id);
+            installed.push(package.identity.clone());
+            if app_id == &broken_app_id {
+                broken_package = Some(package);
+            }
+            std::fs::remove_file(archive).expect("remove package input");
+        }
+        let publisher = publisher.expect("publisher fingerprint");
+        store
+            .mutate(|state| {
+                state.trusted_publishers.push(publisher.clone());
+                state.apps = installed
+                    .iter()
+                    .zip(app_ids.iter().chain([&broken_app_id]))
+                    .map(|(identity, app_id)| AppPolicy {
+                        publisher_id: publisher.clone(),
+                        app_id: app_id.clone(),
+                        selected: Some(identity.clone()),
+                        granted_capabilities: if app_id.as_str().ends_with(".sam") {
+                            vec![Capability::Sam]
+                        } else {
+                            vec![Capability::I2cp]
+                        },
+                        launch_profile: Some(LaunchProfile::UnsafeDirect),
+                        autostart: true,
+                        max_connections: 8,
+                        resource_ceilings: ResourceCeilings::default(),
+                    })
+                    .collect();
+                state.apps.sort_by(|a, b| {
+                    (&a.publisher_id, &a.app_id).cmp(&(&b.publisher_id, &b.app_id))
+                });
+                Ok(())
+            })
+            .expect("persist trusted explicit launch policy");
+        let broken_package = broken_package.expect("broken sibling package");
+        let broken_payload = broken_package.path.join("payload/bin/app");
+        let permissions = std::fs::metadata(&broken_payload)
+            .expect("installed payload metadata")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &broken_payload,
+                std::fs::Permissions::from_mode(permissions.mode() | 0o200),
+            )
+            .expect("make test-owned installed payload owner-writable");
+        }
+        #[cfg(not(unix))]
+        {
+            let mut permissions = permissions;
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&broken_payload, permissions)
+                .expect("make test-owned installed payload writable");
+        }
+        std::fs::write(broken_payload, b"tampered")
+            .expect("tamper the selected sibling after installation");
+        (
+            managed_root.canonicalize().expect("canonical managed root"),
+            app_ids.to_vec(),
+        )
     }
 
     /// The workspace `crates/` directory.
@@ -565,6 +723,156 @@ mod tests {
             sessions,
             streams,
             bridge_error,
+        }
+    }
+
+    /// Runs the shipped `i2pr-appd` over the same real manager pipes and
+    /// private SAM/I2CP gateway used above, but with its production persistent
+    /// policy catalog and a signed, locally installed fixture package.
+    async fn run_persistent_catalog(
+        root: &Path,
+        app_ids: &[AppId],
+        already_seen: &BTreeSet<PathBuf>,
+    ) -> (Outcome, BTreeSet<PathBuf>) {
+        let manager = sibling("i2pr-appd");
+        let apphost = sibling(APPHOST);
+        let application = sibling(FIXTURE_APP);
+        assert_fresh(&manager, &["i2pr-appd/src"]);
+        assert_fresh(&apphost, &["i2pr-apphost/src"]);
+        assert_fresh(
+            &application,
+            &[
+                "i2pr-app-fixture/src/lib.rs",
+                "i2pr-app-fixture/src/main.rs",
+            ],
+        );
+
+        let (to_manager_read, to_manager_write) = std::io::pipe().expect("daemon->appd pipe");
+        let (from_manager_read, from_manager_write) = std::io::pipe().expect("appd->daemon pipe");
+        let mut child: Child = Command::new(&manager)
+            .env_clear()
+            .env("I2PR_APP_STATE_ROOT", root)
+            .stdin(Stdio::from(to_manager_read))
+            .stdout(Stdio::from(from_manager_write))
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the shipped manager with the daemon-owned state root");
+        let mut stderr = child.stderr.take().expect("piped appd stderr");
+        let stderr_task = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match stderr.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if bytes.len() < STDERR_CEILING {
+                            bytes.extend_from_slice(
+                                &chunk[..read.min(STDERR_CEILING - bytes.len())],
+                            );
+                        }
+                    }
+                }
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        });
+
+        let transport = DaemonTransport::new(
+            OwnedFd::from(from_manager_read),
+            OwnedFd::from(to_manager_write),
+        )
+        .expect("daemon transport");
+        let bridge = Arc::new(AppManagerBridge::new(composition()));
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let driver = {
+            let bridge = Arc::clone(&bridge);
+            async move { bridge.run_announcing_ready(transport, Some(ready_tx)).await }
+        };
+        let bridge_task = tokio::spawn(driver);
+        let (bridge_ready, handshake_error) = match tokio::time::timeout(DEADLINE, ready_rx).await {
+            Ok(Ok(Ok(()))) => (true, None),
+            Ok(Ok(Err(error))) => (false, Some(format!("{error:?}"))),
+            Ok(Err(_)) => (false, Some("bridge ended before announcing".to_owned())),
+            Err(_) => (false, Some("manager handshake timed out".to_owned())),
+        };
+        let (transcripts, transcript_paths) =
+            wait_for_managed_transcripts(app_ids, already_seen).await;
+        let (sessions, streams) = bridge.counts().await;
+
+        // Closing the bridge closes its owned transport; appd then observes
+        // EOF. The manager remains responsible for its apphost children.
+        bridge.cancel();
+        bridge_task.abort();
+        let _ = bridge_task.await;
+        let (manager_status, manager_exited_cleanly) =
+            match tokio::time::timeout(MANAGER_EXIT_GRACE, child.wait()).await {
+                Ok(Ok(status)) => (status, true),
+                Ok(Err(_)) | Err(_) => {
+                    let _ = child.start_kill();
+                    let status = tokio::time::timeout(DEADLINE, child.wait())
+                        .await
+                        .expect("a killed manager must still be reaped")
+                        .expect("manager reap");
+                    (status, false)
+                }
+            };
+        let manager_stderr = tokio::time::timeout(DEADLINE, stderr_task)
+            .await
+            .expect("appd stderr drain must end with the child")
+            .unwrap_or_default();
+        (
+            Outcome {
+                transcript: transcripts.into_iter().flat_map(|(_, rows)| rows).collect(),
+                manager_stderr,
+                manager_status: Some(manager_status),
+                manager_exited_cleanly,
+                bridge_ready,
+                sessions,
+                streams,
+                bridge_error: handshake_error,
+            },
+            transcript_paths,
+        )
+    }
+
+    async fn wait_for_managed_transcripts(
+        app_ids: &[AppId],
+        already_seen: &BTreeSet<PathBuf>,
+    ) -> (Vec<(PathBuf, Vec<serde_json::Value>)>, BTreeSet<PathBuf>) {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let mut found = Vec::new();
+            let directory = std::env::temp_dir();
+            for app_id in app_ids {
+                let prefix = format!("i2pr-app-fixture-managed-{}-", app_id.as_str());
+                for entry in std::fs::read_dir(&directory).expect("temp directory reads") {
+                    let entry = entry.expect("temp entry reads");
+                    let path = entry.path();
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else { continue };
+                    if !name.starts_with(&prefix)
+                        || !name.ends_with(".jsonl")
+                        || already_seen.contains(&path)
+                        || !entry.file_type().expect("temp entry type").is_file()
+                    {
+                        continue;
+                    }
+                    found.push((path.clone(), read_transcript(&path)));
+                }
+            }
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            let complete = found.iter().all(|(_, rows)| {
+                rows.iter()
+                    .any(|row| row.get("step").and_then(|v| v.as_str()) == Some("complete"))
+            });
+            if found.len() >= app_ids.len() && complete {
+                let paths = found.iter().map(|(path, _)| path.clone()).collect();
+                return (found, paths);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "persistent catalog did not autostart all signed apps; found transcripts={found:?}"
+            );
+            tokio::time::sleep(POLL_STEP).await;
         }
     }
 
@@ -1004,11 +1312,103 @@ mod tests {
     /// The SAM session id both duplicate-id instances declare.
     const SHARED_SAM_SESSION_ID: &str = "5e6e1a2b-0000-4000-8000-000000000001";
 
-    // -- the fixture cannot be reached from production ----------------------
+    // -- production persistent catalog qualification ------------------------
 
-    /// Plan 369 §G: the fixture is evidence tooling. This asserts the property
-    /// that makes it inert — the shipped manager owns an empty catalog, so no
-    /// authority can name the fixture executable at all.
+    /// Plans 382–383: install signed packages into a fresh local store, persist
+    /// explicit publisher trust, per-app grants, exact selection and
+    /// autostart, then exercise the shipped manager twice through the real
+    /// private SAM and I2CP gateway. A tampered selected sibling is present on
+    /// both starts and must not prevent either valid app from running.
+    #[tokio::test]
+    async fn persisted_autostarts_reach_sam_and_i2cp_again_after_manager_restart() {
+        let _ = sibling("i2pr-appd");
+        let fixture = sibling(FIXTURE_APP);
+        let _ = sibling(APPHOST);
+        let scratch = Scratch::new("persistent-catalog");
+        let (root, app_ids) = prepare_persistent_catalog(&scratch.path, &fixture);
+
+        let (first, first_paths) = run_persistent_catalog(&root, &app_ids, &BTreeSet::new()).await;
+        first.assert_succeeded("first persistent catalog start");
+        assert!(
+            first.recorded("sam-session"),
+            "SAM transcript: {:?}",
+            first.steps()
+        );
+        assert!(
+            first.recorded("i2cp-set-date"),
+            "I2CP transcript: {:?}",
+            first.steps()
+        );
+        assert!(
+            first
+                .manager_stderr
+                .contains("one autostart application was refused by local policy"),
+            "the tampered sibling must be refused while valid siblings continue; stderr={:?}",
+            first.manager_stderr
+        );
+        let first_instances: BTreeSet<String> = first
+            .transcript
+            .iter()
+            .filter(|row| row.get("step").and_then(|v| v.as_str()) == Some("start"))
+            .filter_map(|row| {
+                row.get("detail")
+                    .and_then(|detail| detail.get("instance"))
+                    .and_then(|instance| instance.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(first_instances.len(), 2, "two apps autostart once");
+
+        let (second, second_paths) = run_persistent_catalog(&root, &app_ids, &first_paths).await;
+        second.assert_succeeded("restarted persistent catalog");
+        assert!(
+            second.recorded("sam-session"),
+            "SAM transcript: {:?}",
+            second.steps()
+        );
+        assert!(
+            second.recorded("i2cp-set-date"),
+            "I2CP transcript: {:?}",
+            second.steps()
+        );
+        assert!(
+            second
+                .manager_stderr
+                .contains("one autostart application was refused by local policy"),
+            "bad sibling refusal must be isolated on restart; stderr={:?}",
+            second.manager_stderr
+        );
+        let second_instances: BTreeSet<String> = second
+            .transcript
+            .iter()
+            .filter(|row| row.get("step").and_then(|v| v.as_str()) == Some("start"))
+            .filter_map(|row| {
+                row.get("detail")
+                    .and_then(|detail| detail.get("instance"))
+                    .and_then(|instance| instance.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            second_instances.len(),
+            2,
+            "two apps autostart after restart"
+        );
+        assert!(
+            first_instances.is_disjoint(&second_instances),
+            "restart must mint fresh instance ids: first={first_instances:?}, second={second_instances:?}"
+        );
+
+        for path in first_paths.union(&second_paths) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // -- production manager does not name fixture tooling -------------------
+
+    /// Plan 369 §G / Plan 383: the fixture is evidence tooling. Production
+    /// launch authority comes only from the persistent local policy catalog;
+    /// the shipped manager never names the fixture executable.
     #[test]
     fn the_shipped_manager_cannot_name_the_fixture() {
         let shipped = sibling("i2pr-appd");
@@ -1019,8 +1419,9 @@ mod tests {
         let source = std::fs::read_to_string(crates_dir().join("i2pr-appd/src/main.rs"))
             .expect("i2pr-appd main");
         assert!(
-            source.contains("Appd::new") || source.contains("serve("),
-            "the shipped manager must use the empty-catalog path"
+            source.contains("PersistentLaunchCatalog::new()")
+                && source.contains("serve_with_catalog"),
+            "the shipped manager must use the persistent policy catalog"
         );
         assert!(
             !source.contains(FIXTURE_APP),
