@@ -1314,7 +1314,7 @@ mod tests {
 
     // -- production persistent catalog qualification ------------------------
 
-    /// Plans 373–374: install signed packages into a fresh local store, persist
+    /// Plans 382–383: install signed packages into a fresh local store, persist
     /// explicit publisher trust, per-app grants, exact selection and
     /// autostart, then exercise the shipped manager twice through the real
     /// private SAM and I2CP gateway. A tampered selected sibling is present on
@@ -1406,7 +1406,7 @@ mod tests {
 
     // -- production manager does not name fixture tooling -------------------
 
-    /// Plan 369 §G / Plan 374: the fixture is evidence tooling. Production
+    /// Plan 369 §G / Plan 383: the fixture is evidence tooling. Production
     /// launch authority comes only from the persistent local policy catalog;
     /// the shipped manager never names the fixture executable.
     #[test]

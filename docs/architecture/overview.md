@@ -242,14 +242,14 @@ design choices. Every workspace crate appears exactly once.
 | 23 | Interop apparatus | Harness boundary | Reference-router harness, evidence classes, sanitization, Multipass/rootless lanes (historical NTCP2 surface). | [interop-apparatus.md](interop-apparatus.md) |
 | 25 | `i2pr-app-manager-proto` | AppManager contract | Private router/AppManager protocol: handshake, bounded frames, strict directional control vocabulary, opaque daemon-assigned handles, pure bounded accounting. Authority ceiling below Proposal 170; no administrator vocabulary. Plan 368. | [i2pr-app-manager-proto.md](i2pr-app-manager-proto.md) |
 | 24 | `i2pr-app-proto` | App contract | Managed native-app v1 protocol, capabilities, manifest, default-deny policy and sandbox attestation vocabulary. No OS/runtime owner. | [i2pr-app-proto.md](i2pr-app-proto.md) |
-| 26 | `i2pr-appd` | App manager process | Trusted manager process: persistent policy catalog, reverified package launch authority, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plans 369/374. | [i2pr-appd.md](i2pr-appd.md) |
+| 26 | `i2pr-appd` | App manager process | Trusted manager process: persistent policy catalog, reverified package launch authority, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plans 369/383. | [i2pr-appd.md](i2pr-appd.md) |
 | 27 | `i2pr-apphost` | Direct-exec supervisor | One-shot bounded supervisor: single launch request, double-checked root containment, direct no-shell exec, `Secured` refused before exec, byte-transparent relay, direct-child cleanup. Plan 369. | [i2pr-apphost.md](i2pr-apphost.md) |
-| 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Production source does not name or bundle it; qualification installs it only through an explicit temporary signed policy. Plans 369/374. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |
-| 29 | `i2pr-app-package` | Signed package/store | Bounded Stored-only package verifier, Ed25519 publisher identity, signed inventory, immutable local installation. Plan 373. | [i2pr-app-package.md](i2pr-app-package.md) |
-| 30 | `i2pr-app-state` | Persistent policy | Strict generation store, offline policy mutation, exact package re-verification, validated launch decisions. Plan 374. | [i2pr-app-state.md](i2pr-app-state.md) |
-| 31 | `i2pr-appctl` | Offline administrator CLI | Package verify/install/list/inspect/remove and restart-applied publisher/app policy. Plan 374. | [i2pr-appctl.md](i2pr-appctl.md) |
+| 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Production source does not name or bundle it; qualification installs it only through an explicit temporary signed policy. Plans 369/383. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |
+| 29 | `i2pr-app-package` | Signed package/store | Bounded Stored-only package verifier, Ed25519 publisher identity, signed inventory, immutable local installation. Plan 382. | [i2pr-app-package.md](i2pr-app-package.md) |
+| 30 | `i2pr-app-state` | Persistent policy | Strict generation store, offline policy mutation, exact package re-verification, validated launch decisions. Plan 383. | [i2pr-app-state.md](i2pr-app-state.md) |
+| 31 | `i2pr-appctl` | Offline administrator CLI | Package verify/install/list/inspect/remove and restart-applied publisher/app policy. Plan 383. | [i2pr-appctl.md](i2pr-appctl.md) |
 
-### 4.24 Managed application package and policy (Plans 373–374)
+### 4.24 Managed application package and policy (Plans 382–383)
 
 `i2pr-app-package` proves signed package integrity and publisher-key identity;
 it makes no trust or launch decision. `i2pr-app-state` persists explicit local

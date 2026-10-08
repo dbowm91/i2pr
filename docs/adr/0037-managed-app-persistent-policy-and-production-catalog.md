@@ -6,7 +6,7 @@ Date: 2026-10-07
 
 ## Context
 
-Plan 373 defines signed package identity and an immutable local package store.
+Plan 382 defines signed package identity and an immutable local package store.
 The production manager still needs a durable operator decision before a verified
 package may receive launch authority. This decision must survive restarts while
 remaining unavailable to package parsers, the router protocol, and a live
@@ -24,7 +24,7 @@ network administrator endpoint.
 3. Grants bind to `(publisher fingerprint, AppId)`, not display name or
    package version. Only `Sam` and `I2cp` are grantable in this milestone.
    Manifest capability, autostart, and restart fields are requests only.
-4. Selection stores the exact Plan-373 package identity, including artifact
+4. Selection stores the exact Plan-382 package identity, including artifact
    digest. Install never selects or trusts. Updates and rollbacks require an
    explicit selection; version strings are not ordered.
 5. Untrust clears grants, launch profile, and autostart so retrusting cannot
@@ -64,4 +64,4 @@ network administrator endpoint.
 
 - [Managed-app package v1](../../specs/references/managed-app-package-v1.md)
 - [Managed-app policy v1](../../specs/references/managed-app-policy-v1.md)
-- Plans 373 and 374
+- Plans 382 and 383

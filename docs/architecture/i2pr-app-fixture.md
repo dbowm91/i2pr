@@ -11,7 +11,7 @@ real processes:
 
 No production crate may name it or depend on it. A local administrator can
 still explicitly package, sign, install, trust, select, grant, and enable
-autostart for its binary, as for any package. Plan 374's qualification does that
+autostart for its binary, as for any package. Plan 383's qualification does that
 in a temporary state root; it does not add a built-in fixture launch path.
 `scripts/check-managed-app-process-boundary.py` rule 2 enforces both, and
 `check-dependency-direction.sh` carries the crate's allowlist so that a future
@@ -78,7 +78,7 @@ mistake would prove nothing except that the host can be OOM-killed:
 ## Evidence channel
 
 The Plan-369 fixture scenarios write JSONL transcripts whose paths arrive
-through test launch `argv`. In Plan 374's production-catalog case, the fixture
+through test launch `argv`. In Plan 383's production-catalog case, the fixture
 receives only appd's two reserved identity arguments and derives a temporary
 transcript path locally. Both channels remain outside product state and carry
 no launch authority.
@@ -99,7 +99,7 @@ cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-ap
 ```
 
 before any focused `-p i2pr-daemon` qualification run. It is line 3 of the
-`AGENTS.md` routine floor and a CI step for exactly this reason. Plan 374's
+`AGENTS.md` routine floor and a CI step for exactly this reason. Plan 383's
 black-box case also execs the shipped appd, so that plain binary must be fresh.
 The
 qualification harness asserts binary freshness itself and fails closed rather

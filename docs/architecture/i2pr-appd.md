@@ -1,6 +1,6 @@
 # `i2pr-appd` — the trusted application manager process
 
-`i2pr-appd` (Plans 369 and 374) owns the **manager** side of the managed native
+`i2pr-appd` (Plans 369 and 383) owns the **manager** side of the managed native
 application runtime: the separately supervised process the router starts, which
 holds manager-created launch authority and is the only component that starts an
 `i2pr-apphost`.

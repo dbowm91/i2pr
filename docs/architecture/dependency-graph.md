@@ -43,9 +43,9 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-i2pcontrol` (Plan 286) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-proto` (Plan 345) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-app-manager-proto` (Plan 368) | `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
-| `i2pr-app-package` (Plan 373) | `i2pr-app-proto` | same | `ed25519-dalek`, `serde`, `serde_json`, `sha2`, `thiserror`, `zip` |
-| `i2pr-app-state` (Plan 374) | `i2pr-app-package`, `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
-| `i2pr-appctl` (Plan 374) | `i2pr-app-package`, `i2pr-app-proto`, `i2pr-app-state` | same | `clap` |
+| `i2pr-app-package` (Plan 382) | `i2pr-app-proto` | same | `ed25519-dalek`, `serde`, `serde_json`, `sha2`, `thiserror`, `zip` |
+| `i2pr-app-state` (Plan 383) | `i2pr-app-package`, `i2pr-app-proto` | same | `serde`, `serde_json`, `thiserror` |
+| `i2pr-appctl` (Plan 383) | `i2pr-app-package`, `i2pr-app-proto`, `i2pr-app-state` | same | `clap` |
 | `i2pr-appd` (Plans 369/374) | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-app-state` | same | `rand_core`, `thiserror`, `tokio` |
 | `i2pr-apphost` (Plan 369) | `i2pr-app-manager-proto`, `i2pr-app-proto` | same | `thiserror`, `tokio`, `tokio-util` |
 | `i2pr-app-fixture` (Plan 369 WP5, **evidence tooling**) | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-appd` | same | `serde_json`, `thiserror`, `tokio` |

@@ -1,4 +1,4 @@
-# Plan 373 — signed immutable managed-app package and local store foundation
+# Plan 382 — signed immutable managed-app package and local store foundation
 
 Status: **passed-managed-app-signed-package-store-foundation**.
 
@@ -19,13 +19,13 @@ Interface dependencies:
 - `i2pr-appd::authority::LaunchAuthority` remains sealed; this plan does not create its production caller.
 
 Successor:
-- Plan 374 consumes the verified immutable store to provide persistent administrator policy, a production launch catalog, restart-safe selection/autostart, and the offline administrative CLI.
+- Plan 383 consumes the verified immutable store to provide persistent administrator policy, a production launch catalog, restart-safe selection/autostart, and the offline administrative CLI.
 
 ## Objective
 
 Define and implement the first locally installable managed-application package format and immutable package store.
 
-A package accepted by Plan 373 must have:
+A package accepted by Plan 382 must have:
 
 1. a bounded single-file `.i2prapp` container;
 2. an exact Plan-345/370 manifest;
@@ -50,7 +50,7 @@ The package boundary can be built independently of live launch policy. Keeping i
 
 The Update Framework (TUF) is the appropriate reference for a future remote repository/update layer because it addresses rollback, freeze, mix-and-match, malicious mirror, and key-compromise classes. Those are repository metadata problems, not prerequisites for verifying a local package supplied by an operator.
 
-Plan 373 therefore has **no network client and no TUF implementation**. It produces a local artifact/store model that a later TUF-backed repository can safely target without changing package identity.
+Plan 382 therefore has **no network client and no TUF implementation**. It produces a local artifact/store model that a later TUF-backed repository can safely target without changing package identity.
 
 Sigstore bundles are also not the sole v1 trust root: public identity/transparency infrastructure is useful for public release provenance, but i2pr must be able to verify a package offline and over I2P-only distribution. A future package may carry additional provenance, but the local publisher signature remains independently verifiable.
 
@@ -77,9 +77,9 @@ Add ADR 0036 (next free ADR at implementation start) freezing:
 - package files are immutable content; application data lives outside package versions;
 - no package executes code during verify/install/update/uninstall;
 - local package trust is separate from future TUF/Sigstore/repository provenance;
-- downgrade/selection semantics belong to Plan 374, not the package parser.
+- downgrade/selection semantics belong to Plan 383, not the package parser.
 
-If ADR 0036 is not still free, use the next free ADR number and update this plan during implementation without renumbering Plan 373.
+If ADR 0036 is not still free, use the next free ADR number and update this plan during implementation without renumbering Plan 382.
 
 ## Package format v1
 
@@ -270,7 +270,7 @@ Never unpack into an existing package directory.
 - Final files are owner-readable; writable permission is removed from package payload where supported.
 - Only inventory entries marked executable receive an executable bit on Unix.
 - On Windows, the executable property is semantic and the normal file is created; execution still depends on the selected entrypoint.
-- Package mutation by the same OS administrator remains outside the isolation threat model, but Plan 374 re-verifies selected packages before authority construction so accidental/local tamper fails closed.
+- Package mutation by the same OS administrator remains outside the isolation threat model, but Plan 383 re-verifies selected packages before authority construction so accidental/local tamper fails closed.
 
 ## Invariants
 
@@ -443,7 +443,7 @@ The closure must also run the complete current `AGENTS.md` routine floor.
 
 ## Acceptance criteria
 
-Plan 373 passes only when:
+Plan 382 passes only when:
 
 1. one exact bounded `.i2prapp` v1 profile is frozen;
 2. publisher identity is cryptographically derived from the Ed25519 public key;
@@ -479,10 +479,10 @@ Stop and register a corrective/successor if:
 - boundary-checker mutation evidence;
 - full routine floor;
 - support/config diff;
-- unblock audit for Plan 374.
+- unblock audit for Plan 383.
 
 ## Handoff notes
 
-Do not add a production launch catalog in Plan 373. A verified package is merely cryptographically attributable content.
+Do not add a production launch catalog in Plan 382. A verified package is merely cryptographically attributable content.
 
-Plan 374 is the authority milestone: it decides which publisher keys the operator trusts, which capabilities are granted, which exact installed version is selected, and whether any application becomes launchable.
+Plan 383 is the authority milestone: it decides which publisher keys the operator trusts, which capabilities are granted, which exact installed version is selected, and whether any application becomes launchable.

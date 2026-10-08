@@ -1,17 +1,22 @@
-# Plan 374 closure — persistent managed-app policy, production catalog, and offline administration
+# Plan 383 closure — persistent managed-app policy, production catalog, and offline administration
 
 Status: **passed-managed-app-persistent-policy-production-catalog-and-offline-administration**.
+
+Identity note: this work was initially registered on its feature branch as
+Managed native app runtime Plan 374. The global ownership audit found that
+Proposal 170 already owns Plan 374, so this authority is identified as Plan 383
+before integration. The original implementation commit remains unchanged.
 
 Classification: **invariant + capability + persistence/lifecycle**. This closes
 local administrator policy, offline package administration, and restart-safe
 production catalog selection. Secured containment, live administrator IPC, and
 remote package distribution remain outside the milestone.
 
-Plan: `plans/implementation/managed-native-app-runtime/374-persistent-managed-app-policy-production-catalog-and-offline-administration.md`.
+Plan: `plans/implementation/managed-native-app-runtime/383-persistent-managed-app-policy-production-catalog-and-offline-administration.md`.
 
 Implementation commit: `23c16b8` (`feat(app-runtime): add signed packages and persistent policy`).
-Plan 374 was activated after Plan 373 closed (`b477edf`). Plan 373's package
-foundation closure is `plans/closure/managed-native-app-runtime/373-status.md`.
+Plan 383 was activated after Plan 382 closed (`b477edf`). Plan 382's package
+foundation closure is `plans/closure/managed-native-app-runtime/382-status.md`.
 
 ## Requirement-to-evidence matrix
 
@@ -68,9 +73,9 @@ Findings: critical none; high none; medium none; low none.
 
 ## Unblock audit and roadmap disposition
 
-Registry and roadmap audit: Plan 374 was the only registered successor in the
+Registry and roadmap audit: Plan 383 was the only registered successor in the
 managed-app package/lifecycle line, and it is now closed. No other registered
-managed-app plan is blocked on Plan 374 or newly eligible. OS-specific Secured
+managed-app plan is blocked on Plan 383 or newly eligible. OS-specific Secured
 backends, live AppManager administration, brokered clearnet, UI hosting,
 remote update/TUF, and scoped Proposal 170 remain downstream concepts without
 registered implementation plans; this closure does not create one or claim
@@ -78,5 +83,5 @@ that they are ready. They require separate plans and platform/contract decisions
 The router protocol milestones and other workstreams are unaffected.
 
 Disposition: **closed**. The package and persistent-policy/catalog sequence is
-complete through Plan 374; further managed-app capabilities require a new
+complete through Plan 383; further managed-app capabilities require a new
 plan-of-record.

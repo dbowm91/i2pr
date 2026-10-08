@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static Plan 374 policy, CLI, and launch-authority boundary checks."""
+"""Static Plan 383 policy, CLI, and launch-authority boundary checks."""
 
 from __future__ import annotations
 

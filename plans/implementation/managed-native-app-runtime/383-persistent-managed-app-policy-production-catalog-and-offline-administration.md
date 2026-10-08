@@ -1,4 +1,4 @@
-# Plan 374 — persistent managed-app policy, production launch catalog, and offline administration
+# Plan 383 — persistent managed-app policy, production launch catalog, and offline administration
 
 Status: **passed-managed-app-persistent-policy-production-catalog-and-offline-administration**.
 
@@ -6,18 +6,18 @@ Classification: **invariant + capability + persistence/lifecycle**.
 
 Roadmap: plans/subsystems/managed-native-app-runtime-roadmap.md
 
-Hard dependency: Plan 373 must close the signed immutable package/store foundation.
+Hard dependency: Plan 382 must close the signed immutable package/store foundation.
 
 Interface dependencies:
 - Plans 369–371;
-- Plan 373 package identity/store API;
+- Plan 382 package identity/store API;
 - ADR 0032 and ADR 0035.
 
 ## Objective
 
 Turn the verified local package store into the first restart-safe production launch authority without introducing a network administrator service.
 
-Plan 374 adds:
+Plan 383 adds:
 1. a persistent local administrator-policy store;
 2. publisher trust keyed by exact Ed25519 fingerprint;
 3. persistent per-app capability grants and exact selected package identity;
@@ -31,9 +31,9 @@ Plan 374 adds:
 
 This milestone still makes no secured-sandbox claim. Secured remains unlaunchable until a later qualified backend lands. UnsafeDirect is accepted only after a conspicuous explicit administrator opt-in.
 
-## Why ready after Plan 373
+## Why ready after Plan 382
 
-Plan 369 deliberately ships i2pr-appd with EmptyCatalog. Plan 373 provides a cryptographically attributable immutable package store but still no trust/grant decision. Plan 374 owns that missing administrator decision layer.
+Plan 369 deliberately ships i2pr-appd with EmptyCatalog. Plan 382 provides a cryptographically attributable immutable package store but still no trust/grant decision. Plan 383 owns that missing administrator decision layer.
 
 The package parser remains incapable of granting authority, while the policy layer never parses unverified package bytes directly.
 
@@ -45,7 +45,7 @@ Publisher-key trust is a separate administrator decision. Grants do not derive f
 
 ### No semantic-version ordering
 
-AppVersion is an identifier, not a semver type. Selection is always an exact Plan-373 package identity: publisher fingerprint + AppId + AppVersion + artifact SHA-256.
+AppVersion is an identifier, not a semver type. Selection is always an exact Plan-382 package identity: publisher fingerprint + AppId + AppVersion + artifact SHA-256.
 
 Update or rollback is an explicit operator selection. Install never auto-selects. This avoids silent rollback semantics until a future repository/TUF plan owns monotonic update metadata.
 
@@ -53,7 +53,7 @@ Update or rollback is an explicit operator selection. Install never auto-selects
 
 The managed-app administrator vocabulary remains reserved. Promoting it now would add authentication, concurrency and live mutation races to the persistence milestone.
 
-Plan 374 instead ships i2pr-appctl. Local filesystem access to the managed-app root is the administrator authority. Mutating operations refuse while i2pr-appd owns the runtime lock; changes become active on the next app-runtime/router start.
+Plan 383 instead ships i2pr-appctl. Local filesystem access to the managed-app root is the administrator authority. Mutating operations refuse while i2pr-appd owns the runtime lock; changes become active on the next app-runtime/router start.
 
 ## ADR required
 
@@ -66,7 +66,7 @@ Add ADR 0037, or the next free ADR at implementation start, freezing:
 - update/rollback are explicit selections, never inferred from version ordering;
 - untrust clears launch-enabling policy;
 - manifest capability/autostart/restart fields are requests only;
-- Plan-374 grantable capabilities are only Sam and I2cp;
+- Plan-383 grantable capabilities are only Sam and I2cp;
 - UnsafeDirect requires explicit risk acknowledgement;
 - Secured may be stored as desired policy but still fails before exec;
 - mutations are offline/restart-applied;
@@ -78,7 +78,7 @@ Add ADR 0037, or the next free ADR at implementation start, freezing:
 Add workspace crate i2pr-app-state.
 
 It owns:
-- package-store discovery through Plan 373;
+- package-store discovery through Plan 382;
 - strict persistent policy schema;
 - generation transactions and recovery;
 - publisher/app policy evaluation;
@@ -124,9 +124,9 @@ The process-boundary checker must require env_clear, require the exact state-roo
 
 ## Layout
 
-Plan 373 owns packages/, .staging/, and admin.lock.
+Plan 382 owns packages/, .staging/, and admin.lock.
 
-Plan 374 adds:
+Plan 383 adds:
 
     managed-apps/
       packages/...
@@ -199,7 +199,7 @@ Consequences:
 - administrator changes take effect only after appd/router restart;
 - read-only appctl list/inspect may read immutable committed state without mutation lock.
 
-Plan 374 intentionally does not support live mutation.
+Plan 383 intentionally does not support live mutation.
 
 ## Administrator CLI
 
@@ -266,7 +266,7 @@ The running target is derived from compile-time cfg, never package input. Exactl
 
 ## Resource requests
 
-Plan 374 recognizes exactly:
+Plan 383 recognizes exactly:
 - memory_bytes;
 - open_files.
 
@@ -285,7 +285,7 @@ Startup:
 4. load/validate highest policy generation;
 5. enumerate autostart apps in stable publisher_id/app_id order;
 6. resolve exact selected package;
-7. re-run Plan-373 store/package verification;
+7. re-run Plan-382 store/package verification;
 8. confirm publisher trust;
 9. select exact platform entrypoint;
 10. derive safe capability intersection;
@@ -298,7 +298,7 @@ Package/state crates cannot construct LaunchAuthority; only trusted appd composi
 
 ## Administrator attribution
 
-The existing AdministratorPrincipal::from_authenticated_session name describes a live administrator transport that Plan 374 does not have.
+The existing AdministratorPrincipal::from_authenticated_session name describes a live administrator transport that Plan 383 does not have.
 
 Add a separate non-serializable constructor/typed provenance for trusted local persisted policy, e.g. AdministratorPrincipal::from_trusted_local_policy(generation).
 
@@ -331,7 +331,7 @@ Thus restart-safe means policy/selection/grants survive process/router restart a
 7. Same AppId under a different publisher fingerprint is a different principal.
 8. Policy mutation cannot race a running production catalog.
 9. Appd re-verifies selected package before authority construction.
-10. Only Sam/I2cp can be effective Plan-374 grants.
+10. Only Sam/I2cp can be effective Plan-383 grants.
 11. UnsafeDirect always reflects explicit operator acknowledgement.
 12. Secured remains fail-closed.
 13. No live administrator endpoint/listener exists.
@@ -401,7 +401,7 @@ schema_version 1 is strict. Unknown future schema fails closed.
 
 No existing router behavior changes unless app_runtime.enabled is true and valid trusted/autostart state exists.
 
-Plan 373 package format is unchanged. Managed-app and manager protocols remain unreleased.
+Plan 382 package format is unchanged. Managed-app and manager protocols remain unreleased.
 
 ## Required tests
 
@@ -506,7 +506,7 @@ CLI docs must state plainly:
 
 ## Acceptance criteria
 
-Plan 374 passes only when:
+Plan 383 passes only when:
 1. persistent policy generations survive restart and malformed highest state fails closed;
 2. publisher identity is exact key fingerprint identity;
 3. grants bind publisher+app and never derive from requests;
@@ -568,4 +568,4 @@ The intended v1 operator workflow is:
 
 This makes every authority transition durable and reviewable before untrusted code runs.
 
-After Plan 374, the next feature milestone is OS-specific Secured backends, starting with a platform whose supported primitives can satisfy every required SandboxProperty without weakening the contract.
+After Plan 383, the next feature milestone is OS-specific Secured backends, starting with a platform whose supported primitives can satisfy every required SandboxProperty without weakening the contract.

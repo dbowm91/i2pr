@@ -1,6 +1,6 @@
 # ADR 0036: signed managed-app packages and immutable local store
 
-Status: **Accepted** (Plan 373)
+Status: **Accepted** (Plan 382)
 
 ## Context
 
@@ -30,7 +30,7 @@ decision.
    provenance. Repository freshness and rollback protection belong to a future
    repository/update plan.
 8. Administrator trust and grants bind to publisher-key identity and `AppId`,
-   never a display name or version alone. Plan 374 owns those decisions.
+   never a display name or version alone. Plan 383 owns those decisions.
 9. Downgrade and version selection are explicit administrator operations, not
    consequences of package installation or version ordering.
 
@@ -43,7 +43,7 @@ remote repositories, and transparency integration require later owners.
 
 ## References
 
-- Plan 373: signed immutable package and local store foundation.
+- Plan 382: signed immutable package and local store foundation.
 - `specs/references/managed-app-package-v1.md`.
 - ADR 0032: managed native-app process and capability boundary.
 - ADR 0035: private manager protocol and inherited authority.

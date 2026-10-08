@@ -4,7 +4,7 @@
 //!
 //! Launch authority must be *manager-created*: something inside the trusted
 //! manager has to decide, on its own evidence, that one application may be
-//! launched with one set of capabilities. Plans 373–374 add this authority
+//! launched with one set of capabilities. Plans 382–383 add this authority
 //! source: it loads explicit offline policy, verifies the exact installed
 //! package again, and only then assembles a launch authority.
 //!

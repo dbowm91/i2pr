@@ -1,6 +1,6 @@
 # `i2pr-app-state` — persistent managed-app policy
 
-Path: `crates/i2pr-app-state/`. Plan 374 owns strict local policy generations,
+Path: `crates/i2pr-app-state/`. Plan 383 owns strict local policy generations,
 offline mutations, and verified launch decisions. It cannot construct
 `i2pr-appd::LaunchAuthority` and has no router protocol or process capability.
 

@@ -260,7 +260,7 @@ module previously lacked: `app_runtime` drives it over the inherited anonymous
 transport. The `#![allow(dead_code)]` remains scoped and documented, and must
 not be read as evidence that the bridge is unused.
 
-### Managed application runtime supervision (Plans 369–374)
+### Managed application runtime supervision (Plans 369–371 and 382–383)
 
 `app_runtime` is the daemon's half of the managed-app process: it creates the
 two anonymous pipes, resolves the manager executable, supervises the child, and
@@ -306,7 +306,7 @@ holds the runtime lock for the manager lifetime, loads one strict policy
 generation, and re-verifies each selected package before creating authority.
 No persistent launch policy belongs to the daemon or router config. See
 [managed-app policy v1](../../specs/references/managed-app-policy-v1.md) and
-[Plan 374 app state](i2pr-app-state.md).
+[Plan 383 app state](i2pr-app-state.md).
 
 stderr is drained continuously with a bounded retained snapshot
 (`MAX_MANAGER_STDERR_SNAPSHOT_BYTES`) and an uncapped byte total, so a failing

@@ -1,6 +1,6 @@
 # `i2pr-app-package` — signed package verification and local store
 
-Path: `crates/i2pr-app-package/`. Plan 373 owns the `.i2prapp` v1 verifier and
+Path: `crates/i2pr-app-package/`. Plan 382 owns the `.i2prapp` v1 verifier and
 immutable local package store. It proves signed content integrity and publisher
 key identity; it is not an administrator-policy or launch-authority owner.
 
@@ -82,5 +82,5 @@ executable negative controls.
 
 - ADR 0036: signed managed-app packages and immutable local store.
 - `specs/references/managed-app-package-v1.md`.
-- Plan 373 closure: `plans/closure/managed-native-app-runtime/373-status.md`.
-- Next policy owner: Plan 374.
+- Plan 382 closure: `plans/closure/managed-native-app-runtime/382-status.md`.
+- Next policy owner: Plan 383.

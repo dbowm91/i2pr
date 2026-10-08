@@ -1,6 +1,6 @@
 # `i2pr-appctl` — offline managed-app administration
 
-Path: `crates/i2pr-appctl/`. Plan 374 adds a separate administrator binary
+Path: `crates/i2pr-appctl/`. Plan 383 adds a separate administrator binary
 that operates on `<data-dir>/managed-apps` without a listener or live appd
 protocol.
 

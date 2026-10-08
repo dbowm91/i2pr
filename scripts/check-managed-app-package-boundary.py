@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed structural checks for the Plan 373 package trust zone."""
+"""Fail-closed structural checks for the Plan 382 package trust zone."""
 
 from __future__ import annotations
 

@@ -43,7 +43,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 
 Enforced by `scripts/check-dependency-direction.sh`, `scripts/check-runtime-boundaries.sh`, `scripts/check-console-boundaries.sh`, and `scripts/check-console-browser-security.sh`. Details: `docs/architecture/overview.md`.
 
-## Managed application runtime (Plans 368–374; experimental, disabled by default)
+## Managed application runtime (Plans 368–371 and 382–383; experimental, disabled by default)
 
 `i2pr-appd` is the supervised manager process and `i2pr-apphost` is the **only**
 component that execs an application. Both are separate process trust zones that
@@ -179,7 +179,7 @@ macOS CI builds all test executables once then runs each with `--test-threads=1`
 **Why the floor builds the managed-app sibling binaries explicitly.** Every
 other floor line emits only test harnesses under `target/debug/deps`;
 `cargo check`, `cargo test --all-targets` and `cargo clippy` never produce the
-plain `target/debug/<name>` binaries. Plans 369/374's black-box qualification in
+plain `target/debug/<name>` binaries. Plans 369/383's black-box qualification in
 `crates/i2pr-daemon/src/app_runtime_qualification.rs` execs **real sibling
 executables** (`i2pr-app-fixture-manager`, the production `i2pr-appd`, and
 `i2pr-apphost`), so without that build line it could run binaries left over
@@ -235,7 +235,7 @@ script.
   `check-console-boundaries.sh` rule 7 now asserts that every `i2pr-*`
   workspace member appears in the map, so the gap cannot silently reopen when
   a crate is added. **The count is now enforced, not asserted here**: after
-  Plans 373–374 added three managed-app crates. Do not re-state a count in
+  Plans 382–383 added three managed-app crates. Do not re-state a count in
   this file — verify the exact set instead:
   `cargo metadata --no-deps` set-membership against the map's keys.
 - ~~`tools/i2pr-interop` is unpoliced by the direction script~~ — **CLOSED by
