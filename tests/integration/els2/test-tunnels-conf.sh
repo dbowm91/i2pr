@@ -118,7 +118,10 @@ for mode in PSK DH; do
     *)   fail "${mode}: value has no ':' -- i2pd would drop this entry silently" ;;
   esac
 
-  decoded="$(printf '%s' "${value#*:}" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+  # Decoded under the reference's alphabet: the value on the wire is
+  # I2P base64 (`-~`), and a standard-alphabet decode is the self-agreement
+  # that hid the WP4 alphabet defect.
+  decoded="$(els2_i2pd_b64_to_standard "${value#*:}" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
   if [[ "${decoded}" == "32" ]]; then
     ok "${mode}: value decodes to a 32-byte auth key"
   else
@@ -126,7 +129,7 @@ for mode in PSK DH; do
   fi
 
   # And the bytes are the ones that went in, not merely 32 of something.
-  if [[ "$(printf '%s' "${value#*:}" | base64 -d 2>/dev/null | xxd -p -c 64)" == "${hex}" ]]; then
+  if [[ "$(els2_i2pd_b64_to_standard "${value#*:}" | base64 -d 2>/dev/null | xxd -p -c 64)" == "${hex}" ]]; then
     ok "${mode}: key material round-trips through the encoding unchanged"
   else
     fail "${mode}: key material was altered by the encoding"
@@ -141,6 +144,43 @@ for mode in PSK DH; do
     ok "${mode}: writer emits only its own group"
   fi
 done
+
+echo "== 2b. the I2P base64 alphabet (Plan 381 WP4) =="
+
+# A key whose standard base64 carries `+` and `/` (`fbff00…` -> `+/wA…`).
+# Emitting it untranslated is the defect that failed the first live PSK lane
+# with `ClientCredentialRejected` on the correct key: i2pd decodes under
+# `-~`, maps the unknown characters to -1, and completes with the wrong 32
+# bytes while still logging "1 auth keys read".
+PLUS_SLASH_HEX="fbff000000000000000000000000000000000000000000000000000000000000"
+PLUS_SLASH_CONF="${SCRATCH}/plus-slash.conf"
+write_els2_tunnels_conf "${PLUS_SLASH_CONF}" "ELS2-PSK" 18081 "pskplus.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_PSK}" "${PLUS_SLASH_HEX}" \
+  || fail "writer failed for the +/ key"
+PLUS_SLASH_VALUE="$(sed -n -E 's/^i2cp\.leaseSetClient\.psk\.0[[:space:]]*=[[:space:]]*0:(.*[^[:space:]])[[:space:]]*$/\1/p' "${PLUS_SLASH_CONF}" | head -1)"
+case "${PLUS_SLASH_VALUE}" in
+  *+*|*/*) fail "writer emitted standard-alphabet '+/' i2pd would misread" ;;
+  *)       ok "writer emits the I2P alphabet for a +/ key" ;;
+esac
+if [[ "${PLUS_SLASH_VALUE}" == "-~8A"* ]]; then
+  ok "the +/ key is emitted as the -~ value the reference reads"
+else
+  fail "the +/ key was not translated (got '${PLUS_SLASH_VALUE}')"
+fi
+if [[ "$(els2_i2pd_b64_to_standard "${PLUS_SLASH_VALUE}" | base64 -d 2>/dev/null | xxd -p -c 64)" == "${PLUS_SLASH_HEX}" ]]; then
+  ok "the translated value decodes back to the key bytes"
+else
+  fail "the translated value does not decode back to the key bytes"
+fi
+expect_pass "validator accepts the translated +/ key" "${PLUS_SLASH_CONF}" "ELS2-PSK" 18081 "pskplus.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_PSK}" "${PLUS_SLASH_HEX}"
+
+# The same file with the translation undone is what the old writer emitted.
+# The validator must refuse it: i2pd reads different bytes than written.
+PLUS_SLASH_STD="${SCRATCH}/plus-slash-std.conf"
+sed 's| = 0:-~| = 0:+/|' "${PLUS_SLASH_CONF}" > "${PLUS_SLASH_STD}"
+expect_fail "validator refuses a standard-alphabet key value" "${PLUS_SLASH_STD}" "ELS2-PSK" 18081 "pskplus.dat" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_PSK}" "${PLUS_SLASH_HEX}"
 
 echo "== 3. the validator accepts the writer's own output =="
 
@@ -201,13 +241,13 @@ expect_fail "rejects a short auth key" "${SHORTKEY}" "ELS2-PSK" 18080 "psk.dat" 
 
 BOTH="${SCRATCH}/both.conf"
 { cat "${SCRATCH}/psk.conf"; printf 'i2cp.leaseSetClient.dh.0 = 0:%s\n' \
-    "$(printf '%s' "${DH_HEX}" | xxd -r -p | base64 -w0)"; } > "${BOTH}"
+    "$(els2_hex_to_base64 "${DH_HEX}")"; } > "${BOTH}"
 expect_fail "rejects both client key groups in one section" "${BOTH}" "ELS2-PSK" 18080 "psk.dat" \
   "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_PSK}" "${PSK_HEX}"
 
 NONEKEY="${SCRATCH}/nonekey.conf"
 { cat "${CONF_NONE}"; printf 'i2cp.leaseSetClient.psk.0 = 0:%s\n' \
-    "$(printf '%s' "${PSK_HEX}" | xxd -r -p | base64 -w0)"; } > "${NONEKEY}"
+    "$(els2_hex_to_base64 "${PSK_HEX}")"; } > "${NONEKEY}"
 expect_fail "rejects a client key under auth NONE" "${NONEKEY}" "ELS2-None" 18080 "none.dat" \
   "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}"
 

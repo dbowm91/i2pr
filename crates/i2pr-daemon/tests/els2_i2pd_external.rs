@@ -40,6 +40,12 @@
 //!   `.b32.i2p` suffix is correct for both routers
 //! - `I2PR_ELS2_SSU2_BIND` — a fixed loopback bind for R
 //! - `I2PR_ELS2_EVIDENCE_DIR` — where the sanitized TSV is written
+//! - `I2PR_ELS2_AUTH_MODE` — `none` (default), `psk`, or `dh`: the mode the
+//!   reference publisher uses. Anything else fails.
+//! - `I2PR_ELS2_CLIENT_CREDENTIAL` — `psk:<hex>` / `dh:<hex>` when the mode
+//!   is authorized, empty otherwise. It travels by environment into the
+//!   `CustomOptions` `{"i2pr": {"LeasesetClientCredential": ...}}` seam (Plan
+//!   380) and is never written to evidence — only its presence is recorded.
 //!
 //! Missing environment **fails**. Nothing here degrades into a skip.
 
@@ -84,6 +90,10 @@ fn env_path(name: &str) -> PathBuf {
 
 fn env_value(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required; missing environment fails"))
+}
+
+fn env_optional(name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
 }
 
 fn append_evidence(dir: &std::path::Path, label: &str, value: &str) {
@@ -284,6 +294,35 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     let destination = env_value("I2PR_ELS2_REFERENCE_DEST_B33_I2PD");
     let bind: SocketAddr = env_value("I2PR_ELS2_SSU2_BIND").parse().expect("bind");
     let evidence_dir = env_path("I2PR_ELS2_EVIDENCE_DIR");
+    // Plan 381 WP4: the publisher auth mode and, when it is authorized, the
+    // client credential. The value is used once, in the create below, and is
+    // never written to evidence — only the mode and its presence are.
+    // A credential with mode `none` (or a mode without its credential) fails
+    // here rather than driving the lane with a mismatched pair.
+    let auth_mode = env_optional("I2PR_ELS2_AUTH_MODE");
+    let auth_mode = if auth_mode.is_empty() {
+        "none".to_owned()
+    } else {
+        auth_mode
+    };
+    let credential = env_optional("I2PR_ELS2_CLIENT_CREDENTIAL");
+    match auth_mode.as_str() {
+        "none" => assert!(
+            credential.is_empty(),
+            "mode none must not carry a client credential"
+        ),
+        "psk" | "dh" => assert!(
+            !credential.is_empty(),
+            "mode {auth_mode} requires I2PR_ELS2_CLIENT_CREDENTIAL"
+        ),
+        other => panic!("I2PR_ELS2_AUTH_MODE must be one of none|psk|dh, got {other}"),
+    }
+    append_evidence(&evidence_dir, "auth-mode", &auth_mode);
+    append_evidence(
+        &evidence_dir,
+        "credential-present",
+        &(!credential.is_empty()).to_string(),
+    );
 
     assert!(bind.ip().is_loopback(), "R bind must be loopback");
     assert!(
@@ -391,7 +430,10 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     // The lane's consumer shape, created exactly as the plan requires: a
     // `.b33` target with DelayOpen, since `config.rs:1160-1176` refuses a
     // `.b33` service without it and the TOML path hardcodes it false.
-    let create = serde_json::json!({
+    // In authorized modes the Plan 380 credential rides the typed
+    // `CustomOptions` seam; the lane runner minted it against the same
+    // publisher key the reference is publishing with.
+    let mut create = serde_json::json!({
         "Token": token,
         "Action": "create",
         "Type": "client",
@@ -399,6 +441,10 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "TargetDestination": destination,
         "DelayOpen": true,
     });
+    if !credential.is_empty() {
+        create["CustomOptions"] =
+            serde_json::json!({"i2pr": {"LeasesetClientCredential": credential}});
+    }
     let created = control(control_addr, "TunnelManager", create, 2).await;
     append_evidence(
         &evidence_dir,

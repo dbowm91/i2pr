@@ -86,8 +86,25 @@ els2_group_for_auth_type() {
 }
 
 els2_hex_to_base64() {
-  # hex (64 lowercase chars, no prefix) -> standard base64 with padding.
-  printf '%s' "$1" | xxd -r -p | base64 -w0
+  # hex (64 lowercase chars, no prefix) -> base64 with padding, in the
+  # **I2P alphabet**. i2pd's table ends `...89-~` (`libi2pd/Base.cpp` `T64`),
+  # where standard base64 has `+/`. Its decoder maps unknown characters to -1
+  # and completes anyway, so a standard-alphabet value carrying `+` or `/`
+  # decodes to the wrong 32 bytes *without an error*: `FromBase64` still
+  # succeeds on length, i2pd logs "1 auth keys read", and the destination
+  # publishes under a key the lane never held. Found by executing Plan 381
+  # WP4: a random PSK whose standard base64 contained `+`/`/` failed live
+  # with `ClientCredentialRejected` on the correct key, while the
+  # writer↔validator pair agreed with each other throughout — the same
+  # self-agreement shape as finding 7. `tr` after encoding is exact: `-`/`~`
+  # never appear in standard output except as `+`/`/` substitutes. The `--`
+  # is load-bearing: without it `tr` reads `-~` as an option.
+  printf '%s' "$1" | xxd -r -p | base64 -w0 | tr -- '+/' '-~'
+}
+
+els2_i2pd_b64_to_standard() {
+  # The inverse, for validation only: translate back before `base64 -d`.
+  printf '%s' "$1" | tr -- '-~' '+/'
 }
 
 # `keys` must be a **bare filename**, and this is a reference constraint rather
@@ -301,8 +318,15 @@ validate_els2_tunnels_conf() {
         *) _bad "${expect_group} value has no ':' separator; i2pd would drop it silently" ;;
       esac
       local b64="${value#*:}"
+      # The reference reads this value under its own alphabet, so a
+      # standard-alphabet `+` or `/` here is not a spelling choice: i2pd
+      # decodes it to different bytes than written, silently. Refuse it
+      # rather than validating a line the reference interprets otherwise.
+      case "${b64}" in
+        *+*|*/*) _bad "${expect_group} must use the I2P base64 alphabet ('-~', not '+/'); i2pd would decode other bytes than written" ;;
+      esac
       local decoded
-      decoded="$(printf '%s' "${b64}" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+      decoded="$(els2_i2pd_b64_to_standard "${b64}" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
       if [[ "${decoded}" != "${ELS2_AUTH_KEY_BYTES}" ]]; then
         _bad "${expect_group} must decode to ${ELS2_AUTH_KEY_BYTES} bytes, got ${decoded}"
       fi

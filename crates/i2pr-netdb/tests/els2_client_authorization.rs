@@ -1023,6 +1023,92 @@ fn a_random_source_that_fails_is_reported_not_substituted() {
         .expect("working source");
 }
 
+// --- cross-implementation vectors -----------------------------------------------------------------
+//
+// Plan 381: the PSK lane against stock i2pd 2.61.0 failed with
+// `ClientCredentialRejected` on the correct key, so the derivation below is
+// pinned against the reference's algorithm rather than against itself. The
+// expected values were computed independently (Python `hmac`/`hashlib`) from
+// the pinned source — publisher `CreateClientAuthData` and consumer
+// `ExtractClientAuthData` (`libi2pd/LeaseSet.cpp`), both
+// `HKDF(authSalt, psk || subcredential32 || published_be, "ELS2PSKA")` with
+// `client_id = okm[44..52]` — for the fixed inputs named in the test. A
+// failure here is a wire-interop defect, not a round-trip defect, and every
+// other row in this file passing alongside it is exactly the shape that hid
+// the live failure: self-consistency proves nothing about the peer.
+
+/// Decodes an even-length lowercase hex string into a fixed array.
+fn hex_array<const N: usize>(hex: &str) -> [u8; N] {
+    assert_eq!(hex.len(), N * 2, "vector length");
+    let mut out = [0_u8; N];
+    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte: u8| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => panic!("vector is lowercase hex"),
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    out
+}
+
+#[test]
+fn psk_derivation_matches_the_pinned_reference_algorithm() {
+    // Fixed inputs. `subcredential` here is the 32-byte credential; the
+    // reference appends the big-endian `published` itself to form the 68-byte
+    // auth input, exactly as `auth_input` below documents.
+    let psk_bytes: [u8; 32] = core::array::from_fn(|index| index as u8);
+    let subcredential: [u8; 32] = core::array::from_fn(|index| 0xa0 + index as u8);
+    let published: u32 = 0x6900_0000;
+    let salt: [u8; 32] = core::array::from_fn(|index| 0xc0 + index as u8);
+
+    let material = psk_client_material(
+        &PskClientKey::from_bytes(psk_bytes),
+        &subcredential,
+        published,
+        &salt,
+    )
+    .expect("material derives");
+    // Expected `okm[44..52]` of `HKDF(authSalt, psk || subcredential ||
+    // published_be, "ELS2PSKA", 52)` per the pinned reference.
+    assert_eq!(
+        material.client_id(),
+        &hex_array("8f7f2905a81cadf8"),
+        "the derived client identifier must match the reference's entry tag"
+    );
+
+    // The key and IV are pinned behaviourally: an entry sealed with the
+    // reference-computed `okm[0..32]` / `okm[32..44]` must open under the
+    // derived material to exactly the cookie. `recover_cookie` returns
+    // whatever decrypts, so a wrong key yields a wrong cookie, not an error —
+    // the equality below is the check, not the `is_ok`.
+    let key = i2pr_crypto::LayerCipherKey::from_bytes(hex_array(
+        "8dd4cf2d5baa7c36a1975c60c6c7142a944ef5042dc23d27fde1bcf9ef27c8b3",
+    ));
+    let iv: [u8; 12] = hex_array("1d91fc61f81cfb6539660b7b");
+    let cookie = [0x77_u8; 32];
+    let mut sealed = cookie;
+    i2pr_crypto::chacha20_xor_layer(&key, &iv, &mut sealed).expect("seal");
+    let mut block_bytes = Vec::with_capacity(34 + 40);
+    block_bytes.extend_from_slice(&salt);
+    block_bytes.extend_from_slice(&1_u16.to_be_bytes());
+    block_bytes.extend_from_slice(material.client_id());
+    block_bytes.extend_from_slice(&sealed);
+    let block = AuthBlock::decode(Els2AuthScheme::Psk, &block_bytes).expect("block parses");
+    let recovered = recover_auth_cookie(
+        &block,
+        &subcredential,
+        published,
+        &Els2ClientAuth::Psk(&PskClientKey::from_bytes(psk_bytes)),
+    )
+    .expect("recover");
+    assert_eq!(
+        recovered.as_bytes(),
+        &cookie,
+        "the reference-sealed entry must open to the cookie under the derived material"
+    );
+}
+
 // --- integration with the real credential path --------------------------------------------------
 
 #[test]

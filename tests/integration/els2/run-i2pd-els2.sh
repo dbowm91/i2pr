@@ -452,18 +452,63 @@ sleep 1
 
 echo "==> f ssu2 ${F_PORT}  c ssu2 ${C_PORT}  n ssu2 ${N_PORT}  c sam ${C_SAM}  f http ${F_HTTP}  fixture ${FIX_PORT}  R ssu2 ${R_PORT}"
 
+# ---- the publisher auth mode (Plan 381 WP4) --------------------------------
+# `I2PR_ELS2_AUTH_MODE` selects the mode the reference publisher uses:
+# `none` (default), `psk`, or `dh`. Anything else fails closed before any
+# process starts. For `psk`/`dh` the lane mints one fresh 32-byte client key
+# per run: for PSK it is the shared secret (same value in tunnels.conf and
+# in the driver's credential); for DH it is the client's private half —
+# tunnels.conf carries the derived *public* key (what the publisher lists)
+# while the driver holds `dh:<private-hex>` (what i2pr's credential parses).
+# Key material lives in shell variables and the driver environment only. It
+# is never echoed, never written to results.tsv/destinations.txt/driver
+# evidence, and the run is scrubbed for it afterwards (see below).
+AUTH_MODE="${I2PR_ELS2_AUTH_MODE:-none}"
+case "${AUTH_MODE}" in
+  none) AUTH_TYPE="${ELS2_AUTH_NONE}"; CLIENT_KEY_HEX=""; CREDENTIAL=""; EXTRACT_FLAG="" ;;
+  psk)
+    AUTH_TYPE="${ELS2_AUTH_PSK}"
+    CLIENT_KEY_HEX="$(openssl rand -hex 32)"
+    CREDENTIAL="psk:${CLIENT_KEY_HEX}"
+    EXTRACT_FLAG="--per-client-auth"
+    ;;
+  dh)
+    AUTH_TYPE="${ELS2_AUTH_DH}"
+    DH_PRIV_HEX="$(openssl rand -hex 32)"
+    CLIENT_KEY_HEX="$(python3 -c 'import sys; from cryptography.hazmat.primitives.asymmetric import x25519; print(x25519.X25519PrivateKey.from_private_bytes(bytes.fromhex(sys.argv[1])).public_key().public_bytes_raw().hex())' "${DH_PRIV_HEX}")"
+    CREDENTIAL="dh:${DH_PRIV_HEX}"
+    EXTRACT_FLAG="--per-client-auth"
+    ;;
+  *)
+    echo "I2PR_ELS2_AUTH_MODE must be one of none|psk|dh, got '${AUTH_MODE}'" >&2
+    exit 1
+    ;;
+esac
+
 # ---- cycle 1: identity generation (fact 3) --------------------------------
 write_conf f "${F_PORT}" true 0 "${F_HTTP}" "lane-f"
 # `keys` is a bare filename (fact 1); the path is decided by the data dir.
+# shellcheck disable=SC2086 -- the key argument must vanish (not empty-string)
+# when the mode is NONE, or the writer refuses it as a NONE-with-key claim.
 write_els2_tunnels_conf "${SCRATCH}/f/tunnels.conf" ELS2PUB "${FIX_PORT}" ELS2PUB.dat \
-  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${AUTH_TYPE}" ${CLIENT_KEY_HEX:+${CLIENT_KEY_HEX}} \
   || { record tunnels-conf-generated failed "writer refused the ELS2 publisher section"; exit 1; }
 validate_els2_tunnels_conf "${SCRATCH}/f/tunnels.conf" ELS2PUB "${FIX_PORT}" ELS2PUB.dat \
-  "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" \
+  "${ELS2_STORE_TYPE_ENCRYPTED}" "${AUTH_TYPE}" ${CLIENT_KEY_HEX:+${CLIENT_KEY_HEX}} \
   || { record tunnels-conf-generated failed "validator refused the ELS2 publisher section"; exit 1; }
 record_guarded "tunnels-conf-generated" \
   "ELS2 publisher section written and validated before any process started" 0
-cp "${SCRATCH}/f/tunnels.conf" "${EVIDENCE_DIR}/tunnels.conf"
+# The evidence copy must not carry the client key: in authorized runs the
+# section holds `i2cp.leaseSetClient.{psk,dh}.0 = 0:<base64>` — for PSK the
+# shared secret itself. Redact the value, keeping the group line as proof of
+# the mode→group pairing the writer enforces. NONE runs have no key line and
+# copy verbatim.
+if [[ -n "${CLIENT_KEY_HEX}" ]]; then
+  sed -E 's/^(i2cp\.leaseSetClient\.[a-z]+\.0) = .*$/\1 = [redacted-client-key]/' \
+    "${SCRATCH}/f/tunnels.conf" > "${EVIDENCE_DIR}/tunnels.conf"
+else
+  cp "${SCRATCH}/f/tunnels.conf" "${EVIDENCE_DIR}/tunnels.conf"
+fi
 
 write_conf c "${C_PORT}" true "${C_SAM}" 0 "lane-c"
 : > "${SCRATCH}/c/tunnels.conf"
@@ -530,7 +575,8 @@ DAT="${SCRATCH}/fdata/ELS2PUB.dat"
 [[ -s "${DAT}" ]] || { record destination-derived failed "destination key file missing"; exit 1; }
 EXT="${SCRATCH}/extract.out"
 extract_rc=0
-python3 "${EXTRACTOR}" "${DAT}" > "${EXT}" 2> "${LOG}/extract.err" || extract_rc=$?
+# shellcheck disable=SC2086
+python3 "${EXTRACTOR}" ${EXTRACT_FLAG} "${DAT}" > "${EXT}" 2> "${LOG}/extract.err" || extract_rc=$?
 record_guarded "destination-derived" \
   "the public destination prefix parsed and the blinded address recomputed from the signing key" "${extract_rc}"
 if [[ "${extract_rc}" -ne 0 ]]; then
@@ -541,7 +587,10 @@ fi
 DEST_B32="$(awk -F: '$1 == "dest_b32" {print $2; exit}' "${EXT}")"
 DEST_B33="$(awk -F: '$1 == "dest_b33" {print $2; exit}' "${EXT}")"
 DEST_I2PD="$(awk -F: '$1 == "dest_b33_i2pd" {print $2; exit}' "${EXT}")"
+# destinations.txt carries the mode but never key material: the address
+# bodies are public, the keys are not.
 {
+  echo "auth_mode=${AUTH_MODE}"
   echo "reference_dest_b32=${DEST_B32}"
   echo "reference_dest_b33=${DEST_B33}"
   echo "reference_dest_b33_i2pd=${DEST_I2PD}"
@@ -577,24 +626,38 @@ done
 record_guarded "client-tunnel-pool-ready" \
   "the reference client built the outbound tunnels a b33 lookup gates on" "$(observed_rc "${POOL_OK}")"
 
-SAM_RC=0
-if [[ "${POOL_OK}" -eq 1 ]]; then
-  SAM_OUT="$(I2PR_ELS2_SAM_PORT="${C_SAM}" I2PR_ELS2_SAM_DEST="${DEST_I2PD}" \
-    I2PR_ELS2_SAM_EXPECT="ELS2-LANE-FIXTURE-OK" timeout 300 python3 "${LANE_DIR}/clients/sam_b33_connect.py" 2>&1)" || SAM_RC=$?
-  echo "${SAM_OUT}"
-  if [[ "${SAM_RC}" -ne 0 ]]; then
+# The reference consumer holds no credential: `RequestDestinationWithEncryptedLeaseSet`
+# takes only the blinded public key (`Destination.cpp:778`) and the SAM
+# session's local destination is TRANSIENT, so a stock i2pd consumer cannot
+# present a PSK/DH credential at this pin. The authorized control is therefore
+# genuinely unexecutable, not merely unimplemented — recorded as a documented
+# skip with the reason in the row, never as a pass. Mesh-health attribution in
+# authorized runs falls back to the NONE lane's proven control plus the
+# same-run reference logs. WP5's checker pins this: the control row may be
+# skipped only in authorized runs, and for no other reason.
+if [[ "${AUTH_MODE}" == "none" ]]; then
+  SAM_RC=0
+  if [[ "${POOL_OK}" -eq 1 ]]; then
+    SAM_OUT="$(I2PR_ELS2_SAM_PORT="${C_SAM}" I2PR_ELS2_SAM_DEST="${DEST_I2PD}" \
+      I2PR_ELS2_SAM_EXPECT="ELS2-LANE-FIXTURE-OK" timeout 300 python3 "${LANE_DIR}/clients/sam_b33_connect.py" 2>&1)" || SAM_RC=$?
+    echo "${SAM_OUT}"
+    if [[ "${SAM_RC}" -ne 0 ]]; then
+      SAM_RC=1
+    fi
+  else
     SAM_RC=1
   fi
+  # This is a *control*, not an acceptance row: it proves the mesh carries a
+  # blinded lookup and a payload between two stock reference routers, so a later
+  # i2pr failure is attributable rather than ambiguous. It is never promoted to a
+  # matrix row and never counted as evidence about i2pr.
+  record_guarded control-reference-els2-roundtrip \
+    "stock i2pd consumed a stock i2pd ELS2 destination and the fixture banner came back; this is a mesh control, not an i2pr acceptance row" \
+    "${SAM_RC}"
 else
-  SAM_RC=1
+  record control-reference-els2-roundtrip skipped \
+    "control-skip: authorized mode ${AUTH_MODE} has no reference-consumer credential path (Destination.cpp:778 takes only the blinded key); mesh health is the NONE lane's proven control"
 fi
-# This is a *control*, not an acceptance row: it proves the mesh carries a
-# blinded lookup and a payload between two stock reference routers, so a later
-# i2pr failure is attributable rather than ambiguous. It is never promoted to a
-# matrix row and never counted as evidence about i2pr.
-record_guarded control-reference-els2-roundtrip \
-  "stock i2pd consumed a stock i2pd ELS2 destination and the fixture banner came back; this is a mesh control, not an i2pr acceptance row" \
-  "${SAM_RC}"
 
 # ---- mesh shape precondition: three family-published references -----------
 # Plan 381: i2pr builds qualified three-hop tunnels, whose peer
@@ -641,6 +704,9 @@ if [[ ! -f "${REPO_ROOT}/${DRIVER}" ]]; then
 fi
 
 driver_rc=0
+# The credential travels by environment only, alongside the mode that selects
+# it. In `none` runs both are empty and the driver takes the no-credential
+# branch exactly as before.
 I2PR_ELS2_REFERENCE_ROUTER_INFO="${F_RI}" \
 I2PR_ELS2_REFERENCE_ENDPOINT="127.0.0.1:${F_PORT}" \
 I2PR_ELS2_PEER2_ROUTER_INFO="${C_RI}" \
@@ -652,20 +718,57 @@ I2PR_ELS2_REFERENCE_DEST_B33="${DEST_B33}" \
 I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \
 I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
+I2PR_ELS2_AUTH_MODE="${AUTH_MODE}" \
+I2PR_ELS2_CLIENT_CREDENTIAL="${CREDENTIAL}" \
 I2PR_ELS2_SSU2_BIND="127.0.0.1:${R_PORT}" \
 I2PR_ELS2_EVIDENCE_DIR="${EVIDENCE_DIR}" \
 timeout --foreground 1800 cargo test --locked -p i2pr-daemon \
   --test "${DRIVER_TEST}" -- --ignored --exact --nocapture --test-threads=1 \
   > "${EVIDENCE_DIR}/driver.log" 2>&1 || driver_rc=$?
-record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh" "${driver_rc}"
+record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh (auth ${AUTH_MODE})" "${driver_rc}"
 if [[ "${driver_rc}" -ne 0 ]]; then
   sed -n '1,80p' "${EVIDENCE_DIR}/driver.log" >&2 || true
 fi
 
+# ---- key-material scrub: the evidence must not contain the client key ------
+# The credential is random per run, so searching for it proves absence rather
+# than asserting on a fixed string. Either hex form (tunnels.conf base64 is a
+# different encoding of the same bytes — check both) anywhere under the
+# evidence dir fails the lane even if every row passed.
+if [[ -n "${CLIENT_KEY_HEX}" ]]; then
+  CLIENT_KEY_B64="$(printf '%s' "${CLIENT_KEY_HEX}" | xxd -r -p | base64 -w0)"
+  CLIENT_KEY_I2PD="$(printf '%s' "${CLIENT_KEY_B64}" | tr -- '+/' '-~')"
+  if grep -rqF "${CLIENT_KEY_HEX}" "${EVIDENCE_DIR}" \
+      || grep -rqF "${CLIENT_KEY_B64}" "${EVIDENCE_DIR}" \
+      || grep -rqF "${CLIENT_KEY_I2PD}" "${EVIDENCE_DIR}"; then
+    echo "lane evidence contains client key material; failing closed" >&2
+    record key-material-scrub failed "client key bytes found under ${EVIDENCE_DIR}"
+  else
+    record key-material-scrub passed "no client key bytes under ${EVIDENCE_DIR} (auth ${AUTH_MODE})"
+  fi
+  if [[ -n "${DH_PRIV_HEX:-}" && "${DH_PRIV_HEX}" != "${CLIENT_KEY_HEX}" ]]; then
+    DH_PRIV_B64="$(printf '%s' "${DH_PRIV_HEX}" | xxd -r -p | base64 -w0)"
+    DH_PRIV_I2PD="$(printf '%s' "${DH_PRIV_B64}" | tr -- '+/' '-~')"
+    if grep -rqF "${DH_PRIV_HEX}" "${EVIDENCE_DIR}" \
+        || grep -rqF "${DH_PRIV_B64}" "${EVIDENCE_DIR}" \
+        || grep -rqF "${DH_PRIV_I2PD}" "${EVIDENCE_DIR}"; then
+      echo "lane evidence contains DH private key material; failing closed" >&2
+      record key-material-scrub-dh failed "DH private key bytes found under ${EVIDENCE_DIR}"
+    else
+      record key-material-scrub-dh passed "no DH private key bytes under ${EVIDENCE_DIR}"
+    fi
+  fi
+fi
+# The scrub rows above must reach the evidence copy: re-copy after them, so
+# the evidence `results.tsv` is the same file the gate below decides on.
 cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 
-if awk -F'\t' '$2 != "passed" { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
+# A `skipped` row is accepted only with the frozen `control-skip:` marker in
+# its detail — the authorized-mode control absence documented above. Any other
+# non-passed row, including a skip without the marker, fails the lane. WP5's
+# checker pins the admissible set further (control row, authorized runs only).
+if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
   echo "Plan 381 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 381 ELS2 lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 381 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"

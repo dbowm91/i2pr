@@ -318,7 +318,7 @@ def verify_b33(b33: str, expected_signing_pub: bytes, expected_sig_type: int) ->
         )
 
 
-def parse(path: str) -> dict:
+def parse(path: str, per_client_auth: bool = False) -> dict:
     public, extended_len = _read_identity(path)
     sig_type = _signing_key_type(public, extended_len)
     signing_pub = _signing_public_key(public, sig_type)
@@ -327,7 +327,15 @@ def parse(path: str) -> dict:
     dest_hash = hashlib.sha256(public).digest()
     dest_b32 = base64.b32encode(dest_hash).decode("ascii").rstrip("=").lower()
 
-    b33 = derive_b33(signing_pub, sig_type)
+    # The per-client-auth flag is NOT derivable from the `.dat`: it is key
+    # material, and the flag records the publisher's configured auth mode
+    # (i2pd sets it from `IsPerClientAuth()`, daemon/HTTPServer.cpp:489).
+    # The lane passes the mode it configured — `--per-client-auth` exactly
+    # when the publisher's `i2cp.leaseSetAuthType` is not NONE — so a
+    # default-False here with an authorized publisher produces a body the
+    # reference's own rendering disagrees with, and the lane cross-check
+    # fails closed rather than driving i2pr with the wrong address shape.
+    b33 = derive_b33(signing_pub, sig_type, per_client_auth)
     verify_b33(b33, signing_pub, sig_type)
 
     # The suffix is a *vocabulary*, not part of the derivation, and the two
@@ -426,6 +434,16 @@ def _self_test() -> int:
         check("refuses a corrupted b33", False)
     except ExtractionError:
         check("refuses a corrupted b33", True)
+
+    print("== the per-client-auth flag is in the body, not beside it ==")
+    key = hashlib.sha256(b"per-client-auth-flag").digest()
+    flagged = derive_b33(key, SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519, True)
+    unflagged = derive_b33(key, SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519, False)
+    check("flagged and unflagged bodies differ", flagged != unflagged)
+    check("flagged body decodes flagged", decode_b33(flagged)["per_client_auth"] is True)
+    check("unflagged body decodes unflagged", decode_b33(unflagged)["per_client_auth"] is False)
+    verify_b33(flagged, key, SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519)
+    check("flagged body verifies against the signing key", True)
 
     print("== malformed input is refused, not guessed ==")
     for label, bad in (
@@ -549,13 +567,15 @@ def _write_temp(data: bytes) -> str:
 def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         return _self_test()
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if a != "--per-client-auth"]
+    per_client_auth = len(args) != len(sys.argv[1:])
+    if len(args) != 1 or any(a.startswith("-") for a in args):
         sys.stderr.write(
-            "usage: parse_i2pd_els2_destination.py <private-key-file>\n"
+            "usage: parse_i2pd_els2_destination.py [--per-client-auth] <private-key-file>\n"
             "       parse_i2pd_els2_destination.py --self-test\n"
         )
         return 2
-    info = parse(sys.argv[1])
+    info = parse(args[0], per_client_auth)
     for key, value in info.items():
         # `:` separator: values may contain characters the harness would split
         # on, and the ordering is stable so diffs stay readable.
