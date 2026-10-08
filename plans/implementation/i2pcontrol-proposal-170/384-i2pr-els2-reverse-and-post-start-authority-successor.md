@@ -1,6 +1,6 @@
 # Plan 384 — i2pr ELS2 reverse publication + post-start authority successor lane (i2pd direction)
 
-Status: **in-progress-i2pr-els2-reverse-and-post-start-authority-successor**.
+Status: **blocked-post-start-authority-lookup-and-reverse-publication-corrective-plan-385**.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2 (shared number — no
 collision: 384 is free in every subsystem index, the ledger, and the registry;
