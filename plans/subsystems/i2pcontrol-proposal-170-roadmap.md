@@ -723,8 +723,8 @@ Forward dependency graph:
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
        |                 ^ closed; also fixed a pre-existing Plan 342 seal defect
        |
-       |  -> 381 in prog live ELS2 external driver lane (i2pd direction), WP1–WP5 executed, merge onto main pending
-       |                 ^ WP1–WP5 done; reverse + i2pr-authority rows parked for successor; 380 is its closed hard dependency
+       |  -> 381 passed live ELS2 external driver lane (i2pd direction), WP1–WP5 executed, merged onto main, CI green
+       |                 ^ consumer direction delivered; reverse + i2pr-authority rows parked for successor; 380 was its closed hard dependency
        |
        +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
             ^ 374 needs 381 (external driver); 380 is now a closed dependency
@@ -858,5 +858,5 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
 | 380 | **passed** | capability | plans/closure/i2pcontrol-proposal-170/380-status.md (`passed-authorized-consumer-production-path-closed-with-two-defects-found-and-fixed`) | Closed the Plan 351 deferral: the authorized consumer (`begin_authorized`) now has a production caller and a typed `CustomOptions` credential seam; also fixed a pre-existing Plan 342 double-seal defect. Deliberately local-only. |
-| 381 | **in progress** (WP1–WP5 executed; main merge pending) | external interoperability | plans/closure/i2pcontrol-proposal-170/381-status.md | Plan 374's remaining external driver scope (i2pd direction): NONE/PSK/DH payload rows green live, two live negatives, parked reverse + i2pr-authority rows with named successor. |
+| 381 | **passed** (`passed-i2pd-consumer-direction-live-reverse-and-authority-parked-for-successor`; merged `f791263c` + `c223001f`, CI `37781167269` green) | external interoperability | plans/closure/i2pcontrol-proposal-170/381-status.md | Plan 374's remaining external driver scope (i2pd direction): NONE/PSK/DH payload rows green live, two live negatives, parked reverse + i2pr-authority rows with named successor. |
 | 378 | blocked on 377 alone (373 + 376 passed) | final conformance gate. Closure: `plans/closure/i2pcontrol-proposal-170/378-status.md`. §1 re-freeze executed live and MET; §2/§5 green; §3/§4 blocked; `full-proposal-conformant` NOT SET. | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |

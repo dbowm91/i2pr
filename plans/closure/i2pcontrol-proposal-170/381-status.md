@@ -953,7 +953,12 @@ that changes no ordinary-lookup code.
 
 Findings 1–9 are in the sections above (WP1–WP3 record).
 
-## Resume point (2026-10-08)
+## Resume point (2026-10-08) — superseded by the merge section below
+
+**Superseded 2026-10-08 by "Merge onto main + CI" below:** the floor ran on
+the merged tree, the push landed (`74e85503..c223001f`), CI is green, and
+the NONE row re-ran live on main. The executable work list as it stood
+before the merge is kept for traceability:
 
 **This plan's executable work is done except the routine floor and the
 push.** The consumer matrix is green and repeat-green; the checker is
@@ -964,7 +969,9 @@ green three ways; the evidence packaging is green live. Remaining:
    suites green; PSK/DH/negative/authority-mesh lanes green live.
 3. Commit + push (this branch only; no PR requested).
 4. Registry + roadmaps: keep 381 **in progress** until the push lands,
-   then the closer flips it per the closure outcome below.
+   then the closer flips it per the closure outcome below. **Done: flipped
+   to `passed-i2pd-consumer-direction-live-reverse-and-authority-parked-for-successor`
+   in the merge section below.**
 
 **Closure outcome (for the record that closes this plan).** The i2pd
 consumer direction is delivered completely (3 modes + 2 live negatives
@@ -977,3 +984,60 @@ plan unblocks 374's remainder alongside 375.
 
 **Stop condition 2 no longer constrains this work.** The mesh was the one
 remaining unknown that could have blocked the plan outright, and it is answered.
+
+## Merge onto main + CI (2026-10-08) — token: `passed-i2pd-consumer-direction-live-reverse-and-authority-parked-for-successor`
+
+The branch `plans/373-380-prop170-closure-and-authorized-consumer` merged
+onto `main` as `f791263c` (merge of `origin/main@74e85503`) plus `c223001f`
+(reconciliation), pushed `74e85503..c223001f`. The merge carried Plans 380
+and 381 onto main — main had neither (no 380/381 rows, no 380-status file,
+pre-380 consumer spelling in `outproxy_loopback_wire.rs`).
+
+Conflict resolutions (no weakenings): the outproxy helper keeps the branch's
+widened `RouterSecretOwner` return; registry/roadmaps/freeze-doc keep the
+branch's superset content refreshed to WP1–WP5 currency (the 380 milestone
+row said `ready` — corrected to `passed` — and the 381 rows said
+WP2/WP3-era — refreshed); `tooling.md` took main's figures provisionally
+and the reconciliation commit re-derived them (below).
+
+The reconciliation fixed two real failures, both proven against the tree,
+neither a weakening:
+- `check-tooling-inventory.py` failed (both sides added scripts): floor
+  checker steps 47→48, total steps 57→58, top-level `check-*` 55→57
+  (60 with `interop/`), Method-B rows 57→59. Green unmodified after.
+- `check-license-metadata.py` failed with 6 violations — and this one was
+  **main's own defect**: `23c16b8f` added `i2pr-app-package/-state/-appctl`
+  without `license.workspace = true`, so main was red at `74e85503`
+  (CI run `37714435165` failed `Check license metadata` on both OSes).
+  One-line inheritance per manifest, the same spelling every other member
+  uses; green unmodified after (all 29 manifests).
+
+Full routine floor on the merged tree: 183 suites, 4670 passed, 36 ignored,
+1 failure — `run_lifecycle_readiness::default_profile_starts_without_binding_a_listener`,
+which is **environmental, not merge-caused**: the host's system `i2psvc`
+account (uid 115) holds a persistent SAM listener on `127.0.0.1:7656`
+(answers `HELLO REPLY RESULT=OK`), the merged `default_sam_enabled()`
+is still `false` with zero merge diff in `config.rs`, and the row fails
+identically in isolation. Every other floor step green, including the
+whole checker battery, `cargo deny`, clippy, rustdoc, and doc-tests.
+Local runs of that one row will keep failing (and leaking an orphan child
+per run — cleaned up) until the port is free; CI runners are unaffected.
+
+On-main live evidence: the NONE payload row was re-executed on the merged
+tree (`I2PR_ELS2_AUTH_MODE=none`, stock i2pd 2.61.0 mesh): exit 0,
+`Plan 381 ELS2 lane passed (auth none)`, payload `ELS2-LANE-FIXTURE-OK`.
+The merge delta on lane-relevant production code is a test-only timeout
+tweak plus unrelated app-runtime state-root plumbing (`lib.rs` +3), so the
+branch-tip matrix evidence carries; this re-run removes even that caveat
+for the payload row.
+
+CI on main at `c223001f` (run `37781167269`): **all four jobs success**
+(Dependency policy, MSRV Ubuntu, Quality ubuntu-latest, Quality
+macos-latest). The `m11-transit-external.yml` instant-FAIL runs beside both
+this push and the previous one are a pre-existing artifact (dispatch-only
+workflow, 0 jobs, same signature on `74e85503`) — unrelated, out of scope.
+
+Unblock audit (required): nothing newly unblocked. Plan 374 still needs the
+named successor (reverse direction + i2pr-side authority) *and* Plan 375's
+Java half; 375 still has no driver; 377 still has no inputs; 378 still waits
+on 377. Recorded here so the audit is explicit rather than silent.
