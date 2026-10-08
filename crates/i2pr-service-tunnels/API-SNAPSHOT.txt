@@ -71,6 +71,7 @@ config:fn:group_key
 config:fn:is_client
 config:fn:is_dedicated
 config:fn:is_empty
+config:fn:is_ephemeral
 config:fn:is_explicit_group
 config:fn:is_server
 config:fn:len

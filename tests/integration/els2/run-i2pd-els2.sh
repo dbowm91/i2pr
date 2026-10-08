@@ -498,11 +498,27 @@ validate_els2_tunnels_conf "${SCRATCH}/f/tunnels.conf" ELS2PUB "${FIX_PORT}" ELS
   || { record tunnels-conf-generated failed "validator refused the ELS2 publisher section"; exit 1; }
 record_guarded "tunnels-conf-generated" \
   "ELS2 publisher section written and validated before any process started" 0
+
+# Plan 381 WP4 authority row: a second, STANDARD (type 3) destination on the
+# same reference and fixture port, so the lane proves the ordinary `.b32`
+# path through the same product that carries the ELS2 rows. Each section is
+# written and validated standalone — the validator's exactly-one-section
+# rule guards each generated piece — and concatenation is mechanical.
+write_els2_tunnels_conf "${SCRATCH}/b32section.conf" B32PUB "${FIX_PORT}" B32PUB.dat \
+  "${ELS2_STORE_TYPE_STANDARD}" "${ELS2_AUTH_NONE}" \
+  || { record tunnels-conf-generated failed "writer refused the B32 authority section"; exit 1; }
+validate_els2_tunnels_conf "${SCRATCH}/b32section.conf" B32PUB "${FIX_PORT}" B32PUB.dat \
+  "${ELS2_STORE_TYPE_STANDARD}" "${ELS2_AUTH_NONE}" \
+  || { record tunnels-conf-generated failed "validator refused the B32 authority section"; exit 1; }
+record_guarded "tunnels-conf-authority-section" \
+  "standard-LS2 authority section written and validated before any process started" 0
+cat "${SCRATCH}/b32section.conf" >> "${SCRATCH}/f/tunnels.conf"
+
 # The evidence copy must not carry the client key: in authorized runs the
-# section holds `i2cp.leaseSetClient.{psk,dh}.0 = 0:<base64>` — for PSK the
+# section holds `i2cp.leaseSetClient.psk.0 = 0:<base64>` — for PSK the
 # shared secret itself. Redact the value, keeping the group line as proof of
 # the mode→group pairing the writer enforces. NONE runs have no key line and
-# copy verbatim.
+# copy verbatim. The B32 section carries no key either way.
 if [[ -n "${CLIENT_KEY_HEX}" ]]; then
   sed -E 's/^(i2cp\.leaseSetClient\.[a-z]+\.0) = .*$/\1 = [redacted-client-key]/' \
     "${SCRATCH}/f/tunnels.conf" > "${EVIDENCE_DIR}/tunnels.conf"
@@ -659,6 +675,72 @@ else
     "control-skip: authorized mode ${AUTH_MODE} has no reference-consumer credential path (Destination.cpp:778 takes only the blinded key); mesh health is the NONE lane's proven control"
 fi
 
+# ---- the B32 authority destination ----------------------------------------
+# The standard LS2 is published by the same reference from the same fixture,
+# and consumed first by the reference itself (a control, exactly like the
+# ELS2 one) and then by i2pr's ordinary client path (the authority row).
+# The `.dat` is key material, not a publication signal (fact 2): f publishes
+# two destinations, so the gate is a SECOND "Publishing LeaseSet confirmed"
+# beyond the one the ELS2 poll already saw. Republication runs on lease
+# timers (tens of minutes), so a second confirmation inside this bounded
+# window is the standard record, not a republish.
+B32_PUB_OK=0
+CONFIRMED_BEFORE="$(grep -ac "Publishing LeaseSet confirmed" "${LOG}/f.log" 2>/dev/null || true)"
+for _ in $(seq 1 240); do
+  CONFIRMED_NOW="$(grep -ac "Publishing LeaseSet confirmed" "${LOG}/f.log" 2>/dev/null || true)"
+  if [[ "${CONFIRMED_NOW}" -gt "${CONFIRMED_BEFORE}" ]]; then B32_PUB_OK=1; break; fi
+  sleep 1
+done
+record_guarded "reference-b32-published" \
+  "the reference published its standard LeaseSet2 for the authority destination" "$(observed_rc "${B32_PUB_OK}")"
+if [[ "${B32_PUB_OK}" -ne 1 ]]; then
+  cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
+  exit 1
+fi
+B32_DAT="${SCRATCH}/fdata/B32PUB.dat"
+[[ -s "${B32_DAT}" ]] || { record destination-b32-derived failed "authority key file missing"; exit 1; }
+B32_EXT="${SCRATCH}/extract-b32.out"
+extract_b32_rc=0
+python3 "${EXTRACTOR}" --b32-only "${B32_DAT}" > "${B32_EXT}" 2> "${LOG}/extract-b32.err" || extract_b32_rc=$?
+record_guarded "destination-b32-derived" \
+  "the authority destination parsed to its .b32 without a blinded derivation" "${extract_b32_rc}"
+if [[ "${extract_b32_rc}" -ne 0 ]]; then
+  cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
+  sed -n '1,20p' "${LOG}/extract-b32.err" >&2 || true
+  exit 1
+fi
+DEST_B32_STD="$(awk -F: '$1 == "dest_b32" {print $2; exit}' "${B32_EXT}")"
+echo "reference_dest_b32_std=${DEST_B32_STD}" >> "${EVIDENCE_DIR}/destinations.txt"
+echo "==> authority b32: ${DEST_B32_STD}"
+
+# The connect itself is the publication gate, retried boundedly: with two
+# destinations the reference settles slower than the single-destination
+# mesh WP2 tuned against, and a log-line proxy cannot distinguish the
+# standard publication from a second confirmation of the ELS2 one. Each
+# attempt is a full SAM session + Streaming connect; the loop is a bounded
+# readiness poll like every other gate in this runner, not a second lane
+# attempt (MAX_ATTEMPTS still governs the lane as a whole).
+B32_SAM_RC=1
+B32_ATTEMPTS=0
+B32_SAM_OUT=""
+if [[ "${POOL_OK}" -eq 1 ]]; then
+  for _ in $(seq 1 6); do
+    B32_ATTEMPTS=$((B32_ATTEMPTS + 1))
+    if B32_SAM_OUT="$(I2PR_ELS2_SAM_PORT="${C_SAM}" I2PR_ELS2_SAM_DEST="${DEST_B32_STD}" \
+        I2PR_ELS2_SAM_EXPECT="ELS2-LANE-FIXTURE-OK" timeout 120 python3 "${LANE_DIR}/clients/sam_b33_connect.py" 2>&1)"; then
+      B32_SAM_RC=0
+      break
+    fi
+    sleep 40
+  done
+fi
+echo "${B32_SAM_OUT}"
+# A control, like the ELS2 one: stock reference consuming stock reference's
+# standard destination. Never promoted to an i2pr row.
+record_guarded control-reference-b32-roundtrip \
+  "stock i2pd consumed a stock i2pd standard destination and the fixture banner came back after ${B32_ATTEMPTS} attempt(s); mesh control for the authority row" \
+  "${B32_SAM_RC}"
+
 # ---- mesh shape precondition: three family-published references -----------
 # Plan 381: i2pr builds qualified three-hop tunnels, whose peer
 # projection requires a `family` option per candidate. i2pd only
@@ -716,6 +798,7 @@ I2PR_ELS2_PEER3_ENDPOINT="127.0.0.1:${N_PORT}" \
 I2PR_ELS2_REFERENCE_DEST_B32="${DEST_B32}" \
 I2PR_ELS2_REFERENCE_DEST_B33="${DEST_B33}" \
 I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \
+I2PR_ELS2_REFERENCE_DEST_B32_STD="${DEST_B32_STD}" \
 I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
 I2PR_ELS2_AUTH_MODE="${AUTH_MODE}" \

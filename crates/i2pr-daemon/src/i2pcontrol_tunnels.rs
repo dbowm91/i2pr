@@ -3629,7 +3629,11 @@ impl TunnelControlState {
             if self.startup_name(spec.id.as_str()).is_some() {
                 continue;
             }
+            // Plan 381: ephemeral listeners are exempt — each port-0 bind
+            // gets a distinct OS port. A startup spec holding a fixed port
+            // still collides with a control spec naming the same socket.
             if let Some(listener) = spec.listener
+                && !listener.is_ephemeral()
                 && startup_listeners.contains(&listener.socket())
             {
                 return Err(ControlError::NameCollision(spec.id.as_str().to_owned()));
@@ -3644,11 +3648,25 @@ impl TunnelControlState {
     /// this check is the fail-closed guard for stopped rows shadowing
     /// startup-owned sockets).
     fn check_listener_against_startup(&self, spec: &ServiceTunnelSpec) -> Result<(), ControlError> {
+        // Plan 381: ephemeral listeners are exempt on either side — each
+        // port-0 bind gets a distinct OS port, matching
+        // `ServiceTunnelSet::validate` and the reconcile bind-collision
+        // check. (The error variant is pre-existing and misnamed; a
+        // listener collision is not a name collision, but renaming the
+        // variant is out of scope for this plan.)
         let Some(listener) = spec.listener else {
             return Ok(());
         };
+        if listener.is_ephemeral() {
+            return Ok(());
+        }
         for startup in &self.startup.tunnels {
-            if startup.listener.map(|owned| owned.socket()) == Some(listener.socket()) {
+            if startup
+                .listener
+                .filter(|owned| !owned.is_ephemeral())
+                .map(|owned| owned.socket())
+                == Some(listener.socket())
+            {
                 return Err(ControlError::NameCollision(spec.id.as_str().to_owned()));
             }
         }

@@ -614,8 +614,29 @@ fn freshness_and_storage_key_checks_are_enforced() {
     let wrong_key = BlindedStorageKey::from_hash(Hash::from_bytes([0x77; 32]));
     assert!(matches!(
         ValidatedEncryptedLeaseSet2::validate(
-            record,
+            record.clone(),
             Some(wrong_key),
+            Els2ValidationContext::new(PUBLISHED)
+        ),
+        Err(Els2ValidationError::StorageKeyMismatch)
+    ));
+    // Plan 381 WP4: a record for a different day is refused the same way. A
+    // day boundary changes the blinded key and therefore the storage key, so
+    // presenting day D's record under day D+1's key must fail closed rather
+    // than decrypt under a stale schedule. The owner helper is deterministic
+    // in the unblinded identity, so this is the same publisher, next day.
+    let next_day = utc_blinding_day(PUBLISHED + 86_400).expect("next day");
+    let (_, next_owner) = owner_and_identity(None, next_day);
+    let next_day_key = next_owner.daily().storage_key();
+    assert_ne!(
+        next_day_key.as_hash(),
+        owner.daily().storage_key().as_hash(),
+        "consecutive days must file under different storage keys"
+    );
+    assert!(matches!(
+        ValidatedEncryptedLeaseSet2::validate(
+            record,
+            Some(next_day_key),
             Els2ValidationContext::new(PUBLISHED)
         ),
         Err(Els2ValidationError::StorageKeyMismatch)

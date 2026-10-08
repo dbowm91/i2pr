@@ -318,7 +318,7 @@ def verify_b33(b33: str, expected_signing_pub: bytes, expected_sig_type: int) ->
         )
 
 
-def parse(path: str, per_client_auth: bool = False) -> dict:
+def parse(path: str, per_client_auth: bool = False, b32_only: bool = False) -> dict:
     public, extended_len = _read_identity(path)
     sig_type = _signing_key_type(public, extended_len)
     signing_pub = _signing_public_key(public, sig_type)
@@ -326,6 +326,21 @@ def parse(path: str, per_client_auth: bool = False) -> dict:
     # b32: IdentityEx::Hash() is SHA-256 over GetFullLen() bytes.
     dest_hash = hashlib.sha256(public).digest()
     dest_b32 = base64.b32encode(dest_hash).decode("ascii").rstrip("=").lower()
+
+    if b32_only:
+        # Plan 381 WP4 authority row: a standard (non-encrypted) destination
+        # has no blinded address at all, and deriving one from its signing
+        # key would refuse (non-32-byte keys) or mint a meaningless b33.
+        # The b32 is the whole result.
+        return {
+            "pub_len": len(public),
+            "extended_len": extended_len,
+            "sig_type": sig_type,
+            "sig_type_name": SIGTYPE_NAMES.get(sig_type, str(sig_type)),
+            "signing_pub_len": len(signing_pub),
+            "dest_hash": dest_hash.hex(),
+            "dest_b32": f"{dest_b32}.b32.i2p",
+        }
 
     # The per-client-auth flag is NOT derivable from the `.dat`: it is key
     # material, and the flag records the publisher's configured auth mode
@@ -567,15 +582,19 @@ def _write_temp(data: bytes) -> str:
 def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         return _self_test()
-    args = [a for a in sys.argv[1:] if a != "--per-client-auth"]
-    per_client_auth = len(args) != len(sys.argv[1:])
+    args = [a for a in sys.argv[1:] if a not in ("--per-client-auth", "--b32-only")]
+    per_client_auth = "--per-client-auth" in sys.argv[1:]
+    b32_only = "--b32-only" in sys.argv[1:]
+    if per_client_auth and b32_only:
+        sys.stderr.write("conflicting flags: --per-client-auth needs the b33 derivation\n")
+        return 2
     if len(args) != 1 or any(a.startswith("-") for a in args):
         sys.stderr.write(
-            "usage: parse_i2pd_els2_destination.py [--per-client-auth] <private-key-file>\n"
+            "usage: parse_i2pd_els2_destination.py [--per-client-auth | --b32-only] <key-file>\n"
             "       parse_i2pd_els2_destination.py --self-test\n"
         )
         return 2
-    info = parse(args[0], per_client_auth)
+    info = parse(args[0], per_client_auth, b32_only)
     for key, value in info.items():
         # `:` separator: values may contain characters the harness would split
         # on, and the ordering is stable so diffs stay readable.

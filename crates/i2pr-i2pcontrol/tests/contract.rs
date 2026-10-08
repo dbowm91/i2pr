@@ -1702,7 +1702,10 @@ fn plan289_tunnel_request_envelope_rules() {
     })))
     .unwrap_or_else(|error| panic!("consumer shape must decode: {error:?}"));
     assert_eq!(
-        consumer.options.get("leaseset_password").map(String::as_str),
+        consumer
+            .options
+            .get("leaseset_password")
+            .map(String::as_str),
         Some("plan381-wire-secret")
     );
     assert!(consumer.options.contains_key("target_destination"));

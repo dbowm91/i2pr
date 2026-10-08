@@ -488,6 +488,17 @@ impl LocalListenerSpec {
     pub fn socket(self) -> std::net::SocketAddr {
         std::net::SocketAddr::new(self.address, self.port)
     }
+
+    /// Returns whether this listener binds an OS-assigned ephemeral port.
+    ///
+    /// Plan 381: two port-0 listener specs never collide — each bind gets a
+    /// distinct OS port — so the static duplicate-listener checks exempt
+    /// them. A fixed port still collides with itself, and a bind-time
+    /// conflict (the OS handing an ephemeral bind a port another spec
+    /// names) still fails closed at bind time.
+    pub const fn is_ephemeral(self) -> bool {
+        self.port == 0
+    }
 }
 
 /// Server-side local target for generic/IRC server tunnels.
@@ -1762,7 +1773,12 @@ impl ServiceTunnelSet {
                     reason: "server inbound_port must be unique within a Destination group",
                 });
             }
+            // Plan 381: ephemeral (port-0) listeners never collide
+            // statically — see `LocalListenerSpec::is_ephemeral`. Two
+            // default clients via I2PControl previously rejected the
+            // second with a duplicate that could never happen at bind.
             if let Some(listener) = spec.listener
+                && !listener.is_ephemeral()
                 && !listeners.insert(listener.socket())
             {
                 return Err(ServiceTunnelError::DuplicateListener {
@@ -2189,6 +2205,30 @@ mod tests {
         };
         assert!(matches!(
             set.validate(),
+            Err(ServiceTunnelError::DuplicateListener { .. })
+        ));
+    }
+
+    #[test]
+    fn ephemeral_listeners_never_collide() {
+        // Plan 381: two default (port-0) clients must validate — each bind
+        // gets a distinct OS port — while a fixed port colliding with
+        // itself, or with an ephemeral spec naming no port at all, keeps
+        // failing exactly as before.
+        let first = client_spec("alpha", "127.0.0.1:0", &canonical_b32());
+        let second = client_spec("beta", "127.0.0.1:0", &canonical_b32());
+        ServiceTunnelSet {
+            tunnels: vec![first, second],
+        }
+        .validate()
+        .expect("two ephemeral listeners must validate");
+        let third = client_spec("gamma", "127.0.0.1:8080", &canonical_b32());
+        let fourth = client_spec("delta", "127.0.0.1:8080", &canonical_b32());
+        assert!(matches!(
+            ServiceTunnelSet {
+                tunnels: vec![third, fourth],
+            }
+            .validate(),
             Err(ServiceTunnelError::DuplicateListener { .. })
         ));
     }

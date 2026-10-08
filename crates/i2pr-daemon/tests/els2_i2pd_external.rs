@@ -503,8 +503,14 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "b33-client-created",
         &serde_json::json!({ "error": created["error"].is_null() }).to_string(),
     );
+    // Assert on the RESULT status, not just the envelope: a rejected
+    // candidate returns `"status": "error - ..."` with a null JSON-RPC
+    // error, and an envelope-only assert passes a service that was never
+    // built. (Plan 381 WP4: this exact weakness hid a duplicate-listener
+    // refusal of the second client for a full lane cycle.)
+    let created_status = created["result"]["status"].as_str().unwrap_or_default();
     assert!(
-        created["error"].is_null(),
+        created["error"].is_null() && created_status.starts_with("success"),
         "the .b33 client must be created over I2PControl: {created}"
     );
 
@@ -700,6 +706,28 @@ async fn els2_i2pr_consumes_reference_published_els2() {
             "negative {negative}: expected refusal {expected}, observed {observed}"
         );
     }
+
+    // Plan 381 WP4 authority disposition: the i2pr-side `.b32` row is NOT
+    // attempted here. Three compositions were tried against the live mesh,
+    // and each exposed a real boundary rather than a lane typo; all three
+    // are recorded as findings for the successor plan, not papered over:
+    // a control-created ordinary client is never provisioned post-start
+    // (its supervisor parks on the unresolved target); a product-spec
+    // startup service never reaches the shared manager's committed
+    // generations; a TOML startup service provisions at start but its
+    // 3-attempt ordinary lookup can exhaust against ungossiped floodfills
+    // before the mesh converges. The mesh-side authority signal stays:
+    // the runner publishes the standard destination and the reference
+    // consumes it every run (`control-reference-b32-roundtrip`), and the
+    // ordinary path through i2pr itself is covered by the routine floor's
+    // service-tunnel suites over a diff that touches no ordinary-lookup
+    // code. The runner still exports `I2PR_ELS2_REFERENCE_DEST_B32_STD`
+    // for the successor lane.
+    append_evidence(
+        &evidence_dir,
+        "authority-b32",
+        "successor-plan: i2pr-side row parked, mesh-side control green",
+    );
 
     parent.cancel(i2pr_core::CancellationReason::TestHarnessTeardown);
     let _ = product.shutdown().await;

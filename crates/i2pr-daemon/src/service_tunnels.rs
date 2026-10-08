@@ -1180,7 +1180,12 @@ impl ServiceTunnelManager {
         // listener is in the diff as Removed).
         let mut candidate_listeners: HashMap<SocketAddr, String> = HashMap::new();
         for spec in &candidate_specs {
-            if let Some(listener) = spec.listener {
+            // Plan 381: ephemeral listeners are exempt, matching
+            // `ServiceTunnelSet::validate` — each port-0 bind gets a
+            // distinct OS port, so no static collision is possible.
+            if let Some(listener) = spec.listener
+                && !listener.is_ephemeral()
+            {
                 let socket = listener.socket();
                 if let Some(prior) = candidate_listeners.get(&socket) {
                     return Err(ServiceTunnelError::InvalidConfig(format!(
