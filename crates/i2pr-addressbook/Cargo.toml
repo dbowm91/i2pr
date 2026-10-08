@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Canonical runtime-neutral i2pr address-book owner: four administrative books, resolver precedence, subscriptions, and versioned generations (Plan 294)"
 publish = false
 

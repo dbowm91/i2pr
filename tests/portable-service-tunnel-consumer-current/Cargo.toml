@@ -1,0 +1,15 @@
+[package]
+name = "portable-service-tunnel-consumer-current"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Plan 379 WP C. Pinned to the Plan 379 implementation head, which is the first
+# revision carrying both the MIT license metadata and the Plan 359 permitted
+# `i2pr-proto` edge. The historical Plan 351 fixture next door stays pinned to
+# the Plan 350 revision: it is the evidence that the boundary held *before*
+# that edge existed, and repointing it would destroy the comparison.
+i2pr-service-tunnels = { git = "https://github.com/dbowm91/i2pr", rev = "f0fb74a8582d6077a7c5db49d613699688115bad", package = "i2pr-service-tunnels" }

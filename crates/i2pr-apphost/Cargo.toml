@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Trusted application host: bounded direct-exec supervisor (Plan 369)"
 publish = false
 

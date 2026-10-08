@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Composition owner for the Plan 104 NetDB cache loader and SU3 reseed ingestion"
 publish = false
 

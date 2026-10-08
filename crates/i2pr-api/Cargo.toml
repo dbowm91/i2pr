@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+license.workspace = true
 description = "Application-protocol adapter layer (SAM 3.1) for the i2pr router"
 publish = false
 
