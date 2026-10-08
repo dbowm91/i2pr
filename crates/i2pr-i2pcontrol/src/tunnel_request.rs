@@ -702,10 +702,27 @@ pub fn decode_tunnel_request(
     //
     // The error names the mode and never a secret value, so a rejection is
     // actionable without echoing the lookup secret or any client key.
+    //
+    // Plan 381: the ELS2 *consumer* shape bypasses this publisher block. A
+    // client that consumes a `.b33` publishes nothing, so `leaseset_password`
+    // participates in deriving the lookup key, not a publication — the same
+    // exemption the daemon's `is_encrypted_consumer` already applies
+    // downstream. This gate cannot parse the target (this crate is a leaf
+    // with no workspace dependencies), so it checks key presence only and
+    // defers the exact shape — encrypted-service target, parsed — to the
+    // daemon, which rejects anything else: `build_control_spec` refuses the
+    // secret on a non-encrypted target, and `lease_set_security_plan`
+    // re-applies the precise exemption. Skipping here therefore defers to a
+    // stricter check, never around one.
+    let consumer_shape = !options.contains_key("encrypt_lease_set")
+        && !options.contains_key("leaseset_client_auth")
+        && options.contains_key("leaseset_password")
+        && options.contains_key("target_destination");
     if matches!(action, TunnelAction::Create | TunnelAction::Edit)
         && (options.contains_key("encrypt_lease_set")
             || options.contains_key("leaseset_password")
             || options.contains_key("leaseset_client_auth"))
+        && !consumer_shape
     {
         validate_lease_set_security_block(&options)?;
     }

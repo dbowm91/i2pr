@@ -323,6 +323,52 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "credential-present",
         &(!credential.is_empty()).to_string(),
     );
+    // Plan 381 WP4 negatives. `I2PR_ELS2_NEGATIVE` is empty for the positive
+    // rows, `wrong-credential` (PSK lane: the true credential is ignored and
+    // a random one is presented), or `wrong-secret` (a well-formed but wrong
+    // `leaseset_password` is configured, so the derived storage key misses
+    // the published record). Anything else fails here, not in the lane.
+    let negative = env_optional("I2PR_ELS2_NEGATIVE");
+    match negative.as_str() {
+        "" | "wrong-credential" | "wrong-secret" => {}
+        other => {
+            panic!("I2PR_ELS2_NEGATIVE must be one of wrong-credential|wrong-secret, got {other}")
+        }
+    }
+    if negative == "wrong-credential" {
+        assert_eq!(
+            auth_mode, "psk",
+            "wrong-credential runs on the PSK lane with a minted random key"
+        );
+    }
+    append_evidence(
+        &evidence_dir,
+        "negative",
+        if negative.is_empty() {
+            "none"
+        } else {
+            negative.as_str()
+        },
+    );
+    // A wrong credential is minted locally, never read from the lane: it
+    // must not authorize, and it must not equal the true credential by
+    // construction (fresh randomness, not a mutation of the real key).
+    let presented_credential = if negative == "wrong-credential" {
+        let mut bytes = [0_u8; 32];
+        {
+            use rand_core::TryRngCore as _;
+            rand_core::OsRng
+                .try_fill_bytes(&mut bytes)
+                .expect("random wrong credential");
+        }
+        let mut hex = String::with_capacity(64);
+        for byte in bytes {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        format!("psk:{hex}")
+    } else {
+        credential.clone()
+    };
 
     assert!(bind.ip().is_loopback(), "R bind must be loopback");
     assert!(
@@ -441,9 +487,15 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "TargetDestination": destination,
         "DelayOpen": true,
     });
-    if !credential.is_empty() {
+    if !presented_credential.is_empty() {
         create["CustomOptions"] =
-            serde_json::json!({"i2pr": {"LeasesetClientCredential": credential}});
+            serde_json::json!({"i2pr": {"LeasesetClientCredential": presented_credential}});
+    }
+    // A wrong lookup secret is a well-formed value the publisher never used.
+    // `OptionalLookup` is the Proposal wire name the request layer maps to
+    // `leaseset_password` (`tunnel_request.rs:186`).
+    if negative == "wrong-secret" {
+        create["OptionalLookup"] = serde_json::json!("plan381-wrong-lookup-secret");
     }
     let created = control(control_addr, "TunnelManager", create, 2).await;
     append_evidence(
@@ -597,18 +649,57 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         &serde_json::json!({ "error": got_post["error"].is_null(), "result": got_post["result"] })
             .to_string(),
     );
-    assert!(
-        banner.is_some(),
-        "the application payload must cross both ways: expected {EXPECTED_BANNER:?} back \
-         through the reference's server tunnel. pre-status={target_status:?} \
-         pre-counters={counters:?} post-status={post_status:?} \
-         post-counters={post_counters:?} post-projection={post_projection}"
-    );
-    append_evidence(
-        &evidence_dir,
-        "application-payload-returned",
-        EXPECTED_BANNER,
-    );
+    if negative.is_empty() {
+        assert!(
+            banner.is_some(),
+            "the application payload must cross both ways: expected {EXPECTED_BANNER:?} back \
+             through the reference's server tunnel. pre-status={target_status:?} \
+             pre-counters={counters:?} post-status={post_status:?} \
+             post-counters={post_counters:?} post-projection={post_projection}"
+        );
+        append_evidence(
+            &evidence_dir,
+            "application-payload-returned",
+            EXPECTED_BANNER,
+        );
+    } else {
+        // The negative rows: no payload may cross, and the refusal must be
+        // the specific typed status — not a timeout, not a crash, not a
+        // silent stall. A wrong credential dies in layer-1 authorization;
+        // a wrong lookup secret derives a storage key no record answers to.
+        //
+        // The minted wrong credential authorizes nothing, but it is still
+        // key-shaped material and must not reach evidence: self-scrub the
+        // file before asserting on it.
+        if negative == "wrong-credential" {
+            let wrong_hex = presented_credential
+                .strip_prefix("psk:")
+                .expect("minted wrong credential keeps the psk: spelling");
+            let evidence_text = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv"))
+                .expect("evidence reads back");
+            assert!(
+                !evidence_text.contains(wrong_hex),
+                "the minted wrong credential must not reach evidence"
+            );
+            append_evidence(&evidence_dir, "wrong-credential-scrub", "passed");
+        }
+        let expected = if negative == "wrong-credential" {
+            "ClientCredentialRejected"
+        } else {
+            "LookupExhausted"
+        };
+        let observed = format!("{post_status:?}");
+        append_evidence(&evidence_dir, "negative-expected", expected);
+        append_evidence(&evidence_dir, "negative-observed", &observed);
+        assert!(
+            banner.is_none(),
+            "negative {negative}: no payload may cross, but the banner came back"
+        );
+        assert!(
+            observed.contains(expected),
+            "negative {negative}: expected refusal {expected}, observed {observed}"
+        );
+    }
 
     parent.cancel(i2pr_core::CancellationReason::TestHarnessTeardown);
     let _ = product.shutdown().await;

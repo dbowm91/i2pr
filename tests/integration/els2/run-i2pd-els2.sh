@@ -720,12 +720,13 @@ I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
 I2PR_ELS2_AUTH_MODE="${AUTH_MODE}" \
 I2PR_ELS2_CLIENT_CREDENTIAL="${CREDENTIAL}" \
+I2PR_ELS2_NEGATIVE="${I2PR_ELS2_NEGATIVE:-}" \
 I2PR_ELS2_SSU2_BIND="127.0.0.1:${R_PORT}" \
 I2PR_ELS2_EVIDENCE_DIR="${EVIDENCE_DIR}" \
 timeout --foreground 1800 cargo test --locked -p i2pr-daemon \
   --test "${DRIVER_TEST}" -- --ignored --exact --nocapture --test-threads=1 \
   > "${EVIDENCE_DIR}/driver.log" 2>&1 || driver_rc=$?
-record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh (auth ${AUTH_MODE})" "${driver_rc}"
+record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh (auth ${AUTH_MODE}, negative ${I2PR_ELS2_NEGATIVE:-none})" "${driver_rc}"
 if [[ "${driver_rc}" -ne 0 ]]; then
   sed -n '1,80p' "${EVIDENCE_DIR}/driver.log" >&2 || true
 fi

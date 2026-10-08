@@ -1688,6 +1688,64 @@ fn plan289_tunnel_request_envelope_rules() {
         }))),
         Err(TunnelRequestError::BadValue(_))
     ));
+    // Plan 381: the ELS2 *consumer* shape bypasses the publisher block. A
+    // client naming an encrypted-service target with a lookup secret and no
+    // `EncryptLeaseSet` decodes: the secret derives the lookup key, and the
+    // daemon's `is_encrypted_consumer` enforces the exact shape downstream.
+    // The target value is opaque to this crate (a leaf with no workspace
+    // dependencies), so any string exercises the carve-out; the daemon
+    // refuses a non-encrypted target afterwards.
+    let consumer = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "c", "Type": "client",
+        "TargetDestination": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b33.i2p",
+        "DelayOpen": true, "OptionalLookup": "plan381-wire-secret",
+    })))
+    .unwrap_or_else(|error| panic!("consumer shape must decode: {error:?}"));
+    assert_eq!(
+        consumer.options.get("leaseset_password").map(String::as_str),
+        Some("plan381-wire-secret")
+    );
+    assert!(consumer.options.contains_key("target_destination"));
+    assert!(!consumer.options.contains_key("encrypt_lease_set"));
+    // The carve-out is tight on all four sides: a secret with no target, a
+    // secret beside a publisher mode, and a secret beside a client list all
+    // still go through the publisher block — and fail there.
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "c", "Type": "client",
+            "DelayOpen": true, "OptionalLookup": "plan381-wire-secret",
+        }))),
+        Err(TunnelRequestError::BadValue(message)) if message.contains("not used by")
+    ));
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "c", "Type": "client",
+            "TargetDestination": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b33.i2p",
+            "DelayOpen": true,
+            "EncryptLeaseSet": "blinded", "OptionalLookup": "plan381-wire-secret",
+        }))),
+        Err(TunnelRequestError::BadValue(message)) if message.contains("not used by")
+    ));
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "c", "Type": "client",
+            "TargetDestination": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b33.i2p",
+            "DelayOpen": true, "OptionalLookup": "plan381-wire-secret",
+            "LeaseSetClientAuths": [{"Name": "client", "Key": "ab".repeat(32)}],
+        }))),
+        Err(TunnelRequestError::BadValue(_))
+    ));
+    // The carve-out covers `edit` as well: the gate is action-shaped, and a
+    // stored definition gaining a lookup secret must reach the daemon's
+    // precise check rather than die in the envelope.
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "edit", "Name": "c",
+            "TargetDestination": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b33.i2p",
+            "OptionalLookup": "plan381-wire-secret",
+        })))
+        .is_ok()
+    );
     // No rejection message may echo a supplied secret.
     let secret = "hunter2-lookup-secret";
     for error in [
