@@ -103,7 +103,10 @@ def run() -> int:
             f"destination must use the .b32.i2p spelling i2pd accepts, got {destination!r}"
         )
 
-    session_id = "plan381"
+    # Overridable per attempt: a timed-out attempt leaves its session ID
+    # held by the bridge, and reusing it answers DUPLICATED_ID — which reads
+    # like a mesh defect but is only the retry tripping over its own past.
+    session_id = os.environ.get("I2PR_ELS2_SAM_SESSION_ID", "plan381")
     create = _open(sam_port)
     try:
         _expect_ok(_send(create, HELLO, 30.0), "HELLO")

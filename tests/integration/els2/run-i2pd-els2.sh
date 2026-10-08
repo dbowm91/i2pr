@@ -727,6 +727,7 @@ if [[ "${POOL_OK}" -eq 1 ]]; then
   for _ in $(seq 1 6); do
     B32_ATTEMPTS=$((B32_ATTEMPTS + 1))
     if B32_SAM_OUT="$(I2PR_ELS2_SAM_PORT="${C_SAM}" I2PR_ELS2_SAM_DEST="${DEST_B32_STD}" \
+        I2PR_ELS2_SAM_SESSION_ID="plan381-b32-${B32_ATTEMPTS}" \
         I2PR_ELS2_SAM_EXPECT="ELS2-LANE-FIXTURE-OK" timeout 120 python3 "${LANE_DIR}/clients/sam_b33_connect.py" 2>&1)"; then
       B32_SAM_RC=0
       break
