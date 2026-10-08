@@ -621,7 +621,47 @@ The destination is now found and classified with the correct Red25519 blinded
 type (11) over Ed25519 unblinded (7) — the types the derived b33 actually
 carries.
 
-### The second gate, still open
+### The second gate: where it is, and the next lead
+
+`encrypted_target_status` is still `None` and every `RemoteDeliveryCounters`
+field is still zero, so **provisioning is not reaching the encrypted branch**.
+That branch records `MissingLookupSecret` the instant it is entered, so its
+staying `None` is the proof that it is not entered. No cause is claimed.
+
+What was checked, and cleared, reading outward from the branch:
+
+| Gate | Verdict |
+|---|---|
+| `is_encrypted_service_address` classification | **passes** — strips `.b32.i2p`, tests body length |
+| `spec_reference_for_service` | **fixed above** — now returns the encrypted reference |
+| `project_remote_target` | **passes** — returns `EncryptedService`, correct sigtypes |
+| `enable_deferred_activation` | **fires** — guarded on `router_bootstrap.is_some()`, true here |
+| deferred snapshot refresh | **fires** — generation changes on control create |
+| supervisor for the control-created runtime | **started** — `i2pcontrol_tunnels.rs:4181` |
+
+**The next lead**, not yet proven. `sync_names`
+(`i2pcontrol_tunnels.rs:4155-4190`) starts a supervisor only for diff classes
+`Add | ReplaceListener | ReplaceDestination`, and it **`continue`s silently**
+when the coordinator has no children scope or no cancellation token:
+
+```rust
+let scope = match (lock(&self.children).clone(), lock(&self.cancellation).clone()) {
+    (Some(children), Some(cancellation)) => Some((children, cancellation)),
+    _ => None,
+};
+...
+let Some((children, cancellation)) = scope.clone() else { continue; };
+```
+
+A silently-skipped supervisor would produce exactly the observed shape: the
+listener bound, the connection accepted and held, no request ever sent, every
+counter zero. The driver calls `control_state.startup(&scope, &parent)` before
+creating the service, which should populate both — so whether it does is the
+thing to establish next, and it is a **runtime** question, not a reading
+question. The `supervised` set is private, so the cheapest honest instrument is
+an evidence row for the connection outcome rather than another source reading.
+
+
 
 `encrypted_target_status` is still `None` and every `RemoteDeliveryCounters`
 field is still zero, so **provisioning is still not reaching the encrypted
