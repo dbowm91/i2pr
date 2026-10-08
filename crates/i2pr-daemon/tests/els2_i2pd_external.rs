@@ -72,7 +72,7 @@ use tokio::net::TcpStream;
 
 const TEST_PASSWORD: &str = "plan381-els2-external";
 const SERVICE_ID: &str = "plan381-els2-client";
-const REVERSE_SERVER_ID: &str = "plan385-i2pr-els2-server";
+const REVERSE_SERVER_ID: &str = "plan386-i2pr-els2-server";
 /// The banner the reference's server tunnel terminates on. Seeing it proves
 /// the bytes crossed I2P and reached the application, not merely that a
 /// connection was accepted.
@@ -889,10 +889,11 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     );
     append_evidence(&evidence_dir, "authority-b32-payload-returned", "true");
 
-    // Plan 385 reverse direction: control-create a real type-5 server on the
+    // Plan 386 reverse direction: control-create a real type-5 server on the
     // running i2pr product, then consume it through the stock reference's
     // loopback SAM and the same local fixture. The i2pd session receives only
     // the mode-specific client key; evidence records no credential or address.
+    let publication_baseline = product.lease_publication_snapshot();
     let fixture_port: u16 = env_value("I2PR_ELS2_FIXTURE_PORT")
         .parse()
         .expect("fixture port");
@@ -941,6 +942,68 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     );
     append_evidence(&evidence_dir, "reverse-server-create", "committed");
 
+    // A committed control generation is not itself publication evidence.
+    // Drive the real product until its outbound DatabaseStore cells have
+    // been admitted, or fail within a bounded deadline before asking i2pd
+    // to consume the b33. This distinguishes publication absence from DHT
+    // visibility while retaining the one-attempt remote lookup gate.
+    let publication_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+    let publication = loop {
+        let current = product.lease_publication_snapshot();
+        if current.accepted > publication_baseline.accepted {
+            break current;
+        }
+        if tokio::time::Instant::now() >= publication_deadline {
+            let provisioning = product.destination_provisioning_snapshot(REVERSE_SERVER_ID);
+            append_evidence(&evidence_dir, "reverse-publication-handoff", "failed");
+            append_evidence(
+                &evidence_dir,
+                "reverse-publication-failure-stage",
+                &current
+                    .last_failure_stage
+                    .map(|stage| stage.label())
+                    .unwrap_or("none"),
+            );
+            append_evidence(
+                &evidence_dir,
+                "reverse-publication-counts",
+                &format!(
+                    "attempts={},accepted={},failed={},pending={}",
+                    current.attempts, current.accepted, current.failed, current.pending
+                ),
+            );
+            append_evidence(
+                &evidence_dir,
+                "reverse-destination-provisioning",
+                &format!("{provisioning:?}"),
+            );
+            panic!(
+                "control-created server did not reach the local DatabaseStore delivery boundary: {current:?}"
+            );
+        }
+        product
+            .poll_inbound()
+            .await
+            .expect("product advances while awaiting ELS2 publication");
+    };
+    append_evidence(&evidence_dir, "reverse-publication-handoff", "accepted");
+    append_evidence(
+        &evidence_dir,
+        "reverse-publication-failure-stage",
+        &publication
+            .last_failure_stage
+            .map(|stage| stage.label())
+            .unwrap_or("none"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-publication-counts",
+        &format!(
+            "attempts={},accepted={},failed={},pending={}",
+            publication.attempts, publication.accepted, publication.failed, publication.pending
+        ),
+    );
+
     let reverse_get = control(
         control_addr,
         "TunnelManager",
@@ -972,7 +1035,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     .await
     .expect("reference SAM hello");
     let mut create_session =
-        "SESSION CREATE STYLE=STREAM ID=plan385reverse DESTINATION=TRANSIENT".to_owned();
+        "SESSION CREATE STYLE=STREAM ID=plan386reverse DESTINATION=TRANSIENT".to_owned();
     if let Some(client_key) = reverse_consumer_key.as_ref() {
         let auth_type = if auth_mode == "dh" { "1" } else { "2" };
         let group = if auth_mode == "dh" {
@@ -1010,13 +1073,13 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     sam_expect_ok(
         &mut product,
         &mut connect,
-        &format!("STREAM CONNECT ID=plan385reverse DESTINATION={reverse_address} PORT=0"),
+        &format!("STREAM CONNECT ID=plan386reverse DESTINATION={reverse_address} PORT=0"),
         std::time::Duration::from_secs(180),
     )
     .await
     .expect("reference consumes i2pr type-5 LeaseSet and establishes Streaming");
     connect
-        .write_all(b"plan385-reverse-ping\n")
+        .write_all(b"plan386-reverse-ping\n")
         .await
         .expect("reverse fixture request writes");
     let reverse_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);

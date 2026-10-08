@@ -685,6 +685,10 @@ struct ProductInner {
     server_destination_ids: Vec<i2pr_client::DestinationId>,
     publication_pending: std::collections::HashSet<i2pr_client::DestinationId>,
     publication_retry_after: std::collections::HashMap<i2pr_client::DestinationId, u64>,
+    publication_attempts: u64,
+    publication_accepted: u64,
+    publication_failed: u64,
+    publication_last_failure_stage: Option<LeasePublicationFailureStage>,
     options: ServiceProductOptions,
     startup_inbound: VecDeque<Ssu2InboundI2np>,
     startup_inbound_bytes: usize,
@@ -848,6 +852,80 @@ pub(crate) enum ServiceProductReadiness {
         ready_groups: u16,
         deferred_groups: u16,
     },
+}
+
+/// Coarse local counters for the product-owned LeaseSet publication stage.
+/// No destination identifiers, keys, payloads, or tunnel details are exposed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LeasePublicationSnapshot {
+    pub attempts: u64,
+    pub accepted: u64,
+    pub failed: u64,
+    pub pending: usize,
+    pub last_failure_stage: Option<LeasePublicationFailureStage>,
+}
+
+/// Redacted service-Destination pool state used to distinguish a missing
+/// publication record from a destination that has not reached lease readiness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DestinationProvisioningSnapshot {
+    pub inbound_registrations: usize,
+    pub usable_inbound_leases: usize,
+    pub minimum_usable_inbound: u16,
+    pub outbound_registrations: usize,
+    pub lease_set_present: bool,
+}
+
+fn classify_publication_failure(error: &ServiceProductError) -> LeasePublicationFailureStage {
+    if let ServiceProductError::RouterState(detail) = error
+        && detail.contains("LS2 missing")
+    {
+        return LeasePublicationFailureStage::MissingLeaseSet;
+    }
+    let ServiceProductError::Provisioning(detail) = error else {
+        return LeasePublicationFailureStage::Other;
+    };
+    if detail.contains("LS2 missing") {
+        LeasePublicationFailureStage::MissingLeaseSet
+    } else if detail.contains("type-5 record construction") {
+        LeasePublicationFailureStage::StoreConstruction
+    } else if detail.contains("no floodfill") {
+        LeasePublicationFailureStage::FloodfillSelection
+    } else if detail.contains("publication begin") {
+        LeasePublicationFailureStage::PublicationCoordination
+    } else if detail.contains("publication compose") {
+        LeasePublicationFailureStage::TunnelComposition
+    } else if detail.contains("publication transport") || detail.contains("publication delivery") {
+        LeasePublicationFailureStage::DeliveryAdmission
+    } else {
+        LeasePublicationFailureStage::Other
+    }
+}
+
+/// Bounded, non-secret stage labels for the most recent publication failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeasePublicationFailureStage {
+    MissingLeaseSet,
+    StoreConstruction,
+    FloodfillSelection,
+    PublicationCoordination,
+    TunnelComposition,
+    DeliveryAdmission,
+    Other,
+}
+
+impl LeasePublicationFailureStage {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MissingLeaseSet => "missing-leaseset",
+            Self::StoreConstruction => "store-construction",
+            Self::FloodfillSelection => "floodfill-selection",
+            Self::PublicationCoordination => "publication-coordination",
+            Self::TunnelComposition => "tunnel-composition",
+            Self::DeliveryAdmission => "delivery-admission",
+            Self::Other => "other",
+        }
+    }
 }
 
 impl ServiceProductReadiness {
@@ -1149,6 +1227,10 @@ impl ServiceProduct {
                 server_destination_ids,
                 publication_pending: std::collections::HashSet::new(),
                 publication_retry_after: std::collections::HashMap::new(),
+                publication_attempts: 0,
+                publication_accepted: 0,
+                publication_failed: 0,
+                publication_last_failure_stage: None,
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
@@ -1371,6 +1453,10 @@ impl ServiceProduct {
                 server_destination_ids,
                 publication_pending: std::collections::HashSet::new(),
                 publication_retry_after: std::collections::HashMap::new(),
+                publication_attempts: 0,
+                publication_accepted: 0,
+                publication_failed: 0,
+                publication_last_failure_stage: None,
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
@@ -1511,6 +1597,35 @@ impl ServiceProduct {
     pub fn service_router_network_summary(&self, spec_id: &str) -> Option<RouterNetworkSummary> {
         let destination_id = self.manager.service_destination_id(spec_id)?;
         self.manager.service_router_network_summary(destination_id)
+    }
+
+    /// Secret-free counters for the local LeaseSet publication handoff.
+    /// `accepted` means all outbound cells were admitted by the router
+    /// delivery service; it does not claim floodfill storage or retrieval.
+    pub fn lease_publication_snapshot(&self) -> LeasePublicationSnapshot {
+        LeasePublicationSnapshot {
+            attempts: self.inner.publication_attempts,
+            accepted: self.inner.publication_accepted,
+            failed: self.inner.publication_failed,
+            pending: self.inner.publication_pending.len(),
+            last_failure_stage: self.inner.publication_last_failure_stage,
+        }
+    }
+
+    /// Returns bounded, secret-free pool readiness counts for one service.
+    pub fn destination_provisioning_snapshot(
+        &self,
+        spec_id: &str,
+    ) -> Option<DestinationProvisioningSnapshot> {
+        let destination_id = self.manager.service_destination_id(spec_id)?;
+        self.manager
+            .with_destination_runtime(destination_id, |runtime| DestinationProvisioningSnapshot {
+                inbound_registrations: runtime.inbound_registrations().len(),
+                usable_inbound_leases: runtime.inbound_lease_sources(wall_secs()).len(),
+                minimum_usable_inbound: runtime.config().minimum_usable_inbound(),
+                outbound_registrations: runtime.outbound_registrations().len(),
+                lease_set_present: runtime.lease_set().is_some(),
+            })
     }
 
     /// Pumps the production inbound pipeline once. The driver calls
@@ -1759,6 +1874,17 @@ impl ServiceProduct {
             }
             self.inner.publication_pending.clear();
             self.inner.publication_retry_after.clear();
+            // A committed control generation can add a server destination
+            // whose LeaseSet is already installed by the time this driver
+            // observes the generation change. In that case the ordinary
+            // lease-change detector below sees no delta and would never
+            // publish the new service. Schedule each server once on every
+            // generation transition; publication remains bounded by the
+            // existing retry deadline and is removed after an accepted
+            // delivery.
+            self.inner
+                .publication_pending
+                .extend(self.inner.server_destination_ids.iter().copied());
             self.inner.service_generation_id = current_generation;
         }
         self.process_deferred_activation_request().await;
@@ -1949,6 +2075,7 @@ impl ServiceProduct {
             })
             .collect();
         for destination_id in publication_ids {
+            self.inner.publication_attempts = self.inner.publication_attempts.saturating_add(1);
             let result = publish_service_ls2_for_service(
                 &self.manager,
                 &self.inner.destination_tunnels,
@@ -1957,13 +2084,22 @@ impl ServiceProduct {
                 self.inner.options,
             )
             .await;
-            if result.is_ok() {
-                self.inner.publication_pending.remove(&destination_id);
-                self.inner.publication_retry_after.remove(&destination_id);
-            } else {
-                self.inner
-                    .publication_retry_after
-                    .insert(destination_id, now_ms.saturating_add(5_000));
+            match result {
+                Ok(()) => {
+                    self.inner.publication_accepted =
+                        self.inner.publication_accepted.saturating_add(1);
+                    self.inner.publication_last_failure_stage = None;
+                    self.inner.publication_pending.remove(&destination_id);
+                    self.inner.publication_retry_after.remove(&destination_id);
+                }
+                Err(error) => {
+                    self.inner.publication_failed = self.inner.publication_failed.saturating_add(1);
+                    self.inner.publication_last_failure_stage =
+                        Some(classify_publication_failure(&error));
+                    self.inner
+                        .publication_retry_after
+                        .insert(destination_id, now_ms.saturating_add(5_000));
+                }
             }
         }
         Ok(())

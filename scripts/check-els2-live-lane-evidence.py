@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 385 evidence-integrity check for the live ELS2 corrective lane.
+"""Plan 386 evidence-integrity check for the live ELS2 corrective lane.
 
 The shell wrapper ``scripts/check-els2-live-lane-evidence.sh`` documents the
 boundary and execs this file.
@@ -92,6 +92,10 @@ REQUIRED_DRIVER_KEYS = [
     "authority-failure-stage",
     "authority-b32-payload-returned",
     "reverse-server-create",
+    "reverse-publication-handoff",
+    "reverse-publication-failure-stage",
+    "reverse-publication-counts",
+    "reverse-destination-provisioning",
     "reverse-payload-returned",
 ]
 
@@ -352,6 +356,7 @@ def attribute_window(source: str, fn_start: int) -> str:
 def check(report: Report) -> None:
     driver = read(DRIVER)
     driver_code = strip_comments(driver)
+    product = read("crates/i2pr-daemon/src/service_product.rs")
 
     # ------------------------------------------------------------------
     # 1. The driver test exists and is ignore-gated for the exact
@@ -384,6 +389,13 @@ def check(report: Report) -> None:
                 f"driver test {DRIVER_TEST}: cfg-gated — a row that does not compile "
                 "in an ordinary run is not evidence"
             )
+
+    report.require(
+        "post-start server publication scheduling",
+        product,
+        ".extend(self.inner.server_destination_ids.iter().copied())",
+        "service_product.rs",
+    )
 
     # ------------------------------------------------------------------
     # 2. The evidence keys the matrix rows record.
@@ -508,13 +520,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (DRIVER, DRIVER_IGNORE_REASON, "some other reason", "the ignore-gate reason is changed"),
     (DRIVER, '"application-payload-returned"', '"application-payload-renamed"', "an evidence key is renamed"),
     (DRIVER, '"authority-b32-payload-returned"', '"authority-b32-row-renamed"', "the post-start authority row is removed"),
+    (DRIVER, '"reverse-destination-provisioning"', '"reverse-destination-provisioning-renamed"', "the reverse provisioning evidence is removed"),
     (DRIVER, "use std::sync::Arc;", "use std::sync::Arc;\n    unsafe { }", "the driver grows unsafe"),
     (RUNNER, '\nMAX_ATTEMPTS=1\n', '\nMAX_ATTEMPTS=2\n', "the attempt budget is raised"),
     (RUNNER, 'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"', 'I2PD_PIN="0000000000000000000000000000000000000000"', "the reference pin drifts"),
-    (RUNNER, 'echo "Plan 385 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 385 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, 'echo "Plan 386 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 386 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open", "Err(DestinationFailure::LookupRequired { .. }) if false", "ordinary delay-open clients stop reaching product activation"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "self.resolve_remote_client_target(runtime.destination_id, &hash)", "self.resolve_remote_client_target(runtime.destination_id, &[0; 32])", "ordinary resolution stops using the validated cached target"),
+    ("crates/i2pr-daemon/src/service_product.rs", ".extend(self.inner.server_destination_ids.iter().copied())", ".extend(std::iter::empty())", "post-start control generations stop scheduling server publication"),
     ("tests/integration/els2/els2-tunnels-conf.sh", "tr -- '+/' '-~'", "tr -- '+/' '+/'", "the alphabet translation is neutered"),
 ]
 

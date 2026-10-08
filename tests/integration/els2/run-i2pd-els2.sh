@@ -927,8 +927,8 @@ failed = [row["label"] for row in rows if row["status"] not in ("passed", "skipp
 skipped = [row["label"] for row in rows if row["status"] == "skipped"]
 
 document = {
-    "plan": 385,
-    "predecessor_plan": 384,
+    "plan": 386,
+    "predecessor_plan": 385,
     "lane": "live i2pr ELS2 consumer + post-start ordinary authority corrective (i2pd direction)",
     "reference": {
         "implementation": "i2pd",
@@ -950,7 +950,7 @@ with open(os.path.join(evidence_dir, "evidence.json"), "w", encoding="utf-8") as
     handle.write("\n")
 
 lines = [
-    "# Plan 385 live ELS2 corrective lane evidence",
+    "# Plan 386 live ELS2 corrective lane evidence",
     "",
     f"- reference: stock i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5",
     f"- auth mode: {mode}",
@@ -974,7 +974,7 @@ PY
 record evidence-packaged passed "evidence.json + evidence.md written from sanitized results only"
 cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
-  echo "Plan 385 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 386 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 385 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 386 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"
