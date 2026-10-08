@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 381 evidence-integrity check for the live ELS2 external driver lane.
+"""Plan 384 evidence-integrity check for the live ELS2 external driver lane.
 
 The shell wrapper ``scripts/check-els2-live-lane-evidence.sh`` documents the
 boundary and execs this file.
@@ -47,6 +47,10 @@ DRIVER_IGNORE_REASON = "requires the Plan 381 exact-pinned i2pd 2.61.0 ELS2 lane
 # fails against the reference.
 REQUIRED_UNIT_ROWS: list[tuple[str, str]] = [
     (
+        "crates/i2pr-daemon/tests/i2pcontrol_els2_black_box.rs",
+        "plan334_els2_create_get_rawconfig_round_trip_over_jsonrpc",
+    ),
+    (
         "crates/i2pr-netdb/tests/els2_client_authorization.rs",
         "psk_derivation_matches_the_pinned_reference_algorithm",
     ),
@@ -77,6 +81,12 @@ REQUIRED_DRIVER_KEYS = [
     "authority-b32",
     "reverse-direction",
     "wrong-credential-scrub",
+    "authority-create",
+    "authority-generation-advanced",
+    "authority-committed-generation",
+    "authority-remote-target-projection",
+    "authority-remote-counters",
+    "authority-b32-payload-returned",
 ]
 
 # Runner rows: every `record` label the lane may emit, including the
@@ -96,7 +106,10 @@ REQUIRED_RUNNER_ROWS = [
     "destination-b32-derived",
     "control-reference-b32-roundtrip",
     "reference-families-published",
+    "gossip-convergence-gate",
+    "gossip-selection-audit",
     "i2pr-rows",
+    "authority-b32-payload-returned",
     "key-material-scrub",
     "key-material-scrub-dh",
 ]
@@ -134,11 +147,6 @@ REQUIRED_EXTRACTOR_MARKERS = [
 # firing is the mechanism that keeps a landed row from silently inheriting a
 # "parked" narrative. Both name the successor plan that owns them.
 DOCUMENTED_ABSENCES: list[str] = [
-    # The i2pr-side `.b32` authority payload row: parked after three
-    # compositions exposed real product boundaries (post-start ordinary
-    # provisioning gap; product-spec invisibility to the shared manager;
-    # startup lookup vs floodfill gossip timing).
-    "authority-b32-payload-returned",
     # The i2pd-consumes-i2pr-published reverse row: parked after four live
     # attempts answered LeaseSet-not-found (publication/gossip path
     # unproven against the mesh).
@@ -498,10 +506,11 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (DRIVER, f"async fn {DRIVER_TEST}(", f"async fn {DRIVER_TEST}_RENAMED(", "a required row is renamed"),
     (DRIVER, DRIVER_IGNORE_REASON, "some other reason", "the ignore-gate reason is changed"),
     (DRIVER, '"application-payload-returned"', '"application-payload-renamed"', "an evidence key is renamed"),
+    (DRIVER, '"authority-b32-payload-returned"', '"authority-b32-row-renamed"', "the post-start authority row is removed"),
     (DRIVER, "use std::sync::Arc;", "use std::sync::Arc;\n    unsafe { }", "the driver grows unsafe"),
     (RUNNER, '\nMAX_ATTEMPTS=1\n', '\nMAX_ATTEMPTS=2\n', "the attempt budget is raised"),
     (RUNNER, 'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"', 'I2PD_PIN="0000000000000000000000000000000000000000"', "the reference pin drifts"),
-    (RUNNER, 'echo "Plan 381 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 381 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, 'echo "Plan 384 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 384 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
     ("tests/integration/els2/els2-tunnels-conf.sh", "tr -- '+/' '-~'", "tr -- '+/' '+/'", "the alphabet translation is neutered"),
 ]
@@ -593,7 +602,7 @@ def main() -> int:
             print(f"FAIL: {failure}")
         print(f"check-els2-live-lane-evidence: {len(report.failures)} failure(s)")
         return 1
-    print("check-els2-live-lane-evidence: ok (driver + 4 unit rows + runner surface)")
+    print("check-els2-live-lane-evidence: ok (driver + 5 unit rows + runner surface)")
     return 0
 
 

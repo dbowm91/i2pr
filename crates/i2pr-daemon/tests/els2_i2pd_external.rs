@@ -292,6 +292,9 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         },
     ];
     let destination = env_value("I2PR_ELS2_REFERENCE_DEST_B33_I2PD");
+    // Plan 384: the stock reference's ordinary (type-3) publisher is the
+    // authority control for the i2pr-side post-start provisioning row.
+    let authority_destination = env_value("I2PR_ELS2_REFERENCE_DEST_B32_STD");
     let bind: SocketAddr = env_value("I2PR_ELS2_SSU2_BIND").parse().expect("bind");
     let evidence_dir = env_path("I2PR_ELS2_EVIDENCE_DIR");
     // Plan 381 WP4: the publisher auth mode and, when it is authorized, the
@@ -707,40 +710,101 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         );
     }
 
-    // Plan 381 WP4 authority disposition: the i2pr-side `.b32` row is NOT
-    // attempted here. Three compositions were tried against the live mesh,
-    // and each exposed a real boundary rather than a lane typo; all three
-    // are recorded as findings for the successor plan, not papered over:
-    // a control-created ordinary client is never provisioned post-start
-    // (its supervisor parks on the unresolved target); a product-spec
-    // startup service never reaches the shared manager's committed
-    // generations; a TOML startup service provisions at start but its
-    // 3-attempt ordinary lookup can exhaust against ungossiped floodfills
-    // before the mesh converges. The mesh-side authority signal stays:
-    // the runner publishes the standard destination and the reference
-    // consumes it every run (`control-reference-b32-roundtrip`), and the
-    // ordinary path through i2pr itself is covered by the routine floor's
-    // service-tunnel suites over a diff that touches no ordinary-lookup
-    // code. The runner still exports `I2PR_ELS2_REFERENCE_DEST_B32_STD`
-    // for the successor lane.
+    // Plan 384 WP3: create an ordinary, non-encrypted client *after* the
+    // product and its startup provisioning pass are already running. DelayOpen
+    // routes its first connection through the product-owned bounded
+    // activation request, which must observe the manager's committed control
+    // generation and provision the new Destination before opening the stream.
+    // This is deliberately a regular .b32 target, with no ELS2 credential.
+    let authority_id = "plan384-post-start-authority";
+    let authority_generation_before = manager.committed_generation_id();
+    let authority_create = control(
+        control_addr,
+        "TunnelManager",
+        serde_json::json!({
+            "Token": token,
+            "Action": "create",
+            "Type": "client",
+            "Name": authority_id,
+            "TargetDestination": authority_destination,
+            "DelayOpen": true,
+        }),
+        5,
+    )
+    .await;
+    let authority_status = authority_create["result"]["status"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        authority_create["error"].is_null() && authority_status.starts_with("success"),
+        "post-start ordinary authority client must commit over I2PControl: {authority_create}"
+    );
+    append_evidence(&evidence_dir, "authority-create", "committed");
+    let committed_generation = manager.committed_generation_id();
+    let generation_advanced = matches!(
+        (authority_generation_before, committed_generation),
+        (Some(before), Some(after)) if after > before
+    );
+    append_evidence(
+        &evidence_dir,
+        "authority-generation-advanced",
+        &generation_advanced.to_string(),
+    );
+    assert!(
+        generation_advanced,
+        "post-start control create must publish a new shared-manager generation"
+    );
+    append_evidence(
+        &evidence_dir,
+        "authority-committed-generation",
+        &format!("{}", committed_generation.is_some()),
+    );
+    let authority_projection = manager
+        .spec_reference_for_service(authority_id)
+        .map(|reference| format!("{:?}", manager.project_remote_target(&reference)));
+    append_evidence(
+        &evidence_dir,
+        "authority-remote-target-projection",
+        authority_projection.as_deref().unwrap_or("<missing>"),
+    );
+    assert!(
+        authority_projection.is_some(),
+        "the committed product generation must expose the control-created ordinary target"
+    );
+    let authority_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+    let authority_port = loop {
+        let _ = product.poll_inbound().await;
+        if let Some(port) = product.client_listener_port(authority_id) {
+            break port;
+        }
+        assert!(
+            tokio::time::Instant::now() < authority_deadline,
+            "post-start ordinary client did not bind after committed-generation provisioning"
+        );
+    };
+    append_evidence(&evidence_dir, "authority-client-listener-bound", "true");
+    let authority_banner = read_banner(&mut product, authority_port).await;
+    let authority_counters = product.remote_counters().await;
+    append_evidence(
+        &evidence_dir,
+        "authority-remote-counters",
+        &format!("{authority_counters:?}"),
+    );
+    assert!(
+        authority_banner.is_some(),
+        "post-start ordinary client did not resolve the reference's standard LS2 and carry payload"
+    );
+    append_evidence(&evidence_dir, "authority-b32-payload-returned", "true");
+
     append_evidence(
         &evidence_dir,
         "authority-b32",
-        "successor-plan: i2pr-side row parked, mesh-side control green",
+        "post-start ordinary payload returned",
     );
-
-    // Plan 381 WP4 reverse disposition: the i2pr-publishes direction is
-    // NOT attempted here. Four live attempts were executed and are
-    // preserved in the status record with their evidence (server creates,
-    // material installs, address encodes, reference answers LeaseSet-not-
-    // found on all attempts); the workstream needs its own plan-of-record
-    // (publication signaling, gossip gates, the control-get projection
-    // question). Like the i2pr-side authority row above, it is parked for
-    // the successor, not papered over.
     append_evidence(
         &evidence_dir,
         "reverse-direction",
-        "successor-plan: i2pr-publishes row parked after four live attempts, see status",
+        "successor-plan: i2pr-published reverse payload row remains unqualified",
     );
 
     parent.cancel(i2pr_core::CancellationReason::TestHarnessTeardown);
