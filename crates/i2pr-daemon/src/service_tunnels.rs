@@ -3160,12 +3160,21 @@ impl ServiceTunnelManager {
     /// per-service remote target hashes without assuming the first
     /// target applies to all services.
     pub fn spec_reference_for_service(&self, spec_id: &str) -> Option<DestinationRef> {
-        self.config
-            .specs
-            .tunnels
-            .iter()
-            .find(|spec| spec.id.as_str() == spec_id)
-            .and_then(|spec| spec.destination.clone())
+        // Reads the **committed** generation, not `self.config.specs`.
+        //
+        // `self.config` is written once in `new` and never reassigned, while
+        // `reconcile` replaces `committed_generation.committed_specs`. A
+        // service created over I2PControl therefore lives only in the
+        // committed generation, and reading the startup set made every
+        // control-created service invisible to the entire remote-destination
+        // and ELS2 provisioning path -- `provision_all_service_router_material`
+        // consults this accessor and `continue`s on `None`, which leaves no
+        // status behind and looks exactly like "the lookup never ran".
+        //
+        // Found by Plan 381 §WP3: the driver observed
+        // `spec-reference-present=false` with every remote counter at zero.
+        self.committed_spec_for(spec_id)
+            .and_then(|spec| spec.destination)
     }
 
     /// Plan 212 §7 — returns true when the named service spec is a
@@ -3175,21 +3184,18 @@ impl ServiceTunnelManager {
     /// profiles never call the publication path merely to receive
     /// replies.
     pub fn spec_is_server(&self, spec_id: &str) -> bool {
-        self.config
-            .specs
-            .tunnels
-            .iter()
-            .find(|spec| spec.id.as_str() == spec_id)
-            .is_some_and(|spec| {
-                matches!(
-                    spec.kind,
-                    ServiceTunnelKind::GenericServer
-                        | ServiceTunnelKind::IrcServer
-                        | ServiceTunnelKind::HttpServer
-                        | ServiceTunnelKind::HttpBidirServer
-                        | ServiceTunnelKind::StreamrServer
-                )
-            })
+        // Same defect and the same fix as `spec_reference_for_service`: the
+        // startup `config.specs` is not where a control-created service lives.
+        self.committed_spec_for(spec_id).is_some_and(|spec| {
+            matches!(
+                spec.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::IrcServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+                    | ServiceTunnelKind::StreamrServer
+            )
+        })
     }
 
     /// Plan 206 §8 / Plan 208 §6 — drives one remote Streaming

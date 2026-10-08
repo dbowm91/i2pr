@@ -566,18 +566,73 @@ happened and the record did not unwrap" and "the lookup never happened", and it
 is why `EncryptedTargetStatus` and `RemoteDeliveryCounters` were added to the
 evidence before anything was asserted about the payload.
 
-**This record does not claim a product defect.** Two things are consistent with
-the observation and have not been separated:
+### The confirmed defect, fixed here — and a second gate still open
 
-1. the product provisions services that exist at `start` and services whose
-   destination enters through `deferred_destination_ids`, and a service that
-   appears later in the shared manager is bound but may never be routed into
-   either; or
-2. the driver is missing a step that registers the control-created service with
-   the product before polling.
+WP3's obligation was to separate a product gap from a missing driver step.
+Two earlier readings were wrong and are corrected here rather than left to
+mislead.
 
-Distinguishing them is the first thing WP3 has to do. Until it is done, the
-honest statement is the observed one, and the row stays failed.
+**Reading one — the deferred-activation snapshot asymmetry.** Plausible, and
+real code: `ensure_destination_active` (`service_tunnels.rs:793-819`) computes
+deferred-ness live from current runtimes while `activate_deferred_destination`
+(`service_product.rs:1516-1545`) gates on `inner.deferred_destination_ids` and
+`inner.destination_runtimes`, both written at start. **It is not the cause.**
+`advance_destination_pools_at` re-reads `manager.deferred_destination_ids()`
+and repopulates `destination_runtimes` from `manager.destination_group_runtimes()`
+whenever `committed_generation_id()` changes (`service_product.rs:1681-1712`),
+and the I2PControl create path does call `manager.reconcile`
+(`i2pcontrol_tunnels.rs:3707-3711`), which installs a new generation.
+
+**Reading two — the address spelling.** Also wrong. `DestinationRef::parse`
+dispatches `is_encrypted_service_address` *before* the b32 branch, and that
+strips the `.b32.i2p` suffix and tests the body length
+(`i2pr-proto/src/common/base32.rs:481-488`). The lane's spelling classifies
+correctly.
+
+**What the instrumentation actually showed.** Reading the three gates between
+"listener bound" and "lookup started" gave the answer immediately:
+
+```text
+spec-reference-present   false
+remote-target-projection <no reference>
+```
+
+`spec_reference_for_service` read **`self.config.specs`** — written once in
+`ServiceTunnelManager::new` and never reassigned — while `reconcile` replaces
+`committed_generation.committed_specs`. So every control-created service was
+invisible to the whole remote-destination and ELS2 provisioning path.
+`provision_all_service_router_material` consults that accessor and `continue`s
+on `None`, which records no status and looks exactly like "the lookup never
+ran". `spec_is_server` had the identical shape and the identical defect.
+
+**Fixed here, on the user's instruction**, by routing both through
+`committed_spec_for` — the accessor already documented as the live view.
+
+**The fix is verified by execution, not by argument.** Same lane, same binary:
+
+```text
+spec-reference-present   true
+remote-target-projection EncryptedService(EncryptedServiceAddress {
+                           flags: 0, unblinded_sigtype: 7,
+                           blinded_sigtype: 11, public_key: [...] })
+```
+
+The destination is now found and classified with the correct Red25519 blinded
+type (11) over Ed25519 unblinded (7) — the types the derived b33 actually
+carries.
+
+### The second gate, still open
+
+`encrypted_target_status` is still `None` and every `RemoteDeliveryCounters`
+field is still zero, so **provisioning is still not reaching the encrypted
+branch**. The projection is correct now, which means the remaining gap is
+between "the runtime is enumerated" and "`provision_encrypted_service_target`
+is called". `encrypted_target_status` would record `MissingLookupSecret` the
+moment that branch is reached, so its staying `None` is the proof that the
+branch is not reached.
+
+This is a **separate** investigation from the defect fixed above, and no cause
+is claimed for it. The row stays failed.
 
 ### WP3 deliverables
 
@@ -597,6 +652,26 @@ fixed: the tunnel identifier field is `Name`, not `ID` (`unknown TunnelManager
 field ID`), and the listener read needed the product's inbound pump selected
 alongside the socket read, because a control-created service is delivered by the
 same poll loop that provisions it.
+
+### The floor, after a production change
+
+This commit changes `crates/i2pr-daemon/src/service_tunnels.rs`, so the floor
+is the gate and it was re-run in full rather than reasoned about:
+
+```text
+cargo test --locked --workspace --all-targets -- --test-threads=1
+                                                    # exit 0, 4646 passed, 0 failed, 36 ignored
+cargo fmt --all --check                           # ok
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings   # ok
+python3 scripts/check-portable-service-tunnel-api.py                              # 699 declarations
+bash scripts/check-dependency-direction.sh        # ok
+bash scripts/check-config-secret-hygiene.sh        # ok
+```
+
+**4 646 passed is unchanged from WP2**, which is the meaningful result: a
+production fix that made control-created services visible to the provisioning
+path changed no existing row. A behavioural fix to a path no existing test
+exercised should move nothing, and it moved nothing.
 
 ### WP3 floor
 

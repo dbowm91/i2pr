@@ -424,6 +424,25 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     let counters = product.remote_counters().await;
     append_evidence(&evidence_dir, "remote-counters", &format!("{counters:?}"));
 
+    // The three gates between "the listener bound" and "a lookup started".
+    // None has been observed yet, so all three are read rather than assumed.
+    // `spec_reference_for_service` and `project_remote_target` are the two
+    // points `provision_all_service_router_material` consults before it ever
+    // reaches the encrypted branch, and a `None` at either one is a `continue`
+    // that leaves no status behind -- which is exactly what the evidence
+    // currently shows.
+    let reference_present = manager.spec_reference_for_service(SERVICE_ID).is_some();
+    append_evidence(
+        &evidence_dir,
+        "spec-reference-present",
+        &reference_present.to_string(),
+    );
+    let projection = manager
+        .spec_reference_for_service(SERVICE_ID)
+        .map(|reference| format!("{:?}", manager.project_remote_target(&reference)))
+        .unwrap_or_else(|| "<no reference>".to_owned());
+    append_evidence(&evidence_dir, "remote-target-projection", &projection);
+
     let banner = read_banner(&mut product, port).await;
     assert!(
         banner.is_some(),
