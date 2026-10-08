@@ -72,6 +72,7 @@ use tokio::net::TcpStream;
 
 const TEST_PASSWORD: &str = "plan381-els2-external";
 const SERVICE_ID: &str = "plan381-els2-client";
+const REVERSE_SERVER_ID: &str = "plan385-i2pr-els2-server";
 /// The banner the reference's server tunnel terminates on. Seeing it proves
 /// the bytes crossed I2P and reached the application, not merely that a
 /// connection was accepted.
@@ -260,6 +261,74 @@ async fn read_banner(product: &mut ServiceProduct, port: u16) -> Option<String> 
         }
     }
     None
+}
+
+async fn read_sam_line_pumping(
+    product: &mut ServiceProduct,
+    stream: &mut TcpStream,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut line = Vec::new();
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("SAM reply deadline reached".to_owned());
+        }
+        let mut byte = [0_u8; 1];
+        tokio::select! {
+            result = stream.read(&mut byte) => match result {
+                Ok(0) => return Err("SAM socket closed before reply".to_owned()),
+                Ok(_) if byte[0] == b'\n' => {
+                    return Ok(String::from_utf8_lossy(&line).trim_end_matches('\r').to_owned());
+                }
+                Ok(_) if line.len() < 4096 => line.push(byte[0]),
+                Ok(_) => return Err("SAM reply exceeded line bound".to_owned()),
+                Err(error) => return Err(format!("SAM socket read failed: {error}")),
+            },
+            _ = product.poll_inbound() => {}
+            _ = tokio::time::sleep_until(deadline) => return Err("SAM reply deadline reached".to_owned()),
+        }
+    }
+}
+
+async fn sam_expect_ok(
+    product: &mut ServiceProduct,
+    stream: &mut TcpStream,
+    command: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    stream
+        .write_all(format!("{command}\n").as_bytes())
+        .await
+        .map_err(|error| format!("SAM command write failed: {error}"))?;
+    let reply = read_sam_line_pumping(product, stream, timeout).await?;
+    if reply.contains("RESULT=OK") {
+        Ok(reply)
+    } else {
+        Err(format!("SAM command returned a non-OK status: {reply}"))
+    }
+}
+
+fn decode_key_hex(value: &str) -> [u8; 32] {
+    let bytes = value.as_bytes();
+    assert_eq!(bytes.len(), 64, "authorization key has fixed length");
+    let mut output = [0_u8; 32];
+    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+        let high = (pair[0] as char).to_digit(16).expect("hex digit");
+        let low = (pair[1] as char).to_digit(16).expect("hex digit");
+        output[index] = ((high << 4) | low) as u8;
+    }
+    output
+}
+
+fn encode_key_hex(value: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in value {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 #[tokio::test]
@@ -790,11 +859,190 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "authority-remote-counters",
         &format!("{authority_counters:?}"),
     );
+    let authority_activation_failure = product.deferred_activation_failure(&authority_id);
+    let authority_activation_pending = product.destination_activation_pending(&authority_id);
+    let authority_failed_connects = manager.failed_connects(&authority_id);
+    let authority_failure_stage = manager.deferred_connect_failure_stage(&authority_id);
+    append_evidence(
+        &evidence_dir,
+        "authority-activation-failure-present",
+        &authority_activation_failure.is_some().to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "authority-activation-pending",
+        &format!("{authority_activation_pending:?}"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "authority-failed-connects",
+        &authority_failed_connects.to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "authority-failure-stage",
+        authority_failure_stage.unwrap_or("none"),
+    );
     assert!(
         authority_banner.is_some(),
-        "post-start ordinary client did not resolve the reference's standard LS2 and carry payload"
+        "post-start ordinary client did not resolve the reference's standard LS2 and carry payload; activation_pending={authority_activation_pending:?}; activation_failure={authority_activation_failure:?}; failure_stage={authority_failure_stage:?}; failed_connects={authority_failed_connects}; counters={authority_counters:?}"
     );
     append_evidence(&evidence_dir, "authority-b32-payload-returned", "true");
+
+    // Plan 385 reverse direction: control-create a real type-5 server on the
+    // running i2pr product, then consume it through the stock reference's
+    // loopback SAM and the same local fixture. The i2pd session receives only
+    // the mode-specific client key; evidence records no credential or address.
+    let fixture_port: u16 = env_value("I2PR_ELS2_FIXTURE_PORT")
+        .parse()
+        .expect("fixture port");
+    let mut reverse_create_params = serde_json::json!({
+        "Token": token,
+        "Action": "create",
+        "Type": "server",
+        "Name": REVERSE_SERVER_ID,
+        "TargetHost": "127.0.0.1",
+        "TargetPort": fixture_port,
+        "EncryptLeaseSet": match auth_mode.as_str() {
+            "none" => "blinded",
+            "psk" => "encrypted with per-user key (psk)",
+            "dh" => "encrypted with per-user key (dh)",
+            _ => unreachable!("auth mode validated above"),
+        },
+    });
+    let (reverse_auth_public, reverse_consumer_key) = if auth_mode == "none" {
+        (None, None)
+    } else {
+        let raw = credential
+            .strip_prefix(if auth_mode == "psk" { "psk:" } else { "dh:" })
+            .expect("validated credential scheme");
+        let key = decode_key_hex(raw);
+        if auth_mode == "psk" {
+            (Some(key), Some(key))
+        } else {
+            let private = i2pr_crypto::X25519PrivateKey::from_bytes(key);
+            (Some(private.public_bytes()), Some(key))
+        }
+    };
+    if let Some(client_key) = reverse_auth_public.as_ref() {
+        reverse_create_params["LeaseSetClientAuths"] = serde_json::json!([{
+            "Name": "client0",
+            "Key": encode_key_hex(client_key),
+        }]);
+    }
+    let reverse_created = control(control_addr, "TunnelManager", reverse_create_params, 5).await;
+    let reverse_status = reverse_created["result"]["status"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        reverse_created["error"].is_null() && reverse_status.starts_with("success"),
+        "control-created reverse ELS2 server must commit: status={reverse_status:?}, error={}",
+        reverse_created["error"]
+    );
+    append_evidence(&evidence_dir, "reverse-server-create", "committed");
+
+    let reverse_get = control(
+        control_addr,
+        "TunnelManager",
+        serde_json::json!({"Token": token, "Action": "get", "Name": REVERSE_SERVER_ID}),
+        5,
+    )
+    .await;
+    let reverse_address = reverse_get["result"]["info"]["encryptedAddress"]
+        .as_str()
+        .expect("type-5 server reports encryptedAddress")
+        .to_owned();
+    assert!(
+        reverse_address.ends_with(".b32.i2p"),
+        "reference SAM requires the encrypted address's b32 spelling"
+    );
+    let sam_port: u16 = env_value("I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT")
+        .parse()
+        .expect("reference consumer SAM port");
+    let sam_endpoint = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), sam_port);
+    let mut session = TcpStream::connect(sam_endpoint)
+        .await
+        .expect("reference SAM session connection");
+    sam_expect_ok(
+        &mut product,
+        &mut session,
+        "HELLO VERSION MIN=3.1 MAX=3.1",
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("reference SAM hello");
+    let mut create_session =
+        "SESSION CREATE STYLE=STREAM ID=plan385reverse DESTINATION=TRANSIENT".to_owned();
+    if let Some(client_key) = reverse_consumer_key.as_ref() {
+        let auth_type = if auth_mode == "dh" { "1" } else { "2" };
+        let group = if auth_mode == "dh" {
+            "i2cp.leaseSetClient.dh.0"
+        } else {
+            "i2cp.leaseSetClient.psk.0"
+        };
+        let client_key = i2pr_api::sam::base64::encode(client_key);
+        create_session.push_str(" i2cp.leaseSetAuthType=");
+        create_session.push_str(auth_type);
+        create_session.push(' ');
+        create_session.push_str(group);
+        create_session.push_str("=0:");
+        create_session.push_str(&client_key);
+    }
+    sam_expect_ok(
+        &mut product,
+        &mut session,
+        &create_session,
+        std::time::Duration::from_secs(240),
+    )
+    .await
+    .expect("reference SAM transient session with ELS2 authorization");
+    let mut connect = TcpStream::connect(sam_endpoint)
+        .await
+        .expect("reference SAM connect socket");
+    sam_expect_ok(
+        &mut product,
+        &mut connect,
+        "HELLO VERSION MIN=3.1 MAX=3.1",
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("reference SAM connect hello");
+    sam_expect_ok(
+        &mut product,
+        &mut connect,
+        &format!("STREAM CONNECT ID=plan385reverse DESTINATION={reverse_address} PORT=0"),
+        std::time::Duration::from_secs(180),
+    )
+    .await
+    .expect("reference consumes i2pr type-5 LeaseSet and establishes Streaming");
+    connect
+        .write_all(b"plan385-reverse-ping\n")
+        .await
+        .expect("reverse fixture request writes");
+    let reverse_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut reverse_payload = Vec::new();
+    while tokio::time::Instant::now() < reverse_deadline {
+        let mut chunk = [0_u8; 1024];
+        tokio::select! {
+            result = connect.read(&mut chunk) => match result {
+                Ok(0) => break,
+                Ok(length) => {
+                    reverse_payload.extend_from_slice(&chunk[..length]);
+                    if String::from_utf8_lossy(&reverse_payload).contains(EXPECTED_BANNER) {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+            _ = product.poll_inbound() => {}
+            _ = tokio::time::sleep_until(reverse_deadline) => break,
+        }
+    }
+    assert!(
+        String::from_utf8_lossy(&reverse_payload).contains(EXPECTED_BANNER),
+        "stock reference SAM client did not receive the i2pr-published ELS2 fixture banner"
+    );
+    append_evidence(&evidence_dir, "reverse-payload-returned", EXPECTED_BANNER);
 
     append_evidence(
         &evidence_dir,
@@ -804,7 +1052,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     append_evidence(
         &evidence_dir,
         "reverse-direction",
-        "successor-plan: i2pr-published reverse payload row remains unqualified",
+        "stock i2pd consumed the control-created i2pr ELS2 server through SAM",
     );
 
     parent.cancel(i2pr_core::CancellationReason::TestHarnessTeardown);

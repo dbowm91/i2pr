@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Plan 381 static evidence-integrity check for the live ELS2 external driver
+# Plan 385 static evidence-integrity check for the live ELS2 external driver
 # lane.
 #
 # ## What this asserts
 #
-# The lane in `crates/i2pr-daemon/tests/els2_i2pd_external.rs` is Plan 381's
+# The lane in `crates/i2pr-daemon/tests/els2_i2pd_external.rs` is Plan 385's
 # *runtime* evidence: the consumer-path guard
 # (`scripts/check-encrypted-service-consumer-caller.sh`) pins the shape of the
 # code, and this pins the properties of the evidence itself, so a green lane

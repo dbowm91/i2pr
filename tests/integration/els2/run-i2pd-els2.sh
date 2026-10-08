@@ -828,6 +828,7 @@ I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \
 I2PR_ELS2_REFERENCE_DEST_B32_STD="${DEST_B32_STD}" \
 I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
+I2PR_ELS2_FIXTURE_PORT="${FIX_PORT}" \
 I2PR_ELS2_AUTH_MODE="${AUTH_MODE}" \
 I2PR_ELS2_CLIENT_CREDENTIAL="${CREDENTIAL}" \
 I2PR_ELS2_NEGATIVE="${I2PR_ELS2_NEGATIVE:-}" \
@@ -839,6 +840,8 @@ timeout --foreground 1800 cargo test --locked -p i2pr-daemon \
 record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh (auth ${AUTH_MODE}, negative ${I2PR_ELS2_NEGATIVE:-none})" "${driver_rc}"
 record_guarded "authority-b32-payload-returned" \
   "the post-start ordinary i2pr client resolved the reference standard LS2 and returned the fixture payload" "${driver_rc}"
+record_guarded "reverse-payload-returned" \
+  "stock i2pd consumed the control-created i2pr type-5 service with the selected auth mode and returned the fixture payload" "${driver_rc}"
 if [[ "${driver_rc}" -ne 0 ]]; then
   sed -n '1,80p' "${EVIDENCE_DIR}/driver.log" >&2 || true
 fi
@@ -924,8 +927,9 @@ failed = [row["label"] for row in rows if row["status"] not in ("passed", "skipp
 skipped = [row["label"] for row in rows if row["status"] == "skipped"]
 
 document = {
-    "plan": 384,
-    "lane": "live i2pr ELS2 reverse + post-start ordinary authority (i2pd direction)",
+    "plan": 385,
+    "predecessor_plan": 384,
+    "lane": "live i2pr ELS2 consumer + post-start ordinary authority corrective (i2pd direction)",
     "reference": {
         "implementation": "i2pd",
         "version": "2.61.0",
@@ -946,7 +950,7 @@ with open(os.path.join(evidence_dir, "evidence.json"), "w", encoding="utf-8") as
     handle.write("\n")
 
 lines = [
-    "# Plan 384 live ELS2 lane evidence",
+    "# Plan 385 live ELS2 corrective lane evidence",
     "",
     f"- reference: stock i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5",
     f"- auth mode: {mode}",
@@ -970,7 +974,7 @@ PY
 record evidence-packaged passed "evidence.json + evidence.md written from sanitized results only"
 cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
-  echo "Plan 384 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 385 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 384 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 385 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"

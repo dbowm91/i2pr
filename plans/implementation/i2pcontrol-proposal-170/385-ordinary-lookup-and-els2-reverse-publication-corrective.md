@@ -1,6 +1,6 @@
 # Plan 385 — ordinary lookup and ELS2 reverse publication corrective
 
-Status: **registered-ordinary-lookup-and-reverse-publication-corrective**.
+Status: **in-progress-ordinary-lookup-and-reverse-publication-corrective**.
 
 Subsystem: Proposal 170 / Red25519 + ELS2.
 
@@ -41,7 +41,13 @@ inventory change is explicitly out of scope and triggers a stop.
   standard LeaseSet before the request, the ordinary payload still failed.
   A temporary five-attempt lookup experiment failed too and was reverted;
   ordinary lookup remains at its existing three-attempt budget.
-- The i2pr-publishes → i2pd-consumes NONE/PSK/DH matrix has not been run.
+- The i2pr-publishes → i2pd-consumes NONE/PSK/DH matrix has no passing rows.
+- During this corrective, the standard post-start authority payload passed after
+  fixing the delayed ordinary-client activation and validated-mirror resolution
+  gates. Reverse NONE and PSK attempts then reached i2pd but returned
+  `CANT_REACH_PEER` / `LeaseSet not found`. A later valid DH run reached the
+  same reverse lookup and returned the same result. The complete reverse matrix
+  is therefore still open and is assigned to Plan 386.
 - Plan 384's gossip-gate and standard-lookup observations are captured in its
   sanitized evidence. Invalid runs, including the reference mesh failure,
   are not passing evidence.

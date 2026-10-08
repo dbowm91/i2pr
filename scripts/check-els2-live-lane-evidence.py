@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 384 evidence-integrity check for the live ELS2 external driver lane.
+"""Plan 385 evidence-integrity check for the live ELS2 corrective lane.
 
 The shell wrapper ``scripts/check-els2-live-lane-evidence.sh`` documents the
 boundary and execs this file.
@@ -86,7 +86,13 @@ REQUIRED_DRIVER_KEYS = [
     "authority-committed-generation",
     "authority-remote-target-projection",
     "authority-remote-counters",
+    "authority-activation-pending",
+    "authority-activation-failure-present",
+    "authority-failed-connects",
+    "authority-failure-stage",
     "authority-b32-payload-returned",
+    "reverse-server-create",
+    "reverse-payload-returned",
 ]
 
 # Runner rows: every `record` label the lane may emit, including the
@@ -110,6 +116,7 @@ REQUIRED_RUNNER_ROWS = [
     "gossip-selection-audit",
     "i2pr-rows",
     "authority-b32-payload-returned",
+    "reverse-payload-returned",
     "key-material-scrub",
     "key-material-scrub-dh",
 ]
@@ -142,22 +149,11 @@ REQUIRED_EXTRACTOR_MARKERS = [
     "--per-client-auth",
 ]
 
-# Rows the lane deliberately does not have. If one is ever written, remove it
-# from this list and update the closure record's limitation section: the list
-# firing is the mechanism that keeps a landed row from silently inheriting a
-# "parked" narrative. Both name the successor plan that owns them.
-DOCUMENTED_ABSENCES: list[str] = [
-    # The i2pd-consumes-i2pr-published reverse row: parked after four live
-    # attempts answered LeaseSet-not-found (publication/gossip path
-    # unproven against the mesh).
-    "reverse-payload-returned",
-]
-
 # Forbidden in the driver: the property is "missing environment fails, no
 # silent pass, no secret in evidence, no out-of-lane capability".
 FORBIDDEN_IN_DRIVER = [
     ("#[should_panic", "a should_panic row asserts failure, not the property"),
-    ("std::process::Command", "command execution (the reverse SAM call was parked with the reverse row)"),
+    ("std::process::Command", "command execution"),
     ("Command::new", "command execution"),
     ("ToSocketAddrs", "the lane resolves a name"),
     ("lookup_host", "the lane resolves a name"),
@@ -239,6 +235,20 @@ REQUIRED_IN_PRODUCTION: list[tuple[str, str, str]] = [
         "just the envelope. A refused candidate returns result-status "
         "error with a null JSON-RPC error, and an envelope-only assert "
         "passes a service that was never built",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open",
+        "Plan 385 defect 1: an uncached ordinary Base32 target with DelayOpen "
+        "must accept a connection and request product-owned activation instead "
+        "of parking its already-bound supervisor",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "self.resolve_remote_client_target(runtime.destination_id, &hash)",
+        "Plan 385 defect 2: after successful provisioning, ordinary client "
+        "resolution must use only that requesting service's validated remote "
+        "LeaseSet mirror",
     ),
 ]
 
@@ -438,15 +448,6 @@ def check(report: Report) -> None:
         report.require("driver", driver_code, needle, DRIVER)
 
     # ------------------------------------------------------------------
-    # 7. A parked row that got written must update this list.
-    # ------------------------------------------------------------------
-    for absent in DOCUMENTED_ABSENCES:
-        if absent in driver_code:
-            report.failures.append(
-                f"documented absence {absent} now exists in {DRIVER} — remove it from "
-                "DOCUMENTED_ABSENCES and update the closure record's limitation list"
-            )
-
     # ------------------------------------------------------------------
     # 8. The production properties the lane depends on.
     # ------------------------------------------------------------------
@@ -510,8 +511,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (DRIVER, "use std::sync::Arc;", "use std::sync::Arc;\n    unsafe { }", "the driver grows unsafe"),
     (RUNNER, '\nMAX_ATTEMPTS=1\n', '\nMAX_ATTEMPTS=2\n', "the attempt budget is raised"),
     (RUNNER, 'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"', 'I2PD_PIN="0000000000000000000000000000000000000000"', "the reference pin drifts"),
-    (RUNNER, 'echo "Plan 384 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 384 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, 'echo "Plan 385 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 385 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
+    ("crates/i2pr-daemon/src/service_tunnels.rs", "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open", "Err(DestinationFailure::LookupRequired { .. }) if false", "ordinary delay-open clients stop reaching product activation"),
+    ("crates/i2pr-daemon/src/service_tunnels.rs", "self.resolve_remote_client_target(runtime.destination_id, &hash)", "self.resolve_remote_client_target(runtime.destination_id, &[0; 32])", "ordinary resolution stops using the validated cached target"),
     ("tests/integration/els2/els2-tunnels-conf.sh", "tr -- '+/' '-~'", "tr -- '+/' '+/'", "the alphabet translation is neutered"),
 ]
 

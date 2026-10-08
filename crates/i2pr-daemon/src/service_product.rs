@@ -1414,6 +1414,30 @@ impl ServiceProduct {
         self.http_listener_port(id)
     }
 
+    /// Returns the retained diagnostic for a failed deferred activation.
+    /// The value is bounded by the single failure entry per destination and
+    /// contains the typed provisioning stage, never network payload bytes.
+    pub fn deferred_activation_failure(&self, id: &str) -> Option<&str> {
+        let destination_id = self.manager.service_runtime_for_spec(id)?.destination_id;
+        self.inner
+            .deferred_activation_failures
+            .get(&destination_id)
+            .map(String::as_str)
+    }
+
+    /// Reports whether a service's destination group still awaits its first
+    /// router-backed activation. This is a bounded status read used by the
+    /// live qualification driver to distinguish an activation miss from a
+    /// Streaming failure after successful activation.
+    pub fn destination_activation_pending(&self, id: &str) -> Option<bool> {
+        let runtime = self.manager.service_runtime_for_spec(id)?;
+        Some(
+            self.inner
+                .deferred_destination_ids
+                .contains(&runtime.destination_id),
+        )
+    }
+
     /// Returns the routing decision for a destination hash. The
     /// driver reads the decision through this typed accessor; the
     /// internal `routing_decision_for` decision table is owned by
@@ -1597,7 +1621,7 @@ impl ServiceProduct {
                 Ok(())
             }
             Err(error) => {
-                let reason = "deferred destination provisioning failed".to_owned();
+                let reason = format!("deferred destination provisioning failed: {error}");
                 let _ = self
                     .inner
                     .coordinator

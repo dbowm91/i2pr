@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use i2pr_client::streaming::StreamingError;
@@ -159,6 +159,9 @@ pub struct ServiceRuntime {
     pub(crate) active_connections: Arc<AtomicUsize>,
     /// Per-service failed-connect counter.
     pub(crate) failed_connects: Arc<AtomicUsize>,
+    /// Last bounded coarse failure stage for a deferred ordinary client.
+    /// Kept as a category only; error strings and payloads are never retained.
+    pub(crate) deferred_connect_failure_stage: Arc<AtomicU8>,
     /// Bridge handle shared by the supervisor and the per-service connection pump.
     bridge: SamDestinationHandle,
     /// Authoritative owner shared by every member of the explicit
@@ -1889,6 +1892,21 @@ impl ServiceTunnelManager {
             .and_then(|runtimes| runtimes.get(service_id).cloned())
             .map(|runtime| runtime.failed_connects.load(Ordering::Acquire))
             .unwrap_or(0)
+    }
+
+    /// Returns the coarse failure stage for the most recent delay-open
+    /// ordinary client attempt, when one has failed.
+    pub fn deferred_connect_failure_stage(&self, service_id: &str) -> Option<&'static str> {
+        let runtime = self.service_runtime_for_spec(service_id)?;
+        match runtime
+            .deferred_connect_failure_stage
+            .load(Ordering::Acquire)
+        {
+            1 => Some("activation"),
+            2 => Some("target-resolution"),
+            3 => Some("streaming-connect"),
+            _ => None,
+        }
     }
 
     /// Returns `true` when the supplied spec id has a registered runtime.
@@ -4141,6 +4159,7 @@ impl ServiceTunnelManager {
         let stopped = Arc::new(AtomicBool::new(false));
         let active_connections = Arc::new(AtomicUsize::new(0));
         let failed_connects = Arc::new(AtomicUsize::new(0));
+        let deferred_connect_failure_stage = Arc::new(AtomicU8::new(0));
         let is_http = matches!(spec.kind, ServiceTunnelKind::HttpClient);
         let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
         let is_irc = matches!(spec.kind, ServiceTunnelKind::IrcClient);
@@ -4160,6 +4179,7 @@ impl ServiceTunnelManager {
             stopped: Arc::clone(&stopped),
             active_connections: Arc::clone(&active_connections),
             failed_connects: Arc::clone(&failed_connects),
+            deferred_connect_failure_stage: Arc::clone(&deferred_connect_failure_stage),
             bridge: group.bridge.clone(),
             group: Arc::clone(&group),
             destination_id: group.destination_id,
@@ -4420,7 +4440,17 @@ impl ServiceTunnelManager {
             .destination
             .as_ref()
             .ok_or(DestinationFailure::Missing)?;
-        self.resolve_reference(reference)
+        match self.resolve_reference(reference) {
+            Ok(target) => Ok(target),
+            Err(error @ DestinationFailure::LookupRequired { hash, .. }) => {
+                let Some(runtime) = self.service_runtime_for_spec(spec.id.as_str()) else {
+                    return Err(error);
+                };
+                self.resolve_remote_client_target(runtime.destination_id, &hash)
+                    .ok_or(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Plan 202 §6/§10 — resolves the supplied client tunnel spec
@@ -4980,6 +5010,14 @@ async fn run_client_loop(
         "generic client tunnel bound loopback listener"
     );
     let client_target = match manager.resolve_client_destination(spec) {
+        Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open => {
+            // A control-created ordinary target may not have a Standard LS2
+            // in this destination's router state yet. DelayOpen must keep the
+            // listener useful: accept the first connection, let the product
+            // provision and install the bounded lookup result, then resolve
+            // the same committed target again before opening Streaming.
+            return run_delay_open_ordinary_client_loop(manager, runtime, spec, cancellation).await;
+        }
         Ok(target) => target,
         Err(DestinationFailure::EncryptedServiceRequiresKeyedLookup { .. })
             if runtime.delay_open =>
@@ -5074,6 +5112,99 @@ async fn run_client_loop(
             // SOCKS / IRC loops already follow this shape).
             runtime_for_task.connection_finished_now();
             drop(permit_for_task);
+        });
+    }
+    Ok(())
+}
+
+/// Accepts ordinary `.b32` client connections whose Standard LS2 is not
+/// installed yet. The product-owned activation request performs bounded
+/// router provisioning; only after it succeeds is the committed spec resolved
+/// again and passed to the existing Streaming connection path.
+async fn run_delay_open_ordinary_client_loop(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    cancellation: &CancellationToken,
+) -> Result<(), ServiceTunnelError> {
+    let listener = runtime
+        .client_listener
+        .as_ref()
+        .ok_or_else(|| ServiceTunnelError::InvalidConfig("missing client listener".to_owned()))?;
+    loop {
+        let accept = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            _ = runtime.admission_cancellation.cancelled() => break,
+            accept = listener.accept() => accept,
+        };
+        let (stream, _) = match accept {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(service = %runtime.spec_id, error = %error, "delay-open client listener accept failed");
+                continue;
+            }
+        };
+        let Some(permit) = manager.aggregate_permit.clone().try_acquire_owned().ok() else {
+            runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+            drop(stream);
+            continue;
+        };
+        runtime.active_connections.fetch_add(1, Ordering::Relaxed);
+        let manager_for_task = Arc::clone(manager);
+        let runtime_for_task = Arc::clone(runtime);
+        let spec_for_task = spec.clone();
+        let cancellation_for_task = cancellation.clone();
+        tokio::spawn(async move {
+            let timeout_ms = lookup_connect_timeout(&manager_for_task, &runtime_for_task.spec_id)
+                .max(DELAY_OPEN_FIRST_ACTIVATION_TIMEOUT_MS);
+            let result = match manager_for_task
+                .ensure_destination_active(
+                    &runtime_for_task.spec_id,
+                    &cancellation_for_task,
+                    timeout_ms,
+                )
+                .await
+            {
+                Err(error) => {
+                    runtime_for_task
+                        .deferred_connect_failure_stage
+                        .store(1, Ordering::Release);
+                    Err(Box::new(error) as BoxError)
+                }
+                Ok(()) => match manager_for_task.resolve_client_destination(&spec_for_task) {
+                    Err(error) => {
+                        runtime_for_task
+                            .deferred_connect_failure_stage
+                            .store(2, Ordering::Release);
+                        Err(Box::new(std::io::Error::other(error.to_string())) as BoxError)
+                    }
+                    Ok(target) => {
+                        let result = run_client_connection(
+                            Arc::clone(&manager_for_task),
+                            Arc::clone(&runtime_for_task),
+                            target,
+                            stream,
+                            cancellation_for_task,
+                        )
+                        .await;
+                        if result.is_err() {
+                            runtime_for_task
+                                .deferred_connect_failure_stage
+                                .store(3, Ordering::Release);
+                        }
+                        result
+                    }
+                },
+            };
+            if let Err(error) = result {
+                warn!(service = %runtime_for_task.spec_id, error = %error, "delay-open ordinary client connection failed");
+                runtime_for_task
+                    .failed_connects
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            runtime_for_task.connection_finished_now();
+            drop(permit);
         });
     }
     Ok(())
@@ -5174,11 +5305,10 @@ async fn run_delay_open_encrypted_client_loop(
 /// target from the installed inner LeaseSet2, and connects through
 /// the standard client connection path (which re-ensures activation
 /// as a no-op before dialling).
-/// Plan 381: first-activation budget for a delay-open encrypted
-/// client, in milliseconds.
+/// First-activation budget for a delay-open client, in milliseconds.
 ///
 /// Deferred first activation is a full cold provision (exact-three
-/// tunnel builds each way plus a floodfill ELS2 lookup — the
+/// tunnel builds each way plus a floodfill LeaseSet lookup — the
 /// product's own provisioning budgets run 30s/60s), not a connect.
 /// The 10s `connect_timeout_ms` default only ever fits an already
 /// provisioned destination, so a cold first connection would time
@@ -9951,6 +10081,20 @@ mod plan212_router_backed_service_destination_tests {
             resolved.remote.static_public_key.as_slice(),
             expected_static.as_slice(),
             "static key must come from the validated record"
+        );
+        let mut committed_spec = manager
+            .committed_spec_for("plan214-hit")
+            .expect("requesting runtime spec is committed");
+        committed_spec.destination = Some(DestinationRef::Base32Hash {
+            label: "remote.b32.i2p".to_owned(),
+            hash: expected_hash,
+        });
+        let through_client_resolver = manager
+            .resolve_client_destination(&committed_spec)
+            .expect("installed standard LS2 resolves through the service client owner");
+        assert_eq!(
+            through_client_resolver.remote.destination_hash, expected_hash,
+            "Base32 client resolution must use only that runtime's validated mirror"
         );
     }
 
