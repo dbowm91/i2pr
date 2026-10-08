@@ -33,9 +33,10 @@ use i2pr_crypto::red25519::{BlindingDay, Red25519PrivateScalar, Red25519PublicKe
 use i2pr_netdb::{
     BlindedStorageKey, BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DecryptedEls2,
     DestinationHash, Els2AuthError, Els2Error, Els2ValidationError, LeaseSet2ValidationContext,
-    LeaseSet2ValidationError, OwnerBlinding, ValidatedEncryptedLeaseSet2, ValidatedLeaseSet2,
-    decrypt_no_auth_outer_ciphertext, decrypt_outer_ciphertext, encrypt_no_auth_outer_ciphertext,
-    encrypt_outer_ciphertext, sign_type11_deployed,
+    LeaseSet2ValidationError, LeaseSet2ValidationPolicy, OwnerBlinding,
+    ValidatedEncryptedLeaseSet2, ValidatedLeaseSet2, decrypt_no_auth_outer_ciphertext,
+    decrypt_outer_ciphertext, encrypt_no_auth_outer_ciphertext, encrypt_outer_ciphertext,
+    sign_type11_deployed,
 };
 use i2pr_proto::{
     B32_BLINDED_SIGTYPE, B32_UNBLINDED_SIGTYPE_ED25519, B32_UNBLINDED_SIGTYPE_RED25519,
@@ -496,11 +497,23 @@ impl EncryptedLeaseSet2Resolver {
         // would: it is validated, not merely parsed. Feeding a decrypted record
         // into the destination path without validation would let whoever wrote
         // the ciphertext choose the routing keys.
+        // Plan 381: admit BLINDED_ON_PUBLICATION here. The inner of a
+        // validated envelope carries it routinely (the destination
+        // genuinely publishes blinded — verified against stock i2pd
+        // 2.61.0, whose consumer imposes no such restriction), and the
+        // flag was authenticated by the inner signature just below.
+        // The unencrypted path stays strict.
         let destination_hash = inner.key_hash()?;
         ValidatedLeaseSet2::from_lease_set2(
             inner.clone(),
             Some(DestinationHash::from_hash(destination_hash)),
-            LeaseSet2ValidationContext::new(now_seconds),
+            LeaseSet2ValidationContext::with_policy(
+                now_seconds,
+                LeaseSet2ValidationPolicy {
+                    allow_blinded_on_publication: true,
+                    ..Default::default()
+                },
+            ),
         )?;
         Ok(ResolvedEncryptedService {
             address: self.address(),
@@ -728,10 +741,19 @@ impl EncryptedLeaseSet2Resolver {
         }
         let inner = decrypted.into_lease_set2(MAX_COMMON_STRUCTURE_SIZE)?;
         let destination_hash = inner.key_hash()?;
+        // Plan 381: same BLINDED_ON_PUBLICATION opt-in as `resolve`
+        // above — the inner of a validated envelope carries the flag
+        // routinely on the deployed network.
         i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
             inner.clone(),
             Some(i2pr_netdb::DestinationHash::from_hash(destination_hash)),
-            i2pr_netdb::LeaseSet2ValidationContext::new(now_seconds),
+            i2pr_netdb::LeaseSet2ValidationContext::with_policy(
+                now_seconds,
+                i2pr_netdb::LeaseSet2ValidationPolicy {
+                    allow_blinded_on_publication: true,
+                    ..Default::default()
+                },
+            ),
         )?;
         Ok(ResolvedEncryptedService {
             address: self.address(),

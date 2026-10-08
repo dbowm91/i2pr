@@ -598,6 +598,7 @@ async fn plan212_router_backed_generic_directions() {
         aggregate_connection_ceiling: 8,
         per_service_connection_ceiling: 4,
         reference: Some(reference),
+        extra_bootstrap_peers: Vec::new(),
         options: Default::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
         shared_manager: None,

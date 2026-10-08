@@ -70,7 +70,10 @@ const SERVICE_ID: &str = "plan381-els2-client";
 /// the bytes crossed I2P and reached the application, not merely that a
 /// connection was accepted.
 const EXPECTED_BANNER: &str = "ELS2-LANE-FIXTURE-OK";
-const READ_WINDOW_MS: u64 = 45_000;
+// Plan 381: covers the 90s cold first-activation budget plus lookup,
+// streaming handshake, and payload return with margin. Single attempt:
+// no reconnect loop.
+const READ_WINDOW_MS: u64 = 150_000;
 
 fn env_path(name: &str) -> PathBuf {
     PathBuf::from(
@@ -256,6 +259,28 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     let reference_endpoint: SocketAddr = env_value("I2PR_ELS2_REFERENCE_ENDPOINT")
         .parse()
         .expect("reference endpoint");
+    // Plan 381: the qualified profile builds exact-three diverse
+    // tunnels, so the lane bootstraps three family-distinct stock
+    // references (f/c/n). Missing extra-peer environment fails like
+    // every other lane input — never a silent smaller mesh.
+    let peer2_ri = env_path("I2PR_ELS2_PEER2_ROUTER_INFO");
+    let peer2_endpoint: SocketAddr = env_value("I2PR_ELS2_PEER2_ENDPOINT")
+        .parse()
+        .expect("peer2 endpoint");
+    let peer3_ri = env_path("I2PR_ELS2_PEER3_ROUTER_INFO");
+    let peer3_endpoint: SocketAddr = env_value("I2PR_ELS2_PEER3_ENDPOINT")
+        .parse()
+        .expect("peer3 endpoint");
+    let extra_peers = vec![
+        ReferencePeer {
+            router_info_bytes: std::fs::read(&peer2_ri).expect("read peer2 router.info"),
+            endpoint: peer2_endpoint,
+        },
+        ReferencePeer {
+            router_info_bytes: std::fs::read(&peer3_ri).expect("read peer3 router.info"),
+            endpoint: peer3_endpoint,
+        },
+    ];
     let destination = env_value("I2PR_ELS2_REFERENCE_DEST_B33_I2PD");
     let bind: SocketAddr = env_value("I2PR_ELS2_SSU2_BIND").parse().expect("bind");
     let evidence_dir = env_path("I2PR_ELS2_EVIDENCE_DIR");
@@ -305,6 +330,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
             router_info_bytes: std::fs::read(&reference_ri).expect("read reference router.info"),
             endpoint: reference_endpoint,
         }),
+        extra_bootstrap_peers: extra_peers,
         options: ServiceProductOptions::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
         shared_manager: Some(Arc::clone(&manager)),
@@ -423,6 +449,25 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     }
     let counters = product.remote_counters().await;
     append_evidence(&evidence_dir, "remote-counters", &format!("{counters:?}"));
+    let pre_failed = manager.failed_connects(SERVICE_ID);
+    append_evidence(
+        &evidence_dir,
+        "pre-failed-connects",
+        &pre_failed.to_string(),
+    );
+    let got = control(
+        control_addr,
+        "TunnelManager",
+        serde_json::json!({"Token": token, "Action": "get", "Name": SERVICE_ID}),
+        3,
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "control-get-pre",
+        &serde_json::json!({ "error": got["error"].is_null(), "result": got["result"] })
+            .to_string(),
+    );
 
     // The three gates between "the listener bound" and "a lookup started".
     // None has been observed yet, so all three are read rather than assumed.
@@ -444,11 +489,74 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     append_evidence(&evidence_dir, "remote-target-projection", &projection);
 
     let banner = read_banner(&mut product, port).await;
+    // Re-read after the connection attempt: the pre-connection snapshot above
+    // is expected to be `None`/zero (provisioning runs on the data path via
+    // `ensure_destination_active`), so only the post-attempt values
+    // distinguish "activation never ran" from "lookup/stream failed".
+    let post_status = manager.encrypted_target_status(SERVICE_ID);
+    let post_counters = product.remote_counters().await;
+    let post_reference_present = manager.spec_reference_for_service(SERVICE_ID).is_some();
+    let post_projection = manager
+        .spec_reference_for_service(SERVICE_ID)
+        .map(|reference| format!("{:?}", manager.project_remote_target(&reference)))
+        .unwrap_or_else(|| "<no reference>".to_owned());
+    let post_generation = manager.committed_generation_id();
+    let post_runtime_present = manager.service_runtime_for_spec(SERVICE_ID).is_some();
+    append_evidence(
+        &evidence_dir,
+        "post-encrypted-target-status",
+        &format!("{post_status:?}"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-remote-counters",
+        &format!("{post_counters:?}"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-spec-reference-present",
+        &post_reference_present.to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-remote-target-projection",
+        &post_projection,
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-committed-generation",
+        &format!("{post_generation:?}"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-service-runtime-present",
+        &post_runtime_present.to_string(),
+    );
+    let post_failed = manager.failed_connects(SERVICE_ID);
+    append_evidence(
+        &evidence_dir,
+        "post-failed-connects",
+        &post_failed.to_string(),
+    );
+    let got_post = control(
+        control_addr,
+        "TunnelManager",
+        serde_json::json!({"Token": token, "Action": "get", "Name": SERVICE_ID}),
+        4,
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "control-get-post",
+        &serde_json::json!({ "error": got_post["error"].is_null(), "result": got_post["result"] })
+            .to_string(),
+    );
     assert!(
         banner.is_some(),
         "the application payload must cross both ways: expected {EXPECTED_BANNER:?} back \
-         through the reference's server tunnel. encrypted-target-status={target_status:?} \
-         remote-counters={counters:?}"
+         through the reference's server tunnel. pre-status={target_status:?} \
+         pre-counters={counters:?} post-status={post_status:?} \
+         post-counters={post_counters:?} post-projection={post_projection}"
     );
     append_evidence(
         &evidence_dir,

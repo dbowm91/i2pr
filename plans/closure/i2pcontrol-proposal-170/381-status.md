@@ -1,6 +1,6 @@
 # Plan 381 — status
 
-Status: **in progress** — WP1 and WP2 complete; WP3 driver written but its payload row fails; WP4–WP5 open.
+Status: **in progress** — WP1 and WP2 complete; WP3 payload row now passes (NONE mode, i2pd→i2pr); WP4 matrix and WP5 open.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2.
 
@@ -673,6 +673,43 @@ branch is not reached.
 
 This is a **separate** investigation from the defect fixed above, and no cause
 is claimed for it. The row stays failed.
+
+### WP3 resolution (2026-10-08) — the payload row passes
+
+The second gate was **not** a missing supervisor or a missing registration
+step. Provisioning reached the encrypted branch all along once the
+`committed_spec_for` fix landed; what stayed red was a chain of six further
+defects, each found by executing the lane and each fixed forward. The lane now
+reports `Plan 381 ELS2 lane passed` with the fixture banner
+`ELS2-LANE-FIXTURE-OK` round-tripping through the reference's server tunnel,
+in auth mode NONE, direction i2pd→i2pr. All temporary `plan381-probe`
+`eprintln` instrumentation has been removed (verified by grep: zero hits in
+`crates/` and `tests/`).
+
+| # | Defect | Fix | Evidence |
+|---|---|---|---|
+| 1 | Single-peer mesh cannot satisfy exact-three diverse peer selection | Lane bootstraps 3 family-distinct stock references (f/c/n); `ServiceProductSpec::extra_bootstrap_peers` + multi-bootstrap dial | `candidates=3 scanned=3 unqualified=0` |
+| 2 | Inbound reply correlated on first hop; terminal hop forwards to creator so every inbound reply orphaned | Correlate inbound on terminal hop (`exploratory_build.rs`) | inbound builds install in ~10 ms |
+| 3 | Inbound gateway route resolved creator id `ids[5]`; material keyed by endpoint `ids[9]` | Resolve `ids[9]` (`service_product.rs`) | `InboundBuildMissing` on installed builds gone |
+| 4 | 10 s activation budget too short for cold provision (builds + ELS2 lookup) | 90 s first-activation budget, `READ_WINDOW_MS=150 s` | activation completes |
+| 5 | Strict inner==outer publication-timestamp equality rejects every live reference record (i2pd wraps inner as-is, stamps outer with `now`) | Same-day window (future 3600 s / stale 86400 s) in `i2pr-netdb/src/els2.rs` | `ELS2 store ready` reached |
+| 6 | Inner routinely carries `BLINDED_ON_PUBLICATION`; strict validation rejects it in three places | `allow_blinded_on_publication` policy (default false), opt-in at both `resolve` sites + daemon step-6 (`i2pr-netdb`, `i2pr-client`, `service_product.rs`) | `Resolved` + `encrypted_target_resolved: 1` |
+| 7 | `.b33` carries no destination hash, so the generic client loop had no up-front `ClientTarget` and parked forever | `run_delay_open_encrypted_client_loop`: per-connection deferred-activate, read installed inner hash, connect via ordinary remote target (`service_tunnels.rs`) | listener accepts, activation runs on data path |
+| 8 | **The SYN killer.** `route_outbound_remote_request` re-validated the cached LS2 strict, rejecting the just-admitted blinded record with `BlindedPublicationDeferred` — the SYN died in the sweep and `wait_for_established` timed out | Preserve the admitted shape per record: opt in iff the stored record itself carries the flag (`service_tunnels.rs`) | reference log shows `Incoming stream`, SYN-ACK returns, banner crosses both ways |
+
+Defect 8 is recorded in full because it presented as a transport defect while
+being a validation defect: the reference log showed `Incoming stream from …,
+sSID=…` followed by `Resend #2, another remote lease has been selected`,
+which reads as the reference giving up — but the reference was answering while
+i2pr's own sweep dropped every SYN before dispatch. The probe that closed it
+was a sweep-outcome `eprintln` (drained-N + delivered/unresolved/failed),
+removed after use.
+
+What WP3 proves, precisely: **one** WP4 row — i2pd publishes (NONE), i2pr
+consumes, payload crosses both ways. The auth-mode matrix executed is **NONE
+only**; PSK/DH, the reverse direction, the negatives, and the `.b32.i2p`
+authority row are WP4 and remain open. No advertisement change; type 5 stays
+`advertised = false`.
 
 ### WP3 deliverables
 

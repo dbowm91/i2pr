@@ -132,6 +132,18 @@ pub struct LeaseSet2ValidationPolicy {
     pub max_future_skew_seconds: u64,
     /// Maximum encoded length for a single LeaseSet2 in bytes.
     pub max_encoded_len: usize,
+    /// Accept a `BLINDED_ON_PUBLICATION` flag word.
+    ///
+    /// Plan 381: the inner record of a validated type-5 envelope
+    /// carries this flag routinely (the destination genuinely
+    /// publishes blinded — verified against stock i2pd 2.61.0,
+    /// whose consumer imposes no such restriction). The flag stays
+    /// rejected by default so an unencrypted record arriving over
+    /// the wire with blinded-publication semantics keeps failing
+    /// closed; only the ELS2-inner path opts in, after the
+    /// envelope blinding was authenticated and the inner signature
+    /// verified.
+    pub allow_blinded_on_publication: bool,
 }
 
 impl Default for LeaseSet2ValidationPolicy {
@@ -139,6 +151,7 @@ impl Default for LeaseSet2ValidationPolicy {
         Self {
             max_future_skew_seconds: 60 * 60,
             max_encoded_len: MAX_COMMON_STRUCTURE_SIZE,
+            allow_blinded_on_publication: false,
         }
     }
 }
@@ -149,6 +162,7 @@ impl LeaseSet2ValidationPolicy {
         Self {
             max_future_skew_seconds,
             max_encoded_len,
+            allow_blinded_on_publication: false,
         }
     }
 }
@@ -173,6 +187,7 @@ impl LeaseSet2ValidationContext {
             policy: LeaseSet2ValidationPolicy {
                 max_future_skew_seconds: 60 * 60,
                 max_encoded_len: MAX_COMMON_STRUCTURE_SIZE,
+                allow_blinded_on_publication: false,
             },
         }
     }
@@ -252,7 +267,9 @@ impl ValidatedLeaseSet2 {
             });
         }
 
-        if lease_set2.header().flags().is_blinded_on_publication() {
+        if lease_set2.header().flags().is_blinded_on_publication()
+            && !context.policy.allow_blinded_on_publication
+        {
             return Err(LeaseSet2ValidationError::BlindedPublicationDeferred);
         }
         if lease_set2
@@ -918,6 +935,73 @@ mod tests {
             ValidatedLeaseSet2::from_lease_set2(ls2, None, LeaseSet2ValidationContext::new(1_000))
                 .unwrap_err();
         assert!(matches!(error, LeaseSet2ValidationError::InvalidSignature));
+    }
+
+    #[test]
+    fn blinded_on_publication_rejected_by_default_and_allowed_by_policy() {
+        // Plan 381: the inner record of a validated type-5 envelope
+        // routinely carries BLINDED_ON_PUBLICATION (verified against
+        // stock i2pd 2.61.0). The unencrypted path must keep failing
+        // closed; only an explicit opt-in admits it.
+        let signer = bundle(0x409);
+        let leases = vec![Lease2::new(
+            Hash::from_bytes([0x23; 32]),
+            7,
+            Date32::from_seconds(1_600),
+        )];
+        let destination = destination_for(&signer);
+        let header = LeaseSet2Header::new(
+            destination,
+            1_000,
+            3_600,
+            LeaseSet2Flags::from_raw(i2pr_proto::flags::BLINDED_ON_PUBLICATION),
+        )
+        .expect("header");
+        let options = Mapping::empty();
+        let encryption_keys = vec![
+            LeaseSet2EncryptionKey::new(CryptoKeyType::X25519, dummy_pub())
+                .expect("encryption key"),
+        ];
+        let placeholder =
+            SignatureValue::new(ROUTER_SIGNING_KEY_TYPE, vec![0_u8; 64]).expect("placeholder");
+        let unsigned = LeaseSet2::new(header, options, encryption_keys, leases, placeholder)
+            .expect("unsigned ls2");
+        let preimage = unsigned.signature_preimage();
+        let signature = signer.signing_key().sign(&preimage).expect("sign");
+        let ls2 = LeaseSet2::new(
+            unsigned.header().clone(),
+            unsigned.options().clone(),
+            unsigned.encryption_keys().to_vec(),
+            unsigned.leases().to_vec(),
+            signature,
+        )
+        .expect("ls2");
+        let error = ValidatedLeaseSet2::from_lease_set2(
+            ls2.clone(),
+            None,
+            LeaseSet2ValidationContext::new(1_000),
+        )
+        .unwrap_err();
+        assert_eq!(error, LeaseSet2ValidationError::BlindedPublicationDeferred);
+        let allowed = ValidatedLeaseSet2::from_lease_set2(
+            ls2,
+            None,
+            LeaseSet2ValidationContext::with_policy(
+                1_000,
+                LeaseSet2ValidationPolicy {
+                    allow_blinded_on_publication: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .expect("blinded flag admitted by explicit policy");
+        assert!(
+            allowed
+                .lease_set2()
+                .header()
+                .flags()
+                .is_blinded_on_publication()
+        );
     }
 
     #[test]

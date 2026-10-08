@@ -3,12 +3,26 @@
 #
 # Topology (unprivileged, loopback-only, no reseed, no public network):
 #
-#   f  stock i2pd, floodfill=true, notransit=false
+#   f  stock i2pd, floodfill=true, notransit=false, family lane-f
 #      publishes an ELS2 destination from a generated tunnels.conf
 #      (the reference *publisher* half: Plan 374's i2pd direction)
-#   c  stock i2pd, floodfill=false, notransit=false, SAM on loopback
+#   c  stock i2pd, floodfill=true, notransit=false, SAM on loopback,
+#      family lane-c
 #      (the reference *consumer* half, and the peer that proves the mesh can
 #       carry a client tunnel to a blinded destination)
+#   n  stock i2pd, floodfill=true, notransit=false, family lane-n
+#      (a third peer. Plan 381: i2pr builds qualified three-hop
+#       tunnels, and tunnel-peer selection needs three mutually diverse
+#       candidates — distinct families and ports — so a two-router mesh
+#       can never provision. All three are bootstrapped by the driver;
+#       none is modified, vendored, or rebuilt.
+#       All three are floodfills on purpose: i2pd only rewrites the
+#       on-disk router.info (written familyless at context init, before
+#       the daemon applies `family`) on a later UpdateRouterInfo event,
+#       and for a quiet router the only reliable one is the
+#       floodfill-gated UpdateStats on the publish timer (~10s after
+#       start). A non-floodfill reference keeps its familyless file
+#       forever and i2pr provisions zero candidates.)
 #
 # R (i2pr) is started and driven by `els2_i2pd_external.rs` in WP3. This runner
 # owns the reference processes, the generated configuration and the mesh
@@ -244,6 +258,10 @@ cleanup() {
     kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
   done
   for pid in "${PIDS[@]:-}"; do wait "${pid}" 2>/dev/null || true; done
+  if [[ -n "${I2PR_ELS2_KEEP_SCRATCH:-}" ]]; then
+    echo "keeping lane scratch at ${SCRATCH}" >&2
+    return 0
+  fi
   [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || rm -rf "${SCRATCH}"
 }
 trap cleanup EXIT
@@ -285,20 +303,21 @@ fi
 echo "==> attempt budget: ${MAX_ATTEMPTS} (frozen)"
 
 freeport() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
-F_PORT="$(freeport)"; C_PORT="$(freeport)"
+F_PORT="$(freeport)"; C_PORT="$(freeport)"; N_PORT="$(freeport)"
 C_SAM="$(freeport)"; FIX_PORT="$(freeport)"; F_HTTP="$(freeport)"
 # R's own fixed loopback bind. The controlled profile rejects port = 0 because
 # the in-band RouterInfo carries the port, so this one is allocated up front
 # and handed to the driver rather than discovered.
 R_PORT="${I2PR_ELS2_SSRU2_BIND_PORT:-$(freeport)}"
 
-write_conf() { # name port floodfill samport httpport
-  local name="$1" port="$2" ff="$3" sam="$4" http="$5"
+write_conf() { # name port floodfill samport httpport [family]
+  local name="$1" port="$2" ff="$3" sam="$4" http="$5" family="${6:-}"
   mkdir -p "${SCRATCH}/${name}" "${SCRATCH}/${name}data"
   cat > "${SCRATCH}/${name}/i2pd.conf" <<EOF
 daemon = false
 loglevel = debug
 netid = 2
+family = ${family}
 address4 = 127.0.0.1
 host = 127.0.0.1
 port = ${port}
@@ -337,6 +356,17 @@ verify = false
 urls =
 threshold = 0
 EOF
+  # Plan 381: i2pd only publishes the `family` RI option when it can
+  # self-sign it, which needs `<datadir>/family/<name>.key` (a P-256
+  # PEM private key; Family.cpp `CreateFamilySignature`). i2pr's
+  # tunnel-peer projection requires a family per candidate, so a lane
+  # without keys provisions zero candidates. Keys are lane-ephemeral
+  # fixture material in SCRATCH, never production secrets.
+  if [[ -n "${family}" ]]; then
+    mkdir -p "${SCRATCH}/${name}data/family"
+    openssl ecparam -genkey -name prime256v1 -noout \
+      -out "${SCRATCH}/${name}data/family/${family}.key" 2>/dev/null
+  fi
 }
 
 start_i2pd() { # name
@@ -420,10 +450,10 @@ python3 "${SCRATCH}/fixture.py" "${FIX_PORT}" "ELS2-LANE-FIXTURE-OK" \
 PIDS+=("$!")
 sleep 1
 
-echo "==> f ssu2 ${F_PORT}  c ssu2 ${C_PORT}  c sam ${C_SAM}  f http ${F_HTTP}  fixture ${FIX_PORT}  R ssu2 ${R_PORT}"
+echo "==> f ssu2 ${F_PORT}  c ssu2 ${C_PORT}  n ssu2 ${N_PORT}  c sam ${C_SAM}  f http ${F_HTTP}  fixture ${FIX_PORT}  R ssu2 ${R_PORT}"
 
 # ---- cycle 1: identity generation (fact 3) --------------------------------
-write_conf f "${F_PORT}" true 0 "${F_HTTP}"
+write_conf f "${F_PORT}" true 0 "${F_HTTP}" "lane-f"
 # `keys` is a bare filename (fact 1); the path is decided by the data dir.
 write_els2_tunnels_conf "${SCRATCH}/f/tunnels.conf" ELS2PUB "${FIX_PORT}" ELS2PUB.dat \
   "${ELS2_STORE_TYPE_ENCRYPTED}" "${ELS2_AUTH_NONE}" \
@@ -435,26 +465,35 @@ record_guarded "tunnels-conf-generated" \
   "ELS2 publisher section written and validated before any process started" 0
 cp "${SCRATCH}/f/tunnels.conf" "${EVIDENCE_DIR}/tunnels.conf"
 
-write_conf c "${C_PORT}" false "${C_SAM}" 0
+write_conf c "${C_PORT}" true "${C_SAM}" 0 "lane-c"
 : > "${SCRATCH}/c/tunnels.conf"
+write_conf n "${N_PORT}" true 0 0 "lane-n"
+: > "${SCRATCH}/n/tunnels.conf"
 
 echo "==> cycle 1: identity generation"
-start_i2pd f; start_i2pd c
+start_i2pd f; start_i2pd c; start_i2pd n
 wait_ready f "${F_PORT}" 120 || { record mesh-identity-generation failed "f never published router.info"; exit 1; }
 wait_ready c "${C_PORT}" 120 || { record mesh-identity-generation failed "c never published router.info"; exit 1; }
-F_RI="${SCRATCH}/fdata/router.info"; C_RI="${SCRATCH}/cdata/router.info"
+wait_ready n "${N_PORT}" 120 || { record mesh-identity-generation failed "n never published router.info"; exit 1; }
+F_RI="${SCRATCH}/fdata/router.info"; C_RI="${SCRATCH}/cdata/router.info"; N_RI="${SCRATCH}/ndata/router.info"
 F_IDENT="$(ident_of "${F_RI}")"
 record_guarded "mesh-identity-generation" \
-  "both reference identities created and persisted to disk" 0
-stop_one f; stop_one c
+  "all three reference identities created and persisted to disk" 0
+stop_one f; stop_one c; stop_one n
 sleep 2
 
 # ---- cycle 2: seed one direction only, then run (fact 3) -------------------
 seed_netdb "${SCRATCH}/cdata" "${F_RI}" "${F_IDENT}"
-echo "==> seeded f into c (one direction; the client initiates)"
-start_i2pd f; start_i2pd c
+# Plan 381: n also learns f (never the reverse). Initiation stays
+# one-way — n may dial f, but f does not know n, so no
+# mutual-initiation pair (fact 3) exists anywhere in the mesh.
+seed_netdb "${SCRATCH}/ndata" "${F_RI}" "${F_IDENT}"
+echo "==> seeded f into c and n (one direction; clients initiate)"
+start_i2pd f; start_i2pd c; start_i2pd n
 wait_ready f "${F_PORT}" 120 || { record mesh-up failed "f not ready"; exit 1; }
 wait_ready c "${C_PORT}" 120 || { record mesh-up failed "c not ready"; exit 1; }
+wait_ready n "${N_PORT}" 120 || { record mesh-up failed "n not ready"; exit 1; }
+N_RI="${SCRATCH}/ndata/router.info"
 
 PEER_OK=0
 for _ in $(seq 1 60); do
@@ -557,6 +596,40 @@ record_guarded control-reference-els2-roundtrip \
   "stock i2pd consumed a stock i2pd ELS2 destination and the fixture banner came back; this is a mesh control, not an i2pr acceptance row" \
   "${SAM_RC}"
 
+# ---- mesh shape precondition: three family-published references -----------
+# Plan 381: i2pr builds qualified three-hop tunnels, whose peer
+# projection requires a `family` option per candidate. i2pd only
+# publishes it when `<datadir>/family/<name>.key` exists at startup,
+# AND only rewrites the on-disk router.info (written familyless at
+# context init) on a later UpdateRouterInfo event — for these quiet
+# routers that is the floodfill-gated UpdateStats on the publish
+# timer (~10s after start), which is why all three are floodfills.
+# Poll boundedly rather than asserting once; a mesh without it fails
+# closed as a harness defect, never as an i2pr row.
+FAM_OK=1
+for _i in $(seq 1 36); do
+  FAM_OK=1
+  for _ri in "${F_RI}" "${C_RI}" "${N_RI}"; do
+    if ! python3 -c 'import sys; sys.exit(0 if b"family" in open(sys.argv[1],"rb").read() else 1)' "${_ri}"; then
+      FAM_OK=0
+    fi
+  done
+  if [[ "${FAM_OK}" -eq 1 ]]; then break; fi
+  sleep 5
+done
+if [[ "${FAM_OK}" -ne 1 ]]; then
+  for _ri in "${F_RI}" "${C_RI}" "${N_RI}"; do
+    python3 -c 'import sys; sys.exit(0 if b"family" in open(sys.argv[1],"rb").read() else 1)' "${_ri}" \
+      || echo "reference ${_ri} publishes no family option; check its family key" >&2
+  done
+fi
+record_guarded "reference-families-published" \
+  "all three reference RouterInfos carry a family option for peer selection" "$(observed_rc "${FAM_OK}")"
+if [[ "${FAM_OK}" -ne 1 ]]; then
+  cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
+  exit 1
+fi
+
 # ---- hand off to the WP3 driver -------------------------------------------
 DRIVER="crates/i2pr-daemon/tests/${DRIVER_TEST}.rs"
 if [[ ! -f "${REPO_ROOT}/${DRIVER}" ]]; then
@@ -570,6 +643,10 @@ fi
 driver_rc=0
 I2PR_ELS2_REFERENCE_ROUTER_INFO="${F_RI}" \
 I2PR_ELS2_REFERENCE_ENDPOINT="127.0.0.1:${F_PORT}" \
+I2PR_ELS2_PEER2_ROUTER_INFO="${C_RI}" \
+I2PR_ELS2_PEER2_ENDPOINT="127.0.0.1:${C_PORT}" \
+I2PR_ELS2_PEER3_ROUTER_INFO="${N_RI}" \
+I2PR_ELS2_PEER3_ENDPOINT="127.0.0.1:${N_PORT}" \
 I2PR_ELS2_REFERENCE_DEST_B32="${DEST_B32}" \
 I2PR_ELS2_REFERENCE_DEST_B33="${DEST_B33}" \
 I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \

@@ -241,6 +241,16 @@ pub struct ServiceProductSpec {
     /// the helper dials, bootstraps the RouterInfo, and builds the
     /// outbound + inbound tunnels end-to-end.
     pub reference: Option<ReferencePeer>,
+    /// Plan 381: additional reference peers dialled + bootstrapped
+    /// alongside [`ServiceProductSpec::reference`].
+    ///
+    /// One peer is never enough for the qualified profile: tunnel
+    /// builds select exactly three mutually diverse peers
+    /// (`destination_peers::QUALIFIED_DESTINATION_HOPS`), and an
+    /// external lane with a single reference fails deferred
+    /// provisioning with `NoCandidates`. Empty by default; the
+    /// primary reference above stays the dial-first peer.
+    pub extra_bootstrap_peers: Vec<ReferencePeer>,
     /// Tunable bounds; defaults to [`ServiceProductOptions::default`].
     pub options: ServiceProductOptions,
     /// Canonical address-book resolver cell (Plan 294). Empty by
@@ -431,6 +441,7 @@ mod normal_daemon_owner_tests {
                 .limits
                 .max_active_connections_per_service,
             reference: None,
+            extra_bootstrap_peers: Vec::new(),
             options: ServiceProductOptions::default(),
             addressbook: crate::addressbook::AddressBookManager::activate(
                 config.addressbook.clone(),
@@ -507,6 +518,7 @@ mod normal_daemon_owner_tests {
                 .limits
                 .max_active_connections_per_service,
             reference: None,
+            extra_bootstrap_peers: Vec::new(),
             options: ServiceProductOptions::default(),
             addressbook: crate::addressbook::AddressBookManager::activate(
                 config.addressbook.clone(),
@@ -964,16 +976,30 @@ impl ServiceProduct {
             ServiceProductError::InvalidIdentity(format!("router hash: {error:?}"))
         })?;
         let router_bootstrap = if let Some(reference) = &spec.reference {
-            Some(
+            let material = dial_and_bootstrap_router_only(
+                &mut ssu2_handle,
+                &destination_tunnels,
+                reference,
+                local_router_hash,
+                spec.options,
+            )
+            .await?;
+            // Plan 381: bootstrap every extra peer into the same
+            // authoritative store so deferred provisioning has a
+            // full candidate set. Each extra is dialled like the
+            // primary; a bad extra fails start the same way a bad
+            // primary does rather than provisioning half a mesh.
+            for extra in &spec.extra_bootstrap_peers {
                 dial_and_bootstrap_router_only(
                     &mut ssu2_handle,
                     &destination_tunnels,
-                    reference,
+                    extra,
                     local_router_hash,
                     spec.options,
                 )
-                .await?,
-            )
+                .await?;
+            }
+            Some(material)
         } else {
             None
         };
@@ -3400,11 +3426,18 @@ async fn provision_all_service_router_material(
             if need_inbound && !installed_inbound {
                 return Err(ServiceProductError::InboundBuildMissing);
             }
-            // The inbound creator id is the exact receive id registered by the
-            // established material. Resolve it directly; never infer ownership
-            // from insertion order or another group's gateway hash.
+            // The local inbound ENDPOINT receive id (ids[9], the last
+            // next tunnel) is the exact receive id registered by the
+            // established material — it is the id the IBGW addresses
+            // inbound traffic to. Resolve it directly; never infer
+            // ownership from insertion order or another group's
+            // gateway hash. Plan 381: resolving the creator id
+            // (ids[5]) instead misses every time — the material is
+            // keyed by the endpoint, so a successful build reported
+            // `InboundBuildMissing` (observed live against stock i2pd:
+            // installed yet unresolvable).
             if need_inbound {
-                let local_receive = TunnelId::new(ib_creator).map_err(|_| {
+                let local_receive = TunnelId::new(ids[9]).map_err(|_| {
                     ServiceProductError::Provisioning(format!(
                         "{spec_id}: invalid inbound receive id"
                     ))
@@ -3697,7 +3730,10 @@ async fn provision_encrypted_service_target(
     // before this function returns. `let _ =` rather than `?` is the point of
     // the function: this is the only place a resolution failure is allowed to
     // stop, and stopping here means exactly one `.b33` service is unavailable.
-    if let Err(status) = resolve_encrypted_destination_for_service(
+    // Plan 381: success records `Resolved` plus the installed inner hash,
+    // because no status row may stay `None` once the branch has run and the
+    // delay-open data path needs the hash to connect through.
+    match resolve_encrypted_destination_for_service(
         manager,
         coordinator,
         destination_tunnels,
@@ -3709,11 +3745,20 @@ async fn provision_encrypted_service_target(
     )
     .await
     {
-        manager.record_encrypted_target_status(spec_id, status);
-        if let Some(capability) = manager.router_delivery() {
-            capability
-                .record_observation("encrypted_target_failed")
-                .await;
+        Ok(destination_hash) => {
+            manager.record_encrypted_target_status(
+                spec_id,
+                crate::service_tunnels::EncryptedTargetStatus::Resolved,
+            );
+            manager.record_encrypted_target_inner_hash(spec_id, destination_hash);
+        }
+        Err(status) => {
+            manager.record_encrypted_target_status(spec_id, status);
+            if let Some(capability) = manager.router_delivery() {
+                capability
+                    .record_observation("encrypted_target_failed")
+                    .await;
+            }
         }
     }
 }
@@ -3751,7 +3796,7 @@ async fn resolve_encrypted_destination_for_service(
     spec_id: &str,
     address: i2pr_proto::EncryptedServiceAddress,
     options: ServiceProductOptions,
-) -> Result<(), EncryptedTargetStatus> {
+) -> Result<[u8; 32], EncryptedTargetStatus> {
     let now_secs = wall_secs() as u32;
     let now_ms = wall_ms();
     let deadline_ms = now_ms.saturating_add(
@@ -4027,11 +4072,22 @@ async fn resolve_encrypted_destination_for_service(
     // Step 6 — ordinary validation, then install under the destination hash the
     // inner record itself names. That hash is the service's real Base32
     // address, which is what the rest of the delivery path looks up.
+    // Plan 381: the inner of a validated envelope routinely carries
+    // BLINDED_ON_PUBLICATION (the destination genuinely publishes
+    // blinded), so opt into that flag here — after envelope
+    // authentication, inner signature verification, and address
+    // binding above. The unencrypted path stays strict.
     let now_secs = wall_secs() as u32;
     let validated = ValidatedLeaseSet2::from_lease_set2(
         inner.clone(),
         Some(destination_hash),
-        LeaseSet2ValidationContext::new(now_secs),
+        LeaseSet2ValidationContext::with_policy(
+            now_secs,
+            i2pr_netdb::LeaseSet2ValidationPolicy {
+                allow_blinded_on_publication: true,
+                ..Default::default()
+            },
+        ),
     )
     .map_err(|_| EncryptedTargetStatus::LeaseSetValidationFailed)?;
     manager
@@ -4046,7 +4102,7 @@ async fn resolve_encrypted_destination_for_service(
             .record_observation("encrypted_target_resolved")
             .await;
     }
-    Ok(())
+    Ok(*destination_hash.as_bytes())
 }
 
 /// Bounded lifetime of a type-5 publication window (Plan 337).

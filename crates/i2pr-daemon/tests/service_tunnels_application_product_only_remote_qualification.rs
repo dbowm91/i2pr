@@ -1500,6 +1500,7 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v214() {
         aggregate_connection_ceiling: 8,
         per_service_connection_ceiling: 4,
         reference: Some(reference),
+        extra_bootstrap_peers: Vec::new(),
         options: ServiceProductOptions::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
         shared_manager: None,

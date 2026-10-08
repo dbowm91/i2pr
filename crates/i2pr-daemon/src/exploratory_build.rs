@@ -990,8 +990,17 @@ impl ExploratoryBuildCoordinator {
             });
         }
         state.mark_dispatched().map_err(map_construction_error)?;
+        // Plan 381: the inbound reply arrives DIRECTLY from the
+        // terminal hop, which forwards the sealed records to the
+        // creator (`originator_hash` = us) — not from the first hop
+        // we sent to. Correlating on the first hop orphans every
+        // inbound reply (observed live: all three references created
+        // their hops, the terminal forwarded to us, and the 30s wait
+        // saw nothing). Both directions correlate on the terminal hop.
         let reply_peer_hash = match direction {
-            BuildDirection::Inbound => first_peer_hash,
+            BuildDirection::Inbound => request.peers.last().map(|peer| peer.router_hash).ok_or(
+                BuildCoordinatorError::Coordinator("build path has no terminal hop"),
+            )?,
             BuildDirection::Outbound => request.peers.last().map(|peer| peer.router_hash).ok_or(
                 BuildCoordinatorError::Coordinator("build path has no terminal hop"),
             )?,

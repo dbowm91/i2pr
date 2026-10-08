@@ -755,7 +755,29 @@ pub fn decrypt_outer_ciphertext(
         }
         other => return Err(Els2Error::UnsupportedInnerStoreType { code: other }),
     };
-    if inner_published != published_seconds {
+    // Plan 381: deployed references do NOT synchronize the inner
+    // publication timestamp with the outer one — i2pd wraps the
+    // already-built inner LeaseSet2 as-is and stamps the outer with
+    // `now`, so routine republication lag (minutes, growing while
+    // leases stay stable) is normal on the wire, and neither
+    // reference enforces equality on receipt (verified in pinned
+    // i2pd 2.61.0 source: its consumer has no such check). Strict
+    // equality rejects essentially every live reference record.
+    // Enforce same-day contemporaneity instead: the inner must not
+    // be from the future beyond ordinary clock skew, nor older than
+    // a day relative to the outer (the blinding day-boundary),
+    // which preserves the anti-transplant intent. Absolute
+    // freshness (unexpired leases) is still enforced downstream by
+    // ordinary LeaseSet2 validation, and i2pr's own publisher keeps
+    // stamping inner == outer, so this relaxation only admits
+    // foreign records — it never weakens what i2pr emits.
+    const ELS2_INNER_PUBLISHED_MAX_FUTURE_SKEW_SECONDS: u32 = 3_600;
+    const ELS2_INNER_PUBLISHED_MAX_STALENESS_SECONDS: u32 = 86_400;
+    if inner_published
+        > published_seconds.saturating_add(ELS2_INNER_PUBLISHED_MAX_FUTURE_SKEW_SECONDS)
+        || inner_published
+            < published_seconds.saturating_sub(ELS2_INNER_PUBLISHED_MAX_STALENESS_SECONDS)
+    {
         return Err(Els2Error::InnerTimestampMismatch);
     }
 

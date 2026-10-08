@@ -484,6 +484,18 @@ pub struct ServiceTunnelManager {
     /// [`EncryptedTargetStatus`], and never carries a secret, a derived
     /// storage key, or fetched payload bytes.
     encrypted_target_status: Mutex<HashMap<String, EncryptedTargetStatus>>,
+    /// Plan 381: per-spec unblinded destination hash of the last
+    /// successfully provisioned encrypted target, installed alongside
+    /// [`EncryptedTargetStatus::Resolved`].
+    ///
+    /// The data path needs it because a `.b33` address carries no
+    /// destination hash: the generic client loop cannot resolve one up
+    /// front, so after deferred activation it reads the installed
+    /// inner hash here and connects through the ordinary remote
+    /// target machinery. A 32-byte hash only — no secret, no record
+    /// bytes. Bounded by the number of committed specs like the
+    /// status map beside it.
+    encrypted_target_inner_hash: Mutex<HashMap<String, [u8; 32]>>,
     /// Plan 342: per-spec I2P-routed outproxy providers, installed by the
     /// control plane once a definition's outproxy block normalizes.
     ///
@@ -738,6 +750,7 @@ impl ServiceTunnelManager {
             encrypted_target_secrets: Mutex::new(HashMap::new()),
             encrypted_target_credentials: Mutex::new(HashMap::new()),
             encrypted_target_status: Mutex::new(HashMap::new()),
+            encrypted_target_inner_hash: Mutex::new(HashMap::new()),
             outproxy_providers: Mutex::new(HashMap::new()),
             outproxy_counters: Mutex::new(crate::outproxy_route::OutproxyCounters::default()),
         })
@@ -2996,11 +3009,36 @@ impl ServiceTunnelManager {
             .clear();
     }
 
+    /// Plan 381 — records the unblinded destination hash installed by
+    /// a successful encrypted-target provisioning, replacing any
+    /// previous hash. Read by the delay-open encrypted client loop
+    /// after deferred activation; a 32-byte hash only.
+    pub fn record_encrypted_target_inner_hash(&self, spec_id: &str, hash: [u8; 32]) {
+        self.encrypted_target_inner_hash
+            .lock()
+            .expect("encrypted target inner hash registry poisoned")
+            .insert(spec_id.to_owned(), hash);
+    }
+
+    /// Plan 381 — returns the installed inner destination hash for one
+    /// spec, if its last encrypted-target provisioning succeeded.
+    pub fn encrypted_target_inner_hash(&self, spec_id: &str) -> Option<[u8; 32]> {
+        self.encrypted_target_inner_hash
+            .lock()
+            .ok()?
+            .get(spec_id)
+            .copied()
+    }
+
     /// Drops every recorded encrypted-target status.
     pub fn clear_encrypted_target_statuses(&self) {
         self.encrypted_target_status
             .lock()
             .expect("encrypted target status registry poisoned")
+            .clear();
+        self.encrypted_target_inner_hash
+            .lock()
+            .expect("encrypted target inner hash registry poisoned")
             .clear();
     }
 
@@ -3296,6 +3334,20 @@ impl ServiceTunnelManager {
                 // exposes the pre-allocated `Arc<DestinationIdentity>`
                 // for the static secret.
                 let lease_set2 = cached_ls2.lease_set2().clone();
+                // Plan 381: this re-validation must not be stricter
+                // than the admission that stored the record. The
+                // cached value is already a `ValidatedLeaseSet2`
+                // from an authenticated path (ordinary lookup or
+                // ELS2-inner resolution); re-validating it strict
+                // rejects exactly the ELS2-inner records the lane
+                // just admitted (observed live: the SYN died here
+                // with `BlindedPublicationDeferred` although the
+                // envelope was authenticated and the inner
+                // signature verified). Preserve the admitted shape
+                // per record: opt in iff the stored record itself
+                // carries the flag. Strict records validate exactly
+                // as before; nothing new is admitted anywhere.
+                let admitted_blinded = lease_set2.header().flags().is_blinded_on_publication();
                 // Plan 212 §11 — install the validated remote LS2
                 // into the router-backed routing state (never the
                 // local fabric routing). Remote compose fails
@@ -3310,7 +3362,13 @@ impl ServiceTunnelManager {
                         let validated = ValidatedLeaseSet2::from_lease_set2(
                             lease_set2,
                             None,
-                            LeaseSet2ValidationContext::new(now_seconds),
+                            LeaseSet2ValidationContext::with_policy(
+                                now_seconds,
+                                i2pr_netdb::LeaseSet2ValidationPolicy {
+                                    allow_blinded_on_publication: admitted_blinded,
+                                    ..Default::default()
+                                },
+                            ),
                         )
                         .map_err(|error| {
                             crate::service_delivery::RemoteDeliveryError::LeaseSetRejected(
@@ -4918,6 +4976,18 @@ async fn run_client_loop(
     );
     let client_target = match manager.resolve_client_destination(spec) {
         Ok(target) => target,
+        Err(DestinationFailure::EncryptedServiceRequiresKeyedLookup { .. })
+            if runtime.delay_open =>
+        {
+            // Plan 381: a delay-open `.b33` client carries no destination
+            // hash, so no up-front `ClientTarget` exists. Park-forever
+            // would bind a listener that never accepts; instead accept
+            // per connection and deferred-activate through the
+            // provisioning path, which installs the inner LeaseSet2 and
+            // records its hash for the data path below.
+            return run_delay_open_encrypted_client_loop(manager, runtime, spec, cancellation)
+                .await;
+        }
         Err(error) => {
             warn!(
                 service = %spec.id.as_str(),
@@ -5002,6 +5072,147 @@ async fn run_client_loop(
         });
     }
     Ok(())
+}
+
+/// Plan 381: accept loop for a delay-open encrypted-service (`.b33`)
+/// generic client.
+///
+/// The eager resolve in [`run_client_loop`] fails closed for a `.b33`
+/// address by design (no destination hash exists before the keyed
+/// lookup), so without this branch the supervisor would park forever
+/// on a bound listener. This loop accepts local connections and, per
+/// connection, deferred-activates through the provisioning path —
+/// which fetches, unwraps, binds and installs the inner LeaseSet2 —
+/// then connects through the ordinary remote target built from the
+/// installed inner hash. Non-`delay_open` encrypted specs never reach
+/// here (Plan 351 Gate 1 rejects them at validate time).
+async fn run_delay_open_encrypted_client_loop(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    cancellation: &CancellationToken,
+) -> Result<(), ServiceTunnelError> {
+    let listener = runtime
+        .client_listener
+        .as_ref()
+        .ok_or_else(|| ServiceTunnelError::InvalidConfig("missing client listener".to_owned()))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|error| ServiceTunnelError::Bind(error.to_string()))?;
+    info!(
+        service = %spec.id.as_str(),
+        bind = %local_addr,
+        "delay-open encrypted client bound loopback listener"
+    );
+    loop {
+        let accept = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            _ = runtime.admission_cancellation.cancelled() => break,
+            accept = listener.accept() => accept,
+        };
+        let (stream, _peer) = match accept {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    service = %spec.id.as_str(),
+                    error = %error,
+                    "client listener accept failed"
+                );
+                continue;
+            }
+        };
+        let aggregate_permit: Option<OwnedSemaphorePermit> =
+            manager.aggregate_permit.clone().try_acquire_owned().ok();
+        let Some(aggregate_permit) = aggregate_permit else {
+            warn!(
+                service = %runtime.spec_id,
+                "client tunnel aggregate ceiling reached; rejecting connection"
+            );
+            runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+            drop(stream);
+            continue;
+        };
+        runtime.active_connections.fetch_add(1, Ordering::Relaxed);
+        let manager_for_task = Arc::clone(manager);
+        let runtime_for_task = Arc::clone(runtime);
+        let cancellation_for_task = cancellation.clone();
+        let permit_for_task = aggregate_permit;
+        tokio::spawn(async move {
+            let result = run_delay_open_encrypted_client_connection(
+                manager_for_task,
+                runtime_for_task.clone(),
+                stream,
+                cancellation_for_task,
+            )
+            .await;
+            if let Err(error) = result {
+                warn!(
+                    service = %runtime_for_task.spec_id,
+                    error = %error,
+                    "delay-open encrypted client connection failed"
+                );
+                runtime_for_task
+                    .failed_connects
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            runtime_for_task.connection_finished_now();
+            drop(permit_for_task);
+        });
+    }
+    Ok(())
+}
+
+/// Plan 381: one accepted local connection on a delay-open `.b33`
+/// client. Deferred-activates (idempotent after the first success),
+/// reads the installed inner hash, resolves the ordinary remote
+/// target from the installed inner LeaseSet2, and connects through
+/// the standard client connection path (which re-ensures activation
+/// as a no-op before dialling).
+/// Plan 381: first-activation budget for a delay-open encrypted
+/// client, in milliseconds.
+///
+/// Deferred first activation is a full cold provision (exact-three
+/// tunnel builds each way plus a floodfill ELS2 lookup — the
+/// product's own provisioning budgets run 30s/60s), not a connect.
+/// The 10s `connect_timeout_ms` default only ever fits an already
+/// provisioned destination, so a cold first connection would time
+/// out systematically and poison the destination with a sticky
+/// failure. This budget (under `ensure_destination_active`'s 120s
+/// clamp) covers cold provisioning; after the first success the
+/// deferred set is clean and later connections return immediately,
+/// so steady-state fail-fast behavior is unchanged.
+const DELAY_OPEN_FIRST_ACTIVATION_TIMEOUT_MS: u64 = 90_000;
+
+async fn run_delay_open_encrypted_client_connection(
+    manager: Arc<ServiceTunnelManager>,
+    runtime: Arc<ServiceRuntime>,
+    stream: TcpStream,
+    cancellation: CancellationToken,
+) -> Result<(), BoxError> {
+    let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id)
+        .max(DELAY_OPEN_FIRST_ACTIVATION_TIMEOUT_MS);
+    if let Err(error) = manager
+        .ensure_destination_active(&runtime.spec_id, &cancellation, connect_timeout_ms)
+        .await
+    {
+        return Err(Box::new(std::io::Error::other(error.to_string())) as BoxError);
+    }
+    let hash = manager
+        .encrypted_target_inner_hash(&runtime.spec_id)
+        .ok_or_else(|| {
+            Box::new(std::io::Error::other(
+                "encrypted target has no installed inner destination",
+            )) as BoxError
+        })?;
+    let target = manager
+        .resolve_remote_client_target(runtime.destination_id, &hash)
+        .ok_or_else(|| {
+            Box::new(std::io::Error::other(
+                "installed inner LeaseSet2 is not resolvable",
+            )) as BoxError
+        })?;
+    run_client_connection(manager, runtime, target, stream, cancellation).await
 }
 
 async fn run_server_loop(

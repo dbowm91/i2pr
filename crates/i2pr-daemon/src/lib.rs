@@ -1794,6 +1794,7 @@ fn register_ssu2_service(
                                 .limits
                                 .max_active_connections_per_service,
                             reference: None,
+ extra_bootstrap_peers: Vec::new(),
                             options: crate::service_product::ServiceProductOptions::default(),
                             addressbook: addressbook.shared(),
                             // Plan 337: the one shared manager, also held
