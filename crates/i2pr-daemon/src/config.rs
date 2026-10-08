@@ -4873,11 +4873,22 @@ data_dir = "./state"
                 "{case} must be refused"
             );
         }
-        // The defaults are accepted.
-        let text = format!("{MINIMAL}\n[console]\nenabled = true\n");
-        let config = Config::parse(&text).expect("defaults parse");
-        assert_eq!(config.console.max_sessions, 32);
-        assert!(!config.console.auth);
-        assert!(config.console.password_hash.is_none());
+    }
+
+    #[test]
+    fn sam_listener_defaults_stay_loopback_disabled_on_the_conventional_port() {
+        // The conventional default SAM endpoint is pinned here, host-free, so
+        // the black-box lifecycle row can assert the daemon binds nothing
+        // without probing a specific host-global port.
+        assert!(!default_sam_enabled());
+        assert_eq!(default_sam_port(), 7656);
+        assert_eq!(default_sam_bind_address(), "127.0.0.1");
+        let config = Config::parse(MINIMAL).expect("minimal config parses");
+        assert!(!config.sam.enabled);
+        assert_eq!(config.sam.port, 7656);
+        assert_eq!(
+            config.sam.bind_address,
+            std::net::IpAddr::from([127, 0, 0, 1])
+        );
     }
 }
