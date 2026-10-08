@@ -852,6 +852,95 @@ cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 # its detail — the authorized-mode control absence documented above. Any other
 # non-passed row, including a skip without the marker, fails the lane. WP5's
 # checker pins the admissible set further (control row, authorized runs only).
+#
+# Plan 381 WP5: package the sanitized evidence. `evidence.json` is the
+# machine-readable rollup (pin, mode, rows, scrub outcome); `evidence.md`
+# is its human-readable companion. Both derive from `results.tsv` and
+# `destinations.txt` only — both already scrubbed of key material — plus
+# public constants (the fixture banner). No reference log, no key, no
+# credential enters either file; the key-material scrub above is itself a
+# recorded row. Written for passing and failing lanes alike: a failed lane's
+# evidence is still evidence.
+I2PR_ELS2_NEGATIVE="${I2PR_ELS2_NEGATIVE:-}" RESULTS_FILE="${RESULTS_FILE}" \
+EVIDENCE_DIR="${EVIDENCE_DIR}" AUTH_MODE="${AUTH_MODE}" \
+python3 - "${RESULTS_FILE}" <<'PY'
+import hashlib, json, os, sys
+
+results_path = sys.argv[1]
+evidence_dir = os.environ["EVIDENCE_DIR"]
+mode = os.environ["AUTH_MODE"]
+negative = os.environ.get("I2PR_ELS2_NEGATIVE") or None
+
+rows = []
+with open(results_path, encoding="utf-8") as handle:
+    for line in handle:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) != 3:
+            continue
+        rows.append({"label": parts[0], "status": parts[1], "detail": parts[2]})
+
+destinations = {}
+dest_path = os.path.join(evidence_dir, "destinations.txt")
+if os.path.exists(dest_path):
+    with open(dest_path, encoding="utf-8") as handle:
+        for line in handle:
+            if "=" in line:
+                key, value = line.rstrip("\n").split("=", 1)
+                destinations[key] = value
+
+with open(results_path, "rb") as handle:
+    results_sha256 = hashlib.sha256(handle.read()).hexdigest()
+
+passed = sum(1 for row in rows if row["status"] == "passed")
+failed = [row["label"] for row in rows if row["status"] not in ("passed", "skipped")]
+skipped = [row["label"] for row in rows if row["status"] == "skipped"]
+
+document = {
+    "plan": 381,
+    "lane": "live ELS2 external driver (i2pd direction)",
+    "reference": {
+        "implementation": "i2pd",
+        "version": "2.61.0",
+        "pin": "635b013a612ff47278ef02acf8580a28e10e26c5",
+    },
+    "auth_mode": mode,
+    "negative": negative,
+    "rows_total": len(rows),
+    "rows_passed": passed,
+    "rows_failed": failed,
+    "rows_skipped": skipped,
+    "destinations": destinations,
+    "results_sha256": results_sha256,
+    "key_material": "excluded by construction; see the key-material-scrub rows",
+}
+with open(os.path.join(evidence_dir, "evidence.json"), "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+
+lines = [
+    "# Plan 381 live ELS2 lane evidence",
+    "",
+    f"- reference: stock i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5",
+    f"- auth mode: {mode}",
+    f"- negative: {negative or 'none'}",
+    f"- rows: {passed}/{len(rows)} passed",
+]
+if failed:
+    lines.append(f"- failed: {', '.join(failed)}")
+if skipped:
+    lines.append(f"- skipped (documented control absences): {', '.join(skipped)}")
+lines += [
+    f"- results SHA-256: {results_sha256}",
+    "- destinations: see destinations.txt (public addresses only)",
+    "- per-row detail: see results.tsv; driver detail: see driver-evidence.tsv",
+    "- key material: excluded by construction (see the key-material-scrub rows)",
+    "",
+]
+with open(os.path.join(evidence_dir, "evidence.md"), "w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines))
+PY
+record evidence-packaged passed "evidence.json + evidence.md written from sanitized results only"
+cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
   echo "Plan 381 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1

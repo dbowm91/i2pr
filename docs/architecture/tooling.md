@@ -21,9 +21,9 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 55 | 53 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 57 | 55 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 56 | 53 top level + 3 under `scripts/interop/` |
+| `check-*` on disk (all classes) | 58 | 55 top level + 3 under `scripts/interop/` |
 | Checker invocations in `ci.yml` | 37 | 35 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
@@ -70,6 +70,8 @@ counting method both numbers come from.
 | `scripts/check-outproxy-request-path.py` | Implementation of `check-outproxy-request-path.sh`, holding the brace-matched function-body checks. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
 | `scripts/check-outproxy-wire-lane-evidence.sh` | Plan 342 evidence-integrity check for the self-composed loopback outproxy wire lane. Wrapper; execs the `.py` beside it. | yes | **no** |
 | `scripts/check-outproxy-wire-lane-evidence.py` | Implementation of `check-outproxy-wire-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
+| `scripts/check-els2-live-lane-evidence.sh` | Plan 381 evidence-integrity check for the live ELS2 external driver lane. Wrapper; execs the `.py` beside it. | yes | **no** |
+| `scripts/check-els2-live-lane-evidence.py` | Implementation of `check-els2-live-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
 | `scripts/check-managed-app-private-client-seams.py` | Plan 354 guard for the listener-independent SAM/I2CP connection seams: managed-profile host-target denial, and that both loopback listeners and trusted private connections drive one protocol driver. | yes | yes |
 | `scripts/check-floodfill-type5-serve.sh` | Plan 350 guard for the floodfill's servable record types. The bug it prevents is silent and data-only: `database_store_for_answer` and `lookup_body` each need a type-5 arm, and omitting either stores records nobody can fetch. | yes | **no** |
 | `scripts/check-ntcp2-interoperability.sh` | Plan 099 NTCP2 interoperability static boundary check, enforcing the durable invariants the retained development interop surface relies on. It enforces **no** behaviour and does not make NTCP2 an advertised transport. | yes | yes |
@@ -274,10 +276,10 @@ by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 43 | 45 rows marked `Floor: yes` |
-| Total routine-floor steps | 53 | — |
+| Floor steps invoking a checker | 44 | 46 rows marked `Floor: yes` |
+| Total routine-floor steps | 54 | — |
 | Checkers executed by `ci.yml` | 35 | 38 rows marked `CI: yes` |
-| `check-*` files on disk | 53 (56 with `scripts/interop/`) | 55 checker rows |
+| `check-*` files on disk | 55 (58 with `scripts/interop/`) | 57 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
@@ -311,11 +313,12 @@ in the floor, which is the A3 finding this section now records — and
 because Plan 367 added their `tests/planning/` companions. The m12 row
 also moved from `**no**`/`**no**` to `yes`/`yes` in Plan 364.
 
-**In the floor but not in `ci.yml` (11):**
+**In the floor but not in `ci.yml` (12):**
 (the previous "(4)" list was itself stale — it omitted `check-service-tunnel-boundaries.sh`, which *is* in `ci.yml`, and seven floor checkers that never were)
 
 - `bash scripts/check-adr-number-uniqueness.py` (Plan 361)
 - `bash scripts/check-config-secret-hygiene.sh`
+- `bash scripts/check-els2-live-lane-evidence.sh` (Plan 381)
 - `bash scripts/check-els2-type11-transcript-boundary.sh`
 - `bash scripts/check-encrypted-service-consumer-caller.sh`
 - `bash scripts/check-floodfill-type5-serve.sh`

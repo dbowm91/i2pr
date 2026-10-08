@@ -1,6 +1,9 @@
 # Plan 381 — status
 
-Status: **in progress** — WP1 and WP2 complete; WP3 payload row now passes (NONE mode, i2pd→i2pr); WP4 matrix and WP5 open.
+Status: **in progress** — WP1–WP3 complete; WP4 consumer matrix green
+(NONE/PSK/DH + both live negatives + different-day unit + mesh authority);
+WP4 reverse direction and i2pr-side authority parked for a successor;
+WP5 checker + evidence packaging landed, closure pending floor + push.
 
 Subsystem: Proposal 170 / I2PControl, and Red25519 + ELS2.
 
@@ -797,35 +800,180 @@ count it as cross-router convergence evidence when that plan needs *i2pr*
 against a reference. Its purpose is attribution: without it, a later i2pr row
 failing would not be distinguishable from the mesh being broken.
 
-## Roadmap disposition
+## Roadmap disposition (updated 2026-10-08, WP4 consumer matrix + WP5)
 
-No roadmap milestone is closed by this record. `plans/registry.md` keeps Plan 381
-**in progress**. The Proposal 170 and Red25519/ELS2 roadmaps both note WP1
-complete with the live rows outstanding. **Plans 374, 375, 377 and 378 remain
-blocked**, and this plan does not unblock any of them: 377 needs both a live
-i2pd lane and Plan 375's Java lane, 378 needs 377, and 374/375 are waiting on
-this plan's WP2–WP5.
+`plans/registry.md` keeps Plan 381 **in progress** until the floor + push
+below are done. The consumer direction is fully executed: NONE, PSK and DH
+payload rows green, both live negatives green, the different-day unit row
+green, the mesh-side authority control green every run. **Plans 374, 375,
+377 and 378 remain blocked**: 377 needs the reverse direction and the
+i2pr-side authority row as well, and both are parked for a named successor
+(see below), not delivered here.
 
-## Resume point
+## WP4 — the consumer matrix (all green)
 
-**WP3's remaining row.** The driver runs, the reference mesh is green, the
-`.b33` client is created over I2PControl and binds — but no lookup is attempted
-for it. The first thing to establish is which of the two explanations holds:
+Executed against stock i2pd 2.61.0 @ `635b013a…`, one lane run per row,
+`MAX_ATTEMPTS=1` throughout. Each run reports `Plan 381 ELS2 lane passed
+(auth <mode>)` with `ELS2-LANE-FIXTURE-OK` crossing, or the specified typed
+refusal with no payload crossing.
 
-1. the product routes services that exist at `start` (and those whose
-   destination enters through `deferred_destination_ids`) into
-   `provision_all_service_router_material`, and a service that appears later in
-   the shared manager is bound but never routed into either; or
-2. the driver is missing a registration step.
+| Row | Mode | Result |
+|---|---|---|
+| i2pd publishes, i2pr consumes, payload both ways | NONE | **passed** (WP3; repeated in every later run) |
+| same, with client credential | PSK | **passed** (`Resolved`, scrub clean) |
+| same, with client credential | DH | **passed** first try (`Resolved`, both scrubs clean) |
+| wrong credential refused | PSK lane, minted random key | **passed** (`ClientCredentialRejected`, no payload, self-scrub clean) |
+| wrong lookup secret refused | NONE lane, well-formed wrong `leaseset_password` | **passed** (`LookupExhausted`, no payload) |
+| record for a different day refused | unit (`freshness_and_storage_key_checks_are_enforced` + existing auth day-mismatch row) | **passed** |
+| mesh-side authority control | every run | **passed** (reference consumes reference's standard LS2) |
 
-The typed surfaces already distinguish the outcomes to look for:
-`manager.encrypted_target_status(SERVICE_ID)` moving off `None`, and
-`RemoteDeliveryCounters::remote_lookup_started` leaving zero. Whichever
-explanation survives, the row must not be written as passing until the banner
-comes back through the reference's server tunnel.
+The runner takes `I2PR_ELS2_AUTH_MODE` (`none|psk|dh`, fail-closed) and mints
+one fresh 32-byte client key per authorized run: the same bytes go to
+`tunnels.conf` (I2P alphabet) and to the driver's `LeasesetClientCredential`.
+The driver asserts the create *result status*, records mode/presence (never
+values), and self-scrubs minted material. The runner redacts the key line
+from the evidence `tunnels.conf` and scrubs the evidence dir for the key in
+hex + both base64 alphabets, failing the lane on any hit.
 
-**Then** WP4's rows (both directions, the three auth modes on the i2pr side,
-the negatives, the `.b32.i2p` authority row) and WP5's evidence and closure.
+The authorized reference-consumer control is a documented skip, not a pass:
+stock i2pd SAM cannot present a credential (`Destination.cpp:778` takes only
+the blinded key), so the control is unexecutable at this pin. The lane gate
+tolerates only `skipped` rows carrying the frozen `control-skip:` marker;
+WP5's checker pins the admissible set (control row, authorized runs only).
+
+### WP4 defects found by executing (all fixed here)
+
+9. **The I2P base64 alphabet.** The first live PSK lane failed with
+   `ClientCredentialRejected` on the correct key. The derivation was proven
+   innocent by a new cross-vector test pinning `psk_client_material`
+   against the pinned source algorithm; the defect was key transport:
+   `els2_hex_to_base64` emitted standard base64 while i2pd decodes under
+   `...89-~` (`Base.cpp` `T64`), mapping unknowns to -1 and completing
+   with wrong-but-well-formed bytes — "1 auth keys read" for a key the
+   lane never held. Writer and validator agreed throughout (finding-7
+   shape again). Fixed with `tr '+/' '-~'` (the `--` is load-bearing),
+   validator refusal of `+/`, and 5 contract rows over a fixed `+/` key.
+10. **No control consumer could configure `leaseset_password`.** The
+    request decoder rejected `OptionalLookup` without `EncryptLeaseSet`
+    before the daemon's `is_encrypted_consumer` exemption could apply,
+    leaving `sync_encrypted_target_secrets` without reachable input.
+    The decoder now applies the same carve-out on key presence (a leaf
+    crate cannot parse the target; the daemon enforces the exact shape
+    downstream). 5 contract rows: carve-out decodes on create+edit;
+    secret-without-target, secret-beside-mode, secret-beside-list still
+    fail the publisher block.
+11. **Two port-0 listeners collide statically.** `ServiceTunnelSet::validate`,
+    the reconcile bind-collision check, `reject_cross_class_collisions`,
+    and `check_listener_against_startup` all treated `127.0.0.1:0` as a
+    concrete collision, so a second default client was refused although
+    each bind gets a distinct OS port. `LocalListenerSpec::is_ephemeral`
+    exempts port 0 at all four sites; fixed ports still collide and
+    bind-time conflicts still fail closed. Unit row pins both halves.
+12. **Envelope-only create asserts.** A refused candidate returns
+    `"status": "error - ..."` with a null JSON-RPC error; the driver's
+    `error.is_null()` assert passed a service that was never built and
+    hid defect 11 for a full lane cycle (the third weak-row shape in this
+    plan's history, after the DelayOpen toggle and the truncated fixture).
+    Both driver creates now require `result.status` success.
+13. **Stale SAM session ids on control retry.** A timed-out SAM attempt
+    leaves its id held by the bridge; retrying with `plan381` answers
+    `DUPLICATED_ID`. The client takes `I2PR_ELS2_SAM_SESSION_ID` and the
+    runner scopes it per attempt.
+14. **The final gate was inverted during WP5 assembly** (reported passing
+    lanes as failed and vice versa). Caught by the next lane run; pinned
+    by a dedicated checker section plus a mutation.
+
+### WP4 parked rows (successor-owned, with evidence)
+
+**Reverse direction (i2pr publishes, reference consumes).** Four live
+attempts executed. What works: the encrypted server creates over
+I2PControl, publication material installs synchronously, the address
+encodes (`…​.b32.i2p`), the reference SAM connects reach the mesh. What
+fails: all four attempts answer `CANT_REACH_PEER / LeaseSet not found` —
+no floodfill holds i2pr's record. Reference logs confirm the lookup
+misses on the blinded key the reference itself derives. Open: whether
+i2pr's publication ever leaves the router, and whether stock i2pd
+accepts i2pr's deployed type-11 profile (Plan 346, live-unproven; Plan
+335 measured rejection of the pre-346 form). Also recorded: an early
+draft polled control `get` for `encrypted_address` and missed for 120s
+while the material sat installed — the get-projection question needs a
+unit test, not another lane. The driver code for the attempt was
+removed (a failing row must not ship); the evidence and the exact
+resume point are in `target/`-era logs and in this record.
+
+**i2pr-side `.b32` authority.** Three compositions tried, each exposing
+a real boundary: (a) a control-created ordinary client is never
+provisioned post-start — nothing fetches its remote LS2, its supervisor
+parks on the unresolved target; (b) a product-`ServiceTunnelSet`
+startup service never reaches the shared manager's committed
+generations (the manager builds specs from daemon config only);
+(c) a TOML startup service provisions at start but its 3-attempt
+ordinary lookup can exhaust against ungossiped floodfills (observed
+`malformed=3` against stock references whose own client succeeds —
+ordinary DatabaseLookup interop against stock floodfills is itself
+unqualified; every remote-lookup qualification ran i2pr↔i2pr or ELS2).
+The mesh-side signal stays green every run
+(`control-reference-b32-roundtrip`), and the ordinary path through i2pr
+is covered by the routine floor's service-tunnel suites over a diff
+that changes no ordinary-lookup code.
+
+## WP5 — evidence and checker
+
+- `scripts/check-els2-live-lane-evidence.py` + `.sh` wrapper: driver test
+  presence + exact `#[ignore]` reason, evidence-key markers, 4 unit rows
+  ungated, contract/extractor markers, runner literals + full row
+  surface, loopback/no-capability forbids, parked-row absence firing,
+  9 production-property triples each naming its defect, the final-gate
+  polarity section, and a re-run of
+  `check-encrypted-service-consumer-caller.sh`. `--self-test` holds;
+  `--mutation-table` 9/9 detected, 2/2 controls ok.
+- The checker is in the `AGENTS.md` floor and the tooling inventory
+  (counts bumped: 55→57 scripts, 53→55 check-*, floor steps 53→54).
+- `evidence.json` + `evidence.md` are written by the runner into the
+  lane evidence dir from sanitized results only (pin, mode, row
+  counts, public addresses, results hash; key material excluded by
+  construction with the scrub rows as proof).
+- Guard note: this plan's work tripped
+  `check-encrypted-service-consumer-caller.sh` once — the WP3 match
+  refactor removed the `if let Err(status) =` spelling the guard pins.
+  Fixed in code (the success-recording `.map` folds back into the
+  pinned `if let` shape), not in the script; the guard is green
+  unmodified.
+
+## Findings, attributed forward (new in WP4/WP5)
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 10 | Post-start ordinary provisioning gap: a control-created ordinary client is never provisioned (no remote-LS2 fetch after the startup pass); its supervisor parks on the unresolved target. Any operator-created ordinary client post-start is dead on arrival | medium | Successor plan: activation policy for post-start ordinary services |
+| 11 | Product-`ServiceTunnelSet` specs never reach the shared manager's committed generations (manager builds from daemon config only); silently absent, no error | medium | Same successor: surface or refuse, never silently absent |
+| 12 | Startup ordinary lookup (3 attempts) can exhaust against ungossiped floodfills; ordinary DatabaseLookup interop against stock references is unqualified | medium | Same successor: gossip-convergence gate + selection audit |
+| 13 | Reverse publication unproven: material installs and address encodes, but no floodfill holds the record after 4 bounded consume attempts | high | Successor plan: i2pr ELS2 publisher external lane (Plan 374's other half) |
+| 14 | Control `get` did not project `encrypted_address` for 120s while material sat installed (unresolved: projection lag vs poll bug; bypassed via direct material read) | low | Unit test pinning the projection; no lane needed |
+| 15 | Reference `router.info` rewrite vs driver read race is unhandled (one `InvalidRouterInfo` at product start on an otherwise green mesh; never recurred) | low | Snapshot-and-verify handoff if it recurs |
+
+Findings 1–9 are in the sections above (WP1–WP3 record).
+
+## Resume point (2026-10-08)
+
+**This plan's executable work is done except the routine floor and the
+push.** The consumer matrix is green and repeat-green; the checker is
+green three ways; the evidence packaging is green live. Remaining:
+
+1. Full routine floor at the repo root (verbatim from `AGENTS.md`).
+2. Focused re-runs already done this turn: netdb/client/daemon-lib
+   suites green; PSK/DH/negative/authority-mesh lanes green live.
+3. Commit + push (this branch only; no PR requested).
+4. Registry + roadmaps: keep 381 **in progress** until the push lands,
+   then the closer flips it per the closure outcome below.
+
+**Closure outcome (for the record that closes this plan).** The i2pd
+consumer direction is delivered completely (3 modes + 2 live negatives
++ day unit + mesh authority + checker + packaged evidence). The reverse
+direction and the i2pr-side authority row are parked with named
+successors and firing absence guards — they are separate capabilities
+(post-start provisioning/publication), not partial matrices of the
+delivered one. **Plans 374, 375, 377, 378 stay blocked**; the successor
+plan unblocks 374's remainder alongside 375.
 
 **Stop condition 2 no longer constrains this work.** The mesh was the one
 remaining unknown that could have blocked the plan outright, and it is answered.

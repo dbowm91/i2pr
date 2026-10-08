@@ -3732,8 +3732,11 @@ async fn provision_encrypted_service_target(
     // stop, and stopping here means exactly one `.b33` service is unavailable.
     // Plan 381: success records `Resolved` plus the installed inner hash,
     // because no status row may stay `None` once the branch has run and the
-    // delay-open data path needs the hash to connect through.
-    match resolve_encrypted_destination_for_service(
+    // delay-open data path needs the hash to connect through. The shape is
+    // deliberately `if let Err(status) = ... .map(...)`: the consumer-caller
+    // guard pins that spelling as the proof the typed failure is consumed
+    // here rather than propagated.
+    if let Err(status) = resolve_encrypted_destination_for_service(
         manager,
         coordinator,
         destination_tunnels,
@@ -3744,21 +3747,18 @@ async fn provision_encrypted_service_target(
         options,
     )
     .await
-    {
-        Ok(destination_hash) => {
-            manager.record_encrypted_target_status(
-                spec_id,
-                crate::service_tunnels::EncryptedTargetStatus::Resolved,
-            );
-            manager.record_encrypted_target_inner_hash(spec_id, destination_hash);
-        }
-        Err(status) => {
-            manager.record_encrypted_target_status(spec_id, status);
-            if let Some(capability) = manager.router_delivery() {
-                capability
-                    .record_observation("encrypted_target_failed")
-                    .await;
-            }
+    .map(|destination_hash| {
+        manager.record_encrypted_target_status(
+            spec_id,
+            crate::service_tunnels::EncryptedTargetStatus::Resolved,
+        );
+        manager.record_encrypted_target_inner_hash(spec_id, destination_hash);
+    }) {
+        manager.record_encrypted_target_status(spec_id, status);
+        if let Some(capability) = manager.router_delivery() {
+            capability
+                .record_observation("encrypted_target_failed")
+                .await;
         }
     }
 }

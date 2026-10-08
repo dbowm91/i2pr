@@ -729,6 +729,20 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "successor-plan: i2pr-side row parked, mesh-side control green",
     );
 
+    // Plan 381 WP4 reverse disposition: the i2pr-publishes direction is
+    // NOT attempted here. Four live attempts were executed and are
+    // preserved in the status record with their evidence (server creates,
+    // material installs, address encodes, reference answers LeaseSet-not-
+    // found on all attempts); the workstream needs its own plan-of-record
+    // (publication signaling, gossip gates, the control-get projection
+    // question). Like the i2pr-side authority row above, it is parked for
+    // the successor, not papered over.
+    append_evidence(
+        &evidence_dir,
+        "reverse-direction",
+        "successor-plan: i2pr-publishes row parked after four live attempts, see status",
+    );
+
     parent.cancel(i2pr_core::CancellationReason::TestHarnessTeardown);
     let _ = product.shutdown().await;
 }

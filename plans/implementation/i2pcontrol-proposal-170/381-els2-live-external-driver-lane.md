@@ -1,6 +1,8 @@
 # Plan 381 — Live ELS2 external driver lane (i2pd direction)
 
-Status: **in progress** — WP1 and WP2 complete, WP3–WP5 open. See
+Status: **in progress** — WP1–WP3 complete, WP4 consumer matrix green,
+WP5 checker landed; floor + push pending. Reverse direction and i2pr-side
+authority parked for a named successor. See
 `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 WP1 execution **corrected two facts this plan recorded at registration**; both
