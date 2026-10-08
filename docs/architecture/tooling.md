@@ -21,9 +21,9 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 57 | 55 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 59 | 57 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 58 | 55 top level + 3 under `scripts/interop/` |
+| `check-*` on disk (all classes) | 60 | 57 top level + 3 under `scripts/interop/` |
 | Checker invocations in `ci.yml` | 39 | 37 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-54 `check-*` files exist on disk in `scripts/` (57 counting `scripts/interop/`),
+57 `check-*` files exist on disk in `scripts/` (60 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -278,10 +278,10 @@ by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 47 | 47 rows marked `Floor: yes` |
-| Total routine-floor steps | 57 | — |
+| Floor steps invoking a checker | 48 | 48 rows marked `Floor: yes` |
+| Total routine-floor steps | 58 | — |
 | Checkers executed by `ci.yml` | 37 | 40 rows marked `CI: yes` |
-| `check-*` files on disk | 55 (58 with `scripts/interop/`) | 57 checker rows |
+| `check-*` files on disk | 57 (60 with `scripts/interop/`) | 59 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
