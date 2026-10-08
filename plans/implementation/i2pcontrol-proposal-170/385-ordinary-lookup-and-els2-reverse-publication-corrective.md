@@ -1,6 +1,6 @@
 # Plan 385 — ordinary lookup and ELS2 reverse publication corrective
 
-Status: **in-progress-ordinary-lookup-and-reverse-publication-corrective**.
+Status: **blocked-reverse-els2-publication-not-visible-to-stock-i2pd-plan-386**.
 
 Subsystem: Proposal 170 / Red25519 + ELS2.
 
