@@ -182,8 +182,6 @@ fn syscall_allowlist() -> Vec<u32> {
         libc::SYS_pread64,
         libc::SYS_readv,
         libc::SYS_writev,
-        libc::SYS_poll,
-        libc::SYS_access,
         libc::SYS_sched_yield,
         libc::SYS_mremap,
         libc::SYS_madvise,
@@ -197,10 +195,6 @@ fn syscall_allowlist() -> Vec<u32> {
         libc::SYS_getdents64,
         libc::SYS_getcwd,
         libc::SYS_chdir,
-        libc::SYS_rename,
-        libc::SYS_mkdir,
-        libc::SYS_unlink,
-        libc::SYS_readlink,
         libc::SYS_fchmod,
         libc::SYS_gettimeofday,
         libc::SYS_getrlimit,
@@ -226,7 +220,22 @@ fn syscall_allowlist() -> Vec<u32> {
     .map(|syscall| *syscall as u32)
     .collect();
     #[cfg(target_arch = "x86_64")]
-    calls.push(libc::SYS_arch_prctl as u32);
+    calls.extend([
+        libc::SYS_arch_prctl as u32,
+        libc::SYS_poll as u32,
+        libc::SYS_access as u32,
+        libc::SYS_rename as u32,
+        libc::SYS_mkdir as u32,
+        libc::SYS_unlink as u32,
+        libc::SYS_readlink as u32,
+    ]);
+    #[cfg(target_arch = "aarch64")]
+    calls.extend([
+        libc::SYS_ppoll as u32,
+        libc::SYS_renameat as u32,
+        libc::SYS_mkdirat as u32,
+        libc::SYS_unlinkat as u32,
+    ]);
     calls.sort_unstable();
     calls.dedup();
     #[cfg(target_arch = "x86_64")]
