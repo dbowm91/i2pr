@@ -1,6 +1,6 @@
 # Plan 409 — External Rust Managed-App SDK and Package Builder
 
-Status: **blocked-on-plan408-local-service-protocol-extension**
+Status: **in-progress-external-sdk-and-package-builder**
 
 Global number reconciliation: the imported draft used Plan 388, which Proposal 170 owns on main. This successor is Plan 409; the source draft is preserved at `plans/archive/managed-native-app-runtime/388-external-rust-managed-app-sdk-and-package-builder.md`.
 
@@ -8,11 +8,11 @@ Date: 2026-10-09
 
 Roadmap: `plans/subsystems/managed-native-app-runtime-roadmap.md`
 
-Hard dependencies:
+Readiness:
 
 - Managed native app runtime/369–371 closed.
 - Plans 382–383 closed.
-- Managed native app runtime/408 — local-service minor-version protocol extension — must close first so the SDK exposes the complete current application contract.
+- Managed native app runtime/408 — local-service minor-version protocol extension — closed as `passed-host-owned-loopback-local-service-ingress`; this plan consumes its v1.1 types.
 - Repository license is MIT.
 
 Primary consumers:

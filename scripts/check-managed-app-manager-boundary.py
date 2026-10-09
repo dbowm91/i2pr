@@ -244,7 +244,7 @@ require(
     'i2pr-app-proto = { path = "../i2pr-app-proto" }' in contract_manifest,
     "the contract crate must keep exactly the app-protto dependency",
 )
-# Exactly two implementations may consume the protocol, and no others.
+# The manager protocol has exactly the named consumers below.
 #
 # Plan 368 closed with a single consumer: `i2pr-daemon`, which owns the bridge.
 # Plan 369 WP2 adds the second and only other one, `i2pr-appd`, because the
@@ -252,10 +252,10 @@ require(
 # manager-protocol to the daemon over the inherited transport. That is the
 # whole point of the protocol, so admitting it is a design fact, not a
 # relaxation: the list is an exact allow-set, so a third consumer (a tool, a
-# test fixture, an SDK) still fails here.
+# test fixture, or SDK) still fails here.
 # An exact allow-set, not a pattern: the manager protocol may be consumed by the
 # daemon bridge, the appd manager client, and the apphost host side of the
-# bootstrap, and by nothing else. A fourth consumer is a hard failure.
+# bootstrap, and by nothing else.
 #
 # Plan 369 WP3 added `i2pr-apphost`. It is the other end of the bootstrap
 # handshake defined by this protocol, so it is a legitimate consumer; it is in a

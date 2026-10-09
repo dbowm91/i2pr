@@ -13,6 +13,10 @@ packages = {package["name"]: package for package in metadata["packages"]}
 expected = {
     "i2pr-app-manager-proto": {"i2pr-app-proto"},
     "i2pr-app-proto": set(),
+    # Plan 409: public app-side contracts and deterministic package construction
+    # may depend on the wire contract, but have no router or manager authority.
+    "i2pr-app-sdk": {"i2pr-app-proto"},
+    "i2pr-app-package-build": {"i2pr-app-proto"},
     # Plan 382: signed package verification is a leaf trust-zone owner. Its
     # cryptographic/parser/filesystem dependencies are external only.
     "i2pr-app-package": {"i2pr-app-proto"},
@@ -43,6 +47,7 @@ expected = {
         "i2pr-app-manager-proto",
         "i2pr-app-proto",
         "i2pr-appd",
+        "i2pr-app-sdk",
     },
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},

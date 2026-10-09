@@ -3,7 +3,9 @@ members = [
     "crates/i2pr-addressbook",
     "crates/i2pr-app-manager-proto",
     "crates/i2pr-app-proto",
+    "crates/i2pr-app-sdk",
     "crates/i2pr-app-package",
+    "crates/i2pr-app-package-build",
     "crates/i2pr-app-state",
     "crates/i2pr-appctl",
     "crates/i2pr-api",
@@ -83,6 +85,7 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio = { version = "1.48", default-features = false, features = ["io-std", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time", "test-util"] }
+tokio-app = { package = "tokio", version = "1.48", default-features = false, features = ["io-util", "io-std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 webpki-roots = { version = "1.0.9", default-features = false }
@@ -90,6 +93,7 @@ x25519-dalek = { version = "2.0.1", default-features = false, features = ["stati
 x509-cert = { version = "0.2", features = ["builder", "pem"] }
 x509-parser = { version = "0.18", default-features = false, features = ["verify"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip-stored = { package = "zip", version = "8.6", default-features = false }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]

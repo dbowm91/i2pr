@@ -59,6 +59,8 @@ const FIXTURE_MANAGER: &str = "i2pr-app-fixture-manager";
 const FIXTURE_APP: &str = "i2pr-app-fixture";
 /// Statically linked secured-mode fixture, produced by the Linux CI build.
 const FIXTURE_SECURED_APP: &str = "i2pr-app-fixture-secured";
+/// Optional out-of-workspace Plan-409 app binary used by the external consumer lane.
+const EXTERNAL_APP_BINARY: &str = "I2PR_EXTERNAL_APP_BINARY";
 /// The apphost, resolved by `i2pr-appd`'s own unchanged sibling rule.
 const APPHOST: &str = "i2pr-apphost";
 
@@ -215,7 +217,7 @@ mod tests {
             "name": "managed catalog fixture",
             "description": "",
             "host_protocol_min": {"major": 1, "minor": 0},
-            "host_protocol_max": {"major": 1, "minor": 0},
+            "host_protocol_max": {"major": 1, "minor": 1},
             "entrypoints": [{"target": i2pr_app_state::target_triple().unwrap(), "path": "bin/app"}],
             "requested_capabilities": ["sam", "i2cp"],
             "resources": [
@@ -1367,6 +1369,9 @@ mod tests {
         } else {
             sibling(FIXTURE_APP)
         };
+        let fixture = std::env::var_os(EXTERNAL_APP_BINARY)
+            .map(PathBuf::from)
+            .unwrap_or(fixture);
         let _ = sibling(APPHOST);
         let scratch = Scratch::new("persistent-catalog");
         let (root, app_ids) = prepare_persistent_catalog(&scratch.path, &fixture);

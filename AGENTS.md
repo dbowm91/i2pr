@@ -20,6 +20,8 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 
 - `i2pr-proto` — bounded wire codecs, typed errors, no I/O.
 - `i2pr-app-proto` — runtime-neutral managed-app contract for identity, capabilities, framing, manifests, policy, and attestation; no OS/runtime ownership or production workspace dependencies.
+- `i2pr-app-sdk` — public application-side managed-app session API over caller-owned async channels; optional Tokio adapter only, no sockets or authority.
+- `i2pr-app-package-build` — public deterministic signed `.i2prapp` builder; no store, launch, grant, runtime, network, or manager authority.
 - `i2pr-app-package` — signed `.i2prapp` verification and immutable local store; no trust/grant/catalog/launch authority.
 - `i2pr-app-state` — persistent offline policy generations and package-verified launch decisions; cannot construct `LaunchAuthority`.
 - `i2pr-appctl` — offline package and policy administrator CLI; no router listeners, runtime, or network clients.

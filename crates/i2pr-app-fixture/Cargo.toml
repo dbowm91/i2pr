@@ -25,9 +25,11 @@ publish = false
 [dependencies]
 i2pr-app-manager-proto = { path = "../i2pr-app-manager-proto" }
 i2pr-app-proto = { path = "../i2pr-app-proto" }
+i2pr-app-sdk = { path = "../i2pr-app-sdk", features = ["tokio-adapter"] }
 i2pr-appd = { path = "../i2pr-appd" }
 serde_json.workspace = true
 thiserror.workspace = true
+futures-executor.workspace = true
 # The fixture *application* binary uses plain `std`. Only the fixture *manager*
 # binary needs an async runtime, and Cargo has no per-binary dependency table, so
 # the runtime is declared at package scope. `tokio.workspace` (rather than a

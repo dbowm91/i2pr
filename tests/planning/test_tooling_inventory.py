@@ -13,6 +13,7 @@ only ever read, never mutated.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import tempfile
 import unittest
@@ -275,14 +276,15 @@ class MutationTest(unittest.TestCase):
 
     def test_stale_member_count_is_rejected(self) -> None:
         path = self.root / "docs" / "architecture" / "tooling.md"
-        path.write_text(
-            path.read_text().replace(
-                "### Members (28 crates + 1 non-production binary = 29)",
-                "### Members (19 crates + 1 non-production binary = 20)",
-                1,
-            ),
-            encoding="utf-8",
+        text = path.read_text()
+        changed, replacements = re.subn(
+            r"### Members \(\d+ crates \+ 1 non-production binary = \d+\)",
+            "### Members (19 crates + 1 non-production binary = 20)",
+            text,
+            count=1,
         )
+        self.assertEqual(replacements, 1)
+        path.write_text(changed, encoding="utf-8")
         self.assertTrue(
             any("rule 6" in v for v in self._violations()), self._violations()
         )

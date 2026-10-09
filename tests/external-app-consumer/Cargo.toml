@@ -1,0 +1,16 @@
+[package]
+name = "i2pr-external-app-consumer-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[dependencies]
+i2pr-app-sdk = { path = "../../crates/i2pr-app-sdk", features = ["tokio-adapter"] }
+i2pr-app-package-build = { path = "../../crates/i2pr-app-package-build" }
+serde_json = "1.0"
+futures-executor = "0.3"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }
+tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "rt"] }
+
+[workspace]

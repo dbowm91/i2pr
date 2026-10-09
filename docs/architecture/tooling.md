@@ -901,13 +901,10 @@ source of truth for harness detail.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (28 crates + 1 non-production binary = 29)
+### Members (30 crates + 1 non-production binary = 31)
 
-Recomputed 2026-10-07 by Plan 372 from `cargo metadata --no-deps`; the roster
-below was six crates short, missing the whole operator console and the entire
-managed-application runtime (`i2pr-app-proto`, `i2pr-app-manager-proto`,
-`i2pr-app-package`, `i2pr-app-state`, `i2pr-appctl`, `i2pr-appd`,
-`i2pr-apphost`, and the `i2pr-app-fixture` evidence crate).
+Recomputed from `cargo metadata --no-deps`; the roster includes the managed-app
+SDK and deterministic package builder as public application-side crates.
 
 ```text
 crates/i2pr-addressbook, crates/i2pr-api, crates/i2pr-crypto,
@@ -918,7 +915,8 @@ crates/i2pr-service-tunnels, crates/i2pr-storage, crates/i2pr-su3,
 crates/i2pr-testkit, crates/i2pr-transport,
 crates/i2pr-transport-ntcp2, crates/i2pr-transport-ssu2,
 crates/i2pr-tunnel,
-crates/i2pr-app-proto, crates/i2pr-app-manager-proto,
+crates/i2pr-app-proto, crates/i2pr-app-sdk, crates/i2pr-app-manager-proto,
+crates/i2pr-app-package-build,
 crates/i2pr-app-package, crates/i2pr-app-state, crates/i2pr-appctl,
 crates/i2pr-appd, crates/i2pr-apphost, crates/i2pr-app-fixture,
 tools/i2pr-interop

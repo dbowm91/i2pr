@@ -35,7 +35,7 @@ support claim.
 
 `i2pr` is an experimental I2P router written in Rust, organized as a
 **modular monolith**: one daemon process, one crate per subsystem, a
-strictly enforced dependency DAG. 28 workspace crates plus one
+strictly enforced dependency DAG. 30 workspace crates plus one
 non-production launcher tool.
 
 Five conceptual planes cut across the crates:
@@ -79,8 +79,10 @@ Hard boundaries (CI-enforced; fix code, never weaken scripts):
 crates/
   i2pr-core/                Runtime-neutral contracts/budgets/health (zero deps)
   i2pr-app-proto/           Runtime-neutral managed-app protocol/capability contract (no I/O)
+  i2pr-app-sdk/             Public application-side session API (no socket ownership)
   i2pr-app-manager-proto/   Private trusted AppManager protocol contract (no I/O)
   i2pr-app-package/         Signed managed-app package verifier and immutable local store
+  i2pr-app-package-build/   Deterministic signed package builder (no store/launch authority)
   i2pr-app-state/           Persistent offline app policy and verified launch decisions
   i2pr-appctl/              Offline managed-app administration binary
   i2pr-proto/               Bounded wire codecs, typed errors, no I/O
@@ -184,13 +186,15 @@ Flattened allowlist (the exact set the checker enforces per crate):
 | `i2pr-su3` | — |
 | `i2pr-i2pcontrol` | — |
 | `i2pr-app-proto` | — |
+| `i2pr-app-sdk` | `i2pr-app-proto` |
 | `i2pr-app-manager-proto` | — |
 | `i2pr-app-package` | `i2pr-app-proto` |
+| `i2pr-app-package-build` | `i2pr-app-proto` |
 | `i2pr-app-state` | `i2pr-app-package`, `i2pr-app-proto` |
 | `i2pr-appctl` | `i2pr-app-package`, `i2pr-app-proto`, `i2pr-app-state` |
 | `i2pr-appd` | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-app-state` |
 | `i2pr-apphost` | `i2pr-app-manager-proto`, `i2pr-app-proto` |
-| `i2pr-app-fixture` | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-appd` (evidence tooling) |
+| `i2pr-app-fixture` | `i2pr-app-manager-proto`, `i2pr-app-proto`, `i2pr-app-sdk`, `i2pr-appd` (evidence tooling) |
 | `i2pr-crypto` | `i2pr-proto` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-crypto`, `i2pr-proto`, `i2pr-transport` |
@@ -242,6 +246,8 @@ design choices. Every workspace crate appears exactly once.
 | 23 | Interop apparatus | Harness boundary | Reference-router harness, evidence classes, sanitization, Multipass/rootless lanes (historical NTCP2 surface). | [interop-apparatus.md](interop-apparatus.md) |
 | 25 | `i2pr-app-manager-proto` | AppManager contract | Private router/AppManager protocol: handshake, bounded frames, strict directional control vocabulary, opaque daemon-assigned handles, pure bounded accounting. Authority ceiling below Proposal 170; no administrator vocabulary. Plan 368. | [i2pr-app-manager-proto.md](i2pr-app-manager-proto.md) |
 | 24 | `i2pr-app-proto` | App contract | Managed native-app v1 protocol, capabilities, manifest, default-deny policy and sandbox attestation vocabulary. No OS/runtime owner. | [i2pr-app-proto.md](i2pr-app-proto.md) |
+| 32 | `i2pr-app-sdk` | App SDK | Public managed-app session API over caller-owned channels; optional Tokio adapter. Plan 409. | [i2pr-app-sdk.md](i2pr-app-sdk.md) |
+| 33 | `i2pr-app-package-build` | Package builder | Deterministic signed package construction; no router store or grant authority. Plan 409. | [i2pr-app-package-build.md](i2pr-app-package-build.md) |
 | 26 | `i2pr-appd` | App manager process | Trusted manager process: persistent policy catalog, reverified package launch authority, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plans 369/383. | [i2pr-appd.md](i2pr-appd.md) |
 | 27 | `i2pr-apphost` | Direct-exec supervisor | One-shot bounded supervisor: double-checked root containment, Linux static-ELF Landlock/seccomp secured exec, byte-transparent broker channel, and separate UnsafeDirect relay. Plans 369/407. | [i2pr-apphost.md](i2pr-apphost.md) |
 | 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Production source does not name or bundle it; qualification installs it only through an explicit temporary signed policy. Plans 369/383. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |

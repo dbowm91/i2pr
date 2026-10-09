@@ -1,24 +1,23 @@
 [package]
-name = "i2pr-app-package"
+name = "i2pr-app-package-build"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
-description = "Signed managed-application package verification and immutable local store"
-publish = false
+description = "Deterministic signed .i2prapp package builder for managed applications"
+readme = "README.md"
 
 [dependencies]
-i2pr-app-proto = { path = "../i2pr-app-proto" }
+i2pr-app-proto = { path = "../i2pr-app-proto", version = "0.1.0" }
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-zip.workspace = true
+zip-stored.workspace = true
 
 [dev-dependencies]
-i2pr-app-package-build = { path = "../i2pr-app-package-build" }
 tempfile.workspace = true
 
 [lints]

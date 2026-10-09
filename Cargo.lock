@@ -969,8 +969,10 @@ dependencies = [
 name = "i2pr-app-fixture"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "i2pr-app-manager-proto",
  "i2pr-app-proto",
+ "i2pr-app-sdk",
  "i2pr-appd",
  "serde_json",
  "thiserror",
@@ -992,6 +994,21 @@ name = "i2pr-app-package"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "i2pr-app-package-build",
+ "i2pr-app-proto",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
+name = "i2pr-app-package-build"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
  "i2pr-app-proto",
  "serde",
  "serde_json",
@@ -1008,6 +1025,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "i2pr-app-sdk"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "i2pr-app-proto",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

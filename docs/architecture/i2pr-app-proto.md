@@ -19,6 +19,11 @@ principal. The language-neutral authority is
 [`managed-native-app-runtime-v1.md`](../../specs/references/managed-native-app-runtime-v1.md),
 not serde tags or Rust layout.
 
+This contract is the dependency shared by the publishable `i2pr-app-sdk` and
+`i2pr-app-package-build` crates. Their Rust crate versions are managed
+independently from the router binary. The SDK has no default runtime
+dependency; Tokio support is an opt-in adapter.
+
 `RequestedCapability` is untrusted inert input. `GrantedCapability` can only
 be made through an explicitly administrator-authorized constructor, and
 `EffectiveCapabilities` can only be projected from grants. `brokered_tcp` is

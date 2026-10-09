@@ -36,11 +36,11 @@ holds authority, and it exists solely to reach the real gate.
 
 ## The application depends on nothing but the wire
 
-`i2pr-app-fixture`'s application binary depends only on `i2pr-app-proto` and
-`i2pr-app-manager-proto` (plus its own shared lib). It has no route into router
-state, which is what makes it a genuine separate program rather than an
-in-process fake: if it could reach router internals, the qualification would be
-proving nothing about containment.
+The application source uses the public `i2pr-app-sdk` and
+`i2pr-app-proto` contract to speak to its inherited channel; it does not link
+manager or router implementation code. This proves the SDK path through a
+separate process rather than an in-process fake. The fixture-manager binary is
+separately evidence tooling and runs the real appd implementation.
 
 ## Scenarios
 

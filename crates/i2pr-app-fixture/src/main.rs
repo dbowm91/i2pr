@@ -12,7 +12,8 @@
 //! path: manager → apphost → **separate OS process** → app v1 → gateway → SAM /
 //! I2CP. A fixture living inside the manager could share a decoder, a runtime, or
 //! a bug with the code it is meant to qualify. This binary shares none of those.
-//! Its only workspace dependency is the wire contract.
+//! Its app-side SAM path uses the public app SDK and wire contract; it links
+//! neither manager nor router implementation code.
 //!
 //! # Why plain `std`
 //!
@@ -108,7 +109,6 @@ fn main() -> ExitCode {
 }
 
 fn run(request: &FixtureArgs) -> Result<(), FixtureError> {
-    let mut host = Host::new(request)?;
     transcript::note(
         &request.transcript,
         "start",
@@ -119,6 +119,18 @@ fn run(request: &FixtureArgs) -> Result<(), FixtureError> {
             "pid": std::process::id(),
         }),
     )?;
+
+    if request.scenario == Scenario::SamHappyPath {
+        run_sam_with_public_sdk(request)?;
+        transcript::note(
+            &request.transcript,
+            "complete",
+            serde_json::json!({ "scenario": request.scenario.name() }),
+        )?;
+        return Ok(());
+    }
+
+    let mut host = Host::new(request)?;
 
     // Plan 369 §8: the application speaks first, and `hello` may not precede the
     // 9-byte app v1 greeting.
@@ -179,6 +191,153 @@ fn run(request: &FixtureArgs) -> Result<(), FixtureError> {
         serde_json::json!({ "scenario": request.scenario.name() }),
     )?;
     Ok(())
+}
+
+/// Use the public external-app SDK for the ordinary black-box SAM qualification
+/// so the shipped application API is exercised through real apphost/appd.
+fn run_sam_with_public_sdk(request: &FixtureArgs) -> Result<(), FixtureError> {
+    let reader = BlockingStdin(std::io::stdin());
+    let writer = BlockingStdout(std::io::stdout());
+    futures_executor::block_on(async {
+        let app_id = i2pr_app_proto::AppId::parse(request.app_id.clone())
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        let mut session =
+            i2pr_app_sdk::Session::connect(reader, writer, app_id, request.instance.to_string())
+                .await
+                .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        let capabilities = session
+            .capabilities()
+            .map(|capability| format!("{capability:?}"))
+            .collect::<Vec<_>>();
+        transcript::note(
+            &request.transcript,
+            "capabilities",
+            serde_json::json!(capabilities),
+        )?;
+        let stream = session
+            .open(i2pr_app_proto::AppService::Sam)
+            .await
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        session
+            .send(stream, b"HELLO VERSION MIN=3.1 MAX=3.1\r\n")
+            .await
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        let version = read_sdk_sam_line(&mut session, stream).await?;
+        if !sam_reply_succeeded(&version, "3.1") {
+            return Err(FixtureError::Transport(format!(
+                "SAM HELLO must be answered with an OK reply naming version 3.1, got {version:?}"
+            )));
+        }
+        transcript::note(
+            &request.transcript,
+            "sam-version",
+            serde_json::json!({ "reply": version }),
+        )?;
+        let id = "3f2a9c1d-0000-4000-8000-0000000000ff";
+        let command = format!("SESSION CREATE STYLE=STREAM ID={id} DESTINATION=TRANSIENT\r\n");
+        session
+            .send(stream, command.as_bytes())
+            .await
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        let result = read_sdk_sam_line(&mut session, stream).await?;
+        if !result.contains("RESULT=OK") {
+            return Err(FixtureError::Transport(format!(
+                "SESSION CREATE must be accepted over the private gateway, got {result:?}"
+            )));
+        }
+        transcript::note(
+            &request.transcript,
+            "sam-session",
+            serde_json::json!({ "id": id, "result": result }),
+        )?;
+        transcript::note(&request.transcript, "closing-sam", serde_json::json!({}))?;
+        session
+            .close_stream(stream)
+            .await
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        transcript::note(&request.transcript, "closed-sam", serde_json::json!({}))?;
+        Ok(())
+    })
+}
+
+/// `tokio::io::stdin()` creates a blocking-pool worker. Secured apps do not
+/// need a runtime or thread for this sequential pipe client, so this evidence
+/// fixture adapts standard inherited pipes directly to the SDK's async traits.
+struct BlockingStdin(std::io::Stdin);
+
+impl tokio::io::AsyncRead for BlockingStdin {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::io::Read;
+        let target = buffer.initialize_unfilled();
+        match self.0.read(target) {
+            Ok(read) => {
+                buffer.advance(read);
+                std::task::Poll::Ready(Ok(()))
+            }
+            Err(error) => std::task::Poll::Ready(Err(error)),
+        }
+    }
+}
+
+struct BlockingStdout(std::io::Stdout);
+
+impl tokio::io::AsyncWrite for BlockingStdout {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use std::io::Write;
+        std::task::Poll::Ready(self.0.write(bytes))
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::io::Write;
+        std::task::Poll::Ready(self.0.flush())
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+async fn read_sdk_sam_line<R, W>(
+    session: &mut i2pr_app_sdk::Session<R, W>,
+    stream: u32,
+) -> Result<String, FixtureError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut bytes = Vec::new();
+    while !bytes.contains(&b'\n') {
+        let frame = session
+            .receive()
+            .await
+            .map_err(|error| FixtureError::Transport(error.to_string()))?;
+        if frame.stream_id != stream {
+            return Err(FixtureError::Transport(
+                "SDK returned data for an unrelated stream".into(),
+            ));
+        }
+        if bytes.len().saturating_add(frame.payload.len()) > 4096 {
+            return Err(FixtureError::Transport(
+                "SAM response line exceeded the fixture ceiling".into(),
+            ));
+        }
+        bytes.extend_from_slice(&frame.payload);
+    }
+    Ok(String::from_utf8_lossy(&bytes).trim_end().to_owned())
 }
 
 /// Every behavior that needs a live, capability-carrying session.

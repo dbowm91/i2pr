@@ -246,7 +246,17 @@ Manifest v1 has no installer hooks, arbitrary command, remote/localhost UI
 URL, effective grant, firewall policy, router credential, or administrator
 credential. Future signature formats must authenticate retained raw canonical
 manifest bytes or the exact manifest representation without reinterpreting
-these semantics. Package archive and signature formats are unspecified.
+these semantics. Package archive and signature formats are defined separately
+by `managed-app-package-v1.md`.
+
+Rust application authors may use the independently versioned `i2pr-app-sdk`
+and `i2pr-app-package-build` crates. Their 0.x crate versions do not imply a
+router release or managed-app support claim. Wire compatibility is governed by
+the protocol major/minor negotiation above; package compatibility is governed
+by `managed-app-package-v1.md`. The public SDK depends only on this contract,
+and the builder has no dependency on the router's mutable store or manager
+authority. Both are available as repository git-revision dependencies before
+any registry publication.
 
 ## 6. UI messages and network policy
 

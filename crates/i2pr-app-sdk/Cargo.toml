@@ -1,0 +1,24 @@
+[package]
+name = "i2pr-app-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Public Rust SDK for the managed native application protocol"
+readme = "README.md"
+
+[features]
+default = []
+tokio-adapter = ["dep:tokio-app"]
+
+[dependencies]
+i2pr-app-proto = { path = "../i2pr-app-proto", version = "0.1.0" }
+thiserror.workspace = true
+tokio-app = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures-executor.workspace = true
+
+[lints]
+workspace = true
