@@ -11,9 +11,10 @@ Historical authority:
 - `plans/closure/sam/151-status.md`
 - `plans/closure/sam/153-status.md`
 
-Primary consumer:
+Primary consumers:
 
-- `dbowm91/i2pr-tc` C003 SAM 3.3 primary/subsession transport corrective
+- `dbowm91/i2pr-tc` C003 SAM 3.3 primary/subsession transport corrective;
+- `dbowm91/i2pr-mail` M006/M013 port-aware Postman transport: the reference Postman client tunnels target `pop.postman.i2p:110` and `smtp.postman.i2p:25`, so mail requires the SAM 3.2+ I2P port fields inherited by a truthful 3.3 implementation.
 
 Primary class: capability + invariant + managed-app interface dependency
 
@@ -119,9 +120,12 @@ At implementation start, pin the official SAM 3.3 specification and exact
 current Java I2P/i2pd revisions.
 
 Implement the smallest complete profile required by the shared-Destination
-consumer:
+consumer and the port-aware STREAM consumer:
 
 - HELLO negotiation through 3.3;
+- inherited SAM 3.2 I2P port semantics required by 3.3, including strict
+  `FROM_PORT`/`TO_PORT` parsing and application on STREAM CONNECT plus the
+  applicable session/subsession defaults;
 - primary shared-session creation;
 - child/subsession add;
 - child/subsession remove;
@@ -129,7 +133,9 @@ consumer:
 - DATAGRAM child send/receive without host UDP forwarding;
 - RAW child send/receive without host UDP forwarding;
 - naming/NAME=ME behavior against the primary Destination;
-- typed duplicate/invalid ID/style/port/result behavior;
+- typed duplicate/invalid ID/style/port/result behavior, including exact
+  0–65535 bounds and precedence of per-stream `FROM_PORT`/`TO_PORT` over
+  session defaults;
 - deterministic teardown on primary control loss.
 
 Do not include FORWARD as a managed-app requirement. Existing ordinary SAM
@@ -205,7 +211,8 @@ Extend the runtime-neutral SAM state with explicit:
 - primary Destination ID;
 - bounded child ID map;
 - child kind/style;
-- child I2P port/listen-port configuration;
+- child I2P source/destination/listen-port configuration, including inherited
+  3.2 `FROM_PORT`/`TO_PORT` semantics;
 - child owner/attachment state;
 - generation/teardown state.
 
@@ -297,10 +304,12 @@ Extend parser/replies/state transitions and strict bounds without sockets.
 Bind one control owner to one existing `DestinationRuntime`; deterministic
 teardown and generation rules.
 
-### WP4 — STREAM child composition
+### WP4 — STREAM child composition and I2P port semantics
 
 Reuse existing Streaming managers/registries without reopening the 3.1 stream
-implementation.
+implementation. Implement and test the 3.2+ `FROM_PORT`/`TO_PORT` semantics
+carried by SAM 3.3 so a managed application can target a nonzero remote I2P
+service port without a localhost I2PTunnel proxy.
 
 ### WP5 — DATAGRAM/RAW child composition
 
@@ -331,6 +340,9 @@ Run the repository routine floor plus targeted:
 - primary/child lifecycle property tests;
 - private app-principal isolation tests;
 - loopback shared-Destination integration;
+- port-aware STREAM integration with a controlled nonzero destination port,
+  including a max-boundary case and a negative proof that omitting `TO_PORT`
+  does not accidentally reach the nonzero-port service;
 - external Java I2P matrix;
 - external i2pd matrix.
 
@@ -355,7 +367,9 @@ Plan 368 closes only when:
 11. Java I2P interoperability is recorded;
 12. i2pd interoperability and PRIMARY/MASTER disposition are recorded;
 13. SAM 3.1 regression tests remain green;
-14. full routine/guard/documentation floor passes.
+14. SAM 3.3 STREAM CONNECT honors a nonzero `TO_PORT` on both ordinary and
+    private managed-app origins, with exact port-boundary evidence;
+15. full routine/guard/documentation floor passes.
 
 ## 16. Stop conditions
 
@@ -385,4 +399,5 @@ Create `plans/closure/sam/368-status.md` containing:
 - i2pd interoperability and PRIMARY/MASTER decision;
 - SAM 3.1 regression evidence;
 - routine/guard results;
-- residual findings and downstream unblock decision for i2pr-tc C003.
+- residual findings and downstream unblock decisions for i2pr-tc C003 and
+  i2pr-mail M013/M006 port-aware managed-app transport.
