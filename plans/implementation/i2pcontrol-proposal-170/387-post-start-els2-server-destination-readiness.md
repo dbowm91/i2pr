@@ -1,6 +1,6 @@
 # Plan 387 — post-start ELS2 server destination readiness corrective
 
-Status: **registered-post-start-els2-server-destination-readiness-corrective**.
+Status: **blocked-post-start-server-pool-never-registers-plan-388**.
 
 Subsystem: Proposal 170 / Red25519 + ELS2.
 
@@ -101,3 +101,20 @@ Record the Plan 386 local `MissingLeaseSet` evidence and its result hash; the
 exact runtime transition found; tests/guards and exact live result hashes;
 commands and outcomes; bounded lifecycle, failure, migration, and secret
 review; findings; and the registry/roadmap unblock audit.
+
+## Execution disposition (2026-10-09)
+
+The exact-pinned NONE lane reproduced the local `MissingLeaseSet` failure after
+the ordinary post-start authority payload passed. Its redacted provisioning
+snapshot showed zero inbound/outbound registrations, zero usable inbound
+leases, and no LS2. The build-submission/completion/pause state was not exposed
+by that snapshot, so this pass cannot identify which owner transition is
+stuck. A further bounded snapshot now includes per-group pending builds,
+consecutive failures/pause state, and coarse coordinator build/timeout/delivery
+counters. The runner now emits Plan 387 metadata and verifies package files
+before copying the final result rows, so the shipped digest describes the
+shipped TSV. The next runner attempt encountered stock i2pd process
+instability before reaching the driver, so the new counters have not yet been
+captured in a clean run. Plan 388 owns that localization and corrective work.
+Plan 387 is closed blocked; its reverse payload matrix and routine floor are
+not passed.
