@@ -648,6 +648,29 @@ pub enum ServiceProductError {
     RouterState(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationBeginRejection {
+    Capacity,
+    NoEligibleFloodfill,
+    InvalidRecord,
+    Other,
+}
+
+#[derive(Debug)]
+enum ServicePublicationError {
+    Product(ServiceProductError),
+    Begin {
+        rejection: PublicationBeginRejection,
+        pending: usize,
+    },
+}
+
+impl From<ServiceProductError> for ServicePublicationError {
+    fn from(error: ServiceProductError) -> Self {
+        Self::Product(error)
+    }
+}
+
 impl From<crate::router_i2np::Ssu2ServiceError> for ServiceProductError {
     fn from(error: crate::router_i2np::Ssu2ServiceError) -> Self {
         use crate::router_i2np::Ssu2ServiceError;
@@ -679,6 +702,8 @@ struct ProductInner {
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
+    destination_build_progress:
+        std::collections::HashMap<i2pr_client::DestinationId, DestinationBuildProgress>,
     service_generation_id: Option<u64>,
     local_router_hash: Option<Hash>,
     tunnel_id_allocator: Plan212TunnelIdAllocator,
@@ -689,6 +714,12 @@ struct ProductInner {
     publication_accepted: u64,
     publication_failed: u64,
     publication_last_failure_stage: Option<LeasePublicationFailureStage>,
+    publication_begin_rejected_capacity: u64,
+    publication_begin_rejected_no_floodfill: u64,
+    publication_begin_rejected_invalid_record: u64,
+    publication_begin_rejected_other: u64,
+    publication_coordinator_pending: usize,
+    inbound_traffic: InboundTrafficSnapshot,
     options: ServiceProductOptions,
     startup_inbound: VecDeque<Ssu2InboundI2np>,
     startup_inbound_bytes: usize,
@@ -824,6 +855,9 @@ mod startup_inbound_replay_tests {
 struct ActivatedDestinationBinding {
     pool_slot: i2pr_tunnel::pool::TunnelSlot,
     role_slot: i2pr_tunnel::pool::TunnelSlot,
+    /// Local endpoint receive id used by the data plane and service owner map.
+    /// The pool registration's `tunnel_id` is the creator id and is distinct.
+    local_receive_tunnel: Option<TunnelId>,
     expires_at_ms: u64,
 }
 
@@ -863,24 +897,290 @@ pub struct LeasePublicationSnapshot {
     pub failed: u64,
     pub pending: usize,
     pub last_failure_stage: Option<LeasePublicationFailureStage>,
+    pub begin_rejected_capacity: u64,
+    pub begin_rejected_no_floodfill: u64,
+    pub begin_rejected_invalid_record: u64,
+    pub begin_rejected_other: u64,
+    pub coordinator_pending_publications: usize,
+}
+
+/// Saturating transaction-boundary counters for the inbound SSU2 →
+/// TunnelData → service Streaming path. No tunnel ids or peer data are exposed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InboundTrafficSnapshot {
+    pub tunnel_data_received: u64,
+    pub tunnel_data_dispatch_rejected: u64,
+    pub tunnel_data_cells_accepted: u64,
+    pub complete_garlic_envelopes: u64,
+    pub service_owner_matches: u64,
+    pub service_owner_misses: u64,
+    pub service_dispatch_errors: u64,
+    pub service_garlic_authenticated: u64,
+    pub service_garlic_rejected: u64,
+    pub service_ecies_authentication_rejected: u64,
+    pub service_session_tag_rejected: u64,
+    pub service_other_session_rejected: u64,
+    pub service_structural_garlic_rejected: u64,
+    pub service_payload_garlic_rejected: u64,
+    pub service_missing_sender_ls2_rejected: u64,
+    pub service_sender_ls2_signature_rejected: u64,
+    pub service_sender_ls2_freshness_rejected: u64,
+    pub service_sender_ls2_destination_rejected: u64,
+    pub service_sender_ls2_key_policy_rejected: u64,
+    pub service_sender_ls2_blinded_policy_rejected: u64,
+    pub service_sender_ls2_crypto_rejected: u64,
+    pub service_sender_ls2_crypto_protocol_rejected: u64,
+    pub service_sender_ls2_crypto_unsupported_rejected: u64,
+    pub service_sender_ls2_crypto_key_rejected: u64,
+    /// Last unsupported LeaseSet2 signature algorithm code observed.
+    pub service_last_unsupported_signature_type: Option<u16>,
+    pub service_sender_ls2_size_rejected: u64,
+    pub service_sender_key_mismatch_rejected: u64,
+    pub service_unknown_destination_rejected: u64,
+    pub service_other_garlic_rejected: u64,
+    pub service_payloads_dequeued: u64,
+    pub service_streaming_rejected: u64,
+    pub direct_garlic_received: u64,
+    pub streaming_packets_accepted: u64,
+}
+
+impl InboundTrafficSnapshot {
+    /// Returns saturating cumulative-counter deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            tunnel_data_received: self
+                .tunnel_data_received
+                .saturating_sub(earlier.tunnel_data_received),
+            tunnel_data_dispatch_rejected: self
+                .tunnel_data_dispatch_rejected
+                .saturating_sub(earlier.tunnel_data_dispatch_rejected),
+            tunnel_data_cells_accepted: self
+                .tunnel_data_cells_accepted
+                .saturating_sub(earlier.tunnel_data_cells_accepted),
+            complete_garlic_envelopes: self
+                .complete_garlic_envelopes
+                .saturating_sub(earlier.complete_garlic_envelopes),
+            service_owner_matches: self
+                .service_owner_matches
+                .saturating_sub(earlier.service_owner_matches),
+            service_owner_misses: self
+                .service_owner_misses
+                .saturating_sub(earlier.service_owner_misses),
+            service_dispatch_errors: self
+                .service_dispatch_errors
+                .saturating_sub(earlier.service_dispatch_errors),
+            service_garlic_authenticated: self
+                .service_garlic_authenticated
+                .saturating_sub(earlier.service_garlic_authenticated),
+            service_garlic_rejected: self
+                .service_garlic_rejected
+                .saturating_sub(earlier.service_garlic_rejected),
+            service_ecies_authentication_rejected: self
+                .service_ecies_authentication_rejected
+                .saturating_sub(earlier.service_ecies_authentication_rejected),
+            service_session_tag_rejected: self
+                .service_session_tag_rejected
+                .saturating_sub(earlier.service_session_tag_rejected),
+            service_other_session_rejected: self
+                .service_other_session_rejected
+                .saturating_sub(earlier.service_other_session_rejected),
+            service_structural_garlic_rejected: self
+                .service_structural_garlic_rejected
+                .saturating_sub(earlier.service_structural_garlic_rejected),
+            service_payload_garlic_rejected: self
+                .service_payload_garlic_rejected
+                .saturating_sub(earlier.service_payload_garlic_rejected),
+            service_missing_sender_ls2_rejected: self
+                .service_missing_sender_ls2_rejected
+                .saturating_sub(earlier.service_missing_sender_ls2_rejected),
+            service_sender_ls2_signature_rejected: self
+                .service_sender_ls2_signature_rejected
+                .saturating_sub(earlier.service_sender_ls2_signature_rejected),
+            service_sender_ls2_freshness_rejected: self
+                .service_sender_ls2_freshness_rejected
+                .saturating_sub(earlier.service_sender_ls2_freshness_rejected),
+            service_sender_ls2_destination_rejected: self
+                .service_sender_ls2_destination_rejected
+                .saturating_sub(earlier.service_sender_ls2_destination_rejected),
+            service_sender_ls2_key_policy_rejected: self
+                .service_sender_ls2_key_policy_rejected
+                .saturating_sub(earlier.service_sender_ls2_key_policy_rejected),
+            service_sender_ls2_blinded_policy_rejected: self
+                .service_sender_ls2_blinded_policy_rejected
+                .saturating_sub(earlier.service_sender_ls2_blinded_policy_rejected),
+            service_sender_ls2_crypto_rejected: self
+                .service_sender_ls2_crypto_rejected
+                .saturating_sub(earlier.service_sender_ls2_crypto_rejected),
+            service_sender_ls2_crypto_protocol_rejected: self
+                .service_sender_ls2_crypto_protocol_rejected
+                .saturating_sub(earlier.service_sender_ls2_crypto_protocol_rejected),
+            service_sender_ls2_crypto_unsupported_rejected: self
+                .service_sender_ls2_crypto_unsupported_rejected
+                .saturating_sub(earlier.service_sender_ls2_crypto_unsupported_rejected),
+            service_sender_ls2_crypto_key_rejected: self
+                .service_sender_ls2_crypto_key_rejected
+                .saturating_sub(earlier.service_sender_ls2_crypto_key_rejected),
+            service_last_unsupported_signature_type: if self.service_last_unsupported_signature_type
+                != earlier.service_last_unsupported_signature_type
+            {
+                self.service_last_unsupported_signature_type
+            } else {
+                None
+            },
+            service_sender_ls2_size_rejected: self
+                .service_sender_ls2_size_rejected
+                .saturating_sub(earlier.service_sender_ls2_size_rejected),
+            service_sender_key_mismatch_rejected: self
+                .service_sender_key_mismatch_rejected
+                .saturating_sub(earlier.service_sender_key_mismatch_rejected),
+            service_unknown_destination_rejected: self
+                .service_unknown_destination_rejected
+                .saturating_sub(earlier.service_unknown_destination_rejected),
+            service_other_garlic_rejected: self
+                .service_other_garlic_rejected
+                .saturating_sub(earlier.service_other_garlic_rejected),
+            service_payloads_dequeued: self
+                .service_payloads_dequeued
+                .saturating_sub(earlier.service_payloads_dequeued),
+            service_streaming_rejected: self
+                .service_streaming_rejected
+                .saturating_sub(earlier.service_streaming_rejected),
+            direct_garlic_received: self
+                .direct_garlic_received
+                .saturating_sub(earlier.direct_garlic_received),
+            streaming_packets_accepted: self
+                .streaming_packets_accepted
+                .saturating_sub(earlier.streaming_packets_accepted),
+        }
+    }
+}
+
+#[cfg(test)]
+mod inbound_traffic_snapshot_tests {
+    use super::InboundTrafficSnapshot;
+
+    #[test]
+    fn inbound_traffic_delta_is_saturating_and_fieldwise() {
+        let earlier = InboundTrafficSnapshot {
+            tunnel_data_received: 4,
+            service_owner_misses: 2,
+            streaming_packets_accepted: u64::MAX,
+            ..InboundTrafficSnapshot::default()
+        };
+        let later = InboundTrafficSnapshot {
+            tunnel_data_received: 9,
+            service_owner_misses: 1,
+            streaming_packets_accepted: 3,
+            ..InboundTrafficSnapshot::default()
+        };
+        assert_eq!(
+            later.delta_since(earlier),
+            InboundTrafficSnapshot {
+                tunnel_data_received: 5,
+                service_owner_misses: 0,
+                streaming_packets_accepted: 0,
+                ..InboundTrafficSnapshot::default()
+            }
+        );
+    }
 }
 
 /// Redacted service-Destination pool state used to distinguish a missing
 /// publication record from a destination that has not reached lease readiness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DestinationProvisioningSnapshot {
+    pub inbound_target: u16,
+    pub outbound_target: u16,
+    pub build_concurrency: u16,
     pub inbound_registrations: usize,
     pub usable_inbound_leases: usize,
     pub minimum_usable_inbound: u16,
     pub outbound_registrations: usize,
     pub pending_inbound_builds: usize,
     pub pending_outbound_builds: usize,
+    pub submitted_inbound_builds: u64,
+    pub submitted_outbound_builds: u64,
+    pub completed_inbound_builds: u64,
+    pub completed_outbound_builds: u64,
+    pub failed_inbound_builds: u64,
+    pub failed_outbound_builds: u64,
+    pub cancelled_inbound_builds: u64,
+    pub cancelled_outbound_builds: u64,
+    pub registered_inbound_builds: u64,
+    pub registered_outbound_builds: u64,
+    pub registration_failures: u64,
+    pub registration_missing_material: u64,
+    pub registration_runtime_missing: u64,
+    pub registration_pool_admission_failures: u64,
+    pub registration_tunnel_activation_failures: u64,
+    pub registration_lifetime_failures: u64,
+    pub registration_role_activation_failures: u64,
+    pub post_activation_missing_pool_registration: u64,
+    pub post_activation_owner_failures: u64,
+    pub post_activation_bridge_missing: u64,
+    pub post_activation_bridge_rejections: u64,
+    pub post_activation_bridge_state_missing: u64,
+    pub post_activation_bridge_duplicate_receive: u64,
+    pub post_activation_inbound_installed: u64,
     pub consecutive_build_failures: u16,
     pub replacement_paused: bool,
     pub coordinator_outbound_builds: u64,
+    pub coordinator_installed: u64,
     pub coordinator_timeouts: u64,
+    pub coordinator_hop_rejections: u64,
+    pub coordinator_inbound_routed: u64,
+    pub coordinator_inbound_orphans: u64,
+    pub coordinator_invalid_replies: u64,
     pub coordinator_delivery_failures: u64,
     pub lease_set_present: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DestinationBuildProgress {
+    submitted_inbound: u64,
+    submitted_outbound: u64,
+    completed_inbound: u64,
+    completed_outbound: u64,
+    failed_inbound: u64,
+    failed_outbound: u64,
+    cancelled_inbound: u64,
+    cancelled_outbound: u64,
+    registered_inbound: u64,
+    registered_outbound: u64,
+    registration_failures: u64,
+    registration_missing_material: u64,
+    registration_runtime_missing: u64,
+    registration_pool_admission_failures: u64,
+    registration_tunnel_activation_failures: u64,
+    registration_lifetime_failures: u64,
+    registration_role_activation_failures: u64,
+    post_activation_missing_pool_registration: u64,
+    post_activation_owner_failures: u64,
+    post_activation_bridge_missing: u64,
+    post_activation_bridge_rejections: u64,
+    post_activation_bridge_state_missing: u64,
+    post_activation_bridge_duplicate_receive: u64,
+    post_activation_inbound_installed: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestinationRegistrationFailureStage {
+    MissingMaterial,
+    RuntimeMissing,
+    PoolAdmission,
+    TunnelActivation,
+    CoordinatorLifetime,
+    CoordinatorRoleActivation,
+}
+
+#[derive(Clone, Copy)]
+enum DestinationPostActivationStage {
+    MissingPoolRegistration,
+    OwnerFailure,
+    BridgeMissing,
+    BridgeStateMissing,
+    BridgeDuplicateReceive,
+    InboundInstalled,
 }
 
 fn classify_publication_failure(error: &ServiceProductError) -> LeasePublicationFailureStage {
@@ -906,6 +1206,73 @@ fn classify_publication_failure(error: &ServiceProductError) -> LeasePublication
         LeasePublicationFailureStage::DeliveryAdmission
     } else {
         LeasePublicationFailureStage::Other
+    }
+}
+
+/// Produces a bounded, interleaved schedule for the currently unfilled
+/// per-Destination directions. Inbound builds are considered first because a
+/// usable inbound lease is required before a server LS2 can be installed.
+/// Alternation ensures outbound work cannot consume the whole concurrency
+/// window while inbound leases remain absent (or vice versa).
+fn destination_replenishment_order(
+    inbound_deficit: usize,
+    outbound_deficit: usize,
+    limit: usize,
+) -> Vec<BuildDirection> {
+    let mut inbound_remaining = inbound_deficit;
+    let mut outbound_remaining = outbound_deficit;
+    let capacity = limit.min(inbound_deficit.saturating_add(outbound_deficit));
+    let mut order = Vec::with_capacity(capacity);
+    while order.len() < capacity {
+        if inbound_remaining > 0 {
+            order.push(BuildDirection::Inbound);
+            inbound_remaining -= 1;
+            if order.len() == capacity {
+                break;
+            }
+        }
+        if outbound_remaining > 0 {
+            order.push(BuildDirection::Outbound);
+            outbound_remaining -= 1;
+        }
+    }
+    order
+}
+
+#[cfg(test)]
+mod destination_replenishment_tests {
+    use super::{BuildDirection, destination_replenishment_order};
+
+    #[test]
+    fn replenishment_interleaves_directions_within_the_bounded_window() {
+        assert_eq!(
+            destination_replenishment_order(2, 2, 2),
+            [BuildDirection::Inbound, BuildDirection::Outbound]
+        );
+        assert_eq!(
+            destination_replenishment_order(2, 2, 1),
+            [BuildDirection::Inbound]
+        );
+        assert_eq!(
+            destination_replenishment_order(2, 2, 4),
+            [
+                BuildDirection::Inbound,
+                BuildDirection::Outbound,
+                BuildDirection::Inbound,
+                BuildDirection::Outbound,
+            ]
+        );
+        assert_eq!(
+            destination_replenishment_order(1, 3, 8),
+            [
+                BuildDirection::Inbound,
+                BuildDirection::Outbound,
+                BuildDirection::Outbound,
+                BuildDirection::Outbound,
+            ]
+        );
+        assert_eq!(destination_replenishment_order(6, 6, 13).len(), 12);
+        assert!(destination_replenishment_order(6, 6, 13).len() <= 12);
     }
 }
 
@@ -976,6 +1343,172 @@ fn decode_inbound_ssu2_i2np(bytes: &[u8]) -> Result<I2npMessage, String> {
 }
 
 impl ServiceProduct {
+    fn record_destination_build_outcome(&mut self, outcome: &BuildCoordinatorOutcome) {
+        let (destination_id, direction, stage) = match outcome {
+            BuildCoordinatorOutcome::DestinationEstablished {
+                destination_id,
+                direction,
+                ..
+            } => (*destination_id, *direction, 0),
+            BuildCoordinatorOutcome::DestinationBuildFailed {
+                destination_id,
+                direction,
+            } => (*destination_id, *direction, 1),
+            BuildCoordinatorOutcome::DestinationBuildCancelled {
+                destination_id,
+                direction,
+            } => (*destination_id, *direction, 2),
+            _ => return,
+        };
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let count = match (direction, stage) {
+            (BuildDirection::Inbound, 0) => &mut progress.completed_inbound,
+            (BuildDirection::Outbound, 0) => &mut progress.completed_outbound,
+            (BuildDirection::Inbound, 1) => &mut progress.failed_inbound,
+            (BuildDirection::Outbound, 1) => &mut progress.failed_outbound,
+            (BuildDirection::Inbound, 2) => &mut progress.cancelled_inbound,
+            (BuildDirection::Outbound, 2) => &mut progress.cancelled_outbound,
+            _ => return,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn record_destination_build_submission(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        direction: BuildDirection,
+    ) {
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let count = match direction {
+            BuildDirection::Inbound => &mut progress.submitted_inbound,
+            BuildDirection::Outbound => &mut progress.submitted_outbound,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn record_destination_submission_failure(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        direction: BuildDirection,
+    ) {
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let count = match direction {
+            BuildDirection::Inbound => &mut progress.failed_inbound,
+            BuildDirection::Outbound => &mut progress.failed_outbound,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn record_destination_registration(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        direction: BuildDirection,
+    ) {
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let count = match direction {
+            BuildDirection::Inbound => &mut progress.registered_inbound,
+            BuildDirection::Outbound => &mut progress.registered_outbound,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn record_destination_registration_failure(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        stage: DestinationRegistrationFailureStage,
+    ) {
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        progress.registration_failures = progress.registration_failures.saturating_add(1);
+        let count = match stage {
+            DestinationRegistrationFailureStage::MissingMaterial => {
+                &mut progress.registration_missing_material
+            }
+            DestinationRegistrationFailureStage::RuntimeMissing => {
+                &mut progress.registration_runtime_missing
+            }
+            DestinationRegistrationFailureStage::PoolAdmission => {
+                &mut progress.registration_pool_admission_failures
+            }
+            DestinationRegistrationFailureStage::TunnelActivation => {
+                &mut progress.registration_tunnel_activation_failures
+            }
+            DestinationRegistrationFailureStage::CoordinatorLifetime => {
+                &mut progress.registration_lifetime_failures
+            }
+            DestinationRegistrationFailureStage::CoordinatorRoleActivation => {
+                &mut progress.registration_role_activation_failures
+            }
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn record_destination_post_activation(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        stage: DestinationPostActivationStage,
+    ) {
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let count = match stage {
+            DestinationPostActivationStage::MissingPoolRegistration => {
+                &mut progress.post_activation_missing_pool_registration
+            }
+            DestinationPostActivationStage::OwnerFailure => {
+                &mut progress.post_activation_owner_failures
+            }
+            DestinationPostActivationStage::BridgeMissing => {
+                &mut progress.post_activation_bridge_missing
+            }
+            DestinationPostActivationStage::BridgeStateMissing => {
+                progress.post_activation_bridge_rejections =
+                    progress.post_activation_bridge_rejections.saturating_add(1);
+                &mut progress.post_activation_bridge_state_missing
+            }
+            DestinationPostActivationStage::BridgeDuplicateReceive => {
+                progress.post_activation_bridge_rejections =
+                    progress.post_activation_bridge_rejections.saturating_add(1);
+                &mut progress.post_activation_bridge_duplicate_receive
+            }
+            DestinationPostActivationStage::InboundInstalled => {
+                &mut progress.post_activation_inbound_installed
+            }
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn cancel_destination_builds(&mut self, destination_id: i2pr_client::DestinationId) {
+        let outcomes = self
+            .inner
+            .coordinator
+            .cancel_destination_builds(destination_id);
+        for outcome in outcomes {
+            self.record_destination_build_outcome(&outcome);
+        }
+    }
+
     /// Starts a fully wired product instance.
     ///
     /// Plan 212 §7 ordering:
@@ -1044,7 +1577,9 @@ impl ServiceProduct {
             LookupPolicy::default(),
             RouterInfoStoreConfig::default(),
         )));
-        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
+            ExploratoryPoolConfig::balanced(),
+        );
         coordinator.advance_time(wall_ms());
 
         // Plan 212 §8 — router bootstrap only (no application
@@ -1228,6 +1763,7 @@ impl ServiceProduct {
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
+                destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
                 local_router_hash,
                 tunnel_id_allocator,
@@ -1238,6 +1774,12 @@ impl ServiceProduct {
                 publication_accepted: 0,
                 publication_failed: 0,
                 publication_last_failure_stage: None,
+                publication_begin_rejected_capacity: 0,
+                publication_begin_rejected_no_floodfill: 0,
+                publication_begin_rejected_invalid_record: 0,
+                publication_begin_rejected_other: 0,
+                publication_coordinator_pending: 0,
+                inbound_traffic: InboundTrafficSnapshot::default(),
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
@@ -1317,7 +1859,9 @@ impl ServiceProduct {
                 "validated bootstrap snapshot could not seed the bounded group store".to_owned(),
             ));
         }
-        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
+            ExploratoryPoolConfig::balanced(),
+        );
         coordinator.advance_time(wall_ms());
         let backend = Arc::new(RemoteDestinationBackend::new(
             Arc::clone(&destination_tunnels),
@@ -1454,6 +1998,7 @@ impl ServiceProduct {
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
+                destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
                 local_router_hash: Some(local_router_hash),
                 tunnel_id_allocator,
@@ -1464,6 +2009,12 @@ impl ServiceProduct {
                 publication_accepted: 0,
                 publication_failed: 0,
                 publication_last_failure_stage: None,
+                publication_begin_rejected_capacity: 0,
+                publication_begin_rejected_no_floodfill: 0,
+                publication_begin_rejected_invalid_record: 0,
+                publication_begin_rejected_other: 0,
+                publication_coordinator_pending: 0,
+                inbound_traffic: InboundTrafficSnapshot::default(),
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
@@ -1549,6 +2100,18 @@ impl ServiceProduct {
         capability.counters().await
     }
 
+    /// Returns bounded service connection counts for external qualification
+    /// diagnostics. The snapshot contains no destination or request ids.
+    pub fn service_tunnel_snapshot(&self) -> crate::service_tunnels::ServiceTunnelSnapshot {
+        self.manager.snapshot()
+    }
+
+    /// Returns bounded cumulative counters for the router inbound tunnel
+    /// dispatch path. Values contain no ids, peer data, or payload details.
+    pub fn inbound_traffic_snapshot(&self) -> InboundTrafficSnapshot {
+        self.inner.inbound_traffic
+    }
+
     /// Returns the manager's typed inbound-orphan-receive count
     /// (Plan 210 §F). The counter advances only when a recovered
     /// Garlic envelope arrives on a receive TunnelId with no
@@ -1616,6 +2179,11 @@ impl ServiceProduct {
             failed: self.inner.publication_failed,
             pending: self.inner.publication_pending.len(),
             last_failure_stage: self.inner.publication_last_failure_stage,
+            begin_rejected_capacity: self.inner.publication_begin_rejected_capacity,
+            begin_rejected_no_floodfill: self.inner.publication_begin_rejected_no_floodfill,
+            begin_rejected_invalid_record: self.inner.publication_begin_rejected_invalid_record,
+            begin_rejected_other: self.inner.publication_begin_rejected_other,
+            coordinator_pending_publications: self.inner.publication_coordinator_pending,
         }
     }
 
@@ -1626,8 +2194,17 @@ impl ServiceProduct {
     ) -> Option<DestinationProvisioningSnapshot> {
         let destination_id = self.manager.service_destination_id(spec_id)?;
         let counters = self.inner.coordinator.counters();
+        let progress = self
+            .inner
+            .destination_build_progress
+            .get(&destination_id)
+            .copied()
+            .unwrap_or_default();
         self.manager
             .with_destination_runtime(destination_id, |runtime| DestinationProvisioningSnapshot {
+                inbound_target: runtime.config().inbound_target(),
+                outbound_target: runtime.config().outbound_target(),
+                build_concurrency: runtime.config().build_concurrency(),
                 inbound_registrations: runtime.inbound_registrations().len(),
                 usable_inbound_leases: runtime.inbound_lease_sources(wall_secs()).len(),
                 minimum_usable_inbound: runtime.config().minimum_usable_inbound(),
@@ -1640,10 +2217,43 @@ impl ServiceProduct {
                     .inner
                     .coordinator
                     .pending_destination_direction_len(destination_id, BuildDirection::Outbound),
+                submitted_inbound_builds: progress.submitted_inbound,
+                submitted_outbound_builds: progress.submitted_outbound,
+                completed_inbound_builds: progress.completed_inbound,
+                completed_outbound_builds: progress.completed_outbound,
+                failed_inbound_builds: progress.failed_inbound,
+                failed_outbound_builds: progress.failed_outbound,
+                cancelled_inbound_builds: progress.cancelled_inbound,
+                cancelled_outbound_builds: progress.cancelled_outbound,
+                registered_inbound_builds: progress.registered_inbound,
+                registered_outbound_builds: progress.registered_outbound,
+                registration_failures: progress.registration_failures,
+                registration_missing_material: progress.registration_missing_material,
+                registration_runtime_missing: progress.registration_runtime_missing,
+                registration_pool_admission_failures: progress.registration_pool_admission_failures,
+                registration_tunnel_activation_failures: progress
+                    .registration_tunnel_activation_failures,
+                registration_lifetime_failures: progress.registration_lifetime_failures,
+                registration_role_activation_failures: progress
+                    .registration_role_activation_failures,
+                post_activation_missing_pool_registration: progress
+                    .post_activation_missing_pool_registration,
+                post_activation_owner_failures: progress.post_activation_owner_failures,
+                post_activation_bridge_missing: progress.post_activation_bridge_missing,
+                post_activation_bridge_rejections: progress.post_activation_bridge_rejections,
+                post_activation_bridge_state_missing: progress.post_activation_bridge_state_missing,
+                post_activation_bridge_duplicate_receive: progress
+                    .post_activation_bridge_duplicate_receive,
+                post_activation_inbound_installed: progress.post_activation_inbound_installed,
                 consecutive_build_failures: runtime.pool().consecutive_failures(),
                 replacement_paused: runtime.pool().replacement_paused(),
                 coordinator_outbound_builds: counters.outbound_builds,
+                coordinator_installed: counters.installed,
                 coordinator_timeouts: counters.timeouts,
+                coordinator_hop_rejections: counters.hop_rejections,
+                coordinator_inbound_routed: counters.inbound_routed,
+                coordinator_inbound_orphans: counters.inbound_orphans,
+                coordinator_invalid_replies: counters.invalid_replies,
                 coordinator_delivery_failures: counters.delivery_failures,
                 lease_set_present: runtime.lease_set().is_some(),
             })
@@ -1758,10 +2368,7 @@ impl ServiceProduct {
             }
             Err(error) => {
                 let reason = format!("deferred destination provisioning failed: {error}");
-                let _ = self
-                    .inner
-                    .coordinator
-                    .cancel_destination_builds(destination_id);
+                self.cancel_destination_builds(destination_id);
                 self.inner
                     .deferred_activation_failures
                     .insert(destination_id, reason);
@@ -1814,11 +2421,9 @@ impl ServiceProduct {
             && self.inner.retirement.is_none()
         {
             self.manager.stop_admission();
-            for destination_id in self.inner.destination_ids.iter().copied() {
-                let _ = self
-                    .inner
-                    .coordinator
-                    .cancel_destination_builds(destination_id);
+            let destination_ids = self.inner.destination_ids.clone();
+            for destination_id in destination_ids {
+                self.cancel_destination_builds(destination_id);
             }
             let published_lease_expiry_wall_ms = self
                 .inner
@@ -1868,11 +2473,9 @@ impl ServiceProduct {
         if current_generation != self.inner.service_generation_id {
             let previously_known_servers: std::collections::HashSet<_> =
                 self.inner.server_destination_ids.iter().copied().collect();
-            for destination_id in self.inner.destination_ids.iter().copied() {
-                let _ = self
-                    .inner
-                    .coordinator
-                    .cancel_destination_builds(destination_id);
+            let destination_ids = self.inner.destination_ids.clone();
+            for destination_id in destination_ids {
+                self.cancel_destination_builds(destination_id);
             }
             self.inner.destination_ids.clear();
             self.inner.destination_runtimes.clear();
@@ -1895,6 +2498,28 @@ impl ServiceProduct {
                     self.inner.server_destination_ids.push(destination_id);
                 }
             }
+            if self.inner.local_router_hash.is_some() {
+                for destination_id in self.inner.destination_ids.iter().copied() {
+                    let has_router_state = self
+                        .manager
+                        .with_destination_bridge(destination_id, |bridge| {
+                            bridge.router_network_summary().is_some()
+                        })
+                        .unwrap_or(false);
+                    if !has_router_state {
+                        let staged = crate::sam::streams::RouterDestinationNetworkState::new_staged(
+                            destination_id,
+                        );
+                        self.manager
+                            .install_service_router_material(destination_id, staged, now_ms)
+                            .map_err(|error| {
+                                ServiceProductError::Provisioning(format!(
+                                    "post-start Destination staging failed: {error}"
+                                ))
+                            })?;
+                    }
+                }
+            }
             self.inner.publication_pending.clear();
             self.inner.publication_retry_after.clear();
             // A committed control generation can add a server destination
@@ -1912,11 +2537,23 @@ impl ServiceProduct {
                     .copied()
                     .filter(|destination_id| !previously_known_servers.contains(destination_id)),
             );
+            let current_destination_ids: std::collections::HashSet<_> =
+                self.inner.destination_runtimes.keys().copied().collect();
+            self.inner
+                .destination_build_progress
+                .retain(|destination_id, _| current_destination_ids.contains(destination_id));
+            for destination_id in current_destination_ids {
+                self.inner
+                    .destination_build_progress
+                    .entry(destination_id)
+                    .or_default();
+            }
             self.inner.service_generation_id = current_generation;
         }
         self.process_deferred_activation_request().await;
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
+            self.record_destination_build_outcome(&outcome);
             if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } = outcome
             {
                 let _ = self
@@ -1949,10 +2586,7 @@ impl ServiceProduct {
                         )
                     })
             else {
-                let _ = self
-                    .inner
-                    .coordinator
-                    .cancel_destination_builds(destination_id);
+                self.cancel_destination_builds(destination_id);
                 self.inner.destination_runtimes.remove(&destination_id);
                 self.inner
                     .destination_ids
@@ -2119,10 +2753,43 @@ impl ServiceProduct {
                     self.inner.publication_pending.remove(&destination_id);
                     self.inner.publication_retry_after.remove(&destination_id);
                 }
-                Err(error) => {
+                Err(failure) => {
                     self.inner.publication_failed = self.inner.publication_failed.saturating_add(1);
+                    let (error, begin_rejection) = match failure {
+                        ServicePublicationError::Product(error) => (error, None),
+                        ServicePublicationError::Begin { rejection, pending } => {
+                            self.inner.publication_coordinator_pending = pending;
+                            (
+                                ServiceProductError::Provisioning(
+                                    "publication begin failed".to_owned(),
+                                ),
+                                Some(rejection),
+                            )
+                        }
+                    };
+                    if let Some(rejection) = begin_rejection {
+                        let count = match rejection {
+                            PublicationBeginRejection::Capacity => {
+                                &mut self.inner.publication_begin_rejected_capacity
+                            }
+                            PublicationBeginRejection::NoEligibleFloodfill => {
+                                &mut self.inner.publication_begin_rejected_no_floodfill
+                            }
+                            PublicationBeginRejection::InvalidRecord => {
+                                &mut self.inner.publication_begin_rejected_invalid_record
+                            }
+                            PublicationBeginRejection::Other => {
+                                &mut self.inner.publication_begin_rejected_other
+                            }
+                        };
+                        *count = count.saturating_add(1);
+                    }
                     self.inner.publication_last_failure_stage =
-                        Some(classify_publication_failure(&error));
+                        Some(if begin_rejection.is_some() {
+                            LeasePublicationFailureStage::PublicationCoordination
+                        } else {
+                            classify_publication_failure(&error)
+                        });
                     self.inner
                         .publication_retry_after
                         .insert(destination_id, now_ms.saturating_add(5_000));
@@ -2148,10 +2815,7 @@ impl ServiceProduct {
             .get(&destination_id)
             .cloned()
         else {
-            let _ = self
-                .inner
-                .coordinator
-                .cancel_destination_builds(destination_id);
+            self.cancel_destination_builds(destination_id);
             return Ok(());
         };
         let (inbound_deficit, outbound_deficit, concurrency, paused) = self
@@ -2189,39 +2853,33 @@ impl ServiceProduct {
         let global_available = crate::exploratory_build::MAX_PENDING_BUILDS
             .saturating_sub(self.inner.coordinator.pending_len());
         let submit_limit = group_available.min(global_available);
-        let mut submitted = 0;
-        for (direction, deficit) in [
-            (BuildDirection::Outbound, outbound_deficit),
-            (BuildDirection::Inbound, inbound_deficit),
-        ] {
-            for _ in 0..deficit {
-                if submitted >= submit_limit {
-                    return Ok(());
-                }
-                if submit_destination_replacement(
-                    &mut self.inner.coordinator,
-                    &self.inner.destination_tunnels,
-                    &self.inner.ssu2_handle,
-                    &mut self.inner.tunnel_id_allocator,
-                    destination_id,
-                    direction,
-                    local_router_hash,
-                    &runtime.spec_id,
-                    self.inner.options.dial_timeout,
-                    &self.token,
-                )
-                .await
-                .is_err()
-                {
-                    let _ = self
-                        .manager
-                        .with_destination_runtime(destination_id, |runtime| {
-                            runtime.note_build_failure()
-                        });
-                    return Ok(());
-                }
-                submitted += 1;
+        for direction in
+            destination_replenishment_order(inbound_deficit, outbound_deficit, submit_limit)
+        {
+            if submit_destination_replacement(
+                &mut self.inner.coordinator,
+                &self.inner.destination_tunnels,
+                &self.inner.ssu2_handle,
+                &mut self.inner.tunnel_id_allocator,
+                destination_id,
+                direction,
+                local_router_hash,
+                &runtime.spec_id,
+                self.inner.options.dial_timeout,
+                &self.token,
+            )
+            .await
+            .is_err()
+            {
+                self.record_destination_submission_failure(destination_id, direction);
+                let _ = self
+                    .manager
+                    .with_destination_runtime(destination_id, |runtime| {
+                        runtime.note_build_failure()
+                    });
+                return Ok(());
             }
+            self.record_destination_build_submission(destination_id, direction);
         }
         Ok(())
     }
@@ -2261,6 +2919,7 @@ impl ServiceProduct {
                 .route_inbound_i2np(inbound, wall_ms())
         {
             for outcome in routed.coordinator {
+                self.record_destination_build_outcome(&outcome);
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
                     &outcome
                 {
@@ -2292,27 +2951,29 @@ impl ServiceProduct {
                     .get(&destination_id)
                     .cloned()
                 else {
-                    let _ = self
-                        .inner
-                        .coordinator
-                        .cancel_destination_builds(destination_id);
+                    self.cancel_destination_builds(destination_id);
                     continue;
                 };
-                let Ok(binding) = register_destination_material(
+                let binding = match register_destination_material_classified(
                     &self.manager,
                     &mut self.inner.coordinator,
                     destination_id,
                     attempt_id,
                     direction,
                     wall_secs(),
-                ) else {
-                    let _ = self
-                        .manager
-                        .with_destination_runtime(destination_id, |runtime| {
-                            runtime.note_build_failure()
-                        });
-                    continue;
+                ) {
+                    Ok(binding) => binding,
+                    Err((_, stage)) => {
+                        self.record_destination_registration_failure(destination_id, stage);
+                        let _ = self
+                            .manager
+                            .with_destination_runtime(destination_id, |runtime| {
+                                runtime.note_build_failure()
+                            });
+                        continue;
+                    }
                 };
+                self.record_destination_registration(destination_id, direction);
                 match direction {
                     BuildDirection::Outbound => {
                         if let Some(role) = self
@@ -2346,14 +3007,7 @@ impl ServiceProduct {
                         }
                     }
                     BuildDirection::Inbound => {
-                        let receive_id = self
-                            .manager
-                            .with_destination_runtime(destination_id, |runtime| {
-                                runtime
-                                    .tunnel_registration(binding.pool_slot)
-                                    .map(|registration| registration.tunnel_id().get())
-                            })
-                            .flatten();
+                        let receive_id = binding.local_receive_tunnel.map(TunnelId::get);
                         if let Some(receive_id) = receive_id {
                             let owner = self
                                 .manager
@@ -2366,7 +3020,34 @@ impl ServiceProduct {
                             } else {
                                 None
                             };
-                            if owner.is_err() || !matches!(appended, Some(Ok(()))) {
+                            if owner.is_err() || !matches!(&appended, Some(Ok(()))) {
+                                if owner.is_err() {
+                                    self.record_destination_post_activation(
+                                        destination_id,
+                                        DestinationPostActivationStage::OwnerFailure,
+                                    );
+                                } else if appended.is_none() {
+                                    self.record_destination_post_activation(
+                                        destination_id,
+                                        DestinationPostActivationStage::BridgeMissing,
+                                    );
+                                } else if matches!(
+                                    appended,
+                                    Some(Err(
+                                        crate::sam::streams::InboundReceiveProjectionError::
+                                            RouterStateMissing
+                                    ))
+                                ) {
+                                    self.record_destination_post_activation(
+                                        destination_id,
+                                        DestinationPostActivationStage::BridgeStateMissing,
+                                    );
+                                } else {
+                                    self.record_destination_post_activation(
+                                        destination_id,
+                                        DestinationPostActivationStage::BridgeDuplicateReceive,
+                                    );
+                                }
                                 if owner.is_ok() {
                                     let _ =
                                         self.manager.unregister_inbound_tunnel_owner(receive_id);
@@ -2383,8 +3064,17 @@ impl ServiceProduct {
                                     .with_destination_runtime(destination_id, |runtime| {
                                         runtime.mark_tunnel_failed(binding.pool_slot)
                                     });
+                            } else {
+                                self.record_destination_post_activation(
+                                    destination_id,
+                                    DestinationPostActivationStage::InboundInstalled,
+                                );
                             }
                         } else {
+                            self.record_destination_post_activation(
+                                destination_id,
+                                DestinationPostActivationStage::MissingPoolRegistration,
+                            );
                             let _ = self
                                 .manager
                                 .with_destination_runtime(destination_id, |runtime| {
@@ -2400,7 +3090,14 @@ impl ServiceProduct {
             return;
         };
         let cell = match message.body() {
-            I2npBody::TunnelData(cell) => cell.clone(),
+            I2npBody::TunnelData(cell) => {
+                self.inner.inbound_traffic.tunnel_data_received = self
+                    .inner
+                    .inbound_traffic
+                    .tunnel_data_received
+                    .saturating_add(1);
+                cell.clone()
+            }
             I2npBody::Garlic(_) => {
                 self.handle_direct_garlic(&message, bytes).await;
                 return;
@@ -2424,14 +3121,35 @@ impl ServiceProduct {
         );
         let outcome = match dispatch {
             Ok(outcome) => outcome,
-            Err(_) => return,
+            Err(_) => {
+                self.inner.inbound_traffic.tunnel_data_dispatch_rejected = self
+                    .inner
+                    .inbound_traffic
+                    .tunnel_data_dispatch_rejected
+                    .saturating_add(1);
+                return;
+            }
         };
         match outcome {
-            InboundDispatchOutcome::CellAccepted => {}
+            InboundDispatchOutcome::CellAccepted => {
+                self.inner.inbound_traffic.tunnel_data_cells_accepted = self
+                    .inner
+                    .inbound_traffic
+                    .tunnel_data_cells_accepted
+                    .saturating_add(1);
+            }
             InboundDispatchOutcome::DatabaseStoreComplete { bytes }
             | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
-            | InboundDispatchOutcome::DeliveryStatusComplete { bytes }
-            | InboundDispatchOutcome::GarlicComplete { bytes } => {
+            | InboundDispatchOutcome::DeliveryStatusComplete { bytes } => {
+                self.handle_recovered_envelope(receive_tunnel_id, bytes)
+                    .await;
+            }
+            InboundDispatchOutcome::GarlicComplete { bytes } => {
+                self.inner.inbound_traffic.complete_garlic_envelopes = self
+                    .inner
+                    .inbound_traffic
+                    .complete_garlic_envelopes
+                    .saturating_add(1);
                 self.handle_recovered_envelope(receive_tunnel_id, bytes)
                     .await;
             }
@@ -2449,6 +3167,11 @@ impl ServiceProduct {
     /// misattribution without state effects, and per-service
     /// dispatch fails closed without router state.
     async fn handle_direct_garlic(&mut self, message: &I2npMessage, raw_bytes: &[u8]) {
+        self.inner.inbound_traffic.direct_garlic_received = self
+            .inner
+            .inbound_traffic
+            .direct_garlic_received
+            .saturating_add(1);
         use i2pr_proto::I2npHeader;
         let standard_bytes: Vec<u8> = match message.header() {
             I2npHeader::Standard { .. } => raw_bytes.to_vec(),
@@ -2505,6 +3228,11 @@ impl ServiceProduct {
             if report.streaming_packets_accepted > 0
                 && let Some(capability) = self.manager.router_delivery()
             {
+                self.inner.inbound_traffic.streaming_packets_accepted = self
+                    .inner
+                    .inbound_traffic
+                    .streaming_packets_accepted
+                    .saturating_add(report.streaming_packets_accepted as u64);
                 capability.note_inbound_dispatched().await;
             }
             return;
@@ -2530,7 +3258,7 @@ impl ServiceProduct {
     /// Streaming payload was accepted. Unknown / stale receive
     /// ids fail closed and advance the manager's typed
     /// `note_inbound_orphan_receive` counter (Plan 210 §F §3).
-    async fn handle_recovered_envelope(&self, receive_tunnel_id: u32, bytes: Vec<u8>) {
+    async fn handle_recovered_envelope(&mut self, receive_tunnel_id: u32, bytes: Vec<u8>) {
         let Ok(envelope) = I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) else {
             return;
         };
@@ -2557,9 +3285,19 @@ impl ServiceProduct {
                 // owner the id is stale / orphaned: fail closed.
                 let runtime = self.manager.inbound_tunnel_owner(receive_tunnel_id);
                 let Some(runtime) = runtime else {
+                    self.inner.inbound_traffic.service_owner_misses = self
+                        .inner
+                        .inbound_traffic
+                        .service_owner_misses
+                        .saturating_add(1);
                     self.manager.note_inbound_orphan_receive();
                     return;
                 };
+                self.inner.inbound_traffic.service_owner_matches = self
+                    .inner
+                    .inbound_traffic
+                    .service_owner_matches
+                    .saturating_add(1);
                 let destination_id = runtime.destination_id;
                 // Plan 213: server profiles feed the receiver mirror
                 // (the polled server loop accepts there); clients feed
@@ -2579,9 +3317,187 @@ impl ServiceProduct {
                 ) {
                     Ok(report) => report,
                     Err(_) => {
+                        self.inner.inbound_traffic.service_dispatch_errors = self
+                            .inner
+                            .inbound_traffic
+                            .service_dispatch_errors
+                            .saturating_add(1);
                         return;
                     }
                 };
+                if report.garlic_authenticated {
+                    self.inner.inbound_traffic.service_garlic_authenticated = self
+                        .inner
+                        .inbound_traffic
+                        .service_garlic_authenticated
+                        .saturating_add(1);
+                } else {
+                    self.inner.inbound_traffic.service_garlic_rejected = self
+                        .inner
+                        .inbound_traffic
+                        .service_garlic_rejected
+                        .saturating_add(1);
+                    if report.garlic_rejection
+                        == Some(crate::sam::streams::RouterGarlicRejection::EciesAuthentication)
+                    {
+                        self.inner
+                            .inbound_traffic
+                            .service_ecies_authentication_rejected = self
+                            .inner
+                            .inbound_traffic
+                            .service_ecies_authentication_rejected
+                            .saturating_add(1);
+                    }
+                    if report.garlic_rejection
+                        == Some(crate::sam::streams::RouterGarlicRejection::SessionTag)
+                    {
+                        self.inner.inbound_traffic.service_session_tag_rejected = self
+                            .inner
+                            .inbound_traffic
+                            .service_session_tag_rejected
+                            .saturating_add(1);
+                    }
+                    let category_counter = match report.garlic_rejection {
+                        Some(crate::sam::streams::RouterGarlicRejection::Structural) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_structural_garlic_rejected,
+                        ),
+                        Some(crate::sam::streams::RouterGarlicRejection::EciesOther) => {
+                            Some(&mut self.inner.inbound_traffic.service_other_session_rejected)
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::Payload) => {
+                            Some(&mut self.inner.inbound_traffic.service_payload_garlic_rejected)
+                        }
+                        Some(
+                            crate::sam::streams::RouterGarlicRejection::MissingSenderLeaseSet2,
+                        ) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_missing_sender_ls2_rejected,
+                        ),
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2Signature) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_ls2_signature_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2Freshness) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_ls2_freshness_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2Destination) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_ls2_destination_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2KeyPolicy) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_ls2_key_policy_rejected,
+                            )
+                        }
+                        Some(
+                            crate::sam::streams::RouterGarlicRejection::LeaseSet2BlindedPolicy,
+                        ) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_sender_ls2_blinded_policy_rejected,
+                        ),
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2Crypto) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_sender_ls2_crypto_rejected,
+                        ),
+                        Some(
+                            crate::sam::streams::RouterGarlicRejection::LeaseSet2CryptoProtocol,
+                        ) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_sender_ls2_crypto_protocol_rejected,
+                        ),
+                        Some(
+                            crate::sam::streams::RouterGarlicRejection::LeaseSet2UnsupportedSignatureType(_),
+                        ) => Some(
+                            &mut self
+                                .inner
+                                .inbound_traffic
+                                .service_sender_ls2_crypto_unsupported_rejected,
+                        ),
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2CryptoKey) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_ls2_crypto_key_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::LeaseSet2Size) => {
+                            Some(&mut self.inner.inbound_traffic.service_sender_ls2_size_rejected)
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::SenderKeyMismatch) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_sender_key_mismatch_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::UnknownDestination) => {
+                            Some(
+                                &mut self
+                                    .inner
+                                    .inbound_traffic
+                                    .service_unknown_destination_rejected,
+                            )
+                        }
+                        Some(crate::sam::streams::RouterGarlicRejection::Other) => {
+                            Some(&mut self.inner.inbound_traffic.service_other_garlic_rejected)
+                        }
+                        Some(
+                            crate::sam::streams::RouterGarlicRejection::SessionTag
+                            | crate::sam::streams::RouterGarlicRejection::EciesAuthentication,
+                        )
+                        | None => None,
+                    };
+                    if let Some(counter) = category_counter {
+                        *counter = counter.saturating_add(1);
+                    }
+                    if let Some(
+                        crate::sam::streams::RouterGarlicRejection::LeaseSet2UnsupportedSignatureType(code),
+                    ) = report.garlic_rejection
+                    {
+                        self.inner
+                            .inbound_traffic
+                            .service_last_unsupported_signature_type = Some(code);
+                    }
+                }
+                self.inner.inbound_traffic.service_payloads_dequeued = self
+                    .inner
+                    .inbound_traffic
+                    .service_payloads_dequeued
+                    .saturating_add(report.payloads_dequeued as u64);
+                self.inner.inbound_traffic.service_streaming_rejected = self
+                    .inner
+                    .inbound_traffic
+                    .service_streaming_rejected
+                    .saturating_add(report.streaming_rejected as u64);
                 // Plan 212 §14 step 8 — advance the typed
                 // `remote_inbound_dispatched` counter ONLY after
                 // >=1 Streaming payload was accepted through the
@@ -2590,6 +3506,11 @@ impl ServiceProduct {
                 if report.streaming_packets_accepted > 0
                     && let Some(capability) = self.manager.router_delivery()
                 {
+                    self.inner.inbound_traffic.streaming_packets_accepted = self
+                        .inner
+                        .inbound_traffic
+                        .streaming_packets_accepted
+                        .saturating_add(report.streaming_packets_accepted as u64);
                     capability.note_inbound_dispatched().await;
                 }
             }
@@ -3121,11 +4042,34 @@ fn register_destination_material(
     direction: BuildDirection,
     now_seconds: u64,
 ) -> Result<ActivatedDestinationBinding, ServiceProductError> {
+    register_destination_material_classified(
+        manager,
+        coordinator,
+        destination_id,
+        attempt_id,
+        direction,
+        now_seconds,
+    )
+    .map_err(|(error, _stage)| error)
+}
+
+fn register_destination_material_classified(
+    manager: &crate::service_tunnels::ServiceTunnelManager,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    destination_id: i2pr_client::DestinationId,
+    attempt_id: i2pr_tunnel::short::BuildAttemptId,
+    direction: BuildDirection,
+    now_seconds: u64,
+) -> Result<ActivatedDestinationBinding, (ServiceProductError, DestinationRegistrationFailureStage)>
+{
     let material = coordinator
         .take_destination_material(attempt_id)
         .ok_or_else(|| {
-            ServiceProductError::Provisioning(
-                "completed Destination build has no established material".to_owned(),
+            (
+                ServiceProductError::Provisioning(
+                    "completed Destination build has no established material".to_owned(),
+                ),
+                DestinationRegistrationFailureStage::MissingMaterial,
             )
         })?;
     let (pool_slot, tunnel, expires_at_ms) = manager
@@ -3137,22 +4081,37 @@ fn register_destination_material(
                 BuildDirection::Inbound => runtime.admit_inbound(material, now_seconds),
                 BuildDirection::Outbound => runtime.admit_outbound(material, now_seconds),
             }
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                (
+                    error.to_string(),
+                    DestinationRegistrationFailureStage::PoolAdmission,
+                )
+            })?;
             let tunnel = match runtime.activate_tunnel(pool_slot, now_seconds) {
                 Ok(tunnel) => tunnel,
                 Err(error) => {
                     let _ = runtime.remove_tunnel(pool_slot);
-                    return Err(error.to_string());
+                    return Err((
+                        error.to_string(),
+                        DestinationRegistrationFailureStage::TunnelActivation,
+                    ));
                 }
             };
-            Ok::<_, String>((pool_slot, tunnel, expires_at_ms))
+            Ok::<_, (String, DestinationRegistrationFailureStage)>((
+                pool_slot,
+                tunnel,
+                expires_at_ms,
+            ))
         })
         .ok_or_else(|| {
-            ServiceProductError::Provisioning(
-                "established Destination material has no group runtime".to_owned(),
+            (
+                ServiceProductError::Provisioning(
+                    "established Destination material has no group runtime".to_owned(),
+                ),
+                DestinationRegistrationFailureStage::RuntimeMissing,
             )
         })?
-        .map_err(ServiceProductError::Provisioning)?;
+        .map_err(|(detail, stage)| (ServiceProductError::Provisioning(detail), stage))?;
     if let Err(error) = coordinator.set_lifetime_seconds(
         expires_at_ms
             .saturating_div(1000)
@@ -3161,20 +4120,31 @@ fn register_destination_material(
     ) {
         let _ = manager
             .with_destination_runtime(destination_id, |runtime| runtime.remove_tunnel(pool_slot));
-        return Err(ServiceProductError::Provisioning(error.to_string()));
+        return Err((
+            ServiceProductError::Provisioning(error.to_string()),
+            DestinationRegistrationFailureStage::CoordinatorLifetime,
+        ));
     }
+    let local_receive_tunnel = match direction {
+        BuildDirection::Inbound => Some(tunnel.local_inbound_receive()),
+        BuildDirection::Outbound => None,
+    };
     let role_slot = match coordinator.activate_destination_tunnel(direction, tunnel, now_seconds) {
         Ok(role_slot) => role_slot,
         Err(error) => {
             let _ = manager.with_destination_runtime(destination_id, |runtime| {
                 runtime.remove_tunnel(pool_slot)
             });
-            return Err(ServiceProductError::Provisioning(error.to_string()));
+            return Err((
+                ServiceProductError::Provisioning(error.to_string()),
+                DestinationRegistrationFailureStage::CoordinatorRoleActivation,
+            ));
         }
     };
     Ok(ActivatedDestinationBinding {
         pool_slot,
         role_slot,
+        local_receive_tunnel,
         expires_at_ms,
     })
 }
@@ -3560,6 +4530,7 @@ async fn provision_all_service_router_material(
             }
             // Wait for both installs.
             let mut installed_inbound = false;
+            let mut local_receive_tunnel = None;
             let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
             while need_inbound
                 && !installed_inbound
@@ -3598,7 +4569,7 @@ async fn provision_all_service_router_material(
                                 "inbound startup received a non-inbound build result".to_owned(),
                             ));
                         }
-                        let _binding = register_destination_material(
+                        let binding = register_destination_material(
                             manager,
                             coordinator,
                             destination_id,
@@ -3606,6 +4577,7 @@ async fn provision_all_service_router_material(
                             direction,
                             wall_secs(),
                         )?;
+                        local_receive_tunnel = binding.local_receive_tunnel;
                         installed_inbound = true;
                     }
                 }
@@ -3613,20 +4585,13 @@ async fn provision_all_service_router_material(
             if need_inbound && !installed_inbound {
                 return Err(ServiceProductError::InboundBuildMissing);
             }
-            // The local inbound ENDPOINT receive id (ids[9], the last
-            // next tunnel) is the exact receive id registered by the
-            // established material — it is the id the IBGW addresses
-            // inbound traffic to. Resolve it directly; never infer
-            // ownership from insertion order or another group's
-            // gateway hash. Plan 381: resolving the creator id
-            // (ids[5]) instead misses every time — the material is
-            // keyed by the endpoint, so a successful build reported
-            // `InboundBuildMissing` (observed live against stock i2pd:
-            // installed yet unresolvable).
+            // The local endpoint receive id is distinct from the pool's
+            // creator id. Use the id retained from EstablishedTunnel rather
+            // than relying on the allocator's current position layout.
             if need_inbound {
-                let local_receive = TunnelId::new(ids[9]).map_err(|_| {
+                let local_receive = local_receive_tunnel.ok_or_else(|| {
                     ServiceProductError::Provisioning(format!(
-                        "{spec_id}: invalid inbound receive id"
+                        "{spec_id}: activated inbound tunnel has no local receive id"
                     ))
                 })?;
                 let route = coordinator
@@ -4372,7 +5337,7 @@ async fn publish_service_ls2_for_service(
     ssu2_handle: &mut Ssu2DaemonHandle,
     service_destination: i2pr_client::DestinationId,
     options: ServiceProductOptions,
-) -> Result<(), ServiceProductError> {
+) -> Result<(), ServicePublicationError> {
     // Fetch the real signed LS2 from the router-backed state
     // through the dedicated bridge accessor that clones the public
     // LS2 only (never secret material, never diagnostics).
@@ -4384,13 +5349,16 @@ async fn publish_service_ls2_for_service(
     let Some(lease_set2) = lease_set2 else {
         return Err(ServiceProductError::RouterState(
             "router-backed LS2 missing for publication".to_owned(),
-        ));
+        )
+        .into());
     };
     // Plan 337: the store key is the record's **own** storage key — the
     // day's blinded key for an encrypted service, the destination hash
     // otherwise — and the floodfill below is selected for whichever it is.
     let store_message =
         service_publication_store(manager, service_destination, lease_set2, wall_secs())?;
+    let deadline = Deadline::new(options.tunnel_deadline)
+        .map_err(|_| ServiceProductError::Provisioning("publication deadline".to_owned()))?;
     // The publication state machine requires a floodfill peer. The
     // controlled lane provisions the reference as floodfill; pick
     // the first floodfill candidate for the record's routing key from
@@ -4412,7 +5380,24 @@ async fn publish_service_ls2_for_service(
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
             .begin_ls2_publication(store_message, floodfill)
-            .map_err(|_| ServiceProductError::Provisioning("publication begin failed".to_owned()))?
+            .map_err(|error| {
+                let rejection = match error {
+                    crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
+                        PublicationBeginRejection::Capacity
+                    }
+                    crate::destination_tunnels::DestinationTunnelError::NoEligibleCandidates => {
+                        PublicationBeginRejection::NoEligibleFloodfill
+                    }
+                    crate::destination_tunnels::DestinationTunnelError::Publication(_) => {
+                        PublicationBeginRejection::InvalidRecord
+                    }
+                    _ => PublicationBeginRejection::Other,
+                };
+                ServicePublicationError::Begin {
+                    rejection,
+                    pending: coord_guard.publications_len(),
+                }
+            })?
     };
     // Compose the DatabaseStore through the service's real
     // router-backed outbound tunnel (borrow stays inside the bridge
@@ -4427,8 +5412,6 @@ async fn publish_service_ls2_for_service(
     );
     let dispatch = {
         let mut coord_guard = destination_tunnels.lock().await;
-        let deadline = Deadline::new(options.tunnel_deadline)
-            .map_err(|_| ServiceProductError::Provisioning("publication deadline".to_owned()))?;
         manager
             .with_destination_bridge(service_destination, |bridge| {
                 if !bridge.has_router_network_state(wall_ms()) {
@@ -4450,23 +5433,44 @@ async fn publish_service_ls2_for_service(
                 Some(dispatch)
             })
             .flatten()
-            .ok_or_else(|| {
-                ServiceProductError::Provisioning("publication compose failed".to_owned())
-            })?
+    };
+    let Some(dispatch) = dispatch else {
+        let _ = destination_tunnels
+            .lock()
+            .await
+            .cancel_ls2_publication(request_id);
+        return Err(
+            ServiceProductError::Provisioning("publication compose failed".to_owned()).into(),
+        );
     };
     let delivery = ssu2_handle.delivery().clone();
     for cell_delivery in &dispatch.deliveries {
-        let request = crate::router_i2np::RouterDeliveryRequest::new(
+        let request = match crate::router_i2np::RouterDeliveryRequest::new(
             cell_delivery.target(),
             cell_delivery.message_bytes().to_vec(),
             options.delivery_timeout,
-        )
-        .map_err(|_| ServiceProductError::Provisioning("publication delivery".to_owned()))?;
+        ) {
+            Ok(request) => request,
+            Err(_) => {
+                let _ = destination_tunnels
+                    .lock()
+                    .await
+                    .cancel_ls2_publication(request_id);
+                return Err(
+                    ServiceProductError::Provisioning("publication delivery".to_owned()).into(),
+                );
+            }
+        };
         let outcome = delivery.deliver(request, &CancellationToken::new());
         if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
             return Err(ServiceProductError::Provisioning(
                 "publication transport rejected".to_owned(),
-            ));
+            )
+            .into());
         }
     }
     Ok(())

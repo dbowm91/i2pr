@@ -25,9 +25,9 @@
 //! corresponding role must be removed from the registry so the
 //! runtime cannot target an expired tunnel.
 //!
-//! The registry is bounded by the existing
-//! `ExploratoryPoolConfig.max_inbound` / `max_outbound` ceilings;
-//! no independent capacity is introduced.
+//! The registry is explicitly bounded. Standalone exploratory users size it
+//! from their pool; the daemon's service coordinator adds the maximum retained
+//! service inbound roles and one transient outbound activation slot.
 
 #![forbid(unsafe_code)]
 
@@ -38,16 +38,15 @@ use crate::identity::TunnelId;
 use crate::pool::TunnelSlot;
 use crate::roles::{LocalInboundEndpointRole, OutboundGatewayRole};
 
-/// Bounded per-role capacity ceiling derived from the existing
-/// pool configuration. The values match the exploratory pool's
-/// inbound / outbound ceilings; the registry never holds more
-/// activated roles than the pool can register.
+/// Bounded per-role capacity ceiling. Standalone coordinators use their
+/// exploratory pool limits; the daemon service coordinator derives a larger
+/// finite inbound bound from the service-tunnel configuration maxima.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DataPlaneCapacity {
     /// Maximum number of activated outbound roles.
-    pub outbound: u8,
+    pub outbound: u16,
     /// Maximum number of activated inbound endpoint roles.
-    pub inbound: u8,
+    pub inbound: u16,
 }
 
 /// Typed public routing metadata for one activated inbound
@@ -88,9 +87,9 @@ pub struct InboundGatewayRoute {
 }
 
 impl DataPlaneCapacity {
-    /// Constructs a capacity from the supplied bounds. Both
-    /// values must be non-zero.
-    pub const fn new(outbound: u8, inbound: u8) -> Self {
+    /// Constructs a capacity from the supplied bounds. Both values must be
+    /// non-zero.
+    pub const fn new(outbound: u16, inbound: u16) -> Self {
         Self { outbound, inbound }
     }
 }
@@ -760,5 +759,33 @@ mod tests {
         );
         assert!(matches!(err, Err(RegistryError::OutboundFull)));
         let _ = ExploratoryPoolConfig::balanced();
+    }
+
+    #[test]
+    fn inbound_capacity_is_released_after_owner_removal() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(1, 1));
+        let (receive, first) = inbound_established_with(0x6000, 0xC0DE);
+        registry
+            .activate_inbound(TunnelSlot::from_raw(1), first, 16, 4096, 60_000, 0, 60_000)
+            .expect("first inbound role");
+        let (_next_receive, excess) = inbound_established_with(0x7000, 0xC0DF);
+        assert!(matches!(
+            registry
+                .activate_inbound(TunnelSlot::from_raw(2), excess, 16, 4096, 60_000, 0, 60_000,),
+            Err(RegistryError::InboundFull)
+        ));
+        assert!(registry.remove_inbound(receive).is_some());
+        let (_replacement_receive, replacement) = inbound_established_with(0x8000, 0xC0E0);
+        registry
+            .activate_inbound(
+                TunnelSlot::from_raw(3),
+                replacement,
+                16,
+                4096,
+                60_000,
+                0,
+                60_000,
+            )
+            .expect("capacity released");
     }
 }

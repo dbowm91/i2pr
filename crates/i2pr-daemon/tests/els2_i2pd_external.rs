@@ -72,7 +72,7 @@ use tokio::net::TcpStream;
 
 const TEST_PASSWORD: &str = "plan381-els2-external";
 const SERVICE_ID: &str = "plan381-els2-client";
-const REVERSE_SERVER_ID: &str = "plan387-i2pr-els2-server";
+const REVERSE_SERVER_ID: &str = "plan400-i2pr-els2-server";
 /// The banner the reference's server tunnel terminates on. Seeing it proves
 /// the bytes crossed I2P and reached the application, not merely that a
 /// connection was accepted.
@@ -218,7 +218,13 @@ async fn control(
 /// pump is selected alongside the read, because a control-created service is
 /// delivered by the same poll loop that provisions it — reading without
 /// pumping would wait on work this task is responsible for scheduling.
-async fn read_banner(product: &mut ServiceProduct, port: u16) -> Option<String> {
+async fn read_banner(
+    product: &mut ServiceProduct,
+    port: u16,
+    manager: &i2pr_daemon::service_tunnels::ServiceTunnelManager,
+    service_id: &str,
+    active_connections_peak: &mut usize,
+) -> Option<String> {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
     let stream = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -247,6 +253,8 @@ async fn read_banner(product: &mut ServiceProduct, port: u16) -> Option<String> 
             result = reader.read(&mut chunk) => Some(result),
             _ = product.poll_inbound() => None,
         };
+        *active_connections_peak =
+            (*active_connections_peak).max(manager.active_connections(service_id));
         let Some(read) = read else { continue };
         match read {
             Ok(n) if n > 0 => {
@@ -616,6 +624,14 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         "encrypted-target-status",
         &format!("{target_status:?}"),
     );
+    append_evidence(
+        &evidence_dir,
+        "consumer-credential-sealed",
+        &manager
+            .encrypted_target_credential(SERVICE_ID)
+            .is_some()
+            .to_string(),
+    );
     if let Some(summary) = product.service_router_network_summary(SERVICE_ID) {
         append_evidence(
             &evidence_dir,
@@ -630,6 +646,24 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         &evidence_dir,
         "pre-failed-connects",
         &pre_failed.to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "pre-failure-stage",
+        &format!("{:?}", manager.deferred_connect_failure_stage(SERVICE_ID)),
+    );
+    append_evidence(
+        &evidence_dir,
+        "pre-activation-pending",
+        &format!("{:?}", product.destination_activation_pending(SERVICE_ID)),
+    );
+    append_evidence(
+        &evidence_dir,
+        "pre-activation-failure-present",
+        &product
+            .deferred_activation_failure(SERVICE_ID)
+            .is_some()
+            .to_string(),
     );
     let got = control(
         control_addr,
@@ -664,7 +698,20 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         .unwrap_or_else(|| "<no reference>".to_owned());
     append_evidence(&evidence_dir, "remote-target-projection", &projection);
 
-    let banner = read_banner(&mut product, port).await;
+    let mut consumer_active_connections_peak = 0;
+    let banner = read_banner(
+        &mut product,
+        port,
+        &manager,
+        SERVICE_ID,
+        &mut consumer_active_connections_peak,
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "b33-active-connections-peak",
+        &consumer_active_connections_peak.to_string(),
+    );
     // Re-read after the connection attempt: the pre-connection snapshot above
     // is expected to be `None`/zero (provisioning runs on the data path via
     // `ensure_destination_active`), so only the post-attempt values
@@ -713,6 +760,24 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         &evidence_dir,
         "post-failed-connects",
         &post_failed.to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-failure-stage",
+        &format!("{:?}", manager.deferred_connect_failure_stage(SERVICE_ID)),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-activation-pending",
+        &format!("{:?}", product.destination_activation_pending(SERVICE_ID)),
+    );
+    append_evidence(
+        &evidence_dir,
+        "post-activation-failure-present",
+        &product
+            .deferred_activation_failure(SERVICE_ID)
+            .is_some()
+            .to_string(),
     );
     let got_post = control(
         control_addr,
@@ -852,17 +917,30 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         );
     };
     append_evidence(&evidence_dir, "authority-client-listener-bound", "true");
-    let authority_banner = read_banner(&mut product, authority_port).await;
+    let mut authority_active_connections_peak = 0;
+    let authority_banner = read_banner(
+        &mut product,
+        authority_port,
+        &manager,
+        authority_id,
+        &mut authority_active_connections_peak,
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "authority-active-connections-peak",
+        &authority_active_connections_peak.to_string(),
+    );
     let authority_counters = product.remote_counters().await;
     append_evidence(
         &evidence_dir,
         "authority-remote-counters",
         &format!("{authority_counters:?}"),
     );
-    let authority_activation_failure = product.deferred_activation_failure(&authority_id);
-    let authority_activation_pending = product.destination_activation_pending(&authority_id);
-    let authority_failed_connects = manager.failed_connects(&authority_id);
-    let authority_failure_stage = manager.deferred_connect_failure_stage(&authority_id);
+    let authority_activation_failure = product.deferred_activation_failure(authority_id);
+    let authority_activation_pending = product.destination_activation_pending(authority_id);
+    let authority_failed_connects = manager.failed_connects(authority_id);
+    let authority_failure_stage = manager.deferred_connect_failure_stage(authority_id);
     append_evidence(
         &evidence_dir,
         "authority-activation-failure-present",
@@ -889,7 +967,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     );
     append_evidence(&evidence_dir, "authority-b32-payload-returned", "true");
 
-    // Plan 387 reverse direction: control-create a real type-5 server on the
+    // Plan 396 reverse direction: control-create a real type-5 server on the
     // running i2pr product, then consume it through the stock reference's
     // loopback SAM and the same local fixture. The i2pd session receives only
     // the mode-specific client key; evidence records no credential or address.
@@ -959,7 +1037,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
             append_evidence(
                 &evidence_dir,
                 "reverse-publication-failure-stage",
-                &current
+                current
                     .last_failure_stage
                     .map(|stage| stage.label())
                     .unwrap_or("none"),
@@ -968,8 +1046,16 @@ async fn els2_i2pr_consumes_reference_published_els2() {
                 &evidence_dir,
                 "reverse-publication-counts",
                 &format!(
-                    "attempts={},accepted={},failed={},pending={}",
-                    current.attempts, current.accepted, current.failed, current.pending
+                    "attempts={},accepted={},failed={},pending={},begin_capacity={},begin_no_floodfill={},begin_invalid_record={},begin_other={},coordinator_pending={}",
+                    current.attempts,
+                    current.accepted,
+                    current.failed,
+                    current.pending,
+                    current.begin_rejected_capacity,
+                    current.begin_rejected_no_floodfill,
+                    current.begin_rejected_invalid_record,
+                    current.begin_rejected_other,
+                    current.coordinator_pending_publications
                 ),
             );
             append_evidence(
@@ -990,7 +1076,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     append_evidence(
         &evidence_dir,
         "reverse-publication-failure-stage",
-        &publication
+        publication
             .last_failure_stage
             .map(|stage| stage.label())
             .unwrap_or("none"),
@@ -999,8 +1085,16 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         &evidence_dir,
         "reverse-publication-counts",
         &format!(
-            "attempts={},accepted={},failed={},pending={}",
-            publication.attempts, publication.accepted, publication.failed, publication.pending
+            "attempts={},accepted={},failed={},pending={},begin_capacity={},begin_no_floodfill={},begin_invalid_record={},begin_other={},coordinator_pending={}",
+            publication.attempts,
+            publication.accepted,
+            publication.failed,
+            publication.pending,
+            publication.begin_rejected_capacity,
+            publication.begin_rejected_no_floodfill,
+            publication.begin_rejected_invalid_record,
+            publication.begin_rejected_other,
+            publication.coordinator_pending_publications
         ),
     );
 
@@ -1034,21 +1128,14 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     )
     .await
     .expect("reference SAM hello");
-    let mut create_session =
-        "SESSION CREATE STYLE=STREAM ID=plan387reverse DESTINATION=TRANSIENT".to_owned();
+    let mut create_session = [
+        "SESSION CREATE STYLE=STREAM ID=plan400reverse",
+        "DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
+    ]
+    .join(" ");
     if let Some(client_key) = reverse_consumer_key.as_ref() {
-        let auth_type = if auth_mode == "dh" { "1" } else { "2" };
-        let group = if auth_mode == "dh" {
-            "i2cp.leaseSetClient.dh.0"
-        } else {
-            "i2cp.leaseSetClient.psk.0"
-        };
         let client_key = i2pr_api::sam::base64::encode(client_key);
-        create_session.push_str(" i2cp.leaseSetAuthType=");
-        create_session.push_str(auth_type);
-        create_session.push(' ');
-        create_session.push_str(group);
-        create_session.push_str("=0:");
+        create_session.push_str(" i2cp.leaseSetPrivKey=");
         create_session.push_str(&client_key);
     }
     sam_expect_ok(
@@ -1059,6 +1146,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     )
     .await
     .expect("reference SAM transient session with ELS2 authorization");
+    append_evidence(&evidence_dir, "reverse-reference-signature-type", "7");
     let mut connect = TcpStream::connect(sam_endpoint)
         .await
         .expect("reference SAM connect socket");
@@ -1070,16 +1158,38 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     )
     .await
     .expect("reference SAM connect hello");
+    let reverse_orphans_before_connect = product.inbound_orphan_receives();
+    let reverse_inbound_traffic_before_connect = product.inbound_traffic_snapshot();
+    append_evidence(
+        &evidence_dir,
+        "reverse-inbound-orphan-receives-before-connect",
+        &reverse_orphans_before_connect.to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-router-inbound-traffic-before-connect",
+        &format!("{reverse_inbound_traffic_before_connect:?}"),
+    );
     sam_expect_ok(
         &mut product,
         &mut connect,
-        &format!("STREAM CONNECT ID=plan387reverse DESTINATION={reverse_address} PORT=0"),
+        &format!("STREAM CONNECT ID=plan400reverse DESTINATION={reverse_address} PORT=0"),
         std::time::Duration::from_secs(180),
     )
     .await
     .expect("reference consumes i2pr type-5 LeaseSet and establishes Streaming");
+    append_evidence(
+        &evidence_dir,
+        "reverse-service-connections-after-connect",
+        &format!("{:?}", product.service_tunnel_snapshot()),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-inbound-orphan-receives-after-connect",
+        &product.inbound_orphan_receives().to_string(),
+    );
     connect
-        .write_all(b"plan387-reverse-ping\n")
+        .write_all(b"plan400-reverse-ping\n")
         .await
         .expect("reverse fixture request writes");
     let reverse_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -1101,11 +1211,66 @@ async fn els2_i2pr_consumes_reference_published_els2() {
             _ = tokio::time::sleep_until(reverse_deadline) => break,
         }
     }
+    let reverse_payload_returned =
+        String::from_utf8_lossy(&reverse_payload).contains(EXPECTED_BANNER);
+    append_evidence(
+        &evidence_dir,
+        "reverse-payload-returned",
+        if reverse_payload_returned {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-publication-post-read",
+        &format!("{:?}", product.lease_publication_snapshot()),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-service-connections-post-read",
+        &format!("{:?}", product.service_tunnel_snapshot()),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-routing-counters-post-read",
+        &format!("{:?}", product.remote_counters().await),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-inbound-orphan-receives-post-read",
+        &product.inbound_orphan_receives().to_string(),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-inbound-orphan-receives-delta",
+        &product
+            .inbound_orphan_receives()
+            .saturating_sub(reverse_orphans_before_connect)
+            .to_string(),
+    );
+    let reverse_inbound_traffic_after_read = product.inbound_traffic_snapshot();
+    append_evidence(
+        &evidence_dir,
+        "reverse-router-inbound-traffic-delta",
+        &format!(
+            "{:?}",
+            reverse_inbound_traffic_after_read.delta_since(reverse_inbound_traffic_before_connect)
+        ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "reverse-destination-provisioning-post-read",
+        &format!(
+            "{:?}",
+            product.destination_provisioning_snapshot(REVERSE_SERVER_ID)
+        ),
+    );
     assert!(
-        String::from_utf8_lossy(&reverse_payload).contains(EXPECTED_BANNER),
+        reverse_payload_returned,
         "stock reference SAM client did not receive the i2pr-published ELS2 fixture banner"
     );
-    append_evidence(&evidence_dir, "reverse-payload-returned", EXPECTED_BANNER);
 
     append_evidence(
         &evidence_dir,

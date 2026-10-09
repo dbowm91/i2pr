@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 381 §WP2 — the reference SAM client for a blinded (b33) connect.
+"""Plan 400 — the reference SAM client for a blinded (b33) connect.
 
 This exists as its own file rather than as a heredoc inside the lane runner
 because the SAM dance is where every non-obvious part of this lane lives, and a
@@ -46,7 +46,14 @@ import socket
 import sys
 
 HELLO = "HELLO VERSION MIN=3.1 MAX=3.1"
-SESSION_CREATE = "SESSION CREATE STYLE=STREAM ID={sid} DESTINATION=TRANSIENT"
+# Match ADR 0004's selected inbound Destination verification profile. SAM v3
+# defaults to legacy DSA-SHA1 type 0 unless the client explicitly selects one.
+# The qualification therefore sets type 7 and does not claim default-profile
+# compatibility for i2pd's transient Destination.
+SESSION_CREATE = (
+    "SESSION CREATE STYLE=STREAM ID={sid} DESTINATION=TRANSIENT "
+    "SIGNATURE_TYPE=7"
+)
 
 # Minting a transient destination builds a tunnel pool before SAM answers.
 # This is a bounded wait for a state change, not a retry of a failed attempt.
@@ -106,7 +113,7 @@ def run() -> int:
     # Overridable per attempt: a timed-out attempt leaves its session ID
     # held by the bridge, and reusing it answers DUPLICATED_ID — which reads
     # like a mesh defect but is only the retry tripping over its own past.
-    session_id = os.environ.get("I2PR_ELS2_SAM_SESSION_ID", "plan381")
+    session_id = os.environ.get("I2PR_ELS2_SAM_SESSION_ID", "plan400")
     create = _open(sam_port)
     try:
         _expect_ok(_send(create, HELLO, 30.0), "HELLO")

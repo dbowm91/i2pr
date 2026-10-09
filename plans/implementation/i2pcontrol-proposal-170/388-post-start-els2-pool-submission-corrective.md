@@ -1,6 +1,6 @@
 # Plan 388 — post-start ELS2 pool submission and completion corrective
 
-Status: **registered-post-start-els2-pool-submission-corrective**.
+Status: **blocked-post-start-inbound-builds-stall-before-response-plan-389**.
 
 Subsystem: Proposal 170 / Red25519 + ELS2.
 

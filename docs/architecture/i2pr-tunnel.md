@@ -120,7 +120,7 @@ The crate ships **23 modules** at the crate root. Line counts are real
 | `short_record` | `short_record.rs` | 1 260 | Typed 154-byte request and 202-byte reply plaintext codecs with the CSPRNG / deterministic split and strict role/encryption-type validation | `ShortRequestRecord`, `ShortReplyRecord`, `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError` |
 | `established` | `established.rs` | 967 | Secret-material ownership for a live tunnel with `Option<EstablishedNextHop>` next-hop state and one-shot `into_extracted` / `into_established_tunnel` transfer | `EstablishedTunnel`, `EstablishedHop`, `EstablishedMaterial`, `EstablishedNextHop`, `EstablishedRole`, `EstablishedTunnelError` |
 | `garlic_reply` | `garlic_reply.rs` | 821 | Plan 188 bounded OBEP garlic unwrap: tag-gated ChaCha20-Poly1305 decrypt plus local ShortTunnelBuildReply clove parse, and the OBEP wrap side | `decrypt_build_reply_garlic`, `wrap_obep_reply_garlic`, `GarlicClove`, `DecryptedBuildReply`, `GarlicReplyError` |
-| `data_plane_registry` | `data_plane_registry.rs` | 764 | Bounded activation state for local roles keyed by slot and local receive tunnel id, with the Plan 190 typed `InboundGatewayRoute` | `DataPlaneRegistry`, `DataPlaneCapacity`, `InboundGatewayRoute`, `RegistryRemoval`, `RegistryError` |
+| `data_plane_registry` | `data_plane_registry.rs` | 791 | Bounded activation state for local roles keyed by slot and local receive tunnel id; `DataPlaneCapacity` uses u16 bounds so the daemon can reserve its finite aggregate service-role ceiling | `DataPlaneRegistry`, `DataPlaneCapacity`, `InboundGatewayRoute`, `RegistryRemoval`, `RegistryError` |
 | `bridge` | `bridge.rs` | 668 | Plan 115 canonical production seam from `ShortBuildAction::Deliver` to one complete I2NP type-25 message with a no-double-prefix invariant | `ShortBuildI2npBridge`, `BridgeHeader`, `BridgeRecord`, `BridgeError` |
 | `layer` | `layer.rs` | 506 | AES-256 ECB/CBC/ECB per-hop layer transform plus the bounded duplicate window | `TunnelLayerTransform`, `DuplicateWindow`, `DuplicateToken`, `DuplicateWindowError` |
 | `fixed_vectors` | `fixed_vectors.rs` | 407 | Frozen Noise-N / HKDF / ChaChaPoly conformance constants generated once from an independent reference oracle | `FIXED_SEALED_REQUEST`, `FIXED_REQUEST_KEYDATA`, `FIXED_REPLY_KEY` / `FIXED_LAYER_KEY` / `FIXED_IV_KEY`, `FIXED_OBEP_GARLIC_KEY` / `FIXED_OBEP_GARLIC_TAG` |
@@ -548,6 +548,16 @@ Duplicate slot and receive-id activation is fail-closed
 (`RegistryError::DuplicateOutbound` / `DuplicateInbound` /
 `DuplicateInboundSlot`, plus `OutboundFull` / `InboundFull` /
 `DirectionMismatch`).
+
+The registry capacity is supplied explicitly. A standalone exploratory
+coordinator uses its configured pool maximum. The daemon service coordinator
+adds the validated maximum of 32 service tunnels × 8 effective inbound roles
+to that pool ceiling (264 inbound with the default pool), because those roles
+stay registered for inbound routing until the owning Destination pool evicts
+them. Outbound service roles are moved synchronously into the Destination
+bridge, so the coordinator adds one transient activation slot to the
+exploratory maximum. The u16 capacity is a representation choice for these
+derived limits, not permission to increase service/group configuration bounds.
 
 `InboundGatewayRoute` is the Plan 190 fix and is deliberately a **typed,
 `Copy`, non-secret** struct of three fields:
