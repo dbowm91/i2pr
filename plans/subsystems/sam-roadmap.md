@@ -27,7 +27,9 @@ CI hygiene are closed through the historic 135–153 line.
 Plan 368 is a parallel extension. It adds SAM 3.3 PRIMARY/subsession
 shared-Destination semantics so one application identity can expose STREAM plus
 protocol-17 repliable DATAGRAM and protocol-18 RAW children without moving
-I2P Streaming into the application.
+I2P Streaming into the application. It also owns the SAM 3.2+ I2P port semantics
+inherited by 3.3, including port-aware STREAM CONNECT required by i2pr-mail to
+reach Postman's nonzero I2P service ports without localhost proxy tunnels.
 
 Historic plans: 135–153. Active extension: 368.
 
@@ -83,8 +85,9 @@ second data plane.
     -> 151 acceptance -> 152/153 hygiene     [SAM 3.1 closed]
 
 151 + existing Destination/Streaming/Datagram substrate
-    -> 368 SAM 3.3 PRIMARY/subsessions       [ready]
+    -> 368 SAM 3.3 PRIMARY/subsessions + port-aware STREAM [ready]
          -> downstream i2pr-tc C003
+         -> downstream i2pr-mail M006/M012
 ```
 
 ## 7. Milestones
@@ -132,8 +135,9 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 - PRIMARY versus MASTER behavior differs across deployed implementations and
   must be dispositioned by evidence, not assumption.
-- SAM 3.3 support is not advertised until shared STREAM/DATAGRAM/RAW identity
-  and lifecycle pass against Java I2P and i2pd.
+- SAM 3.3 support is not advertised until shared STREAM/DATAGRAM/RAW identity,
+  lifecycle, and inherited 3.2+ `FROM_PORT`/`TO_PORT` STREAM semantics pass
+  against Java I2P and i2pd.
 - If canonical protocol-17/18 delivery cannot be reused without a parallel
   router data plane, Plan 368 must stop.
 - Independent external rows stay loopback/private-client only; no public SAM
