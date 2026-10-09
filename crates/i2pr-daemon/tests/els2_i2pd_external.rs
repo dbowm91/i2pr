@@ -72,7 +72,7 @@ use tokio::net::TcpStream;
 
 const TEST_PASSWORD: &str = "plan381-els2-external";
 const SERVICE_ID: &str = "plan381-els2-client";
-const REVERSE_SERVER_ID: &str = "plan386-i2pr-els2-server";
+const REVERSE_SERVER_ID: &str = "plan387-i2pr-els2-server";
 /// The banner the reference's server tunnel terminates on. Seeing it proves
 /// the bytes crossed I2P and reached the application, not merely that a
 /// connection was accepted.
@@ -889,7 +889,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     );
     append_evidence(&evidence_dir, "authority-b32-payload-returned", "true");
 
-    // Plan 386 reverse direction: control-create a real type-5 server on the
+    // Plan 387 reverse direction: control-create a real type-5 server on the
     // running i2pr product, then consume it through the stock reference's
     // loopback SAM and the same local fixture. The i2pd session receives only
     // the mode-specific client key; evidence records no credential or address.
@@ -1035,7 +1035,7 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     .await
     .expect("reference SAM hello");
     let mut create_session =
-        "SESSION CREATE STYLE=STREAM ID=plan386reverse DESTINATION=TRANSIENT".to_owned();
+        "SESSION CREATE STYLE=STREAM ID=plan387reverse DESTINATION=TRANSIENT".to_owned();
     if let Some(client_key) = reverse_consumer_key.as_ref() {
         let auth_type = if auth_mode == "dh" { "1" } else { "2" };
         let group = if auth_mode == "dh" {
@@ -1073,13 +1073,13 @@ async fn els2_i2pr_consumes_reference_published_els2() {
     sam_expect_ok(
         &mut product,
         &mut connect,
-        &format!("STREAM CONNECT ID=plan386reverse DESTINATION={reverse_address} PORT=0"),
+        &format!("STREAM CONNECT ID=plan387reverse DESTINATION={reverse_address} PORT=0"),
         std::time::Duration::from_secs(180),
     )
     .await
     .expect("reference consumes i2pr type-5 LeaseSet and establishes Streaming");
     connect
-        .write_all(b"plan386-reverse-ping\n")
+        .write_all(b"plan387-reverse-ping\n")
         .await
         .expect("reverse fixture request writes");
     let reverse_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);

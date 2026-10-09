@@ -873,6 +873,13 @@ pub struct DestinationProvisioningSnapshot {
     pub usable_inbound_leases: usize,
     pub minimum_usable_inbound: u16,
     pub outbound_registrations: usize,
+    pub pending_inbound_builds: usize,
+    pub pending_outbound_builds: usize,
+    pub consecutive_build_failures: u16,
+    pub replacement_paused: bool,
+    pub coordinator_outbound_builds: u64,
+    pub coordinator_timeouts: u64,
+    pub coordinator_delivery_failures: u64,
     pub lease_set_present: bool,
 }
 
@@ -1618,12 +1625,26 @@ impl ServiceProduct {
         spec_id: &str,
     ) -> Option<DestinationProvisioningSnapshot> {
         let destination_id = self.manager.service_destination_id(spec_id)?;
+        let counters = self.inner.coordinator.counters();
         self.manager
             .with_destination_runtime(destination_id, |runtime| DestinationProvisioningSnapshot {
                 inbound_registrations: runtime.inbound_registrations().len(),
                 usable_inbound_leases: runtime.inbound_lease_sources(wall_secs()).len(),
                 minimum_usable_inbound: runtime.config().minimum_usable_inbound(),
                 outbound_registrations: runtime.outbound_registrations().len(),
+                pending_inbound_builds: self
+                    .inner
+                    .coordinator
+                    .pending_destination_direction_len(destination_id, BuildDirection::Inbound),
+                pending_outbound_builds: self
+                    .inner
+                    .coordinator
+                    .pending_destination_direction_len(destination_id, BuildDirection::Outbound),
+                consecutive_build_failures: runtime.pool().consecutive_failures(),
+                replacement_paused: runtime.pool().replacement_paused(),
+                coordinator_outbound_builds: counters.outbound_builds,
+                coordinator_timeouts: counters.timeouts,
+                coordinator_delivery_failures: counters.delivery_failures,
                 lease_set_present: runtime.lease_set().is_some(),
             })
     }
