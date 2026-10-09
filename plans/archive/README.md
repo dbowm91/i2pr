@@ -11,3 +11,6 @@ MUST preserve traceability via `git mv` and MUST NOT rewrite historical conclusi
 
 Canonical direction (`GUARDRAILS.md`, `specs/`, accepted ADRs) MUST NOT be archived merely
 because an initial implementation completed.
+
+- `managed-native-app-runtime/385-managed-app-private-persistent-data-and-launch-workspace.md` and `386-linux-secured-sandbox-and-resource-enforcement.md` — superseded planning drafts consolidated into Plan 407 after global-number reconciliation; the Proposal 170 line already owns global Plans 385 and 386.
+- `managed-native-app-runtime/387-host-owned-local-service-ingress.md` and `388-external-rust-managed-app-sdk-and-package-builder.md` — deferred planning drafts retained for traceability; their old global numbers belong to Proposal 170, and each needs a fresh uniquely numbered plan before execution.

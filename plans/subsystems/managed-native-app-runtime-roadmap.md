@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345, 349, 352–355, 368–371 and 382–383 are closed. Plans 385, 387, and 388 are ready; Plan 386 is blocked on 385. Plan 385 owns private app data roots, Plan 387 host-owned local-service ingress, Plan 388 the external Rust app SDK/package builder, and Plan 386 the first qualified Linux Secured backend. Live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream and unregistered. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, 352–355, 368–371 and 382–383 are closed. Plan 407 is ready for the first qualified Linux `Secured` sandbox backend plus private persistent app data. The former managed-app Plans 385–388 drafts are archived after global-number reconciliation; local-service ingress and the external SDK remain future work. macOS/Windows sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -108,7 +108,7 @@ Future console UI assets are package-relative static resources under a distinct 
 
 ## 6. Dependency graph
 
-Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, and 371 are closed. Later capability milestones receive global numbers only when their implementation plans are written.
+Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, 371, 382, and 383 are closed. Plan 407 is registered and ready. The managed-app drafts formerly numbered 385–388 are archived because those global numbers belong to Proposal 170 on main; later milestones receive unique global numbers when their implementation plans are written.
 
 ```text
 345 architecture + runtime-neutral app contract foundation (closed)
@@ -122,10 +122,9 @@ Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, and 371 are closed. Later cap
                                      -> 371 optional non-blocking startup substrate corrective (closed; lifted 369's invariant-1/§5 blocker)
                                      -> 382 signed immutable package + local store foundation (closed)
                                           -> 383 persistent trust/grants + production catalog + offline admin (closed)
-                                               -> 385 private persistent app data + launch workspace (ready)
-                                                    -> 386 Linux Secured sandbox/resource enforcement (blocked on 385)
-                                               -> 387 host-owned local-service ingress (ready)
-                                               -> 388 external Rust app SDK + package builder (ready)
+                                               -> 407 Linux Secured apphost sandbox + private app data (ready)
+                                               -> future host-owned local-service ingress
+                                               -> future external Rust app SDK + package builder
                                                -> live AppManager administrator API (future plan)
                       -> scoped Proposal 170 adapter after its stable contract is ready
                                 -> brokered clearnet policy/DNS/TCP
@@ -137,7 +136,7 @@ Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, and 371 are closed. Later cap
 
 Plan 352 closed the mapped-address policy gap and Plan 353 completed the integration-hygiene gate. Plan 354 passed the listener-independent SAM/I2CP connection seams with managed-profile host-target denial. Plan 355 passed the principal/capability boundary over those seams without choosing package/process IPC. Plan 368 froze a private manager protocol and mapped that protocol into the existing gateway without process launch. **Plan 369 then added the trusted manager/apphost process roles and the fixture lifecycle, and has passed**; Plans 382–383 added signed packages and persistent explicit policy, while Secured launch still fails closed until a later qualified OS backend exists.
 
-The scoped Proposal 170 adapter remains separately sequenced behind its canonical control contract. Plans 385/387/388 now own private app data, host-owned local ingress, and the external Rust SDK respectively; Plan 386 owns the first Linux Secured sandbox after 385. Brokered clearnet, live admin, UI hosting, and remote update remain future owners.
+The scoped Proposal 170 adapter remains separately sequenced behind its canonical control contract. Plan 407 owns Linux sandboxing and private app data. Host-owned local ingress and the external Rust SDK remain future work and require newly numbered plans when registered. Brokered clearnet, live admin, UI hosting, and remote update remain future owners.
 
 ## 7. Milestones
 
@@ -155,10 +154,11 @@ The scoped Proposal 170 adapter remains separately sequenced behind its canonica
 | 370 | closed | `passed-managed-app-v1-hello-instance-id-codec-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/370-managed-app-v1-hello-instance-id-codec-corrective.md` | `plans/closure/managed-native-app-runtime/370-status.md` |
 | 382 | closed | `passed-managed-app-signed-package-store-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/382-signed-immutable-managed-app-package-and-local-store-foundation.md` | `plans/closure/managed-native-app-runtime/382-status.md` |
 | 383 | closed | `passed-managed-app-persistent-policy-production-catalog-and-offline-administration` | invariant + capability + persistence/lifecycle | `plans/implementation/managed-native-app-runtime/383-persistent-managed-app-policy-production-catalog-and-offline-administration.md` | `plans/closure/managed-native-app-runtime/383-status.md` |
-| 385 | ready | `registered-managed-app-private-persistent-data-and-launch-workspace` | infrastructure + persistence/lifecycle invariant | `plans/implementation/managed-native-app-runtime/385-managed-app-private-persistent-data-and-launch-workspace.md` | pending |
-| 386 | blocked | `blocked-on-plan385-linux-secured-sandbox-resource-enforcement` | security invariant + platform capability | `plans/implementation/managed-native-app-runtime/386-linux-secured-sandbox-and-resource-enforcement.md` | pending |
-| 387 | ready | `registered-host-owned-local-service-ingress` | capability + security invariant + protocol extension | `plans/implementation/managed-native-app-runtime/387-host-owned-local-service-ingress.md` | pending |
-| 388 | ready | `registered-external-rust-managed-app-sdk-package-builder` | external interface + infrastructure + developer tooling | `plans/implementation/managed-native-app-runtime/388-external-rust-managed-app-sdk-and-package-builder.md` | pending |
+| 407 | ready | `registered-ready-linux-secured-apphost-sandbox` | invariant + capability + platform security | `plans/implementation/managed-native-app-runtime/407-linux-secured-apphost-sandbox.md` | — |
+
+
+
+
 
 Plans 354 and 355 are closed, so the router gateway boundary is concrete. Plan 368 closed the daemon↔manager protocol/bridge with **no production caller**, which is what Plan 369 supplied and is now closed: the supervised i2pr-appd/i2pr-apphost lifecycle consumer over the inherited anonymous transport. One Plan 368 limitation was carried into Plan 369's scope and resolved: the protocol's 128-streams-per-session ceiling exceeds what the runtime child-task ceiling admits, so admission fails closed rather than reaching the protocol number.
 
@@ -270,4 +270,4 @@ Plan 352 passed as `passed-managed-app-mapped-ipv6-policy-canonicalization`: map
 
 Plan 354 passed: both loopback listeners and trusted private connections use one listener-independent protocol driver, and managed-app SAM denies `STREAM FORWARD`/host-target behavior. Plan 355 passed: trusted composition binds one `AppPrincipal` and immutable `EffectiveCapabilities` to isolated private SAM/I2CP contexts. Neither plan launches applications, implements package lifecycle, establishes sandbox containment, or promotes SAM/I2CP support. Proposal 170 integration remains gated on canonical Proposal 170 completion.
 
-Future app implementation must preserve the existing router ownership boundaries. Plans 368–371 and 382–383 are closed. Plan 382 created no trust/grants/launch authority; Plan 383 added persistent local authority but did not claim Secured containment or add a live administrator endpoint. Plans 385/387/388 are registered ready for private app data, host-owned local ingress, and the external Rust SDK/package builder. Plan 386 is blocked on 385 and owns Linux Secured containment. Brokered clearnet, UI, remote repository/update, live admin, and scoped control remain downstream and separately qualified.
+Future app implementation must preserve the existing router ownership boundaries. Plans 368–371 and 382–383 are closed. Plan 382 created no trust/grants/launch authority; Plan 383 added persistent local authority but did not claim Secured containment or add a live administrator endpoint. Plan 407 is registered ready for Linux Secured containment and private app data. Former managed-app drafts 385–388 are archived because those global numbers belong to Proposal 170; local ingress and the SDK need newly numbered plans before implementation. Brokered clearnet, UI, remote repository/update, live admin, and scoped control remain downstream and separately qualified.
