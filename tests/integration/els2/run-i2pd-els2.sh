@@ -971,7 +971,8 @@ lines += [
 with open(os.path.join(evidence_dir, "evidence.md"), "w", encoding="utf-8") as handle:
     handle.write("\n".join(lines))
 PY
-record evidence-packaged passed "evidence.json + evidence.md written from sanitized results only"
+test -s "${EVIDENCE_DIR}/evidence.json"
+test -s "${EVIDENCE_DIR}/evidence.md"
 cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
   echo "Plan 387 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2

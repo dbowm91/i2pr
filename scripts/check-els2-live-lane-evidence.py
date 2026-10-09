@@ -133,6 +133,10 @@ REQUIRED_RUNNER_LITERALS = [
     '\nMAX_ATTEMPTS=1\n',
     'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"',
     'I2PD_VERSION="2.61.0"',
+    '"plan": 387',
+    '"predecessor_plan": 386',
+    'test -s "${EVIDENCE_DIR}/evidence.json"',
+    'test -s "${EVIDENCE_DIR}/evidence.md"',
     "control-skip:",
 ]
 
@@ -525,6 +529,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (RUNNER, '\nMAX_ATTEMPTS=1\n', '\nMAX_ATTEMPTS=2\n', "the attempt budget is raised"),
     (RUNNER, 'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"', 'I2PD_PIN="0000000000000000000000000000000000000000"', "the reference pin drifts"),
     (RUNNER, 'echo "Plan 387 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 387 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, 'test -s "${EVIDENCE_DIR}/evidence.json"', 'record evidence-packaged passed "evidence files exist"', "the evidence package is not verified before final TSV copy"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open", "Err(DestinationFailure::LookupRequired { .. }) if false", "ordinary delay-open clients stop reaching product activation"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "self.resolve_remote_client_target(runtime.destination_id, &hash)", "self.resolve_remote_client_target(runtime.destination_id, &[0; 32])", "ordinary resolution stops using the validated cached target"),
