@@ -9,7 +9,8 @@ Rules
   1. Only the daemon consumes the manager protocol as a router-side
      implementation; the contract crate has no production reverse dependency.
   2. The contract crate cannot reach a router, runtime, or OS owner.
-  3. The daemon bridge contains no host socket, listener, or connect path.
+  3. The daemon bridge's only host listener is the explicitly authorized
+     127.0.0.1 local-service listener; no other bind/connect path is allowed.
   4. The control vocabulary carries no package, grant, configuration, process,
      or policy operation, and no administrator variant.
   5. `control_scoped` is unrepresentable in the service vocabulary.
@@ -320,28 +321,51 @@ require(
     "transport binding belongs to the daemon bridge, not the contract crate",
 )
 
-# -- rule 3: the bridge has no host socket path ----------------------------
+# -- rule 3: only the authorized loopback listener is allowed -------------
 bridge_leaves = normalise_use_groups(bridge_production)
 for leaf in bridge_leaves:
     require(
-        "3-no-socket",
-        not leaf.startswith(("std::net", "tokio::net", "std::os::unix::net", "hyper::",
+        "3-loopback-only",
+        not leaf.startswith(("std::net", "std::os::unix::net", "hyper::",
                              "axum::", "tokio::process", "std::process", "std::fs")),
-        f"the bridge must not name a host socket or process API: {leaf}",
+        f"the bridge must not name an unapproved socket/process API: {leaf}",
     )
+    if leaf.startswith("tokio::net"):
+        require(
+            "3-loopback-only",
+            leaf in {"tokio::net::TcpListener", "tokio::net::TcpStream"},
+            f"only the fixed loopback listener and its accepted TCP streams are allowed: {leaf}",
+        )
 for forbidden in (
-    "TcpListener", "TcpStream", "UnixListener", "UnixStream", "bind(", "connect(",
-    "127.0.0.1", "0.0.0.0", "localhost",
+    "UdpSocket", "TcpSocket", "UnixListener", "UnixStream", "socket2::",
+    "connect(", "0.0.0.0", "[::]",
 ):
     require(
-        "3-no-socket",
+        "3-loopback-only",
         forbidden not in bridge_production,
-        f"the bridge must contain no listener/connect/loopback path: {forbidden!r}",
+        f"the bridge must not contain an alternate socket path: {forbidden!r}",
     )
 require(
-    "3-no-socket",
+    "3-loopback-only",
+    "tokio::net::TcpListener" in bridge_leaves and "tokio::net::TcpStream" in bridge_leaves,
+    "the daemon bridge may use only Tokio's TCP listener and accepted stream types",
+)
+require(
+    "3-loopback-only",
+    len(re.findall(r"TcpListener::bind\(\(std::net::Ipv4Addr::LOCALHOST, port\)\)", bridge_production)) == 1
+    and len(re.findall(r"\bbind\(", bridge_production)) == 1,
+    "the sole listener must bind Ipv4Addr::LOCALHOST and no caller-selected address",
+)
+require(
+    "3-loopback-only",
     "trait ManagerTransport: AsyncRead + AsyncWrite" in bridge_production,
-    "the bridge must take its transport by injection",
+    "the private manager transport must remain injected",
+)
+require(
+    "3-loopback-only",
+    not any(token in strip_comments((ROOT / "crates/i2pr-appd/src/session.rs").read_text())
+            for token in ("tokio::net", "std::net::Tcp", "TcpListener", "TcpStream")),
+    "appd must remain free of listener and socket ownership",
 )
 
 # -- rule 4: the control vocabulary has no admin authority ------------------

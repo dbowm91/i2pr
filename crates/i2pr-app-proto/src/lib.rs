@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 pub const PROTOCOL_MAJOR: u8 = 1;
-pub const PROTOCOL_MINOR: u8 = 0;
+pub const PROTOCOL_MINOR: u8 = 1;
 pub const FRAME_HEADER_BYTES: usize = 12;
 pub const MAX_FRAME_PAYLOAD_BYTES: usize = 65_536;
 pub const MAX_CONTROL_BYTES: usize = 16_384;
@@ -26,6 +26,10 @@ pub const MAX_NETWORK_RULES: usize = 64;
 pub const MAX_ENTRYPOINTS: usize = 8;
 pub const MAX_RESOURCE_ENTRIES: usize = 16;
 pub const MAX_STREAMS: usize = 128;
+pub const MAX_LOCAL_SERVICES: usize = 8;
+pub const MAX_LOCAL_SERVICE_NAME_BYTES: usize = 64;
+pub const MAX_LOCAL_SERVICE_CONNECTIONS: usize = 16;
+pub const MAX_LOCAL_SERVICE_QUEUE_FRAMES: usize = 8;
 pub const MAX_INFLIGHT_REQUESTS: usize = 64;
 pub const MAX_UI_MESSAGE_BYTES: usize = 16_384;
 pub const MAX_DIAGNOSTIC_BYTES: usize = 1_024;
@@ -360,6 +364,8 @@ pub enum Capability {
     UiBridge,
     Health,
     Lifecycle,
+    /// Administrator-granted publication of daemon-owned loopback TCP services.
+    LocalService,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +449,17 @@ pub enum AppToHostMessage {
     Reset { stream_id: u32, reason: String },
     #[serde(rename = "ui_message")]
     UiMessage { message_id: u32, payload: String },
+    #[serde(rename = "publish_local_service")]
+    PublishLocalService {
+        request_id: RequestId,
+        service_name: String,
+        preferred_port: Option<u16>,
+    },
+    #[serde(rename = "unpublish_local_service")]
+    UnpublishLocalService {
+        request_id: RequestId,
+        service_id: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +486,19 @@ pub enum HostToAppMessage {
         state: String,
         detail: Option<String>,
     },
+    #[serde(rename = "local_service_published")]
+    LocalServicePublished {
+        request_id: RequestId,
+        service_id: u32,
+        port: u16,
+    },
+    #[serde(rename = "local_service_unpublished")]
+    LocalServiceUnpublished {
+        request_id: RequestId,
+        service_id: u32,
+    },
+    #[serde(rename = "local_service_incoming")]
+    LocalServiceIncoming { service_id: u32, stream_id: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -828,6 +858,26 @@ pub fn validate_app_to_host_message(message: &AppToHostMessage) -> Result<(), Co
                 .map(|_| ())
                 .map_err(|_| ContractError::InvalidControl)
         }
+        AppToHostMessage::PublishLocalService {
+            service_name,
+            preferred_port,
+            ..
+        } => {
+            if service_name.is_empty()
+                || service_name.len() > MAX_LOCAL_SERVICE_NAME_BYTES
+                || !service_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                || preferred_port.is_some_and(|p| p < 1024)
+            {
+                return Err(ContractError::InvalidControl);
+            }
+            Ok(())
+        }
+        AppToHostMessage::UnpublishLocalService { service_id, .. } if *service_id == 0 => {
+            Err(ContractError::InvalidControl)
+        }
+        AppToHostMessage::UnpublishLocalService { .. } => Ok(()),
     }
 }
 
@@ -861,6 +911,19 @@ pub fn validate_host_to_app_message(message: &HostToAppMessage) -> Result<(), Co
             }
             Ok(())
         }
+        HostToAppMessage::LocalServicePublished {
+            service_id, port, ..
+        } if *service_id == 0 || *port < 1024 => Err(ContractError::InvalidControl),
+        HostToAppMessage::LocalServicePublished { .. } => Ok(()),
+        HostToAppMessage::LocalServiceUnpublished { service_id, .. } if *service_id == 0 => {
+            Err(ContractError::InvalidControl)
+        }
+        HostToAppMessage::LocalServiceUnpublished { .. } => Ok(()),
+        HostToAppMessage::LocalServiceIncoming {
+            service_id,
+            stream_id,
+        } if *service_id == 0 || *stream_id == 0 => Err(ContractError::InvalidControl),
+        HostToAppMessage::LocalServiceIncoming { .. } => Ok(()),
         HostToAppMessage::PermissionReply { .. } => Ok(()),
     }
 }
@@ -1087,6 +1150,16 @@ impl Manifest {
                 _ => ContractError::InvalidManifest,
             },
         )?;
+        let local_service = self
+            .requested_capabilities
+            .iter()
+            .any(|r| r.capability == Capability::LocalService);
+        if local_service
+            && (self.host_protocol_min > (VersionPair { major: 1, minor: 1 })
+                || self.host_protocol_max < (VersionPair { major: 1, minor: 1 }))
+        {
+            return Err(ContractError::InvalidManifest);
+        }
         if let Some(ui) = &self.ui
             && (ui.max_message_bytes == 0 || ui.max_message_bytes as usize > MAX_UI_MESSAGE_BYTES)
         {
@@ -1624,6 +1697,43 @@ mod tests {
         assert_eq!(
             bad.validate(),
             Err(ContractError::LimitExceeded("capabilities"))
+        );
+    }
+
+    #[test]
+    fn local_service_requires_v1_1_and_bounded_loopback_transaction_values() {
+        let mut manifest = minimal_manifest();
+        manifest.requested_capabilities = vec![RequestedCapability {
+            capability: Capability::LocalService,
+        }];
+        assert_eq!(manifest.validate(), Err(ContractError::InvalidManifest));
+        manifest.host_protocol_max = VersionPair { major: 1, minor: 1 };
+        assert!(manifest.validate().is_ok());
+
+        let request_id = RequestId::new(1).unwrap();
+        assert!(
+            validate_app_to_host_message(&AppToHostMessage::PublishLocalService {
+                request_id,
+                service_name: "rpc_1".into(),
+                preferred_port: Some(1024),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_app_to_host_message(&AppToHostMessage::PublishLocalService {
+                request_id,
+                service_name: "bad/name".into(),
+                preferred_port: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_app_to_host_message(&AppToHostMessage::PublishLocalService {
+                request_id,
+                service_name: "rpc".into(),
+                preferred_port: Some(1023),
+            })
+            .is_err()
         );
     }
 

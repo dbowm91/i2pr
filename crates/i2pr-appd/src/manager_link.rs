@@ -98,6 +98,10 @@ pub enum ManagerEvent {
         stream: ManagerServiceStreamId,
         payload: Vec<u8>,
     },
+    LocalServiceIncoming {
+        service: i2pr_app_manager_proto::ManagerLocalServiceId,
+        stream: ManagerServiceStreamId,
+    },
 }
 
 /// Routing the reader performs on behalf of a waiting caller.
@@ -384,6 +388,8 @@ fn correlation_of(message: &ManagerToDaemonMessage) -> RequestId {
         | ManagerToDaemonMessage::CloseSession { request_id, .. }
         | ManagerToDaemonMessage::OpenService { request_id, .. }
         | ManagerToDaemonMessage::CloseService { request_id, .. }
+        | ManagerToDaemonMessage::PublishLocalService { request_id, .. }
+        | ManagerToDaemonMessage::UnpublishLocalService { request_id, .. }
         | ManagerToDaemonMessage::ResetService { request_id, .. }
         | ManagerToDaemonMessage::Health { request_id }
         | ManagerToDaemonMessage::Shutdown { request_id, .. } => *request_id,
@@ -550,6 +556,17 @@ fn notify(state: &mut LinkState, message: DaemonToManagerMessage) -> Result<(), 
             // arrive. The session removes the binding when it acts on the event.
             if let Some(events) = state.sessions.get(&session) {
                 let _ = events.try_send(ManagerEvent::StreamEnded { stream, reason });
+            }
+            Ok(())
+        }
+        DaemonToManagerMessage::LocalServiceIncoming {
+            session,
+            service,
+            stream,
+        } => {
+            if let Some(events) = state.sessions.get(&session) {
+                state.streams.insert(stream, session);
+                let _ = events.try_send(ManagerEvent::LocalServiceIncoming { service, stream });
             }
             Ok(())
         }

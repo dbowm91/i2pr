@@ -9,10 +9,10 @@ use i2pr_app_manager_proto::{
     DaemonToManagerMessage, EffectiveGrant, Frame, FrameKind, HANDSHAKE_MAGIC, Handshake,
     MAX_CONTROL_BYTES, MAX_DATA_FRAME_BYTES, MAX_INFLIGHT_REQUESTS, MAX_MANAGER_SESSIONS,
     MAX_SERVICE_STREAMS_PER_SESSION, ManagerError, ManagerErrorCode, ManagerGatewayLimits,
-    ManagerProtocolError, ManagerRole, ManagerScopeLimits, ManagerService, ManagerServiceStreamId,
-    ManagerSessionId, ManagerToDaemonMessage, ServiceEndReason, decode_daemon_to_manager_control,
-    decode_manager_to_daemon_control, encode_daemon_to_manager_control,
-    encode_manager_to_daemon_control,
+    ManagerLocalServiceId, ManagerProtocolError, ManagerRole, ManagerScopeLimits, ManagerService,
+    ManagerServiceStreamId, ManagerSessionId, ManagerToDaemonMessage, ServiceEndReason,
+    decode_daemon_to_manager_control, decode_manager_to_daemon_control,
+    encode_daemon_to_manager_control, encode_manager_to_daemon_control,
 };
 use i2pr_app_proto::{AppId, Capability, PublisherId, RequestId};
 
@@ -53,7 +53,7 @@ fn handshake_golden_bytes_are_frozen_and_version_independent() {
     let encoded = handshake().encode();
     assert_eq!(
         encoded,
-        [b'I', b'2', b'P', b'M', 1, 0, 1, 0, 0,],
+        [b'I', b'2', b'P', b'M', 1, 1, 1, 0, 0,],
         "handshake golden bytes must stay frozen for a language-neutral protocol"
     );
     assert_eq!(&encoded[..4], &HANDSHAKE_MAGIC);
@@ -157,6 +157,49 @@ fn control_vocabulary_is_strictly_directional() {
     );
     assert_eq!(
         decode_manager_to_daemon_control(&encoded),
+        Err(ManagerProtocolError::InvalidControl)
+    );
+}
+
+#[test]
+fn local_service_publication_request_is_bounded_and_has_no_bind_address() {
+    let valid = ManagerToDaemonMessage::PublishLocalService {
+        request_id: request_id(1),
+        session: session(1),
+        service_name: "rpc-service".into(),
+        preferred_port: None,
+    };
+    let encoded = encode_manager_to_daemon_control(&valid).expect("valid publication");
+    assert!(decode_manager_to_daemon_control(&encoded).is_ok());
+    assert!(!String::from_utf8_lossy(&encoded).contains("bind_address"));
+
+    let privileged = ManagerToDaemonMessage::PublishLocalService {
+        request_id: request_id(2),
+        session: session(1),
+        service_name: "rpc".into(),
+        preferred_port: Some(1023),
+    };
+    assert_eq!(
+        encode_manager_to_daemon_control(&privileged),
+        Err(ManagerProtocolError::InvalidControl)
+    );
+    let invalid_name = ManagerToDaemonMessage::PublishLocalService {
+        request_id: request_id(3),
+        session: session(1),
+        service_name: "../rpc".into(),
+        preferred_port: None,
+    };
+    assert_eq!(
+        encode_manager_to_daemon_control(&invalid_name),
+        Err(ManagerProtocolError::InvalidControl)
+    );
+    assert_eq!(
+        encode_daemon_to_manager_control(&DaemonToManagerMessage::LocalServicePublished {
+            request_id: request_id(4),
+            session: session(1),
+            service: ManagerLocalServiceId::new(1).unwrap(),
+            port: 80,
+        }),
         Err(ManagerProtocolError::InvalidControl)
     );
 }
@@ -544,6 +587,17 @@ fn reply_correlation_is_exact_and_notifications_are_uncorrelated() {
             session: session(1),
             stream: stream(2),
         },
+        DaemonToManagerMessage::LocalServicePublished {
+            request_id: request_id(4),
+            session: session(1),
+            service: ManagerLocalServiceId::new(3).unwrap(),
+            port: 9000,
+        },
+        DaemonToManagerMessage::LocalServiceUnpublished {
+            request_id: request_id(4),
+            session: session(1),
+            service: ManagerLocalServiceId::new(3).unwrap(),
+        },
         DaemonToManagerMessage::HealthStatus {
             request_id: request_id(4),
             state: "running".to_owned(),
@@ -579,6 +633,11 @@ fn reply_correlation_is_exact_and_notifications_are_uncorrelated() {
         DaemonToManagerMessage::SessionEnded {
             session: session(1),
             reason: ServiceEndReason::SessionEnded,
+        },
+        DaemonToManagerMessage::LocalServiceIncoming {
+            session: session(1),
+            service: ManagerLocalServiceId::new(3).unwrap(),
+            stream: stream(2),
         },
     ] {
         assert_eq!(notification.correlation(), None);
@@ -687,7 +746,7 @@ fn scope_accounting_is_bounded_at_capacity_one_exact_and_max_plus_one() {
 }
 
 #[test]
-fn declared_ceilings_match_the_plan_368_contract() {
+fn declared_ceilings_match_the_plan_368_and_408_contracts() {
     // These are frozen protocol facts asserted by the reference spec. Changing
     // one is a protocol change requiring a new plan.
     assert_eq!(MAX_SERVICE_STREAMS_PER_SESSION, 128);
@@ -695,6 +754,12 @@ fn declared_ceilings_match_the_plan_368_contract() {
     assert_eq!(MAX_INFLIGHT_REQUESTS, 64);
     assert_eq!(MAX_CONTROL_BYTES, 16_384);
     assert_eq!(MAX_DATA_FRAME_BYTES, 65_536);
+    assert_eq!(i2pr_app_manager_proto::MAX_LOCAL_SERVICES_PER_SESSION, 8);
+    assert_eq!(
+        i2pr_app_manager_proto::MAX_LOCAL_SERVICE_CONNECTIONS_PER_SESSION,
+        16
+    );
+    assert_eq!(i2pr_app_manager_proto::MAX_LOCAL_SERVICE_QUEUE_FRAMES, 8);
     assert_eq!(i2pr_app_manager_proto::FRAME_HEADER_BYTES, 12);
     assert_eq!(i2pr_app_manager_proto::MANAGER_PROTOCOL_MAJOR, 1);
 }

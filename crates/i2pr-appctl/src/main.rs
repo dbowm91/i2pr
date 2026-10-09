@@ -114,12 +114,14 @@ enum AppCommand {
 enum GrantCapability {
     Sam,
     I2cp,
+    LocalService,
 }
 impl From<GrantCapability> for Capability {
     fn from(v: GrantCapability) -> Self {
         match v {
             GrantCapability::Sam => Self::Sam,
             GrantCapability::I2cp => Self::I2cp,
+            GrantCapability::LocalService => Self::LocalService,
         }
     }
 }

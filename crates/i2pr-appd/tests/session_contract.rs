@@ -297,6 +297,8 @@ fn answer(
         | ManagerToDaemonMessage::OpenService { request_id, .. }
         | ManagerToDaemonMessage::CloseService { request_id, .. }
         | ManagerToDaemonMessage::ResetService { request_id, .. }
+        | ManagerToDaemonMessage::PublishLocalService { request_id, .. }
+        | ManagerToDaemonMessage::UnpublishLocalService { request_id, .. }
         | ManagerToDaemonMessage::Health { request_id }
         | ManagerToDaemonMessage::Shutdown { request_id, .. } => *request_id,
     };
@@ -338,6 +340,21 @@ fn answer(
             request_id,
             session: *session,
             stream: *stream,
+        }),
+        ManagerToDaemonMessage::PublishLocalService { session, .. } => {
+            Some(DaemonToManagerMessage::LocalServicePublished {
+                request_id,
+                session: *session,
+                service: i2pr_app_manager_proto::ManagerLocalServiceId::new(100).unwrap(),
+                port: 9000,
+            })
+        }
+        ManagerToDaemonMessage::UnpublishLocalService {
+            session, service, ..
+        } => Some(DaemonToManagerMessage::LocalServiceUnpublished {
+            request_id,
+            session: *session,
+            service: *service,
         }),
         ManagerToDaemonMessage::CloseSession { session, .. } => {
             Some(DaemonToManagerMessage::SessionClosed {
@@ -542,6 +559,139 @@ async fn a_matching_hello_is_answered_with_the_launch_capabilities() {
 }
 
 #[tokio::test]
+async fn v1_0_client_remains_usable_without_v1_1_local_service_capability() {
+    let mut harness = harness(&[Capability::LocalService], OpenPolicy::Accept).await;
+    let (mut app, task) = start_session(&mut harness, &[Capability::LocalService]).await;
+    app.greet_with(Role::Application, PROTOCOL_MAJOR, 0).await;
+    app.send_control(&AppToHostMessage::Hello {
+        request_id: rid(2),
+        app_id: AppId::parse(APP_ID).expect("app id"),
+        instance_id: AppInstanceId::new(INSTANCE).expect("instance"),
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: 0,
+    })
+    .await;
+    assert!(matches!(
+        app.recv_control().await,
+        HostToAppMessage::Reply {
+            outcome: AppRequestOutcome::Succeeded,
+            ..
+        }
+    ));
+    assert_eq!(
+        app.recv_control().await,
+        HostToAppMessage::Capabilities {
+            capabilities: Vec::new()
+        }
+    );
+    drop(app);
+    assert_eq!(end_of(task).await, SessionEnd::ApplicationClosed);
+}
+
+#[tokio::test]
+async fn local_service_publish_incoming_and_data_use_logical_streams() {
+    let mut harness = harness(&[Capability::LocalService], OpenPolicy::Accept).await;
+    let (mut app, task) = start_session(&mut harness, &[Capability::LocalService]).await;
+    app.greet().await;
+    app.send_control(&hello()).await;
+    assert!(matches!(
+        app.recv_control().await,
+        HostToAppMessage::Reply {
+            outcome: AppRequestOutcome::Succeeded,
+            ..
+        }
+    ));
+    assert_eq!(
+        app.recv_control().await,
+        HostToAppMessage::Capabilities {
+            capabilities: vec![Capability::LocalService]
+        }
+    );
+    app.send_control(&AppToHostMessage::PublishLocalService {
+        request_id: rid(3),
+        service_name: "rpc".into(),
+        preferred_port: None,
+    })
+    .await;
+    let (app_service_id, port) = match app.recv_control().await {
+        HostToAppMessage::LocalServicePublished {
+            request_id,
+            service_id,
+            port,
+        } => {
+            assert_eq!(request_id, rid(3));
+            (service_id, port)
+        }
+        other => panic!("expected local service publication, got {other:?}"),
+    };
+    assert_eq!(port, 9000);
+    loop {
+        if let ManagerToDaemonMessage::PublishLocalService {
+            service_name,
+            preferred_port: None,
+            ..
+        } = harness.daemon.seen.recv().await.expect("daemon request")
+        {
+            assert_eq!(service_name, "rpc");
+            break;
+        }
+    }
+
+    let manager_stream = ManagerServiceStreamId::new(55).unwrap();
+    harness
+        .daemon
+        .inject
+        .send(DaemonToManagerMessage::LocalServiceIncoming {
+            session: harness.session,
+            service: i2pr_app_manager_proto::ManagerLocalServiceId::new(100).unwrap(),
+            stream: manager_stream,
+        })
+        .await
+        .unwrap();
+    let app_stream_id = match app.recv_control().await {
+        HostToAppMessage::LocalServiceIncoming {
+            service_id,
+            stream_id,
+        } => {
+            assert_eq!(service_id, app_service_id);
+            stream_id
+        }
+        other => panic!("expected incoming logical stream, got {other:?}"),
+    };
+    assert_ne!(app_stream_id, 0);
+    app.send_data(app_stream_id, b"from-app").await;
+    assert_eq!(
+        timeout(DEADLINE, harness.daemon.data_seen.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        (manager_stream, b"from-app".to_vec())
+    );
+    harness
+        .daemon
+        .inject_data
+        .send((manager_stream, b"to-app".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(app.recv_data().await, (app_stream_id, b"to-app".to_vec()));
+
+    app.send_control(&AppToHostMessage::UnpublishLocalService {
+        request_id: rid(4),
+        service_id: app_service_id,
+    })
+    .await;
+    assert_eq!(
+        app.recv_control().await,
+        HostToAppMessage::LocalServiceUnpublished {
+            request_id: rid(4),
+            service_id: app_service_id
+        }
+    );
+    drop(app);
+    assert_eq!(end_of(task).await, SessionEnd::ApplicationClosed);
+}
+
+#[tokio::test]
 async fn a_wrong_app_id_kills_the_launch() {
     let mut harness = harness(&[Capability::Sam], OpenPolicy::Accept).await;
     let (mut app, task) = start_session(&mut harness, &[Capability::Sam]).await;
@@ -584,14 +734,13 @@ async fn a_wrong_instance_id_kills_the_launch() {
 }
 
 #[tokio::test]
-async fn a_protocol_minor_mismatch_kills_the_launch() {
+async fn an_unsupported_future_protocol_minor_kills_the_launch() {
     let mut harness = harness(&[Capability::Sam], OpenPolicy::Accept).await;
     let (mut app, task) = start_session(&mut harness, &[Capability::Sam]).await;
 
     app.greet().await;
     // Minor is not checked by the codec, so this encodes cleanly and is refused
-    // by the session: Plan 369 makes no minor-compatibility promise, so a
-    // mismatch is not assumed harmless.
+    // by the session: an app cannot claim a minor newer than the one implemented.
     app.send_control(&AppToHostMessage::Hello {
         request_id: rid(2),
         app_id: AppId::parse(APP_ID).expect("app id"),

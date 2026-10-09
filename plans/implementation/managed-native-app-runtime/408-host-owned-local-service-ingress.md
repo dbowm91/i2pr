@@ -1,6 +1,6 @@
 # Plan 408 — Host-Owned Loopback Local-Service Ingress for Managed Apps
 
-Status: **in-progress-host-owned-loopback-local-service-ingress**
+Status: **passed-host-owned-loopback-local-service-ingress**
 
 Global number reconciliation: the imported draft used Plan 387, which Proposal 170 owns on main. This successor is Plan 408; the source draft is preserved at `plans/archive/managed-native-app-runtime/387-host-owned-local-service-ingress.md`.
 
@@ -44,7 +44,7 @@ reservation for inbound services.
 
 ## 2. Capability and versioning
 
-Add one explicit capability literal, tentatively `local_service`.
+Add one explicit capability literal, `local_service`.
 
 Because Plan 383 can persist signed package manifests and protocol ranges, this
 is an observable contract extension. Advance the managed-app protocol minor
@@ -90,6 +90,13 @@ host -> application:
   local_service_unpublished(request_id, service_id)
   local_service_incoming(service_id, stream_id)
 ```
+
+Frozen bounds: names are unique ASCII `[A-Za-z0-9_-]` tokens of 1–64 bytes;
+up to 8 services and 16 accepted local-service streams per session; preferred
+ports are 1024–65535, while an omitted port requests OS-selected ephemeral
+allocation. A bind conflict fails without retry. Each stream has an 8-frame
+inbound queue and each data frame is at most 65,536 bytes. The endpoint reports
+only the selected port; binding is always `127.0.0.1`.
 
 Accepted connection bytes then use the existing logical stream data/close/reset
 framing.

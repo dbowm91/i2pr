@@ -87,6 +87,8 @@ operation.
 - `close` `{type, stream_id}`
 - `reset` `{type, stream_id, reason}`
 - `ui_message` `{type, message_id, payload}`
+- v1.1 `publish_local_service` `{type, request_id, service_name, preferred_port?}`
+- v1.1 `unpublish_local_service` `{type, request_id, service_id}`
 
 **Host → application** messages:
 
@@ -97,6 +99,9 @@ operation.
 - `capabilities` `{type, capabilities[]}` — effective, administrator-granted
   capabilities only
 - `health` `{type, state, detail?}` — unsolicited host event, never a reply
+- v1.1 `local_service_published` `{type, request_id, service_id, port}`
+- v1.1 `local_service_unpublished` `{type, request_id, service_id}`
+- v1.1 `local_service_incoming` `{type, service_id, stream_id}`
 
 `service` is one of `sam`, `i2cp`, or `control_scoped`. `brokered_tcp` is not
 an openable v1 service. `status` is one of `pending`, `denied`, or `recorded`;
@@ -186,8 +191,9 @@ launch, sandboxing, or the outer managed-app channel.
 
 ## 4. Capabilities
 
-The closed v1 capability literals are `sam`, `i2cp`, `control_scoped`,
-`brokered_tcp`, `ui_bridge`, `health`, and `lifecycle`. Capability lists are
+The v1.0 capability literals are `sam`, `i2cp`, `control_scoped`,
+`brokered_tcp`, `ui_bridge`, `health`, and `lifecycle`. v1.1 adds
+`local_service`. Capability lists are
 unique and have at most 32 entries. Unknown literals are rejected.
 
 `RequestedCapability` is inert app/package input. `GrantedCapability` is
@@ -199,6 +205,16 @@ plan defines its connect transaction. Any other conversion from requested to
 granted requires a future explicit administrator owner. Capability scope is
 associated with an `AppPrincipal` and never implies a general Proposal 170
 credential.
+
+`local_service` permits only daemon-owned IPv4 loopback TCP listeners. It is
+administrator-granted, requires a package protocol range that includes 1.1,
+and is omitted from the effective capability list when an application
+negotiates v1.0. `preferred_port` is absent for OS-selected ephemeral allocation
+or is an unprivileged port (1024–65535). The returned port is informational.
+Names are unique ASCII tokens of 1–64 bytes. A session may publish 8 services
+and hold at most 16 accepted local-service streams; each stream has an 8-chunk
+inbound queue, each chunk at most 65,536 bytes. No application receives a
+socket or listener descriptor.
 
 ## 5. Manifest v1
 

@@ -49,7 +49,7 @@ use thiserror::Error;
 
 /// Protocol version, independent of the application protocol version.
 pub const MANAGER_PROTOCOL_MAJOR: u8 = 1;
-pub const MANAGER_PROTOCOL_MINOR: u8 = 0;
+pub const MANAGER_PROTOCOL_MINOR: u8 = 1;
 
 /// Manager-protocol handshake magic. Distinct from `I2PA` so a manager-protocol
 /// byte can never be mistaken for an application-protocol byte.
@@ -70,6 +70,10 @@ pub const MAX_DATA_FRAME_BYTES: usize = 65_536;
 pub const MAX_MANAGER_SESSIONS: usize = 32;
 /// Per-session live service streams. Matches the app protocol stream ceiling.
 pub const MAX_SERVICE_STREAMS_PER_SESSION: usize = 128;
+pub const MAX_LOCAL_SERVICES_PER_SESSION: usize = i2pr_app_proto::MAX_LOCAL_SERVICES;
+pub const MAX_LOCAL_SERVICE_CONNECTIONS_PER_SESSION: usize =
+    i2pr_app_proto::MAX_LOCAL_SERVICE_CONNECTIONS;
+pub const MAX_LOCAL_SERVICE_QUEUE_FRAMES: usize = i2pr_app_proto::MAX_LOCAL_SERVICE_QUEUE_FRAMES;
 pub const MAX_INFLIGHT_REQUESTS: usize = 64;
 pub const MAX_DIAGNOSTIC_BYTES: usize = 1_024;
 /// Bounded decimal digits for a 128-bit opaque id (39 digits is the maximum).
@@ -172,6 +176,7 @@ const MAX_HANDLE: u64 = u64::MAX;
 
 manager_handle!(ManagerSessionId, MAX_HANDLE);
 manager_handle!(ManagerServiceStreamId, MAX_HANDLE);
+manager_handle!(ManagerLocalServiceId, MAX_HANDLE);
 
 /// Opaque 128-bit application launch-instance id, carried as decimal digits.
 ///
@@ -459,6 +464,19 @@ pub enum ManagerToDaemonMessage {
         session: ManagerSessionId,
         stream: ManagerServiceStreamId,
     },
+    #[serde(rename = "publish_local_service")]
+    PublishLocalService {
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service_name: String,
+        preferred_port: Option<u16>,
+    },
+    #[serde(rename = "unpublish_local_service")]
+    UnpublishLocalService {
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+    },
     #[serde(rename = "reset_service")]
     ResetService {
         request_id: RequestId,
@@ -539,6 +557,19 @@ pub enum DaemonToManagerMessage {
         session: ManagerSessionId,
         stream: ManagerServiceStreamId,
     },
+    #[serde(rename = "local_service_published")]
+    LocalServicePublished {
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+        port: u16,
+    },
+    #[serde(rename = "local_service_unpublished")]
+    LocalServiceUnpublished {
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+    },
     #[serde(rename = "health_status")]
     HealthStatus {
         request_id: RequestId,
@@ -562,6 +593,12 @@ pub enum DaemonToManagerMessage {
         stream: ManagerServiceStreamId,
         reason: ServiceEndReason,
     },
+    #[serde(rename = "local_service_incoming")]
+    LocalServiceIncoming {
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+        stream: ManagerServiceStreamId,
+    },
     /// Unsolicited: the session was torn down and every descendant stream died.
     #[serde(rename = "session_ended")]
     SessionEnded {
@@ -583,10 +620,14 @@ impl DaemonToManagerMessage {
             | Self::ServiceOpened { request_id, .. }
             | Self::ServiceClosed { request_id, .. }
             | Self::ServiceReset { request_id, .. }
+            | Self::LocalServicePublished { request_id, .. }
+            | Self::LocalServiceUnpublished { request_id, .. }
             | Self::HealthStatus { request_id, .. }
             | Self::ShutdownAck { request_id }
             | Self::Rejected { request_id, .. } => Some(*request_id),
-            Self::ServiceEnded { .. } | Self::SessionEnded { .. } => None,
+            Self::ServiceEnded { .. }
+            | Self::SessionEnded { .. }
+            | Self::LocalServiceIncoming { .. } => None,
         }
     }
 }
@@ -967,7 +1008,24 @@ pub fn validate_manager_to_daemon_message(
         ManagerToDaemonMessage::CloseSession { .. }
         | ManagerToDaemonMessage::OpenService { .. }
         | ManagerToDaemonMessage::CloseService { .. }
+        | ManagerToDaemonMessage::UnpublishLocalService { .. }
         | ManagerToDaemonMessage::Health { .. } => Ok(()),
+        ManagerToDaemonMessage::PublishLocalService {
+            service_name,
+            preferred_port,
+            ..
+        } => {
+            if service_name.is_empty()
+                || service_name.len() > i2pr_app_proto::MAX_LOCAL_SERVICE_NAME_BYTES
+                || !service_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                || preferred_port.is_some_and(|port| port < 1024)
+            {
+                return Err(ManagerProtocolError::InvalidControl);
+            }
+            Ok(())
+        }
         ManagerToDaemonMessage::ResetService { reason, .. }
         | ManagerToDaemonMessage::Shutdown { reason, .. } => bounded_string(reason),
     }
@@ -977,6 +1035,9 @@ pub fn validate_daemon_to_manager_message(
     message: &DaemonToManagerMessage,
 ) -> Result<(), ManagerProtocolError> {
     match message {
+        DaemonToManagerMessage::LocalServicePublished { port, .. } if *port < 1024 => {
+            Err(ManagerProtocolError::InvalidControl)
+        }
         DaemonToManagerMessage::HealthStatus { state, detail, .. } => {
             bounded_string(state)?;
             if let Some(detail) = detail {

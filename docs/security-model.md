@@ -310,7 +310,7 @@ reported as forced. No Plan 021 service binds sockets, connects to peers,
 performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
 advertises protocol capabilities.
 
-## Managed-application process and policy threats (Plans 369–374)
+## Managed-application process and policy threats (Plans 369–408)
 
 Plans 369–374 add a managed-application runtime that can start applications
 as real processes after explicit local policy. It is **disabled by default**
@@ -384,6 +384,14 @@ staging and parses only that copy. Package paths are validated and files are
 materialized manually; there is no install hook, generic extract-all, network
 fetch, or exec path. Appd re-verifies selected packages before constructing
 authority.
+
+Plan 408 adds one narrowly scoped listener exception: an administrator-granted
+`local_service` capability lets the **daemon** bind IPv4 `127.0.0.1` and forward
+accepted bytes as logical streams over the same inherited pipe. Appd and
+apphost remain listener-free and receive no socket or descriptor. The endpoint
+is not authenticated by loopback peer address. Publication is bounded to 8
+listeners and 16 accepted streams per app session, and session teardown closes
+both. This does not grant general host networking to a Secured application.
 
 These checks prove key possession and content integrity only. Publisher trust,
 selection, grants, profile, and autostart are distinct persistent decisions.

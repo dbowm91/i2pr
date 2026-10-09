@@ -180,7 +180,7 @@ async fn the_manager_greeting_is_the_exact_frozen_byte_sequence() {
 
     let mut bytes = [0_u8; HANDSHAKE_BYTES];
     peer.stream.read_exact(&mut bytes).await.expect("read");
-    assert_eq!(&bytes, b"I2PM\x01\x00\x01\x00\x00");
+    assert_eq!(&bytes, b"I2PM\x01\x01\x01\x00\x00");
     assert_eq!(
         Handshake::decode(&bytes).expect("decode"),
         Handshake {

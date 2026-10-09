@@ -43,7 +43,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.89` (`cargo check --locked
 
 Enforced by `scripts/check-dependency-direction.sh`, `scripts/check-runtime-boundaries.sh`, `scripts/check-console-boundaries.sh`, and `scripts/check-console-browser-security.sh`. Details: `docs/architecture/overview.md`.
 
-## Managed application runtime (Plans 368–371 and 382–383; experimental, disabled by default)
+## Managed application runtime (Plans 368–371, 382–383, 407–408; experimental, disabled by default)
 
 `i2pr-appd` is the supervised manager process and `i2pr-apphost` is the **only**
 component that execs an application. Both are separate process trust zones that
@@ -70,6 +70,13 @@ Do not extend this profile to dynamic loaders, threads, subprocesses, or broader
 host filesystem access without a new plan and qualification. Policy changes
 require app runtime restart. A
 broken manager degrades the app runtime and nothing else.
+
+The v1.1 `local_service` capability is granted only by offline administrator
+policy. `i2pr-daemon` owns at most 8 IPv4 loopback listeners per app session and
+16 accepted local streams; it sends typed stream events through the inherited
+manager pipe. Neither appd nor apphost receives a socket or descriptor, and
+the listener always binds `127.0.0.1`. v1.0 clients do not receive this
+capability.
 
 Do not describe managed-app v1 as released, stable, supported, or advertised.
 Do not run a focused `cargo test -p i2pr-daemon` qualification run without

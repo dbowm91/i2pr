@@ -12,9 +12,10 @@
 //! 1. **Hello is declaration, not authentication.** The application was spawned
 //!    by apphost, which was spawned by this manager, and the private stdio
 //!    channel was handed to it. `hello` only confirms that the process is
-//!    speaking for the identity this manager already selected. So the match is
-//!    exact — app id, instance id, major *and* minor — and any mismatch,
-//!    duplicate, or data-before-hello terminates the launch.
+//!    speaking for the identity this manager already selected. App id and
+//!    instance id match exactly; the major must match, and older compatible
+//!    minors are accepted with newer capabilities filtered out. Any identity
+//!    mismatch, duplicate, future minor, or data-before-hello ends the launch.
 //! 2. **A permission request cannot raise authority.** [`LaunchAuthority`] owns
 //!    its capabilities behind no `&mut` path at all, so there is nothing to
 //!    mutate. The observable consequence is that a capability the authority does
@@ -290,6 +291,10 @@ pub struct AppSession {
     limits: SessionLimits,
     /// Application stream id → daemon-issued handle.
     streams: BTreeMap<u32, ManagerServiceStreamId>,
+    local_services: BTreeMap<u32, i2pr_app_manager_proto::ManagerLocalServiceId>,
+    protocol_minor: u8,
+    next_incoming_stream: u32,
+    next_local_service: u32,
     /// Set once the daemon has ended the session, so teardown does not ask it to
     /// close something that is already gone.
     manager_ended: bool,
@@ -358,6 +363,10 @@ impl AppSession {
             reader_task: Some(reader_task),
             limits: SessionLimits::default(),
             streams: BTreeMap::new(),
+            local_services: BTreeMap::new(),
+            protocol_minor: 0,
+            next_incoming_stream: u32::MAX,
+            next_local_service: 1,
             manager_ended: false,
         }
     }
@@ -487,10 +496,16 @@ impl AppSession {
 
         // The effective capability set the application is now held to. It is the
         // authority's, sent once, and there is no message that can change it.
+        self.protocol_minor = protocol_minor;
+        let capabilities = self
+            .authority
+            .capabilities()
+            .iter()
+            .copied()
+            .filter(|cap| *cap != i2pr_app_proto::Capability::LocalService || protocol_minor >= 1)
+            .collect();
         if let Err(error) = self
-            .write_to_app(&HostToAppMessage::Capabilities {
-                capabilities: self.authority.capabilities().to_vec(),
-            })
+            .write_to_app(&HostToAppMessage::Capabilities { capabilities })
             .await
         {
             return Err(SessionEnd::Refused(error));
@@ -515,6 +530,11 @@ impl AppSession {
                     }
                     Some(ManagerEvent::Data { stream, payload }) => {
                         if let Err(error) = self.on_backend_data(stream, payload).await {
+                            return SessionEnd::Refused(error);
+                        }
+                    }
+                    Some(ManagerEvent::LocalServiceIncoming { service, stream }) => {
+                        if let Err(error) = self.on_local_service_incoming(service, stream).await {
                             return SessionEnd::Refused(error);
                         }
                     }
@@ -557,10 +577,7 @@ impl AppSession {
         if instance_id != self.authority.instance_id() {
             return Err(AppdError::App("hello declared a different instance id"));
         }
-        // Major must match for the contract to be the one both sides implement.
-        // Minor must also match: Plan 369 makes no minor-compatibility promise,
-        // so a mismatch is refused rather than assumed harmless.
-        if protocol_major != PROTOCOL_MAJOR || protocol_minor != PROTOCOL_MINOR {
+        if protocol_major != PROTOCOL_MAJOR || protocol_minor > PROTOCOL_MINOR {
             return Err(AppdError::Contract(ContractError::UnsupportedVersion));
         }
         Ok(())
@@ -626,6 +643,22 @@ impl AppSession {
             AppToHostMessage::UiMessage { .. } => {
                 Err(AppdError::App("ui_message has no host in Plan 369"))
             }
+            AppToHostMessage::PublishLocalService {
+                request_id,
+                service_name,
+                preferred_port,
+            } => {
+                self.publish_local_service(request_id, service_name, preferred_port)
+                    .await?;
+                Ok(None)
+            }
+            AppToHostMessage::UnpublishLocalService {
+                request_id,
+                service_id,
+            } => {
+                self.unpublish_local_service(request_id, service_id).await?;
+                Ok(None)
+            }
         }
     }
 
@@ -672,6 +705,176 @@ impl AppSession {
         };
         self.write_to_app(&reply).await?;
         Ok(None)
+    }
+
+    async fn publish_local_service(
+        &mut self,
+        request_id: RequestId,
+        service_name: String,
+        preferred_port: Option<u16>,
+    ) -> Result<(), AppdError> {
+        self.limits
+            .register_request(u32::from(request_id))
+            .map_err(AppdError::Contract)?;
+        let response = if self.protocol_minor < 1
+            || !self
+                .authority
+                .permits(i2pr_app_proto::Capability::LocalService)
+        {
+            HostToAppMessage::Reply {
+                request_id,
+                outcome: AppRequestOutcome::Failed(RequestError {
+                    code: RequestErrorCode::PermissionDenied,
+                    diagnostic: Some("local_service capability is not granted".into()),
+                }),
+            }
+        } else if self.local_services.len() >= i2pr_app_proto::MAX_LOCAL_SERVICES {
+            HostToAppMessage::Reply {
+                request_id,
+                outcome: AppRequestOutcome::Failed(RequestError {
+                    code: RequestErrorCode::ResourceLimit,
+                    diagnostic: Some("local service limit reached".into()),
+                }),
+            }
+        } else {
+            let manager_request = self.link.allocate_request_id();
+            match self
+                .link
+                .request(ManagerToDaemonMessage::PublishLocalService {
+                    request_id: manager_request,
+                    session: self.session,
+                    service_name,
+                    preferred_port,
+                })
+                .await
+            {
+                Ok(DaemonToManagerMessage::LocalServicePublished { service, port, .. }) => {
+                    let app_id = self.next_local_service;
+                    self.next_local_service = self
+                        .next_local_service
+                        .checked_add(1)
+                        .ok_or(AppdError::App("local service ids exhausted"))?;
+                    self.local_services.insert(app_id, service);
+                    HostToAppMessage::LocalServicePublished {
+                        request_id,
+                        service_id: app_id,
+                        port,
+                    }
+                }
+                Ok(DaemonToManagerMessage::Rejected { error, .. }) => HostToAppMessage::Reply {
+                    request_id,
+                    outcome: AppRequestOutcome::Failed(RequestError {
+                        code: match error.code {
+                            ManagerErrorCode::PermissionDenied => {
+                                RequestErrorCode::PermissionDenied
+                            }
+                            ManagerErrorCode::ResourceLimit => RequestErrorCode::ResourceLimit,
+                            ManagerErrorCode::Conflict => RequestErrorCode::Conflict,
+                            _ => RequestErrorCode::InvalidRequest,
+                        },
+                        diagnostic: Some("daemon refused local service".into()),
+                    }),
+                },
+                Ok(_) => {
+                    return Err(AppdError::App(
+                        "daemon answered local-service publish with unrelated message",
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        self.limits
+            .complete_request(request_id)
+            .map_err(AppdError::Contract)?;
+        self.write_to_app(&response).await
+    }
+
+    async fn unpublish_local_service(
+        &mut self,
+        request_id: RequestId,
+        app_service_id: u32,
+    ) -> Result<(), AppdError> {
+        self.limits
+            .register_request(u32::from(request_id))
+            .map_err(AppdError::Contract)?;
+        let service = self.local_services.remove(&app_service_id);
+        let result = if let Some(service) = service {
+            let manager_request = self.link.allocate_request_id();
+            self.link
+                .request(ManagerToDaemonMessage::UnpublishLocalService {
+                    request_id: manager_request,
+                    session: self.session,
+                    service,
+                })
+                .await
+        } else {
+            Err(AppdError::App("unknown local service"))
+        };
+        let _ = self.limits.complete_request(request_id);
+        match result {
+            Ok(DaemonToManagerMessage::LocalServiceUnpublished { .. }) => {
+                self.write_to_app(&HostToAppMessage::LocalServiceUnpublished {
+                    request_id,
+                    service_id: app_service_id,
+                })
+                .await
+            }
+            Ok(DaemonToManagerMessage::Rejected { error, .. }) => {
+                self.write_to_app(&HostToAppMessage::Reply {
+                    request_id,
+                    outcome: AppRequestOutcome::Failed(RequestError {
+                        code: RequestErrorCode::NotFound,
+                        diagnostic: Some(format!("local service refused: {:?}", error.code)),
+                    }),
+                })
+                .await
+            }
+            Err(AppdError::App(_)) => {
+                self.write_to_app(&HostToAppMessage::Reply {
+                    request_id,
+                    outcome: AppRequestOutcome::Failed(RequestError {
+                        code: RequestErrorCode::NotFound,
+                        diagnostic: Some("local service not found".into()),
+                    }),
+                })
+                .await
+            }
+            Err(error) => Err(error),
+            _ => Err(AppdError::App(
+                "daemon answered local-service unpublish with unrelated message",
+            )),
+        }
+    }
+
+    async fn on_local_service_incoming(
+        &mut self,
+        service: i2pr_app_manager_proto::ManagerLocalServiceId,
+        stream: ManagerServiceStreamId,
+    ) -> Result<(), AppdError> {
+        if !self.local_services.values().any(|value| *value == service) {
+            return Err(AppdError::App("daemon named an unowned local service"));
+        }
+        let mut app_stream = self.next_incoming_stream;
+        while app_stream == 0 || self.streams.contains_key(&app_stream) {
+            app_stream = app_stream
+                .checked_sub(1)
+                .ok_or(AppdError::App("incoming stream ids exhausted"))?;
+        }
+        self.next_incoming_stream = app_stream.saturating_sub(1);
+        self.limits
+            .open_stream(app_stream)
+            .map_err(AppdError::Contract)?;
+        self.streams.insert(app_stream, stream);
+        let service_id = self
+            .local_services
+            .iter()
+            .find_map(|(id, value)| (*value == service).then_some(*id))
+            .ok_or(AppdError::App("daemon named an unowned local service"))?;
+        self.write_to_app(&HostToAppMessage::LocalServiceIncoming {
+            service_id,
+            stream_id: app_stream,
+        })
+        .await
     }
 
     /// Maps one application open onto a manager-protocol service stream.

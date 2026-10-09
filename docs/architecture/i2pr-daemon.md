@@ -213,7 +213,7 @@ exact byte-stream mapping are specified in
 | File | Lines | Responsibility | Key types |
 | --- | --- | --- | --- |
 | `src/app_gateway.rs` | 704 | Plan 355 per-principal authorization, capability-first service admission, isolated private SAM/I2CP state, bounded supervised byte-stream ownership, and no listener fallback | `AppGatewayAuthorization`, `AppGatewayLimits`, `AppGatewaySession`, `AppGatewayConnection`, `AppGatewayConnectionEnd`, `AppGatewayError` |
-| `src/app_manager_bridge.rs` | Plan 368 trusted AppManager bridge over an **injected** duplex stream: handshake, strict directional control loop, manager-asserted grants re-derived through the administrator path, capability check before backend allocation, exact SAM/I2CP octet forwarding through bounded per-stream queues, one backend watcher per stream, and deterministic teardown on manager EOF. No listener, no socket, no loopback fallback | `AppManagerBridge`, `AppManagerComposition`, `AppManagerBridgeError`, `ManagerTransport` |
+| `src/app_manager_bridge.rs` | Plans 368/408 trusted AppManager bridge over an **injected** duplex stream: SAM/I2CP gateway plus administrator-granted `local_service` publication. The daemon binds only `127.0.0.1`, owns accepted sockets, and forwards exact bytes over bounded logical streams; appd receives no socket or descriptor. Listener, accepted-stream, and session teardown are cancellation-owned | `AppManagerBridge`, `AppManagerComposition`, `AppManagerBridgeError`, `ManagerTransport` |
 
 ### Trusted AppManager bridge
 

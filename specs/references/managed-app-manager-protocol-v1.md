@@ -16,8 +16,10 @@ authenticated* application principal into the router's private SAM/I2CP capabili
 gateway. This protocol carries that projection.
 
 **In scope:** handshake, bounded frames, request/reply correlation, app gateway
-session create/close, SAM/I2CP service open/close/reset, ordered service data
-octets, backend termination notification, bounded health and shutdown.
+session create/close, SAM/I2CP service open/close/reset, administrator-granted
+daemon-owned loopback listener publication/unpublication, accepted-stream
+notifications, ordered service data octets, backend termination notification,
+bounded health and shutdown.
 
 **Explicitly out of scope.** A peer of this protocol cannot express any of:
 package install/update/uninstall; grant, revoke, or permission persistence;
@@ -26,8 +28,14 @@ configuration read/write; general Proposal 170 / I2PControl dispatch; daemon met
 names; `control_scoped`; administrator operations of any kind.
 
 There is deliberately no administrator message variant on this protocol.
+The v1.1 `local_service` messages only exercise a grant already fixed by the
+offline policy store; they cannot create or change a grant.
 
 ## 2. Relationship to other contracts
+
+The private manager protocol remains major version 1 and is currently minor
+version 1. Plan 408 added local-service control messages; the minor remains
+compatible because the handshake treats minor as informational.
 
 This protocol is **not**:
 
@@ -137,6 +145,10 @@ Header is exactly 12 octets, followed by the payload.
 | In-flight correlated requests | 64 |
 | Diagnostic / reason string | 1 024 octets, ASCII only |
 | Requested gateway connections | 1 … 128 |
+| Published local services per session | 8 |
+| Accepted local-service streams per session | 16 |
+| Local-service inbound queue | 8 data frames per stream |
+| Local-service bind address | `127.0.0.1` only |
 
 Every queue, count, frame, request, and stream in this protocol is bounded by one
 of these values or by an equivalent router-owner ceiling.

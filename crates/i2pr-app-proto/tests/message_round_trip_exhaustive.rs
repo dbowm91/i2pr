@@ -76,6 +76,15 @@ fn all_app_to_host() -> Vec<AppToHostMessage> {
             message_id: 7,
             payload: "{\"kind\":\"ready\"}".to_owned(),
         },
+        AppToHostMessage::PublishLocalService {
+            request_id: request_id(11),
+            service_name: "rpc".into(),
+            preferred_port: Some(9000),
+        },
+        AppToHostMessage::UnpublishLocalService {
+            request_id: request_id(12),
+            service_id: 3,
+        },
     ];
     // Exhaustive by construction: a new variant breaks this build.
     for message in &samples {
@@ -85,7 +94,9 @@ fn all_app_to_host() -> Vec<AppToHostMessage> {
             | AppToHostMessage::PermissionRequest { .. }
             | AppToHostMessage::Close { .. }
             | AppToHostMessage::Reset { .. }
-            | AppToHostMessage::UiMessage { .. } => {}
+            | AppToHostMessage::UiMessage { .. }
+            | AppToHostMessage::PublishLocalService { .. }
+            | AppToHostMessage::UnpublishLocalService { .. } => {}
         }
     }
     samples
@@ -123,6 +134,19 @@ fn all_host_to_app() -> Vec<HostToAppMessage> {
             state: "ready".to_owned(),
             detail: Some("detail".to_owned()),
         },
+        HostToAppMessage::LocalServicePublished {
+            request_id: request_id(10),
+            service_id: 1,
+            port: 9000,
+        },
+        HostToAppMessage::LocalServiceUnpublished {
+            request_id: request_id(11),
+            service_id: 1,
+        },
+        HostToAppMessage::LocalServiceIncoming {
+            service_id: 1,
+            stream_id: 20,
+        },
     ];
     for message in &samples {
         match message {
@@ -131,7 +155,10 @@ fn all_host_to_app() -> Vec<HostToAppMessage> {
             | HostToAppMessage::StreamClosed { .. }
             | HostToAppMessage::StreamReset { .. }
             | HostToAppMessage::Capabilities { .. }
-            | HostToAppMessage::Health { .. } => {}
+            | HostToAppMessage::Health { .. }
+            | HostToAppMessage::LocalServicePublished { .. }
+            | HostToAppMessage::LocalServiceUnpublished { .. }
+            | HostToAppMessage::LocalServiceIncoming { .. } => {}
         }
     }
     samples
@@ -352,7 +379,7 @@ fn hello_encodes_the_instance_id_as_canonical_decimal_digits() {
     assert_eq!(
         String::from_utf8(wire).expect("utf8"),
         format!(
-            r#"{{"type":"hello","request_id":1,"app_id":"sample-app","instance_id":"{}","protocol_major":1,"protocol_minor":0}}"#,
+            r#"{{"type":"hello","request_id":1,"app_id":"sample-app","instance_id":"{}","protocol_major":1,"protocol_minor":1}}"#,
             u128::MAX
         )
     );

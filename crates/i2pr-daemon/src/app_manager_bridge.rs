@@ -16,9 +16,8 @@
 //!
 //! # Deliberate non-features
 //!
-//! - No listener, socket, loopback connect, or host-socket API of any kind. The
-//!   transport is injected; Plan 369 owns the concrete anonymous inherited
-//!   binding.
+//! - The private manager transport remains injected and anonymous. The daemon
+//!   alone owns explicitly granted loopback local-service listeners.
 //! - No package, grant-persistence, launch-profile, process, or router-config
 //!   authority. The protocol vocabulary cannot express them.
 //! - `control_scoped` is unrepresentable in the service vocabulary and is refused
@@ -46,15 +45,15 @@
 // The allowance is scoped to this module and names its own reason.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use i2pr_app_manager_proto::{
     DaemonToManagerMessage, EffectiveGrant, Frame, FrameKind, Handshake, ManagerError,
-    ManagerErrorCode, ManagerGatewayLimits, ManagerProtocolError, ManagerScopeLimits,
-    ManagerService, ManagerServiceStreamId, ManagerSessionId, ManagerToDaemonMessage,
-    ServiceEndReason, ServiceStreamLedger,
+    ManagerErrorCode, ManagerGatewayLimits, ManagerLocalServiceId, ManagerProtocolError,
+    ManagerScopeLimits, ManagerService, ManagerServiceStreamId, ManagerSessionId,
+    ManagerToDaemonMessage, ServiceEndReason, ServiceStreamLedger,
 };
 use i2pr_app_proto::{
     AdministratorPrincipal, AppService, EffectiveCapabilities, GrantedCapability, RequestId,
@@ -62,6 +61,7 @@ use i2pr_app_proto::{
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::app_gateway::{
@@ -130,6 +130,14 @@ struct SessionState {
     connections: BTreeMap<ManagerServiceStreamId, StreamState>,
     /// Bounded inbound byte queues, keyed by the same session-local handle.
     inbound: BTreeMap<ManagerServiceStreamId, mpsc::Sender<Vec<u8>>>,
+    local_services: BTreeMap<ManagerLocalServiceId, LocalServiceState>,
+    local_service_names: BTreeSet<String>,
+    local_service_authorized: bool,
+}
+
+struct LocalServiceState {
+    name: String,
+    cancellation: CancellationToken,
 }
 
 /// One live service stream.
@@ -139,7 +147,7 @@ struct SessionState {
 /// cancellation root so an explicit close or reset reaches that task.
 struct StreamState {
     cancellation: CancellationToken,
-    service: ManagerService,
+    local_service: Option<ManagerLocalServiceId>,
 }
 
 /// The trusted bridge over one manager transport.
@@ -150,6 +158,7 @@ pub(crate) struct AppManagerBridge {
     outbound: Mutex<Option<OutboundWriter>>,
     next_session: AtomicU64,
     next_stream: AtomicU64,
+    next_local_service: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -173,6 +182,7 @@ impl AppManagerBridge {
             outbound: Mutex::new(None),
             next_session: AtomicU64::new(1),
             next_stream: AtomicU64::new(1),
+            next_local_service: AtomicU64::new(1),
         }
     }
 
@@ -445,6 +455,23 @@ impl AppManagerBridge {
                 session,
                 service,
             } => self.open_service(request_id, session, service).await,
+            ManagerToDaemonMessage::PublishLocalService {
+                request_id,
+                session,
+                service_name,
+                preferred_port,
+            } => {
+                self.publish_local_service(request_id, session, service_name, preferred_port)
+                    .await
+            }
+            ManagerToDaemonMessage::UnpublishLocalService {
+                request_id,
+                session,
+                service,
+            } => {
+                self.unpublish_local_service(request_id, session, service)
+                    .await
+            }
             ManagerToDaemonMessage::CloseService {
                 request_id,
                 session,
@@ -547,6 +574,9 @@ impl AppManagerBridge {
                 "capability set rejected",
             );
         };
+        let local_service_authorized = effective
+            .as_slice()
+            .contains(&i2pr_app_proto::Capability::LocalService);
         let Ok(limits) = AppGatewayLimits::new(limits.max_connections as usize) else {
             return reject(
                 request_id,
@@ -582,6 +612,9 @@ impl AppManagerBridge {
             streams: ServiceStreamLedger::default(),
             connections: BTreeMap::new(),
             inbound: BTreeMap::new(),
+            local_services: BTreeMap::new(),
+            local_service_names: BTreeSet::new(),
+            local_service_authorized,
         };
 
         let admitted = self.scope.lock().await.open_session(session_id).is_ok();
@@ -633,6 +666,250 @@ impl AppManagerBridge {
         }
         session_state.state.lock().await.gateway.shutdown().await;
         self.scope.lock().await.close_session(session).is_ok()
+    }
+
+    async fn publish_local_service(
+        self: &Arc<Self>,
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service_name: String,
+        preferred_port: Option<u16>,
+    ) -> Vec<DaemonToManagerMessage> {
+        let Some(state) = self.sessions.lock().await.get(&session).cloned() else {
+            return vec![reject(
+                request_id,
+                ManagerErrorCode::NotFound,
+                "unknown session",
+            )];
+        };
+        {
+            let guard = state.state.lock().await;
+            if !guard.local_service_authorized {
+                return vec![reject(
+                    request_id,
+                    ManagerErrorCode::PermissionDenied,
+                    "local_service capability not granted",
+                )];
+            }
+            if guard.local_services.len() >= i2pr_app_proto::MAX_LOCAL_SERVICES {
+                return vec![reject(
+                    request_id,
+                    ManagerErrorCode::ResourceLimit,
+                    "local service ceiling reached",
+                )];
+            }
+            if guard.local_service_names.contains(&service_name) {
+                return vec![reject(
+                    request_id,
+                    ManagerErrorCode::Conflict,
+                    "duplicate local service name",
+                )];
+            }
+        }
+        let port = preferred_port.unwrap_or(0);
+        let listener = match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
+            Ok(value) => value,
+            Err(_) => {
+                return vec![reject(
+                    request_id,
+                    ManagerErrorCode::Conflict,
+                    "loopback port unavailable",
+                )];
+            }
+        };
+        let Ok(address) = listener.local_addr() else {
+            return vec![reject(
+                request_id,
+                ManagerErrorCode::Internal,
+                "local listener address unavailable",
+            )];
+        };
+        let Ok(service) =
+            ManagerLocalServiceId::new(self.next_local_service.fetch_add(1, Ordering::Relaxed))
+        else {
+            return vec![reject(
+                request_id,
+                ManagerErrorCode::ResourceLimit,
+                "local service ids exhausted",
+            )];
+        };
+        let cancellation = state.cancellation.child_token();
+        {
+            let mut guard = state.state.lock().await;
+            if guard.local_services.len() >= i2pr_app_proto::MAX_LOCAL_SERVICES
+                || !guard.local_service_names.insert(service_name.clone())
+            {
+                return vec![reject(
+                    request_id,
+                    ManagerErrorCode::Conflict,
+                    "local service changed during bind",
+                )];
+            }
+            guard.local_services.insert(
+                service,
+                LocalServiceState {
+                    name: service_name.clone(),
+                    cancellation: cancellation.clone(),
+                },
+            );
+        }
+        let bridge = Arc::clone(self);
+        let accept_cancel = cancellation.clone();
+        if self.composition.children.spawn(move |_| async move {
+            loop {
+                let accepted = tokio::select! { biased; () = accept_cancel.cancelled() => break, result = listener.accept() => result };
+                match accepted { Ok((socket, peer)) if peer.ip().is_loopback() => bridge.accept_local_connection(session, service, socket).await, Ok((_socket, _)) => {}, Err(_) => break }
+            }
+            Ok(())
+        }).is_err() {
+            let mut guard = state.state.lock().await;
+            guard.local_services.remove(&service);
+            guard.local_service_names.remove(&service_name);
+            return vec![reject(request_id, ManagerErrorCode::ResourceLimit, "accept task unavailable")];
+        }
+        vec![DaemonToManagerMessage::LocalServicePublished {
+            request_id,
+            session,
+            service,
+            port: address.port(),
+        }]
+    }
+
+    async fn accept_local_connection(
+        self: &Arc<Self>,
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+        socket: TcpStream,
+    ) {
+        let Some(state) = self.sessions.lock().await.get(&session).cloned() else {
+            return;
+        };
+        let stream = match self.allocate_stream() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let (inbound, mut inbound_rx) =
+            mpsc::channel::<Vec<u8>>(i2pr_app_manager_proto::MAX_LOCAL_SERVICE_QUEUE_FRAMES);
+        let cancellation = state.cancellation.child_token();
+        {
+            let mut guard = state.state.lock().await;
+            if !guard.local_services.contains_key(&service)
+                || guard
+                    .connections
+                    .values()
+                    .filter(|entry| entry.local_service.is_some())
+                    .count()
+                    >= i2pr_app_manager_proto::MAX_LOCAL_SERVICE_CONNECTIONS_PER_SESSION
+                || guard.streams.open(stream).is_err()
+            {
+                return;
+            }
+            guard.inbound.insert(stream, inbound);
+            guard.connections.insert(
+                stream,
+                StreamState {
+                    cancellation: cancellation.clone(),
+                    local_service: Some(service),
+                },
+            );
+        }
+        let Some(outbound) = self.outbound_sender().await else {
+            let _ = self.close_service(session, stream).await;
+            return;
+        };
+        let event = DaemonToManagerMessage::LocalServiceIncoming {
+            session,
+            service,
+            stream,
+        };
+        if let Ok(payload) = i2pr_app_manager_proto::encode_daemon_to_manager_control(&event)
+            && let Ok(bytes) = Frame::control(payload).encode()
+            && outbound.send(bytes).await.is_err()
+        {
+            let _ = self.close_service(session, stream).await;
+            return;
+        }
+        let (mut reader, mut writer) = tokio::io::split(socket);
+        let pump_outbound = outbound.clone();
+        let pump_cancel = cancellation.clone();
+        let write_cancel = cancellation.clone();
+        let bridge = Arc::clone(self);
+        if self.composition.children.spawn(move |_| async move {
+            let mut read_buffer = vec![0_u8; 16 * 1024];
+            let write_pump = async { loop { tokio::select! { biased; () = write_cancel.cancelled() => break, chunk = inbound_rx.recv() => match chunk { Some(bytes) if writer.write_all(&bytes).await.is_ok() => {}, _ => break } } } let _ = writer.shutdown().await; };
+            let read_pump = async { loop { tokio::select! { biased; () = pump_cancel.cancelled() => break, read = reader.read(&mut read_buffer) => match read { Ok(n) if n > 0 => { let frame = Frame::data(stream, read_buffer[..n].to_vec()); let Ok(frame) = frame.encode() else { break }; if pump_outbound.send(frame).await.is_err() { break; } }, _ => break } } } };
+            let ended = tokio::select! { biased; () = pump_cancel.cancelled() => false, _ = write_pump => true, _ = read_pump => true };
+            if ended {
+                pump_cancel.cancel(i2pr_core::CancellationReason::ParentScope);
+                bridge.notify_local_stream_ended(session, stream, ServiceEndReason::BackendClosed).await;
+                let _ = bridge.close_service(session, stream).await;
+            }
+            Ok(())
+        }).is_err() { let _ = self.close_service(session, stream).await; }
+    }
+
+    async fn unpublish_local_service(
+        &self,
+        request_id: RequestId,
+        session: ManagerSessionId,
+        service: ManagerLocalServiceId,
+    ) -> Vec<DaemonToManagerMessage> {
+        let Some(state) = self.sessions.lock().await.get(&session).cloned() else {
+            return vec![reject(
+                request_id,
+                ManagerErrorCode::NotFound,
+                "unknown session",
+            )];
+        };
+        let mut guard = state.state.lock().await;
+        let Some(entry) = guard.local_services.remove(&service) else {
+            return vec![reject(
+                request_id,
+                ManagerErrorCode::NotFound,
+                "unknown local service",
+            )];
+        };
+        entry
+            .cancellation
+            .cancel(i2pr_core::CancellationReason::ParentScope);
+        guard.local_service_names.remove(&entry.name);
+        let streams = guard
+            .connections
+            .iter()
+            .filter_map(|(stream, value)| (value.local_service == Some(service)).then_some(*stream))
+            .collect::<Vec<_>>();
+        drop(guard);
+        for stream in streams {
+            self.notify_local_stream_ended(session, stream, ServiceEndReason::ManagerClosed)
+                .await;
+            let _ = self.close_service(session, stream).await;
+        }
+        vec![DaemonToManagerMessage::LocalServiceUnpublished {
+            request_id,
+            session,
+            service,
+        }]
+    }
+
+    async fn notify_local_stream_ended(
+        &self,
+        session: ManagerSessionId,
+        stream: ManagerServiceStreamId,
+        reason: ServiceEndReason,
+    ) {
+        let Some(outbound) = self.outbound_sender().await else {
+            return;
+        };
+        let event = DaemonToManagerMessage::ServiceEnded {
+            session,
+            stream,
+            reason,
+        };
+        if let Ok(payload) = i2pr_app_manager_proto::encode_daemon_to_manager_control(&event)
+            && let Ok(bytes) = Frame::control(payload).encode()
+        {
+            let _ = outbound.send(bytes).await;
+        }
     }
 
     async fn open_service(
@@ -703,7 +980,7 @@ impl AppManagerBridge {
             stream_id,
             StreamState {
                 cancellation: stream_cancellation.clone(),
-                service,
+                local_service: None,
             },
         );
 
@@ -845,7 +1122,7 @@ impl AppManagerBridge {
         payload: Vec<u8>,
     ) -> Result<(), AppManagerBridgeError> {
         let owner = self.session_owning(stream).await;
-        let Some(state) = owner else {
+        let Some((session, state)) = owner else {
             return Err(AppManagerBridgeError::Protocol(
                 ManagerProtocolError::InvalidHandle,
             ));
@@ -858,18 +1135,31 @@ impl AppManagerBridge {
         };
         // A full queue means the backend is not draining. Refusing here is the
         // bounded-backpressure behaviour: the stream resets rather than growing.
-        sender.try_send(payload).map_err(|_| {
-            AppManagerBridgeError::Protocol(ManagerProtocolError::LimitExceeded("service stream"))
-        })
+        match sender.try_send(payload) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(AppManagerBridgeError::Protocol(
+                ManagerProtocolError::InvalidHandle,
+            )),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                drop(guard);
+                self.notify_local_stream_ended(session, stream, ServiceEndReason::BackendRejected)
+                    .await;
+                let _ = self.close_service(session, stream).await;
+                Ok(())
+            }
+        }
     }
 
     /// Finds the one session whose local map contains `stream`.
     ///
     /// Because handles are allocated monotonically and never reused, the match is
     /// unique. A stale handle matches nothing.
-    async fn session_owning(&self, stream: ManagerServiceStreamId) -> Option<Arc<Session>> {
+    async fn session_owning(
+        &self,
+        stream: ManagerServiceStreamId,
+    ) -> Option<(ManagerSessionId, Arc<Session>)> {
         let sessions = self.sessions.lock().await;
-        for session_state in sessions.values() {
+        for (session, session_state) in sessions.iter() {
             if session_state
                 .state
                 .lock()
@@ -877,7 +1167,7 @@ impl AppManagerBridge {
                 .inbound
                 .contains_key(&stream)
             {
-                return Some(Arc::clone(session_state));
+                return Some((*session, Arc::clone(session_state)));
             }
         }
         None
@@ -1018,7 +1308,7 @@ mod tests {
     };
     use i2pr_app_proto::{AppId, AppInstanceId, Capability, PublisherId};
     use std::net::{IpAddr, Ipv4Addr};
-    use tokio::io::{AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::time::{Duration, timeout};
 
     const IO_BUFFER: usize = 64 * 1024;
@@ -1141,6 +1431,8 @@ mod tests {
                 | ManagerToDaemonMessage::OpenService { request_id, .. }
                 | ManagerToDaemonMessage::CloseService { request_id, .. }
                 | ManagerToDaemonMessage::ResetService { request_id, .. }
+                | ManagerToDaemonMessage::PublishLocalService { request_id, .. }
+                | ManagerToDaemonMessage::UnpublishLocalService { request_id, .. }
                 | ManagerToDaemonMessage::Health { request_id }
                 | ManagerToDaemonMessage::Shutdown { request_id, .. } => *request_id,
             };
@@ -1991,5 +2283,322 @@ mod tests {
         bridge.cancel();
         bridge.teardown_all().await;
         assert_eq!(bridge.counts().await, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn granted_local_service_forwards_exact_bytes_over_loopback() {
+        let (_bridge, mut manager) = start_bridge().await;
+        let session = opened_session(
+            manager
+                .open_session(rid(1), 51, &[Capability::LocalService])
+                .await,
+        );
+        let published = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(2),
+                session,
+                service_name: "rpc".into(),
+                preferred_port: None,
+            })
+            .await;
+        let (service, port) = match published {
+            DaemonToManagerMessage::LocalServicePublished { service, port, .. } => (service, port),
+            other => panic!("expected published service, got {other:?}"),
+        };
+        assert!(port >= 1024);
+        let mut client = timeout(DEADLINE, TcpStream::connect((Ipv4Addr::LOCALHOST, port)))
+            .await
+            .expect("connect deadline")
+            .expect("loopback listener");
+        let incoming = manager.next_notification().await;
+        let stream = match incoming {
+            DaemonToManagerMessage::LocalServiceIncoming {
+                session: actual,
+                service: actual_service,
+                stream,
+            } => {
+                assert_eq!(actual, session);
+                assert_eq!(actual_service, service);
+                stream
+            }
+            other => panic!("expected incoming stream, got {other:?}"),
+        };
+        client
+            .write_all(b"client-to-app")
+            .await
+            .expect("client write");
+        match manager.next_message_with_payload().await {
+            ManagerReply::Data(actual, bytes) => {
+                assert_eq!(actual, stream.get() as u32);
+                assert_eq!(bytes, b"client-to-app");
+            }
+            _ => panic!("expected forwarded client bytes"),
+        }
+        manager.send_data(stream, b"app-to-client").await;
+        let mut received = [0_u8; 13];
+        timeout(DEADLINE, client.read_exact(&mut received))
+            .await
+            .expect("read deadline")
+            .expect("read client data");
+        assert_eq!(&received, b"app-to-client");
+        let result = manager
+            .request(ManagerToDaemonMessage::UnpublishLocalService {
+                request_id: rid(3),
+                session,
+                service,
+            })
+            .await;
+        assert!(matches!(
+            result,
+            DaemonToManagerMessage::LocalServiceUnpublished { .. }
+        ));
+        assert_eq!(
+            timeout(DEADLINE, client.read(&mut [0_u8; 1]))
+                .await
+                .expect("teardown deadline")
+                .expect("teardown read"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn local_service_grant_and_session_ownership_are_enforced() {
+        let (_bridge, mut manager) = start_bridge().await;
+        let denied_session =
+            opened_session(manager.open_session(rid(10), 61, &[Capability::Sam]).await);
+        let denied = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(11),
+                session: denied_session,
+                service_name: "denied".into(),
+                preferred_port: None,
+            })
+            .await;
+        assert!(matches!(
+            denied,
+            DaemonToManagerMessage::Rejected {
+                error: ManagerError {
+                    code: ManagerErrorCode::PermissionDenied,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let owner = opened_session(
+            manager
+                .open_session(rid(12), 62, &[Capability::LocalService])
+                .await,
+        );
+        let foreign = opened_session(
+            manager
+                .open_session(rid(13), 63, &[Capability::LocalService])
+                .await,
+        );
+        let published = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(14),
+                session: owner,
+                service_name: "rpc".into(),
+                preferred_port: None,
+            })
+            .await;
+        let (service, port) = match published {
+            DaemonToManagerMessage::LocalServicePublished { service, port, .. } => (service, port),
+            other => panic!("expected publish, got {other:?}"),
+        };
+        let duplicate = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(15),
+                session: owner,
+                service_name: "rpc".into(),
+                preferred_port: None,
+            })
+            .await;
+        assert!(matches!(
+            duplicate,
+            DaemonToManagerMessage::Rejected {
+                error: ManagerError {
+                    code: ManagerErrorCode::Conflict,
+                    ..
+                },
+                ..
+            }
+        ));
+        let foreign_unpublish = manager
+            .request(ManagerToDaemonMessage::UnpublishLocalService {
+                request_id: rid(16),
+                session: foreign,
+                service,
+            })
+            .await;
+        assert!(matches!(
+            foreign_unpublish,
+            DaemonToManagerMessage::Rejected {
+                error: ManagerError {
+                    code: ManagerErrorCode::NotFound,
+                    ..
+                },
+                ..
+            }
+        ));
+        let own_unpublish = manager
+            .request(ManagerToDaemonMessage::UnpublishLocalService {
+                request_id: rid(17),
+                session: owner,
+                service,
+            })
+            .await;
+        assert!(matches!(
+            own_unpublish,
+            DaemonToManagerMessage::LocalServiceUnpublished { .. }
+        ));
+        assert!(
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err(),
+            "unpublished listener must be gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_service_connection_ceiling_rejects_the_seventeenth_stream() {
+        let (_bridge, mut manager) = start_bridge().await;
+        let session = opened_session(
+            manager
+                .open_session(rid(20), 71, &[Capability::LocalService])
+                .await,
+        );
+        let published = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(21),
+                session,
+                service_name: "bounded".into(),
+                preferred_port: None,
+            })
+            .await;
+        let (service, port) = match published {
+            DaemonToManagerMessage::LocalServicePublished { service, port, .. } => (service, port),
+            other => panic!("expected published service, got {other:?}"),
+        };
+        let mut clients = Vec::new();
+        for _ in 0..i2pr_app_manager_proto::MAX_LOCAL_SERVICE_CONNECTIONS_PER_SESSION {
+            clients.push(
+                TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                    .await
+                    .expect("connect under ceiling"),
+            );
+            assert!(matches!(
+                manager.next_notification().await,
+                DaemonToManagerMessage::LocalServiceIncoming { .. }
+            ));
+        }
+        let mut excess = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .expect("kernel may complete the bounded backlog connect");
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            timeout(DEADLINE, excess.read(&mut byte))
+                .await
+                .expect("excess close deadline")
+                .expect("excess close read"),
+            0
+        );
+        assert_eq!(
+            manager
+                .request(ManagerToDaemonMessage::UnpublishLocalService {
+                    request_id: rid(22),
+                    session,
+                    service
+                })
+                .await,
+            DaemonToManagerMessage::LocalServiceUnpublished {
+                request_id: rid(22),
+                session,
+                service
+            }
+        );
+        drop(clients);
+    }
+
+    #[tokio::test]
+    async fn local_service_bind_conflict_does_not_choose_another_port() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let (_bridge, mut manager) = start_bridge().await;
+        let session = opened_session(
+            manager
+                .open_session(rid(30), 81, &[Capability::LocalService])
+                .await,
+        );
+        let reply = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(31),
+                session,
+                service_name: "conflict".into(),
+                preferred_port: Some(port),
+            })
+            .await;
+        assert!(matches!(
+            reply,
+            DaemonToManagerMessage::Rejected {
+                error: ManagerError {
+                    code: ManagerErrorCode::Conflict,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn closing_the_owner_session_closes_listener_and_accepted_streams() {
+        let (_bridge, mut manager) = start_bridge().await;
+        let session = opened_session(
+            manager
+                .open_session(rid(40), 91, &[Capability::LocalService])
+                .await,
+        );
+        let published = manager
+            .request(ManagerToDaemonMessage::PublishLocalService {
+                request_id: rid(41),
+                session,
+                service_name: "lifecycle".into(),
+                preferred_port: None,
+            })
+            .await;
+        let (service, port) = match published {
+            DaemonToManagerMessage::LocalServicePublished { service, port, .. } => (service, port),
+            other => panic!("expected publication, got {other:?}"),
+        };
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        assert!(
+            matches!(manager.next_notification().await, DaemonToManagerMessage::LocalServiceIncoming { service: actual, .. } if actual == service)
+        );
+        let closed = manager
+            .request(ManagerToDaemonMessage::CloseSession {
+                request_id: rid(42),
+                session,
+            })
+            .await;
+        assert!(matches!(
+            closed,
+            DaemonToManagerMessage::SessionClosed { .. }
+        ));
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            timeout(DEADLINE, client.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err()
+        );
     }
 }

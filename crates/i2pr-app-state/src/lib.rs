@@ -285,7 +285,11 @@ impl AppStateStore {
             .map(|r| r.capability)
             .collect::<BTreeSet<_>>();
         if app.granted_capabilities.iter().any(|cap| {
-            !requested.contains(cap) || !matches!(cap, Capability::Sam | Capability::I2cp)
+            !requested.contains(cap)
+                || !matches!(
+                    cap,
+                    Capability::Sam | Capability::I2cp | Capability::LocalService
+                )
         }) {
             return Err(StateError::CapabilityNotRequested);
         }
@@ -391,10 +395,12 @@ pub fn validate_state(state: &PolicyState) -> Result<(), StateError> {
         }
         prior_key = Some(key);
         if app.granted_capabilities.windows(2).any(|w| w[0] >= w[1])
-            || app
-                .granted_capabilities
-                .iter()
-                .any(|c| !matches!(c, Capability::Sam | Capability::I2cp))
+            || app.granted_capabilities.iter().any(|c| {
+                !matches!(
+                    c,
+                    Capability::Sam | Capability::I2cp | Capability::LocalService
+                )
+            })
         {
             return Err(StateError::InvalidState);
         }
@@ -635,7 +641,7 @@ mod tests {
             "name": "sample",
             "description": "",
             "host_protocol_min": {"major": 1, "minor": 0},
-            "host_protocol_max": {"major": 1, "minor": 0},
+            "host_protocol_max": {"major": 1, "minor": if requested.contains(&Capability::LocalService) { 1 } else { 0 }},
             "entrypoints": [{"target": target_triple().unwrap(), "path": "bin/app"}],
             "requested_capabilities": requested.iter().map(|c| serde_json::to_value(i2pr_app_proto::RequestedCapability { capability: *c }).unwrap()).collect::<Vec<_>>(),
             "resources": [
@@ -935,5 +941,58 @@ mod tests {
                 Err(StateError::SelectedPackageUnavailable)
             ));
         }
+    }
+
+    #[test]
+    fn local_service_grant_is_persistent_requested_and_restart_applied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = AppStateStore::open(tmp.path().join("state")).unwrap();
+        let package_path = tmp.path().join("local.i2prapp");
+        signed_package(&package_path, "1.0", &[Capability::LocalService]);
+        let package = store.packages().install(&package_path).unwrap();
+        let publisher_id = package.identity.publisher_key_id.clone();
+        let app_id = package.identity.app_id.clone();
+        store
+            .mutate(|state| {
+                state.trusted_publishers.push(publisher_id.clone());
+                state.apps.push(AppPolicy {
+                    publisher_id: publisher_id.clone(),
+                    app_id: app_id.clone(),
+                    selected: Some(package.identity.clone()),
+                    granted_capabilities: vec![Capability::LocalService],
+                    launch_profile: Some(LaunchProfile::UnsafeDirect),
+                    autostart: true,
+                    max_connections: 4,
+                    resource_ceilings: ResourceCeilings {
+                        memory_bytes: Some(4096),
+                        open_files: Some(64),
+                    },
+                });
+                Ok(())
+            })
+            .unwrap();
+        let state = store.load().unwrap();
+        let decision = store
+            .resolve(&state, &state.apps[0], target_triple().unwrap())
+            .unwrap();
+        assert_eq!(decision.capabilities, [Capability::LocalService]);
+
+        let runtime_lock = store.lock_runtime().unwrap();
+        assert!(matches!(
+            store.mutate(|_| Ok(())),
+            Err(StateError::RuntimeBusy)
+        ));
+        drop(runtime_lock);
+        store
+            .mutate(|state| {
+                state.apps[0].granted_capabilities.clear();
+                Ok(())
+            })
+            .unwrap();
+        let state = store.load().unwrap();
+        let decision = store
+            .resolve(&state, &state.apps[0], target_triple().unwrap())
+            .unwrap();
+        assert!(decision.capabilities.is_empty());
     }
 }

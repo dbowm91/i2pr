@@ -42,6 +42,11 @@ launcher and any `PATH` lookup outright.
 the fixture manager. The process checker also requires the daemon to clear the
 manager environment and bind the canonical state root only.
 
+The v1.1 `local_service` capability does not change this process boundary:
+appd sends publication requests and logical-stream events over the inherited
+pipe. The router daemon binds `127.0.0.1` and owns the listener and accepted
+sockets; no descriptor crosses into appd or apphost.
+
 ## Modules
 
 | Module | Owns |
