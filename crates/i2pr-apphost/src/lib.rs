@@ -54,10 +54,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
 mod sandbox;
 pub mod transport;
 
@@ -606,10 +602,6 @@ where
     let instance_id = instance_identifier(&request)?;
 
     if request.launch_profile == i2pr_app_proto::LaunchProfile::Secured {
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
         let attestation = match sandbox::install(
             &launch,
             request.resources.requested_memory_bytes,
@@ -638,23 +630,6 @@ where
                 .map_err(ApphostError::Transport)?;
                 return Err(error);
             }
-        };
-        #[cfg(not(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )))]
-        let attestation = {
-            let error = ApphostError::Bootstrap(ApphostBootstrapError::SecuredUnavailable);
-            write_reply(
-                transport,
-                &ApphostReply::Failed {
-                    reason: ApphostFailureReason::SecuredUnavailable,
-                    diagnostic: Some(ApphostBootstrapError::SecuredUnavailable.to_string()),
-                },
-            )
-            .await
-            .map_err(ApphostError::Transport)?;
-            return Err(error);
         };
 
         write_reply(
@@ -749,10 +724,6 @@ pub fn serve_inherited() -> Result<(), ApphostError> {
     drop(bootstrap_runtime);
     if request.launch_profile == i2pr_app_proto::LaunchProfile::Secured {
         let launch = resolve_command(&request)?;
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
         let attestation = match sandbox::install(
             &launch,
             request.resources.requested_memory_bytes,
@@ -779,22 +750,6 @@ pub fn serve_inherited() -> Result<(), ApphostError> {
                 )?;
                 return Err(error);
             }
-        };
-        #[cfg(not(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )))]
-        let attestation = {
-            write_reply_blocking(
-                &mut output,
-                &ApphostReply::Failed {
-                    reason: ApphostFailureReason::SecuredUnavailable,
-                    diagnostic: Some(ApphostBootstrapError::SecuredUnavailable.to_string()),
-                },
-            )?;
-            return Err(ApphostError::Bootstrap(
-                ApphostBootstrapError::SecuredUnavailable,
-            ));
         };
         let instance_id = instance_identifier(&request)?;
         write_reply_blocking(

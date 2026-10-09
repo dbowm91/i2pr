@@ -24,6 +24,8 @@ i2pr-app-proto = { path = "../i2pr-app-proto" }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 landlock.workspace = true
 bux-seccomp.workspace = true
 libc.workspace = true

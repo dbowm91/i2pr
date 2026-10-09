@@ -4,26 +4,63 @@
 //! Landlock grant exactly the immutable package tree and persistent app data
 //! without granting `/usr`, a loader cache, or the host's general library tree.
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
 };
 
-use i2pr_app_proto::{SandboxAttestation, SandboxProperty};
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use i2pr_app_proto::SandboxAttestation;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use i2pr_app_proto::SandboxProperty;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use landlock::{
     ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus,
 };
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use rustix::process::{Resource, Rlimit, setrlimit};
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use crate::{ApphostError, ResolvedLaunch};
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 const MAX_PROGRAM_HEADERS: u16 = 1024;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 const MAX_PROGRAM_HEADER_BYTES: u64 = 128 * 1024;
 
 /// Install every Linux enforcement layer, failing before readiness if one is
 /// absent or only partially enforced.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub(crate) fn install(
     launch: &ResolvedLaunch,
     memory_bytes: u64,
@@ -105,6 +142,10 @@ pub(crate) fn install(
 
 /// Static ELFs are the first supported executable model. Reject malformed,
 /// foreign-architecture, and interpreter-bearing files before installing rules.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn ensure_static_elf(path: &Path) -> Result<(), ApphostError> {
     let mut file = File::open(path).map_err(|_| ApphostError::SandboxSetup)?;
     let mut header = [0_u8; 64];
@@ -163,6 +204,10 @@ fn ensure_static_elf(path: &Path) -> Result<(), ApphostError> {
 /// Small purpose-built syscall allowlist for a single-threaded static app.
 /// Network, process creation, process inspection, kernel interfaces, and
 /// resource-limit mutation are absent by construction.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn syscall_allowlist() -> Vec<u32> {
     #[allow(clippy::useless_conversion)]
     let mut calls: Vec<u32> = vec![
@@ -250,6 +295,10 @@ fn syscall_allowlist() -> Vec<u32> {
 /// Permit `prlimit64` only for querying limits. Rust's static standard library
 /// queries RLIMIT_STACK during startup; allowing the syscall without checking
 /// its new-limit pointer would let the application raise its hard ceilings.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn syscall_filter() -> Vec<u64> {
     use bux_seccomp::bpf::{
         BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W, SECCOMP_ARCH_OFFSET,
@@ -300,19 +349,22 @@ fn syscall_filter() -> Vec<u64> {
     program
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod tests {
     use super::*;
 
     #[test]
     fn allowlist_excludes_network_process_creation_and_inspection() {
         let calls = syscall_allowlist();
-        for forbidden in [
-            libc::SYS_clone,
-            libc::SYS_fork,
-            libc::SYS_vfork,
-            libc::SYS_clone3,
-        ] {
+        for forbidden in [libc::SYS_clone, libc::SYS_clone3] {
+            assert!(!calls.contains(&(forbidden as u32)));
+        }
+        #[cfg(target_arch = "x86_64")]
+        for forbidden in [libc::SYS_fork, libc::SYS_vfork] {
             assert!(!calls.contains(&(forbidden as u32)));
         }
         #[cfg(target_arch = "x86_64")]
@@ -334,9 +386,35 @@ mod tests {
         assert!(calls.contains(&(libc::SYS_execve as u32)));
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_uses_native_poll_and_at_file_syscalls() {
+        let calls = syscall_allowlist();
+        for required in [
+            libc::SYS_ppoll,
+            libc::SYS_renameat,
+            libc::SYS_mkdirat,
+            libc::SYS_unlinkat,
+        ] {
+            assert!(calls.contains(&(required as u32)));
+        }
+    }
+
     #[test]
     fn elf_header_parser_rejects_non_elf_and_missing_file() {
         assert!(ensure_static_elf(Path::new("/dev/null")).is_err());
         assert!(ensure_static_elf(Path::new("/i2pr/no-such-file")).is_err());
     }
+}
+
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+pub(crate) fn install(
+    _launch: &crate::ResolvedLaunch,
+    _memory_bytes: u64,
+    _open_files: u32,
+) -> Result<i2pr_app_proto::SandboxAttestation, crate::ApphostError> {
+    Err(crate::ApphostError::SandboxUnavailable)
 }
