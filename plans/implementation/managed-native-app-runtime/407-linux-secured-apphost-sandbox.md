@@ -1,6 +1,6 @@
 # Plan 407 — Linux Secured managed-app sandbox and private data root
 
-Status: **in-progress-linux-secured-apphost-sandbox**
+Status: **passed-linux-secured-apphost-sandbox-and-private-persistent-app-data**
 
 Global number reconciliation: the source branch called this Plan 385, but Plans 385–388 are already owned by Proposal 170 on `main`. This proposal is Plan 407. It consolidates the former managed-app Plans 385 and 386; those drafts, plus the deferred ingress and SDK drafts 387 and 388, are preserved under `plans/archive/managed-native-app-runtime/`.
 
