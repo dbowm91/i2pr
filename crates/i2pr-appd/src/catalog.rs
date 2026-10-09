@@ -22,7 +22,7 @@
 use std::{collections::VecDeque, path::PathBuf, sync::Mutex};
 
 use i2pr_app_manager_proto::apphost::{
-    DescriptiveResourceRequest, Entrypoint, LaunchRoot, SanitizedEnvironment,
+    AppDataRoot, DescriptiveResourceRequest, Entrypoint, LaunchRoot, SanitizedEnvironment,
 };
 use i2pr_app_manager_proto::{ManagerInstanceId, ManagerPrincipal};
 use i2pr_app_proto::{AdministratorPrincipal, AppInstanceId, PublisherId};
@@ -169,6 +169,16 @@ fn authority_for_decision(
             .to_owned(),
     )
     .map_err(|_| LaunchBuildError::Refused("package root rejected"))?;
+    let data_root = AppDataRoot::new(
+        decision
+            .data_root
+            .to_str()
+            .ok_or(LaunchBuildError::Refused(
+                "application data path is not representable",
+            ))?
+            .to_owned(),
+    )
+    .map_err(|_| LaunchBuildError::Refused("application data root rejected"))?;
     let entrypoint = Entrypoint::new(decision.entrypoint)
         .map_err(|_| LaunchBuildError::Refused("package entrypoint rejected"))?;
     let administrator = AdministratorPrincipal::from_trusted_local_policy(decision.generation)
@@ -180,6 +190,7 @@ fn authority_for_decision(
         capabilities: decision.capabilities,
         launch_profile: decision.launch_profile,
         root,
+        data_root,
         entrypoint,
         // Managed-app v1's first application message must declare the exact
         // AppId and per-launch instance id. These two reserved arguments are

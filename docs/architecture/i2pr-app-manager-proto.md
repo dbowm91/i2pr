@@ -7,7 +7,9 @@ leaf contract crate whose only production `i2pr-*` dependency is
 `i2pr-app-proto`.
 
 It owns no transport, no sockets, no process launching, no filesystem, no DNS, no
-Tokio, no sandbox backend, and no router state. The normative,
+Tokio, no sandbox backend, and no router state. Its adjacent apphost bootstrap
+contract carries the trusted private data root and secured-ready attestation;
+Linux enforcement remains owned by `i2pr-apphost`. The normative,
 language-neutral authority is
 [`managed-app-manager-protocol-v1.md`](../../specs/references/managed-app-manager-protocol-v1.md);
 the security rationale and the transport intent are ADR 0035.

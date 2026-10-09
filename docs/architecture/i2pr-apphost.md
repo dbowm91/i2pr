@@ -17,14 +17,17 @@ nothing else, ever, and serves nothing after the application exits.
 Bootstrap is one-shot and then byte-transparent: the launch request is consumed
 exactly once, and everything after it is forwarded without interpretation.
 
-## What it refuses, and why the refusal is the point
+## Launch profiles
 
-- **`Secured` launches are refused fail-closed.** No qualified sandbox backend
-  exists in Plan 369, so reporting a successful `Secured` launch would be a
-  forged containment claim. The refusal happens in `LaunchRequest::validate`
-  before this crate reaches a filesystem, and this crate **independently
-  re-checks it before exec** so that no future refactor can quietly skip the
-  gate.
+- **`Secured`** is supported only on qualified Linux x86_64/aarch64 hosts and
+  only for static native ELF executables. Apphost enforces private package and
+  app-data trees with Landlock, hard address-space/open-file limits, and a
+  default-kill seccomp filter under `no_new_privs`. Network access,
+  process-inspection operations, and child creation are denied. A complete
+  attestation is sent only after all layers succeed; unsupported hosts and
+  setup failures are refused before exec.
+- **`UnsafeDirect`** remains an explicit unsandboxed host-networking profile.
+  It does not receive a secured attestation.
 - **There is no shell.** The application is exec'd directly. Nothing is passed
   to `sh -c`, and `PATH` is never consulted.
 - **There is no second authority.** No discovery endpoint, no signal-based
@@ -87,9 +90,10 @@ loss, so callers do not have to infer it from EOF.
 
 ## Limits
 
-- **No grandchild containment claim.** Only the direct child is owned and
-  reaped.
-- **No sandbox.** `Secured` is refused, not approximated.
+- **No secured subprocesses.** Seccomp denies process creation, so v1 does not
+  depend on an unqualified descendant supervisor or host cgroup delegation.
+- **Static ELF only.** `PT_INTERP` executables are refused rather than granting
+  broad host loader paths.
 - One launch per process. There is no restart, pooling, or reuse.
 - The apphost's own executable is deliberately **not** resolved by sibling
   lookup: its target is not a sibling but the root/entrypoint of a launch

@@ -113,6 +113,8 @@ pub struct LaunchDecision {
     pub open_files: u32,
     pub target: String,
     pub entrypoint: String,
+    /// Manager-owned persistent writable storage for this trusted app identity.
+    pub data_root: PathBuf,
 }
 
 pub struct AppStateStore {
@@ -254,9 +256,6 @@ impl AppStateStore {
             return Err(StateError::SelectedPackageUnavailable);
         }
         let profile = app.launch_profile.ok_or(StateError::NoSelection)?;
-        if profile == LaunchProfile::Secured {
-            return Err(StateError::SecuredUnavailable);
-        }
         let entrypoints = package
             .manifest
             .entrypoints
@@ -304,6 +303,10 @@ impl AppStateStore {
         let open_files = request("open_files")
             .min(app.resource_ceilings.open_files.unwrap_or(0))
             .min(u32::MAX as u64) as u32;
+        if profile == LaunchProfile::Secured && (memory_bytes == 0 || open_files == 0) {
+            return Err(StateError::UnsupportedResource);
+        }
+        let data_root = self.application_data_root(&app.publisher_id, &app.app_id)?;
         Ok(LaunchDecision {
             generation: state.generation,
             package,
@@ -314,7 +317,44 @@ impl AppStateStore {
             open_files,
             target: target.to_owned(),
             entrypoint,
+            data_root,
         })
+    }
+
+    /// Return the stable private data directory for one trusted publisher/app
+    /// pair. The package version and launch instance are intentionally absent.
+    pub fn application_data_root(
+        &self,
+        publisher_id: &str,
+        app_id: &AppId,
+    ) -> Result<PathBuf, StateError> {
+        if !is_digest(publisher_id) {
+            return Err(StateError::InvalidState);
+        }
+        let base = self.root.join("app-data");
+        fs::create_dir_all(&base)?;
+        private_dir(&base)?;
+        let publisher = base.join(publisher_id);
+        fs::create_dir_all(&publisher)?;
+        private_dir(&publisher)?;
+        let app = publisher.join(app_id.as_str());
+        match fs::symlink_metadata(&app) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(StateError::InvalidState);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&app)?;
+            }
+            Err(error) => return Err(StateError::Io(error)),
+        }
+        private_dir(&app)?;
+        let canonical_root = self.root.canonicalize()?;
+        let canonical_app = app.canonicalize()?;
+        if !canonical_app.starts_with(canonical_root.join("app-data")) {
+            return Err(StateError::InvalidState);
+        }
+        Ok(canonical_app)
     }
 }
 
@@ -664,6 +704,57 @@ mod tests {
     }
 
     #[test]
+    fn application_data_root_is_persistent_private_and_identity_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = AppStateStore::open(tmp.path().join("state")).unwrap();
+        let app = AppId::parse("same-app").unwrap();
+        let publisher_a = publisher('a');
+        let publisher_b = publisher('b');
+        let a = store.application_data_root(&publisher_a, &app).unwrap();
+        let b = store.application_data_root(&publisher_b, &app).unwrap();
+        assert_ne!(a, b);
+        std::fs::write(a.join("persistent.db"), b"state").unwrap();
+        drop(store);
+        let reopened = AppStateStore::open(tmp.path().join("state")).unwrap();
+        let after_restart = reopened.application_data_root(&publisher_a, &app).unwrap();
+        assert_eq!(a, after_restart);
+        assert_eq!(
+            std::fs::read(after_restart.join("persistent.db")).unwrap(),
+            b"state"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&after_restart)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_root_rejects_a_symlink_leaf() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = AppStateStore::open(tmp.path().join("state")).unwrap();
+        let app = AppId::parse("linked-app").unwrap();
+        let parent = store.root().join("app-data").join(publisher('c'));
+        std::fs::create_dir_all(&parent).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        symlink(&outside, parent.join("linked-app")).unwrap();
+        assert!(matches!(
+            store.application_data_root(&publisher('c'), &app),
+            Err(StateError::InvalidState)
+        ));
+    }
+
+    #[test]
     fn malformed_highest_generation_does_not_roll_back() {
         let tmp = tempfile::tempdir().unwrap();
         let store = AppStateStore::open(tmp.path()).unwrap();
@@ -821,10 +912,16 @@ mod tests {
             })
             .unwrap();
         let state = store.load().unwrap();
-        assert!(matches!(
-            store.resolve(&state, &state.apps[0], target_triple().unwrap()),
-            Err(StateError::SecuredUnavailable)
-        ));
+        let secured = store
+            .resolve(&state, &state.apps[0], target_triple().unwrap())
+            .unwrap();
+        assert_eq!(secured.launch_profile, LaunchProfile::Secured);
+        assert!(secured.data_root.is_dir());
+        assert_eq!(
+            secured.data_root,
+            store.application_data_root(&fingerprint, &app_id).unwrap(),
+            "data identity is stable when the package version changes"
+        );
 
         #[cfg(unix)]
         {

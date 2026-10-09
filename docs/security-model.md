@@ -394,7 +394,7 @@ clears grants, profile, and autostart so retrust cannot resurrect authority.
 Only Sam and I2cp can be granted, and only when the exact selected manifest
 requests them.
 
-### Containment is checked twice, and `Secured` fails closed
+### Containment is checked twice, with a qualified Linux secured profile
 
 `LaunchRequest::validate` rejects `..`, `.`, absolute, and backslash forms
 *structurally*, on strings, so it is testable without a filesystem. That is
@@ -403,11 +403,15 @@ it — so `resolve_command` canonicalises both paths and re-checks containment o
 the resolved result. A single check would leave either the obvious escape or the
 disguised one open.
 
-`LaunchProfile::Secured` is **refused before any exec**, and refused again at
-the exec site so no future refactor can quietly skip the gate. No sandbox
-backend is qualified in Plan 369, so reporting a successful `Secured` launch
-would be a forged containment claim. The failure mode is a refusal, not an
-approximation.
+Secured execution is limited to static native ELF binaries on Linux x86_64 and
+aarch64 hosts with Landlock ABI v3 and seccomp-BPF. Apphost applies private
+filesystem rules to the immutable package and stable publisher/AppId data root,
+installs hard memory/open-file ceilings, sets `no_new_privs`, installs a
+default-kill syscall filter, and then replaces itself with the app. Networking,
+process inspection and all process creation are denied. Dynamic ELF, unsupported
+hosts, and any partial setup are refused before exec. The Ready attestation is
+sent only after all layers have succeeded. The `UnsafeDirect` profile remains
+ordinary host networking without containment.
 
 The child environment is **constructed**, not inherited, so the router's
 environment does not leak into an application.
@@ -437,8 +441,10 @@ a claim this plan cannot support.
 
 Stated plainly because each is a plausible misreading:
 
-- **No secured sandbox.** `Secured` remains refused. `UnsafeDirect` provides
-  ordinary host networking, and resource ceilings are descriptive only.
+- **No portable sandbox.** Secured support is Linux x86_64/aarch64 only and
+  static ELF only. `UnsafeDirect` remains ordinary host networking.
+- **No secured threads or subprocesses.** Seccomp denies process creation, so
+  the secured child-tree claim does not rely on cgroups or PID namespaces.
 - **No automatic update or rollback ordering.** Operators explicitly select an
   exact artifact; version strings are not ordered.
 - **No app crash auto-restart.** Exit is terminal for that application during

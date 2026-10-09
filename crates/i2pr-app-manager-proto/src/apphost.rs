@@ -15,18 +15,13 @@
 //!   entrypoint is a validated package-relative path under a prevalidated root.
 //! - No environment expansion. Environment entries are bounded, sanitised
 //!   key/value pairs.
-//! - No `Secured` launch. [`LaunchProfile::Secured`] is accepted by the type but
-//!   MUST be rejected by every apphost until a qualified OS sandbox backend
-//!   exists. [`LaunchRequest::validate`] fails it closed here so a caller cannot
-//!   even build a request that would exec under `Secured`.
-//! - No sandbox attestation. Plan 369 forbids fabricating one, so there is no
-//!   attestation type in this contract at all.
+//! - Secured launches carry a manager-owned data root and a ready attestation.
 //! - No decoder from application protocol messages or manifest bytes. This is the
 //!   whole point: launch authority is manager-created, never app-created.
 
 use std::collections::BTreeMap;
 
-use i2pr_app_proto::{LaunchProfile, MAX_IDENTIFIER_BYTES};
+use i2pr_app_proto::{LaunchProfile, MAX_IDENTIFIER_BYTES, SandboxAttestation};
 
 use serde::{Deserialize, Serialize};
 /// Re-exported so a peer can decode a reply without adding its own dependency.
@@ -80,11 +75,15 @@ pub enum ApphostBootstrapError {
     Malformed,
     #[error("truncated bootstrap")]
     Truncated,
-    /// Plan 369 stop condition: `Secured` has no qualified backend yet.
-    #[error("secured launch is unavailable until a sandbox backend is qualified")]
+    /// The current host or executable cannot meet the secured profile.
+    #[error("secured launch is unavailable on this host or executable")]
     SecuredUnavailable,
     #[error("launch root is invalid")]
     InvalidRoot,
+    #[error("application data root is invalid")]
+    InvalidDataRoot,
+    #[error("secured sandbox setup failed")]
+    SandboxSetupFailed,
     #[error("entrypoint escapes the launch root")]
     EntrypointEscapesRoot,
     #[error("entrypoint is invalid")]
@@ -180,6 +179,41 @@ impl LaunchRoot {
     }
 }
 
+/// Manager-owned stable data directory, never supplied by package input.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AppDataRoot(String);
+
+impl AppDataRoot {
+    pub fn new(value: impl Into<String>) -> Result<Self, ApphostBootstrapError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > MAX_ROOT_BYTES
+            || !value.starts_with('/')
+            || !value.is_ascii()
+            || value.contains('\\')
+            || value.contains('\0')
+        {
+            return Err(ApphostBootstrapError::InvalidDataRoot);
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for AppDataRoot {
+    type Error = ApphostBootstrapError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<AppDataRoot> for String {
+    fn from(value: AppDataRoot) -> Self {
+        value.0
+    }
+}
+
 impl TryFrom<String> for LaunchRoot {
     type Error = ApphostBootstrapError;
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -244,6 +278,7 @@ pub struct LaunchRequest {
     pub principal: crate::ManagerPrincipal,
     pub launch_profile: LaunchProfile,
     pub root: LaunchRoot,
+    pub data_root: AppDataRoot,
     pub entrypoint: Entrypoint,
     pub argv: Vec<String>,
     pub environment: SanitizedEnvironment,
@@ -251,17 +286,11 @@ pub struct LaunchRequest {
 }
 
 impl LaunchRequest {
-    /// Validates a launch request, failing `Secured` closed.
+    /// Validates the manager-created launch request.
     ///
     /// This is the single gate Plan 369 requires before any exec. It is pure, so
     /// it is unit-testable without a process, filesystem, or sandbox.
     pub fn validate(&self) -> Result<(), ApphostBootstrapError> {
-        // The Plan 369 gate: no qualified sandbox backend exists, so `Secured`
-        // must be refused *before* exec. Returning `Ok` here would be a forged
-        // containment claim.
-        if self.launch_profile == LaunchProfile::Secured {
-            return Err(ApphostBootstrapError::SecuredUnavailable);
-        }
         if !self.root.contains_entrypoint(&self.entrypoint) {
             return Err(ApphostBootstrapError::EntrypointEscapesRoot);
         }
@@ -308,7 +337,10 @@ impl LaunchRequest {
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ApphostReply {
     #[serde(rename = "ready")]
-    Ready { instance_id: String },
+    Ready {
+        instance_id: String,
+        attestation: Option<SandboxAttestation>,
+    },
     #[serde(rename = "failed")]
     Failed {
         reason: ApphostFailureReason,
@@ -321,6 +353,7 @@ pub enum ApphostReply {
 pub enum ApphostFailureReason {
     /// The Plan 369 gate fired: `Secured` has no qualified backend.
     SecuredUnavailable,
+    SandboxSetupFailed,
     InvalidRoot,
     EntrypointEscapesRoot,
     EntrypointNotFound,

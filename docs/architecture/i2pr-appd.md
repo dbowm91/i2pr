@@ -60,9 +60,8 @@ manager environment and bind the canonical state root only.
 Effective capabilities can only be assembled through
 `GrantedCapability::from_administrator_policy`, so `BrokeredTcp` is
 ungrantable, and there is no `&mut` path to the capability set at all. Every
-gate that can be evaluated without a filesystem runs in `authority`, including
-the `Secured` refusal, so no authority value can exist for a launch apphost
-would refuse at exec time.
+gate that can be evaluated without a filesystem runs in `authority`. Host
+support and enforcement are then checked by apphost before it sends readiness.
 
 This is asserted by **method resolution**, not by scanning for a
 `#[derive(Deserialize)]`: adding a derive makes the crate stop compiling rather
@@ -120,8 +119,9 @@ cleanly".
 
 ## Limits
 
-- No OS sandbox backend is qualified, so `LaunchProfile::Secured` is refused
-  before any exec. There is no grandchild containment claim.
+- Secured is qualified only for static native ELF applications on supported
+  Linux x86_64/aarch64 hosts. It denies subprocess creation; other hosts refuse
+  before exec.
 - No package store, signature verification, grant persistence, or policy engine.
   The next milestone owns those.
 - No administrator or general control credential is exposed to this process.

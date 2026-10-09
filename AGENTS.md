@@ -59,15 +59,31 @@ selected, granted, profile-configured applications with autostart enabled in
 the offline policy store. Appd receives only the canonical managed-app root
 from the daemon after `env_clear`; the private protocol has no
 manager-receivable launch request. `UnsafeDirect` means ordinary host
-networking without a sandbox. `Secured` is **refused before exec** — there is
-no qualified sandbox backend, so there is no containment claim of any kind,
-including for grandchildren. Policy changes require app runtime restart. A
+networking without a sandbox. `Secured` is supported only on qualified Linux
+x86_64/aarch64 hosts for static native ELF executables. Apphost installs
+Landlock ABI v3 filesystem rules, `no_new_privs`, a default-kill seccomp policy,
+and hard address-space/open-file limits before in-place exec. Secured v1 denies
+direct networking, process inspection, and process creation; unsupported hosts
+or incomplete setup fail before exec. Its persistent private data root is keyed
+by trusted publisher identity plus AppId and stays outside package/policy trees.
+Do not extend this profile to dynamic loaders, threads, subprocesses, or broader
+host filesystem access without a new plan and qualification. Policy changes
+require app runtime restart. A
 broken manager degrades the app runtime and nothing else.
 
 Do not describe managed-app v1 as released, stable, supported, or advertised.
 Do not run a focused `cargo test -p i2pr-daemon` qualification run without
 `cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd` first
 (see the floor).
+On Linux, preserve both fixture variants: after the sibling build, compile the
+static fixture, copy it to `target/debug/i2pr-app-fixture-secured`, then rebuild
+the ordinary fixture binary before a focused daemon qualification run:
+
+```text
+cargo rustc --locked -p i2pr-app-fixture --bin i2pr-app-fixture -- -C target-feature=+crt-static
+cp target/debug/i2pr-app-fixture target/debug/i2pr-app-fixture-secured
+cargo build --locked -p i2pr-app-fixture --bin i2pr-app-fixture
+```
 
 Guards: `scripts/check-managed-app-process-boundary.py` — **run it with
 `--self-test` as well** — `scripts/check-managed-app-package-boundary.py`
@@ -138,6 +154,8 @@ python3 scripts/check-managed-app-package-boundary.py
 python3 scripts/check-managed-app-package-boundary.py --self-test
 python3 scripts/check-managed-app-policy-boundary.py
 python3 scripts/check-managed-app-policy-boundary.py --self-test
+python3 scripts/check-managed-app-secured-sandbox.py
+python3 scripts/check-managed-app-secured-sandbox.py --self-test
 bash scripts/check-service-tunnel-boundaries.sh
 python3 scripts/check-managed-app-gateway-boundary.py
 python3 scripts/check-managed-app-manager-boundary.py

@@ -17,6 +17,7 @@ Policy lives outside installed package trees:
 ```text
 managed-apps/
   packages/...
+  app-data/<publisher-fingerprint-digest>/<app-id>/
   policy/
     generations/<20-digit-generation>/state.json
     .staging/<transaction>/state.json
@@ -50,10 +51,16 @@ retain at least the newest two generations.
 - Autostart requires a trusted publisher, exact selection, and explicit
   profile. Manifest autostart/restart flags are advisory only.
 - `UnsafeDirect` is ordinary host networking without a sandbox and requires
-  `i2pr-appctl --allow-direct-host-network`. `Secured` may be stored but is
-  refused before exec until a qualified OS backend exists.
-- `memory_bytes` and `open_files` are descriptive ceilings, not enforced
-  resource limits.
+  `i2pr-appctl --allow-direct-host-network`. `Secured` is enforced on qualified
+  Linux x86_64/aarch64 hosts for static ELF applications; unsupported hosts and
+  incomplete setup refuse before exec.
+- Linux Secured launches receive a stable private data directory keyed by the
+  trusted publisher identity and AppId. It is outside `packages/` and `policy/`,
+  survives package replacement and manager restart, and is not removed by
+  package removal.
+- For Linux Secured launches, nonzero `memory_bytes` and `open_files` are hard
+  address-space and descriptor ceilings. Other profiles do not claim these
+  limits are enforced.
 
 ## Administration and runtime
 

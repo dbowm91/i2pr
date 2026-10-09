@@ -36,6 +36,7 @@ use i2pr_app_manager_proto::apphost::{
     ApphostFailureReason, ApphostHandshake, ApphostReply, LaunchRequest,
     MAX_BOOTSTRAP_PAYLOAD_BYTES,
 };
+use i2pr_app_proto::LaunchProfile;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::pipe::{Receiver, Sender};
 use tokio::process::{Child, Command};
@@ -67,6 +68,8 @@ pub enum ApphostLaunchError {
     Bootstrap(String),
     #[error("the apphost refused the launch: {0:?}")]
     Refused(ApphostFailureReason),
+    #[error("the apphost readiness attestation does not match the requested profile")]
+    InvalidAttestation,
     #[error("the apphost did not exit within {0:?}")]
     ExitTimeout(Duration),
     #[error("a killed apphost could not be reaped within {0:?}")]
@@ -171,8 +174,8 @@ pub async fn write_bootstrap<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    // `encode` is the gate that refuses `Secured` before a single byte goes on
-    // the wire. The host re-checks it independently; this side refuses first.
+    // `encode` validates the trusted bootstrap. Platform sandbox availability
+    // is determined by apphost and must be attested before Ready.
     let payload = request
         .encode()
         .map_err(|error| ApphostLaunchError::Bootstrap(error.to_string()))?;
@@ -305,15 +308,33 @@ pub async fn launch_apphost(
     };
 
     match reply {
-        ApphostReply::Ready { .. } => Ok(LaunchedApphost {
-            child,
-            from_host: Some(from_host),
-            to_host: Some(to_host),
-        }),
+        ApphostReply::Ready { attestation, .. } => {
+            let valid = readiness_attestation_valid(request.launch_profile, attestation.as_ref());
+            if !valid {
+                terminate(&mut child).await;
+                return Err(ApphostLaunchError::InvalidAttestation);
+            }
+            Ok(LaunchedApphost {
+                child,
+                from_host: Some(from_host),
+                to_host: Some(to_host),
+            })
+        }
         ApphostReply::Failed { reason, .. } => {
             terminate(&mut child).await;
             Err(ApphostLaunchError::Refused(reason))
         }
+    }
+}
+
+fn readiness_attestation_valid(
+    profile: LaunchProfile,
+    attestation: Option<&i2pr_app_proto::SandboxAttestation>,
+) -> bool {
+    match (profile, attestation) {
+        (LaunchProfile::Secured, Some(attestation)) => attestation.validate_secured().is_ok(),
+        (LaunchProfile::UnsafeDirect, None) => true,
+        _ => false,
     }
 }
 
@@ -335,6 +356,7 @@ impl From<ApphostLaunchError> for crate::LaunchFailure {
             ApphostLaunchError::Spawn(_) => Self::Spawn,
             ApphostLaunchError::Bootstrap(_) => Self::Bootstrap,
             ApphostLaunchError::Refused(reason) => Self::Refused(reason),
+            ApphostLaunchError::InvalidAttestation => Self::Bootstrap,
             ApphostLaunchError::ExitTimeout(_) | ApphostLaunchError::ReapTimeout(_) => {
                 Self::Teardown
             }
@@ -360,6 +382,36 @@ mod tests {
             matches!(outcome, Err(ApphostLaunchError::SiblingUnavailable(_))),
             "a relative path must never be resolved against the working directory, got {outcome:?}"
         );
+    }
+
+    #[test]
+    fn ready_attestation_must_match_the_selected_profile() {
+        use i2pr_app_proto::{REQUIRED_SECURED_PROPERTIES, SandboxAttestation};
+        let complete = SandboxAttestation {
+            backend_kind: "test-backend".to_owned(),
+            backend_version: "1".to_owned(),
+            evidence_generation: 1,
+            properties: REQUIRED_SECURED_PROPERTIES.to_vec(),
+        };
+        assert!(readiness_attestation_valid(
+            LaunchProfile::Secured,
+            Some(&complete)
+        ));
+        assert!(!readiness_attestation_valid(LaunchProfile::Secured, None));
+        assert!(!readiness_attestation_valid(
+            LaunchProfile::UnsafeDirect,
+            Some(&complete)
+        ));
+        assert!(readiness_attestation_valid(
+            LaunchProfile::UnsafeDirect,
+            None
+        ));
+        let mut partial = complete;
+        partial.properties.pop();
+        assert!(!readiness_attestation_valid(
+            LaunchProfile::Secured,
+            Some(&partial)
+        ));
     }
 
     #[tokio::test]
@@ -440,6 +492,8 @@ mod tests {
             },
             launch_profile: i2pr_app_proto::LaunchProfile::UnsafeDirect,
             root: i2pr_app_manager_proto::apphost::LaunchRoot::new("/tmp").expect("root"),
+            data_root: i2pr_app_manager_proto::apphost::AppDataRoot::new("/tmp/app-data")
+                .expect("data root"),
             entrypoint: i2pr_app_manager_proto::apphost::Entrypoint::new("app").expect("entry"),
             argv: Vec::new(),
             environment: i2pr_app_manager_proto::apphost::SanitizedEnvironment::new(

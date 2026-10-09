@@ -303,10 +303,15 @@ filesystem boundary, host process inspection denied or contained, child
 process tree contained, resource limits installed, sanitized environment, and
 inherited broker channel installed. Attestation includes backend kind/version,
 evidence generation, and the asserted property set. Missing any required
-property fails validation. No v1 value claims that an OS backend exists.
+property fails validation. Plan 407 supplies a qualified Linux x86_64/aarch64
+backend for static native ELF applications on hosts enforcing Landlock ABI v3
+and seccomp-BPF. Unsupported hosts, dynamic ELF executables, and partial setup
+fail before exec. Secured v1 denies threads/subprocesses and direct sockets.
 
-Resource requests are bounded hints; a future host clamps them to operator
-ceilings or denies launch. They cannot raise limits. Fixed ceilings:
+Resource requests are bounded by the trusted operator policy and installed as
+hard address-space and open-file limits for the Linux secured profile. They
+cannot raise limits. Other launch profiles do not gain resource containment by
+this contract. Fixed ceilings:
 
 | Item | Ceiling |
 | --- | ---: |

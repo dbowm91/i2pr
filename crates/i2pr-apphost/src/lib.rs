@@ -8,14 +8,12 @@
 //! relay between the manager and that application until one side closes. It
 //! launches nothing else, ever, and serves nothing after the application exits.
 //!
-//! # What it refuses, and why that refusal is the point
+//! # Launch profiles and fail-closed refusals
 //!
-//! * **`Secured` launches are refused fail-closed.** No qualified sandbox backend
-//!   exists in Plan 369, so reporting a successful `Secured` launch would be a
-//!   forged containment claim. The refusal happens in
-//!   [`LaunchRequest::validate`] before this crate reaches a filesystem, and this
-//!   crate independently re-checks it before exec so that no future refactor can
-//!   quietly skip the gate.
+//! * **`Secured` requires the qualified Linux backend.** It accepts only static
+//!   native ELF on Linux x86_64/aarch64, installs filesystem, resource, and
+//!   syscall restrictions before readiness, and execs in place. Any unavailable
+//!   layer refuses before application exec. Other hosts remain fail-closed.
 //! * **There is no shell.** The application is exec'd directly. Nothing is
 //!   passed to `sh -c`, and `PATH` is never consulted.
 //! * **There is no second authority.** No discovery endpoint, no signal-based
@@ -56,6 +54,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod sandbox;
 pub mod transport;
 
 pub use transport::{DuplexTransport, inherited};
@@ -105,6 +108,14 @@ pub enum ApphostError {
     EntrypointNotFound,
     #[error("the entrypoint resolves outside the launch root")]
     EntrypointEscapesRoot,
+    #[error("the application data root does not resolve to a directory")]
+    DataRootUnresolvable,
+    #[error("the application data root overlaps the package root")]
+    InvalidDataRoot,
+    #[error("the secured Linux sandbox is unavailable on this host or executable")]
+    SandboxUnavailable,
+    #[error("the secured Linux sandbox could not be installed")]
+    SandboxSetup,
     #[error("the application could not be started: {0}")]
     Spawn(String),
     #[error("the application did not exit within {0:?}")]
@@ -124,6 +135,7 @@ pub enum ApphostError {
 pub fn failure_reason(error: ApphostBootstrapError) -> ApphostFailureReason {
     match error {
         ApphostBootstrapError::SecuredUnavailable => ApphostFailureReason::SecuredUnavailable,
+        ApphostBootstrapError::SandboxSetupFailed => ApphostFailureReason::SandboxSetupFailed,
         ApphostBootstrapError::InvalidRoot => ApphostFailureReason::InvalidRoot,
         ApphostBootstrapError::EntrypointEscapesRoot => ApphostFailureReason::EntrypointEscapesRoot,
         _ => ApphostFailureReason::MalformedBootstrap,
@@ -201,11 +213,14 @@ where
 /// A validated, fully resolved executable and its arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedLaunch {
+    pub profile: i2pr_app_proto::LaunchProfile,
     /// Absolute, canonicalised executable path. It has been proven to sit
     /// inside `root` after symlink resolution.
     pub program: PathBuf,
     /// Absolute, canonicalised root the executable was proven to live under.
     pub root: PathBuf,
+    /// Canonical manager-owned per-application data directory.
+    pub data_root: PathBuf,
     pub argv: Vec<String>,
     pub environment: BTreeMap<String, String>,
 }
@@ -248,10 +263,22 @@ pub fn resolve_command(request: &LaunchRequest) -> Result<ResolvedLaunch, Apphos
     if !is_contained_in(&canonical_root, &canonical_entrypoint) {
         return Err(ApphostError::EntrypointEscapesRoot);
     }
+    let data_root = Path::new(request.data_root.as_str());
+    let canonical_data_root = data_root
+        .canonicalize()
+        .map_err(|_| ApphostError::DataRootUnresolvable)?;
+    if !canonical_data_root.is_dir()
+        || is_contained_in(&canonical_root, &canonical_data_root)
+        || is_contained_in(&canonical_data_root, &canonical_root)
+    {
+        return Err(ApphostError::InvalidDataRoot);
+    }
 
     Ok(ResolvedLaunch {
+        profile: request.launch_profile,
         program: canonical_entrypoint,
         root: canonical_root,
+        data_root: canonical_data_root,
         argv: request.argv.clone(),
         environment: request.environment.entries().clone(),
     })
@@ -290,6 +317,11 @@ pub fn spawn_application(
     launch: &ResolvedLaunch,
     working_directory: &Path,
 ) -> Result<Child, ApphostError> {
+    if launch.profile == i2pr_app_proto::LaunchProfile::Secured {
+        return Err(ApphostError::Bootstrap(
+            ApphostBootstrapError::SecuredUnavailable,
+        ));
+    }
     let mut command = Command::new(&launch.program);
     command
         .current_dir(working_directory)
@@ -305,6 +337,9 @@ pub fn spawn_application(
     command.env_clear();
     for (key, value) in &launch.environment {
         command.env(OsString::from(key), OsString::from(value));
+    }
+    if let Some(data_root) = launch.data_root.to_str() {
+        command.env("I2PR_APP_DATA_DIR", data_root);
     }
     for argument in &launch.argv {
         command.arg(OsString::from(argument));
@@ -489,7 +524,14 @@ pub async fn serve<T>(mut transport: T) -> Result<(), ApphostError>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = match read_launch_request(&mut transport, APPHOST_BOOTSTRAP_GRACE).await {
+    serve_inner(&mut transport).await
+}
+
+async fn serve_inner<T>(transport: &mut T) -> Result<(), ApphostError>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let request = match read_launch_request(transport, APPHOST_BOOTSTRAP_GRACE).await {
         Ok(request) => request,
         Err(error) => {
             // A rejected bootstrap is answered in protocol, because at this
@@ -504,12 +546,23 @@ where
                     reason: failure_reason(error),
                     diagnostic: Some(error.to_string()),
                 };
-                let _ = write_reply(&mut transport, &reply).await;
+                let _ = write_reply(transport, &reply).await;
             }
             return Err(ApphostError::Bootstrap(error));
         }
     };
 
+    serve_request(transport, request, false).await
+}
+
+async fn serve_request<T>(
+    transport: &mut T,
+    request: LaunchRequest,
+    permit_secured_exec: bool,
+) -> Result<(), ApphostError>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
     let launch = match resolve_command(&request) {
         Ok(launch) => launch,
         Err(error) => {
@@ -524,17 +577,97 @@ where
                 reason,
                 diagnostic: Some(error.to_string()),
             };
-            write_reply(&mut transport, &reply)
+            write_reply(transport, &reply)
                 .await
                 .map_err(ApphostError::Transport)?;
             return Err(error);
         }
     };
 
+    // The generic in-process transport cannot safely prove an in-place exec:
+    // replacing the test harness or embedding process would be catastrophic.
+    if request.launch_profile == i2pr_app_proto::LaunchProfile::Secured && !permit_secured_exec {
+        let error = ApphostError::Bootstrap(ApphostBootstrapError::SecuredUnavailable);
+        write_reply(
+            transport,
+            &ApphostReply::Failed {
+                reason: failure_reason(ApphostBootstrapError::SecuredUnavailable),
+                diagnostic: Some(ApphostBootstrapError::SecuredUnavailable.to_string()),
+            },
+        )
+        .await
+        .map_err(ApphostError::Transport)?;
+        return Err(error);
+    }
+
     // The instance identifier is derived before the exec, so a principal this
     // host cannot name is a refusal rather than a running application whose
     // identity the manager never learns.
     let instance_id = instance_identifier(&request)?;
+
+    if request.launch_profile == i2pr_app_proto::LaunchProfile::Secured {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        let attestation = match sandbox::install(
+            &launch,
+            request.resources.requested_memory_bytes,
+            request.resources.requested_open_files,
+        ) {
+            Ok(attestation) => attestation,
+            Err(error) => {
+                let (reason, wire_error) = match error {
+                    ApphostError::SandboxUnavailable => (
+                        ApphostFailureReason::SecuredUnavailable,
+                        ApphostBootstrapError::SecuredUnavailable,
+                    ),
+                    _ => (
+                        ApphostFailureReason::SandboxSetupFailed,
+                        ApphostBootstrapError::SandboxSetupFailed,
+                    ),
+                };
+                write_reply(
+                    transport,
+                    &ApphostReply::Failed {
+                        reason,
+                        diagnostic: Some(wire_error.to_string()),
+                    },
+                )
+                .await
+                .map_err(ApphostError::Transport)?;
+                return Err(error);
+            }
+        };
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        let attestation = {
+            let error = ApphostError::Bootstrap(ApphostBootstrapError::SecuredUnavailable);
+            write_reply(
+                transport,
+                &ApphostReply::Failed {
+                    reason: ApphostFailureReason::SecuredUnavailable,
+                    diagnostic: Some(ApphostBootstrapError::SecuredUnavailable.to_string()),
+                },
+            )
+            .await
+            .map_err(ApphostError::Transport)?;
+            return Err(error);
+        };
+
+        write_reply(
+            transport,
+            &ApphostReply::Ready {
+                instance_id,
+                attestation: Some(attestation),
+            },
+        )
+        .await
+        .map_err(ApphostError::Transport)?;
+        return exec_in_place(&launch);
+    }
 
     let working_directory = launch.root.clone();
     let child = spawn_application(&launch, &working_directory)?;
@@ -542,11 +675,157 @@ where
     // Split only once the launch is decided: after the reply is written the
     // channel stops being protocol and becomes a transparent relay.
     let (mut manager_read, mut manager_write) = tokio::io::split(transport);
-    write_reply(&mut manager_write, &ApphostReply::Ready { instance_id })
-        .await
-        .map_err(ApphostError::Transport)?;
+    write_reply(
+        &mut manager_write,
+        &ApphostReply::Ready {
+            instance_id,
+            attestation: None,
+        },
+    )
+    .await
+    .map_err(ApphostError::Transport)?;
 
     relay(child, &mut manager_read, &mut manager_write).await
+}
+
+#[cfg(unix)]
+fn exec_in_place(launch: &ResolvedLaunch) -> Result<(), ApphostError> {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(&launch.program);
+    command.current_dir(&launch.root).env_clear();
+    for (key, value) in &launch.environment {
+        command.env(key, value);
+    }
+    if let Some(data_root) = launch.data_root.to_str() {
+        command.env("I2PR_APP_DATA_DIR", data_root);
+    }
+    for argument in &launch.argv {
+        command.arg(argument);
+    }
+    let error = command.exec();
+    Err(ApphostError::Spawn(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn exec_in_place(_launch: &ResolvedLaunch) -> Result<(), ApphostError> {
+    Err(ApphostError::Bootstrap(
+        ApphostBootstrapError::SecuredUnavailable,
+    ))
+}
+
+/// Process entry point. Tokio is used only to perform the bounded bootstrap
+/// read; its runtime is dropped before the secured branch installs restrictions
+/// and replaces the process with the application.
+pub fn serve_inherited() -> Result<(), ApphostError> {
+    let mut output = std::io::stdout().lock();
+    let mut input = tokio::io::stdin();
+    let bootstrap_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| ApphostError::SandboxSetup)?;
+    let request = match bootstrap_runtime
+        .block_on(read_launch_request(&mut input, APPHOST_BOOTSTRAP_GRACE))
+    {
+        Ok(request) => request,
+        Err(error) => {
+            if !matches!(
+                error,
+                ApphostBootstrapError::BadMagic
+                    | ApphostBootstrapError::UnsupportedVersion
+                    | ApphostBootstrapError::RoleMismatch
+            ) {
+                write_reply_blocking(
+                    &mut output,
+                    &ApphostReply::Failed {
+                        reason: failure_reason(error),
+                        diagnostic: Some(error.to_string()),
+                    },
+                )?;
+            }
+            return Err(ApphostError::Bootstrap(error));
+        }
+    };
+    drop(input);
+    drop(bootstrap_runtime);
+    if request.launch_profile == i2pr_app_proto::LaunchProfile::Secured {
+        let launch = resolve_command(&request)?;
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        let attestation = match sandbox::install(
+            &launch,
+            request.resources.requested_memory_bytes,
+            request.resources.requested_open_files,
+        ) {
+            Ok(attestation) => attestation,
+            Err(error) => {
+                let (reason, wire_error) = match error {
+                    ApphostError::SandboxUnavailable => (
+                        ApphostFailureReason::SecuredUnavailable,
+                        ApphostBootstrapError::SecuredUnavailable,
+                    ),
+                    _ => (
+                        ApphostFailureReason::SandboxSetupFailed,
+                        ApphostBootstrapError::SandboxSetupFailed,
+                    ),
+                };
+                write_reply_blocking(
+                    &mut output,
+                    &ApphostReply::Failed {
+                        reason,
+                        diagnostic: Some(wire_error.to_string()),
+                    },
+                )?;
+                return Err(error);
+            }
+        };
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        let attestation = {
+            write_reply_blocking(
+                &mut output,
+                &ApphostReply::Failed {
+                    reason: ApphostFailureReason::SecuredUnavailable,
+                    diagnostic: Some(ApphostBootstrapError::SecuredUnavailable.to_string()),
+                },
+            )?;
+            return Err(ApphostError::Bootstrap(
+                ApphostBootstrapError::SecuredUnavailable,
+            ));
+        };
+        let instance_id = instance_identifier(&request)?;
+        write_reply_blocking(
+            &mut output,
+            &ApphostReply::Ready {
+                instance_id,
+                attestation: Some(attestation),
+            },
+        )?;
+        drop(output);
+        return exec_in_place(&launch);
+    }
+
+    drop(output);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| ApphostError::SandboxSetup)?;
+    let mut transport = inherited();
+    runtime.block_on(serve_request(&mut transport, request, false))
+}
+
+fn write_reply_blocking<W: std::io::Write>(
+    writer: &mut W,
+    reply: &ApphostReply,
+) -> Result<(), ApphostError> {
+    let encoded = serde_json::to_vec(reply).map_err(|_| ApphostError::SandboxSetup)?;
+    writer
+        .write_all(&encoded)
+        .map_err(ApphostError::Transport)?;
+    writer.flush().map_err(ApphostError::Transport)
 }
 
 /// Derives the bounded instance identifier echoed back on `Ready`.
@@ -585,6 +864,7 @@ mod tests {
             },
             launch_profile: profile,
             root: i2pr_app_manager_proto::apphost::LaunchRoot::new(root)?,
+            data_root: i2pr_app_manager_proto::apphost::AppDataRoot::new("/tmp/app-data")?,
             entrypoint: i2pr_app_manager_proto::apphost::Entrypoint::new(entrypoint)?,
             argv: Vec::new(),
             environment: i2pr_app_manager_proto::apphost::SanitizedEnvironment::new(
@@ -598,25 +878,14 @@ mod tests {
     }
 
     #[test]
-    fn secured_launch_is_refused_before_any_exec() {
+    fn secured_launch_passes_wire_validation_for_platform_backend() {
         let request = request(
             "/apps/fixture",
             "bin/app",
             i2pr_app_proto::LaunchProfile::Secured,
         )
         .expect("request");
-        assert_eq!(
-            request.validate(),
-            Err(ApphostBootstrapError::SecuredUnavailable)
-        );
-        // The refusal must also survive the filesystem-touching path, so a
-        // refactor that calls `resolve_command` first cannot skip the gate.
-        assert!(matches!(
-            resolve_command(&request),
-            Err(ApphostError::Bootstrap(
-                ApphostBootstrapError::SecuredUnavailable
-            ))
-        ));
+        assert!(request.validate().is_ok());
         assert_eq!(
             failure_reason(ApphostBootstrapError::SecuredUnavailable),
             ApphostFailureReason::SecuredUnavailable

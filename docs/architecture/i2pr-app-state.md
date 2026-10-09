@@ -18,8 +18,11 @@ at `u64::MAX` is typed.
 publisher trust and selected package identity, re-verifies the installed
 signature and payload inventory, resolves exactly one platform target, and
 intersects explicit grants with requests and the implemented Sam/I2cp set.
-Unknown requested resources and unavailable Secured policy fail closed.
-Resource ceilings are descriptive only.
+Unknown requested resources fail closed. Linux Secured decisions carry a stable,
+private app-data root keyed by trusted publisher fingerprint and AppId; the
+apphost still refuses unsupported hosts or incomplete sandbox setup.
+Secured profiles require nonzero effective memory and open-file ceilings;
+apphost installs them as hard limits before exec.
 
 ## Locking
 

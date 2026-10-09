@@ -38,7 +38,8 @@
 use std::collections::BTreeSet;
 
 use i2pr_app_manager_proto::apphost::{
-    DescriptiveResourceRequest, Entrypoint, LaunchRequest, LaunchRoot, SanitizedEnvironment,
+    AppDataRoot, DescriptiveResourceRequest, Entrypoint, LaunchRequest, LaunchRoot,
+    SanitizedEnvironment,
 };
 use i2pr_app_manager_proto::{EffectiveGrant, ManagerGatewayLimits, ManagerPrincipal};
 use i2pr_app_proto::{
@@ -61,6 +62,7 @@ pub struct AuthorityRequest {
     pub capabilities: Vec<Capability>,
     pub launch_profile: LaunchProfile,
     pub root: LaunchRoot,
+    pub data_root: AppDataRoot,
     pub entrypoint: Entrypoint,
     pub argv: Vec<String>,
     pub environment: SanitizedEnvironment,
@@ -77,6 +79,7 @@ pub struct LaunchAuthority {
     effective: EffectiveCapabilities,
     launch_profile: LaunchProfile,
     root: LaunchRoot,
+    data_root: AppDataRoot,
     entrypoint: Entrypoint,
     argv: Vec<String>,
     environment: SanitizedEnvironment,
@@ -88,10 +91,8 @@ impl LaunchAuthority {
     /// Builds an authority from an administrator-origin decision.
     ///
     /// Every gate that can be evaluated without a filesystem or a process is
-    /// evaluated here, including the Plan 369 §2 `Secured` refusal, so no
-    /// authority value can exist for a launch that apphost would refuse at exec
-    /// time. Failing later would mean a launch was admitted by the manager and
-    /// then killed by the host, which reads as two decisions where there is one.
+    /// evaluated here, including profile/resource consistency. Host-specific
+    /// sandbox availability is checked by apphost before it sends readiness.
     pub fn new(
         administrator: &AdministratorPrincipal,
         request: AuthorityRequest,
@@ -101,6 +102,7 @@ impl LaunchAuthority {
             capabilities,
             launch_profile,
             root,
+            data_root,
             entrypoint,
             argv,
             environment,
@@ -128,6 +130,7 @@ impl LaunchAuthority {
             effective,
             launch_profile,
             root,
+            data_root,
             entrypoint,
             argv,
             environment,
@@ -196,6 +199,7 @@ impl LaunchAuthority {
             principal: self.principal.clone(),
             launch_profile: self.launch_profile,
             root: self.root.clone(),
+            data_root: self.data_root.clone(),
             entrypoint: self.entrypoint.clone(),
             argv: self.argv.clone(),
             environment: self.environment.clone(),
@@ -239,7 +243,7 @@ mod tests {
     use i2pr_app_manager_proto::ManagerInstanceId;
     use i2pr_app_manager_proto::ManagerProtocolError;
     use i2pr_app_manager_proto::apphost::{
-        ApphostBootstrapError, Entrypoint, LaunchRoot, SanitizedEnvironment,
+        AppDataRoot, Entrypoint, LaunchRoot, SanitizedEnvironment,
     };
     use i2pr_app_proto::{AdministratorPrincipal, AppId, LaunchProfile};
 
@@ -259,6 +263,7 @@ mod tests {
             capabilities,
             launch_profile: profile,
             root: LaunchRoot::new("/opt/apps/fixture").expect("root"),
+            data_root: AppDataRoot::new("/var/lib/i2pr/apps-data/pub/fixture").expect("data root"),
             entrypoint: Entrypoint::new(entrypoint).expect("entrypoint"),
             argv: Vec::new(),
             environment: SanitizedEnvironment::new(BTreeMap::new()).expect("environment"),
@@ -321,16 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn secured_is_refused_before_an_authority_exists() {
+    fn secured_authority_is_bounded_and_deferred_to_the_platform_owner() {
         let outcome = LaunchAuthority::new(
             &administrator(),
             request(vec![Capability::Sam], LaunchProfile::Secured, "app"),
         );
-        assert_eq!(
-            outcome.unwrap_err(),
-            AppdError::Bootstrap(ApphostBootstrapError::SecuredUnavailable),
-            "the refusal must land on the authority, not at exec time"
-        );
+        assert_eq!(outcome.unwrap().launch_profile(), LaunchProfile::Secured);
     }
 
     #[test]

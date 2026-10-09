@@ -57,6 +57,8 @@ use crate::config::{I2cpConfig, SamConfig};
 const FIXTURE_MANAGER: &str = "i2pr-app-fixture-manager";
 /// The fixture application `i2pr-apphost` will exec.
 const FIXTURE_APP: &str = "i2pr-app-fixture";
+/// Statically linked secured-mode fixture, produced by the Linux CI build.
+const FIXTURE_SECURED_APP: &str = "i2pr-app-fixture-secured";
 /// The apphost, resolved by `i2pr-appd`'s own unchanged sibling rule.
 const APPHOST: &str = "i2pr-apphost";
 
@@ -216,7 +218,10 @@ mod tests {
             "host_protocol_max": {"major": 1, "minor": 0},
             "entrypoints": [{"target": i2pr_app_state::target_triple().unwrap(), "path": "bin/app"}],
             "requested_capabilities": ["sam", "i2cp"],
-            "resources": [],
+            "resources": [
+                {"name": "memory_bytes", "requested": 268435456},
+                {"name": "open_files", "requested": 32}
+            ],
             "ui": null,
             "autostart_requested": false,
             "restart_requested": false
@@ -303,10 +308,22 @@ mod tests {
                         } else {
                             vec![Capability::I2cp]
                         },
-                        launch_profile: Some(LaunchProfile::UnsafeDirect),
+                        launch_profile: Some(
+                            if cfg!(all(
+                                target_os = "linux",
+                                any(target_arch = "x86_64", target_arch = "aarch64")
+                            )) {
+                                LaunchProfile::Secured
+                            } else {
+                                LaunchProfile::UnsafeDirect
+                            },
+                        ),
                         autostart: true,
                         max_connections: 8,
-                        resource_ceilings: ResourceCeilings::default(),
+                        resource_ceilings: ResourceCeilings {
+                            memory_bytes: Some(512 * 1024 * 1024),
+                            open_files: Some(64),
+                        },
                     })
                     .collect();
                 state.apps.sort_by(|a, b| {
@@ -795,7 +812,7 @@ mod tests {
             Err(_) => (false, Some("manager handshake timed out".to_owned())),
         };
         let (transcripts, transcript_paths) =
-            wait_for_managed_transcripts(app_ids, already_seen).await;
+            wait_for_managed_transcripts(root, app_ids, already_seen).await;
         let (sessions, streams) = bridge.counts().await;
 
         // Closing the bridge closes its owned transport; appd then observes
@@ -835,28 +852,48 @@ mod tests {
     }
 
     async fn wait_for_managed_transcripts(
+        managed_root: &Path,
         app_ids: &[AppId],
         already_seen: &BTreeSet<PathBuf>,
     ) -> (Vec<(PathBuf, Vec<serde_json::Value>)>, BTreeSet<PathBuf>) {
         let deadline = Instant::now() + DEADLINE;
         loop {
             let mut found = Vec::new();
-            let directory = std::env::temp_dir();
+            let directory = managed_root.join("app-data");
             for app_id in app_ids {
-                let prefix = format!("i2pr-app-fixture-managed-{}-", app_id.as_str());
-                for entry in std::fs::read_dir(&directory).expect("temp directory reads") {
-                    let entry = entry.expect("temp entry reads");
-                    let path = entry.path();
-                    let name = entry.file_name();
-                    let Some(name) = name.to_str() else { continue };
-                    if !name.starts_with(&prefix)
-                        || !name.ends_with(".jsonl")
-                        || already_seen.contains(&path)
-                        || !entry.file_type().expect("temp entry type").is_file()
+                let prefix = format!("transcript-{}-", app_id.as_str());
+                let Ok(publishers) = std::fs::read_dir(&directory) else {
+                    continue;
+                };
+                for publisher in publishers {
+                    let publisher = publisher.expect("publisher data entry reads");
+                    if !publisher
+                        .file_type()
+                        .expect("publisher entry type")
+                        .is_dir()
                     {
                         continue;
                     }
-                    found.push((path.clone(), read_transcript(&path)));
+                    for app in std::fs::read_dir(publisher.path()).expect("publisher data reads") {
+                        let app = app.expect("app data entry reads");
+                        if !app.file_type().expect("app data entry type").is_dir() {
+                            continue;
+                        }
+                        for entry in std::fs::read_dir(app.path()).expect("app data files read") {
+                            let entry = entry.expect("app data file entry reads");
+                            let path = entry.path();
+                            let name = entry.file_name();
+                            let Some(name) = name.to_str() else { continue };
+                            if !name.starts_with(&prefix)
+                                || !name.ends_with(".jsonl")
+                                || already_seen.contains(&path)
+                                || !entry.file_type().expect("app data file type").is_file()
+                            {
+                                continue;
+                            }
+                            found.push((path.clone(), read_transcript(&path)));
+                        }
+                    }
                 }
             }
             found.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1322,7 +1359,14 @@ mod tests {
     #[tokio::test]
     async fn persisted_autostarts_reach_sam_and_i2cp_again_after_manager_restart() {
         let _ = sibling("i2pr-appd");
-        let fixture = sibling(FIXTURE_APP);
+        let fixture = if cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) {
+            sibling(FIXTURE_SECURED_APP)
+        } else {
+            sibling(FIXTURE_APP)
+        };
         let _ = sibling(APPHOST);
         let scratch = Scratch::new("persistent-catalog");
         let (root, app_ids) = prepare_persistent_catalog(&scratch.path, &fixture);

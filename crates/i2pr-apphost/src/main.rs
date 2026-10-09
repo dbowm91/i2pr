@@ -16,7 +16,7 @@
 
 use std::process::ExitCode;
 
-use i2pr_apphost::{inherited, serve};
+use i2pr_apphost::serve_inherited;
 
 fn main() -> ExitCode {
     // Refuse unknown arguments instead of tolerating them: an ignored argument
@@ -27,18 +27,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("i2pr-apphost could not start its async runtime: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match runtime.block_on(serve(inherited())) {
+    match serve_inherited() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Diagnostics go to stderr only. stderr is never protocol and is

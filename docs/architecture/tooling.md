@@ -21,10 +21,10 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 59 | 57 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 60 | 58 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 60 | 57 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 39 | 37 `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 61 | 58 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 40 | 38 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-57 `check-*` files exist on disk in `scripts/` (60 counting `scripts/interop/`),
+58 `check-*` files exist on disk in `scripts/` (61 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -59,6 +59,7 @@ counting method both numbers come from.
 | `scripts/check-managed-app-process-boundary.py` | Plans 369/383 static guard for **which process execs what**. Rule 1 pins the three blessed spawn sites (daemon→manager, appd→apphost, apphost→application); rule 1b requires `current_exe()` sibling resolution for the two distribution-owned edges and forbids shell launch and `PATH` lookup; rule 2 forbids production code naming or depending on the fixture; rule 3 requires the shipped manager to refuse argv and use the persistent policy catalog; rule 4 keeps the manager test seam definition-shaped, failing closed on any production caller. Strips comments and `#[cfg(test)]` regions before scanning, so test-only qualification can exercise the real catalog without adding a production fixture edge. `--self-test` applies each mutation in memory and requires rejection, with negative controls. | yes | yes |
 | `scripts/check-managed-app-package-boundary.py` | Plan 382 package trust-zone guard: confines package code to the app protocol contract and rejects router/runtime, network, process execution, and launch-authority seams. `--self-test` proves each source/dependency rule with in-memory mutations and positive controls. | yes | yes |
 | `scripts/check-managed-app-policy-boundary.py` | Plan 383 policy/CLI/appd guard: constrains the app-state/appctl dependencies and keeps `LaunchAuthority` construction in appd, verifies persistent-catalog wiring, and checks the daemon's state-root handoff. `--self-test` proves the seam rules with source mutations. | yes | yes |
+| `scripts/check-managed-app-secured-sandbox.py` | Plan 407 guard for static ELF refusal, hard resource ceilings, Landlock ABI v3 hard enforcement, no-new-privileges, seccomp default-kill policy, and sandbox-before-ready-before-exec ordering. `--self-test` requires six enforcement-bypass mutations to fail. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
 | `scripts/check-license-metadata.py` | Plan 379 repository license-metadata drift guard. Asserts the MIT `LICENSE` shape, the root `[workspace.package] license`, and that **every** member manifest inherits or names MIT — then cross-checks the resolved `cargo metadata` values, so a `[workspace.package]` key nobody inherits cannot read as a declaration again. Also rejects any member `license-file` (a second, disagreeing source of truth) and keeps the README's clean-room/provenance clause. Regex-parsed rather than `tomllib` so it runs on macOS system Python; `--self-test` gives every rule a rejected mutation plus accepted controls for the strict direction. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
@@ -278,10 +279,10 @@ by one commit):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 48 | 48 rows marked `Floor: yes` |
-| Total routine-floor steps | 58 | — |
-| Checkers executed by `ci.yml` | 37 | 40 rows marked `CI: yes` |
-| `check-*` files on disk | 57 (60 with `scripts/interop/`) | 59 checker rows |
+| Floor steps invoking a checker | 50 | 49 rows marked `Floor: yes` |
+| Total routine-floor steps | 60 | — |
+| Checkers executed by `ci.yml` | 38 | 41 rows marked `CI: yes` |
+| `check-*` files on disk | 58 (61 with `scripts/interop/`) | 60 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
@@ -739,18 +740,19 @@ CI pass.
 Ten workflows exist. One is the ordinary gate; the other nine are
 `workflow_dispatch`-only manual external lanes.
 
-### `.github/workflows/ci.yml` (ordinary gate, three jobs)
+### `.github/workflows/ci.yml` (ordinary gate, four jobs)
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, `fail-fast: false`) | Checkout → ripgrep install (Linux only) → Rust 1.95.0 + rustfmt + clippy → Cargo cache → `cargo fmt --all --check` → `cargo check --locked --workspace` → `cargo check --locked --workspace --all-targets` → tests → `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` → `cargo doc --locked --workspace --no-deps` (with `RUSTDOCFLAGS: -D warnings`) → 24 checker invocations |
+| **Secured apphost (Linux aarch64)** | ubuntu-24.04-arm | Native static-Rust apphost sandbox probes and the signed managed SAM/I2CP restart qualification; verifies all guards also on aarch64. |
+| **Quality** | ubuntu-latest + macos-latest (matrix, `fail-fast: false`) | Checkout → ripgrep install (Linux only) → Rust 1.95.0 + rustfmt + clippy → Cargo cache → `cargo fmt --all --check` → `cargo check --locked --workspace` → `cargo check --locked --workspace --all-targets` → tests → `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` → `cargo doc --locked --workspace --no-deps` (with `RUSTDOCFLAGS: -D warnings`) → 25 checker invocations |
 | **MSRV** | ubuntu-latest | Rust **1.89.0** → `cargo check --locked --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | `cargo deny check advisories bans sources` (via `EmbarkStudios/cargo-deny-action@v2`) |
 
 Triggers: `on: push`, `on: pull_request` (all branches).
 `permissions: contents: read`.
 
-**The 24 checker invocations, exactly** (all bare `if: runner.os ==
+**The 25 checker invocations, exactly** (all bare `if: runner.os ==
 'Linux'` unless noted):
 
 1. `bash scripts/check-dependency-direction.sh` (both OS)
@@ -777,6 +779,7 @@ Triggers: `on: push`, `on: pull_request` (all branches).
 22. `bash scripts/check-m11-transit-boundaries.sh`
 23. `bash scripts/check-java-source-lock-gating.sh`
 24. `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`
+25. `python3 scripts/check-managed-app-secured-sandbox.py` and its `--self-test` (one Linux-only CI step)
 
 **macOS test pattern.** The workspace includes several real loopback
 listener suites, and macOS runners become flaky when Cargo launches
@@ -978,6 +981,8 @@ python3 scripts/check-managed-app-gateway-boundary.py
 python3 scripts/check-managed-app-manager-boundary.py
 python3 scripts/check-managed-app-process-boundary.py
 python3 scripts/check-managed-app-process-boundary.py --self-test
+python3 scripts/check-managed-app-secured-sandbox.py
+python3 scripts/check-managed-app-secured-sandbox.py --self-test
 python3 scripts/check-portable-service-tunnel-api.py
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'

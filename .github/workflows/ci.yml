@@ -8,6 +8,37 @@ permissions:
   contents: read
 
 jobs:
+  secured-sandbox-aarch64:
+    name: Secured apphost (Linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+        # This native runner executes Landlock/seccomp negative probes; a
+        # cross-compiled binary cannot qualify kernel enforcement behavior.
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Build managed-app sibling binaries
+        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl
+      - name: Build static Linux managed-app qualification fixture
+        run: |
+          cargo rustc --locked -p i2pr-app-fixture --bin i2pr-app-fixture -- -C target-feature=+crt-static
+          cp target/debug/i2pr-app-fixture target/debug/i2pr-app-fixture-secured
+          cargo build --locked -p i2pr-app-fixture --bin i2pr-app-fixture
+      - name: Qualify apphost sandbox and managed SAM/I2CP path
+        run: |
+          cargo test --locked -p i2pr-apphost --all-targets -- --test-threads=1
+          cargo test --locked -p i2pr-app-manager-proto -p i2pr-app-state -p i2pr-appd --all-targets -- --test-threads=1
+          cargo test --locked -p i2pr-daemon --lib app_runtime_qualification::tests::persisted_autostarts_reach_sam_and_i2cp_again_after_manager_restart -- --exact --test-threads=1
+      - name: Check secured sandbox boundary
+        run: |
+          python3 scripts/check-managed-app-secured-sandbox.py
+          python3 scripts/check-managed-app-secured-sandbox.py --self-test
+
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -89,7 +120,13 @@ jobs:
       # staleness guard exists, fail the build for the right reason and still
       # not test what it claims to.
       - name: Build managed-app runtime and admin binaries
-        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appctl
+        run: cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl
+      - name: Build static Linux managed-app qualification fixture
+        if: runner.os == 'Linux'
+        run: |
+          cargo rustc --locked -p i2pr-app-fixture --bin i2pr-app-fixture -- -C target-feature=+crt-static
+          cp target/debug/i2pr-app-fixture target/debug/i2pr-app-fixture-secured
+          cargo build --locked -p i2pr-app-fixture --bin i2pr-app-fixture
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when Cargo launches the workspace's
@@ -136,6 +173,11 @@ jobs:
         run: |
           python3 scripts/check-managed-app-policy-boundary.py
           python3 scripts/check-managed-app-policy-boundary.py --self-test
+      - name: Check managed-app secured sandbox boundary
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/check-managed-app-secured-sandbox.py
+          python3 scripts/check-managed-app-secured-sandbox.py --self-test
       - name: Check portable service-tunnel API snapshot
         run: python3 scripts/check-portable-service-tunnel-api.py
       - name: Check portable service-tunnel external consumer

@@ -91,12 +91,14 @@ async fn drive(request: FixtureRequest) -> Result<(), String> {
         .ok_or("the fixture application has no parent directory")?;
     let entrypoint = Entrypoint::new(FIXTURE_APP_NAME)
         .map_err(|error| format!("fixture entrypoint rejected: {error}"))?;
+    let data_root = fixture_data_root()?;
 
     let catalog = FixtureCatalog {
         app_root: LaunchRoot::new(root.to_str().ok_or("fixture root is not valid UTF-8")?)
             .map_err(|error| format!("fixture root rejected: {error}"))?,
         entrypoint,
         capabilities: request.capabilities,
+        data_root: data_root.clone(),
         instances: request.instances,
         first_instance: request.first_instance,
         app_args: request.app_args,
@@ -106,9 +108,29 @@ async fn drive(request: FixtureRequest) -> Result<(), String> {
     // The real manager, over the real inherited transport. Only the catalog
     // differs from the shipped binary.
     let mut appd = i2pr_appd::Appd::with_catalog(catalog);
-    appd.run(i2pr_appd::inherited())
+    let result = appd
+        .run(i2pr_appd::inherited())
         .await
-        .map_err(|error| format!("manager stopped: {error}"))
+        .map_err(|error| format!("manager stopped: {error}"));
+    if let Some(parent) = data_root.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+    result
+}
+
+/// Private temporary data root for this evidence manager process.
+fn fixture_data_root() -> Result<std::path::PathBuf, String> {
+    let path = std::env::temp_dir()
+        .join(format!("i2pr-app-fixture-manager-{}", std::process::id()))
+        .join("app-data");
+    std::fs::create_dir_all(&path).map_err(|error| format!("fixture data root: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("fixture data permissions: {error}"))?;
+    }
+    Ok(path)
 }
 
 /// Resolves the fixture application next to this binary.
@@ -139,6 +161,7 @@ struct FixtureCatalog {
     app_root: LaunchRoot,
     entrypoint: Entrypoint,
     capabilities: Vec<Capability>,
+    data_root: std::path::PathBuf,
     instances: usize,
     first_instance: u128,
     app_args: FixtureArgs,
@@ -167,6 +190,7 @@ impl i2pr_appd::LaunchCatalog for FixtureCatalog {
             &self.app_root,
             &self.entrypoint,
             &self.capabilities,
+            &self.data_root,
             app_args,
             instance,
         )
@@ -182,13 +206,14 @@ const FIXTURE_APP_ID: &str = "i2pr.fixture.app";
 /// This is the *only* place a fixture authority is constructed, and it goes
 /// through the same `LaunchAuthority::new` gate production would: the
 /// administrator grant path, the canonical instance id, the gateway limit, and
-/// the whole bootstrap contract (`Secured` refusal, entrypoint containment,
+/// the whole bootstrap contract (profile, entrypoint containment,
 /// argv bounds) all run exactly as they do for a real launch. A fixture that
 /// could bypass that gate would qualify nothing.
 fn build_authority(
     root: &LaunchRoot,
     entrypoint: &Entrypoint,
     capabilities: &[Capability],
+    data_root: &std::path::Path,
     app_args: FixtureArgs,
     instance: u128,
 ) -> Result<i2pr_appd::authority::LaunchAuthority, String> {
@@ -201,11 +226,21 @@ fn build_authority(
             publisher_id: None,
         },
         capabilities: capabilities.to_vec(),
-        // `Secured` is refused at authority construction because no backend is
-        // qualified; a fixture that asked for it would prove nothing, and would
-        // fail here rather than at exec.
+        // This fixture manager deliberately exercises UnsafeDirect. Plan 407's
+        // secured qualification uses the production persistent catalog path.
         launch_profile: LaunchProfile::UnsafeDirect,
         root: root.clone(),
+        data_root: {
+            let app_root = data_root.join(FIXTURE_APP_ID);
+            std::fs::create_dir_all(&app_root)
+                .map_err(|error| format!("fixture app data directory: {error}"))?;
+            i2pr_app_manager_proto::apphost::AppDataRoot::new(
+                app_root
+                    .to_str()
+                    .ok_or("fixture app data path is not valid UTF-8")?,
+            )
+            .map_err(|e| format!("application data root: {e:?}"))?
+        },
         entrypoint: entrypoint.clone(),
         argv: app_args.to_argv(),
         environment: SanitizedEnvironment::new(BTreeMap::new())

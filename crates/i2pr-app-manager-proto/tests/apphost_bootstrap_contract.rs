@@ -1,8 +1,8 @@
 //! Plan 369 WP1 evidence for the AppManager ↔ apphost bootstrap contract.
 //!
-//! These are pure contract tests: no process, no filesystem, no exec. That is the
-//! point — the Plan 369 gates must be provable without a sandbox backend, because
-//! `Secured` exists precisely to be refused before one is qualified.
+//! These are pure contract tests: no process, no filesystem, no exec. They prove
+//! the bounded wire accepts a secured request; platform qualification and refusal
+//! behavior belong to the real apphost process tests.
 
 use std::collections::BTreeMap;
 
@@ -34,6 +34,10 @@ fn request() -> LaunchRequest {
         principal: principal(),
         launch_profile: LaunchProfile::UnsafeDirect,
         root: LaunchRoot::new("/opt/i2pr/apps/fixture").expect("root"),
+        data_root: i2pr_app_manager_proto::apphost::AppDataRoot::new(
+            "/var/lib/i2pr/app-data/publisher/fixture",
+        )
+        .expect("data root"),
         entrypoint: Entrypoint::new("bin/app").expect("entrypoint"),
         argv: vec!["--selftest".to_owned()],
         environment: environment(),
@@ -49,29 +53,17 @@ fn request() -> LaunchRequest {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn secured_launch_is_refused_before_any_exec() {
+fn secured_launch_is_accepted_by_contract_for_platform_qualification() {
     let mut secured = request();
     secured.launch_profile = LaunchProfile::Secured;
 
-    assert_eq!(
-        secured.validate(),
-        Err(ApphostBootstrapError::SecuredUnavailable),
-        "Secured must fail closed: no qualified sandbox backend exists in Plan 369"
-    );
-    // ...and the refusal is not an encoding accident.
-    assert_eq!(
-        secured.encode(),
-        Err(ApphostBootstrapError::SecuredUnavailable)
-    );
-    // A rejected request must not be recoverable by round-tripping the bytes.
-    assert!(secured.encode().is_err());
-
-    // UnsafeDirect remains the only admissible profile.
+    assert_eq!(secured.validate(), Ok(()));
+    assert!(LaunchRequest::decode(&secured.encode().expect("encode")).is_ok());
     assert_eq!(request().validate(), Ok(()));
 }
 
 #[test]
-fn secured_cannot_be_smuggled_through_encoded_bytes() {
+fn secured_profile_survives_round_trip_without_changing_other_fields() {
     // Encode an UnsafeDirect request, then rewrite the profile field to `secured`
     // and decode. The decoder re-validates, so the forgery is refused.
     let encoded = request().encode().expect("encode");
@@ -82,8 +74,10 @@ fn secured_cannot_be_smuggled_through_encoded_bytes() {
         "the fixture must actually have rewritten the profile"
     );
     assert_eq!(
-        LaunchRequest::decode(forged.as_bytes()),
-        Err(ApphostBootstrapError::SecuredUnavailable)
+        LaunchRequest::decode(forged.as_bytes())
+            .unwrap()
+            .launch_profile,
+        LaunchProfile::Secured
     );
 }
 
@@ -256,13 +250,14 @@ fn apphost_handshake_is_exact_and_version_gated() {
 #[test]
 fn replies_are_typed_and_include_the_fail_closed_reason() {
     let ready: ApphostReply = i2pr_app_manager_proto::apphost::serde_json::from_str(
-        r#"{"type":"ready","instance_id":"11"}"#,
+        r#"{"type":"ready","instance_id":"11","attestation":null}"#,
     )
     .expect("decode ready");
     assert_eq!(
         ready,
         ApphostReply::Ready {
-            instance_id: "11".to_owned()
+            instance_id: "11".to_owned(),
+            attestation: None,
         }
     );
 

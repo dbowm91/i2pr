@@ -243,7 +243,7 @@ design choices. Every workspace crate appears exactly once.
 | 25 | `i2pr-app-manager-proto` | AppManager contract | Private router/AppManager protocol: handshake, bounded frames, strict directional control vocabulary, opaque daemon-assigned handles, pure bounded accounting. Authority ceiling below Proposal 170; no administrator vocabulary. Plan 368. | [i2pr-app-manager-proto.md](i2pr-app-manager-proto.md) |
 | 24 | `i2pr-app-proto` | App contract | Managed native-app v1 protocol, capabilities, manifest, default-deny policy and sandbox attestation vocabulary. No OS/runtime owner. | [i2pr-app-proto.md](i2pr-app-proto.md) |
 | 26 | `i2pr-appd` | App manager process | Trusted manager process: persistent policy catalog, reverified package launch authority, inherited anonymous transport, concurrent manager client, app v1 session, bounded instance registry. Separate trust zone. Plans 369/383. | [i2pr-appd.md](i2pr-appd.md) |
-| 27 | `i2pr-apphost` | Direct-exec supervisor | One-shot bounded supervisor: single launch request, double-checked root containment, direct no-shell exec, `Secured` refused before exec, byte-transparent relay, direct-child cleanup. Plan 369. | [i2pr-apphost.md](i2pr-apphost.md) |
+| 27 | `i2pr-apphost` | Direct-exec supervisor | One-shot bounded supervisor: double-checked root containment, Linux static-ELF Landlock/seccomp secured exec, byte-transparent broker channel, and separate UnsafeDirect relay. Plans 369/407. | [i2pr-apphost.md](i2pr-apphost.md) |
 | 28 | `i2pr-app-fixture` | Black-box fixture | Evidence tooling: native fixture application plus a fixture manager running the real `Appd` against a test catalog. Production source does not name or bundle it; qualification installs it only through an explicit temporary signed policy. Plans 369/383. | [i2pr-app-fixture.md](i2pr-app-fixture.md) |
 | 29 | `i2pr-app-package` | Signed package/store | Bounded Stored-only package verifier, Ed25519 publisher identity, signed inventory, immutable local installation. Plan 382. | [i2pr-app-package.md](i2pr-app-package.md) |
 | 30 | `i2pr-app-state` | Persistent policy | Strict generation store, offline policy mutation, exact package re-verification, validated launch decisions. Plan 383. | [i2pr-app-state.md](i2pr-app-state.md) |
@@ -257,8 +257,9 @@ publisher trust, exact package selection, grants, profile, and autostart in
 immutable generations. `i2pr-appctl` is the offline mutation surface. The
 production `i2pr-appd` catalog re-verifies selected packages, holds one policy
 snapshot under a lifetime runtime lock, and launches only explicit autostarts.
-`UnsafeDirect` means ordinary host networking without a sandbox; `Secured`
-remains unavailable. See [policy v1](../../specs/references/managed-app-policy-v1.md).
+`UnsafeDirect` means ordinary host networking without a sandbox; Linux Secured
+uses the qualified static-ELF backend, while unsupported hosts remain fail-closed.
+See [policy v1](../../specs/references/managed-app-policy-v1.md).
 
 ## 4. Discrete module overviews
 
@@ -584,9 +585,10 @@ byte-transparent relay.
 
 Containment is checked **twice** — structurally on strings, then again on
 canonicalised paths — because a single check leaves either the obvious escape or
-the disguised one open. `Secured` is refused **before any exec** and re-checked
-at the exec site; there is no shell and no `PATH` lookup; the direct child is
-owned from spawn until reaped and killed rather than leaked. Full detail in
+the disguised one open. Secured Linux execution installs the qualified kernel
+profile before in-place exec; unsupported hosts fail before exec. There is no
+shell and no `PATH` lookup; the direct UnsafeDirect child is owned from spawn
+until reaped and killed rather than leaked. Full detail in
 [i2pr-apphost.md](i2pr-apphost.md).
 
 ### 4.23 `i2pr-app-fixture` — the managed-app black-box fixture

@@ -323,9 +323,10 @@ impl FixtureArgs {
                 "--i2pr-app-id".to_owned(),
             ));
         };
-        let transcript = std::env::temp_dir().join(format!(
-            "i2pr-app-fixture-managed-{app_id}-{instance}.jsonl"
-        ));
+        let data_root = std::env::var_os("I2PR_APP_DATA_DIR")
+            .ok_or(FixtureError::MissingOption("I2PR_APP_DATA_DIR"))?;
+        let transcript = std::path::PathBuf::from(data_root)
+            .join(format!("transcript-{app_id}-{instance}.jsonl"));
         Ok(Self {
             scenario,
             app_id,

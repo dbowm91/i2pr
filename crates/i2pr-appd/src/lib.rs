@@ -5,7 +5,7 @@
 //! must not depend on `i2pr-daemon`, `i2pr-runtime`, `i2pr-client`, `i2pr-api`,
 //! `i2pr-i2pcontrol`, NetDB, tunnel, or transport crates, and it owns no router
 //! protocol internals, no NetDB/tunnel/transport state, no Proposal-170
-//! administrator credential, and no sandbox enforcement.
+//! administrator credential or sandbox enforcement (the apphost owns it).
 //!
 //! # What it owns
 //!
@@ -36,9 +36,8 @@
 //! - No listener, no socket, no discoverable endpoint. The transport is the two
 //!   inherited anonymous pipes in [`transport`], and its possession is the
 //!   authentication fact (ADR 0035).
-//! - No sandbox attestation type exists anywhere in this crate, and none may be
-//!   fabricated. `LaunchProfile::Secured` is refused by the bootstrap contract
-//!   before any exec (Plan 369 §2).
+//! - No sandbox attestation is fabricated here. A secured apphost must return a
+//!   complete validated attestation before the manager accepts readiness.
 //! - No decoder from application protocol messages, manifest bytes, or any other
 //!   peer-supplied bytes into authority.
 //! - Nothing in the manager protocol can make the manager launch an application.

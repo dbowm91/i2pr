@@ -63,6 +63,8 @@ fn authority_with(capabilities: &[Capability]) -> LaunchAuthority {
             capabilities: capabilities.to_vec(),
             launch_profile: i2pr_app_proto::LaunchProfile::UnsafeDirect,
             root: LaunchRoot::new("/opt/fixture").expect("root"),
+            data_root: i2pr_app_manager_proto::apphost::AppDataRoot::new("/var/lib/fixture-data")
+                .expect("data root"),
             entrypoint: Entrypoint::new("app").expect("entrypoint"),
             argv: Vec::new(),
             environment: SanitizedEnvironment::new(BTreeMap::new()).expect("environment"),

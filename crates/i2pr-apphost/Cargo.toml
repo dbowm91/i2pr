@@ -24,6 +24,10 @@ i2pr-app-proto = { path = "../i2pr-app-proto" }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+landlock.workspace = true
+bux-seccomp.workspace = true
+libc.workspace = true
+rustix.workspace = true
 
 [lib]
 name = "i2pr_apphost"
