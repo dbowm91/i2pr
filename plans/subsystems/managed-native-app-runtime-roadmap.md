@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345, 349, 352–355, 368–371, 382–383, and 407 are closed. Plan 408 is active for host-owned loopback local-service ingress. Plan 409 is registered but blocked on Plan 408's protocol minor-version extension. The former managed-app Plans 385–388 drafts are archived after global-number reconciliation. macOS/Windows sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, 352–355, 368–371, 382–383, and 407–409 are closed. The former managed-app Plans 385–388 drafts are archived after global-number reconciliation. macOS/Windows sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -108,7 +108,7 @@ Future console UI assets are package-relative static resources under a distinct 
 
 ## 6. Dependency graph
 
-Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, 371, 382, 383, and 407 are closed. The imported managed-app drafts formerly numbered 385–388 are archived because those global numbers belong to Proposal 170 on main. Their sandbox/data scope closed as Plan 407; host-owned local ingress is Plan 408; the external Rust SDK/package builder is Plan 409.
+Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, 371, 382, 383, and 407–409 are closed. The imported managed-app drafts formerly numbered 385–388 are archived because those global numbers belong to Proposal 170 on main. Their sandbox/data scope closed as Plan 407; host-owned local ingress is Plan 408; the external Rust SDK/package builder is Plan 409.
 
 ```text
 345 architecture + runtime-neutral app contract foundation (closed)
@@ -123,8 +123,8 @@ Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, 371, 382, 383, and 407 are cl
                                      -> 382 signed immutable package + local store foundation (closed)
                                           -> 383 persistent trust/grants + production catalog + offline admin (closed)
                                                -> 407 Linux Secured apphost sandbox + private app data (closed)
-                                                    -> 408 host-owned local-service ingress (ready)
-                                                         -> 409 external Rust app SDK + package builder (blocked until 408)
+                                                         -> 408 host-owned local-service ingress (passed)
+                                                              -> 409 external Rust app SDK + package builder (passed)
                                                -> live AppManager administrator API (future plan)
                       -> scoped Proposal 170 adapter after its stable contract is ready
                                 -> brokered clearnet policy/DNS/TCP
@@ -136,7 +136,7 @@ Plans 345, 349, 352, 353, 354, 355, 368, 369, 370, 371, 382, 383, and 407 are cl
 
 Plan 352 closed the mapped-address policy gap and Plan 353 completed the integration-hygiene gate. Plan 354 passed the listener-independent SAM/I2CP connection seams with managed-profile host-target denial. Plan 355 passed the principal/capability boundary over those seams without choosing package/process IPC. Plan 368 froze a private manager protocol and mapped that protocol into the existing gateway without process launch. **Plan 369 then added the trusted manager/apphost process roles and the fixture lifecycle, and has passed**; Plans 382–383 added signed packages and persistent explicit policy. Plan 407 now qualifies Linux x86_64/aarch64 Secured execution and private persistent data; other hosts remain fail-closed.
 
-The scoped Proposal 170 adapter remains separately sequenced behind its canonical control contract. Plan 407 owns Linux sandboxing and private app data. Plan 408 owns host-owned local ingress; Plan 409 consumes its protocol extension and provides the external Rust SDK/package builder. Brokered clearnet, live admin, UI hosting, and remote update remain future owners.
+The scoped Proposal 170 adapter remains separately sequenced behind its canonical control contract. Plan 407 owns Linux sandboxing and private app data. Plan 408 owns host-owned local ingress; Plan 409 consumed its protocol extension and delivered the external Rust SDK/package builder. Brokered clearnet, live admin, UI hosting, and remote update remain future owners.
 
 ## 7. Milestones
 
@@ -156,7 +156,7 @@ The scoped Proposal 170 adapter remains separately sequenced behind its canonica
 | 383 | closed | `passed-managed-app-persistent-policy-production-catalog-and-offline-administration` | invariant + capability + persistence/lifecycle | `plans/implementation/managed-native-app-runtime/383-persistent-managed-app-policy-production-catalog-and-offline-administration.md` | `plans/closure/managed-native-app-runtime/383-status.md` |
 | 407 | closed | `passed-linux-secured-apphost-sandbox-and-private-persistent-app-data` | invariant + capability + platform security | `plans/implementation/managed-native-app-runtime/407-linux-secured-apphost-sandbox.md` | `plans/closure/managed-native-app-runtime/407-status.md` |
 | 408 | closed | `passed-host-owned-loopback-local-service-ingress` | capability + security invariant + protocol extension | `plans/implementation/managed-native-app-runtime/408-host-owned-local-service-ingress.md` | `plans/closure/managed-native-app-runtime/408-status.md` |
-| 409 | active | `in-progress-external-rust-managed-app-sdk-and-package-builder` | external interface + infrastructure + developer tooling | `plans/implementation/managed-native-app-runtime/409-external-rust-managed-app-sdk-and-package-builder.md` | — |
+| 409 | closed | `passed-external-rust-managed-app-sdk-and-package-builder` | external interface + infrastructure + developer tooling | `plans/implementation/managed-native-app-runtime/409-external-rust-managed-app-sdk-and-package-builder.md` | `plans/closure/managed-native-app-runtime/409-status.md` |
 
 
 
@@ -272,4 +272,4 @@ Plan 352 passed as `passed-managed-app-mapped-ipv6-policy-canonicalization`: map
 
 Plan 354 passed: both loopback listeners and trusted private connections use one listener-independent protocol driver, and managed-app SAM denies `STREAM FORWARD`/host-target behavior. Plan 355 passed: trusted composition binds one `AppPrincipal` and immutable `EffectiveCapabilities` to isolated private SAM/I2CP contexts. Neither plan launches applications, implements package lifecycle, establishes sandbox containment, or promotes SAM/I2CP support. Proposal 170 integration remains gated on canonical Proposal 170 completion.
 
-Future app implementation must preserve the existing router ownership boundaries. Plans 368–371, 382–383, and 407–408 are closed. Plan 382 created no trust/grants/launch authority; Plan 383 added persistent local authority but did not add a live administrator endpoint. Plan 407 qualifies Linux Secured containment and private app data. The former managed-app drafts 385–388 are reconciled as Plans 407–409; Plan 408 passed daemon-owned loopback ingress and its protocol extension, and Plan 409 is active. Brokered clearnet, UI, remote repository/update, live admin, and scoped control remain downstream and separately qualified.
+Future app implementation must preserve the existing router ownership boundaries. Plans 368–371, 382–383, and 407–409 are closed. Plan 382 created no trust/grants/launch authority; Plan 383 added persistent local authority but did not add a live administrator endpoint. Plan 407 qualifies Linux Secured containment and private app data. The former managed-app drafts 385–388 are reconciled as Plans 407–409; Plan 408 passed daemon-owned loopback ingress and its protocol extension, and Plan 409 passed the external SDK/package-builder contract. Brokered clearnet, UI, remote repository/update, live admin, and scoped control remain downstream and separately qualified.

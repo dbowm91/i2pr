@@ -1,6 +1,6 @@
 # Plan 409 — External Rust Managed-App SDK and Package Builder
 
-Status: **in-progress-external-sdk-and-package-builder**
+Status: **passed-external-rust-managed-app-sdk-and-package-builder**
 
 Global number reconciliation: the imported draft used Plan 388, which Proposal 170 owns on main. This successor is Plan 409; the source draft is preserved at `plans/archive/managed-native-app-runtime/388-external-rust-managed-app-sdk-and-package-builder.md`.
 
