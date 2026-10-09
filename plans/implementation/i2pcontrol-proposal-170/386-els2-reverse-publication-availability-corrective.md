@@ -1,6 +1,6 @@
 # Plan 386 — ELS2 reverse publication availability corrective
 
-Status: **registered-i2pr-els2-reverse-publication-availability-corrective**.
+Status: **blocked-control-created-server-missing-router-leaseset-plan-387**.
 
 Subsystem: Proposal 170 / Red25519 + ELS2.
 
@@ -116,3 +116,16 @@ cancellation. No persistent-format or public control-schema change is
 expected. A service that cannot publish or retrieve its LeaseSet must remain a
 typed failed/unresolved service; do not report success based only on a local
 encrypted address projection.
+
+
+Plan 386 execution result: committed implementation/evidence work at `abac02c0`
+localized the reverse failure to the local server Destination readiness boundary.
+A control-created server commits and derives type-5 material, but the product
+records repeated `MissingLeaseSet` publication failures before constructing a
+DatabaseStore. The NONE reverse payload therefore remains unproven; PSK and DH
+reverse payload rows were not attempted after this earlier local gate failed.
+Plan 387 owns the post-start server Destination provisioning corrective.
+
+Commit `fbc6f8bc` narrows generation-change publication scheduling to newly
+added server destinations, avoiding duplicate publication of existing servers
+after unrelated tunnel edits.
