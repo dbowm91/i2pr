@@ -22,7 +22,7 @@ not close Plan 375.
 | re-read the exact ELS2/type-5 consumer/publisher/config surfaces | pass (source only) | NONE/DH/PSK and blinded lookup confirmed at exact pin; see freeze §3.5 |
 | record the current i2pr SHA and Cargo.lock hash | pass | `d616f0868db4e56bd311d74095347209d69f5aa0`; SHA-256 `5389da3fa5dcd74e13d4c6421c3a2079c98b4e9ee117a8b575ca9c80e4a92bce` |
 | ADR 0032 (Proposal 170) transcript policy unchanged | pass | untouched |
-| controlled topology with no public-network dependency | verified available | the Plan 303/306 mesh passes on this host (see Plan 374's status) |
+| controlled topology with no public-network dependency | historical pass; current rerun stopped before matrix | Plan-279 topology assembled, but JC SAM session creation returned `Address already in use`; see continuation execution below |
 
 Durable record: [`tests/integration/els2/reference-freeze.md`](../../../tests/integration/els2/reference-freeze.md),
 shared with Plan 374.
@@ -31,6 +31,24 @@ Build notes worth keeping: **JDK 21 is mandatory** — the host default JDK 25
 makes Gradle 8.5 fail with `Unsupported class file major version 69`. `--offline`
 also fails, because the `me.champeau.jmh` plugin must be resolved from the
 plugin portal.
+
+## Continuation execution (2026-10-09)
+
+The existing Plan-279 controlled Java floodfill substrate was invoked once
+with JDK 21 and a unique loopback port set. It compiled the stock-router test
+launcher, prepared and activated the controlled i2pr floodfill, and seeded
+JC with `{F, JD1, JD2}`. It stopped before any ELS2 row: after JC's SAM bridge
+became reachable, `SESSION CREATE STYLE=DATAGRAM ... DESTINATION=TRANSIENT`
+returned `SESSION STATUS RESULT=I2P_ERROR MESSAGE="Address already in use"`
+through the runner's bounded warm-up. The sanitized runner output is in the
+ignored `target/interop/m12-floodfill-java-evidence/`; no reference private
+keys were retained. This is a substrate setup failure, not an ELS2 pass or a
+Java protocol finding. A second diagnostic invocation was interrupted before
+its warm-up completed and is not counted as an attempt.
+
+The Plan-279 substrate cannot yet be treated as ready for Plan 375 execution.
+The SAM/I2CP session creation failure must be attributed from a clean,
+diagnostic-preserving run before the Java ELS2 driver can use it.
 
 ## Pinned-source result (2026-10-09)
 
@@ -94,8 +112,8 @@ output remains valid and remains **not** interoperability.
 
 ## Roadmap disposition and unblock audit
 
-- **Roadmap disposition: active**, source proof complete; live driver and rows
-  outstanding.
+- **Roadmap disposition: active**, source proof complete; Plan-279 SAM setup
+  diagnosis, live driver, and rows outstanding.
 - **Unblock audit, executed per `plans/README.md`:**
 
 | Plan | Other hard dependencies | All closed? | Disposition |
