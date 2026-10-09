@@ -1,6 +1,6 @@
 # Plan 408 — Host-Owned Loopback Local-Service Ingress for Managed Apps
 
-Status: **registered-local-service-ingress**
+Status: **in-progress-host-owned-loopback-local-service-ingress**
 
 Global number reconciliation: the imported draft used Plan 387, which Proposal 170 owns on main. This successor is Plan 408; the source draft is preserved at `plans/archive/managed-native-app-runtime/387-host-owned-local-service-ingress.md`.
 
