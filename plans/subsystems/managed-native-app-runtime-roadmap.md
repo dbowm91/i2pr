@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345, 349, 352–355, 368–371 and 382–383 are closed. Plan 407 is ready for the first qualified Linux `Secured` sandbox backend plus private persistent app data. The former managed-app Plans 385–388 drafts are archived after global-number reconciliation; local-service ingress and the external SDK remain future work. macOS/Windows sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, 352–355, 368–371 and 382–383 are closed. Plan 407 is active for the first qualified Linux `Secured` sandbox backend plus private persistent app data. The former managed-app Plans 385–388 drafts are archived after global-number reconciliation; local-service ingress and the external SDK remain future work. macOS/Windows sandboxing, live AppManager administration, brokered clearnet, UI hosting, remote update/TUF, and scoped Proposal 170 remain downstream. This workstream is parallel to router protocol milestones and does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -154,7 +154,7 @@ The scoped Proposal 170 adapter remains separately sequenced behind its canonica
 | 370 | closed | `passed-managed-app-v1-hello-instance-id-codec-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/370-managed-app-v1-hello-instance-id-codec-corrective.md` | `plans/closure/managed-native-app-runtime/370-status.md` |
 | 382 | closed | `passed-managed-app-signed-package-store-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/382-signed-immutable-managed-app-package-and-local-store-foundation.md` | `plans/closure/managed-native-app-runtime/382-status.md` |
 | 383 | closed | `passed-managed-app-persistent-policy-production-catalog-and-offline-administration` | invariant + capability + persistence/lifecycle | `plans/implementation/managed-native-app-runtime/383-persistent-managed-app-policy-production-catalog-and-offline-administration.md` | `plans/closure/managed-native-app-runtime/383-status.md` |
-| 407 | ready | `registered-ready-linux-secured-apphost-sandbox` | invariant + capability + platform security | `plans/implementation/managed-native-app-runtime/407-linux-secured-apphost-sandbox.md` | — |
+| 407 | active | `in-progress-linux-secured-apphost-sandbox` | invariant + capability + platform security | `plans/implementation/managed-native-app-runtime/407-linux-secured-apphost-sandbox.md` | — |
 
 
 
