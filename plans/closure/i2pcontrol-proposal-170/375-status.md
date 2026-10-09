@@ -1,14 +1,17 @@
 # Plan 375 — Stock Java I2P bidirectional ELS2 qualification: status
 
-Status: **blocked-reference-freeze-partial-live-els2-driver-not-written**
+Status: **active-java-source-proof-complete-live-els2-driver-not-written**
 
 Plan of record:
 [`375-java-live-els2-qualification.md`](../../implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md).
 
 Classification: external interoperability + capability evidence.
 
-This plan **did not pass**. No ELS2 direction was executed against Java I2P.
-Its freeze was partially completed; its source proof is explicitly incomplete.
+This plan has not passed. No ELS2 direction has been executed against Java I2P.
+The 2026-10-09 continuation completed the pinned-source audit for publisher,
+consumer, and authorization modes and rebuilt the unmodified Java pin with JDK
+21. The live Java driver and matrix remain outstanding. This open status does
+not close Plan 375.
 
 ## What was completed
 
@@ -16,8 +19,8 @@ Its freeze was partially completed; its source proof is explicitly incomplete.
 |---|---|---|
 | the pin builds unmodified | pass | `:core:jar` + `:router:jar` at `9134f808…`; `BUILD SUCCESSFUL`, 7 tasks |
 | record version and dependency versions | partial | 2.13.0; Gradle 8.5; `sourceCompatibility`/`targetCompatibility` = 17; JDK 21 required |
-| re-read the exact ELS2/type-5 consumer/publisher/config surfaces | **incomplete** | see below |
-| record the current i2pr SHA and Cargo.lock hash | pass | `75fd691cfe0e0473ce79f89fa16d66a5e7453649`; `Cargo.lock` SHA-256 `ab1963730134…b9004a` |
+| re-read the exact ELS2/type-5 consumer/publisher/config surfaces | pass (source only) | NONE/DH/PSK and blinded lookup confirmed at exact pin; see freeze §3.5 |
+| record the current i2pr SHA and Cargo.lock hash | pass | `d616f0868db4e56bd311d74095347209d69f5aa0`; SHA-256 `5389da3fa5dcd74e13d4c6421c3a2079c98b4e9ee117a8b575ca9c80e4a92bce` |
 | ADR 0032 (Proposal 170) transcript policy unchanged | pass | untouched |
 | controlled topology with no public-network dependency | verified available | the Plan 303/306 mesh passes on this host (see Plan 374's status) |
 
@@ -29,7 +32,7 @@ makes Gradle 8.5 fail with `Unsupported class file major version 69`. `--offline
 also fails, because the `me.champeau.jmh` plugin must be resolved from the
 plugin portal.
 
-## What exists at the pin, and what does not
+## Pinned-source result (2026-10-09)
 
 Present in `core/build/libs/i2p.jar`:
 
@@ -37,27 +40,25 @@ Present in `core/build/libs/i2p.jar`:
 - `net/i2p/crypto/eddsa/RedDSAEngine.class`
 - the ordinary `LeaseSet2` / `MetaLeaseSet` / `LeaseSet` surfaces
 
-**Not yet read, and this is the gap:** the ELS2 **authorization-mode vocabulary**
-at this pin, and the **b33 consumer path**. Plan 375's capability matrix cannot
-be sized until those are read, because the matrix size depends on how many modes
-Java implements — exactly the question Plan 374's freeze answered for i2pd and
-which materially changed that plan's scope.
-
-Recording this as incomplete rather than inferring it from the class list is
-deliberate. i2pd turned out to implement **all three** modes despite the
-evidence available before reading the source; assuming the same for Java without
-reading it would repeat the mistake in the other direction.
+`BlindData` defines `AUTH_NONE=0`, `AUTH_DH=1`, and `AUTH_PSK=3`. The stock
+I2PTunnel surface maps selectors 0, 1, and 2 to none, DH, and PSK. `LookupDestJob`
+decodes extended Base32 B33 bodies and derives the blinded lookup key. Stock
+SAM preserves I2CP type-5/auth options. These are source-feasibility facts only;
+they size the live matrix as NONE, PSK, DH, plus separate lookup-secret and
+authorized/wrong/missing-credential cases. See the pinned-source citations in
+`tests/integration/els2/reference-freeze.md` §3.5.
 
 ## The blocker
 
-Same named gap as Plan 374, and it is the same one:
+The Java-specific gap is the missing live driver and its evidence artifact:
 
-The repository has no ELS2 live driver. It has the Plan 303/306 controlled
-floodfill mesh (type 1/3/7 only), Plan 350/351's i2pr-internal type-5 path, and
-Plan 346's crypto-boundary transcript check. None is a live ELS2 row, and the
-plan forbids satisfying one by inserting a decoded LeaseSet into a consumer, by
-sharing an in-process NetDB, by invoking the resolver with test bytes, or by
-modifying Java I2P.
+The repository has Plan 279's controlled Java floodfill topology, an i2pr ELS2
+consumer driver for i2pd, Plan 350/351's i2pr type-5 path, and Plan 346's
+crypto-boundary transcript check. None executes either Java ELS2 direction.
+The Plan-279 topology is only a substrate; it has no Java ELS2 publisher/client
+driver or Java-to-i2pr application proof. Rows cannot be satisfied by inserting
+a decoded LeaseSet, sharing an in-process NetDB, invoking the resolver with
+test bytes, or modifying Java I2P.
 
 The Java lane additionally needs its own source-level handling of Java's
 tunnel-peering gate — `TunnelPeerSelector.shouldExclude` caps arity and
@@ -71,9 +72,9 @@ correction removes what looked like a policy blocker, but not the driver work.
 
 - **critical / high: none.** No product defect was found; no product code was
   changed.
-- **medium, planning**: Plan 375's matrix size is still unsized, because its
-  source proof is incomplete. Sizing it before the proof would repeat Plan 374's
-  initial assumption and then have to be redone.
+- **medium, implementation**: the Java source matrix is now sized, but the live
+  driver has not been implemented or executed. No Java result can be imported
+  into Plan 377.
 - **low (recorded, not fixed here)**: `scripts/interop/fetch-ssu2-reference.sh`
   cannot fetch the Java reference at its pin — it clones a default branch and
   fails its own pin check (`expected 9134f808…`, `got a629ec7c…`), so a
@@ -93,21 +94,20 @@ output remains valid and remains **not** interoperability.
 
 ## Roadmap disposition and unblock audit
 
-- **Roadmap disposition: blocked**, on a named work gap plus an incomplete
-  source proof.
+- **Roadmap disposition: active**, source proof complete; live driver and rows
+  outstanding.
 - **Unblock audit, executed per `plans/README.md`:**
 
 | Plan | Other hard dependencies | All closed? | Disposition |
 |---|---|---|---|
-| 377 | Plan 374 **not passed**, Plan 375 **not passed** | no | stays blocked |
+| 377 | Plan 374 delivered by Plan 406; Plan 375 **not passed** | no | stays blocked on Plan 375 |
 | 378 | Plan 376 passed; Plan 377 not passed | no | stays blocked on 377 alone |
 
 No corrective pass is registered: no defect was found.
 
 ## Limitations
 
-- The presence of `EncryptedLeaseSet` and `RedDSAEngine` is a class-listing
-  fact, not a behavioural one. It says the types exist at the pin; it says
-  nothing about which authorization modes are reachable.
+- Source branches for the modes and lookup path do not prove their runtime
+  interoperability or application behavior.
 - No claim is made about Java behaviour under load, at scale, or against the
   public network.

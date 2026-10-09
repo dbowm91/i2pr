@@ -1,17 +1,19 @@
 # ELS2 external-qualification reference freeze — Plans 374 and 375
 
-Status: **reference freeze executed; live matrix not executed.**
+Status: **reference freeze executed; Java source proof complete; live matrix not executed.**
 
 This file is the "before execution" section both Plans 374 and 375 require. It
 records what was verified about the reference routers and the host substrate,
 so the next execution pass does not repeat the discovery work and so a future
 reader can tell exactly how far the external lane actually got.
 
-It is **not** evidence that any ELS2 direction passed. No live ELS2 matrix row
-has been executed. Both plans remain blocked, and the precise blocker is
-recorded below and in their closure records.
+It is **not** evidence that any Java ELS2 direction passed. Plan 374's i2pd
+source proof and Plan 375's Java source proof are recorded below. The i2pd
+matrix was subsequently completed under Plan 406; Plan 375's live matrix
+remains open.
 
-Produced: 2026-10-07. Host: Linux x86_64, unprivileged, loopback-only.
+Produced: 2026-10-07; Java source proof extended 2026-10-09. Host: Linux
+x86_64, unprivileged, loopback-only.
 
 ## 1. Pins and builds
 
@@ -266,30 +268,69 @@ in the controlled mesh does resolve a blinded address, fetch and decrypt an ELS2
 LeaseSet2, build a Streaming session, and carry an application payload to a
 stock i2pd publisher's server tunnel. The direction is not blocked on topology.
 
-### 3.5 Java I2P 2.13.0
+### 3.5 Java I2P 2.13.0 — Plan 375 source proof
 
-`core/build/libs/i2p.jar` at the pin contains `net/i2p/data/EncryptedLeaseSet.class`
-and `net/i2p/crypto/eddsa/RedDSAEngine.class`. The ELS2 type-5 record type and
-the RedDSA engine are both present. Plan 375's source proof is **not** complete
-here: the auth-mode vocabulary and the b33 consumer path have not been read at
-this pin, and nothing has been executed.
+Source was read from the clean checkout at
+`i2p/i2p.i2p@9134f808337b401e8e53c73734c81fab04280c9d` on 2026-10-09. The
+unmodified stock build completed with JDK 21 (`ant updater preppkg` through
+`scripts/interop/fetch-m6-java.sh --rebuild`). This is source feasibility, not
+live interoperability evidence.
 
-## 4. Why Plans 374 and 375 are blocked
+* **ELS2 modes:** `core/java/src/net/i2p/data/BlindData.java:38-48` defines
+  `AUTH_NONE=0`, `AUTH_DH=1`, `AUTH_PSK=3`. These are the blinded-data auth
+  identifiers; Java's tunnel configuration surface uses a different selector:
+  `apps/i2ptunnel/java/src/net/i2p/i2ptunnel/ui/GeneralHelper.java:685-711`
+  maps `i2cp.leaseSetAuthType=0` to none, `1` to DH, and `2` to PSK. For PSK,
+  `i2cp.leaseSetClient.psk.0` selects per-client PSK mode; without it Java uses
+  shared PSK mode. For DH, `getClientAuths(..., true)` reads consecutive
+  `i2cp.leaseSetClient.dh.N` values; PSK uses `i2cp.leaseSetClient.psk.N`.
+* **Publisher:** `router/java/src/net/i2p/router/client/ClientMessageEventListener.java`
+  accepts I2CP lease-set type 5 for EdDSA and RedDSA destinations and applies
+  `i2cp.leaseSetSecret` and `i2cp.leaseSetPrivKey` before creating/publishing
+  the encrypted record. `core/java/src/net/i2p/data/EncryptedLeaseSet.java`
+  implements NONE/DH/PSK encryption and authorized decryption. Thus all three
+  modes are implemented at this pin; none is `reference-not-applicable`.
+* **Consumer lookup:** `router/java/src/net/i2p/router/client/LookupDestJob.java:88-145`
+  decodes extended Base32 names with a `.b32.i2p` suffix, recognizes a body of
+  at least 35 bytes as encrypted LeaseSet2, decodes `BlindData`, derives the
+  blinded hash, and issues the ordinary NetDB lookup. It fails closed when a
+  required secret or auth private key is unavailable. Its Java-facing suffix
+  is `.b32.i2p`; the encoded blinded body is the same B33 address material.
+* **Stock SAM configuration:** `apps/sam/java/src/net/i2p/sam/SAMv3Handler.java:420-478`
+  preserves unrecognized `SESSION CREATE` parameters in the session properties
+  after consuming `ID`, `STYLE`, and `DESTINATION`. This permits the stock SAM
+  surface to pass the `i2cp.*` type-5/auth properties without changing Java.
+  Java's built-in I2PTunnel UI independently exposes these same settings.
 
-Both plans are blocked by **the same specific, named gap**, and it is not an
-environmental one.
+This sizes the authorization portion of Plan 375: NONE, shared PSK, per-client
+PSK, and DH configuration are source-supported. Required execution includes
+the overlapping supported NONE/PSK/DH modes, authorized success and
+wrong/missing credentials, and the separate lookup-secret behavior. The
+source-only presence of these branches does not establish live store, lookup,
+decryption, tunnel construction, or payload success.
 
-> **Updated by Plan 381 WP3–WP5 (2026-10-08).** The i2pd-direction half now exists:
+The stock build cache records Java `21.0.12.1` (Eclipse Temurin), Ant `1.10.14`,
+build command `ant updater preppkg`, and installed-tree SHA-256
+`87a284800507ccc88fd53c7d1b4a0178d0168c5e16dac3a8587dd01af857e5df`. At the
+source-proof baseline, i2pr HEAD was `d616f0868db4e56bd311d74095347209d69f5aa0`
+and `Cargo.lock` SHA-256 was
+`5389da3fa5dcd74e13d4c6421c3a2079c98b4e9ee117a8b575ca9c80e4a92bce`.
+
+## 4. Remaining Plan 375 work
+
+Plan 406 delivered the i2pd scope. Plan 375 remains active because its Java
+ELS2 live driver and directions have not been executed. This is implementation
+work, not an environmental blocker.
+
+> **Historical Plan 381 note (2026-10-08).** The i2pd-direction half now exists:
 > `tests/integration/els2/run-i2pd-els2.sh` plus the driver
 > `crates/i2pr-daemon/tests/els2_i2pd_external.rs` carry NONE/PSK/DH payload
 > rows, two live negatives, and a mesh authority control, with packaged
 > `evidence.json`/`evidence.md` and `scripts/check-els2-live-lane-evidence.sh`
-> as the guard. What is **still** missing is the reverse direction
-> (i2pr publishes), the i2pr-side authority row, and all of Java — so the
-> block stands for 374/375/377/378 pending the named successor. Plan 381
-> still does not unblock them.
+> as the guard. At that point the reverse direction and authority row remained;
+> Plan 406 subsequently delivered the i2pd scope. Java remains independently open.
 
-The repository has no ELS2 live driver. What exists is:
+Available substrates include:
 
 - the Plan 303/306 controlled floodfill mesh, which proves *type-1/3/7*
   RouterInfo publication, lookup, and serve against stock references;
@@ -298,28 +339,22 @@ The repository has no ELS2 live driver. What exists is:
 - Plan 346's crypto-boundary cross-verification of the deployed type-11
   transcript against executed Java and i2pd signature output.
 
-None of those is a live ELS2 row. Plan 374 explicitly forbids satisfying a row
-by inserting a decoded LeaseSet into a consumer, by sharing an in-process NetDB
-between R and F, by invoking the resolver with test bytes, or by modifying
-i2pd. So the lane has to be **written**, not extended:
+These substrates alone do not satisfy a Java ELS2 row. Plan 375 forbids
+satisfying a row by inserting a decoded LeaseSet into a consumer, sharing an
+in-process NetDB between R and F, invoking the resolver with test bytes, or
+modifying Java I2P. The lane must:
 
-1. An **R/F/D ELS2 mesh driver** that adds type-5 publication and blinded-key
-   lookup to the controlled topology, with R and F as distinct processes.
-2. An **i2pd service/client driver** built only from stock configuration and
-   public output — creating an encrypted service, obtaining its b33, setting
-   the lookup secret / PSK / DH material with stock syntax, and exposing a
-   loopback application behind it.
-3. The full matrix: 2 directions × 3 auth modes × 3 credential scenarios, the
-   nine negative rows, the persistence and daily-rotation rows, and a bounded
-   machine-readable artifact with a checker that fails when a mandatory row
-   lacks `store → lookup → decrypt/validate → application` provenance.
-4. The same again for Java in Plan 375, against a **different** auth-mode
-   vocabulary that has not yet been read at the pin.
+1. Use stock SAM/I2CP to publish a Java type-5 service and consume an external
+   B33 address, exposing a loopback application.
+2. Compose with the controlled queried-floodfill topology: F is a separate
+   controlled i2pr floodfill, while JC builds tunnels through Java relays JD1
+   and JD2. Prove that F is queried and Java does not need R as a tunnel peer.
+3. Execute both directions across NONE/PSK/DH and lookup-secret modes, with
+   wrong/missing credential, malformed/stale/tampered/wrong-key, restart, and
+   adjacent-day rollover cases. Package bounded evidence and a checker that
+   rejects local-record injection and topology bypass.
 
-This is a substantial piece of new external-integration engineering. A partial
-lane that "passes" would be worse than an honest block: the repo's guardrails
-forbid early-return-success, and a half-executed matrix recorded as evidence is
-exactly the failure mode the evidence checkers exist to prevent.
+Plan 377 remains blocked until Plan 375's Java artifact passes its checker.
 
 ## 5. What this changes for the next pass
 
@@ -329,11 +364,8 @@ exactly the failure mode the evidence checkers exist to prevent.
 - **The i2pd capability question is answered.** Neither direction is
   `reference-not-applicable`, so Plan 374's matrix is the full one. That is the
   single biggest input to sizing the work, and it was previously unknown.
-- **Plan 375 is smaller than it looks but not small.** Java has the type-5
-  record type and the RedDSA engine. Whether Java implements the DH/PSK
-  authorization variants is unread at this pin and must be read before Plan
-  375's matrix is sized — it is the same source-proof step this file performed
-  for i2pd.
+- **Plan 375's source matrix is sized.** Java implements NONE, DH, and PSK at
+  this pin. The stock live driver and complete matrix remain open.
 
 Nothing in this file may be cited as ELS2 interoperability evidence. Type 5
 remains `advertised = false`, and no ELS2 capability claim is made.
