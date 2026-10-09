@@ -393,7 +393,7 @@ def check(report: Report) -> None:
     report.require(
         "post-start server publication scheduling",
         product,
-        ".extend(self.inner.server_destination_ids.iter().copied())",
+        ".filter(|destination_id| !previously_known_servers.contains(destination_id))",
         "service_product.rs",
     )
 
@@ -528,7 +528,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open", "Err(DestinationFailure::LookupRequired { .. }) if false", "ordinary delay-open clients stop reaching product activation"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "self.resolve_remote_client_target(runtime.destination_id, &hash)", "self.resolve_remote_client_target(runtime.destination_id, &[0; 32])", "ordinary resolution stops using the validated cached target"),
-    ("crates/i2pr-daemon/src/service_product.rs", ".extend(self.inner.server_destination_ids.iter().copied())", ".extend(std::iter::empty())", "post-start control generations stop scheduling server publication"),
+    ("crates/i2pr-daemon/src/service_product.rs", ".filter(|destination_id| !previously_known_servers.contains(destination_id))", ".filter(|_| false)", "post-start control generations stop scheduling server publication"),
     ("tests/integration/els2/els2-tunnels-conf.sh", "tr -- '+/' '-~'", "tr -- '+/' '+/'", "the alphabet translation is neutered"),
 ]
 

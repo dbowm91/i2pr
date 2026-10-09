@@ -1845,6 +1845,8 @@ impl ServiceProduct {
         let retiring = self.inner.retirement.is_some();
         let current_generation = self.manager.committed_generation_id();
         if current_generation != self.inner.service_generation_id {
+            let previously_known_servers: std::collections::HashSet<_> =
+                self.inner.server_destination_ids.iter().copied().collect();
             for destination_id in self.inner.destination_ids.iter().copied() {
                 let _ = self
                     .inner
@@ -1882,9 +1884,13 @@ impl ServiceProduct {
             // generation transition; publication remains bounded by the
             // existing retry deadline and is removed after an accepted
             // delivery.
-            self.inner
-                .publication_pending
-                .extend(self.inner.server_destination_ids.iter().copied());
+            self.inner.publication_pending.extend(
+                self.inner
+                    .server_destination_ids
+                    .iter()
+                    .copied()
+                    .filter(|destination_id| !previously_known_servers.contains(destination_id)),
+            );
             self.inner.service_generation_id = current_generation;
         }
         self.process_deferred_activation_request().await;
