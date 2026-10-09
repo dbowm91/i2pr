@@ -211,6 +211,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 [[package]]
 name = "i2pr-app-package-build"
 version = "0.1.0"
+source = "git+https://github.com/dbowm91/i2pr?rev=fa991b28171ea68251d6e94bd1a1d04c09117c9c#fa991b28171ea68251d6e94bd1a1d04c09117c9c"
 dependencies = [
  "ed25519-dalek",
  "i2pr-app-proto",
@@ -224,6 +225,7 @@ dependencies = [
 [[package]]
 name = "i2pr-app-proto"
 version = "0.1.0"
+source = "git+https://github.com/dbowm91/i2pr?rev=fa991b28171ea68251d6e94bd1a1d04c09117c9c#fa991b28171ea68251d6e94bd1a1d04c09117c9c"
 dependencies = [
  "serde",
  "serde_json",
@@ -233,6 +235,7 @@ dependencies = [
 [[package]]
 name = "i2pr-app-sdk"
 version = "0.1.0"
+source = "git+https://github.com/dbowm91/i2pr?rev=fa991b28171ea68251d6e94bd1a1d04c09117c9c#fa991b28171ea68251d6e94bd1a1d04c09117c9c"
 dependencies = [
  "i2pr-app-proto",
  "thiserror",
