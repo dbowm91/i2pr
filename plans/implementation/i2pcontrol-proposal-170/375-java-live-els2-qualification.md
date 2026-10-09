@@ -1,6 +1,6 @@
 # Plan 375 — Stock Java I2P bidirectional Encrypted LeaseSet2 qualification
 
-Status: **registered-java-live-els2-qualification-blocked-on-plan373**
+Status: **in-progress-java-live-els2-source-lock-and-live-matrix**
 
 Classification: external interoperability + capability evidence.
 
