@@ -226,6 +226,7 @@ mod tokio_session {
         }
 
         pub async fn receive(&mut self) -> Result<Frame, SdkError> {
+            self.finish_pending_output().await?;
             while let Some(frame) = self.pending_data.pop_front() {
                 if self.streams.contains(&frame.stream_id) {
                     return Ok(frame);
@@ -246,6 +247,7 @@ mod tokio_session {
         }
 
         pub async fn recv_control(&mut self) -> Result<HostToAppMessage, SdkError> {
+            self.finish_pending_output().await?;
             if let Some(message) = self.pending_controls.pop_front() {
                 return Ok(message);
             }
@@ -362,6 +364,17 @@ mod tokio_session {
             Ok(())
         }
 
+        async fn finish_pending_output(&mut self) -> Result<(), SdkError> {
+            if self.pending_write.is_some() {
+                self.drain_pending_frame().await?;
+            }
+            if self.pending_flush {
+                self.writer.flush().await?;
+                self.pending_flush = false;
+            }
+            Ok(())
+        }
+
         async fn drain_pending_frame(&mut self) -> Result<(), SdkError> {
             let writer = &mut self.writer;
             let pending_write = &self.pending_write;
@@ -435,7 +448,11 @@ mod tokio_session {
     }
 
     fn request_id() -> Result<RequestId, SdkError> {
-        let id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_REQUEST
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| SdkError::Closed)?;
         RequestId::new(id).map_err(|_| SdkError::Closed)
     }
 
