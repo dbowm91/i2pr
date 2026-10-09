@@ -28,15 +28,18 @@
 use i2pr_client::{
     DestinationConfig, DestinationIdentity, DestinationRouting, DestinationRoutingConfig,
     DestinationTunnelPool, SendError, build_signed_lease_set2,
+    encrypted_leaseset::EncryptedLeaseSet2Publisher,
 };
+use i2pr_crypto::red25519::{Red25519PrivateScalar, generate_private};
 use i2pr_daemon::destination_tunnels::{
     DestinationTunnelCoordinator, DestinationTunnelError, LeaseStoreIngestOutcome,
-    MAX_CONCURRENT_LEASE_LOOKUPS, MAX_LEASE_LOOKUP_RETRIES, ReplyPathDerivationError,
-    reply_path_for_inbound_route,
+    MAX_CONCURRENT_LEASE_LOOKUPS, MAX_CONCURRENT_LEASE_PUBLICATIONS, MAX_LEASE_LOOKUP_RETRIES,
+    ReplyPathDerivationError, reply_path_for_inbound_route,
 };
 use i2pr_netdb::{
-    DestinationHash, LookupAction, LookupPolicy, ReplyPath, ResponseOutcome, RouterHash,
-    RouterInfoStoreConfig, router_hash_from_destination,
+    BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DestinationHash, LookupAction,
+    LookupPolicy, ReplyPath, ResponseOutcome, RouterHash, RouterInfoStoreConfig,
+    router_hash_from_destination,
 };
 use i2pr_proto::{
     DatabaseStoreData, DatabaseStoreMessage, Date, Hash, I2npBody, I2npMessage,
@@ -828,6 +831,49 @@ fn ls2_publication_rejects_unknown_and_non_ls2() {
 }
 
 #[test]
+fn encrypted_type5_publication_requires_its_blinded_storage_key() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD124);
+    let floodfill_hash = bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let signer = destination_identity(0xD125);
+    let pool = pool_with_real_material(0xD125);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let inner = signed_ls2(&signer, &pool, now_u32);
+    let mut rng = ChaCha8Rng::seed_from_u64(0xD126);
+    let private: Red25519PrivateScalar = generate_private(&mut rng).expect("blinding key");
+    let public = i2pr_crypto::red25519::derive_public_key(&private);
+    let identity = BlindingIdentity::new(
+        public,
+        i2pr_proto::SigningKeyType::RedDsaSha512Ed25519,
+        None,
+    )
+    .expect("blinding identity");
+    let schedule =
+        BlindingSchedule::new_owner(identity, private, BlindingScheduleConfig::new(2, true));
+    let publisher = EncryptedLeaseSet2Publisher::new(&schedule);
+    let (_, message) = publisher
+        .build_database_store(&inner, now_u32, now_u32 + 300, &mut rng)
+        .expect("type-5 publication");
+    let request = coord
+        .begin_ls2_publication(message.clone(), floodfill_hash)
+        .expect("valid encrypted type-5 record");
+    assert_eq!(coord.publications_len(), 1);
+    coord
+        .cancel_ls2_publication(request)
+        .expect("cancel valid intent");
+
+    let wrong_key = DatabaseStoreMessage {
+        key: Hash::from_bytes([0xA5; 32]),
+        ..message
+    };
+    assert!(matches!(
+        coord.begin_ls2_publication(wrong_key, floodfill_hash),
+        Err(DestinationTunnelError::Publication(_))
+    ));
+    assert_eq!(coord.publications_len(), 0);
+}
+
+#[test]
 fn ls2_publication_retry_reuses_signed_bytes() {
     let mut coord = coordinator();
     let floodfill = router_bundle(0xD130);
@@ -860,6 +906,43 @@ fn ls2_publication_retry_reuses_signed_bytes() {
         .expect("compose after retry");
     assert!(proof.via_tunnel);
     coord.cancel_ls2_publication(request_id).expect("cancel");
+    assert_eq!(coord.publications_len(), 0);
+}
+
+#[test]
+fn failed_publication_cancellation_releases_bounded_capacity() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD140);
+    let floodfill_hash = bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD141);
+    let pool = pool_with_real_material(0xD141);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let ls2 = signed_ls2(&identity, &pool, now_u32);
+    let mut attempts = Vec::new();
+    for _ in 0..MAX_CONCURRENT_LEASE_PUBLICATIONS {
+        attempts.push(
+            coord
+                .begin_ls2_publication(ls2_store_message(&ls2), floodfill_hash)
+                .expect("fill bounded publication capacity"),
+        );
+    }
+    assert_eq!(coord.publications_len(), MAX_CONCURRENT_LEASE_PUBLICATIONS);
+    assert_eq!(
+        coord.begin_ls2_publication(ls2_store_message(&ls2), floodfill_hash),
+        Err(DestinationTunnelError::TooManyPublications)
+    );
+    coord
+        .cancel_ls2_publication(attempts[0])
+        .expect("cancel failed attempt");
+    let replacement = coord
+        .begin_ls2_publication(ls2_store_message(&ls2), floodfill_hash)
+        .expect("replacement uses released capacity");
+    assert_eq!(coord.publications_len(), MAX_CONCURRENT_LEASE_PUBLICATIONS);
+    for request_id in attempts.into_iter().skip(1).chain([replacement]) {
+        coord
+            .cancel_ls2_publication(request_id)
+            .expect("cleanup pending attempt");
+    }
     assert_eq!(coord.publications_len(), 0);
 }
 

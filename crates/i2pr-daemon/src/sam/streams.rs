@@ -130,9 +130,9 @@ pub struct RouterDestinationNetworkState {
     session_manager: EciesSessionManager,
     outbound_roles: Vec<GroupOutboundRole>,
     next_outbound_role: usize,
-    lease_set2: LeaseSet2,
+    lease_set2: Option<LeaseSet2>,
     #[allow(dead_code)]
-    validated_lease_set2: ValidatedLeaseSet2,
+    validated_lease_set2: Option<ValidatedLeaseSet2>,
     inbound_receive_ids: Vec<u32>,
     outbound_expires_at_ms: u64,
     inbound_expires_at_ms: u64,
@@ -186,8 +186,8 @@ impl RouterDestinationNetworkState {
                 role: outbound_role,
             }],
             next_outbound_role: 0,
-            lease_set2,
-            validated_lease_set2,
+            lease_set2: Some(lease_set2),
+            validated_lease_set2: Some(validated_lease_set2),
             inbound_receive_ids,
             outbound_expires_at_ms,
             inbound_expires_at_ms,
@@ -218,17 +218,38 @@ impl RouterDestinationNetworkState {
                 .map(|(pool_slot, role)| GroupOutboundRole { pool_slot, role })
                 .collect(),
             next_outbound_role: 0,
-            lease_set2,
-            validated_lease_set2,
+            lease_set2: Some(lease_set2),
+            validated_lease_set2: Some(validated_lease_set2),
             inbound_receive_ids,
             outbound_expires_at_ms,
             inbound_expires_at_ms,
         }
     }
 
+    /// Creates a bounded staging projection for a newly committed service
+    /// Destination. It can collect activated roles while its first usable
+    /// inbound lease and signed LS2 are still being provisioned.
+    pub(crate) fn new_staged(destination_id: DestinationId) -> Self {
+        Self {
+            destination_id,
+            routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
+            session_manager: EciesSessionManager::new(EciesSessionConfig::balanced()),
+            outbound_roles: Vec::new(),
+            next_outbound_role: 0,
+            lease_set2: None,
+            validated_lease_set2: None,
+            inbound_receive_ids: Vec::new(),
+            outbound_expires_at_ms: u64::MAX,
+            inbound_expires_at_ms: u64::MAX,
+        }
+    }
+
     /// Returns true when either the outbound or inbound material is
     /// expired relative to `now_ms`.
     pub(crate) fn is_expired(&self, now_ms: u64) -> bool {
+        if self.lease_set2.is_none() {
+            return false;
+        }
         self.outbound_roles
             .iter()
             .all(|binding| binding.role.expires_at_ms() <= now_ms)
@@ -271,6 +292,9 @@ pub struct RouterNetworkSummary {
 pub struct RouterInboundDispatchReport {
     /// Whether the Garlic envelope authenticated.
     pub garlic_authenticated: bool,
+    /// Bounded class of a typed Garlic rejection. No error strings,
+    /// peer identifiers, or ciphertext are retained.
+    pub garlic_rejection: Option<RouterGarlicRejection>,
     /// Number of destination payloads dequeued via `pop_payload`.
     pub payloads_dequeued: usize,
     /// Number of payloads accepted by
@@ -287,7 +311,37 @@ pub struct RouterInboundDispatchReport {
     pub datagrams_accepted: usize,
 }
 
+/// Privacy-safe categories for locating the authenticated-dispatch boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouterGarlicRejection {
+    Structural,
+    SessionTag,
+    EciesAuthentication,
+    EciesOther,
+    Payload,
+    MissingSenderLeaseSet2,
+    LeaseSet2Signature,
+    LeaseSet2Freshness,
+    LeaseSet2Destination,
+    LeaseSet2KeyPolicy,
+    LeaseSet2BlindedPolicy,
+    LeaseSet2Crypto,
+    LeaseSet2CryptoProtocol,
+    LeaseSet2UnsupportedSignatureType(u16),
+    LeaseSet2CryptoKey,
+    LeaseSet2Size,
+    SenderKeyMismatch,
+    UnknownDestination,
+    Other,
+}
+
 /// Per-destination SAM STREAM bridge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InboundReceiveProjectionError {
+    RouterStateMissing,
+    DuplicateReceiveId,
+}
+
 #[allow(dead_code)]
 pub struct SamDestinationBridge {
     identity: Arc<DestinationIdentity>,
@@ -736,7 +790,7 @@ impl SamDestinationBridge {
         if material.is_expired(now_ms) {
             return Err("router network state already expired".to_owned());
         }
-        if material.inbound_receive_ids.is_empty() {
+        if material.lease_set2.is_some() && material.inbound_receive_ids.is_empty() {
             return Err("router network state carries no inbound receive ids".to_owned());
         }
         if material.inbound_receive_ids.contains(&0) {
@@ -747,12 +801,14 @@ impl SamDestinationBridge {
         // validation uses seconds derived from `now_ms`.
         let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
         let expected_key = self.identity.id().as_netdb_key();
-        ValidatedLeaseSet2::from_lease_set2(
-            material.lease_set2.clone(),
-            Some(expected_key),
-            LeaseSet2ValidationContext::new(now_seconds),
-        )
-        .map_err(|error| format!("router network LS2 validation failed: {error:?}"))?;
+        if let Some(lease_set2) = &material.lease_set2 {
+            ValidatedLeaseSet2::from_lease_set2(
+                lease_set2.clone(),
+                Some(expected_key),
+                LeaseSet2ValidationContext::new(now_seconds),
+            )
+            .map_err(|error| format!("router network LS2 validation failed: {error:?}"))?;
+        }
         self.router_network = Some(material);
         Ok(())
     }
@@ -799,7 +855,10 @@ impl SamDestinationBridge {
             inbound_receive_count: state.inbound_receive_ids.len(),
             outbound_expires_at_ms: state.outbound_expires_at_ms,
             inbound_expires_at_ms: state.inbound_expires_at_ms,
-            lease_count: state.lease_set2.leases().len(),
+            lease_count: state
+                .lease_set2
+                .as_ref()
+                .map_or(0, |lease_set| lease_set.leases().len()),
             // The manager fills owner registration (it owns the
             // inbound-owner registry); the bridge cannot observe it.
             inbound_owner_registered: false,
@@ -878,13 +937,16 @@ impl SamDestinationBridge {
 
     /// Adds an inbound receive id after its established material has entered
     /// the canonical pool and inbound dispatch registry.
-    pub(crate) fn append_router_inbound_receive(&mut self, receive_id: u32) -> Result<(), String> {
+    pub(crate) fn append_router_inbound_receive(
+        &mut self,
+        receive_id: u32,
+    ) -> Result<(), InboundReceiveProjectionError> {
         let state = self
             .router_network
             .as_mut()
-            .ok_or_else(|| "router-backed network state not installed".to_owned())?;
+            .ok_or(InboundReceiveProjectionError::RouterStateMissing)?;
         if state.inbound_receive_ids.contains(&receive_id) {
-            return Err("inbound receive id already belongs to the group".to_owned());
+            return Err(InboundReceiveProjectionError::DuplicateReceiveId);
         }
         state.inbound_receive_ids.push(receive_id);
         Ok(())
@@ -912,8 +974,8 @@ impl SamDestinationBridge {
                 LeaseSet2ValidationContext::new(now_seconds),
             )
             .map_err(|error| format!("refreshed router LS2 validation failed: {error:?}"))?;
-            state.lease_set2 = lease_set2;
-            state.validated_lease_set2 = validated;
+            state.lease_set2 = Some(lease_set2);
+            state.validated_lease_set2 = Some(validated);
             state.inbound_expires_at_ms = inbound_expires_at_ms;
         } else {
             state.inbound_expires_at_ms = now_ms;
@@ -930,7 +992,7 @@ impl SamDestinationBridge {
     pub(crate) fn router_ls2_for_publication(&self) -> Option<LeaseSet2> {
         self.router_network
             .as_ref()
-            .map(|state| state.lease_set2.clone())
+            .and_then(|state| state.lease_set2.clone())
     }
 
     /// Plan 212 §12 — borrows the router-backed outbound role for
@@ -1023,7 +1085,9 @@ impl SamDestinationBridge {
         let local_id = self.identity.id();
         debug_assert_eq!(state.destination_id, local_id);
         let local_static_secret = *self.identity.static_secret_bytes();
-        let local_lease_set2 = state.lease_set2.clone();
+        let Some(local_lease_set2) = state.lease_set2.clone() else {
+            return Err("router-backed LeaseSet2 is not ready (NoTunnelMaterial)".to_owned());
+        };
         let mut os_rng = OsRng;
         let mut rng = UnwrapMut(&mut os_rng);
         let routing = &state.routing;
@@ -1169,10 +1233,11 @@ impl SamDestinationBridge {
                 sender_destination,
                 ..
             } => sender_destination.as_ref().map(|hash| *hash.as_bytes()),
-            i2pr_client::InboundDispatchOutcome::Rejected(_) => {
+            i2pr_client::InboundDispatchOutcome::Rejected(error) => {
                 self.diagnostics.record_inbound_observation();
                 return Ok(RouterInboundDispatchReport {
                     garlic_authenticated: false,
+                    garlic_rejection: Some(classify_router_garlic_rejection(error)),
                     payloads_dequeued: 0,
                     streaming_packets_accepted: 0,
                     streaming_rejected: 0,
@@ -1184,6 +1249,7 @@ impl SamDestinationBridge {
             self.diagnostics.record_inbound_observation();
             return Ok(RouterInboundDispatchReport {
                 garlic_authenticated: true,
+                garlic_rejection: None,
                 payloads_dequeued: 0,
                 streaming_packets_accepted: 0,
                 streaming_rejected: 0,
@@ -1274,11 +1340,80 @@ impl SamDestinationBridge {
         }
         Ok(RouterInboundDispatchReport {
             garlic_authenticated: true,
+            garlic_rejection: None,
             payloads_dequeued: dequeued,
             streaming_packets_accepted: accepted,
             streaming_rejected: rejected,
             datagrams_accepted,
         })
+    }
+}
+
+fn classify_router_garlic_rejection(
+    error: &i2pr_client::InboundDispatchError,
+) -> RouterGarlicRejection {
+    use i2pr_client::InboundDispatchError as Error;
+    match error {
+        Error::NotGarlic
+        | Error::Codec(_)
+        | Error::EnvelopeTooShort { .. }
+        | Error::UnsupportedGarlicFlag(_) => RouterGarlicRejection::Structural,
+        Error::Session(i2pr_client::EciesSessionError::UnknownSessionTag)
+        | Error::Session(i2pr_client::EciesSessionError::NoPendingHandshake)
+        | Error::Session(i2pr_client::EciesSessionError::NoProvisionalResponder)
+        | Error::Session(i2pr_client::EciesSessionError::NoSession) => {
+            RouterGarlicRejection::SessionTag
+        }
+        Error::Session(i2pr_client::EciesSessionError::Ecies(
+            i2pr_crypto::EciesError::AuthenticationFailed,
+        )) => RouterGarlicRejection::EciesAuthentication,
+        Error::Session(i2pr_client::EciesSessionError::Ecies(_)) => {
+            RouterGarlicRejection::EciesOther
+        }
+        Error::Payload(_) | Error::QueueFull(_) => RouterGarlicRejection::Payload,
+        Error::MissingSenderLeaseSet2 => RouterGarlicRejection::MissingSenderLeaseSet2,
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::InvalidSignature) => {
+            RouterGarlicRejection::LeaseSet2Signature
+        }
+        Error::LeaseSet2Validation(
+            i2pr_netdb::LeaseSet2ValidationError::Expired { .. }
+            | i2pr_netdb::LeaseSet2ValidationError::AllLeasesExpired
+            | i2pr_netdb::LeaseSet2ValidationError::ExcessiveFuture { .. }
+            | i2pr_netdb::LeaseSet2ValidationError::OfflineSignatureExpired,
+        ) => RouterGarlicRejection::LeaseSet2Freshness,
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::DestinationMismatch) => {
+            RouterGarlicRejection::LeaseSet2Destination
+        }
+        Error::LeaseSet2Validation(
+            i2pr_netdb::LeaseSet2ValidationError::NoUsableX25519
+            | i2pr_netdb::LeaseSet2ValidationError::DuplicateX25519,
+        ) => RouterGarlicRejection::LeaseSet2KeyPolicy,
+        Error::LeaseSet2Validation(
+            i2pr_netdb::LeaseSet2ValidationError::BlindedPublicationDeferred,
+        ) => RouterGarlicRejection::LeaseSet2BlindedPolicy,
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::Crypto(
+            i2pr_crypto::CryptoError::Protocol(_),
+        )) => RouterGarlicRejection::LeaseSet2CryptoProtocol,
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::Crypto(
+            i2pr_crypto::CryptoError::UnsupportedAlgorithm {
+                algorithm,
+                context: "signature verification",
+            },
+        )) => RouterGarlicRejection::LeaseSet2UnsupportedSignatureType(*algorithm),
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::Crypto(
+            i2pr_crypto::CryptoError::InvalidKey { .. }
+            | i2pr_crypto::CryptoError::AllZeroSharedSecret,
+        )) => RouterGarlicRejection::LeaseSet2CryptoKey,
+        Error::LeaseSet2Validation(i2pr_netdb::LeaseSet2ValidationError::Crypto(_)) => {
+            RouterGarlicRejection::LeaseSet2Crypto
+        }
+        Error::LeaseSet2Validation(
+            i2pr_netdb::LeaseSet2ValidationError::EncodedTooLarge { .. }
+            | i2pr_netdb::LeaseSet2ValidationError::ArithmeticOverflow,
+        ) => RouterGarlicRejection::LeaseSet2Size,
+        Error::SenderKeyMismatch => RouterGarlicRejection::SenderKeyMismatch,
+        Error::UnknownDestination(_) => RouterGarlicRejection::UnknownDestination,
+        Error::Session(_) | Error::DuplicateReplay => RouterGarlicRejection::Other,
     }
 }
 

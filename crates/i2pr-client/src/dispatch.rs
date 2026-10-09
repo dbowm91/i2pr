@@ -33,7 +33,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use i2pr_netdb::{DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, ValidatedLeaseSet2};
+use i2pr_netdb::{
+    DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, LeaseSet2ValidationError,
+    ValidatedLeaseSet2,
+};
 use i2pr_proto::{
     CodecError, EciesPayloadBlock, EciesPayloadSequence, GarlicCloveBlock, GarlicDelivery, Hash,
     I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
@@ -166,7 +169,7 @@ pub enum InboundDispatchError {
     MissingSenderLeaseSet2,
     /// A bundled sender LeaseSet2 failed validation under its own
     /// contained Destination hash.
-    LeaseSet2Validation(String),
+    LeaseSet2Validation(LeaseSet2ValidationError),
     /// The bundled sender LeaseSet2 is valid but its usable type-4
     /// X25519 key does not match the authenticated NS static key;
     /// the binding is rejected and no reply may be sent (Plan 127
@@ -199,8 +202,8 @@ impl core::fmt::Display for InboundDispatchError {
             Self::MissingSenderLeaseSet2 => {
                 formatter.write_str("bound New Session carried no unambiguous bundled LeaseSet2")
             }
-            Self::LeaseSet2Validation(message) => {
-                write!(formatter, "bundled LeaseSet2 validation: {message}")
+            Self::LeaseSet2Validation(error) => {
+                write!(formatter, "bundled LeaseSet2 validation: {error}")
             }
             Self::SenderKeyMismatch => write!(
                 formatter,
@@ -604,7 +607,7 @@ impl DestinationDispatcher {
         // recipient's hash (Plan 127 §3).
         let context = LeaseSet2ValidationContext::new(now_seconds);
         let validated = ValidatedLeaseSet2::from_lease_set2(sender_ls2.clone(), None, context)
-            .map_err(|error| InboundDispatchError::LeaseSet2Validation(format!("{error:?}")))?;
+            .map_err(InboundDispatchError::LeaseSet2Validation)?;
         let remote_destination_hash = validated.key();
         // The LS2 usable type-4 X25519 key must equal the
         // authenticated NS static key before the binding completes.

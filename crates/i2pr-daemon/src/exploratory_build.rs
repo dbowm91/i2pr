@@ -576,10 +576,8 @@ impl ExploratoryBuildCoordinator {
     pub fn new(pool_config: ExploratoryPoolConfig) -> Self {
         let inbound = pool_config.max_inbound();
         let outbound = pool_config.max_outbound();
-        let registry_capacity = DataPlaneCapacity::new(
-            u8::try_from(outbound.max(inbound)).unwrap_or(u8::MAX),
-            u8::try_from(inbound.max(outbound)).unwrap_or(u8::MAX),
-        );
+        let registry_capacity =
+            DataPlaneCapacity::new(outbound.max(inbound), inbound.max(outbound));
         Self {
             pool: ExploratoryPool::new(pool_config),
             registry: DataPlaneRegistry::new(registry_capacity),
@@ -594,6 +592,33 @@ impl ExploratoryBuildCoordinator {
             paused: false,
             now_ms: 0,
         }
+    }
+
+    /// Constructs the product coordinator with a bounded shared role registry
+    /// for the exploratory pool and service Destination ownership. Inbound
+    /// service roles remain in the registry for routing until their owning
+    /// Destination pool evicts them. Outbound service roles are moved to the
+    /// bridge synchronously, so only one activation slot is reserved beyond
+    /// the exploratory pool ceiling.
+    pub fn new_with_service_destination_capacity(pool_config: ExploratoryPoolConfig) -> Self {
+        let max_inbound = pool_config.max_inbound();
+        let max_outbound = pool_config.max_outbound();
+        let service_inbound = u16::try_from(i2pr_service_tunnels::MAX_SERVICE_TUNNELS)
+            .expect("service tunnel maximum fits u16")
+            .checked_mul(u16::from(
+                i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS,
+            ))
+            .expect("service inbound role maximum fits u16");
+        let inbound_capacity = max_inbound
+            .checked_add(service_inbound)
+            .expect("combined inbound role maximum fits u16");
+        let outbound_capacity = max_outbound
+            .checked_add(1)
+            .expect("outbound transient role headroom fits u16");
+        let mut coordinator = Self::new(pool_config);
+        coordinator.registry =
+            DataPlaneRegistry::new(DataPlaneCapacity::new(outbound_capacity, inbound_capacity));
+        coordinator
     }
 
     /// Returns the configured failure threshold.
@@ -1894,6 +1919,26 @@ mod tests {
     }
 
     #[test]
+    fn service_coordinator_capacity_covers_bounded_destination_roles() {
+        let pool = ExploratoryPoolConfig::balanced();
+        let coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(pool);
+        assert_eq!(
+            coordinator.registry().capacity(),
+            DataPlaneCapacity::new(
+                pool.max_outbound() + 1,
+                pool.max_inbound()
+                    + u16::try_from(i2pr_service_tunnels::MAX_SERVICE_TUNNELS).unwrap()
+                        * u16::from(i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS),
+            )
+        );
+        let standalone = ExploratoryBuildCoordinator::new(pool);
+        assert_eq!(
+            standalone.registry().capacity(),
+            DataPlaneCapacity::new(pool.max_outbound(), pool.max_inbound())
+        );
+    }
+
+    #[test]
     fn destination_build_failures_are_scoped_and_do_not_pause_exploratory_pool() {
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
         coordinator.failure_threshold = 1;
@@ -2019,6 +2064,11 @@ mod tests {
             BuildCoordinatorOutcome::DestinationBuildCancelled { destination_id, .. }
                 if *destination_id == group_a
         )));
+        // A subsequent generation reconcile must not surface or retain the
+        // attempts cancelled by the preceding generation transition.
+        assert!(coordinator.cancel_destination_builds(group_a).is_empty());
+        assert_eq!(coordinator.pending_destination_len(group_a), 0);
+        assert_eq!(coordinator.pending_destination_len(group_b), 1);
     }
 
     #[test]

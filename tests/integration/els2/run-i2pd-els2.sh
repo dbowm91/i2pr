@@ -232,10 +232,10 @@ PY
   fi
 
   if [[ "${FAILURES}" -ne 0 ]]; then
-    echo "FAIL: ${FAILURES} Plan 381 lane self-test violation(s)" >&2
+    echo "FAIL: ${FAILURES} Plan 400 lane self-test violation(s)" >&2
     exit 1
   fi
-  echo "ok: Plan 381 ELS2 lane self-test holds"
+  echo "ok: Plan 400 ELS2 lane self-test holds"
   exit 0
 fi
 
@@ -385,6 +385,25 @@ stop_one() { # name
   [[ -n "${pid}" ]] || return 0
   kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
   wait "${pid}" 2>/dev/null || true
+}
+
+reference_process_health() {
+  local name pid state summary="" failed=0
+  for name in f c n; do
+    pid="$(cat "${SCRATCH}/${name}.pid" 2>/dev/null || true)"
+    state=""
+    if [[ -n "${pid}" ]]; then
+      state="$(ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    if [[ -n "${state}" && "${state}" != *Z* ]]; then
+      summary+="${name}=alive;"
+    else
+      summary+="${name}=dead;"
+      failed=1
+    fi
+  done
+  printf '%s' "${summary}"
+  return "${failed}"
 }
 
 # Readiness is a conjunction: the RouterInfo must exist AND the log must show
@@ -776,6 +795,32 @@ if [[ "${FAM_OK}" -ne 1 ]]; then
   exit 1
 fi
 
+# Plan 384 WP1: a missing standard LeaseSet on an otherwise healthy floodfill
+# is not an i2pr lookup failure. Wait until every floodfill in the controlled
+# mesh (the bootstrap peer plus both extra peers handed to i2pr) has logged the
+# exact standard destination before attempting the authority row. The base32
+# destination hash is public and is already present in destinations.txt.
+GOSSIP_OK=0
+LEASESET_LOG_PREFIX="${DEST_B32_STD:0:32}"
+for _ in $(seq 1 240); do
+  GOSSIP_OK=1
+  for _log in "${LOG}/f.log" "${LOG}/c.log" "${LOG}/n.log"; do
+    # i2pd truncates IdentHash::ToBase32 in log output; use a 160-bit
+    # prefix of the public hash, which is still unambiguous in this lane.
+    if ! grep -Fq "${LEASESET_LOG_PREFIX}" "${_log}"; then GOSSIP_OK=0; fi
+  done
+  if [[ "${GOSSIP_OK}" -eq 1 ]]; then break; fi
+  sleep 1
+done
+record_guarded "gossip-convergence-gate" \
+  "all three family-published i2pd bootstrap candidates (f, c, n) logged the reference standard LeaseSet2 before i2pr's one-attempt lookup" "$(observed_rc "${GOSSIP_OK}")"
+record "gossip-selection-audit" passed \
+  "i2pr receives f as primary bootstrap and c/n as the two explicit extra peers; all candidates were required to hold the target before the authority request"
+if [[ "${GOSSIP_OK}" -ne 1 ]]; then
+  cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
+  exit 1
+fi
+
 # ---- hand off to the WP3 driver -------------------------------------------
 DRIVER="crates/i2pr-daemon/tests/${DRIVER_TEST}.rs"
 if [[ ! -f "${REPO_ROOT}/${DRIVER}" ]]; then
@@ -787,9 +832,18 @@ if [[ ! -f "${REPO_ROOT}/${DRIVER}" ]]; then
 fi
 
 driver_rc=0
+health_before="$(reference_process_health)" && health_before_rc=0 || health_before_rc=$?
+record_guarded "reference-process-health" \
+  "the named stock i2pd mesh processes are alive before the i2pr driver (${health_before})" \
+  "${health_before_rc}"
+if [[ "${health_before_rc}" -ne 0 ]]; then
+  echo "reference-process-health-before=failed ${health_before}" > "${EVIDENCE_DIR}/driver.log"
+  driver_rc=1
+fi
 # The credential travels by environment only, alongside the mode that selects
 # it. In `none` runs both are empty and the driver takes the no-credential
 # branch exactly as before.
+if [[ "${health_before_rc}" -eq 0 ]]; then
 I2PR_ELS2_REFERENCE_ROUTER_INFO="${F_RI}" \
 I2PR_ELS2_REFERENCE_ENDPOINT="127.0.0.1:${F_PORT}" \
 I2PR_ELS2_PEER2_ROUTER_INFO="${C_RI}" \
@@ -802,6 +856,7 @@ I2PR_ELS2_REFERENCE_DEST_B33_I2PD="${DEST_I2PD}" \
 I2PR_ELS2_REFERENCE_DEST_B32_STD="${DEST_B32_STD}" \
 I2PR_ELS2_REFERENCE_CONSUMER_SAM_PORT="${C_SAM}" \
 I2PR_ELS2_REFERENCE_CONSUMER_ENDPOINT="127.0.0.1:${C_PORT}" \
+I2PR_ELS2_FIXTURE_PORT="${FIX_PORT}" \
 I2PR_ELS2_AUTH_MODE="${AUTH_MODE}" \
 I2PR_ELS2_CLIENT_CREDENTIAL="${CREDENTIAL}" \
 I2PR_ELS2_NEGATIVE="${I2PR_ELS2_NEGATIVE:-}" \
@@ -810,7 +865,19 @@ I2PR_ELS2_EVIDENCE_DIR="${EVIDENCE_DIR}" \
 timeout --foreground 1800 cargo test --locked -p i2pr-daemon \
   --test "${DRIVER_TEST}" -- --ignored --exact --nocapture --test-threads=1 \
   > "${EVIDENCE_DIR}/driver.log" 2>&1 || driver_rc=$?
+fi
+health_after="$(reference_process_health)" && health_after_rc=0 || health_after_rc=$?
+record_guarded "reference-process-health-after" \
+  "the named stock i2pd mesh processes remain alive after the i2pr driver (${health_after})" \
+  "${health_after_rc}"
+if [[ "${health_after_rc}" -ne 0 ]]; then
+  driver_rc=1
+fi
 record_guarded "i2pr-rows" "the WP3 driver ran the i2pr ELS2 rows against the live reference mesh (auth ${AUTH_MODE}, negative ${I2PR_ELS2_NEGATIVE:-none})" "${driver_rc}"
+record_guarded "authority-b32-payload-returned" \
+  "the post-start ordinary i2pr client resolved the reference standard LS2 and returned the fixture payload" "${driver_rc}"
+record_guarded "reverse-payload-returned" \
+  "stock i2pd consumed the control-created i2pr type-5 service with the selected auth mode and returned the fixture payload" "${driver_rc}"
 if [[ "${driver_rc}" -ne 0 ]]; then
   sed -n '1,80p' "${EVIDENCE_DIR}/driver.log" >&2 || true
 fi
@@ -896,8 +963,10 @@ failed = [row["label"] for row in rows if row["status"] not in ("passed", "skipp
 skipped = [row["label"] for row in rows if row["status"] == "skipped"]
 
 document = {
-    "plan": 381,
-    "lane": "live ELS2 external driver (i2pd direction)",
+    "plan": 400,
+    "predecessor_plan": 399,
+    "lane": "live i2pr ELS2 reverse signature-profile qualification (i2pd direction)",
+    "reference_destination_signature_type": 7,
     "reference": {
         "implementation": "i2pd",
         "version": "2.61.0",
@@ -918,10 +987,11 @@ with open(os.path.join(evidence_dir, "evidence.json"), "w", encoding="utf-8") as
     handle.write("\n")
 
 lines = [
-    "# Plan 381 live ELS2 lane evidence",
+    "# Plan 400 live ELS2 corrective lane evidence",
     "",
     f"- reference: stock i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5",
     f"- auth mode: {mode}",
+    "- reference transient Destination signature type: 7 (explicit SAM parameter)",
     f"- negative: {negative or 'none'}",
     f"- rows: {passed}/{len(rows)} passed",
 ]
@@ -939,10 +1009,11 @@ lines += [
 with open(os.path.join(evidence_dir, "evidence.md"), "w", encoding="utf-8") as handle:
     handle.write("\n".join(lines))
 PY
-record evidence-packaged passed "evidence.json + evidence.md written from sanitized results only"
+test -s "${EVIDENCE_DIR}/evidence.json"
+test -s "${EVIDENCE_DIR}/evidence.md"
 cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
 if awk -F'\t' '$2 != "passed" && !($2 == "skipped" && $3 ~ /^control-skip:/) { found = 1 } END { exit found ? 0 : 1 }' "${RESULTS_FILE}"; then
-  echo "Plan 381 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 400 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 381 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 400 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}"

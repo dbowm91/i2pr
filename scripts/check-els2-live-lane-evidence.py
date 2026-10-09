@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 381 evidence-integrity check for the live ELS2 external driver lane.
+"""Plan 400 evidence-integrity check for the live ELS2 corrective lane.
 
 The shell wrapper ``scripts/check-els2-live-lane-evidence.sh`` documents the
 boundary and execs this file.
@@ -47,6 +47,10 @@ DRIVER_IGNORE_REASON = "requires the Plan 381 exact-pinned i2pd 2.61.0 ELS2 lane
 # fails against the reference.
 REQUIRED_UNIT_ROWS: list[tuple[str, str]] = [
     (
+        "crates/i2pr-daemon/tests/i2pcontrol_els2_black_box.rs",
+        "plan334_els2_create_get_rawconfig_round_trip_over_jsonrpc",
+    ),
+    (
         "crates/i2pr-netdb/tests/els2_client_authorization.rs",
         "psk_derivation_matches_the_pinned_reference_algorithm",
     ),
@@ -77,6 +81,31 @@ REQUIRED_DRIVER_KEYS = [
     "authority-b32",
     "reverse-direction",
     "wrong-credential-scrub",
+    "authority-create",
+    "authority-generation-advanced",
+    "authority-committed-generation",
+    "authority-remote-target-projection",
+    "authority-remote-counters",
+    "authority-activation-pending",
+    "authority-activation-failure-present",
+    "authority-failed-connects",
+    "authority-failure-stage",
+    "authority-active-connections-peak",
+    "b33-active-connections-peak",
+    "consumer-credential-sealed",
+    "pre-failure-stage",
+    "post-failure-stage",
+    "pre-activation-pending",
+    "pre-activation-failure-present",
+    "post-activation-pending",
+    "post-activation-failure-present",
+    "authority-b32-payload-returned",
+    "reverse-server-create",
+    "reverse-publication-handoff",
+    "reverse-publication-failure-stage",
+    "reverse-publication-counts",
+    "reverse-destination-provisioning",
+    "reverse-payload-returned",
 ]
 
 # Runner rows: every `record` label the lane may emit, including the
@@ -96,7 +125,13 @@ REQUIRED_RUNNER_ROWS = [
     "destination-b32-derived",
     "control-reference-b32-roundtrip",
     "reference-families-published",
+    "gossip-convergence-gate",
+    "gossip-selection-audit",
+    "reference-process-health",
+    "reference-process-health-after",
     "i2pr-rows",
+    "authority-b32-payload-returned",
+    "reverse-payload-returned",
     "key-material-scrub",
     "key-material-scrub-dh",
 ]
@@ -109,6 +144,11 @@ REQUIRED_RUNNER_LITERALS = [
     '\nMAX_ATTEMPTS=1\n',
     'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"',
     'I2PD_VERSION="2.61.0"',
+    '"plan": 400',
+    '"predecessor_plan": 399',
+    '"reference_destination_signature_type": 7',
+    'test -s "${EVIDENCE_DIR}/evidence.json"',
+    'test -s "${EVIDENCE_DIR}/evidence.md"',
     "control-skip:",
 ]
 
@@ -129,27 +169,11 @@ REQUIRED_EXTRACTOR_MARKERS = [
     "--per-client-auth",
 ]
 
-# Rows the lane deliberately does not have. If one is ever written, remove it
-# from this list and update the closure record's limitation section: the list
-# firing is the mechanism that keeps a landed row from silently inheriting a
-# "parked" narrative. Both name the successor plan that owns them.
-DOCUMENTED_ABSENCES: list[str] = [
-    # The i2pr-side `.b32` authority payload row: parked after three
-    # compositions exposed real product boundaries (post-start ordinary
-    # provisioning gap; product-spec invisibility to the shared manager;
-    # startup lookup vs floodfill gossip timing).
-    "authority-b32-payload-returned",
-    # The i2pd-consumes-i2pr-published reverse row: parked after four live
-    # attempts answered LeaseSet-not-found (publication/gossip path
-    # unproven against the mesh).
-    "reverse-payload-returned",
-]
-
 # Forbidden in the driver: the property is "missing environment fails, no
 # silent pass, no secret in evidence, no out-of-lane capability".
 FORBIDDEN_IN_DRIVER = [
     ("#[should_panic", "a should_panic row asserts failure, not the property"),
-    ("std::process::Command", "command execution (the reverse SAM call was parked with the reverse row)"),
+    ("std::process::Command", "command execution"),
     ("Command::new", "command execution"),
     ("ToSocketAddrs", "the lane resolves a name"),
     ("lookup_host", "the lane resolves a name"),
@@ -188,6 +212,220 @@ REQUIRED_IN_PRODUCTION: list[tuple[str, str, str]] = [
         "Plan 381 WP3 defect 3: the inbound gateway route resolves the "
         "endpoint id, not the creator id. The material is keyed by the "
         "endpoint, so the creator id misses every installed build",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "destination_replenishment_order(inbound_deficit, outbound_deficit, submit_limit)",
+        "Plan 388: interleave inbound and outbound submissions so an outbound "
+        "concurrency window cannot starve the inbound leases needed for LS2",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "submitted_inbound_builds: progress.submitted_inbound",
+        "Plan 389: the live provisioning snapshot must report the selected "
+        "Destination's bounded submitted-build count",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        ".retain(|destination_id, _| current_destination_ids.contains(destination_id))",
+        "Plan 389: retired-generation stage counters must be pruned with their "
+        "Destination owner to keep diagnostic memory bounded",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "registration_pool_admission_failures: progress.registration_pool_admission_failures",
+        "Plan 389: preserve the bounded stage that distinguishes pool admission "
+        "from build completion and role activation",
+    ),
+    (
+        "crates/i2pr-daemon/src/exploratory_build.rs",
+        "new_with_service_destination_capacity",
+        "Plan 390: product composition must allocate the explicit service-role registry bound",
+    ),
+    (
+        "crates/i2pr-daemon/src/exploratory_build.rs",
+        "checked_mul(u16::from(",
+        "Plan 390: retained inbound role capacity must be checked against the finite service group maximum",
+    ),
+    (
+        "crates/i2pr-daemon/src/exploratory_build.rs",
+        "i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS",
+        "Plan 390: aggregate role capacity must use the effective per-direction service ceiling",
+    ),
+    (
+        "crates/i2pr-daemon/src/exploratory_build.rs",
+        "i2pr_service_tunnels::MAX_SERVICE_TUNNELS",
+        "Plan 390: aggregate role capacity must use the service tunnel count ceiling",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "ExploratoryBuildCoordinator::new_with_service_destination_capacity(",
+        "Plan 390: both product composition paths must select the aggregate role bound",
+    ),
+    (
+        "crates/i2pr-tunnel/src/data_plane_registry.rs",
+        "pub inbound: u16",
+        "Plan 390: the bounded role registry must represent all supported service inbound roles",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "post_activation_owner_failures: progress.post_activation_owner_failures",
+        "Plan 391: retain bounded attribution for receive-owner rejection",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "DestinationPostActivationStage::InboundInstalled",
+        "Plan 391: count successful inbound owner and bridge installation",
+    ),
+    (
+        "crates/i2pr-daemon/src/sam/streams.rs",
+        "pub(crate) enum InboundReceiveProjectionError",
+        "Plan 392: keep bridge state absence and duplicate receive projection as distinct typed errors",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "DestinationPostActivationStage::BridgeDuplicateReceive",
+        "Plan 392: count duplicate bridge projection separately without recording an identifier",
+    ),
+    (
+        "crates/i2pr-daemon/src/sam/streams.rs",
+        "pub(crate) fn new_staged(destination_id: DestinationId)",
+        "Plan 392: support a bounded bridge role projection before its first LS2",
+    ),
+    (
+        "crates/i2pr-daemon/src/sam/streams.rs",
+        "pub(crate) fn router_ls2_for_publication(&self) -> Option<LeaseSet2>",
+        "Plan 392: staged state must not fabricate a publishable LS2",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "RouterDestinationNetworkState::new_staged(",
+        "Plan 392: committed router-backed generations must initialize staged bridge state",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        ".cancel_ls2_publication(request_id)",
+        "Plan 393: failed publication composition and delivery must release coordinator capacity",
+    ),
+    (
+        "crates/i2pr-daemon/tests/destination_tunnel_unit.rs",
+        "failed_publication_cancellation_releases_bounded_capacity",
+        "Plan 393: cancellation must restore publication capacity for a replacement attempt",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "DestinationTunnelError::TooManyPublications => {\n                        PublicationBeginRejection::Capacity",
+        "Plan 396: coordinator-capacity rejection must remain separately attributable",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        "begin_capacity={}",
+        "Plan 396: the pinned evidence must retain coarse begin-rejection counts",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        '"reverse-service-connections-post-read"',
+        "Plan 400: post-read evidence must retain bounded service connection counts",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        '"reverse-routing-counters-post-read"',
+        "Plan 400: post-read evidence must retain bounded routing counters",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        '"reverse-inbound-orphan-receives-post-read"',
+        "Plan 400: attribute post-read drops to a missing service receive owner",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        '"reverse-inbound-orphan-receives-delta"',
+        "Plan 400: distinguish reverse receive-owner misses from earlier lane traffic",
+    ),
+    (
+        "crates/i2pr-daemon/src/destination_tunnels.rs",
+        "blinded_storage_key(&key))\n                    == Some(store_message.key)",
+        "Plan 395: encrypted DatabaseStore key must match its blinded public key",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "server_syns_observed_total",
+        "Plan 397: expose a bounded cumulative count of inbound server SYNs observed",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "server_target_dials_succeeded_total",
+        "Plan 397: distinguish accepted server streams from successful loopback target dials",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "BuildDirection::Inbound => Some(tunnel.local_inbound_receive())",
+        "Plan 397: retain the established tunnel's local endpoint receive id",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "let receive_id = binding.local_receive_tunnel.map(TunnelId::get)",
+        "Plan 397: post-start owner and bridge projection must use endpoint receive id",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "pub fn delta_since(self, earlier: Self) -> Self",
+        "Plan 400: inbound diagnostics must support transaction-scoped saturating deltas",
+    ),
+    (
+        "crates/i2pr-daemon/tests/els2_i2pd_external.rs",
+        '"reverse-router-inbound-traffic-delta"',
+        "Plan 400: exact-pinned evidence must retain reverse inbound transition deltas",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "service_garlic_authenticated",
+        "Plan 400: distinguish authenticated Garlic from inbound owner attribution",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "service_payloads_dequeued",
+        "Plan 400: expose whether authenticated Garlic yielded destination payloads",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "service_sender_ls2_freshness_rejected",
+        "Plan 400: retain bounded sender-LeaseSet2 freshness rejection attribution",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "service_sender_ls2_crypto_protocol_rejected",
+        "Plan 400: retain bounded LeaseSet2 protocol-crypto rejection attribution",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_product.rs",
+        "service_last_unsupported_signature_type",
+        "Plan 400: retain only the bounded public signature algorithm code for diagnosis",
+    ),
+    (
+        "tests/integration/els2/clients/sam_b33_connect.py",
+        '"SIGNATURE_TYPE=7"',
+        "Plan 400: the stock reference SAM destination must select the supported type-7 profile",
+    ),
+    (
+        DRIVER,
+        "DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
+        "Plan 400: the reverse ELS2 requester must use the supported type-7 profile",
+    ),
+    (
+        DRIVER,
+        'create_session.push_str(" i2cp.leaseSetPrivKey=")',
+        "Plan 403: authorized reverse requester must provide the consumer secret",
+    ),
+    (
+        DRIVER,
+        '"reverse-reference-signature-type"',
+        "Plan 400: the reverse requester profile must be recorded in sanitized evidence",
+    ),
+    (
+        "crates/i2pr-daemon/src/sam/streams.rs",
+        "RouterGarlicRejection::UnknownDestination",
+        "Plan 400: distinguish unknown local destination from sender binding failures",
     ),
     (
         "tests/integration/els2/els2-tunnels-conf.sh",
@@ -231,6 +469,20 @@ REQUIRED_IN_PRODUCTION: list[tuple[str, str, str]] = [
         "just the envelope. A refused candidate returns result-status "
         "error with a null JSON-RPC error, and an envelope-only assert "
         "passes a service that was never built",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open",
+        "Plan 385 defect 1: an uncached ordinary Base32 target with DelayOpen "
+        "must accept a connection and request product-owned activation instead "
+        "of parking its already-bound supervisor",
+    ),
+    (
+        "crates/i2pr-daemon/src/service_tunnels.rs",
+        "self.resolve_remote_client_target(runtime.destination_id, &hash)",
+        "Plan 385 defect 2: after successful provisioning, ordinary client "
+        "resolution must use only that requesting service's validated remote "
+        "LeaseSet mirror",
     ),
 ]
 
@@ -334,6 +586,24 @@ def attribute_window(source: str, fn_start: int) -> str:
 def check(report: Report) -> None:
     driver = read(DRIVER)
     driver_code = strip_comments(driver)
+    product = read("crates/i2pr-daemon/src/service_product.rs")
+    service_coordinator = "ExploratoryBuildCoordinator::new_with_service_destination_capacity("
+    if product.count(service_coordinator) != 2:
+        report.failures.append(
+            "Plan 390: both product composition paths must select the aggregate role bound"
+        )
+    coordinator_source = read("crates/i2pr-daemon/src/exploratory_build.rs")
+    report.require(
+        "role capacity derivation",
+        coordinator_source,
+        "checked_mul(u16::from(\n                i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS,",
+        "ExploratoryBuildCoordinator::new_with_service_destination_capacity",
+    )
+    publication_cancel = ".cancel_ls2_publication(request_id)"
+    if product.count(publication_cancel) < 3:
+        report.failures.append(
+            "Plan 393: compose, request-construction, and delivery failures must cancel publication intent"
+        )
 
     # ------------------------------------------------------------------
     # 1. The driver test exists and is ignore-gated for the exact
@@ -367,11 +637,33 @@ def check(report: Report) -> None:
                 "in an ordinary run is not evidence"
             )
 
+    report.require(
+        "post-start server publication scheduling",
+        product,
+        ".filter(|destination_id| !previously_known_servers.contains(destination_id))",
+        "service_product.rs",
+    )
+
     # ------------------------------------------------------------------
     # 2. The evidence keys the matrix rows record.
     # ------------------------------------------------------------------
     for key in REQUIRED_DRIVER_KEYS:
         report.require("driver evidence", driver, f'"{key}"', DRIVER)
+    report.require(
+        "reverse authorized consumer credential",
+        driver,
+        'create_session.push_str(" i2cp.leaseSetPrivKey=")',
+        DRIVER,
+    )
+    for forbidden in (
+        "i2cp.leaseSetType=5",
+        "i2cp.leaseSetAuthType",
+        "i2cp.leaseSetClient.",
+    ):
+        if forbidden in driver:
+            report.failures.append(
+                f"reverse requester carries publisher-only ELS2 option {forbidden!r}"
+            )
 
     # ------------------------------------------------------------------
     # 3. The unit rows exist and are NOT gated.
@@ -430,15 +722,6 @@ def check(report: Report) -> None:
         report.require("driver", driver_code, needle, DRIVER)
 
     # ------------------------------------------------------------------
-    # 7. A parked row that got written must update this list.
-    # ------------------------------------------------------------------
-    for absent in DOCUMENTED_ABSENCES:
-        if absent in driver_code:
-            report.failures.append(
-                f"documented absence {absent} now exists in {DRIVER} — remove it from "
-                "DOCUMENTED_ABSENCES and update the closure record's limitation list"
-            )
-
     # ------------------------------------------------------------------
     # 8. The production properties the lane depends on.
     # ------------------------------------------------------------------
@@ -498,11 +781,45 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (DRIVER, f"async fn {DRIVER_TEST}(", f"async fn {DRIVER_TEST}_RENAMED(", "a required row is renamed"),
     (DRIVER, DRIVER_IGNORE_REASON, "some other reason", "the ignore-gate reason is changed"),
     (DRIVER, '"application-payload-returned"', '"application-payload-renamed"', "an evidence key is renamed"),
+    (DRIVER, '"authority-b32-payload-returned"', '"authority-b32-row-renamed"', "the post-start authority row is removed"),
+    (DRIVER, '"reverse-destination-provisioning"', '"reverse-destination-provisioning-renamed"', "the reverse provisioning evidence is removed"),
+    (DRIVER, '"reverse-service-connections-post-read"', '"reverse-service-connections-post-read-renamed"', "post-read service connection evidence is removed"),
+    (DRIVER, '"reverse-routing-counters-post-read"', '"reverse-routing-counters-post-read-renamed"', "post-read routing counter evidence is removed"),
+    (DRIVER, '"reverse-inbound-orphan-receives-post-read"', '"reverse-inbound-orphan-receives-post-read-renamed"', "post-read inbound orphan evidence is removed"),
+    (DRIVER, '"reverse-inbound-orphan-receives-delta"', '"reverse-inbound-orphan-receives-delta-renamed"', "reverse receive-owner delta evidence is removed"),
+    ("crates/i2pr-daemon/src/service_tunnels.rs", "pub server_syns_observed_total: u64,", "pub server_syns_seen_total: u64,", "the bounded inbound server SYN observation is removed"),
+    ("crates/i2pr-daemon/src/service_product.rs", "let receive_id = binding.local_receive_tunnel.map(TunnelId::get)", "let receive_id = self.manager.with_destination_runtime(destination_id, |runtime| runtime.tunnel_registration(binding.pool_slot).map(|registration| registration.tunnel_id().get())).flatten()", "post-start owner registration regresses to the pool creator tunnel id"),
+    ("crates/i2pr-daemon/tests/els2_i2pd_external.rs", '"reverse-router-inbound-traffic-delta"', '"reverse-router-inbound-traffic-delta-renamed"', "transaction-scoped inbound route diagnostics are removed"),
+    ("crates/i2pr-daemon/src/service_product.rs", "pub service_garlic_authenticated: u64,", "pub service_garlic_valid: u64,", "authenticated inbound Garlic attribution is removed"),
+    ("crates/i2pr-daemon/src/service_product.rs", "pub service_sender_ls2_freshness_rejected: u64,", "pub service_sender_ls2_fresh_rejected: u64,", "fine-grained sender LeaseSet2 validation attribution is removed"),
+    ("crates/i2pr-daemon/src/sam/streams.rs", "i2pr_crypto::CryptoError::Protocol(_),\n        )) => RouterGarlicRejection::LeaseSet2CryptoProtocol", "i2pr_crypto::CryptoError::Protocol(_),\n        )) => RouterGarlicRejection::LeaseSet2Crypto", "LeaseSet2 validation crypto failures lose protocol subtype attribution"),
+    ("crates/i2pr-daemon/src/service_product.rs", "ExploratoryBuildCoordinator::new_with_service_destination_capacity(", "ExploratoryBuildCoordinator::new(", "product composition falls back to the exploratory-only role bound"),
+    ("crates/i2pr-daemon/src/exploratory_build.rs", "i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS,", "i2pr_service_tunnels::MAX_SERVICE_TUNNELS,", "aggregate inbound capacity stops using the per-direction ceiling"),
+    ("crates/i2pr-daemon/src/service_product.rs", "RouterDestinationNetworkState::new_staged(", "RouterDestinationNetworkState::new_with_outbound_roles(", "post-start generation stops initializing staged bridge state"),
+    ("crates/i2pr-daemon/src/service_product.rs", ".cancel_ls2_publication(request_id)", ".retry_ls2_publication(request_id)", "a publication failure path stops releasing its coordinator intent"),
+    ("crates/i2pr-daemon/src/service_product.rs", "DestinationTunnelError::TooManyPublications => {\n                        PublicationBeginRejection::Capacity", "DestinationTunnelError::TooManyPublications => {\n                        PublicationBeginRejection::Other", "publication capacity rejection loses its distinct counter"),
     (DRIVER, "use std::sync::Arc;", "use std::sync::Arc;\n    unsafe { }", "the driver grows unsafe"),
     (RUNNER, '\nMAX_ATTEMPTS=1\n', '\nMAX_ATTEMPTS=2\n', "the attempt budget is raised"),
     (RUNNER, 'I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"', 'I2PD_PIN="0000000000000000000000000000000000000000"', "the reference pin drifts"),
-    (RUNNER, 'echo "Plan 381 ELS2 lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 381 ELS2 lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, '"reference_destination_signature_type": 7', '"reference_destination_signature_type": 0', "evidence no longer records the explicit supported signature profile"),
+    ("tests/integration/els2/clients/sam_b33_connect.py", '"SIGNATURE_TYPE=7"', '"SIGNATURE_TYPE=0"', "reference SAM requester silently returns to legacy type 0"),
+    (DRIVER, "DESTINATION=TRANSIENT SIGNATURE_TYPE=7", "DESTINATION=TRANSIENT SIGNATURE_TYPE=0", "reverse requester silently returns to legacy type 0"),
+    (DRIVER, 'create_session.push_str(" i2cp.leaseSetPrivKey=")', 'create_session.push_str(" i2cp.leaseSetPrivateKey=")', "authorized reverse requester stops supplying the consumer secret"),
+    (DRIVER, '"consumer-credential-sealed"', '"consumer-credential-stored"', "DH/PSK consumer credential presence evidence is removed"),
+    (DRIVER, '"post-failure-stage"', '"post-failure-phase"', "deferred failure stage evidence is removed"),
+    (DRIVER, '"authority-active-connections-peak"', '"authority-active-connections"', "authority local-accept evidence is removed"),
+    (RUNNER, 'record_guarded "reference-process-health"', 'record_guarded "reference-process-status"', "the pre-driver reference health gate is removed"),
+    (DRIVER, '"post-activation-failure-present"', '"post-activation-failure"', "deferred provisioning failure presence evidence is removed"),
+    (DRIVER, 'create_session.push_str(" i2cp.leaseSetPrivKey=");', 'create_session.push_str(" i2cp.leaseSetType=5");\n        create_session.push_str(" i2cp.leaseSetPrivKey=");', "reverse requester regresses to publisher-only authorization options"),
+    (RUNNER, 'echo "Plan 400 ELS2 corrective lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', 'echo "Plan 400 ELS2 corrective lane passed (auth ${AUTH_MODE}); sanitized evidence: ${EVIDENCE_DIR}" >&2\n  exit 1', "the final gate is inverted to pass failing lanes"),
+    (RUNNER, 'test -s "${EVIDENCE_DIR}/evidence.json"', 'record evidence-packaged passed "evidence files exist"', "the evidence package is not verified before final TSV copy"),
     ("crates/i2pr-daemon/src/service_tunnels.rs", "admitted_blinded = lease_set2.header().flags().is_blinded_on_publication()", "admitted_blinded = false", "the sweep stops preserving the admitted shape"),
+    ("crates/i2pr-daemon/src/service_tunnels.rs", "Err(DestinationFailure::LookupRequired { .. }) if runtime.delay_open", "Err(DestinationFailure::LookupRequired { .. }) if false", "ordinary delay-open clients stop reaching product activation"),
+    ("crates/i2pr-daemon/src/service_tunnels.rs", "self.resolve_remote_client_target(runtime.destination_id, &hash)", "self.resolve_remote_client_target(runtime.destination_id, &[0; 32])", "ordinary resolution stops using the validated cached target"),
+    ("crates/i2pr-daemon/src/service_product.rs", ".filter(|destination_id| !previously_known_servers.contains(destination_id))", ".filter(|_| false)", "post-start control generations stop scheduling server publication"),
+    ("crates/i2pr-daemon/src/service_product.rs", "destination_replenishment_order(inbound_deficit, outbound_deficit, submit_limit)", "destination_replenishment_order(outbound_deficit, inbound_deficit, submit_limit)", "inbound build scheduling is displaced behind outbound work"),
+    ("crates/i2pr-daemon/src/service_product.rs", ".retain(|destination_id, _| current_destination_ids.contains(destination_id))", ".retain(|_, _| true)", "retired Destination progress is no longer bounded by the committed generation"),
+    ("crates/i2pr-daemon/src/service_product.rs", "registration_pool_admission_failures: progress.registration_pool_admission_failures", "registration_pool_admission_failures: 0", "pool admission failure stage is no longer reported"),
     ("tests/integration/els2/els2-tunnels-conf.sh", "tr -- '+/' '-~'", "tr -- '+/' '+/'", "the alphabet translation is neutered"),
 ]
 
@@ -593,7 +910,7 @@ def main() -> int:
             print(f"FAIL: {failure}")
         print(f"check-els2-live-lane-evidence: {len(report.failures)} failure(s)")
         return 1
-    print("check-els2-live-lane-evidence: ok (driver + 4 unit rows + runner surface)")
+    print("check-els2-live-lane-evidence: ok (driver + 5 unit rows + runner surface)")
     return 0
 
 

@@ -1296,8 +1296,8 @@ impl DestinationTunnelCoordinator {
         Err(DestinationTunnelError::DirectTransportRejected)
     }
 
-    /// Begins one local Standard LeaseSet2 publication attempt
-    /// against an eligible floodfill peer (Plan 187 §8).
+    /// Begins one local Standard or encrypted LeaseSet2 publication
+    /// attempt against an eligible floodfill peer (Plan 187 §8, Plan 395).
     ///
     /// The supplied store message must carry the destination's own
     /// signed record describing its real inbound tunnel; the stored
@@ -1318,12 +1318,19 @@ impl DestinationTunnelCoordinator {
                 "store key must be destination-derived, not floodfill".to_owned(),
             ));
         }
-        if !matches!(
-            store_message.data,
-            i2pr_proto::DatabaseStoreData::LeaseSet2(_)
-        ) {
+        let valid_record = match &store_message.data {
+            i2pr_proto::DatabaseStoreData::LeaseSet2(_) => true,
+            i2pr_proto::DatabaseStoreData::EncryptedLeaseSet(record) => {
+                i2pr_crypto::red25519::Red25519PublicKey::decode(record.blinded_public_key())
+                    .ok()
+                    .map(|key| i2pr_crypto::red25519::blinded_storage_key(&key))
+                    == Some(store_message.key)
+            }
+            _ => false,
+        };
+        if !valid_record {
             return Err(DestinationTunnelError::Publication(
-                "publication body must be a Standard LeaseSet2".to_owned(),
+                "publication body or destination-derived store key is invalid".to_owned(),
             ));
         }
         let request_id = self.next_request_id;

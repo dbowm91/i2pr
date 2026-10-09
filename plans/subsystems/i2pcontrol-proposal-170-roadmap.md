@@ -716,8 +716,8 @@ Forward dependency graph:
 
 ```text
 373 passed  planning/support truth reconciliation
-  -> 374 blocked  stock i2pd bidirectional ELS2 lane (freeze done; driver not written)
-  -> 375 blocked  stock Java I2P bidirectional ELS2 lane (freeze partial; driver not written)
+  -> 374 blocked  stock i2pd bidirectional ELS2 lane (driver exists; i2pr authority/reverse remain open)
+  -> 375 active  stock Java I2P bidirectional ELS2 lane (source proof complete; Java driver/matrix open)
   -> 376 passed  live outproxy failover + restart
        |
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
@@ -726,10 +726,13 @@ Forward dependency graph:
         |  -> 381 passed live ELS2 external driver lane (i2pd direction), WP1–WP5 executed, merged onto main, CI green
         |                 ^ consumer direction delivered; reverse + i2pr-authority rows parked for successor; 380 was its closed hard dependency
         |
-        |  -> 384 ready  i2pr ELS2 reverse publication + post-start authority successor (owns 381 findings 10–15; on pass, 374's i2pd remainder is delivered)
+        |  -> 384 blocked  post-start authority payload failed; reverse matrix not run
+        |       -> 385 blocked  ordinary lookup fixed + authority passes; reverse publication unresolved
+        |            -> 386 blocked  local publication stage is MissingLeaseSet before DatabaseStore construction
+        |                 -> 387 ready  post-start server Destination pool/LeaseSet readiness corrective
         |
         +-> 377 blocked  ELS2 external convergence (needs 374 + 375)
-             ^ 374 needs 384 (reverse + authority successor); 380/381 are closed deps
+             ^ 374 needs 385 + 387 (authority and i2pr-publishes rows); 380/381 passed; 384–386 are blocked evidence records
             |
             +-> 378 blocked  final conformance gate (needs 377; 373/376 done)
 
@@ -744,14 +747,13 @@ Plans 374, 375, and 376 are intentionally independent after 373 and may execute 
 **Plan 373 passed**, so all three became `ready`: it was their only unmet hard dependency — each
 of 374/375 also requires passed 346/350/351, and 376 requires passed 341/343 plus 342-passed-scoped.
 
-**376 has since passed, and 374/375 are blocked.** Both ELS2 lanes completed their
-pre-execution freeze and then stopped at the same named point: the repository has no
-ELS2 live driver. It has the Plan 303/306 controlled floodfill mesh (type 1/3/7 only),
-Plan 350/351's i2pr-internal type-5 path, and Plan 346's crypto-boundary transcript check —
-none of which is a live ELS2 row, and the plans forbid substituting any of them. The mesh
-itself was **verified running on this host**, so the external lane is not blocked by the
-environment; it is blocked by unwritten external-integration engineering. The freeze record
-lives in `tests/integration/els2/reference-freeze.md` so the next pass does not repeat it.
+**376 has passed; Plan 406 delivered Plan 374's i2pd scope; Plan 375 is active.** The
+Java source proof has been completed against the exact 2.13.0 pin: NONE/DH/PSK and the
+blinded lookup path are implemented, and the unmodified stock build succeeds with JDK 21.
+No Java ELS2 direction has run. Plan 279's Java controlled-floodfill topology is available
+as a substrate, but the stock Java type-5 publisher/client driver and live application
+matrix are not yet implemented. The freeze record lives in
+`tests/integration/els2/reference-freeze.md`.
 
 **Source-level research after those four closures narrowed the block to one production gap, and
 Plan 380 has now closed it.**
@@ -819,8 +821,9 @@ fails**. `encrypted_target_status` is `None` and every `RemoteDeliveryCounters` 
 so no lookup was ever attempted for a service created over I2PControl after `start`. A product
 gap and a missing driver step are **not yet separated**, and no product defect is claimed.
 
-What remains: making that row pass, then WP4's rows and WP5's evidence. **The auth-mode matrix
-actually executed is still none of the three**. Plan 381 still does **not** unblock 374.
+What remains for Plan 381: making that row pass, then WP4's rows and WP5's evidence. **The
+auth-mode matrix actually executed is still none of the three**. Plan 381 still does **not**
+unblock 374.
 See `plans/closure/i2pcontrol-proposal-170/381-status.md`.
 
 **WP3–WP5 have since executed (2026-10-08).** The payload row passes (NONE, i2pd→i2pr)
@@ -831,6 +834,24 @@ WP5 landed `scripts/check-els2-live-lane-evidence.{py,sh}` plus packaged
 `evidence.json`/`evidence.md`. The reverse direction (i2pr publishes) and the i2pr-side
 `.b32` authority row are parked for a named successor with firing absence guards — so
 374/375/377/378 stay blocked on that successor, not on this lane.
+
+**Plan 384 then executed its authority work (2026-10-08) and closed blocked.** The local
+`get` projection, post-start create, committed generation, target projection, listener bind,
+and the three-floodfill gossip gate passed. The authority payload failed against the pinned
+stock i2pd even after a temporary five-attempt experiment, which was reverted; reverse
+publication was not attempted. Plan 385 is now the corrective owner. Plan 374 remains
+blocked on 385, Plan 375 remains independently blocked, Plan 377 still needs both, and Plan
+378 still needs 377. No downstream plan is unblocked by Plan 384.
+
+Plan 385 fixed the delayed ordinary lookup and passed the post-start authority
+payload, but its reverse NONE/PSK/DH payload rows failed at stock i2pd. Plan 386
+instrumented the actual local publication boundary: the control-created server
+had no router-backed LS2 (36 attempts, zero accepted handoffs, one pending), so
+the type-5 DatabaseStore was never constructed. Plan 387 reproduced the failure
+after the ordinary authority payload, with zero inbound/outbound registrations
+and no LS2. Plan 387 added bounded build/failure diagnostics but could not
+capture them in a clean lane; Plan 388 owns that localization and corrective.
+Plans 374/375/377/378 remain blocked; no downstream plan is unblocked.
 
 ### Why two ELS2 reference plans
 
@@ -855,11 +876,15 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 |---|---|---|---|
 | 373 | **passed** | planning/support corrective | plans/closure/i2pcontrol-proposal-170/373-status.md (`passed-authority-support-and-successor-state-reconciled-without-capability-promotion`) |
 | 373 (plan) | — | — | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
-| 374 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/374-status.md. Freeze executed; controlled mesh verified running here; both directions reference-feasible and all three auth modes implemented. Consumer direction delivered by passed 381; reverse + i2pr-side authority owned by **ready Plan 384** (381 findings 10–15). | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
-| 375 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/375-status.md. Build verified at the pin (JDK 21 required); source proof recorded incomplete; same unwritten-driver blocker. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
+| 374 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/374-status.md. Plan 385 fixed ordinary lookup and passed post-start authority; Plans 386/387 localized reverse publication to a control-created server with zero pool registrations and no LS2. Plan 388 owns the pool transition corrective. | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
+| 375 | **active** | external interoperability | Exact-pinned Java publisher/consumer/auth source proof and stock build are complete. Plan-279 F/JC/JD1/JD2 topology rerun stopped at stock SAM session creation (`Address already in use`) before any ELS2 row; setup diagnosis, Java driver, and matrix remain open. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
 | 380 | **passed** | capability | plans/closure/i2pcontrol-proposal-170/380-status.md (`passed-authorized-consumer-production-path-closed-with-two-defects-found-and-fixed`) | Closed the Plan 351 deferral: the authorized consumer (`begin_authorized`) now has a production caller and a typed `CustomOptions` credential seam; also fixed a pre-existing Plan 342 double-seal defect. Deliberately local-only. |
 | 381 | **passed** (`passed-i2pd-consumer-direction-live-reverse-and-authority-parked-for-successor`; merged `f791263c` + `c223001f`, CI `37781167269` green) | external interoperability | plans/closure/i2pcontrol-proposal-170/381-status.md | Plan 374's remaining external driver scope (i2pd direction): NONE/PSK/DH payload rows green live, two live negatives, parked reverse + i2pr-authority rows with named successor. |
-| 384 | **ready** (`registered-i2pr-els2-reverse-and-authority-successor`) | external interoperability | plans/implementation/i2pcontrol-proposal-170/384-i2pr-els2-reverse-and-post-start-authority-successor.md (closure pending) | 381's parked scope: reverse direction (i2pr publishes, NONE/PSK/DH) + i2pr-side authority row + findings 10–15 (post-start provisioning, committed generations, gossip gate, get-projection test). Closed deps 380/381/346/350/351/337-338. On pass, 374's i2pd remainder is delivered; 375/377/378 stay blocked. |
+| 384 | **blocked** (`blocked-post-start-authority-lookup-and-reverse-publication-corrective-plan-385`) | external interoperability | plans/closure/i2pcontrol-proposal-170/384-status.md | Historical evidence record. Plan 385 fixed ordinary lookup and passed authority; Plan 386 localized reverse publication to a missing server LS2, and Plan 388 owns pool-transition localization. |
+| 385 | **blocked** (`blocked-reverse-els2-publication-not-visible-to-stock-i2pd-plan-386`) | external interoperability corrective | plans/closure/i2pcontrol-proposal-170/385-status.md | Ordinary delayed activation, validated-mirror resolution, and post-start authority payload passed. Reverse NONE/PSK/DH all fail at stock i2pd with `LeaseSet not found`; Plan 386 localized the earlier local missing-LeaseSet stage and Plans 387/388 own the local provisioning correction. No support/advertisement promotion. |
+| 386 | **blocked** (`blocked-control-created-server-missing-router-leaseset-plan-387`) | external interoperability corrective | plans/closure/i2pcontrol-proposal-170/386-status.md | Exact-pinned run recorded 36 local publication attempts, 0 accepted, 1 pending, stage `MissingLeaseSet`. NONE reverse payload failed before DatabaseStore construction; PSK/DH not attempted. Plans 387/388 own server Destination readiness. |
+| 387 | **blocked** (`blocked-post-start-server-pool-never-registers-plan-388`) | product lifecycle + external interoperability corrective | plans/closure/i2pcontrol-proposal-170/387-status.md | Authority payload passed, but the control-created reverse server still had zero inbound/outbound registrations and no LS2. New bounded counters were not captured in a clean run; Plan 388 owns localization. |
+| 388 | **ready** (`registered-post-start-els2-pool-submission-corrective`) | product lifecycle + external interoperability corrective | plans/implementation/i2pcontrol-proposal-170/388-post-start-els2-pool-submission-corrective.md | Use the expanded redacted per-group snapshot to identify whether builds are skipped, pending, failing, or not installed; fix that owner transition and requalify reverse NONE/PSK/DH. |
 | 378 | blocked on 377 alone (373 + 376 passed) | final conformance gate. Closure: `plans/closure/i2pcontrol-proposal-170/378-status.md`. §1 re-freeze executed live and MET; §2/§5 green; §3/§4 blocked; `full-proposal-conformant` NOT SET. | plans/implementation/i2pcontrol-proposal-170/378-final-prop170-conformance-gate.md |
