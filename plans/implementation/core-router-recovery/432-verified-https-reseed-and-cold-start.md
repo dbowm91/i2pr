@@ -1,6 +1,6 @@
 # Plan 432 — HTTPS SU3 reseed acquisition and unattended cold-start recovery
 
-Status: registered / **ready**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; re-evaluate current bootstrap/trust files at execution. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
+Status: **active**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; exact-head bootstrap/trust source census is underway. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
 
 ## Objective and readiness
 

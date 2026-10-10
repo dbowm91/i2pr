@@ -27,7 +27,7 @@ The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.m
 | Plan | State | Implementation handoff | Dependency / observable outcome |
 | --- | --- | --- | --- |
 | 431 | **stopped** | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | `closure/core-router-recovery/431-status.md`: independent non-loopback reference topology unavailable; 433 remains blocked |
-| 432 | **ready** | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
+| 432 | **active** | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
 | 433 | blocked | [Live NetDB/tunnel/client composition](implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) | 431+432 → real independent-router multihop application path |
 | 434 | **ready** | [NTCP2 authenticated-link recovery](implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) | 430 → pinpoint Plan 099 discrepancy and qualify i2pd two-way I2NP |
 | 435 | blocked | [NTCP2 daemon and dual transports](implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) | 433+434 → guarded NTCP2 and SSU2 with i2pd+Java proof |
