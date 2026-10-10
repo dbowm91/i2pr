@@ -78,7 +78,7 @@ The original 433/435–439 qualification dependencies remain binding for normal/
                                           -> informs Plan 437, never substitutes for 433/436
 ```
 
-Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-router-qualification-comparison.md) pins fork `6885a945` and upstream `9b43484a`. Its `allow_local` loopback sessions demonstrate loopback transport testing is valid **with correct source identities/network IDs**; they do not demonstrate external reachable addresses or stock-router peer selection. Preserve all prior stopped-plan data and two-family conformance. A known-good stock-to-stock control must establish topology admissibility before source protocol attribution. Plan 440 closed this contract gate; Plans 441–444 are now ready, independent of Plan 431 or Plan 436, and may close narrowly for controlled evidence without promoting a public capability.
+Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-router-qualification-comparison.md) pins fork `6885a945` and upstream `9b43484a`. Its `allow_local` loopback sessions demonstrate loopback transport testing is valid **with correct source identities/network IDs**; they do not demonstrate external reachable addresses or stock-router peer selection. Preserve all prior stopped-plan data and two-family conformance. A known-good stock-to-stock control must establish topology admissibility before source protocol attribution. Plan 440 closed this contract gate; Plans 442–444 are ready independent of Plan 431 or Plan 436; Plan 441 is blocked on Plan 445's runner-attribution correction. Each may close narrowly for controlled evidence without promoting a public capability.
 
 ## 7. Milestones
 
@@ -107,10 +107,11 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 438 | blocked on 437 | `plans/implementation/floodfill/438-two-family-floodfill-and-normal-optin.md` | Two independent families; opt-in/withdrawal gate |
 | 439 | blocked on 433,435,436,438 | `plans/implementation/core-router-recovery/439-independent-full-router-acceptance.md` | Cold start through multihop communication, restart/fault bounds |
 | 440 | passed | `plans/implementation/core-router-recovery/440-emissary-informed-evidence-and-topology-contract.md` | `440-status.md`: evidence profile contract and mutation-tested gates; no capability promotion |
-| 441 | ready | `plans/implementation/ntcp2-transport/441-current-pin-single-session-control-and-interop-recovery.md` | Stock-to-stock first; session-bound i2pr authenticated NTCP2 and I2NP |
+| 441 | blocked on 445 | `plans/implementation/ntcp2-transport/441-current-pin-single-session-control-and-interop-recovery.md` | `441-status.md`: first stock-control run returned exit 66 without retained terminal attribution; Plan 445 corrective |
 | 442 | ready | `plans/implementation/core-router-recovery/442-ssu2-normal-owner-preparation-and-independent-topology.md` | Durable SSU2 normal owner and separate external LAN evidence |
 | 443 | ready | `plans/implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md` | Isolated normal-daemon multihop app exchange; no public claim |
 | 444 | ready | `plans/implementation/floodfill/444-configured-shared-bandwidth-class-and-java-selection-control.md` | Enforced shared-bandwidth class and independent Java floodfill selection |
+| 445 | ready | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | Correct Plan 441's missing terminal-category evidence and allocate a fresh bounded control run |
 
 No `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. Earlier registration convention: no `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 

@@ -1,6 +1,6 @@
 # Plan 441 — NTCP2 stock control, single-session fixture and actionable handshake recovery
 
-Status: **registered / blocked on Plan 440**. Successor evidence lane to blocked Plan 434 and stopped diagnostics Plans 410, 414–424. Roadmap core-router-recovery and NTCP2 transport. Use the **existing** current-pin i2pd 2.61.0 cache/pristine helper; do not resurrect the network-ID-99 retired lane.
+Status: **blocked** — `blocked-stock-control-runner-did-not-retain-terminal-category`; corrective successor Plan 445 is registered. Closure: `plans/closure/ntcp2-transport/441-status.md`. Successor evidence lane to blocked Plan 434 and stopped diagnostics Plans 410, 414–424. Roadmap core-router-recovery and NTCP2 transport. Use the **existing** current-pin i2pd 2.61.0 cache/pristine helper; do not resurrect the network-ID-99 retired lane.
 
 ## Objective and why
 
