@@ -66,6 +66,7 @@ impl AppGatewayLimits {
 /// Inputs owned by daemon composition for one app launch instance.
 pub(crate) struct AppGatewayComposition {
     pub(crate) sam: SamConfig,
+    pub(crate) sam_max_version: i2pr_api::sam::version::SamVersion,
     pub(crate) i2cp: I2cpConfig,
     pub(crate) addressbook: SharedAddressBook,
     /// Dedicated to this gateway session and parented by its daemon owner.
@@ -79,6 +80,7 @@ pub(crate) struct AppGatewaySession {
     authorization: AppGatewayAuthorization,
     limits: AppGatewayLimits,
     sam_config: SamConfig,
+    sam_max_version: i2pr_api::sam::version::SamVersion,
     i2cp_config: I2cpConfig,
     addressbook: SharedAddressBook,
     sam: Mutex<Option<Arc<SamServiceState>>>,
@@ -109,6 +111,7 @@ impl AppGatewaySession {
             authorization,
             limits,
             sam_config,
+            sam_max_version: composition.sam_max_version,
             i2cp_config,
             addressbook: composition.addressbook,
             sam: Mutex::new(None),
@@ -189,6 +192,38 @@ impl AppGatewaySession {
         })
     }
 
+    /// Opens a typed, bounded datagram operation stream. It is a separate
+    /// manager service; the existing `sam` service remains exact-byte SAM.
+    pub(crate) async fn open_datagram(
+        &self,
+        stream: crate::sam::raw_stream::SamIoStream,
+    ) -> Result<AppGatewayConnection, AppGatewayError> {
+        self.authorize(AppService::Sam)?;
+        let permit = self.acquire_connection()?;
+        let state = self.sam_state().await?;
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let (ended_sender, ended_receiver) = oneshot::channel();
+        self.children
+            .spawn(move |service_cancellation| async move {
+                let _permit = permit;
+                state
+                    .drive_private_datagram_connection(
+                        stream,
+                        task_cancellation,
+                        service_cancellation,
+                    )
+                    .await;
+                let _ = ended_sender.send(AppGatewayConnectionEnd::BackendClosed);
+                Ok(())
+            })
+            .map_err(|_| AppGatewayError::ResourceLimit)?;
+        Ok(AppGatewayConnection {
+            cancellation,
+            ended: Some(ended_receiver),
+        })
+    }
+
     /// Opens one private I2CP protocol connection over the caller-owned byte
     /// stream. No TCP listener or loopback connection is involved.
     pub(crate) async fn open_i2cp(
@@ -241,7 +276,13 @@ impl AppGatewaySession {
         if let Some(state) = slot.as_ref() {
             return Ok(Arc::clone(state));
         }
-        let state = Arc::new(SamServiceState::new(self.sam_config.clone()).map_err(map_sam_error)?);
+        let state = Arc::new(
+            SamServiceState::new_with_max_supported_version(
+                self.sam_config.clone(),
+                self.sam_max_version,
+            )
+            .map_err(map_sam_error)?,
+        );
         state.set_addressbook_handle(self.addressbook.clone());
         *slot = Some(Arc::clone(&state));
         Ok(state)
@@ -400,8 +441,10 @@ mod tests {
                     enabled: true,
                     bind_address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                     port: 7656,
+                    udp_port: 0,
                     limits: i2pr_api::sam::limits::SamLimits::loopback_test_profile(),
                 },
+                sam_max_version: i2pr_api::sam::version::SamVersion::const_new(3, 3),
                 i2cp: I2cpConfig::loopback_test_profile(8, 16, 64 * 1024, 64),
                 addressbook: SharedAddressBook::new(),
                 children,
@@ -457,6 +500,11 @@ mod tests {
         let (_client, router) = tokio::io::duplex(128);
         assert!(matches!(
             session.open_sam(Box::new(router)).await,
+            Err(AppGatewayError::PermissionDenied)
+        ));
+        let (_client, datagram_router) = tokio::io::duplex(128);
+        assert!(matches!(
+            session.open_datagram(Box::new(datagram_router)).await,
             Err(AppGatewayError::PermissionDenied)
         ));
         assert!(!session.has_backend_state(AppService::Sam).await);
@@ -558,6 +606,269 @@ mod tests {
         assert_eq!(first.available_connection_slots().await, 8);
         first.shutdown().await;
         second.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn private_sam_primary_subsessions_are_scoped_to_the_app_instance() {
+        use tokio::io::AsyncWriteExt;
+
+        let first = session(41, &[Capability::Sam]);
+        let second = session(42, &[Capability::Sam]);
+        let first_state = first.sam_state().await.expect("private SAM state");
+
+        let (mut primary_client, primary_router) = tokio::io::duplex(4096);
+        let primary_connection = first
+            .open_sam(Box::new(primary_router))
+            .await
+            .expect("open primary control stream");
+        primary_client
+            .write_all(b"HELLO VERSION MIN=3.1 MAX=3.3\n")
+            .await
+            .expect("HELLO primary");
+        assert!(read_line(&mut primary_client).await.contains("VERSION=3.3"));
+        primary_client
+            .write_all(b"SESSION CREATE STYLE=PRIMARY ID=shared DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create primary");
+        assert!(
+            read_line(&mut primary_client)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK DESTINATION=")
+        );
+        primary_client
+            .write_all(b"SESSION ADD STYLE=STREAM ID=mail FROM_PORT=25 TO_PORT=110\n")
+            .await
+            .expect("add child");
+        assert_eq!(
+            read_line(&mut primary_client).await,
+            "SESSION STATUS RESULT=OK ID=\"mail\"\n"
+        );
+
+        // A second private SAM connection from the same app instance may use
+        // the child ID. Its invalid destination is reached only after the
+        // child lookup succeeds.
+        let (mut same_app_client, same_app_router) = tokio::io::duplex(4096);
+        let same_app_connection = first
+            .open_sam(Box::new(same_app_router))
+            .await
+            .expect("open same-app stream socket");
+        same_app_client
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("HELLO same app");
+        assert!(
+            read_line(&mut same_app_client)
+                .await
+                .contains("VERSION=3.3")
+        );
+        same_app_client
+            .write_all(b"STREAM CONNECT ID=mail DESTINATION=invalid\n")
+            .await
+            .expect("connect using child ID");
+        assert!(
+            read_line(&mut same_app_client)
+                .await
+                .contains("RESULT=INVALID_KEY")
+        );
+
+        // A different app instance reusing the same textual session ID must
+        // fail at session lookup before destination parsing.
+        let (mut other_app_client, other_app_router) = tokio::io::duplex(4096);
+        let other_app_connection = second
+            .open_sam(Box::new(other_app_router))
+            .await
+            .expect("open other-app stream socket");
+        other_app_client
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("HELLO other app");
+        assert!(
+            read_line(&mut other_app_client)
+                .await
+                .contains("VERSION=3.3")
+        );
+        other_app_client
+            .write_all(b"STREAM CONNECT ID=mail DESTINATION=invalid\n")
+            .await
+            .expect("cross-app connect");
+        assert!(
+            read_line(&mut other_app_client)
+                .await
+                .contains("RESULT=INVALID_ID")
+        );
+
+        drop(primary_client);
+        assert_eq!(
+            primary_connection.wait_closed().await,
+            AppGatewayConnectionEnd::BackendClosed
+        );
+        assert_eq!(first_state.session_registry().session_count(), 0);
+        drop((same_app_client, other_app_client));
+        same_app_connection.wait_closed().await;
+        other_app_connection.wait_closed().await;
+        first.shutdown().await;
+        second.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn private_sam_stream_children_route_nonzero_and_maximum_ports() {
+        let app = session(51, &[Capability::Sam]);
+        let (mut peer, peer_router) = tokio::io::duplex(8192);
+        let _peer_connection = app
+            .open_sam(Box::new(peer_router))
+            .await
+            .expect("open peer private SAM stream");
+        peer.write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("peer HELLO");
+        assert!(read_line(&mut peer).await.contains("VERSION=3.3"));
+        peer.write_all(b"SESSION CREATE STYLE=PRIMARY ID=peer DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create peer primary");
+        assert!(
+            read_line(&mut peer)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        for (id, port) in [("pop", 110), ("max-listener", u16::MAX)] {
+            let command = format!("SESSION ADD STYLE=STREAM ID={id} FROM_PORT={port}\n");
+            peer.write_all(command.as_bytes())
+                .await
+                .expect("add peer STREAM child");
+            assert!(read_line(&mut peer).await.contains(&format!("ID=\"{id}\"")));
+        }
+        peer.write_all(b"NAMING LOOKUP NAME=ME\n")
+            .await
+            .expect("lookup peer Destination");
+        let naming = read_line(&mut peer).await;
+        let peer_public = naming
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("VALUE="))
+            .expect("peer public Destination")
+            .trim_matches(['"', '\n', '\r'])
+            .to_owned();
+
+        let (mut primary, primary_router) = tokio::io::duplex(8192);
+        let _primary_connection = app
+            .open_sam(Box::new(primary_router))
+            .await
+            .expect("open client private SAM stream");
+        primary
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("client HELLO");
+        assert!(read_line(&mut primary).await.contains("VERSION=3.3"));
+        primary
+            .write_all(b"SESSION CREATE STYLE=PRIMARY ID=client DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create client primary");
+        assert!(
+            read_line(&mut primary)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        for (id, from_port) in [("mail", 25), ("max-client", u16::MAX)] {
+            let command = format!("SESSION ADD STYLE=STREAM ID={id} FROM_PORT={from_port}\n");
+            primary
+                .write_all(command.as_bytes())
+                .await
+                .expect("add client STREAM child");
+            assert!(
+                read_line(&mut primary)
+                    .await
+                    .contains(&format!("ID=\"{id}\""))
+            );
+        }
+
+        let (mut omitted, omitted_router) = tokio::io::duplex(8192);
+        let _omitted_connection = app
+            .open_sam(Box::new(omitted_router))
+            .await
+            .expect("open omitted-port private SAM stream");
+        omitted
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("omitted HELLO");
+        assert!(read_line(&mut omitted).await.contains("VERSION=3.3"));
+        let command = format!("STREAM CONNECT ID=mail DESTINATION={peer_public}\n");
+        omitted
+            .write_all(command.as_bytes())
+            .await
+            .expect("connect without TO_PORT");
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(22), read_line(&mut omitted))
+                .await
+                .expect("bounded omitted-port result");
+        assert!(
+            result.contains("RESULT=TIMEOUT"),
+            "unexpected reply {result:?}"
+        );
+
+        async fn exchange(
+            app: &AppGatewaySession,
+            child_id: &str,
+            peer_id: &str,
+            peer_public: &str,
+            port: u16,
+        ) {
+            let (mut accept, accept_router) = tokio::io::duplex(8192);
+            let _accept_connection = app
+                .open_sam(Box::new(accept_router))
+                .await
+                .expect("open private STREAM ACCEPT");
+            accept
+                .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+                .await
+                .expect("accept HELLO");
+            assert!(read_line(&mut accept).await.contains("VERSION=3.3"));
+            accept
+                .write_all(format!("STREAM ACCEPT ID={peer_id}\n").as_bytes())
+                .await
+                .expect("STREAM ACCEPT");
+
+            let (mut connect, connect_router) = tokio::io::duplex(8192);
+            let _connect_connection = app
+                .open_sam(Box::new(connect_router))
+                .await
+                .expect("open private STREAM CONNECT");
+            connect
+                .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+                .await
+                .expect("connect HELLO");
+            assert!(read_line(&mut connect).await.contains("VERSION=3.3"));
+            let command =
+                format!("STREAM CONNECT ID={child_id} DESTINATION={peer_public} TO_PORT={port}\n");
+            connect
+                .write_all(command.as_bytes())
+                .await
+                .expect("STREAM CONNECT");
+            assert!(
+                read_line(&mut connect)
+                    .await
+                    .starts_with("STREAM STATUS RESULT=OK")
+            );
+            assert!(
+                read_line(&mut accept)
+                    .await
+                    .starts_with("STREAM STATUS RESULT=OK")
+            );
+            assert!(read_line(&mut accept).await.starts_with("DESTINATION="));
+            let payload = format!("private-port-{port}").into_bytes();
+            connect.write_all(&payload).await.expect("send payload");
+            let mut received = vec![0_u8; payload.len()];
+            accept
+                .read_exact(&mut received)
+                .await
+                .expect("receive payload");
+            assert_eq!(received, payload);
+        }
+
+        exchange(&app, "mail", "pop", &peer_public, 110).await;
+        exchange(&app, "max-client", "max-listener", &peer_public, u16::MAX).await;
+        let state = app.sam_state().await.expect("app SAM state");
+        assert_eq!(state.session_registry().session_count(), 6);
+        app.shutdown().await;
+        assert_eq!(state.session_registry().session_count(), 0);
     }
 
     #[tokio::test]
@@ -678,8 +989,10 @@ mod tests {
                     enabled: false,
                     bind_address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                     port: 0,
+                    udp_port: 0,
                     limits: i2pr_api::sam::limits::SamLimits::loopback_test_profile(),
                 },
+                sam_max_version: i2pr_api::sam::version::SamVersion::const_new(3, 3),
                 i2cp: I2cpConfig::loopback_test_profile(8, 16, 64 * 1024, 64),
                 addressbook: SharedAddressBook::new(),
                 children,

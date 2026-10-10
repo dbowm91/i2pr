@@ -21,9 +21,9 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 60 | 58 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 62 | 60 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 61 | 58 top level + 3 under `scripts/interop/` |
+| `check-*` on disk (all classes) | 63 | 60 top level + 3 under `scripts/interop/` |
 | Checker invocations in `ci.yml` | 40 | 38 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-58 `check-*` files exist on disk in `scripts/` (61 counting `scripts/interop/`),
+60 `check-*` files exist on disk in `scripts/` (63 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -152,6 +152,8 @@ evidence key.
 | Script | Lane | What it catches | Floor | CI |
 | --- | --- | --- | --- | --- |
 | `scripts/check-sam-acceptance-evidence.sh` | SAM | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers. | yes | yes |
+| `scripts/check-sam368-java-evidence.sh` | SAM | Plan 368 Java I2P 2.13.0 evidence integrity for pinned `SAMStreamSink` plus PRIMARY child, DATAGRAM1/2/3 receive, and same-PRIMARY STREAM rows; run by `tests/integration/sam/run-java-368.sh`. | no | no |
+| `scripts/check-sam368-i2pd-evidence.sh` | SAM | Plan 368 non-gating i2pd 2.61.0 loopback/source diagnostic evidence integrity, including exact pin, constrained network profile, and sanitized feature rows; run by `tests/integration/sam/run-i2pd-368-diagnostic.sh`. | no | no |
 | `scripts/check-ssu2-acceptance-evidence.sh` | SSU2 | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection. | yes | yes |
 | `scripts/check-i2cp-acceptance-evidence.sh` | I2CP | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins. | yes | yes |
 | `scripts/check-i2pcontrol-acceptance-evidence.sh` | I2PControl | Plan 295 I2PControl differential evidence integrity: the local 28/8/4 corpus derives from the executed Rust corpus with a sanitized shape hash; external rows stay env-gated (`blocked-env-absent` until both target env vars are set); no literal pass rows, no forgiveness, no fake env, no secret-carrying evidence. | yes | yes |
@@ -282,7 +284,7 @@ by one commit):
 | Floor steps invoking a checker | 50 | 49 rows marked `Floor: yes` |
 | Total routine-floor steps | 60 | — |
 | Checkers executed by `ci.yml` | 38 | 41 rows marked `CI: yes` |
-| `check-*` files on disk | 58 (61 with `scripts/interop/`) | 60 checker rows |
+| `check-*` files on disk | 60 (63 with `scripts/interop/`) | 62 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
@@ -467,7 +469,7 @@ real driver scripts and its matching evidence checker.
 | `tests/integration/m11-transit/` | `run-i2pd.sh` | `check-m11-transit-boundaries.sh`, `check-m11-transit-qualification-evidence.sh`, `check-m11-per-epoch-composition.sh` | `m11-transit-external.yml` |
 | `tests/integration/m6-interop/` | `run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`, `run-destination.sh`, `run-streaming.sh`, `run-java.sh`, `run-m6-mixed-router.sh` (plus `java/`) | `check-m6-mixed-router-acceptance-evidence.sh`, `check-exploratory-tunnel-evidence.sh`, `check-netdb-tunnel-evidence.sh`, `check-destination-tunnel-evidence.sh`, `check-streaming-tunnel-evidence.sh`, `check-m6-final-closure-evidence.sh`, `interop/check-m6-java-response-source-lock.sh`, `interop/check-p243-host-qualified.sh` | `m6-mixed-router-external.yml` |
 | `tests/integration/ntcp2/` | `manifest.toml` + Python `harness/` (23 modules, incl. `test_execution_lane.py`); subtrees `config/`, `evidence/`, `evidence-receipts/`, `mixed-scenarios/`, `qualification/`, `reference-drivers/`, `reference-observation-qualification/`, `reference-scenarios/`, `scenarios/` | `check-ntcp2-interoperability.sh`, `check-constrained-host-lane-boundary.sh`, `check-rootless-interop-boundary.sh`, `check-multipass-interop-boundary.sh`, `interop/check-p243-host-qualified.sh` | `ntcp2-interop-ubuntu.yml`, `ntcp2-interop-rootless.yml`, `ntcp2-interop-host-loopback-development.yml` |
-| `tests/integration/sam/` | `run-independent.sh` (plus `clients/build.sh`, `reference/`, `clients/`, `evidence.md`, `README.md`) | `check-sam-acceptance-evidence.sh` | `sam-external.yml` |
+| `tests/integration/sam/` | `run-independent.sh`, `run-java-368.sh`, `run-i2pd-368-diagnostic.sh` (plus `clients/build.sh`, `reference/`, `clients/`, `evidence.md`, `README.md`) | `check-sam-acceptance-evidence.sh`, `check-sam368-java-evidence.sh`, `check-sam368-i2pd-evidence.sh` | `sam-external.yml` |
 | `tests/integration/service-tunnels/` | `run-independent.sh`, `run-plan213-generic.sh`, `run-plan214-applications.sh`, `test-plan215-tunnels-conf.sh`, `hold_sam_session.py` (plus `clients/`, `fixtures/`) | `check-service-tunnel-acceptance-evidence.sh`, `check-service-tunnel-boundaries.sh` | `service-tunnels-external.yml` |
 | `tests/integration/ssu2/` | `run-independent.sh` | `check-ssu2-acceptance-evidence.sh` | `ssu2-external.yml` |
 

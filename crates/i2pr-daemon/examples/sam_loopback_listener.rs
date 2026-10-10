@@ -32,6 +32,7 @@ fn sam_config(port: u16) -> SamConfig {
         enabled: true,
         bind_address: "127.0.0.1".parse().expect("loopback"),
         port,
+        udp_port: 0,
         limits: SamLimits::loopback_test_profile(),
     }
 }

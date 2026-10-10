@@ -1,6 +1,6 @@
-# SAM Roadmap — SAM 3.1 Closed, SAM 3.3 Extension Active
+# SAM Roadmap — SAM 3.1 and SAM 3.3 Local Profile Closed
 
-Status: SAM 3.1 closed; Plan 368 SAM 3.3 extension ready
+Status: SAM 3.1 closed; Plan 368 SAM 3.3 local profile closed (experimental)
 
 Long-term references:
 
@@ -25,13 +25,18 @@ independent-client closure, self-composing local product, final acceptance +
 CI hygiene are closed through the historic 135–153 line.
 
 Plan 368 is a parallel extension. It adds SAM 3.3 PRIMARY/subsession
-shared-Destination semantics so one application identity can expose STREAM plus
-protocol-17 repliable DATAGRAM and protocol-18 RAW children without moving
-I2P Streaming into the application. It also owns the SAM 3.2+ I2P port semantics
-inherited by 3.3, including port-aware STREAM CONNECT required by i2pr-mail to
-reach Postman's nonzero I2P service ports without localhost proxy tunnels.
+shared-Destination semantics so one application identity can expose STREAM,
+protocol-17 DATAGRAM1, protocol-19 DATAGRAM2, protocol-20 DATAGRAM3, and
+protocol-18 RAW children without moving I2P Streaming into the application. It
+also owns the SAM 3.2+ I2P port semantics inherited by 3.3, including port-aware
+STREAM CONNECT required by i2pr-mail to reach Postman's nonzero I2P service
+ports without localhost proxy tunnels. It adds loopback SAM UDP datagram
+transport and custom RAW protocol routing, plus the current unversioned SAM
+send controls and Proposal 167 LeaseSet-option lookup surface. Current official
+SAM documentation and pinned Java I2P are normative; i2pd is diagnostic only
+and non-gating.
 
-Historic plans: 135–153. Active extension: 368.
+Historic SAM 3.1 plans: 135–153. Closed local SAM 3.3 extension: 368.
 
 ## 2. Work classification
 
@@ -55,11 +60,15 @@ Historic plans: 135–153. Active extension: 368.
 Plan 151 (`passed-m7-sam31-final-acceptance-evidence-correction`) remains
 Milestone 7 SAM 3.1 final-acceptance authority.
 
-Plan 368 is **ready** as a parallel extension:
-`plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`.
+Plan 368 closed the experimental local profile:
+`plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`;
+authoritative evidence is `plans/closure/sam/368-status.md`.
 
-No SAM 3.3 support claim exists until Plan 368 closes with the required
-Java I2P, i2pd, self-product, and private managed-app evidence.
+The implementation negotiates SAM 3.1–3.3 and is qualified for the local
+PRIMARY/subsession surface, port-aware STREAM, and the tested datagram/RAW
+children. It remains loopback-only, disabled by default, experimental, and
+non-advertised for public or remote-router use. Current SAM documentation and
+pinned Java I2P are normative; i2pd is a non-gating compatibility diagnostic.
 
 ## 5. Target architecture
 
@@ -85,9 +94,9 @@ second data plane.
     -> 151 acceptance -> 152/153 hygiene     [SAM 3.1 closed]
 
 151 + existing Destination/Streaming/Datagram substrate
-    -> 368 SAM 3.3 PRIMARY/subsessions + port-aware STREAM [ready]
+    -> 368 SAM 3.3 PRIMARY/subsessions + port-aware STREAM [closed; local experimental profile]
          -> downstream i2pr-tc C003
-         -> downstream i2pr-mail M006/M013
+         -> downstream i2pr-mail M006/M012
 ```
 
 ## 7. Milestones
@@ -116,7 +125,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 151 | closed | passed-m7-sam31-final-acceptance-evidence-correction | `plans/implementation/sam/151-m7-sam31-final-acceptance-evidence-correction.md` | `plans/closure/sam/151-status.md` |
 | 152 | closed | passed-m6-session-streaming-robustness-corrective | `plans/implementation/sam/152-m6-session-streaming-robustness-corrective.md` | `plans/closure/sam/152-status.md` |
 | 153 | closed | passed-post-m7-authority-and-ci-hygiene | — | `plans/closure/sam/153-m7-closure-authority-and-ci-hygiene.md`; `plans/closure/sam/153-status.md` |
-| 368 | ready | registered-sam33-primary-subsession-shared-destination-profile | `plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md` | closure pending: `plans/closure/sam/368-status.md` |
+| 368 | closed | passed-sam33-primary-subsession-shared-destination-profile | `plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md` | `plans/closure/sam/368-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -135,10 +144,12 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 - PRIMARY versus MASTER behavior differs across deployed implementations and
   must be dispositioned by evidence, not assumption.
-- SAM 3.3 support is not advertised until shared STREAM/DATAGRAM/RAW identity,
-  lifecycle, and inherited 3.2+ `FROM_PORT`/`TO_PORT` STREAM semantics pass
-  against Java I2P and i2pd.
-- If canonical protocol-17/18 delivery cannot be reused without a parallel
+- The Plan 368 selected local profile passed the shared STREAM/DATAGRAM1/
+  DATAGRAM2/DATAGRAM3/RAW identity and lifecycle matrix, inherited 3.2+
+  `FROM_PORT`/`TO_PORT` STREAM semantics, and selected current SAM additions
+  against pinned Java I2P. The profile remains experimental and is not
+  advertised for public or remote-router use. i2pd remains diagnostic only.
+- If canonical protocol-17–20 delivery cannot be reused without a parallel
   router data plane, Plan 368 must stop.
 - Independent external rows stay loopback/private-client only; no public SAM
   bind is introduced.
@@ -148,11 +159,12 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 SAM 3.1 remains closed via Plan 151; Plan 152 (M6 robustness corrective
 discovered by 151, normalized by 153) is retained.
 
-The 3.3 extension closes only through Plan 368's own closure record and support
-inventory update.
+The 3.3 extension is closed through Plan 368's closure record and support
+inventory entry; this does not change the public/remote-router non-claims.
 
 ## 12. Milestone status summary
 
 Full row history is §7. Current SAM 3.1 authority: Plan 151
-(`passed-m7-sam31-final-acceptance-evidence-correction`). Current extension
-authority: Plan 368, ready.
+(`passed-m7-sam31-final-acceptance-evidence-correction`). Current local SAM 3.3
+profile authority: Plan 368
+(`passed-sam33-primary-subsession-shared-destination-profile`).

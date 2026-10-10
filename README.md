@@ -74,11 +74,11 @@ i2pr run --dry-run --config config.toml
 configuration is valid; dry run complete (no network or persistent state was touched)
 ```
 
-### 5. Talk SAM 3.1 over loopback
+### 5. Talk SAM 3.3 over loopback
 
 Since **Plan 360**, `i2pr run` reaches a serving state and binds its configured
 loopback listeners; before that it exited `ReadinessTimeout` with nothing bound
-(see *Running the router* below). To get a SAM 3.1 listener without writing a
+(see *Running the router* below). To get a SAM 3.3-capable listener without writing a
 config, use the harness example, which binds an ephemeral loopback port and
 prints it as JSON:
 

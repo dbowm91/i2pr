@@ -313,6 +313,11 @@ record_guarded "naming-transcript" \
   "${naming_rc}"
 
 echo "==> negative SAM compatibility matrix"
+version_rc=0
+python3 "${TRANSCRIPT}" versions --host 127.0.0.1 --port "${SAM_PORT}" || version_rc=$?
+record_guarded "version-range" \
+  "Java 1.0-3.3 range and SAM 3.1/3.2/3.3 overlaps select the highest supported version" \
+  "${version_rc}"
 negative_rc=0
 python3 "${TRANSCRIPT}" negative --host 127.0.0.1 --port "${SAM_PORT}" || negative_rc=$?
 record_guarded "negative-matrix" \
@@ -383,6 +388,59 @@ cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- \
 record_guarded "plan149-self-composed" \
   "canonical black-box local SAM product suite (cargo test -p i2pr-daemon --test sam_stream_self_composed)" \
   "${plan149_rc}"
+
+echo "==> staged Plan 368 SAM 3.3 primary/subsession loopback profile"
+plan368_profile_rc=0
+cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl \
+  >"${SCRATCH}/plan368-sibling-build.log" 2>&1 || plan368_profile_rc=$?
+if [[ "${plan368_profile_rc}" -eq 0 ]]; then
+  cargo test --locked -p i2pr-daemon --lib \
+    sam::tests::staged_33_profile_runs_primary_child_commands_over_loopback_tcp \
+    -- --exact --test-threads=1 >"${SCRATCH}/plan368-profile.log" 2>&1 || plan368_profile_rc=$?
+fi
+record_guarded "plan368-primary-child-loopback" \
+  "production SAM 3.1–3.3 profile over loopback TCP with PRIMARY child commands" \
+  "${plan368_profile_rc}"
+plan368_private_rc=1
+if [[ "${plan368_profile_rc}" -eq 0 ]]; then
+  plan368_private_rc=0
+  cargo test --locked -p i2pr-daemon --lib \
+    app_gateway::tests::private_sam_primary_subsessions_are_scoped_to_the_app_instance \
+    -- --exact --test-threads=1 >"${SCRATCH}/plan368-private-profile.log" 2>&1 || plan368_private_rc=$?
+fi
+record_guarded "plan368-private-primary-isolation" \
+  "private SAM 3.3 primary child reuse within one app and denial across app principals" \
+  "${plan368_private_rc}"
+plan368_ports_rc=1
+if [[ "${plan368_private_rc}" -eq 0 ]]; then
+  plan368_ports_rc=0
+  cargo test --locked -p i2pr-daemon --lib \
+    sam::tests::staged_33_stream_children_route_nonzero_and_maximum_ports_over_tcp \
+    -- --exact --test-threads=1 >"${SCRATCH}/plan368-port-aware.log" 2>&1 || plan368_ports_rc=$?
+fi
+record_guarded "plan368-port-aware-loopback" \
+  "ordinary loopback SAM STREAM port 110/65535 routing and omitted-TO_PORT negative" \
+  "${plan368_ports_rc}"
+plan368_private_ports_rc=1
+if [[ "${plan368_ports_rc}" -eq 0 ]]; then
+  plan368_private_ports_rc=0
+  cargo test --locked -p i2pr-daemon --lib \
+    app_gateway::tests::private_sam_stream_children_route_nonzero_and_maximum_ports \
+    -- --exact --test-threads=1 >"${SCRATCH}/plan368-private-port-aware.log" 2>&1 || plan368_private_ports_rc=$?
+fi
+record_guarded "plan368-private-port-aware" \
+  "private SAM STREAM port 110/65535 routing and omitted-TO_PORT negative" \
+  "${plan368_private_ports_rc}"
+plan368_datagrams_rc=1
+if [[ "${plan368_private_ports_rc}" -eq 0 ]]; then
+  plan368_datagrams_rc=0
+  cargo test --locked -p i2pr-daemon --lib \
+    sam::tests::primary_datagram_children_share_destination_and_route_protocols_17_through_20 \
+    -- --exact --test-threads=1 >"${SCRATCH}/plan368-datagram-shared-destination.log" 2>&1 || plan368_datagrams_rc=$?
+fi
+record_guarded "plan368-shared-datagram-protocols" \
+  "one PRIMARY routes protocols 17/19/20, RAW 18, and custom RAW through ordinary SAM plus the private manager-protocol send/receive stream" \
+  "${plan368_datagrams_rc}"
 
 echo "==> Plan 151 local acceptance suites"
 PLAN151_LOG="${EVIDENCE_DIR}/plan151-acceptance.log"

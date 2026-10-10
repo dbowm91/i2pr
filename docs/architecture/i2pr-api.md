@@ -5,7 +5,7 @@ across 33 Rust files: 15 494 in `src/` (31 files) plus 364 in `tests/`
 (2 files).
 
 Runtime-neutral application-protocol adapter layer for the `i2pr` router:
-strict bounded SAM 3.1 and I2CP 0.9.67 (M9 profile) wire codecs, typed
+strict bounded SAM 3.1–3.3 and I2CP 0.9.67 (M9 profile) wire codecs, typed
 command/reply models, connection and session state machines, and bounded
 per-session resource accounting — composed into real listeners by
 `i2pr-daemon`.
@@ -14,7 +14,7 @@ per-session resource accounting — composed into real listeners by
 
 `i2pr-api` owns two application protocol surfaces, both **runtime-neutral**:
 
-- **SAM 3.1** (`src/sam/`) — bounded line/command/reply parsing, exact
+- **SAM 3.1–3.3** (`src/sam/`) — bounded line/command/reply parsing, exact
   version negotiation, the I2P Base64 codec, the `SamPrivateDestination`
   private-destination container, the bounded session/stream registries,
   the line reader, the server connection state machine, and the
@@ -435,14 +435,11 @@ describe the same destination without ever touching secret bytes.
 
 ### SAM version negotiation
 
-The server support set is the literal pair
-`MIN_SUPPORTED_VERSION == MAX_SUPPORTED_VERSION ==
-SamVersion::const_new(3, 1)` (`version.rs:17-20`), so the advertised
-range is exactly `[3.1, 3.1]`. `negotiate` intersects the client's
-`MIN`/`MAX` with that set and returns
-`NegotiatedVersion::Agreed(SamVersion { major: 3, minor: 1 })` for the
-canonical client range; any non-overlapping range returns
-`NegotiatedVersion::NoOverlap` rather than accepting a nearest version.
+The server support range is `[3.1, 3.3]` after Plan 368 qualification.
+`negotiate` intersects the client's `MIN`/`MAX` with that range and selects
+the highest overlap; a Java 2.13.0 client range of `1.0–3.3` therefore
+negotiates `3.3`. Disjoint or inverted ranges return
+`NegotiatedVersion::NoOverlap` instead of selecting a nearest version.
 
 ### STREAM CONNECT / ACCEPT and FORWARD policy
 
@@ -634,10 +631,10 @@ fixture escapes the manifest, and that 22 ids are present (including
 1. **One canonical reply encoder.** Hand-formatted SAM reply strings are
    forbidden outside `reply.rs`, so the wire spelling cannot drift
    between the daemon's socket tasks and the tests.
-2. **Server advertises exactly one version.** The SAM support set is the
-   literal pair `MIN_SUPPORTED_VERSION == MAX_SUPPORTED_VERSION ==
-   SamVersion::const_new(3, 1)`, so `[3.1, 3.1]` is a fact of the type,
-   not a configuration.
+2. **Server support is a qualified explicit range.** The SAM support set is
+   `[3.1, 3.3]`, with the upper bound advanced only after Plan 368's
+   specification, Java, shared-Destination, private-origin, and routine-floor
+   evidence. Negotiation cannot select 3.4 or a version outside the range.
 3. **Manual quote unescape after tokenisation.** The parser strips outer
    quotes and unescapes `\"` and `\\` only after tokenising, keeping the
    tokeniser simple and the option validator narrow.

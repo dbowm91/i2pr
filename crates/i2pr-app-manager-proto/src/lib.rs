@@ -40,6 +40,7 @@
 #![forbid(unsafe_code)]
 
 pub mod apphost;
+pub mod datagram;
 
 use std::collections::BTreeSet;
 
@@ -384,6 +385,8 @@ impl Handshake {
 pub enum ManagerService {
     Sam,
     I2cp,
+    /// Typed private datagram operations scoped to a SAM PRIMARY/child.
+    SamDatagram,
 }
 
 impl ManagerService {
@@ -393,6 +396,7 @@ impl ManagerService {
         match value {
             "sam" => Ok(Self::Sam),
             "i2cp" => Ok(Self::I2cp),
+            "sam_datagram" => Ok(Self::SamDatagram),
             "control_scoped" => Err(ManagerProtocolError::UnsupportedService),
             _ => Err(ManagerProtocolError::InvalidIdentifier),
         }
@@ -402,13 +406,14 @@ impl ManagerService {
         match self {
             Self::Sam => "sam",
             Self::I2cp => "i2cp",
+            Self::SamDatagram => "sam_datagram",
         }
     }
 
     /// Capability this service requires, for the daemon's pre-allocation check.
     pub const fn required_capability(self) -> Capability {
         match self {
-            Self::Sam => Capability::Sam,
+            Self::Sam | Self::SamDatagram => Capability::Sam,
             Self::I2cp => Capability::I2cp,
         }
     }

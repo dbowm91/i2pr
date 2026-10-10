@@ -19,8 +19,10 @@
 #   fault-retransmit-ceiling, forward-lifecycle, plan127-134-regressions,
 #   sibling-stream-isolation, close-reset-lifecycle, workspace-gates,
 #   binary-matrix, stream-forward, plan149-self-composed, silent-transcript,
-#   naming-transcript, negative-matrix, private-destination-i2psam,
+#   naming-transcript, version-range, negative-matrix, private-destination-i2psam,
 #   private-destination-i2plib-substitute.
+# Plan 368 adds 3.3 profile rows and negotiates the qualified production range
+# [3.1, 3.3] after the full local/Java matrix.
 #
 # Usage: bash scripts/check-sam-acceptance-evidence.sh
 
@@ -49,9 +51,15 @@ GUARDED=(
   plan149-self-composed
   silent-transcript
   naming-transcript
+  version-range
   negative-matrix
   private-destination-i2psam
   private-destination-i2plib-substitute
+  plan368-primary-child-loopback
+  plan368-private-primary-isolation
+  plan368-port-aware-loopback
+  plan368-private-port-aware
+  plan368-shared-datagram-protocols
 )
 
 failures=0

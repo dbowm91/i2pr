@@ -31,7 +31,7 @@ implementation.
   cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
-- **ALL listeners.** SAM 3.1 (`sam.rs`), I2CP (`i2cp.rs`), I2PControl (`i2pcontrol.rs`,
+- **ALL listeners.** SAM 3.1–3.3 (`sam.rs`), I2CP (`i2cp.rs`), I2PControl (`i2pcontrol.rs`,
   TLS + JSON-RPC), service-tunnel per-profile executors, the loopback router console
   (`console.rs`, EggServe), and the SSU2 `ssu2-router` service.
   Every `TcpListener` / `UdpSocket` / `tokio::spawn` in production lives here or in
@@ -320,7 +320,7 @@ can be told which executable to start";
 `scripts/check-managed-app-process-boundary.py` rule 4 separates the two shapes
 and fails closed on any production caller.
 
-### SAM 3.1
+### SAM (Plan 368 extension in progress)
 
 The TCP listener is an admission adapter over one SAM connection driver. The
 same driver accepts an injected bounded async byte stream and an explicit
@@ -332,7 +332,8 @@ mode transfers the generic transport into the same supervised raw driver.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/sam.rs` | 3 335 | Plans 137–149 supervised SAM 3.1 composition root; listener adapter and private async-stream entry share one driver; private SAM denies `STREAM FORWARD`; Plan 294 canonical address-book step in `NAMING LOOKUP` | `SamServiceState`, `SamServiceError`, private connection seam, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
+| `src/sam.rs` | current | SAM listener composition; Plan 368 adds PRIMARY/subsessions and ordinary loopback UDP datagram bridge; private app path remains injected-stream/typed manager operation and has no host UDP endpoint authority | `SamServiceState`, `SamServiceError`, private connection seam, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
+| `src/sam/datagram_udp.rs` | current | Bounded SAM UDP 3.x header parser and DATAGRAM1/2/3/RAW wire formatter; host endpoint remains loopback-only | `DatagramPacket`, `parse_packet`, `encode_received` |
 | `src/sam/fabric.rs` | 457 | Plan 149 localhost product fabric: OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed delivery sweep counters | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
 | `src/sam/streams.rs` | 2 075 | Plans 138/143/144 SAM Streaming bridge; Plan 392 adds an identity-bound staged router projection so a committed Destination can accumulate bounded inbound/outbound roles before its first usable LS2 | `SamDestinationBridge`, `SamDestinations`, `RouterDestinationNetworkState`, `InboundReceiveProjectionError`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash` |
 | `src/sam/raw_stream.rs` | 830 | Plan 147 dedicated raw STREAM driver over an owned async byte stream (the Plan 143 command-mode regression fix: real byte-stream <-> `StreamingManager` loop, CSPRNG CONNECT path) | `SamAsyncStream`, `SamIoStream`, raw-stream types |
@@ -582,6 +583,7 @@ path** — operator intent is always explicit.
 | `sam.enabled` | `false` | `default_sam_enabled` (810) |
 | `sam.bind_address` | `"127.0.0.1"` | (812) |
 | `sam.port` | `7656` | (814) |
+| `sam.udp_port` | `7655` | Plan 368; bound on the same loopback IP as the TCP listener |
 | `sam.max_clients` | `16` | (816) |
 | `sam.max_sessions` | `16` | (818) |
 | `sam.max_stream_sockets_per_session` | `16` | (820) |

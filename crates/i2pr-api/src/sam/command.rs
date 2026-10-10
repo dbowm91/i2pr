@@ -69,6 +69,8 @@ pub enum MalformedReason {
     OptionTooLong,
     /// The version literal was malformed.
     BadVersion,
+    /// A STREAM I2P port was not a decimal value in 0..=65535.
+    InvalidPort,
 }
 
 /// A required option that was missing from the command.
@@ -102,6 +104,10 @@ pub enum DuplicateOption {
     Name,
     /// Duplicate `SILENT=`.
     Silent,
+    /// Duplicate `FROM_PORT=`.
+    FromPort,
+    /// Duplicate `TO_PORT=`.
+    ToPort,
 }
 
 /// A SAM 3.1 command family.
@@ -253,8 +259,6 @@ pub enum UnsupportedReason {
     UnsupportedSessionStyle(UnsupportedStyle),
     /// `SIGNATURE_TYPE=` was not the supported type.
     UnsupportedSignatureType(String),
-    /// `NAMING LOOKUP OPTIONS=true` is outside the M7 3.1 baseline.
-    NamingLookupOptions,
     /// `STREAM FORWARD SSL=true` belongs to SAM 3.2+.
     StreamForwardSsl,
     /// A `STREAM CONNECT` carried a 3.2-only port option.
@@ -374,6 +378,10 @@ pub enum StreamConnectError {
     MissingDestination,
     /// `SILENT=` was present but did not parse to `true` or `false`.
     InvalidSilent(String),
+    /// `FROM_PORT=` was present but was not a decimal I2P port in 0..=65535.
+    InvalidFromPort(String),
+    /// `TO_PORT=` was present but was not a decimal I2P port in 0..=65535.
+    InvalidToPort(String),
     /// `ID=` was empty or longer than the SAM session-id byte ceiling.
     InvalidId,
 }
@@ -385,6 +393,12 @@ impl core::fmt::Display for StreamConnectError {
             Self::MissingDestination => formatter.write_str("STREAM CONNECT missing DESTINATION"),
             Self::InvalidSilent(value) => {
                 write!(formatter, "STREAM CONNECT invalid SILENT={value}")
+            }
+            Self::InvalidFromPort(value) => {
+                write!(formatter, "STREAM CONNECT invalid FROM_PORT={value}")
+            }
+            Self::InvalidToPort(value) => {
+                write!(formatter, "STREAM CONNECT invalid TO_PORT={value}")
             }
             Self::InvalidId => formatter.write_str("STREAM CONNECT invalid ID"),
         }
@@ -404,6 +418,10 @@ pub struct StreamConnectRequest {
     /// `SILENT=` value (`true` / `false`). `None` when the option was
     /// absent (the SAM default is non-silent).
     pub silent: Option<bool>,
+    /// Local I2P source port override. `None` inherits SESSION CREATE.
+    pub from_port: Option<u16>,
+    /// Remote I2P destination port override. `None` inherits SESSION CREATE.
+    pub to_port: Option<u16>,
 }
 
 /// Typed failure of parsing a `STREAM ACCEPT` request from a `Command`.
@@ -439,6 +457,223 @@ pub struct StreamAcceptRequest {
     pub silent: Option<bool>,
 }
 
+/// Typed SAM 3.3 `SESSION ADD` subsession request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionAddRequest {
+    /// Globally unique child session ID.
+    pub id: String,
+    /// Child protocol style.
+    pub style: crate::sam::session_create::SessionCreateStyle,
+    /// Outbound I2P source port.
+    pub from_port: u16,
+    /// Outbound I2P destination port.
+    pub to_port: u16,
+    /// Optional host UDP port for ordinary SAM bridge clients. Private managed-app
+    /// data operations never acquire or forward to this host endpoint.
+    pub port: Option<u16>,
+    /// Optional loopback host for ordinary UDP forwarding. DNS names other
+    /// than `localhost` are rejected so the daemon never performs resolution.
+    pub host: Option<std::net::IpAddr>,
+    /// Whether RAW datagrams forwarded to the UDP endpoint include I2CP
+    /// protocol and port metadata.
+    pub raw_header: bool,
+    /// Outbound I2CP protocol for RAW children; fixed by STYLE otherwise.
+    pub protocol: u8,
+    /// Inbound I2CP listen protocol for RAW children; fixed by STYLE otherwise.
+    pub listen_protocol: u8,
+    /// Local I2P receive port; defaults to FROM_PORT for child sessions.
+    pub listen_port: u16,
+}
+
+/// Typed `SESSION ADD` validation failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionAddError {
+    /// Required ID or STYLE is missing.
+    MissingField,
+    /// ID is invalid.
+    InvalidId,
+    /// Style is unsupported for subsessions.
+    InvalidStyle,
+    /// A port field is not decimal or exceeds 65535.
+    InvalidPort,
+    /// Datagram styles require PORT while STREAM forbids it.
+    PortStyleMismatch,
+    /// HOST is not a loopback IP literal or `localhost`.
+    InvalidHost,
+    /// HEADER is malformed or used with a non-RAW style.
+    InvalidHeader,
+    /// RAW protocol is not a supported value, or the selected field forbids it.
+    InvalidProtocol,
+    /// UDP binding is configured once for the daemon, not per subsession.
+    UnsupportedUdpBinding,
+    /// SESSION ADD must reuse the PRIMARY Destination.
+    DestinationNotAllowed,
+}
+
+/// Parses a validated `SESSION ADD` command.
+pub fn parse_session_add(command: &Command) -> Result<SessionAddRequest, SessionAddError> {
+    if command.value("DESTINATION").is_some() {
+        return Err(SessionAddError::DestinationNotAllowed);
+    }
+    if command.value("sam.udp.host").is_some() || command.value("sam.udp.port").is_some() {
+        return Err(SessionAddError::UnsupportedUdpBinding);
+    }
+    let id = command.value("ID").ok_or(SessionAddError::MissingField)?;
+    if id.is_empty() || id.len() > MAX_SAM_SESSION_ID_BYTES {
+        return Err(SessionAddError::InvalidId);
+    }
+    let style = command
+        .value("STYLE")
+        .and_then(crate::sam::session_create::SessionCreateStyle::parse)
+        .filter(|style| {
+            matches!(
+                style,
+                crate::sam::session_create::SessionCreateStyle::Stream
+                    | crate::sam::session_create::SessionCreateStyle::Datagram
+                    | crate::sam::session_create::SessionCreateStyle::Datagram2
+                    | crate::sam::session_create::SessionCreateStyle::Datagram3
+                    | crate::sam::session_create::SessionCreateStyle::Raw
+            )
+        })
+        .ok_or(SessionAddError::InvalidStyle)?;
+    let port = command
+        .value("PORT")
+        .map(|value| parse_sam_port(value).ok_or(SessionAddError::InvalidPort))
+        .transpose()?;
+    let host = command.value("HOST").map(parse_loopback_host).transpose()?;
+    if host.is_some()
+        && !matches!(
+            style,
+            crate::sam::session_create::SessionCreateStyle::Datagram
+                | crate::sam::session_create::SessionCreateStyle::Datagram2
+                | crate::sam::session_create::SessionCreateStyle::Datagram3
+                | crate::sam::session_create::SessionCreateStyle::Raw
+        )
+    {
+        return Err(SessionAddError::InvalidHost);
+    }
+    let raw_header = match command.value("HEADER") {
+        None | Some("false") => false,
+        Some("true") if style == crate::sam::session_create::SessionCreateStyle::Raw => true,
+        Some("true") => return Err(SessionAddError::InvalidHeader),
+        Some(_) => return Err(SessionAddError::InvalidHeader),
+    };
+    if command.value("HEADER").is_some()
+        && style != crate::sam::session_create::SessionCreateStyle::Raw
+    {
+        return Err(SessionAddError::InvalidHeader);
+    }
+    let raw_style = style == crate::sam::session_create::SessionCreateStyle::Raw;
+    if !raw_style
+        && (command.value("PROTOCOL").is_some() || command.value("LISTEN_PROTOCOL").is_some())
+    {
+        return Err(SessionAddError::InvalidProtocol);
+    }
+    let (protocol, listen_protocol) = if raw_style {
+        let protocol = command
+            .value("PROTOCOL")
+            .map(parse_raw_protocol)
+            .transpose()?
+            .unwrap_or(18);
+        let listen_protocol = command
+            .value("LISTEN_PROTOCOL")
+            .map(parse_raw_listen_protocol)
+            .transpose()?
+            .unwrap_or(protocol);
+        (protocol, listen_protocol)
+    } else {
+        let protocol = match style {
+            crate::sam::session_create::SessionCreateStyle::Stream => {
+                i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER
+            }
+            crate::sam::session_create::SessionCreateStyle::Datagram => {
+                i2pr_proto::PROTOCOL_TYPE_DATAGRAM
+            }
+            crate::sam::session_create::SessionCreateStyle::Datagram2 => {
+                i2pr_proto::PROTOCOL_TYPE_DATAGRAM2
+            }
+            crate::sam::session_create::SessionCreateStyle::Datagram3 => {
+                i2pr_proto::PROTOCOL_TYPE_DATAGRAM3
+            }
+            crate::sam::session_create::SessionCreateStyle::Raw
+            | crate::sam::session_create::SessionCreateStyle::Primary => unreachable!(),
+        };
+        (protocol, protocol)
+    };
+    if matches!(
+        style,
+        crate::sam::session_create::SessionCreateStyle::Datagram
+            | crate::sam::session_create::SessionCreateStyle::Datagram2
+            | crate::sam::session_create::SessionCreateStyle::Datagram3
+            | crate::sam::session_create::SessionCreateStyle::Raw
+    ) != port.is_some()
+    {
+        return Err(SessionAddError::PortStyleMismatch);
+    }
+    let from_port = command
+        .value("FROM_PORT")
+        .map(|value| parse_sam_port(value).ok_or(SessionAddError::InvalidPort))
+        .transpose()?
+        .unwrap_or(0);
+    let to_port = command
+        .value("TO_PORT")
+        .map(|value| parse_sam_port(value).ok_or(SessionAddError::InvalidPort))
+        .transpose()?
+        .unwrap_or(0);
+    let listen_port = command
+        .value("LISTEN_PORT")
+        .map(|value| parse_sam_port(value).ok_or(SessionAddError::InvalidPort))
+        .transpose()?
+        .unwrap_or(from_port);
+    if style == crate::sam::session_create::SessionCreateStyle::Stream
+        && listen_port != 0
+        && listen_port != from_port
+    {
+        return Err(SessionAddError::PortStyleMismatch);
+    }
+    Ok(SessionAddRequest {
+        id: id.to_owned(),
+        style,
+        from_port,
+        to_port,
+        port,
+        host,
+        raw_header,
+        protocol,
+        listen_protocol,
+        listen_port,
+    })
+}
+
+fn parse_raw_protocol(value: &str) -> Result<u8, SessionAddError> {
+    let protocol = value
+        .parse::<u8>()
+        .map_err(|_| SessionAddError::InvalidProtocol)?;
+    (!matches!(protocol, 6 | 17 | 19 | 20))
+        .then_some(protocol)
+        .ok_or(SessionAddError::InvalidProtocol)
+}
+
+fn parse_raw_listen_protocol(value: &str) -> Result<u8, SessionAddError> {
+    let protocol = value
+        .parse::<u8>()
+        .map_err(|_| SessionAddError::InvalidProtocol)?;
+    (protocol != 6)
+        .then_some(protocol)
+        .ok_or(SessionAddError::InvalidProtocol)
+}
+
+fn parse_loopback_host(value: &str) -> Result<std::net::IpAddr, SessionAddError> {
+    if value.eq_ignore_ascii_case("localhost") {
+        return Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+    value
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(std::net::IpAddr::is_loopback)
+        .ok_or(SessionAddError::InvalidHost)
+}
+
 /// Extracts a `StreamConnectRequest` from a `STREAM CONNECT` command.
 /// Returns a typed error on any malformed field; the daemon maps the
 /// error to the SAM `ReplyResult` vocabulary.
@@ -462,11 +697,34 @@ pub fn parse_stream_connect(command: &Command) -> Result<StreamConnectRequest, S
             None => return Err(StreamConnectError::InvalidSilent(value.to_owned())),
         },
     };
+    let from_port = command
+        .value("FROM_PORT")
+        .map(|value| {
+            parse_sam_port(value)
+                .ok_or_else(|| StreamConnectError::InvalidFromPort(value.to_owned()))
+        })
+        .transpose()?;
+    let to_port = command
+        .value("TO_PORT")
+        .map(|value| {
+            parse_sam_port(value).ok_or_else(|| StreamConnectError::InvalidToPort(value.to_owned()))
+        })
+        .transpose()?;
     Ok(StreamConnectRequest {
         session_id,
         destination,
         silent,
+        from_port,
+        to_port,
     })
+}
+
+pub(super) fn parse_sam_port(value: &str) -> Option<u16> {
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        value.parse::<u16>().ok()
+    } else {
+        None
+    }
 }
 
 /// Extracts a `StreamAcceptRequest` from a `STREAM ACCEPT` command.
@@ -526,5 +784,138 @@ mod tests {
         assert_eq!(command.value("ID"), Some("alpha"));
         assert_eq!(command.value("id"), Some("alpha"));
         assert_eq!(command.value("Id"), Some("alpha"));
+    }
+
+    #[test]
+    fn stream_connect_ports_default_and_accept_full_u16_range() {
+        let command = Command::new(
+            CommandKind::StreamConnect,
+            vec![
+                OptionPair::new("ID".to_owned(), "s".to_owned()),
+                OptionPair::new("DESTINATION".to_owned(), "dest".to_owned()),
+            ],
+            None,
+        );
+        let request = parse_stream_connect(&command).expect("default ports");
+        assert_eq!((request.from_port, request.to_port), (None, None));
+
+        let command = Command::new(
+            CommandKind::StreamConnect,
+            vec![
+                OptionPair::new("ID".to_owned(), "s".to_owned()),
+                OptionPair::new("DESTINATION".to_owned(), "dest".to_owned()),
+                OptionPair::new("FROM_PORT".to_owned(), "65535".to_owned()),
+                OptionPair::new("TO_PORT".to_owned(), "0".to_owned()),
+            ],
+            None,
+        );
+        let request = parse_stream_connect(&command).expect("boundary ports");
+        assert_eq!(
+            (request.from_port, request.to_port),
+            (Some(u16::MAX), Some(0))
+        );
+    }
+
+    #[test]
+    fn stream_connect_rejects_non_decimal_and_overflow_ports() {
+        for (name, value, expected) in [
+            ("FROM_PORT", "-1", true),
+            ("FROM_PORT", "65536", true),
+            ("TO_PORT", "1x", false),
+            ("TO_PORT", "65536", false),
+        ] {
+            let command = Command::new(
+                CommandKind::StreamConnect,
+                vec![
+                    OptionPair::new("ID".to_owned(), "s".to_owned()),
+                    OptionPair::new("DESTINATION".to_owned(), "dest".to_owned()),
+                    OptionPair::new(name.to_owned(), value.to_owned()),
+                ],
+                None,
+            );
+            let error = parse_stream_connect(&command).expect_err("invalid port");
+            assert_eq!(
+                matches!(error, StreamConnectError::InvalidFromPort(_)),
+                expected
+            );
+            assert_eq!(
+                matches!(error, StreamConnectError::InvalidToPort(_)),
+                !expected
+            );
+        }
+    }
+
+    #[test]
+    fn session_add_parses_stream_child_and_requires_port_for_datagram_styles() {
+        let stream = crate::sam::parser::parse_line(
+            "SESSION ADD STYLE=STREAM ID=child FROM_PORT=25 TO_PORT=110",
+        )
+        .expect("parse stream child");
+        let request =
+            parse_session_add(stream.command().expect("recognized")).expect("valid stream child");
+        assert_eq!(
+            request.style,
+            crate::sam::session_create::SessionCreateStyle::Stream
+        );
+        assert_eq!((request.from_port, request.to_port), (25, 110));
+        assert_eq!(request.port, None);
+
+        let datagram =
+            crate::sam::parser::parse_line("SESSION ADD STYLE=DATAGRAM ID=datagram-child")
+                .expect("parse datagram child");
+        assert_eq!(
+            parse_session_add(datagram.command().expect("recognized")),
+            Err(SessionAddError::PortStyleMismatch)
+        );
+        for style in ["DATAGRAM", "DATAGRAM2", "DATAGRAM3", "RAW"] {
+            let line = format!("SESSION ADD STYLE={style} ID=child PORT=1234");
+            let request = crate::sam::parser::parse_line(&line).expect("parse child");
+            assert_eq!(
+                parse_session_add(request.command().expect("recognized"))
+                    .expect("valid datagram child")
+                    .style
+                    .as_str(),
+                style
+            );
+        }
+    }
+
+    #[test]
+    fn session_add_host_and_raw_header_are_strict_and_loopback_only() {
+        let request = crate::sam::parser::parse_line(
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 HOST=localhost HEADER=true",
+        )
+        .expect("parse RAW child");
+        let parsed = parse_session_add(request.command().expect("recognized"))
+            .expect("valid RAW forwarding options");
+        assert_eq!(
+            parsed.host,
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        );
+        assert!(parsed.raw_header);
+        let custom_raw = crate::sam::parser::parse_line(
+            "SESSION ADD STYLE=RAW ID=raw-custom PORT=7655 PROTOCOL=42 LISTEN_PROTOCOL=43",
+        )
+        .expect("parse custom RAW child");
+        let custom_raw = parse_session_add(custom_raw.command().expect("recognized"))
+            .expect("valid custom RAW protocol pair");
+        assert_eq!((custom_raw.protocol, custom_raw.listen_protocol), (42, 43));
+
+        for line in [
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 HOST=example.com",
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 HOST=192.0.2.1",
+            "SESSION ADD STYLE=STREAM ID=stream HOST=127.0.0.1",
+            "SESSION ADD STYLE=DATAGRAM ID=dgram PORT=7655 HEADER=true",
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 HEADER=maybe",
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 PROTOCOL=17",
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 LISTEN_PROTOCOL=6",
+            "SESSION ADD STYLE=RAW ID=raw PORT=7655 DESTINATION=TRANSIENT",
+        ] {
+            let command = crate::sam::parser::parse_line(line).expect("parse command");
+            assert!(
+                parse_session_add(command.command().expect("recognized")).is_err(),
+                "{line}"
+            );
+        }
     }
 }

@@ -192,7 +192,7 @@ pub enum LocalDeliveryOutcome {
         /// Inbound adapter observation (Plan 129 §3).
         observation: InboundStreamingOutcome,
     },
-    /// A repliable (17) or raw (18) datagram was authenticated
+    /// A datagram or application-defined RAW protocol was authenticated
     /// (where applicable) and queued on the receiver's
     /// [`crate::datagram::DatagramManager`] (Plan 291). Streaming
     /// never sees it.
@@ -466,7 +466,8 @@ fn drain_single_to_streaming(
     if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
         return Ok(LocalDeliveryOutcome::DispatchRejected(outcome));
     }
-    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let sender_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let local_destination_hash_bytes: [u8; 32] = *receiver.identity.id().as_hash().as_bytes();
     // A single-composed delivery routes at most one payload: pop
     // exactly once so any foreign multi-data message's extra cloves
     // linger for subsequent drains, exactly as before Plan 296.
@@ -478,6 +479,7 @@ fn drain_single_to_streaming(
         payload.bytes().to_vec(),
         sender,
         receiver,
+        sender_destination_hash_bytes,
         local_destination_hash_bytes,
     )? {
         FedPayload::Streaming(observation) => Ok(LocalDeliveryOutcome::Delivered { observation }),
@@ -508,13 +510,15 @@ fn drain_all_to_streaming(
     if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
         return Vec::new();
     }
-    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let sender_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let local_destination_hash_bytes: [u8; 32] = *receiver.identity.id().as_hash().as_bytes();
     let mut fed = Vec::new();
     while let Some(payload) = receiver.dispatcher.pop_payload(receiver.identity.id()) {
         fed.push(feed_one_payload(
             payload.bytes().to_vec(),
             sender,
             receiver,
+            sender_destination_hash_bytes,
             local_destination_hash_bytes,
         ));
     }
@@ -529,6 +533,7 @@ fn feed_one_payload(
     payload_bytes: Vec<u8>,
     sender: &LocalDeliverySender<'_>,
     receiver: &mut LocalDeliveryReceiver<'_>,
+    sender_destination_hash_bytes: [u8; 32],
     local_destination_hash_bytes: [u8; 32],
 ) -> Result<FedPayload, LocalDeliveryError> {
     // Peek the streaming packet header to route the packet to the
@@ -587,7 +592,7 @@ fn feed_one_payload(
         &payload_bytes,
         receiver.identity,
         target_streaming,
-        &local_destination_hash_bytes,
+        &sender_destination_hash_bytes,
         sender.now_ms,
     )?;
     // Plan 291: repliable/raw datagrams authenticate and queue on
@@ -602,14 +607,16 @@ fn feed_one_payload(
     {
         receiver
             .datagrams
-            .process_inbound(
+            .process_inbound_at(crate::datagram::DatagramInboundRequest {
                 protocol,
                 source_port,
                 destination_port,
-                &payload,
-                local_destination_hash_bytes,
-                sender.now_ms,
-            )
+                payload: &payload,
+                transport_sender: *sender.identity.id().as_hash().as_bytes(),
+                recipient_hash: local_destination_hash_bytes,
+                now_ms: sender.now_ms,
+                now_seconds: sender.now_seconds,
+            })
             .map_err(LocalDeliveryError::Datagram)?;
         return Ok(FedPayload::Datagram);
     }
@@ -1142,6 +1149,47 @@ mod tests {
         )
     }
 
+    fn deliver_one_between(
+        request: &TransportSendRequest,
+        sender: &mut Fixture,
+        receiver: &mut Fixture,
+        receiver_seed: u64,
+        rng: &mut ChaCha8Rng,
+    ) -> Result<LocalDeliveryOutcome, LocalDeliveryError> {
+        let mut sender_inputs = LocalDeliverySender {
+            identity: &sender.identity,
+            routing: &mut sender.routing,
+            session: &mut sender.session,
+            outbound: &sender.outbound_role,
+            local_lease_set2: &sender.lease_set2,
+            now_seconds: NOW_SECONDS,
+            now_ms: NOW_MS,
+        };
+        let mut receiver_inputs = LocalDeliveryReceiver {
+            identity: &receiver.identity,
+            dispatcher: &mut receiver.dispatcher,
+            session: &mut receiver.session,
+            routing: &mut receiver.routing,
+            streaming: &mut receiver.streaming,
+            datagrams: &mut receiver.datagrams,
+            canonical_streaming: None,
+            lease_set2_store: &mut receiver.lease_store,
+            now_seconds: NOW_SECONDS,
+        };
+        deliver(
+            request,
+            &mut sender_inputs,
+            &mut receiver_inputs,
+            i2pr_proto::Hash::from_bytes([0xA1; 32]),
+            i2pr_proto::Hash::from_bytes([0xA2; 32]),
+            inbound_tunnel(receiver_seed),
+            i2pr_proto::Hash::from_bytes([0xB1; 32]),
+            i2pr_proto::Hash::from_bytes([0xB2; 32]),
+            TunnelId::new(0x0200_0000).expect("tunnel id"),
+            rng,
+        )
+    }
+
     #[test]
     fn batched_bundles_two_replies_with_policy_enabled() {
         // Plan 296: two same-remote requests travel as one bundled
@@ -1174,6 +1222,69 @@ mod tests {
         assert_eq!(first.len(), 2, "both bundled payloads feed datagrams");
         assert_eq!(first[0].payload, b"batched-first-payload");
         assert_eq!(first[1].payload, b"batched-second-payload");
+    }
+
+    #[test]
+    fn local_delivery_routes_protocols_17_to_20_and_custom_raw_protocols() {
+        let mut sender = Fixture::new(0x3681);
+        let mut receiver = Fixture::new(0x3682);
+        sender.preresolve(&receiver);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x3683);
+        handshake_ns_for_sender(&mut sender, &mut receiver, &mut rng);
+        let mut requests = Vec::new();
+        for (protocol, payload) in [
+            (17, b"datagram1".as_slice()),
+            (18, b"raw18".as_slice()),
+            (19, b"datagram2".as_slice()),
+            (20, b"datagram3".as_slice()),
+            (42, b"custom-raw".as_slice()),
+        ] {
+            requests.push(
+                sender
+                    .datagrams
+                    .send(
+                        &sender.identity,
+                        &crate::datagram::DatagramSendRequest {
+                            destination_hash: receiver.hash_bytes(),
+                            source_port: 100 + u16::from(protocol),
+                            destination_port: 200 + u16::from(protocol),
+                            protocol,
+                            payload: payload.to_vec(),
+                            options: None,
+                        },
+                    )
+                    .expect("build canonical outbound datagram"),
+            );
+        }
+        for (request, protocol) in requests.iter().zip([17, 18, 19, 20, 42]) {
+            let outcome =
+                deliver_one_between(request, &mut sender, &mut receiver, 0x3682, &mut rng);
+            assert!(
+                matches!(outcome, Ok(LocalDeliveryOutcome::DatagramDelivered)),
+                "protocol {protocol} delivery failed: {outcome:?}"
+            );
+        }
+        let events = receiver.datagrams.drain_received();
+        assert_eq!(events.len(), 5);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.protocol)
+                .collect::<Vec<_>>(),
+            vec![17, 18, 19, 20, 42]
+        );
+        assert!(events[0].sender_authenticated);
+        assert!(!events[1].sender_authenticated);
+        assert!(events[2].sender_authenticated);
+        assert!(!events[3].sender_authenticated);
+        assert!(!events[4].sender_authenticated);
+        assert_eq!(events[0].payload, b"datagram1");
+        assert_eq!(events[2].payload, b"datagram2");
+        assert_eq!(events[3].payload, b"datagram3");
+        assert_eq!(events[4].payload, b"custom-raw");
+        assert_eq!(events[4].raw_payload, b"custom-raw");
+        assert!(events[0].raw_payload.len() > events[0].payload.len());
+        assert!(events[2].raw_payload.len() > events[2].payload.len());
     }
 
     #[test]

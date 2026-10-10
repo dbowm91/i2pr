@@ -9,7 +9,10 @@ use core::fmt;
 
 use crate::sam::{base64, private_destination::SamPrivateDestination, version::SamVersion};
 
-use super::{MAX_SAM_OPTION_VALUE_BYTES, MAX_SAM_PRIV_TEXT_BYTES, MAX_SAM_PUB_TEXT_BYTES};
+use super::{
+    MAX_SAM_LINE_BYTES, MAX_SAM_OPTION_VALUE_BYTES, MAX_SAM_OPTIONS, MAX_SAM_PRIV_TEXT_BYTES,
+    MAX_SAM_PUB_TEXT_BYTES,
+};
 
 /// Result vocabulary for SAM replies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +25,8 @@ pub enum ReplyResult {
     InvalidKey,
     /// `RESULT=KEY_NOT_FOUND`.
     KeyNotFound,
+    /// `RESULT=LEASESET_NOT_FOUND`.
+    LeaseSetNotFound,
     /// `RESULT=DUPLICATED_ID`.
     DuplicatedId,
     /// `RESULT=DUPLICATED_DESTINATION`.
@@ -50,6 +55,7 @@ impl ReplyResult {
             Self::NoVersion => "NOVERSION",
             Self::InvalidKey => "INVALID_KEY",
             Self::KeyNotFound => "KEY_NOT_FOUND",
+            Self::LeaseSetNotFound => "LEASESET_NOT_FOUND",
             Self::DuplicatedId => "DUPLICATED_ID",
             Self::DuplicatedDestination => "DUPLICATED_DESTINATION",
             Self::InvalidId => "INVALID_ID",
@@ -180,6 +186,17 @@ fn push_encoded_value(out: &mut String, value: &str) {
             out.push('\\');
         }
         out.push(byte as char);
+    }
+    out.push('"');
+}
+
+fn push_quoted_value(out: &mut String, value: &str) {
+    out.push('"');
+    for character in value.chars() {
+        if character == '"' || character == '\\' {
+            out.push('\\');
+        }
+        out.push(character);
     }
     out.push('"');
 }
@@ -376,6 +393,7 @@ impl DestReply {
 pub struct SessionStatus {
     result: ReplyResult,
     destination: Option<String>,
+    id: Option<String>,
     message: Option<String>,
 }
 
@@ -404,6 +422,17 @@ impl SessionStatus {
         Self {
             result: ReplyResult::Ok,
             destination: Some(private_destination.to_owned()),
+            id: None,
+            message: None,
+        }
+    }
+
+    /// Constructs the SAM 3.3 success response for a child operation.
+    pub fn ok_id(id: &str) -> Self {
+        Self {
+            result: ReplyResult::Ok,
+            destination: None,
+            id: Some(id.to_owned()),
             message: None,
         }
     }
@@ -414,6 +443,7 @@ impl SessionStatus {
         Self {
             result,
             destination: None,
+            id: None,
             message,
         }
     }
@@ -435,9 +465,20 @@ impl SessionStatus {
 
     /// Encodes the reply as a wire line.
     pub fn encode(&self) -> String {
+        if let Some(id) = &self.id {
+            let mut out = String::from("SESSION STATUS RESULT=");
+            out.push_str(self.result.as_str());
+            out.push_str(" ID=");
+            push_quoted_value(&mut out, id);
+            out.push('\n');
+            return out;
+        }
         let mut line = ReplyLine::new(ReplyKind::SessionStatus, self.result);
         if let Some(destination) = &self.destination {
             line = line.with_option("DESTINATION", destination.clone());
+        }
+        if let Some(id) = &self.id {
+            line = line.with_option("ID", id.clone());
         }
         if let Some(message) = &self.message {
             line = line.with_option("MESSAGE", message.clone());
@@ -491,8 +532,10 @@ impl StreamStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamingReply {
     result: ReplyResult,
+    name: Option<String>,
     value: Option<String>,
     message: Option<String>,
+    options: Vec<(String, String)>,
 }
 
 impl NamingReply {
@@ -505,18 +548,68 @@ impl NamingReply {
         );
         Self {
             result: ReplyResult::Ok,
+            name: None,
             value: Some(value),
             message: None,
+            options: Vec::new(),
         }
+    }
+
+    /// Constructs a successful NAMING REPLY with bounded LeaseSet options.
+    /// Invalid SAM option pairs are omitted as required by Proposal 167.
+    pub fn ok_with_options(value: String, options: Vec<(String, String)>) -> Self {
+        let mut reply = Self::ok(value);
+        let mut base = String::from("NAMING REPLY RESULT=OK VALUE=");
+        push_encoded_value(&mut base, reply.value.as_deref().unwrap_or_default());
+        let mut total = base.len().saturating_add(1);
+        for (key, value) in options {
+            if reply.options.len() >= MAX_SAM_OPTIONS
+                || key.is_empty()
+                || key.contains('=')
+                || key.contains(['\r', '\n'])
+                || value.contains(['\r', '\n'])
+                || key.len() > MAX_SAM_OPTION_VALUE_BYTES
+                || value.len() > MAX_SAM_OPTION_VALUE_BYTES
+            {
+                continue;
+            }
+            let mut encoded_pair = String::from(" OPTION:");
+            encoded_pair.push_str(&key);
+            encoded_pair.push('=');
+            push_encoded_value(&mut encoded_pair, &value);
+            let pair_len = encoded_pair.len();
+            if total.saturating_add(pair_len) > MAX_SAM_LINE_BYTES {
+                break;
+            }
+            total += pair_len;
+            reply.options.push((key, value));
+        }
+        reply
     }
 
     /// Constructs an error NAMING REPLY.
     pub fn error(result: ReplyResult, message: Option<String>) -> Self {
         Self {
             result,
+            name: None,
             value: None,
             message,
+            options: Vec::new(),
         }
+    }
+
+    /// Adds the requested name to the reply, as required for client-side
+    /// request correlation by SAM V3 implementations such as Java I2P.
+    pub fn with_name(mut self, name: String) -> Self {
+        assert!(
+            name.len() <= MAX_SAM_OPTION_VALUE_BYTES,
+            "NAMING REPLY name exceeds the SAM byte ceiling",
+        );
+        self.name = Some(name);
+        while self.encode().len() > MAX_SAM_LINE_BYTES && !self.options.is_empty() {
+            self.options.pop();
+        }
+        self
     }
 
     /// Returns the resolved destination value, if any.
@@ -532,13 +625,41 @@ impl NamingReply {
     /// Encodes the reply as a wire line.
     pub fn encode(&self) -> String {
         let mut line = ReplyLine::new(ReplyKind::NamingReply, self.result);
+        if let Some(name) = &self.name {
+            line = line.with_option("NAME", name.clone());
+        }
         if let Some(value) = &self.value {
             line = line.with_option("VALUE", value.clone());
         }
-        if let Some(message) = &self.message {
-            line = line.with_option("MESSAGE", message.clone());
+        let mut encoded = line.encode();
+        if self.options.is_empty() {
+            if let Some(message) = &self.message {
+                let mut line = ReplyLine::new(ReplyKind::NamingReply, self.result);
+                if let Some(name) = &self.name {
+                    line = line.with_option("NAME", name.clone());
+                }
+                if let Some(value) = &self.value {
+                    line = line.with_option("VALUE", value.clone());
+                }
+                line = line.with_option("MESSAGE", message.clone());
+                return line.encode();
+            }
+            return encoded;
         }
-        line.encode()
+        // `OPTION:key=value` is a repeated Proposal 167 field, not an
+        // ordinary `KEY=value` option. Values use the same bounded SAM
+        // quoting rules as other reply fields.
+        if encoded.ends_with('\n') {
+            encoded.pop();
+        }
+        for (key, value) in &self.options {
+            encoded.push_str(" OPTION:");
+            encoded.push_str(key);
+            encoded.push('=');
+            push_encoded_value(&mut encoded, value);
+        }
+        encoded.push('\n');
+        encoded
     }
 }
 
@@ -624,6 +745,14 @@ mod tests {
     }
 
     #[test]
+    fn subsession_status_success_returns_only_child_id() {
+        assert_eq!(
+            SessionStatus::ok_id("child").encode(),
+            "SESSION STATUS RESULT=OK ID=\"child\"\n"
+        );
+    }
+
+    #[test]
     fn dest_reply_ok_carries_pub_and_priv() {
         let bytes = vec![0x42_u8; 455];
         let destination = SamPrivateDestination::from_raw_for_test(bytes);
@@ -631,5 +760,48 @@ mod tests {
         let encoded = reply.encode();
         assert!(encoded.starts_with("DEST REPLY RESULT=OK PUB="));
         assert!(encoded.contains(" PRIV="));
+    }
+
+    #[test]
+    fn naming_reply_encodes_repeated_proposal_167_options() {
+        let reply = NamingReply::ok_with_options(
+            "destination".to_owned(),
+            vec![("i2cp.messageReliability".to_owned(), "none".to_owned())],
+        );
+        assert_eq!(
+            reply.encode(),
+            "NAMING REPLY RESULT=OK VALUE=destination OPTION:i2cp.messageReliability=none\n"
+        );
+    }
+
+    #[test]
+    fn naming_reply_carries_requested_name_for_client_correlation() {
+        let reply = NamingReply::ok("destination".to_owned()).with_name("ME".to_owned());
+        assert_eq!(
+            reply.encode(),
+            "NAMING REPLY RESULT=OK NAME=ME VALUE=destination\n"
+        );
+        let error = NamingReply::error(ReplyResult::KeyNotFound, Some("unavailable".to_owned()))
+            .with_name("missing.i2p".to_owned());
+        assert_eq!(
+            error.encode(),
+            "NAMING REPLY RESULT=KEY_NOT_FOUND NAME=missing.i2p MESSAGE=unavailable\n"
+        );
+    }
+
+    #[test]
+    fn naming_reply_filters_option_injection_and_caps_entries() {
+        let reply = NamingReply::ok_with_options(
+            "destination".to_owned(),
+            vec![
+                ("bad=key".to_owned(), "ignored".to_owned()),
+                ("linebreak".to_owned(), "bad\nvalue".to_owned()),
+                ("good".to_owned(), "yes".to_owned()),
+            ],
+        );
+        assert_eq!(
+            reply.encode(),
+            "NAMING REPLY RESULT=OK VALUE=destination OPTION:good=yes\n"
+        );
     }
 }

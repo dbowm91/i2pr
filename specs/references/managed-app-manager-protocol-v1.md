@@ -16,10 +16,10 @@ authenticated* application principal into the router's private SAM/I2CP capabili
 gateway. This protocol carries that projection.
 
 **In scope:** handshake, bounded frames, request/reply correlation, app gateway
-session create/close, SAM/I2CP service open/close/reset, administrator-granted
-daemon-owned loopback listener publication/unpublication, accepted-stream
-notifications, ordered service data octets, backend termination notification,
-bounded health and shutdown.
+session create/close, SAM/I2CP/datagram service open/close/reset,
+administrator-granted daemon-owned loopback listener publication/unpublication,
+accepted-stream notifications, ordered service data octets, backend termination
+notification, bounded health and shutdown.
 
 **Explicitly out of scope.** A peer of this protocol cannot express any of:
 package install/update/uninstall; grant, revoke, or permission persistence;
@@ -42,7 +42,7 @@ This protocol is **not**:
 | Contract | Relationship |
 |---|---|
 | Managed application protocol v1 (`i2pr-app-proto`, `managed-native-app-runtime-v1.md`) | Separate protocol, separate magic, separate vocabulary. Shared value types only. |
-| SAM 3.1 (`i2pr-api`) | Carried as opaque octets on a service stream. Never parsed here. |
+| SAM (`i2pr-api`) | The `sam` service carries opaque SAM octets. `sam_datagram` is a separate typed binary service and is never mixed into the SAM stream. |
 | I2CP (`i2pr-api`) | Carried as opaque octets on a service stream. Never parsed here. |
 | Proposal 170 / I2PControl (`i2pr-i2pcontrol`) | Not reachable. Its authority is strictly larger. |
 

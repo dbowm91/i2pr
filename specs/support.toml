@@ -125,7 +125,7 @@ plan_153_plan_of_record = "plans/closure/sam/153-m7-closure-authority-and-ci-hyg
 plan_153_closure = "plans/closure/sam/153-status.md"
 plan_153_status = "passed-post-m7-authority-and-ci-hygiene"
 plan_368_plan_of_record = "plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md"
-plan_368_status = "registered-ready-sam33-primary-subsession-shared-destination-profile"
+plan_368_status = "in-progress-sam33-primary-subsession-shared-destination-profile"
 sam33_primary_subsessions = "not-yet-claimed"
 sam33_stream_datagram_raw_shared_destination = "not-yet-claimed"
 plan_154_plan_of_record = "plans/implementation/ssu2/154-m8-ssu2-transport-and-reachability-roadmap.md"
@@ -1343,6 +1343,27 @@ evidence = [
     "crates/i2pr-daemon/tests/sam_stream_raw_product.rs",
     "crates/i2pr-daemon/tests/sam_stream_self_composed.rs",
     "docs/architecture/audit/2026-08-28-plan140-audit.md",
+]
+advertised = false
+
+[[surface]]
+id = "sam.v33-primary-subsession-profile"
+protocol = "sam"
+structure = "sam33-primary-shared-destination-stream-datagram-raw-port-aware"
+scope = "required"
+status = "experimental"
+notes = "Plan 368 closed the negotiated local SAM 3.1–3.3 range, SAM 3.3 PRIMARY/SESSION ADD/REMOVE lifecycle, shared-Destination STREAM/DATAGRAM1/2/3/RAW children, SAM 3.2+ STREAM ports, current Proposal 163 Datagram2/3 and Proposal 167 naming options, and explicit pre-enqueue rejection of unsupported 3.3 send controls. Exact-pinned Java I2P 2.13.0 evidence includes the unmodified SAMStreamSink plus a Java wire peer covering all child styles, DATAGRAM1/2/3 receive traffic, and STREAM traffic on one PRIMARY. The ordinary loopback fixture combines STREAM, protocols 17/19/20, RAW 18, and custom RAW 42 under one PRIMARY; private managed-app Send/Receive remains on its bounded manager protocol with no host UDP endpoint. i2pd 2.61.0 is diagnostic-only and its PRIMARY/MASTER or subsession gaps do not gate or redefine support. Loopback-only, disabled by default; experimental and non-advertised for public or remote-router use. Closure: `plans/closure/sam/368-status.md`."
+evidence = [
+    "crates/i2pr-api/src/sam/version.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "tests/integration/sam/java/Sam368PrimaryProbe.java",
+    "tests/integration/sam/run-java-368.sh",
+    "scripts/check-sam368-java-evidence.sh",
+    "tests/integration/sam/run-i2pd-368-diagnostic.sh",
+    "scripts/check-sam368-i2pd-evidence.sh",
+    "plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md",
+    "plans/closure/sam/368-status.md",
+    "specs/SOURCES.md",
 ]
 advertised = false
 

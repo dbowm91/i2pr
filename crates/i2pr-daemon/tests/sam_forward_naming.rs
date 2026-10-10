@@ -15,6 +15,7 @@ fn config() -> SamConfig {
         enabled: true,
         bind_address: "127.0.0.1".parse().unwrap(),
         port: 0,
+        udp_port: 0,
         limits: SamLimits::loopback_test_profile(),
     }
 }

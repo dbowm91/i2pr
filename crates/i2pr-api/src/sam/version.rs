@@ -1,6 +1,6 @@
-//! SAM v3.1 version negotiation.
+//! SAM v3 version negotiation.
 //!
-//! Plan 136 advertises exactly one supported version: **3.1**. The
+//! Plan 368 advertises the qualified SAM V3 range **3.1–3.3**. The
 //! parser rejects malformed, signed, overflowing, extra-component,
 //! empty, or whitespace-contaminated version strings. Negotiation
 //! returns the highest mutually supported version from the explicit
@@ -10,14 +10,11 @@
 use core::fmt;
 
 const SUPPORTED_MAJOR: u16 = 3;
-const SUPPORTED_MINOR: u16 = 1;
 
-/// The minimum version the server advertises for the Milestone 7
-/// baseline.
+/// The minimum version the server advertises for the Milestone 7 baseline.
 pub const MIN_SUPPORTED_VERSION: SamVersion = SamVersion::const_new(3, 1);
-/// The maximum version the server advertises for the Milestone 7
-/// baseline.
-pub const MAX_SUPPORTED_VERSION: SamVersion = SamVersion::const_new(3, 1);
+/// The maximum version the server advertises after Plan 368 qualification.
+pub const MAX_SUPPORTED_VERSION: SamVersion = SamVersion::const_new(3, 3);
 
 /// A typed SAM protocol version.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -159,13 +156,23 @@ impl NegotiatedVersion {
 
 /// Negotiates a SAM version between the client's `MIN`/`MAX` range
 /// and the server's advertised support. The server support set is
-/// intentionally minimal: the exact range
-/// `[MIN_SUPPORTED_VERSION, MAX_SUPPORTED_VERSION]`. A future plan may
-/// widen the support set.
+/// is the qualified range `[MIN_SUPPORTED_VERSION, MAX_SUPPORTED_VERSION]`.
 pub fn negotiate(client_min: SamVersion, client_max: SamVersion) -> NegotiatedVersion {
     let server_min = MIN_SUPPORTED_VERSION;
     let server_max = MAX_SUPPORTED_VERSION;
-    if client_min.major() != client_max.major() {
+    negotiate_with_server_range(client_min, client_max, server_min, server_max)
+}
+
+/// Negotiates against an explicit server range for staged protocol
+/// qualification. Production callers use [`negotiate`], which applies the
+/// currently advertised support range.
+pub fn negotiate_with_server_range(
+    client_min: SamVersion,
+    client_max: SamVersion,
+    server_min: SamVersion,
+    server_max: SamVersion,
+) -> NegotiatedVersion {
+    if client_min > client_max || server_min > server_max {
         return NegotiatedVersion::NoOverlap {
             client_min,
             client_max,
@@ -173,25 +180,17 @@ pub fn negotiate(client_min: SamVersion, client_max: SamVersion) -> NegotiatedVe
             server_max,
         };
     }
-    if client_max < server_min || client_min > server_max {
-        return NegotiatedVersion::NoOverlap {
-            client_min,
-            client_max,
-            server_min,
-            server_max,
-        };
-    }
-    let chosen_minor = if client_max.minor() <= server_max.minor() {
-        client_max.minor()
+    let first_common = if client_min > server_min {
+        client_min
     } else {
-        server_max.minor()
+        server_min
     };
-    let chosen_minor = if chosen_minor >= client_min.minor() {
-        chosen_minor
+    let last_common = if client_max < server_max {
+        client_max
     } else {
-        client_min.minor()
+        server_max
     };
-    if chosen_minor < client_min.minor() || chosen_minor > client_max.minor() {
+    if first_common > last_common {
         return NegotiatedVersion::NoOverlap {
             client_min,
             client_max,
@@ -199,14 +198,13 @@ pub fn negotiate(client_min: SamVersion, client_max: SamVersion) -> NegotiatedVe
             server_max,
         };
     }
-    NegotiatedVersion::Agreed(SamVersion::const_new(server_max.major(), chosen_minor))
+    NegotiatedVersion::Agreed(last_common)
 }
 
 /// Whether the supplied version is within the server's advertised
-/// range. Plan 136 advertises only the exact value `3.1`.
+/// range after the complete Plan 368 SAM 3.3 acceptance matrix passes.
 pub fn is_advertised(version: SamVersion) -> bool {
     version.major() == SUPPORTED_MAJOR
-        && version.minor() == SUPPORTED_MINOR
         && version >= MIN_SUPPORTED_VERSION
         && version <= MAX_SUPPORTED_VERSION
 }
@@ -245,6 +243,40 @@ mod tests {
     }
 
     #[test]
+    fn production_and_explicit_ranges_negotiate_the_qualified_33_maximum() {
+        let staged = negotiate_with_server_range(
+            SamVersion::const_new(3, 1),
+            SamVersion::const_new(3, 3),
+            SamVersion::const_new(3, 1),
+            SamVersion::const_new(3, 3),
+        );
+        assert_eq!(staged.agreed(), Some(SamVersion::const_new(3, 3)));
+        let default = negotiate(SamVersion::const_new(3, 1), SamVersion::const_new(3, 3));
+        assert_eq!(default.agreed(), Some(SamVersion::const_new(3, 3)));
+    }
+
+    #[test]
+    fn negotiation_accepts_client_range_spanning_legacy_and_current_major_versions() {
+        // The pinned Java I2P 2.13.0 SAM client sends MIN=1.0 MAX=3.3.
+        // Version ranges are ordered tuples; the client's lower bound need
+        // not have the same major component as its upper bound.
+        let staged = negotiate_with_server_range(
+            SamVersion::const_new(1, 0),
+            SamVersion::const_new(3, 3),
+            SamVersion::const_new(3, 1),
+            SamVersion::const_new(3, 3),
+        );
+        assert_eq!(staged.agreed(), Some(SamVersion::const_new(3, 3)));
+        let production = negotiate_with_server_range(
+            SamVersion::const_new(1, 0),
+            SamVersion::const_new(3, 3),
+            MIN_SUPPORTED_VERSION,
+            MAX_SUPPORTED_VERSION,
+        );
+        assert_eq!(production.agreed(), Some(SamVersion::const_new(3, 3)));
+    }
+
+    #[test]
     fn negotiate_rejects_disjoint_ranges() {
         let outcome = negotiate(SamVersion::const_new(3, 0), SamVersion::const_new(3, 1));
         assert!(matches!(outcome, NegotiatedVersion::Agreed(_)));
@@ -253,16 +285,28 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_rejects_major_mismatch() {
+    fn negotiate_rejects_nonoverlapping_ranges_across_major_versions() {
         let outcome = negotiate(SamVersion::const_new(2, 9), SamVersion::const_new(2, 9));
         assert!(matches!(outcome, NegotiatedVersion::NoOverlap { .. }));
     }
 
     #[test]
-    fn advertised_versions_are_only_3_1() {
+    fn negotiate_rejects_inverted_ranges() {
+        let outcome = negotiate_with_server_range(
+            SamVersion::const_new(3, 3),
+            SamVersion::const_new(3, 1),
+            MIN_SUPPORTED_VERSION,
+            MAX_SUPPORTED_VERSION,
+        );
+        assert!(matches!(outcome, NegotiatedVersion::NoOverlap { .. }));
+    }
+
+    #[test]
+    fn advertised_versions_are_the_qualified_31_through_33_range() {
         assert!(is_advertised(SamVersion::const_new(3, 1)));
+        assert!(is_advertised(SamVersion::const_new(3, 2)));
+        assert!(is_advertised(SamVersion::const_new(3, 3)));
         assert!(!is_advertised(SamVersion::const_new(3, 0)));
-        assert!(!is_advertised(SamVersion::const_new(3, 2)));
-        assert!(!is_advertised(SamVersion::const_new(3, 3)));
+        assert!(!is_advertised(SamVersion::const_new(3, 4)));
     }
 }

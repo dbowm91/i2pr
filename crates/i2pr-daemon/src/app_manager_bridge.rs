@@ -600,6 +600,7 @@ impl AppManagerBridge {
                 limits,
                 AppGatewayComposition {
                     sam: self.composition.sam.clone(),
+                    sam_max_version: i2pr_api::sam::version::MAX_SUPPORTED_VERSION,
                     i2cp: self.composition.i2cp.clone(),
                     addressbook: self.composition.addressbook.clone(),
                     children: ChildScope::child_of(
@@ -958,6 +959,9 @@ impl AppManagerBridge {
             tokio::io::duplex(i2pr_app_manager_proto::MAX_DATA_FRAME_BYTES);
         let opened = match service {
             ManagerService::Sam => guard.gateway.open_sam(Box::new(backend_side)).await,
+            ManagerService::SamDatagram => {
+                guard.gateway.open_datagram(Box::new(backend_side)).await
+            }
             ManagerService::I2cp => guard.gateway.open_i2cp(Box::new(backend_side)).await,
         };
         let connection = match opened {
@@ -1270,7 +1274,7 @@ fn gateway_code(error: AppGatewayError) -> ManagerErrorCode {
 
 fn app_service(service: ManagerService) -> AppService {
     match service {
-        ManagerService::Sam => AppService::Sam,
+        ManagerService::Sam | ManagerService::SamDatagram => AppService::Sam,
         ManagerService::I2cp => AppService::I2cp,
     }
 }
@@ -1514,6 +1518,7 @@ mod tests {
                 enabled: true,
                 bind_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 7656,
+                udp_port: 0,
                 limits: i2pr_api::sam::limits::SamLimits::loopback_test_profile(),
             },
             i2cp: I2cpConfig::loopback_test_profile(8, 16, 64 * 1024, 64),
@@ -1718,6 +1723,44 @@ mod tests {
             "unexpected SAM reply: {text}"
         );
 
+        manager
+            .request(ManagerToDaemonMessage::CloseService {
+                request_id: rid(3),
+                session,
+                stream,
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sam_datagram_service_is_typed_and_scoped_to_private_gateway() {
+        let (_bridge, mut manager) = start_bridge().await;
+        let session = opened_session(manager.open_session(rid(1), 1, &[Capability::Sam]).await);
+        let stream = opened_stream(
+            manager
+                .request(ManagerToDaemonMessage::OpenService {
+                    request_id: rid(2),
+                    session,
+                    service: ManagerService::SamDatagram,
+                })
+                .await,
+        );
+        let request = i2pr_app_manager_proto::datagram::DatagramRequest::Receive {
+            primary_id: "missing-primary".to_owned(),
+            child_id: "missing-child".to_owned(),
+        }
+        .encode()
+        .expect("encode private datagram operation");
+        let mut framed = (request.len() as u32).to_be_bytes().to_vec();
+        framed.extend_from_slice(&request);
+        manager.send_data(stream, &framed).await;
+        let response = expect_data(&mut manager, stream).await;
+        let declared = u32::from_be_bytes(response[..4].try_into().expect("reply length")) as usize;
+        assert_eq!(declared, response.len() - 4);
+        assert_eq!(
+            i2pr_app_manager_proto::datagram::DatagramReply::decode(&response[4..]).unwrap(),
+            i2pr_app_manager_proto::datagram::DatagramReply::Rejected
+        );
         manager
             .request(ManagerToDaemonMessage::CloseService {
                 request_id: rid(3),

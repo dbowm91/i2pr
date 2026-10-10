@@ -1346,7 +1346,7 @@ async fn plan376_http_connect_fails_over_to_the_second_outproxy() {
         .create(&create_request(
             "tunnel-a",
             TunnelType::ConnectClient,
-            two_endpoint_options(&live_material, &dead_label, &live_label, None),
+            two_endpoint_options(&live_label, &dead_label, &live_label, None),
         ))
         .await
         .expect("the two-endpoint block is accepted");
@@ -1413,7 +1413,7 @@ async fn plan376_socks5_fails_over_to_the_second_outproxy() {
         .create(&create_request(
             "socks-a",
             TunnelType::Socks,
-            two_endpoint_options(&live_material, &dead_label, &live_label, None),
+            two_endpoint_options(&live_label, &dead_label, &live_label, None),
         ))
         .await
         .expect("create");
@@ -1500,7 +1500,7 @@ async fn plan376_an_upstream_refusal_is_retried_at_the_second_outproxy() {
             "tunnel-a",
             TunnelType::ConnectClient,
             two_endpoint_options(
-                &live_material,
+                &live_label,
                 &refused_label,
                 &live_label,
                 Some(("operator", "s3cret!")),
@@ -1601,7 +1601,7 @@ async fn plan376_authentication_rejection_is_retried_at_the_next_endpoint_by_the
             "tunnel-a",
             TunnelType::ConnectClient,
             two_endpoint_options(
-                &live_material,
+                &live_label,
                 &picky_label,
                 &live_label,
                 Some(("operator", "s3cret!")),

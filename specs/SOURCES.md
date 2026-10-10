@@ -10,6 +10,32 @@ Repository: [`i2p/i2p.website`](https://github.com/i2p/i2p.website)
 
 Pinned commit: [`88596022920bdf99f27db27688faf4f204792fcd`](https://github.com/i2p/i2p.website/commit/88596022920bdf99f27db27688faf4f204792fcd)
 
+## SAM V3 refresh (Plan 368, 2026-10-09)
+
+The normative SAM source for Plan 368 is the current English SAM V3 page at
+official website commit
+[`e98cedf3483dcbf25d5673736c14805e790bc102`](https://github.com/i2p/i2p.website/commit/e98cedf3483dcbf25d5673736c14805e790bc102),
+`content/en/docs/api/samv3.md`. It identifies SAM 3.3 as the latest negotiated
+version and includes the April 2025 Datagram2/3 additions without a version
+bump. The page says i2pd does not support most 3.2/3.3 features; that is
+implementation context, not normative behavior.
+
+The normative implementation qualification is Java I2P 2.13.0 at
+`9134f808337b401e8e53c73734c81fab04280c9d`, especially
+`apps/sam/java/src/net/i2p/sam/SAMv3Handler.java` and
+`PrimarySession.java`. The pinned source accepts PRIMARY and MASTER, handles
+SESSION ADD/REMOVE, and has subsession styles for STREAM, DATAGRAM, RAW,
+DATAGRAM2, and DATAGRAM3. Its `SAMv3DatagramServer` also uses one bridge-wide
+UDP endpoint from `sam.udp.host`/`sam.udp.port`, rejecting a later session that
+requests a different endpoint. The pinned i2pd 2.61.0 revision
+`635b013a612ff47278ef02acf8580a28e10e26c5` is a non-gating compatibility
+diagnostic only. Read-only source inspection at that exact commit found
+Datagram2/3 codecs in `libi2pd/Datagram.cpp`, while
+`libi2pd_client/SAM.cpp::ProcessSessionAdd` and `ProcessSessionRemove` return
+"not supported" and its session style supports MASTER rather than PRIMARY.
+This is recorded only as a diagnostic difference; it must not override the
+official specification or Java I2P behavior.
+
 ## Milestone 12 source refresh (Plan 270, 2026-10-01)
 
 Plan 270 compared the following normative English pages at official `i2p/i2p.website`

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supporting raw SAM 3.1 transcript checks for Plan 150.
+"""Supporting SAM V3 transcript checks for Plans 150 and 368.
 
 This is not counted as an independent client.  It covers the protocol
 surfaces that the two external library runners do not expose conveniently:
@@ -129,18 +129,24 @@ def cmd_naming(args: argparse.Namespace) -> int:
             )
             return 4
 
+        sam.send_line("NAMING LOOKUP NAME=ME OPTIONS=true")
+        options_reply = sam.recv_line()
+        if not options_reply.startswith("NAMING REPLY RESULT=OK NAME=ME VALUE="):
+            print("naming: bounded LeaseSet options lookup failed", file=sys.stderr)
+            return 5
+
         sam.send_line(f"NAMING LOOKUP NAME={named_public}")
         if not sam.recv_line().startswith("NAMING REPLY RESULT=OK"):
             print("naming: full public lookup failed", file=sys.stderr)
-            return 5
+            return 6
         sam.send_line("NAMING LOOKUP NAME=not-a-valid-base64!!!")
         if "RESULT=INVALID_KEY" not in sam.recv_line():
             print("naming: malformed public lookup failed", file=sys.stderr)
-            return 6
+            return 7
         sam.send_line("NAMING LOOKUP NAME=unknown-plan150-name.i2p")
         if "RESULT=KEY_NOT_FOUND" not in sam.recv_line():
             print("naming: unknown .i2p lookup failed", file=sys.stderr)
-            return 7
+            return 8
         return 0
     finally:
         sam.close()
@@ -150,15 +156,47 @@ def expect_reply(host: str, port: int, command: str, expected: str) -> bool:
     sam = open_session(host, port)
     try:
         sam.send_line(command)
-        return expected in sam.recv_line(5.0)
+        reply = sam.recv_line(5.0)
+        if expected not in reply:
+            print(
+                f"negative: {command!r} expected {expected!r}, got {reply!r}",
+                file=sys.stderr,
+            )
+            return False
+        return True
     finally:
         sam.close()
+
+
+def cmd_versions(args: argparse.Namespace) -> int:
+    checks = [
+        ("1.0", "3.3", "VERSION=3.3"),
+        ("3.1", "3.1", "VERSION=3.1"),
+        ("3.2", "3.2", "VERSION=3.2"),
+        ("3.2", "3.3", "VERSION=3.3"),
+    ]
+    for minimum, maximum, expected in checks:
+        sam = BufferedSocket(
+            socket.create_connection((args.host, args.port), timeout=10.0)
+        )
+        try:
+            sam.send_line(f"HELLO VERSION MIN={minimum} MAX={maximum}")
+            reply = sam.recv_line()
+            if "RESULT=OK" not in reply or expected not in reply:
+                print(
+                    "version-range: negotiated result did not match the tested range",
+                    file=sys.stderr,
+                )
+                return 2
+        finally:
+            sam.close()
+    return 0
 
 
 def cmd_negative(args: argparse.Namespace) -> int:
     checks = [
         (
-            "HELLO VERSION MIN=3.2 MAX=3.3",
+            "HELLO VERSION MIN=3.4 MAX=3.5",
             "HELLO REPLY RESULT=NOVERSION",
             False,
         ),
@@ -179,7 +217,7 @@ def cmd_negative(args: argparse.Namespace) -> int:
             "NOT_IMPLEMENTED",
             True,
         ),
-        ("NAMING LOOKUP NAME=ME OPTIONS=true", "NOT_IMPLEMENTED", True),
+        ("NAMING LOOKUP NAME=ME OPTIONS=yes", "RESULT=NOT_IMPLEMENTED", True),
         ("FROBNICATE X=1", "RESULT=I2P_ERROR", True),
         (
             "SESSION CREATE STYLE=STREAM ID=bad DESTINATION=not-base64!!!",
@@ -202,7 +240,12 @@ def cmd_negative(args: argparse.Namespace) -> int:
             )
             try:
                 sam.send_line(command)
-                if expected not in sam.recv_line(5.0):
+                reply = sam.recv_line(5.0)
+                if expected not in reply:
+                    print(
+                        f"negative: {command!r} expected {expected!r}, got {reply!r}",
+                        file=sys.stderr,
+                    )
                     return 2
             finally:
                 sam.close()
@@ -310,6 +353,10 @@ def main() -> int:
     naming.add_argument("--host", required=True)
     naming.add_argument("--port", type=int, required=True)
 
+    versions = sub.add_parser("versions")
+    versions.add_argument("--host", required=True)
+    versions.add_argument("--port", type=int, required=True)
+
     negative = sub.add_parser("negative")
     negative.add_argument("--host", required=True)
     negative.add_argument("--port", type=int, required=True)
@@ -323,6 +370,8 @@ def main() -> int:
         return cmd_generate(args)
     if args.command == "naming":
         return cmd_naming(args)
+    if args.command == "versions":
+        return cmd_versions(args)
     if args.command == "silent":
         return cmd_silent(args)
     return cmd_negative(args)

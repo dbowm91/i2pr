@@ -16,7 +16,7 @@ use i2pr_daemon::config::SamConfig;
 use i2pr_daemon::sam::SamServiceState;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 fn sam_config() -> SamConfig {
@@ -24,6 +24,7 @@ fn sam_config() -> SamConfig {
         enabled: true,
         bind_address: "127.0.0.1".parse().unwrap(),
         port: 0,
+        udp_port: 0,
         limits: SamLimits::loopback_test_profile(),
     }
 }
@@ -202,6 +203,19 @@ async fn session_create_transient_round_trip() {
     let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
+    write_all(&mut client, b"DEST GENERATE SIGNATURE_TYPE=7\n").await;
+    let generated = read_one_line(&mut client).await;
+    let public = generated
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("PUB="))
+        .expect("generated public destination");
+    let lookup = format!("NAMING LOOKUP NAME={public} OPTIONS=true\n");
+    write_all(&mut client, lookup.as_bytes()).await;
+    let reply = read_one_line(&mut client).await;
+    assert!(
+        reply.starts_with("NAMING REPLY RESULT=LEASESET_NOT_FOUND"),
+        "expected explicit missing-LeaseSet reply for an unregistered Destination, got {reply:?}"
+    );
     write_all(
         &mut client,
         b"SESSION CREATE STYLE=STREAM ID=alpha DESTINATION=TRANSIENT\n",
@@ -215,6 +229,32 @@ async fn session_create_transient_round_trip() {
     assert_eq!(state.session_registry().session_count(), 1);
     assert_eq!(state.destination_registry().lock().unwrap().len(), 1);
     assert_eq!(state.streaming_pools().lock().unwrap().len(), 1);
+    drop(client);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn naming_lookup_options_reports_local_leaseset_options() {
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
+    let mut client = TcpStream::connect(address).await.expect("connect");
+    hello_3_1(&mut client).await;
+    write_all(
+        &mut client,
+        b"SESSION CREATE STYLE=STREAM ID=alpha DESTINATION=TRANSIENT\n",
+    )
+    .await;
+    let created = read_one_line(&mut client).await;
+    assert!(created.starts_with("SESSION STATUS RESULT=OK DESTINATION="));
+    write_all(&mut client, b"NAMING LOOKUP NAME=ME OPTIONS=true\n").await;
+    let reply = read_one_line(&mut client).await;
+    assert!(
+        reply.starts_with("NAMING REPLY RESULT=OK NAME=ME VALUE="),
+        "expected successful local LeaseSet options lookup with echoed NAME"
+    );
+    assert!(!reply.contains("LEASESET_NOT_FOUND"));
+    assert_eq!(state.session_registry().session_count(), 1);
     drop(client);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
@@ -531,6 +571,27 @@ async fn service_shutdown_closes_listener_and_clients() {
     let mut buf = [0_u8; 32];
     let _ = timeout(Duration::from_secs(2), client.read(&mut buf)).await;
     drop(client);
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn malformed_udp_packet_does_not_stop_sam_control_listener() {
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
+    let udp_address = state.udp_bind_address().expect("UDP socket bound");
+    let udp_client = UdpSocket::bind("127.0.0.1:0").await.expect("UDP client");
+    udp_client
+        .send_to(b"not a SAM packet", udp_address)
+        .await
+        .expect("send malformed packet");
+    wait_for_quiescence().await;
+
+    let mut client = TcpStream::connect(address)
+        .await
+        .expect("TCP listener remains live");
+    hello_3_1(&mut client).await;
+    drop(client);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
     drop(state);
 }
 

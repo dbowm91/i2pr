@@ -59,6 +59,7 @@ fn sam_config() -> SamConfig {
         enabled: true,
         bind_address: "127.0.0.1".parse().unwrap(),
         port: 0,
+        udp_port: 0,
         limits: SamLimits::loopback_test_profile(),
     }
 }
@@ -180,8 +181,8 @@ async fn session_create(stream: &mut TcpStream, id: &str, destination: &str) -> 
     write_all(stream, b"NAMING LOOKUP NAME=ME\n").await;
     let naming_reply = read_one_line(stream).await;
     assert!(
-        naming_reply.starts_with("NAMING REPLY RESULT=OK VALUE="),
-        "NAMING LOOKUP NAME=ME for {id} failed: {naming_reply:?}"
+        naming_reply.starts_with("NAMING REPLY RESULT=OK NAME=ME VALUE="),
+        "NAMING LOOKUP NAME=ME for {id} failed"
     );
     naming_reply
         .split_whitespace()

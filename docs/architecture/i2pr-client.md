@@ -115,7 +115,7 @@ Line counts are `wc -l` at the audit date. 16 modules; 18,136 lines total
 | (facade) | [`src/lib.rs`](../../crates/i2pr-client/src/lib.rs) | 125 | Module declarations and the crate-root `pub use` re-export surface. `#![forbid(unsafe_code)]`. | all re-exports below |
 | `bundle` | [`src/bundle.rs`](../../crates/i2pr-client/src/bundle.rs) | 385 | Plan 296 Garlic reply bundling: multi-data-clove reply encoder under one payload ceiling. | `ReplyBundling`, `BundleError`, `encode_bundled_reply_payload`, `MAX_BUNDLED_DATA_CLOVES` (= 4) |
 | `config` | [`src/config.rs`](../../crates/i2pr-client/src/config.rs) | 1012 | Bounded per-destination and registry configuration plus every `MAX_*`/`DEFAULT_*` ceiling. | `DestinationConfig`, `RegistryConfig`, `DestinationTunnelMode`, `LocalRouterContext`, `DestinationConfigError`, `MAX_LOCAL_DESTINATIONS` (16), `MAX_DESTINATION_INBOUND`/`_OUTBOUND` (8/8), `MAX_DESTINATION_BUILD_CONCURRENCY` (4), `MAX_DESTINATION_FAILURE_THRESHOLD` (16), `MAX_PENDING_DESTINATION_MESSAGES` (256), `MAX_PENDING_DESTINATION_BYTES` (512 KiB), `MAX_DESTINATION_BACKUP_QUANTITY` (3), `MAX_DESTINATION_LENGTH_VARIANCE` (2), `MAX_AGGREGATE_COMMAND_QUEUE_DEPTH` (4096), `MAX_LEASE_PUBLICATION_MARGIN_SECONDS` (600), `MAX_LEASE_ROTATION_MARGIN_SECONDS` (600), `DEFAULT_LEASE_PUBLICATION_MARGIN_SECONDS` (60), `DEFAULT_LEASE_ROTATION_MARGIN_SECONDS` (120) |
-| `datagram` | [`src/datagram.rs`](../../crates/i2pr-client/src/datagram.rs) | 657 | Plan 291 runtime-neutral repliable (17) and raw (18) datagram substrate: framing, Ed25519 sender authentication, bounded send/receive queues. | `DatagramManager`, `DatagramSendRequest`, `DatagramReceiveEvent`, `DatagramCounters`, `DatagramError`, `DATAGRAM1_PROTOCOL`, `RAW_DATAGRAM_PROTOCOL`, `MAX_DATAGRAM_APPLICATION_PAYLOAD` (1200), `MAX_DATAGRAM_FROM_BYTES` (2048), `MAX_DATAGRAM_RECEIVE_QUEUE` (64), `MAX_DATAGRAM_OUTBOUND_QUEUE` (64) |
+| `datagram` | [`src/datagram.rs`](../../crates/i2pr-client/src/datagram.rs) | Plan 291 + 368 runtime-neutral protocol 17–20 datagram substrate: Datagram1 and Proposal 163 codecs, recipient-bound signatures, offline delegation expiry, replay cache, Datagram3 unauthenticated source metadata, and bounded queues. | `DatagramManager`, `DatagramSendRequest`, `DatagramReceiveEvent`, `DatagramCounters`, `DatagramError`, `DATAGRAM1_PROTOCOL`, `DATAGRAM2_PROTOCOL`, `DATAGRAM3_PROTOCOL`, `RAW_DATAGRAM_PROTOCOL`, `MAX_DATAGRAM_APPLICATION_PAYLOAD`, `MAX_DATAGRAM_OPTIONS_BYTES`, `MAX_DATAGRAM_FROM_BYTES`, `MAX_DATAGRAM_RECEIVE_QUEUE`, `MAX_DATAGRAM_OUTBOUND_QUEUE`, `MAX_DATAGRAM2_REPLAY_ENTRIES` |
 | `dispatch` | [`src/dispatch.rs`](../../crates/i2pr-client/src/dispatch.rs) | 929 | Recipient-side Garlic surface: ECIES classification hand-off, bound-New-Session sender LS2 binding, destination-hash ownership check, bounded FIFO application queues. | `DestinationDispatcher`, `InboundDispatchOutcome`, `InboundDispatchError`, `MAX_INBOUND_DESTINATIONS` (256), `MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION` (512 KiB), `MAX_INBOUND_PENDING_MESSAGES` (256) |
 | `encrypted_leaseset` | [`src/encrypted_leaseset.rs`](../../crates/i2pr-client/src/encrypted_leaseset.rs) | 756 | Plans 332/333 ELS2 client halves: owner-only publisher (no-authorization and Plan 333 authorized records) and lookup-only resolver over a b33 address. Consumes the in-repo `i2pr_crypto::red25519` module. | `EncryptedLeaseSet2Publisher`, `EncryptedLeaseSet2Resolver`, `ResolvedEncryptedService`, `EncryptedLeaseSetError`, `ServerPsk` (= `i2pr_netdb::PskClientKey`), `GenerationAuthCookie`, `authorization_scheme`, `generate_client_dh_keypair`, `owner_scalar_from_seed` |
 | `identity` | [`src/identity.rs`](../../crates/i2pr-client/src/identity.rs) | 986 | Non-secret public destination identity, the non-`Clone`/redacted-`Debug` router-owned secret owner, the ownership marker, and the non-`Clone` client-supplied inbound decryption capability. | `DestinationId`, `DestinationPublic`, `DestinationIdentity`, `DestinationOwnership`, `InboundDecryptionCapability`, `InboundDecryptionRef`, `DestinationIdentityError`, `DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE` (ElGamal/type 0), `DESTINATION_LS2_CRYPTO_TYPE` (X25519/type 4), `DESTINATION_LEGACY_PUBLIC_LENGTH` (256), `DESTINATION_LEGACY_PADDING_LENGTH` (96), `DESTINATION_X25519_PADDING_LENGTH` (320) |
@@ -663,17 +663,17 @@ I2P source/destination ports and applies **no local TCP privileged-port
 policy** (`source_port == 0` is legal end-to-end). The adapter never owns
 sockets, timers, or DNS.
 
-### Datagram substrate (Plan 291)
+### Datagram substrate (Plans 291/368)
 
-`DatagramManager` handles the two connectionless client payload families:
-repliable (17, `DATAGRAM1_PROTOCOL`) and raw (18, `RAW_DATAGRAM_PROTOCOL`).
-The application payload is bounded by `MAX_DATAGRAM_APPLICATION_PAYLOAD`
-(1200 bytes) and the `FROM` field by `MAX_DATAGRAM_FROM_BYTES` (2048). Both
-queues are bounded at 64 (`MAX_DATAGRAM_RECEIVE_QUEUE`,
-`MAX_DATAGRAM_OUTBOUND_QUEUE`). Repliable datagrams carry an Ed25519 sender
-signature which is authenticated before queueing. Because datagrams carry no
-connection state, there is no initiator/mirror split: inbound 17/18 payloads
-authenticated in the local delivery seam surface as
+`DatagramManager` handles protocol 17/18 Datagram1/Raw and Proposal 163 protocol
+19/20 Datagram2/Datagram3. Payloads, options, sender destinations, both queues,
+and the 1024-entry Datagram2 replay cache are bounded. Datagram2 verifies its
+signature over the recipient hash and rejects expired delegated keys/replays
+before queueing. Its 1024-entry replay cache rejects new messages while all
+entries are unexpired rather than evicting a live replay guard. Datagram3
+exposes its source hash only as unauthenticated
+metadata. Because datagrams carry no connection state, there is no
+initiator/mirror split: inbound 17–20 payloads surface as
 `LocalDeliveryOutcome::DatagramDelivered` and never reach `StreamingManager`.
 
 ### ELS2 client halves (Plans 332/333)

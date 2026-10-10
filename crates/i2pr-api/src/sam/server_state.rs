@@ -78,6 +78,20 @@ pub enum DispatchOutcome {
         /// Validated `SESSION CREATE` request.
         request: Box<SessionCreateRequest>,
     },
+    /// The runtime must register a child under an existing PRIMARY.
+    RequireSessionAdd {
+        /// Owning PRIMARY session id.
+        primary_id: SamSessionId,
+        /// Validated child request.
+        request: Box<crate::sam::command::SessionAddRequest>,
+    },
+    /// The runtime must remove a child from an existing PRIMARY.
+    RequireSessionRemove {
+        /// Owning PRIMARY session id.
+        primary_id: SamSessionId,
+        /// Child id to remove.
+        child_id: String,
+    },
     /// The command required driving a `STREAM CONNECT` transaction.
     /// The runtime executes the underlying `StreamingManager::connect`
     /// call, drives the per-stream SAM raw-mode transition, and then
@@ -148,6 +162,8 @@ impl DispatchOutcome {
             Self::Malformed { reply, .. } => Some(reply),
             Self::Unsupported { reply, .. } => Some(reply),
             Self::RequireSessionCreate { .. } => None,
+            Self::RequireSessionAdd { .. } => None,
+            Self::RequireSessionRemove { .. } => None,
             Self::RequireStreamConnect { .. } => None,
             Self::RequireStreamAccept { .. } => None,
             Self::StreamRawMode { .. } => None,
@@ -190,7 +206,10 @@ pub enum ServerConnectionState {
     AwaitHello,
     /// HELLO succeeded; DEST GENERATE / SESSION CREATE / utility
     /// commands are accepted.
-    UtilityReady,
+    UtilityReady {
+        /// Successfully negotiated protocol version.
+        version: crate::sam::version::SamVersion,
+    },
     /// SESSION CREATE succeeded; the per-socket task owns one
     /// session until the connection closes.
     SessionControl {
@@ -198,6 +217,10 @@ pub enum ServerConnectionState {
         session_id: SamSessionId,
         /// Owning destination identifier.
         destination_id: DestinationId,
+        /// Version negotiated on this owning control connection.
+        version: crate::sam::version::SamVersion,
+        /// `true` only when this control connection owns a PRIMARY.
+        primary: bool,
     },
     /// Connection is closed. State transitions to this are terminal.
     Closed,
@@ -217,6 +240,18 @@ impl ServerConnectionState {
 /// and never blocks. Callers (the daemon's per-socket task) drive the
 /// state machine once per command.
 pub fn dispatch(state: ServerConnectionState, command: &CommandOutcome) -> DispatchOutcome {
+    dispatch_with_server_max(state, command, MAX_SUPPORTED_VERSION)
+}
+
+/// Dispatches using an explicit server maximum version. The production
+/// dispatcher uses [`dispatch`]; the daemon's loopback profile harness uses
+/// this entry point to exercise later SAM versions before promoting them to
+/// the default advertised range.
+pub fn dispatch_with_server_max(
+    state: ServerConnectionState,
+    command: &CommandOutcome,
+    server_max: crate::sam::version::SamVersion,
+) -> DispatchOutcome {
     if state.is_closed() {
         return DispatchOutcome::Close {
             close_reason: CloseReason::MalformedLine,
@@ -253,19 +288,25 @@ pub fn dispatch(state: ServerConnectionState, command: &CommandOutcome) -> Dispa
             )),
         },
         CommandOutcome::Unsupported(unsupported) => handle_unsupported(&state, unsupported),
-        CommandOutcome::Recognised(command) => handle_recognised(state, command),
+        CommandOutcome::Recognised(command) => handle_recognised(state, command, server_max),
     }
 }
 
 fn tracing_warn_unknown(_observed: &crate::sam::command::UnknownCommand) {}
 fn tracing_warn_unknown_action(_observed: &crate::sam::command::UnknownCommand) {}
 
-fn handle_recognised(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+fn handle_recognised(
+    state: ServerConnectionState,
+    command: &Command,
+    server_max: crate::sam::version::SamVersion,
+) -> DispatchOutcome {
     match command.kind() {
-        CommandKind::HelloVersion => handle_hello(state, command),
+        CommandKind::HelloVersion => handle_hello(state, command, server_max),
         CommandKind::DestGenerate => handle_dest_generate(state),
         CommandKind::SessionCreate => handle_session_create(state, command),
-        CommandKind::StreamConnect => handle_stream_connect(command),
+        CommandKind::SessionAdd => handle_session_add(state, command),
+        CommandKind::SessionRemove => handle_session_remove(state, command),
+        CommandKind::StreamConnect => handle_stream_connect(state, command),
         CommandKind::StreamAccept => handle_stream_accept(command),
         CommandKind::StreamForward => handle_stream_forward(state, command),
         CommandKind::NamingLookup => handle_naming_lookup(state, command),
@@ -275,11 +316,9 @@ fn handle_recognised(state: ServerConnectionState, command: &Command) -> Dispatc
             close_reason: CloseReason::ClientQuit,
             reply: None,
         },
-        CommandKind::SessionAdd
-        | CommandKind::SessionRemove
-        | CommandKind::Auth
-        | CommandKind::Datagram
-        | CommandKind::Raw => handle_recognized_unsupported(state, command.kind()),
+        CommandKind::Auth | CommandKind::Datagram | CommandKind::Raw => {
+            handle_recognized_unsupported(state, command.kind())
+        }
     }
 }
 
@@ -297,7 +336,11 @@ fn handle_recognized_unsupported(
     }
 }
 
-fn handle_hello(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+fn handle_hello(
+    state: ServerConnectionState,
+    command: &Command,
+    server_max: crate::sam::version::SamVersion,
+) -> DispatchOutcome {
     if !matches!(state, ServerConnectionState::AwaitHello) {
         return DispatchOutcome::Close {
             close_reason: CloseReason::MalformedLine,
@@ -319,11 +362,16 @@ fn handle_hello(state: ServerConnectionState, command: &Command) -> DispatchOutc
     };
     let (min, max) = versions;
     let requested_min = min.unwrap_or(MIN_SUPPORTED_VERSION);
-    let requested_max = max.unwrap_or(MAX_SUPPORTED_VERSION);
-    let overlap = crate::sam::version::negotiate(requested_min, requested_max);
+    let requested_max = max.unwrap_or(server_max);
+    let overlap = crate::sam::version::negotiate_with_server_range(
+        requested_min,
+        requested_max,
+        MIN_SUPPORTED_VERSION,
+        server_max,
+    );
     match overlap {
         crate::sam::version::NegotiatedVersion::Agreed(version) => DispatchOutcome::Advance {
-            state: ServerConnectionState::UtilityReady,
+            state: ServerConnectionState::UtilityReady { version },
             reply: Some(Reply::Hello(crate::sam::reply::HelloReply::ok(version))),
         },
         crate::sam::version::NegotiatedVersion::NoOverlap { .. } => {
@@ -353,7 +401,8 @@ fn handle_dest_generate(state: ServerConnectionState) -> DispatchOutcome {
                 Some("DEST GENERATE before HELLO".to_owned()),
             ))),
         },
-        ServerConnectionState::UtilityReady | ServerConnectionState::SessionControl { .. } => {
+        ServerConnectionState::UtilityReady { .. }
+        | ServerConnectionState::SessionControl { .. } => {
             // DEST GENERATE is a utility command; the daemon is
             // responsible for executing `dest_generate` and replying
             // with the real `PUB`/`PRIV`. We mark Stay so the caller
@@ -377,7 +426,20 @@ fn handle_session_create(state: ServerConnectionState, command: &Command) -> Dis
                 Some("SESSION CREATE before HELLO".to_owned()),
             ))),
         },
-        ServerConnectionState::UtilityReady => {
+        ServerConnectionState::UtilityReady { version } => {
+            if (command.value("FROM_PORT").is_some() || command.value("TO_PORT").is_some())
+                && version < crate::sam::version::SamVersion::const_new(3, 2)
+            {
+                return DispatchOutcome::Unsupported {
+                    reason: UnsupportedReason::UnsupportedCommandFamily(
+                        "SESSION CREATE I2CP ports require SAM 3.2".to_owned(),
+                    ),
+                    reply: Reply::Session(SessionStatus::error(
+                        crate::sam::reply::ReplyResult::NotImplemented,
+                        Some("FROM_PORT and TO_PORT require SAM 3.2 or newer".to_owned()),
+                    )),
+                };
+            }
             let request = match build_session_create_request(command) {
                 Ok(request) => request,
                 Err(error) => {
@@ -390,6 +452,74 @@ fn handle_session_create(state: ServerConnectionState, command: &Command) -> Dis
                     };
                 }
             };
+            if command.value("sam.udp.host").is_some() || command.value("sam.udp.port").is_some() {
+                return DispatchOutcome::Unsupported {
+                    reason: UnsupportedReason::UnsupportedCommandFamily(
+                        "per-session SAM UDP bind options are not supported".to_owned(),
+                    ),
+                    reply: Reply::Session(SessionStatus::error(
+                        crate::sam::reply::ReplyResult::NotImplemented,
+                        Some("SAM UDP binding is configured at the daemon level".to_owned()),
+                    )),
+                };
+            }
+            if request.style == crate::sam::session_create::SessionCreateStyle::Stream
+                && [
+                    "PORT",
+                    "HOST",
+                    "PROTOCOL",
+                    "HEADER",
+                    "LISTEN_PORT",
+                    "LISTEN_PROTOCOL",
+                ]
+                .iter()
+                .any(|key| command.value(key).is_some())
+            {
+                return DispatchOutcome::Malformed {
+                    reason: MalformedReason::InvalidPort,
+                    reply: Reply::Session(SessionStatus::error(
+                        crate::sam::reply::ReplyResult::I2pError,
+                        Some("datagram routing options are invalid for STYLE=STREAM".to_owned()),
+                    )),
+                };
+            }
+            if request.style == crate::sam::session_create::SessionCreateStyle::Primary
+                && version < crate::sam::version::SamVersion::const_new(3, 3)
+            {
+                return DispatchOutcome::Unsupported {
+                    reason: UnsupportedReason::UnsupportedCommandFamily(
+                        "SESSION CREATE STYLE=PRIMARY requires SAM 3.3".to_owned(),
+                    ),
+                    reply: Reply::Session(SessionStatus::error(
+                        crate::sam::reply::ReplyResult::NotImplemented,
+                        Some("PRIMARY sessions require SAM 3.3".to_owned()),
+                    )),
+                };
+            }
+            if request.style == crate::sam::session_create::SessionCreateStyle::Primary
+                && [
+                    "FROM_PORT",
+                    "TO_PORT",
+                    "PORT",
+                    "HOST",
+                    "PROTOCOL",
+                    "LISTEN_PORT",
+                    "LISTEN_PROTOCOL",
+                    "HEADER",
+                ]
+                .iter()
+                .any(|key| command.value(key).is_some())
+            {
+                return DispatchOutcome::Malformed {
+                    reason: MalformedReason::InvalidPort,
+                    reply: Reply::Session(SessionStatus::error(
+                        crate::sam::reply::ReplyResult::I2pError,
+                        Some(
+                            "PRIMARY sessions cannot set per-subsesson routing options".to_owned(),
+                        ),
+                    )),
+                };
+            }
             DispatchOutcome::RequireSessionCreate {
                 request: Box::new(request),
             }
@@ -413,7 +543,116 @@ fn build_session_create_request(
     let id = command.value("ID").unwrap_or("");
     let style = command.value("STYLE").unwrap_or("");
     let destination = command.value("DESTINATION").unwrap_or("");
-    crate::sam::session_create::parse_session_create(id, style, destination)
+    crate::sam::session_create::parse_session_create_with_ports(
+        id,
+        style,
+        destination,
+        command.value("FROM_PORT"),
+        command.value("TO_PORT"),
+    )
+}
+
+fn handle_session_add(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+    let ServerConnectionState::SessionControl {
+        session_id,
+        version,
+        primary: true,
+        ..
+    } = state
+    else {
+        return DispatchOutcome::Unsupported {
+            reason: UnsupportedReason::UnsupportedCommandFamily(
+                "SESSION ADD requires PRIMARY".to_owned(),
+            ),
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::InvalidId,
+                Some("SESSION ADD requires a live PRIMARY control session".to_owned()),
+            )),
+        };
+    };
+    if version < crate::sam::version::SamVersion::const_new(3, 3) {
+        return DispatchOutcome::Unsupported {
+            reason: UnsupportedReason::UnsupportedCommandFamily(
+                "SESSION ADD requires SAM 3.3".to_owned(),
+            ),
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::NotImplemented,
+                Some("SESSION ADD requires SAM 3.3".to_owned()),
+            )),
+        };
+    }
+    match crate::sam::command::parse_session_add(command) {
+        Ok(request) => DispatchOutcome::RequireSessionAdd {
+            primary_id: session_id,
+            request: Box::new(request),
+        },
+        Err(error) => DispatchOutcome::Malformed {
+            reason: MalformedReason::InvalidQuoting,
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::I2pError,
+                Some(format!("invalid SESSION ADD: {error:?}")),
+            )),
+        },
+    }
+}
+
+fn handle_session_remove(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+    let ServerConnectionState::SessionControl {
+        session_id,
+        version,
+        primary: true,
+        ..
+    } = state
+    else {
+        return DispatchOutcome::Unsupported {
+            reason: UnsupportedReason::UnsupportedCommandFamily(
+                "SESSION REMOVE requires PRIMARY".to_owned(),
+            ),
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::InvalidId,
+                Some("SESSION REMOVE requires a live PRIMARY control session".to_owned()),
+            )),
+        };
+    };
+    if version < crate::sam::version::SamVersion::const_new(3, 3) {
+        return DispatchOutcome::Unsupported {
+            reason: UnsupportedReason::UnsupportedCommandFamily(
+                "SESSION REMOVE requires SAM 3.3".to_owned(),
+            ),
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::NotImplemented,
+                Some("SESSION REMOVE requires SAM 3.3".to_owned()),
+            )),
+        };
+    }
+    if command.options().len() != 1 || command.value("ID").is_none() {
+        return DispatchOutcome::Malformed {
+            reason: MalformedReason::InvalidQuoting,
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::I2pError,
+                Some("SESSION REMOVE accepts only ID".to_owned()),
+            )),
+        };
+    }
+    match command.value("ID") {
+        Some(child_id)
+            if !child_id.is_empty() && child_id.len() <= crate::sam::MAX_SAM_SESSION_ID_BYTES =>
+        {
+            DispatchOutcome::RequireSessionRemove {
+                primary_id: session_id,
+                child_id: child_id.to_owned(),
+            }
+        }
+        _ => DispatchOutcome::Malformed {
+            reason: MalformedReason::MissingRequiredOption(
+                crate::sam::command::MissingOption::SessionId,
+            ),
+            reply: Reply::Session(SessionStatus::error(
+                crate::sam::reply::ReplyResult::I2pError,
+                Some("SESSION REMOVE requires ID".to_owned()),
+            )),
+        },
+    }
 }
 
 fn map_session_create_error_to_result(
@@ -428,6 +667,9 @@ fn map_session_create_error_to_result(
         | SessionCreateError::InvalidDestination(_) => crate::sam::reply::ReplyResult::I2pError,
         SessionCreateError::PrivateDestination(_) | SessionCreateError::Base64(_) => {
             crate::sam::reply::ReplyResult::InvalidKey
+        }
+        SessionCreateError::InvalidFromPort(_) | SessionCreateError::InvalidToPort(_) => {
+            crate::sam::reply::ReplyResult::I2pError
         }
     }
 }
@@ -468,7 +710,31 @@ fn handle_stream_forward(state: ServerConnectionState, command: &Command) -> Dis
     }
 }
 
-fn handle_stream_connect(command: &Command) -> DispatchOutcome {
+fn handle_stream_connect(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+    let version = match state {
+        ServerConnectionState::UtilityReady { version }
+        | ServerConnectionState::SessionControl { version, .. } => version,
+        ServerConnectionState::AwaitHello | ServerConnectionState::Closed => {
+            return DispatchOutcome::Close {
+                close_reason: CloseReason::MalformedLine,
+                reply: Some(Reply::Stream(StreamStatus::error(
+                    crate::sam::reply::ReplyResult::I2pError,
+                    Some("STREAM CONNECT before HELLO".to_owned()),
+                ))),
+            };
+        }
+    };
+    if (command.value("FROM_PORT").is_some() || command.value("TO_PORT").is_some())
+        && version < crate::sam::version::SamVersion::const_new(3, 2)
+    {
+        return DispatchOutcome::Unsupported {
+            reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
+            reply: Reply::Stream(StreamStatus::error(
+                crate::sam::reply::ReplyResult::NotImplemented,
+                Some("FROM_PORT and TO_PORT require SAM 3.2 or newer".to_owned()),
+            )),
+        };
+    }
     match parse_stream_connect(command) {
         Ok(request) => DispatchOutcome::RequireStreamConnect {
             request: Box::new(request),
@@ -509,6 +775,9 @@ fn stream_connect_error_to_malformed(error: &StreamConnectError) -> MalformedRea
         StreamConnectError::InvalidSilent(_) | StreamConnectError::InvalidId => {
             MalformedReason::InvalidQuoting
         }
+        StreamConnectError::InvalidFromPort(_) | StreamConnectError::InvalidToPort(_) => {
+            MalformedReason::InvalidPort
+        }
     }
 }
 
@@ -516,7 +785,9 @@ fn stream_connect_error_to_result(error: &StreamConnectError) -> crate::sam::rep
     match error {
         StreamConnectError::MissingId
         | StreamConnectError::MissingDestination
-        | StreamConnectError::InvalidSilent(_) => crate::sam::reply::ReplyResult::I2pError,
+        | StreamConnectError::InvalidSilent(_)
+        | StreamConnectError::InvalidFromPort(_)
+        | StreamConnectError::InvalidToPort(_) => crate::sam::reply::ReplyResult::I2pError,
         StreamConnectError::InvalidId => crate::sam::reply::ReplyResult::InvalidId,
     }
 }
@@ -625,6 +896,8 @@ pub struct StreamForwardFailed {
 pub struct NamingLookupApplied {
     /// Canonical public Destination text.
     pub value: String,
+    /// Validated LeaseSet options to include when requested.
+    pub options: Vec<(String, String)>,
 }
 
 /// Failed outcome of a local naming lookup.
@@ -758,19 +1031,21 @@ pub fn apply_stream_forward_outcome(
 
 /// Converts a local naming result to a NAMING REPLY.
 pub fn apply_naming_lookup_outcome(
+    name: String,
     outcome: Result<NamingLookupApplied, NamingLookupFailed>,
 ) -> DispatchOutcome {
     match outcome {
         Ok(applied) => DispatchOutcome::Stay {
-            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::ok(
-                applied.value,
-            ))),
+            reply: Some(Reply::Naming(
+                crate::sam::reply::NamingReply::ok_with_options(applied.value, applied.options)
+                    .with_name(name),
+            )),
         },
         Err(failed) => DispatchOutcome::Stay {
-            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::error(
-                failed.result,
-                Some(failed.message),
-            ))),
+            reply: Some(Reply::Naming(
+                crate::sam::reply::NamingReply::error(failed.result, Some(failed.message))
+                    .with_name(name),
+            )),
         },
     }
 }
@@ -792,7 +1067,7 @@ fn handle_naming_lookup(state: ServerConnectionState, command: &Command) -> Disp
         Err(error) => DispatchOutcome::Stay {
             reply: Some(Reply::Naming(crate::sam::reply::NamingReply::error(
                 match error {
-                    crate::sam::naming::NamingLookupError::UnsupportedOptions => {
+                    crate::sam::naming::NamingLookupError::InvalidOptions => {
                         crate::sam::reply::ReplyResult::NotImplemented
                     }
                     crate::sam::naming::NamingLookupError::InvalidName => {
@@ -857,7 +1132,7 @@ fn handle_unsupported(
 /// [`DispatchOutcome::RequireSessionCreate`] follow-up into the
 /// final reply.
 pub fn apply_session_outcome(
-    _state: ServerConnectionState,
+    state: ServerConnectionState,
     outcome: Result<SessionCreateApplied, SessionCreateFailed>,
 ) -> DispatchOutcome {
     match outcome {
@@ -865,6 +1140,11 @@ pub fn apply_session_outcome(
             state: ServerConnectionState::SessionControl {
                 session_id: applied.session_id,
                 destination_id: applied.destination_id,
+                version: match state {
+                    ServerConnectionState::UtilityReady { version } => version,
+                    _ => crate::sam::version::MAX_SUPPORTED_VERSION,
+                },
+                primary: applied.style == crate::sam::session_create::SessionCreateStyle::Primary,
             },
             reply: Some(Reply::Session(SessionStatus::ok(
                 &applied.private_destination_b64,
@@ -897,6 +1177,8 @@ pub struct SessionCreateApplied {
     /// clients retrieve the matching public key with
     /// `NAMING LOOKUP NAME=ME`.
     pub private_destination_b64: String,
+    /// The owner style created on this control connection.
+    pub style: crate::sam::session_create::SessionCreateStyle,
 }
 
 /// Failed session-create payload returned by the daemon.
@@ -935,9 +1217,10 @@ mod tests {
         let outcome = dispatch(ServerConnectionState::AwaitHello, &hello());
         match outcome {
             DispatchOutcome::Advance {
-                state: ServerConnectionState::UtilityReady,
+                state: ServerConnectionState::UtilityReady { version },
                 reply: Some(Reply::Hello(reply)),
             } => {
+                assert_eq!(version, SamVersion::const_new(3, 1));
                 assert_eq!(reply.result(), ReplyResult::Ok);
                 assert_eq!(reply.version(), Some(SamVersion::const_new(3, 1)));
             }
@@ -947,7 +1230,9 @@ mod tests {
 
     #[test]
     fn hello_after_utility_ready_closes() {
-        let state = ServerConnectionState::UtilityReady;
+        let state = ServerConnectionState::UtilityReady {
+            version: crate::sam::version::MAX_SUPPORTED_VERSION,
+        };
         let outcome = dispatch(state, &hello());
         assert!(matches!(
             outcome,
@@ -976,12 +1261,144 @@ mod tests {
     #[test]
     fn session_create_in_utility_ready_requires_runtime() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &session_create_transient("alpha"),
         );
         assert!(matches!(
             outcome,
             DispatchOutcome::RequireSessionCreate { .. }
+        ));
+    }
+
+    #[test]
+    fn session_create_rejects_per_session_udp_bind_that_daemon_cannot_honor() {
+        let command = parse_line(
+            "SESSION CREATE STYLE=PRIMARY ID=primary DESTINATION=TRANSIENT sam.udp.port=7657",
+        )
+        .expect("parse command");
+        let outcome = dispatch(
+            ServerConnectionState::UtilityReady {
+                version: SamVersion::const_new(3, 3),
+            },
+            &command,
+        );
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::Unsupported {
+                reply: Reply::Session(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn primary_create_rejects_every_subsession_routing_option() {
+        for option in ["LISTEN_PORT=1", "LISTEN_PROTOCOL=42"] {
+            let command = parse_line(&format!(
+                "SESSION CREATE STYLE=PRIMARY ID=primary DESTINATION=TRANSIENT {option}"
+            ))
+            .expect("parse primary command");
+            assert!(matches!(
+                dispatch(
+                    ServerConnectionState::UtilityReady {
+                        version: SamVersion::const_new(3, 3),
+                    },
+                    &command,
+                ),
+                DispatchOutcome::Malformed { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn session_add_is_primary_scoped_and_preserves_datagram_routing() {
+        let command = parse_line(
+            "SESSION ADD STYLE=RAW ID=raw42 PORT=7655 PROTOCOL=42 LISTEN_PROTOCOL=43 LISTEN_PORT=44 HEADER=true",
+        )
+        .expect("parse SESSION ADD");
+        let state = ServerConnectionState::SessionControl {
+            session_id: SamSessionId::new("primary").expect("primary id"),
+            destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([4; 32])),
+            version: SamVersion::const_new(3, 3),
+            primary: true,
+        };
+        assert!(matches!(
+            dispatch(state, &command),
+            DispatchOutcome::RequireSessionAdd {
+                request,
+                primary_id,
+            } if primary_id.as_str() == "primary"
+                && request.id == "raw42"
+                && request.protocol == 42
+                && request.listen_protocol == 43
+                && request.listen_port == 44
+                && request.raw_header
+        ));
+
+        let non_primary = ServerConnectionState::SessionControl {
+            session_id: SamSessionId::new("stream").expect("session id"),
+            destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([5; 32])),
+            version: SamVersion::const_new(3, 3),
+            primary: false,
+        };
+        assert!(matches!(
+            dispatch(non_primary, &command),
+            DispatchOutcome::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn session_remove_requires_only_a_bounded_child_id() {
+        let state = || ServerConnectionState::SessionControl {
+            session_id: SamSessionId::new("primary").expect("primary id"),
+            destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([6; 32])),
+            version: SamVersion::const_new(3, 3),
+            primary: true,
+        };
+        let valid = parse_line("SESSION REMOVE ID=child").expect("valid remove");
+        assert!(matches!(
+            dispatch(state(), &valid),
+            DispatchOutcome::RequireSessionRemove { child_id, .. } if child_id == "child"
+        ));
+        let invalid_id = format!(
+            "SESSION REMOVE ID={}",
+            "x".repeat(crate::sam::MAX_SAM_SESSION_ID_BYTES + 1)
+        );
+        for invalid in ["SESSION REMOVE ID=child EXTRA=value", invalid_id.as_str()] {
+            let command = parse_line(invalid).expect("parse remove");
+            assert!(matches!(
+                dispatch(state(), &command),
+                DispatchOutcome::Malformed { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn session_create_port_defaults_are_version_gated_and_typed() {
+        let command = crate::sam::parser::parse_line(
+            "SESSION CREATE STYLE=STREAM ID=alpha DESTINATION=TRANSIENT FROM_PORT=25 TO_PORT=110",
+        )
+        .expect("parse");
+        let v31 = dispatch(
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::SamVersion::const_new(3, 1),
+            },
+            &command,
+        );
+        assert!(matches!(v31, DispatchOutcome::Unsupported { .. }));
+
+        let v33 = dispatch(
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::SamVersion::const_new(3, 3),
+            },
+            &command,
+        );
+        assert!(matches!(
+            v33,
+            DispatchOutcome::RequireSessionCreate { request }
+                if request.from_port == 25 && request.to_port == 110
         ));
     }
 
@@ -992,6 +1409,8 @@ mod tests {
         let state = ServerConnectionState::SessionControl {
             session_id,
             destination_id,
+            version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            primary: false,
         };
         let outcome = dispatch(state, &session_create_transient("beta"));
         match outcome {
@@ -1018,14 +1437,21 @@ mod tests {
 
     #[test]
     fn dest_generate_in_utility_ready_stays() {
-        let outcome = dispatch(ServerConnectionState::UtilityReady, &dest_generate());
+        let outcome = dispatch(
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
+            &dest_generate(),
+        );
         assert!(matches!(outcome, DispatchOutcome::Stay { reply: None }));
     }
 
     #[test]
     fn quit_closes() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("QUIT").expect("parse"),
         );
         assert!(matches!(
@@ -1040,7 +1466,9 @@ mod tests {
     #[test]
     fn ping_echoes_payload() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("PING hello").expect("parse"),
         );
         match outcome {
@@ -1056,7 +1484,9 @@ mod tests {
     #[test]
     fn stream_connect_returns_require_runtime_handshake() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("STREAM CONNECT ID=alpha DESTINATION=foo").expect("parse"),
         );
         assert!(matches!(
@@ -1066,9 +1496,49 @@ mod tests {
     }
 
     #[test]
+    fn stream_connect_port_options_require_sam_32_negotiation() {
+        let command =
+            crate::sam::parser::parse_line("STREAM CONNECT ID=alpha DESTINATION=foo TO_PORT=110")
+                .expect("parse command");
+        let outcome = dispatch(
+            ServerConnectionState::SessionControl {
+                session_id: SamSessionId::new("alpha").unwrap(),
+                destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([2; 32])),
+                version: crate::sam::version::SamVersion::const_new(3, 1),
+                primary: false,
+            },
+            &command,
+        );
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::Unsupported {
+                reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
+                ..
+            }
+        ));
+
+        let outcome = dispatch(
+            ServerConnectionState::SessionControl {
+                session_id: SamSessionId::new("alpha").unwrap(),
+                destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([2; 32])),
+                version: crate::sam::version::SamVersion::const_new(3, 3),
+                primary: false,
+            },
+            &command,
+        );
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::RequireStreamConnect { request }
+                if request.from_port.is_none() && request.to_port == Some(110)
+        ));
+    }
+
+    #[test]
     fn stream_accept_returns_require_runtime_handshake() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("STREAM ACCEPT ID=alpha").expect("parse"),
         );
         assert!(matches!(
@@ -1080,7 +1550,9 @@ mod tests {
     #[test]
     fn stream_forward_requires_daemon_registration() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("STREAM FORWARD ID=alpha PORT=1234 HOST=127.0.0.1").expect("parse"),
         );
         assert!(matches!(
@@ -1092,7 +1564,9 @@ mod tests {
     #[test]
     fn stream_connect_missing_destination_is_malformed() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("STREAM CONNECT ID=alpha").expect("parse"),
         );
         match outcome {
@@ -1107,7 +1581,9 @@ mod tests {
     #[test]
     fn unknown_command_closes() {
         let outcome = dispatch(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             &parse_line("WHAT AM I").expect("parse"),
         );
         assert!(matches!(
@@ -1124,12 +1600,15 @@ mod tests {
         let session_id = SamSessionId::new("alpha").unwrap();
         let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([7_u8; 32]));
         let outcome = apply_session_outcome(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             Ok(SessionCreateApplied {
                 session_id: session_id.clone(),
                 destination_id,
                 public_destination_b64: "PUB".to_owned(),
                 private_destination_b64: "PRIV".to_owned(),
+                style: crate::sam::session_create::SessionCreateStyle::Stream,
             }),
         );
         match outcome {
@@ -1138,6 +1617,7 @@ mod tests {
                     ServerConnectionState::SessionControl {
                         session_id: ref advanced_id,
                         destination_id: advanced_dest,
+                        ..
                     },
                 reply: Some(Reply::Session(reply)),
             } => {
@@ -1153,7 +1633,9 @@ mod tests {
     #[test]
     fn apply_session_outcome_stays_on_failure() {
         let outcome = apply_session_outcome(
-            ServerConnectionState::UtilityReady,
+            ServerConnectionState::UtilityReady {
+                version: crate::sam::version::MAX_SUPPORTED_VERSION,
+            },
             Err(SessionCreateFailed {
                 result: ReplyResult::DuplicatedId,
                 message: "duplicate id".to_owned(),

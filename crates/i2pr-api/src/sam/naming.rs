@@ -5,7 +5,6 @@
 //! client; the daemon may add a locally-owned cached mapping.
 
 use super::base64;
-use super::private_destination::PUB_LENGTH;
 use super::{MAX_SAM_NAME_BYTES, MAX_SAM_OPTION_VALUE_BYTES};
 
 /// A validated naming request.
@@ -13,6 +12,8 @@ use super::{MAX_SAM_NAME_BYTES, MAX_SAM_OPTION_VALUE_BYTES};
 pub struct NamingLookupRequest {
     /// The SAM name to resolve.
     pub name: String,
+    /// Whether the reply should include local LeaseSet2 options.
+    pub include_lease_set_options: bool,
 }
 
 /// Typed naming failure.
@@ -24,8 +25,8 @@ pub enum NamingLookupError {
     InvalidKey,
     /// The name is validly shaped but not locally available.
     KeyNotFound,
-    /// `OPTIONS=true` is a later SAM feature.
-    UnsupportedOptions,
+    /// The OPTIONS value is not a SAM boolean.
+    InvalidOptions,
 }
 
 impl core::fmt::Display for NamingLookupError {
@@ -34,21 +35,21 @@ impl core::fmt::Display for NamingLookupError {
             Self::InvalidName => "invalid SAM naming name",
             Self::InvalidKey => "invalid public destination key",
             Self::KeyNotFound => "name not found in the local naming surface",
-            Self::UnsupportedOptions => "NAMING LOOKUP OPTIONS is unsupported in SAM 3.1",
+            Self::InvalidOptions => "NAMING LOOKUP OPTIONS must be true or false",
         })
     }
 }
 
-/// Parses `NAMING LOOKUP NAME=...` and applies the M7 options policy.
+/// Parses `NAMING LOOKUP NAME=... [OPTIONS=true|false]`.
 pub fn parse_naming_lookup(
     command: &crate::sam::command::Command,
 ) -> Result<NamingLookupRequest, NamingLookupError> {
-    if command
-        .value("OPTIONS")
-        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-    {
-        return Err(NamingLookupError::UnsupportedOptions);
-    }
+    let include_lease_set_options = match command.value("OPTIONS") {
+        None => false,
+        Some(value) if value.eq_ignore_ascii_case("true") => true,
+        Some(value) if value.eq_ignore_ascii_case("false") => false,
+        Some(_) => return Err(NamingLookupError::InvalidOptions),
+    };
     let name = command
         .value("NAME")
         .ok_or(NamingLookupError::InvalidName)?;
@@ -64,6 +65,7 @@ pub fn parse_naming_lookup(
     }
     Ok(NamingLookupRequest {
         name: name.to_owned(),
+        include_lease_set_options,
     })
 }
 
@@ -75,14 +77,18 @@ pub fn resolve_public_destination(name: &str) -> Result<String, NamingLookupErro
     if name.eq_ignore_ascii_case("ME") || name.to_ascii_lowercase().ends_with(".i2p") {
         return Err(NamingLookupError::KeyNotFound);
     }
-    let bytes = base64::decode(name, PUB_LENGTH).map_err(|_| NamingLookupError::InvalidKey)?;
+    // Do not impose the legacy SAM PRIV prefix length on a public Destination.
+    // The structural decoder determines the complete canonical length, while
+    // MAX_COMMON_STRUCTURE_SIZE bounds work before decoding.
+    let bytes = base64::decode(name, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+        .map_err(|_| NamingLookupError::InvalidKey)?;
     let destination =
         i2pr_proto::Destination::decode(&bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
             .map_err(|_| NamingLookupError::InvalidKey)?;
     let canonical = destination
         .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
         .map_err(|_| NamingLookupError::InvalidKey)?;
-    if canonical.len() != PUB_LENGTH || canonical.as_slice() != bytes.as_slice() {
+    if canonical.as_slice() != bytes.as_slice() {
         return Err(NamingLookupError::InvalidKey);
     }
     Ok(base64::encode(&canonical))
@@ -146,11 +152,24 @@ mod tests {
     }
 
     #[test]
-    fn options_are_explicitly_unsupported() {
+    fn options_is_retained_as_a_typed_lookup_flag() {
         let command = parse_line("NAMING LOOKUP NAME=ME OPTIONS=true").unwrap();
-        assert!(matches!(
-            command,
-            crate::sam::command::CommandOutcome::Unsupported(_)
-        ));
+        let request = parse_naming_lookup(command.command().unwrap()).unwrap();
+        assert!(request.include_lease_set_options);
+    }
+
+    #[test]
+    fn options_accepts_false_and_rejects_non_boolean_values() {
+        let command = parse_line("NAMING LOOKUP NAME=ME OPTIONS=false").unwrap();
+        assert!(
+            !parse_naming_lookup(command.command().unwrap())
+                .unwrap()
+                .include_lease_set_options
+        );
+        let command = parse_line("NAMING LOOKUP NAME=ME OPTIONS=yes").unwrap();
+        assert_eq!(
+            parse_naming_lookup(command.command().unwrap()),
+            Err(NamingLookupError::InvalidOptions)
+        );
     }
 }
