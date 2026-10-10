@@ -4,7 +4,7 @@ Status: registered planning line; no production capability promotion. Owner: i2p
 
 ## 1. Purpose and ownership boundary
 
-Close the gap between i2pr's strong runtime-neutral I2P primitives and an independently bootstrapping, genuinely interoperable ordinary I2P router, **including eventual NTCP2 and optional floodfill**. Plans 430–439 established the recovery baseline; corrective Plans 440–444 supply missing evidence topology, isolated product integration, and early bandwidth classification, without reopening historical closure tokens. Preserve canonical authority in `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml`, the closure records and ADR 0026/0027/0030 (floodfill reachability).
+Close the gap between i2pr's strong runtime-neutral I2P primitives and an independently bootstrapping, genuinely interoperable ordinary I2P router, **including eventual NTCP2 and optional floodfill**. Plans 430–439 established the recovery baseline; corrective Plans 440–445 audited evidence topology and exposed real stock-helper, process composition, LAN and configured-bandwidth blockers. Plans 446–449 are the next separate corrective owners. All historical closure tokens remain immutable. Preserve canonical authority in `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml`, the closure records and ADR 0026/0027/0030 (floodfill reachability).
 
 Ownership remains: `i2pr-proto` owns codecs; `i2pr-transport-ssu2`/`i2pr-transport-ntcp2` own protocol state machines; `i2pr-runtime` owns transport sockets, timers, cancellation and bounded queues; `i2pr-netdb` owns validated routing metadata and capability policy; `i2pr-tunnel`/`i2pr-client` own tunnel/destination state; `i2pr-daemon` is the composition root. No new independent routing stack or copied reference-router code.
 
@@ -20,7 +20,7 @@ No user-interface implementation; no SSU1/NTCP1; no mandatory ML-KEM/PQ modes; n
 
 - `plans/closure/ntcp2-transport/099-status.md`: `protocol-defect-localized`, i2pd side `noise_authenticated`, i2pr side missing matching final event. Plan 101 forbids normal-daemon NTCP2 activation; do not characterize this as missing crypto primitives or a proven crypto failure.
 - `plans/closure/ssu2/161-status.md`: i2pd 2.61.0 direct IPv4 loopback interoperability passed; `crates/i2pr-daemon/src/config.rs::normalize_ssu2` still forbids non-loopback binds, advertisement and introducer service.
-- `crates/i2pr-daemon/src/bootstrap.rs` and `docs/architecture/i2pr-daemon.md`: signed SU3 parsing, cache and offline reseed; startup does not fetch HTTPS SU3. `reseed.enabled` defaults false.
+- Initial bootstrap supported only signed local/offline SU3; **Plan 432 has since implemented consented verified HTTPS SU3 cold-start acquisition** with local TLS fixture, signed ingest and cache reuse. Public reseed hosts and normal network availability remain distinct unproven gates; `reseed.enabled` remains default-off.
 - `plans/closure/transit-tunnels/268-status.md`: one-family receipt evidence passed; ordinary public transit remains disabled.
 - `plans/closure/floodfill/303-status.md`: controlled i2pd one-family full matrix passed. `306-status.md`: Java lists/parses `fR` but does not select it with bandwidth class unknown; normal `caps=f` is forbidden. Proposal-170 Plans 350/351 closed type-5 store/serve/consumer gaps, so do not resurrect the historical type-5 deferral.
 - Plan 360 made the daemon start and bind enabled local listeners. A process reaching supervision is not proof of external transport or application readiness.
@@ -112,8 +112,27 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 443 | blocked | `plans/implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md` | `plans/closure/core-router-recovery/443-status.md`: one-family component lanes pass; actual normal-process composition and stock-to-stock control remain open |
 | 444 | blocked | `plans/implementation/floodfill/444-configured-shared-bandwidth-class-and-java-selection-control.md` | `plans/closure/floodfill/444-status.md`: Java thresholds source-verified; no configured and enforced global rate budget exists |
 | 445 | blocked | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | `445-status.md`: terminal categories identify both stock helpers' sessions as not established; no i2pr attempt followed |
+| 446 | **ready** | `plans/implementation/ntcp2-transport/446-real-i2pd-daemon-control-and-ntcp2-requalification.md` | Replace 441/445 custom-library-helper failure with normal stock-i2pd daemon-to-daemon reference control, then i2pr NTCP2 two-way I2NP |
+| 447 | **ready** | `plans/implementation/core-router-recovery/447-real-daemon-ssu2-netdb-sam-e2e-corrective.md` | Execute real `i2pr run` process; independently close startup/SAM, stock link/NetDB and nonzero-hop application gates |
+| 448 | **ready** | `plans/implementation/floodfill/448-global-bandwidth-governor-and-eligible-capability-class.md` | Enforce global configured ingress/egress share limits and truthful RouterInfo capacity before 444 Java selection |
+| 449 | **ready for harness; external proof environment-dependent** | `plans/implementation/core-router-recovery/449-portable-ssu2-independent-lan-qualification-lane.md` | Implement operator-ready LAN preflight, then require authorized two-host stock i2pd SSU2 traffic for Plan 431 qualification |
 
-No `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. Earlier registration convention: no `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
+No `plans/closure/.../NNN-status.md` is created for corrective Plans 446–449 by registration; old Plan 440–445 closure records remain authoritative. Earlier: no `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. Earlier registration convention: no `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
+
+### Next executable batch (Plans 446–449; registered 2026-10-10)
+
+Four independent **bounded corrective owners** are dependency-ready after Plan 440's closed evidence contract and previous Plan 432's HTTPS bootstrap:
+
+```text
+441/445 blocked stock helper -> 446 real stock i2pd daemon control -> 434 NTCP2 recovery -> 435 dual transport
+443 blocked component-only -> 447 real i2pr run / SAM -> 443 product gate -> 433 external normal-router gate
+444 blocked no rate owner -> 448 global enforced bandwidth capacity -> 444 Java selection -> 437 normal role -> 438
+442 local key owner passed / 431 stopped -> 449 preflight then authorized private LAN -> 431 external gate -> 433
+```
+
+The **local implementation** for each may progress separately; Plan 447 Gate A (normal-process startup and SAM) must not inherit the two-host Plan 449 requirement or Plan 446's NTCP2 positive control. Plan 448 is independent of NTCP2 and transit role qualification, but full `caps=f` remains blocked by Plan 437/438. The failed Plan 441/445 setup used *custom library-linked helper executables*, so a normal **stock i2pd daemon executable** positive control is now the prerequisite for source attribution. Prior attempts' closed status tokens and exact output remain authoritative; no more per-log micro-corrective loop.
+
+Plan 449 cannot claim completion of full external qualification without an operator-authorized independently addressed host pair. Code-level LAN harness/preflight can be completed and closed **only as infrastructure**, not a release claim. All new successes must be recorded in new closure records; `specs/support.toml`, public RouterInfo, two-family conformance, Plan 101 default-off NTCP2 and Plan 431 non-loopback requirements remain unchanged.
 
 ## 8. Cross-cutting invariants
 
