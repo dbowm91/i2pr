@@ -1,6 +1,6 @@
 # Plan 375 — Stock Java I2P bidirectional ELS2 qualification: status
 
-Status: **active-java-source-proof-complete-live-els2-driver-not-written**
+Status: **blocked-java-sam-substrate-diagnosis-and-live-driver-required**
 
 Plan of record:
 [`375-java-live-els2-qualification.md`](../../implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md).
@@ -10,8 +10,11 @@ Classification: external interoperability + capability evidence.
 This plan has not passed. No ELS2 direction has been executed against Java I2P.
 The 2026-10-09 continuation completed the pinned-source audit for publisher,
 consumer, and authorization modes and rebuilt the unmodified Java pin with JDK
-21. The live Java driver and matrix remain outstanding. This open status does
-not close Plan 375.
+21. This turn reviewed the recorded SAM setup failure and the launcher/config
+source. The available evidence does not identify its cause. Plan 279's frozen
+three-attempt budget is spent, so its runner is not eligible for another
+execution. Plan 375 is blocked until a separately bounded Java SAM/I2CP
+diagnostic and the Java ELS2 driver are registered and executed.
 
 ## What was completed
 
@@ -48,7 +51,12 @@ its warm-up completed and is not counted as an attempt.
 
 The Plan-279 substrate cannot yet be treated as ready for Plan 375 execution.
 The SAM/I2CP session creation failure must be attributed from a clean,
-diagnostic-preserving run before the Java ELS2 driver can use it.
+diagnostic-preserving run before the Java ELS2 driver can use it. The current
+source review found no support for the earlier ephemeral-port-collision theory:
+only JC is configured to bind the SAM/I2CP service, while the other controlled
+routers omit that service. No root cause is claimed. The retained evidence does
+not include the rejected SAM response, and the spent Plan-279 runner cannot be
+reused to obtain it.
 
 ## Pinned-source result (2026-10-09)
 
@@ -112,8 +120,9 @@ output remains valid and remains **not** interoperability.
 
 ## Roadmap disposition and unblock audit
 
-- **Roadmap disposition: active**, source proof complete; Plan-279 SAM setup
-  diagnosis, live driver, and rows outstanding.
+- **Roadmap disposition: blocked**, source proof complete; a new bounded
+  Plan-375-specific SAM setup diagnostic and Java live driver/matrix are
+  outstanding. This is a scheduling disposition, not a Java protocol result.
 - **Unblock audit, executed per `plans/README.md`:**
 
 | Plan | Other hard dependencies | All closed? | Disposition |
