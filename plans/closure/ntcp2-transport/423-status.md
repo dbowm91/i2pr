@@ -17,9 +17,10 @@ The one reverse-only attempt reached TCP and terminated with
 with `control-dialing-session-not-established`; its sanitized stock-log
 observer found no SessionRequest or SessionConfirmed milestones, no I2NP
 block, and no DeliveryStatus. Cleanup passed. The attempt budget is spent.
-This identifies the responder's bounded read-closed result, but does not
-localize why the pinned peer closed before establishing the session. No
-cryptographic defect or i2pr-owned protocol correction is inferred.
+This identifies the responder's bounded read-closed result, but the evidence
+has no shared session correlation token to establish its cause or correlate it
+with the helper's session-not-established outcome. No cryptographic defect or
+i2pr-owned protocol correction is inferred.
 
 ## Requirement-to-evidence matrix
 
@@ -47,10 +48,11 @@ cryptographic defect or i2pr-owned protocol correction is inferred.
 
 ## Findings and unblock audit
 
-- **Medium — pinned peer closes before establishing the reverse session.** The
-  responder now exposes the read-closed outcome, but the helper's bounded
-  terminal result and zero handshake-stage counters do not reveal why it
-  closed. No safe i2pr-owned correction is localized. Plan 434 remains blocked
+- **Medium — reverse session is not established.** The responder exposes a
+  read-closed outcome, while the helper reports session-not-established; the
+  evidence does not correlate these as one cause. The helper's bounded
+  terminal result and zero handshake-stage counters do not localize a safe
+  i2pr-owned correction. Plan 434 remains blocked
   until authenticated forward and reverse link evidence includes correlated
   I2NP DeliveryStatus. Plans 433 and 435–439 remain blocked on their registered
   prerequisites. Plan 431 remains stopped at the unavailable independent

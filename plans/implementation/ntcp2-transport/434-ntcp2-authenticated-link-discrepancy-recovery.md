@@ -1,6 +1,6 @@
 # Plan 434 — NTCP2 authenticated-link discrepancy recovery (Plan 099 successor)
 
-Status: **blocked** — `blocked-current-pinned-i2pd-reverse-initiator-runner-unavailable`. Closure record: `plans/closure/ntcp2-transport/434-status.md`. No production or harness changes were made. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; activation follows Plan 432 closure commit `e518214`. Historical Plans 030–101 remain closed without rewriting closure records.
+Status: **blocked** — `blocked-reverse-attempt-did-not-establish-authenticated-link`. Current status amendment: `plans/closure/ntcp2-transport/434-status-amendment-plan-423.md`; original blocked record remains in `plans/closure/ntcp2-transport/434-status.md`. Plans 421–423 supplied and exercised the reverse runner, but no authenticated reverse link or correlated I2NP delivery was observed. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; activation follows Plan 432 closure commit `e518214`. Historical Plans 030–101 remain closed without rewriting closure records.
 
 ## Objective and rationale
 
