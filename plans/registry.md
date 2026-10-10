@@ -20,10 +20,28 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | `registered-*`, `pending`, `next *` | `ready` | Approved for execution when dependencies clear |
 | `skipped`, `retired*` | `archived` | Never authoritative; retained for traceability |
 
+## Core-router operational recovery — registered 2026-10-10
+
+The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.md) explicitly includes **NTCP2 and optional floodfill** as completion requirements, not indefinitely deferred enhancements. This line is planning-only: normal public SSU2/NTCP2, transit, and `caps=f` remain non-advertised/unqualified; signed online HTTPS SU3 reseeding is not yet wired into normal bootstrap. Historical Plan 099/101, 161, 268, 303/306, and Proposal-170 ELS2 closure tokens are unchanged. One dependency-ready plan: **430**. No implementation/closure pass is claimed.
+
+| Plan | State | Implementation handoff | Dependency / observable outcome |
+| --- | --- | --- | --- |
+| 430 | **ready** | [Executable baseline and role gates](implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md) | Existing closures; freeze factual source and no-false-claim readiness |
+| 431 | blocked | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | 430 → controlled non-loopback bind, persistent identity, RouterInfo policy |
+| 432 | blocked | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
+| 433 | blocked | [Live NetDB/tunnel/client composition](implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) | 431+432 → real independent-router multihop application path |
+| 434 | blocked | [NTCP2 authenticated-link recovery](implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) | 430 → pinpoint Plan 099 discrepancy and qualify i2pd two-way I2NP |
+| 435 | blocked | [NTCP2 daemon and dual transports](implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) | 433+434 → guarded NTCP2 and SSU2 with i2pd+Java proof |
+| 436 | blocked | [Normal-daemon transit opt-in](implementation/transit-tunnels/436-normal-daemon-transit-participation-optin.md) | 433 → M11 participant product and bounded admission |
+| 437 | blocked | [Truthful floodfill bandwidth class](implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md) | 433+436 → measured Java-eligible bandwidth, no fake cap |
+| 438 | blocked | [Two-family floodfill normal opt-in](implementation/floodfill/438-two-family-floodfill-and-normal-optin.md) | 437 → i2pd+Java qualification and guarded `caps=f` |
+| 439 | blocked | [Independent full-router acceptance](implementation/core-router-recovery/439-independent-full-router-acceptance.md) | 433+435+436+438 → full cold-start through application and optional roles |
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Core-router operational recovery | registered; Plan 430 ready, 431–439 dependency-blocked | `plans/subsystems/core-router-recovery-roadmap.md` | Plans 430–439 public SSU2/reseed, live router, NTCP2, transit, floodfill and full acceptance | Strict default-off and no false RouterInfo publication; Plan 430 is the first executable gate. No production source or support claims changed. |
 | Workspace foundation | closed (milestones) / parallel corrective lane active | `plans/subsystems/workspace-foundation-roadmap.md` | Plans 000–025 closed; parallel lane Plans 359–367 | **Milestones stay closed; the lane does not reopen them.** Plan 360 fixed the product-path defect where `i2pr run` opened no listener. Plans 361/362/365/366 closed four guard gaps in which an assertion read as enforcing a boundary while enforcing nothing — 366 was the worst, scanning 1 of 13 console files; 365's premise was a `ci.yml` that did not parse, which no floor step could see. Plan 364 (floodfill) landed in the same batch. No capability or advertisement claim. |
 | NTCP2 transport | closed | `plans/subsystems/ntcp2-transport-roadmap.md` | Plans 030–101 exited (defect localized, daemon NTCP2 disabled) | New NTCP2 work needs a new plan-of-record |
 | NetDB | closed | `plans/subsystems/netdb-roadmap.md` | Plans 102–106 closed (handoff via Plan 106) | — |
@@ -370,9 +388,8 @@ Reference pins are frozen (i2pd `2.61.0`, Java I2P `2.13.0`, go-i2cp `b529ee1c�
 
 - Milestone 12 floodfill planning (dependency-ready: the Plan 268 closure is fully passed including exact-head CI run `36811447204` on `778818b`; the `receipt` family is closed 3/8 with zero semantic failures on `cc9b40c` and composed passing. Plan 265's `ibgw-data` and `participant-lifecycle` families are closed on `4682920e`, Plan 266's ladder is proven with 1/8 on `a9803ca`, Plan 267's disposition instrument is proven with 0/8 on `315fb0d`, and the five retained Plan 264 deterministic epochs remain integrity-checked).
 - Non-loopback/remote I2CP, TLS/auth, broad historical I2CP compliance.
-- Live/public NTCP2 or SSU2 router transport activation; broad mixed-router interop beyond
-  the qualified lanes.
-- Public I2P participation; network-transport-bound NetDB/public-router behavior.
+- Public NTCP2/SSU2 activation and two-family qualification **now registered** under recovery Plans 431/434/435, blocked by baseline and interoperability evidence; not implemented or advertised.
+- Public I2P participation and network-bound NetDB/router behavior **now registered** under recovery Plans 432/433/439; pending implementation and live evidence.
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed
 verification. Corrective passes own new closure evidence rather than editing history.
