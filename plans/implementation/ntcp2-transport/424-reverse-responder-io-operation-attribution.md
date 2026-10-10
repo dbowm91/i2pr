@@ -1,6 +1,6 @@
 # Plan 424 — attribute reverse responder SessionConfirmed I/O operation
 
-Status: **ready** — `registered-reverse-responder-io-operation-attribution`.
+Status: **active** — `in-progress-reverse-responder-io-operation-attribution`.
 Corrective successor to [Plan 423](../../closure/ntcp2-transport/423-status-amendment-plan-424.md)
 and [Plan 434](../../closure/ntcp2-transport/434-status-amendment-plan-424.md).
 

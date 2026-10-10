@@ -142,7 +142,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 421 | stopped | `plans/implementation/ntcp2-transport/421-current-pin-reverse-initiator-attempt.md` | `plans/closure/ntcp2-transport/421-status.md`: reverse scenario identity mismatch before wire |
 | 422 | stopped | `plans/implementation/ntcp2-transport/422-reverse-scenario-identity-correction.md` | `plans/closure/ntcp2-transport/422-status.md`: corrected mapping reached TCP; responder failed at SessionConfirmed Part 1 |
 | 423 | stopped | `plans/implementation/ntcp2-transport/423-session-confirmed-part1-error-classification.md` | `plans/closure/ntcp2-transport/423-status-amendment-plan-424.md`: responder I/O failed during `await_confirmed`; exact operation unknown |
-| 424 | ready | `plans/implementation/ntcp2-transport/424-reverse-responder-io-operation-attribution.md` | Exact responder I/O operation and bounded kind; one reverse-only attempt |
+| 424 | active | `plans/implementation/ntcp2-transport/424-reverse-responder-io-operation-attribution.md` | Exact responder I/O operation and bounded kind; one reverse-only attempt |
 
 ## 8. Cross-cutting requirements
 
