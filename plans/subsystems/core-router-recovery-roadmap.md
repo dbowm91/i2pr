@@ -4,7 +4,7 @@ Status: registered planning line; no production capability promotion. Owner: i2p
 
 ## 1. Purpose and ownership boundary
 
-Close the gap between i2pr's strong runtime-neutral I2P primitives and an independently bootstrapping, genuinely interoperable ordinary I2P router, **including eventual NTCP2 and optional floodfill**. Plans 430–439 are new work, not reopening historical closure tokens. Preserve canonical authority in `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml`, the closure records and ADR 0026/0027/0030 (floodfill reachability).
+Close the gap between i2pr's strong runtime-neutral I2P primitives and an independently bootstrapping, genuinely interoperable ordinary I2P router, **including eventual NTCP2 and optional floodfill**. Plans 430–439 established the recovery baseline; corrective Plans 440–444 supply missing evidence topology, isolated product integration, and early bandwidth classification, without reopening historical closure tokens. Preserve canonical authority in `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml`, the closure records and ADR 0026/0027/0030 (floodfill reachability).
 
 Ownership remains: `i2pr-proto` owns codecs; `i2pr-transport-ssu2`/`i2pr-transport-ntcp2` own protocol state machines; `i2pr-runtime` owns transport sockets, timers, cancellation and bounded queues; `i2pr-netdb` owns validated routing metadata and capability policy; `i2pr-tunnel`/`i2pr-client` own tunnel/destination state; `i2pr-daemon` is the composition root. No new independent routing stack or copied reference-router code.
 
@@ -59,6 +59,27 @@ Capability advertisement is an output of observed healthy owners and completed c
 
 431/432/434 were independently executable after 430's common contract and baseline closed. Plan 431 stopped at the unavailable non-loopback topology, Plan 432 passed, and Plan 434 remains blocked. Corrective Plans 410 and 414–420 stopped at their recorded evidence boundaries. Plan 420 observed the post-validation RouterInfo marker and a process-level termination marker, but no I2NP block or DeliveryStatus; the termination could not be correlated to the accepted session without retaining prohibited identity-bearing data. Plan 421 stopped before wire because the reverse scenario assigned the wrong expected sender identity. Plan 422 corrected that mapping and spent one reverse-only attempt; it reached TCP but failed at responder SessionConfirmed Part 1. Plan 423 distinguished seven bounded protocol errors and I/O, then its one reverse-only attempt reached TCP and produced an I/O failure while the helper reported session-not-established; those results have no shared correlation. Plan 424 preserved the exact operation and kind, then spent one reverse-only attempt. It identified a closed SessionConfirmed read, while the helper again reported session-not-established without a shared correlation token. Plans 433, 434, 435, 436, 437, 438, and 439 remain blocked on their listed predecessor evidence. Other work lines are eligible only when their own registered dependencies are closed. A blocked step must record its blocker and bounded next evidence, not loop indefinitely.
 
+### Registered corrective graph (2026-10-10)
+
+The original 433/435–439 qualification dependencies remain binding for normal/public roles. New work separates source implementation from unavailable external infrastructure:
+
+```text
+430 passed + 432 passed -> 440 test-topology/Emissary contract (ready)
+                                  |-> 441 stock reference positive control
+                                  |       -> current-pin NTCP2 i2pr forward/reverse
+                                  |       -> Plan 434/435 qualified handoff (no shortcut)
+                                  |-> 442 SSU2 durable keys/normal owner (local gate)
+                                  |       -> private-LAN independent evidence when authorized
+                                  |       -> original Plan 431 qualification
+                                  |-> 443 controlled i2pr NetDB/tunnel/application
+                                  |       -> informs Plan 433, never substitutes for 431
+                                  |-> 444 configured enforced shared bandwidth class
+                                          -> Java healthy bootstrap and candidate selection
+                                          -> informs Plan 437, never substitutes for 433/436
+```
+
+Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-router-qualification-comparison.md) pins fork `6885a945` and upstream `9b43484a`. Its `allow_local` loopback sessions demonstrate loopback transport testing is valid **with correct source identities/network IDs**; they do not demonstrate external reachable addresses or stock-router peer selection. Preserve all prior stopped-plan data and two-family conformance. A known-good stock-to-stock control must establish topology admissibility before source protocol attribution. Plan 440 closed this contract gate. Plan 442's local durable-identity owner and loopback lifecycle passed, but its separate LAN qualification stopped because no independent host pair is available; Plan 431 remains stopped. Plan 443's one-family component lanes pass, while normal-process composition and stock-to-stock control remain unproven. Plan 444's source audit is complete but no truthful class can be implemented until a configured ingress/egress budget is enforced. Plan 441 is blocked after Plan 445 corrected runner attribution but the stock-to-stock control failed. Each may close narrowly for controlled evidence without promoting a public capability.
+
 ## 7. Milestones
 
 | Plan | Status at registration | Implementation | Required proof |
@@ -85,8 +106,14 @@ Capability advertisement is an output of observed healthy owners and completed c
 | 437 | blocked on 433,436 | `plans/implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md` | Measured class and Java candidate selection |
 | 438 | blocked on 437 | `plans/implementation/floodfill/438-two-family-floodfill-and-normal-optin.md` | Two independent families; opt-in/withdrawal gate |
 | 439 | blocked on 433,435,436,438 | `plans/implementation/core-router-recovery/439-independent-full-router-acceptance.md` | Cold start through multihop communication, restart/fault bounds |
+| 440 | passed | `plans/implementation/core-router-recovery/440-emissary-informed-evidence-and-topology-contract.md` | `440-status.md`: evidence profile contract and mutation-tested gates; no capability promotion |
+| 441 | blocked on 445 | `plans/implementation/ntcp2-transport/441-current-pin-single-session-control-and-interop-recovery.md` | `441-status.md`: first stock-control run returned exit 66 without retained terminal attribution; Plan 445 corrective |
+| 442 | blocked | `plans/implementation/core-router-recovery/442-ssu2-normal-owner-preparation-and-independent-topology.md` | `plans/closure/core-router-recovery/442-status.md`: durable SSU2 keys and loopback owner passed; independent LAN pair unavailable; Plan 431 remains stopped |
+| 443 | blocked | `plans/implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md` | `plans/closure/core-router-recovery/443-status.md`: one-family component lanes pass; actual normal-process composition and stock-to-stock control remain open |
+| 444 | blocked | `plans/implementation/floodfill/444-configured-shared-bandwidth-class-and-java-selection-control.md` | `plans/closure/floodfill/444-status.md`: Java thresholds source-verified; no configured and enforced global rate budget exists |
+| 445 | blocked | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | `445-status.md`: terminal categories identify both stock helpers' sessions as not established; no i2pr attempt followed |
 
-No `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
+No `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. Earlier registration convention: no `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
 ## 8. Cross-cutting invariants
 

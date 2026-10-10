@@ -51,7 +51,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+use i2pr_crypto::{OsRng, RouterIdentityBundle};
 use i2pr_netdb::controlled_router_options;
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
@@ -63,8 +63,8 @@ use i2pr_runtime::{
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
     Ssu2ServiceHandle, Ssu2SocketConfig, constants,
 };
+use i2pr_storage::Ssu2TransportIdentityMaterial;
 use i2pr_transport::{EncodedI2npMessage, LinkId, MAX_I2NP_MESSAGE_BYTES, PeerId};
-use rand_core::TryRngCore;
 use thiserror::Error;
 
 use crate::config::Ssu2Config;
@@ -965,6 +965,26 @@ pub fn generate_controlled_identity(
     host: &str,
     port: u16,
 ) -> Result<Ssu2IdentityMaterial, Ssu2ServiceError> {
+    let hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let material = Ssu2TransportIdentityMaterial::generate(*hash.as_bytes(), &mut OsRng)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    generate_controlled_identity_with_keys(bundle, host, port, &material)
+}
+
+/// Builds controlled SSU2 identity material from persistent transport keys.
+///
+/// The keys must be bound to the supplied router identity. This is the
+/// production daemon path; the ephemeral wrapper above is retained for focused
+/// unit tests and controlled fixtures.
+pub fn generate_controlled_identity_with_keys(
+    bundle: &RouterIdentityBundle,
+    host: &str,
+    port: u16,
+    transport: &Ssu2TransportIdentityMaterial,
+) -> Result<Ssu2IdentityMaterial, Ssu2ServiceError> {
     if host != "127.0.0.1" && host != "::1" {
         return Err(Ssu2ServiceError::ControlledProfile(
             "SSU2 controlled identity requires a loopback host".to_owned(),
@@ -979,13 +999,12 @@ pub fn generate_controlled_identity(
         .identity()
         .hash()
         .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
-    let static_key =
-        X25519PrivateKey::generate(&mut OsRng).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if transport.router_hash() != hash.as_bytes() {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    let static_key = transport.static_key();
     let static_bytes = *static_key.secret_bytes();
-    let mut intro_bytes = [0_u8; 32];
-    OsRng
-        .try_fill_bytes(&mut intro_bytes)
-        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let intro_bytes = *transport.intro_key_bytes();
     if intro_bytes.iter().all(|byte| *byte == 0) {
         return Err(Ssu2ServiceError::InvalidIdentity);
     }
@@ -1536,6 +1555,51 @@ mod tests {
         let material =
             generate_controlled_identity(&bundle, "127.0.0.1", 44001).expect("controlled");
         assert!(!material.router_info.is_empty());
+    }
+
+    #[test]
+    fn controlled_identity_uses_router_bound_persistent_transport_keys() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use rand_core::OsRng;
+
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let transport =
+            Ssu2TransportIdentityMaterial::generate(hash, &mut OsRng).expect("transport keys");
+        let generated =
+            generate_controlled_identity_with_keys(&bundle, "127.0.0.1", 44001, &transport)
+                .expect("signed controlled identity");
+        assert_eq!(
+            generated.router_hash,
+            bundle.identity().hash().expect("hash")
+        );
+        assert_eq!(
+            generated.static_secret_bytes,
+            *transport.static_key().secret_bytes()
+        );
+        let signed = i2pr_proto::RouterInfo::decode(
+            &generated.router_info,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .expect("signed RouterInfo decodes");
+        let address = signed
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .expect("signed SSU2 address");
+        assert_eq!(
+            address.options().get("s"),
+            Some(i2p_b64_encode(&transport.static_key().public_bytes()).as_str())
+        );
+        assert_eq!(
+            address.options().get("i"),
+            Some(i2p_b64_encode(transport.intro_key_bytes()).as_str())
+        );
+        let wrong_router = RouterIdentityBundle::generate(&mut OsRng).expect("other identity");
+        assert!(
+            generate_controlled_identity_with_keys(&wrong_router, "127.0.0.1", 44001, &transport,)
+                .is_err()
+        );
     }
 
     #[test]

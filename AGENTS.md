@@ -161,6 +161,8 @@ python3 scripts/check-license-metadata.py
 python3 scripts/check-managed-app-private-client-seams.py
 python3 scripts/check-router-readiness-contract.py
 python3 scripts/check-router-readiness-contract.py --self-test
+python3 scripts/check-core-router-recovery-contract.py
+python3 scripts/check-core-router-recovery-contract.py --self-test
 python3 scripts/check-managed-app-package-boundary.py
 python3 scripts/check-managed-app-package-boundary.py --self-test
 python3 scripts/check-managed-app-policy-boundary.py
