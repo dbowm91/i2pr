@@ -20,8 +20,8 @@ SOURCE_FILES = {
 
 def violations(sources: dict[str, str]) -> list[str]:
     checks = {
-        "controlled profiles must be denied": "(RouterProfile::NormalRouter, AdvertisementClaim::TransportAddress)",
-        "optional roles must require the optional-role profile": "(RouterProfile::OptionalNetworkRole, _) => true",
+        "normal-router profile must be narrowly scoped to transport": "RouterProfile::NormalRouter,\n            AdvertisementClaim::TransportAddress",
+        "optional roles must require the optional-role profile": "| (RouterProfile::OptionalNetworkRole, _)",
         "readiness must gate claims": "!readiness.satisfies(required_readiness)",
         "owner health must gate claims": "!evidence.owner_healthy",
         "reachability must gate claims": "!evidence.address_reachable",
@@ -73,7 +73,7 @@ def self_test(sources: dict[str, str]) -> None:
         "!evidence.operator_authorized",
         "!evidence.generation_current",
         "Self::Degraded => false",
-        "(RouterProfile::OptionalNetworkRole, _) => true",
+        "| (RouterProfile::OptionalNetworkRole, _)",
     ]
     mutations.extend(
         (name, needle)

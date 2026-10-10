@@ -106,11 +106,13 @@ pub fn evaluate_advertisement(
     required_readiness: ReadinessStage,
     evidence: AdvertisementEvidence,
 ) -> Result<(), AdvertisementRejection> {
-    let profile_allows = match (profile, claim) {
-        (RouterProfile::NormalRouter, AdvertisementClaim::TransportAddress)
-        | (RouterProfile::OptionalNetworkRole, _) => true,
-        _ => false,
-    };
+    let profile_allows = matches!(
+        (profile, claim),
+        (
+            RouterProfile::NormalRouter,
+            AdvertisementClaim::TransportAddress
+        ) | (RouterProfile::OptionalNetworkRole, _)
+    );
     if !profile_allows {
         return Err(AdvertisementRejection::ProfileDisallowsClaim);
     }
