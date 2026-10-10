@@ -198,6 +198,8 @@ jobs:
         run: |
           python3 scripts/check-core-router-recovery-contract.py
           python3 scripts/check-core-router-recovery-contract.py --self-test
+      - name: Check Plan 449 offline SSU2 host preflight
+        run: python3 scripts/plan449-ssu2-preflight.py --self-test
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh
