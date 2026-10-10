@@ -81,7 +81,7 @@ Planning-only handoff from the actual Plan 446/447/448 blocked closures and Plan
 
 | Plan | State | Implementation handoff | Gate / dependencies |
 | --- | --- | --- | --- |
-| 451 | **ready** | [Real process SSU2→NetDB→nonzero-hop SAM application](implementation/core-router-recovery/451-real-process-ssu2-netdb-multihop-application-acceptance.md) | Plan 450 Gate A passed; controlled Gate B/C; exact-pinned i2pd, existing M6 lane baselines; **not** Plan 433's public qualification. |
+| 451 | **blocked** | [Real process SSU2→NetDB→nonzero-hop SAM application](implementation/core-router-recovery/451-real-process-ssu2-netdb-multihop-application-acceptance.md) | `closure/core-router-recovery/451-status.md` (`blocked-normal-sam-remote-product-fabric-not-composed`): SAM session creation uses local-only fabric; normal SSU2 group product is not injected. Gate B/C remain unrun. |
 | 452 | **blocked** | [Correct i2pd CLI datadir isolation and NTCP2 stock control](implementation/ntcp2-transport/452-real-i2pd-isolated-datadir-and-stock-ntcp2-control.md) | `closure/ntcp2-transport/452-status.md` (`blocked-stock-control-no-dial-trigger`): isolated stock processes and listeners pass, but no stock-owned operation initiated a session; no i2pr attempt made. |
 | 454 | **ready** | [Finish shared bandwidth enforcement and gated class permit](implementation/floodfill/454-shared-bandwidth-enforcement-and-capability-permit.md) | Plan 448 partial governor/SSU2 adapter, dormant NTCP2 adapter, bounded traffic-class fairness; no public class, `R` or `f` until separate role gates. |
 

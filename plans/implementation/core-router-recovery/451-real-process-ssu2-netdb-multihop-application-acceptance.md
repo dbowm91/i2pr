@@ -1,6 +1,6 @@
 # Plan 451 — Real-process SSU2 → NetDB → multihop SAM application acceptance
 
-Status: **registered / blocked on Plan 450 Gate A** (2026-10-10). Owner: core-router-recovery; follow-on to Plans 443/447, not a replacement for public Plan 433. Interface dependencies: Plan 450 real-daemon owner; Plan 432 validated seeds; Plan 440 profile/oracle; existing Plan 161 and Plan 443 exact-pinned successful SSU2/M6 lanes. No NTCP2, floodfill candidate, public SSU2 address, or live LAN dependency.
+Status: **blocked on normal-process SAM remote product composition** (2026-10-10). Plan 450 Gate A passed, but `SamServiceState::execute_session_create` still builds the local-only `SamLocalProductFabric`; the normal SSU2-backed destination-group product is not injected into SAM. See `plans/closure/core-router-recovery/451-status.md`. Owner: core-router-recovery; follow-on to Plans 443/447, not a replacement for public Plan 433. Interface dependencies: Plan 450 real-daemon owner; Plan 432 validated seeds; Plan 440 profile/oracle; existing Plan 161 and Plan 443 exact-pinned successful SSU2/M6 lanes. No NTCP2, floodfill candidate, public SSU2 address, or live LAN dependency.
 
 ## Result and evidence truth
 
