@@ -1,6 +1,6 @@
 # Plan 454 — Complete bounded shared bandwidth enforcement and non-fabricated capability permit
 
-Status: **registered / ready** (2026-10-10). Owner: floodfill infrastructure. Corrective successor to `plans/closure/floodfill/448-status.md` (partially implemented, blocked), feeding Plan 444 Java candidate-selection controls and later normal-role Plans 437–438. Hard dependency: Plan 448's governor/config/SSU2 slice is present, Plan 440 evidence taxonomy. Do not require completed Plan 452 authenticated NTCP2 or Plan 449 live LAN for the implementable shared-governor contract.
+Status: **active** (2026-10-10). Implementation in progress: governor construction moved to daemon composition; configured control reserve and four bounded traffic classes added; SSU2 outbound handshake finals and authenticated NTCP2 framed read/write paths use the shared governor; socket-backed NTCP2 byte charging test added. Health-gated capacity permit, broader socket contention/restart evidence, and full routine floor remain. Owner: floodfill infrastructure. Corrective successor to `plans/closure/floodfill/448-status.md` (partially implemented, blocked), feeding Plan 444 Java candidate-selection controls and later normal-role Plans 437–438. Hard dependency: Plan 448's governor/config/SSU2 slice is present, Plan 440 evidence taxonomy. Do not require completed Plan 452 authenticated NTCP2 or Plan 449 live LAN for the implementable shared-governor contract.
 
 ## Result
 
