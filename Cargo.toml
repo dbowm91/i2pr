@@ -45,7 +45,7 @@ repository = "https://github.com/dbowm91/i2pr"
 license = "MIT"
 
 [workspace.dependencies]
-aes = { version = "0.8.4", default-features = false }
+aes = { version = "0.9.3", default-features = false }
 bux-seccomp = "=0.2.0"
 axum = { version = "0.8", default-features = false, features = ["form", "json", "query"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash"] }
