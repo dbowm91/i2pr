@@ -134,6 +134,31 @@ Plan 447 Gate A (normal-process startup and SAM) is independent of the two-host 
 
 Plan 449 cannot claim completion of full external qualification without an operator-authorized independently addressed host pair. Code-level LAN harness/preflight can be completed and closed **only as infrastructure**, not a release claim. All new successes must be recorded in new closure records; `specs/support.toml`, public RouterInfo, two-family conformance, Plan 101 default-off NTCP2 and Plan 431 non-loopback requirements remain unchanged.
 
+### Executable continuation: Plans 450–454 (2026-10-10)
+
+Source-evidenced blockers from 446–449 are separate, not one serial prerequisite: 446 failed **before protocol** because normal i2pd lacked CLI `--datadir`; 447 has only real-process SAM HELLO evidence; 448 has SSU2-only governor infrastructure; 449 has offline two-host preflight but no live LAN. Do not turn a missing external lab into a source-implementation blocker. The new bounded plans deliberately avoid another per-stage observer/closure cycle.
+
+```text
+432/440 + 442 local owner -> 450 real i2pr run Gate A
+                                  -> 451 real-daemon SSU2 / NetDB / multihop client product (controlled)
+446 invalid CLI datadir -------> 452 isolated stock i2pd NTCP2 control -> authenticated i2pr NTCP2 -> 434/435
+442 local SSU2 + 449 preflight -> 453 guarded private-LAN nonloopback source owner
+                                  -> 431 external two-host qualification (not automatically passed)
+448 partial rate governor -----> 454 common governed transport + typed capacity permit
+                                  -> 444 Java selection -> 437/438 floodfill role
+451 controlled + 431 independent-network -> 433 ordinary external router product -> 439 final
+```
+
+| Plan | State at registration | Implementation | Required evidence |
+| --- | --- | --- | --- |
+| 450 | ready | `plans/implementation/core-router-recovery/450-real-daemon-gate-a-router-lifecycle-and-readiness.md` | Real `i2pr run` black-box signed identity, bound SSU2/SAM, restart and truthful staged readiness; **no peer needed** |
+| 451 | blocked on 450 Gate A | `plans/implementation/core-router-recovery/451-real-process-ssu2-netdb-multihop-application-acceptance.md` | Normal process + pinned i2pd, authenticated I2NP/NetDB, >0-hop bidirectional external-SAM Streaming |
+| 452 | ready | `plans/implementation/ntcp2-transport/452-real-i2pd-isolated-datadir-and-stock-ntcp2-control.md` | Disjoint CLI-datadir normal i2pd stock control, real dial trigger and decoded I2NP; only then i2pr NTCP2 |
+| 453 | ready | `plans/implementation/core-router-recovery/453-ssu2-nonloopback-owner-without-external-claim.md` | Guarded nonloopback bind/RI owner local source and negative tests; independent LAN qualification **remains open** |
+| 454 | ready | `plans/implementation/floodfill/454-shared-bandwidth-enforcement-and-capability-permit.md` | One governor for enabled transports, reserved control budgets, socket rate evidence and opaque class permit; no `fR` promotion |
+
+**Acceptance discipline:** prior successes are lower-layer regression baselines, not prerequisites to repeat in every new fixture. A positive stock control is mandatory for an asserted stock selection/topology claim when ambiguous; a valid observed authenticated i2pr link need not be discarded simply because a different full stock-to-stock topology was not tested. Distinguish fixture-ineligible, no-dial-trigger, transport, NetDB, tunnel and application boundaries. Finite attempts prevent unchanged retries, **not** a repeat after a proved fixture correction. No Emissary implementation/vectors copied; only documented behavior is consulted. All normal/public claims stay controlled by `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml` and the historical closure authority.
+
 ## 8. Cross-cutting invariants
 
 No network-supplied raw router identity becomes trusted without validation. Do not couple transport public key to destination/client identity or allow correlation between multiple client destinations via service metadata. Preserve non-advertised defaults and explicit operator authorization for changes in public exposure. Enforce per-address and global pending-handshake, verified-link, byte, fragment, NetDB, tunnel, and floodfill budgets. All network activity is cancellable and recoverable; snapshots and logs exclude secret/identity-bearing full values. Retain protocol specifications and clean-room provenance; Emissary is an **architectural reference only** outside the Proposal 170 ADR 0028 exception.
