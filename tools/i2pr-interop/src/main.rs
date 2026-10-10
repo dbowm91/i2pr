@@ -145,6 +145,14 @@ enum LauncherError {
     ResponderNoiseStateFailed,
     ResponderSessionCreatedWriteFailed,
     ResponderSessionConfirmedPart1Failed,
+    ResponderSessionConfirmedPart1InvalidFixedLength,
+    ResponderSessionConfirmedPart1Truncated,
+    ResponderSessionConfirmedPart1ExcessivePadding,
+    ResponderSessionConfirmedPart1DeobfuscationFailed,
+    ResponderSessionConfirmedPart1AuthenticationFailed,
+    ResponderSessionConfirmedPart1TranscriptMismatch,
+    ResponderSessionConfirmedPart1KeyAgreementInvalid,
+    ResponderSessionConfirmedPart1IoFailed,
     ResponderSessionConfirmedPart2Failed,
     ResponderRouterIdentityVerificationFailed,
     ResponderHandshakeTimeout,
@@ -864,7 +872,7 @@ fn map_responder_stage_error(error: HandshakeDriverError) -> LauncherError {
         HandshakeDriverError::Protocol(HandshakeError::DeadlineExpired) => {
             LauncherError::ResponderHandshakeTimeout
         }
-        HandshakeDriverError::Io(_) => LauncherError::ResponderSessionConfirmedPart1Failed,
+        HandshakeDriverError::Io(_) => LauncherError::ResponderSessionConfirmedPart1IoFailed,
         other => {
             let _ = other;
             LauncherError::HandshakeFailed
@@ -892,17 +900,30 @@ fn map_responder_stage_error(error: HandshakeDriverError) -> LauncherError {
 /// the first matching variant wins.
 fn classify_await_confirmed(inner: &HandshakeDriverError) -> LauncherError {
     let HandshakeDriverError::Protocol(error) = inner else {
-        return LauncherError::ResponderSessionConfirmedPart1Failed;
+        return match inner {
+            HandshakeDriverError::Io(_) => LauncherError::ResponderSessionConfirmedPart1IoFailed,
+            _ => LauncherError::ResponderSessionConfirmedPart1Failed,
+        };
     };
     match error {
-        HandshakeError::InvalidFixedLength
-        | HandshakeError::Truncated
-        | HandshakeError::ExcessivePadding
-        | HandshakeError::DeobfuscationFailure
-        | HandshakeError::AuthenticationFailure
-        | HandshakeError::TranscriptMismatch
-        | HandshakeError::InvalidKeyAgreement => {
-            LauncherError::ResponderSessionConfirmedPart1Failed
+        HandshakeError::InvalidFixedLength => {
+            LauncherError::ResponderSessionConfirmedPart1InvalidFixedLength
+        }
+        HandshakeError::Truncated => LauncherError::ResponderSessionConfirmedPart1Truncated,
+        HandshakeError::ExcessivePadding => {
+            LauncherError::ResponderSessionConfirmedPart1ExcessivePadding
+        }
+        HandshakeError::DeobfuscationFailure => {
+            LauncherError::ResponderSessionConfirmedPart1DeobfuscationFailed
+        }
+        HandshakeError::AuthenticationFailure => {
+            LauncherError::ResponderSessionConfirmedPart1AuthenticationFailed
+        }
+        HandshakeError::TranscriptMismatch => {
+            LauncherError::ResponderSessionConfirmedPart1TranscriptMismatch
+        }
+        HandshakeError::InvalidKeyAgreement => {
+            LauncherError::ResponderSessionConfirmedPart1KeyAgreementInvalid
         }
         HandshakeError::RouterInfoMalformed
         | HandshakeError::RouterInfoSignatureInvalid
@@ -1649,6 +1670,38 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
             StatusResult::AuthenticationFailed,
             StatusReason::ResponderSessionConfirmedPart1Failed,
         ),
+        LauncherError::ResponderSessionConfirmedPart1InvalidFixedLength => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1InvalidFixedLength,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1Truncated => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1Truncated,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1ExcessivePadding => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1ExcessivePadding,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1DeobfuscationFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1DeobfuscationFailed,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1AuthenticationFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1AuthenticationFailed,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1TranscriptMismatch => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1TranscriptMismatch,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1KeyAgreementInvalid => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1KeyAgreementInvalid,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1IoFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1IoFailed,
+        ),
         LauncherError::ResponderSessionConfirmedPart2Failed => (
             StatusResult::AuthenticationFailed,
             StatusReason::ResponderSessionConfirmedPart2Failed,
@@ -2037,7 +2090,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
             ),
             (
                 "await_confirmed",
-                LauncherError::ResponderSessionConfirmedPart1Failed,
+                LauncherError::ResponderSessionConfirmedPart1Truncated,
             ),
             (
                 "done",
@@ -2086,27 +2139,55 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
     #[test]
     fn await_confirmed_phase_distinguishes_part1_part2_and_identity() {
         use i2pr_transport_ntcp2::handshake::HandshakeError;
-        // Part-one failures: structural and transcript.
+        // Part-one protocol failures retain one closed reason apiece.
         for part1 in [
-            HandshakeError::InvalidFixedLength,
-            HandshakeError::Truncated,
-            HandshakeError::ExcessivePadding,
-            HandshakeError::DeobfuscationFailure,
-            HandshakeError::AuthenticationFailure,
-            HandshakeError::TranscriptMismatch,
-            HandshakeError::InvalidKeyAgreement,
+            (
+                HandshakeError::InvalidFixedLength,
+                LauncherError::ResponderSessionConfirmedPart1InvalidFixedLength,
+            ),
+            (
+                HandshakeError::Truncated,
+                LauncherError::ResponderSessionConfirmedPart1Truncated,
+            ),
+            (
+                HandshakeError::ExcessivePadding,
+                LauncherError::ResponderSessionConfirmedPart1ExcessivePadding,
+            ),
+            (
+                HandshakeError::DeobfuscationFailure,
+                LauncherError::ResponderSessionConfirmedPart1DeobfuscationFailed,
+            ),
+            (
+                HandshakeError::AuthenticationFailure,
+                LauncherError::ResponderSessionConfirmedPart1AuthenticationFailed,
+            ),
+            (
+                HandshakeError::TranscriptMismatch,
+                LauncherError::ResponderSessionConfirmedPart1TranscriptMismatch,
+            ),
+            (
+                HandshakeError::InvalidKeyAgreement,
+                LauncherError::ResponderSessionConfirmedPart1KeyAgreementInvalid,
+            ),
         ] {
-            let label = format!("{part1:?}");
+            let (protocol_error, expected) = part1;
+            let label = format!("{protocol_error:?}");
             let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
                 phase_label: "await_confirmed",
-                inner: Box::new(HandshakeDriverError::Protocol(part1)),
+                inner: Box::new(HandshakeDriverError::Protocol(protocol_error)),
             });
             assert_eq!(
-                mapped,
-                LauncherError::ResponderSessionConfirmedPart1Failed,
-                "part-1 variant {label} did not collapse to part1"
+                mapped, expected,
+                "part-1 variant {label} did not retain its closed category"
             );
         }
+        let io = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+            phase_label: "await_confirmed",
+            inner: Box::new(HandshakeDriverError::Io(i2pr_runtime::ExactIoError {
+                kind: i2pr_runtime::IoErrorKind::Closed,
+            })),
+        });
+        assert_eq!(io, LauncherError::ResponderSessionConfirmedPart1IoFailed);
         // Identity verification: identity, malformed, signature, peer
         // key, static-key.
         for identity in [
@@ -2153,6 +2234,14 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
             LauncherError::ResponderNoiseStateFailed,
             LauncherError::ResponderSessionCreatedWriteFailed,
             LauncherError::ResponderSessionConfirmedPart1Failed,
+            LauncherError::ResponderSessionConfirmedPart1InvalidFixedLength,
+            LauncherError::ResponderSessionConfirmedPart1Truncated,
+            LauncherError::ResponderSessionConfirmedPart1ExcessivePadding,
+            LauncherError::ResponderSessionConfirmedPart1DeobfuscationFailed,
+            LauncherError::ResponderSessionConfirmedPart1AuthenticationFailed,
+            LauncherError::ResponderSessionConfirmedPart1TranscriptMismatch,
+            LauncherError::ResponderSessionConfirmedPart1KeyAgreementInvalid,
+            LauncherError::ResponderSessionConfirmedPart1IoFailed,
             LauncherError::ResponderSessionConfirmedPart2Failed,
             LauncherError::ResponderRouterIdentityVerificationFailed,
             LauncherError::ResponderHandshakeTimeout,

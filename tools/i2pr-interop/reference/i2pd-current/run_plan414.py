@@ -22,6 +22,24 @@ TREE_SHA256 = "dbffcb2960766cf07cc87a5a56377472122ae577832f2ff5dfaa51611eb82f98"
 TOPOLOGY = "current-network-loopback"
 TIMEOUT_MS = 30_000
 MAX_ATTEMPTS_PER_DIRECTION = 1
+RESPONDER_REASON_CODES = frozenset({
+    "responder_tcp_accept_missing", "responder_admission_rejected",
+    "responder_message1_decode_failed", "responder_message1_options_invalid",
+    "responder_noise_state_failed", "responder_session_created_write_failed",
+    "responder_session_confirmed_part1_failed",
+    "responder_session_confirmed_part1_invalid_fixed_length",
+    "responder_session_confirmed_part1_truncated",
+    "responder_session_confirmed_part1_excessive_padding",
+    "responder_session_confirmed_part1_deobfuscation_failed",
+    "responder_session_confirmed_part1_authentication_failed",
+    "responder_session_confirmed_part1_transcript_mismatch",
+    "responder_session_confirmed_part1_key_agreement_invalid",
+    "responder_session_confirmed_part1_io_failed",
+    "responder_session_confirmed_part2_failed",
+    "responder_router_identity_verification_failed",
+    "responder_handshake_timeout", "responder_authenticated_link_install_failed",
+    "responder_data_frame_read_failed", "responder_i2np_decode_failed",
+})
 
 
 class RunError(RuntimeError):
@@ -86,6 +104,9 @@ def project_stages(path: Path, reference: bool) -> list[dict[str, str]]:
             phase = safe_reason(record.get("phase"))
             result = safe_reason(record.get("result"))
             reason = safe_reason(record.get("reason_code"))
+            if reason is not None and reason.startswith("responder_") \
+                    and reason not in RESPONDER_REASON_CODES:
+                reason = None
             if phase is not None:
                 row = {"phase": phase}
                 if result:
@@ -664,6 +685,20 @@ def main() -> int:
             projected = project_stages(staged, False)
             if projected != [{"phase": "terminal", "result": "failed", "reason_code": "wire-rejected"}]:
                 raise RunError("self-test-stage-projection-failed")
+            staged.write_text(json.dumps({
+                "phase": "terminal", "result": "authentication_failed",
+                "reason_code": "responder_session_confirmed_part1_authentication_failed",
+            }) + "\n" + json.dumps({
+                "phase": "terminal", "result": "authentication_failed",
+                "reason_code": "responder_session_confirmed_part1_dynamic_detail",
+            }) + "\n", encoding="utf-8")
+            projected = project_stages(staged, False)
+            if projected != [
+                {"phase": "terminal", "result": "authentication_failed",
+                 "reason_code": "responder_session_confirmed_part1_authentication_failed"},
+                {"phase": "terminal", "result": "authentication_failed"},
+            ]:
+                raise RunError("self-test-responder-reason-allowlist-failed")
             evidence = root / "evidence.json"
             write_evidence(evidence, [{"direction": "forward", "launcher_stages": projected}], "rejected")
             output = evidence.read_text(encoding="utf-8")

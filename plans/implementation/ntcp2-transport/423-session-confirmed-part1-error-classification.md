@@ -1,6 +1,6 @@
 # Plan 423 — classify reverse SessionConfirmed Part 1 failures precisely
 
-Status: **active** — active-session-confirmed-part1-error-classification.
+Status: **stopped** — stopped-reverse-session-confirmed-read-closed.
 Corrective successor to [Plan 422](../../closure/ntcp2-transport/422-status.md).
 
 ## Objective

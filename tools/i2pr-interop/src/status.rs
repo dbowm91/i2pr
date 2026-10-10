@@ -85,6 +85,14 @@ pub enum StatusReason {
     ResponderNoiseStateFailed,
     ResponderSessionCreatedWriteFailed,
     ResponderSessionConfirmedPart1Failed,
+    ResponderSessionConfirmedPart1InvalidFixedLength,
+    ResponderSessionConfirmedPart1Truncated,
+    ResponderSessionConfirmedPart1ExcessivePadding,
+    ResponderSessionConfirmedPart1DeobfuscationFailed,
+    ResponderSessionConfirmedPart1AuthenticationFailed,
+    ResponderSessionConfirmedPart1TranscriptMismatch,
+    ResponderSessionConfirmedPart1KeyAgreementInvalid,
+    ResponderSessionConfirmedPart1IoFailed,
     ResponderSessionConfirmedPart2Failed,
     ResponderRouterIdentityVerificationFailed,
     ResponderHandshakeTimeout,
@@ -290,6 +298,30 @@ pub(crate) fn reason_name(value: StatusReason) -> &'static str {
         }
         StatusReason::ResponderSessionConfirmedPart1Failed => {
             "responder_session_confirmed_part1_failed"
+        }
+        StatusReason::ResponderSessionConfirmedPart1InvalidFixedLength => {
+            "responder_session_confirmed_part1_invalid_fixed_length"
+        }
+        StatusReason::ResponderSessionConfirmedPart1Truncated => {
+            "responder_session_confirmed_part1_truncated"
+        }
+        StatusReason::ResponderSessionConfirmedPart1ExcessivePadding => {
+            "responder_session_confirmed_part1_excessive_padding"
+        }
+        StatusReason::ResponderSessionConfirmedPart1DeobfuscationFailed => {
+            "responder_session_confirmed_part1_deobfuscation_failed"
+        }
+        StatusReason::ResponderSessionConfirmedPart1AuthenticationFailed => {
+            "responder_session_confirmed_part1_authentication_failed"
+        }
+        StatusReason::ResponderSessionConfirmedPart1TranscriptMismatch => {
+            "responder_session_confirmed_part1_transcript_mismatch"
+        }
+        StatusReason::ResponderSessionConfirmedPart1KeyAgreementInvalid => {
+            "responder_session_confirmed_part1_key_agreement_invalid"
+        }
+        StatusReason::ResponderSessionConfirmedPart1IoFailed => {
+            "responder_session_confirmed_part1_io_failed"
         }
         StatusReason::ResponderSessionConfirmedPart2Failed => {
             "responder_session_confirmed_part2_failed"

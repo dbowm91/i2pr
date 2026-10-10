@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "tools/i2pr-interop/reference/i2pd-current/src/i2pd_current_ntcp2_driver.cpp"
@@ -12,6 +13,8 @@ BUILD = ROOT / "tools/i2pr-interop/reference/i2pd-current/build.sh"
 CMAKE = ROOT / "tools/i2pr-interop/reference/i2pd-current/CMakeLists.txt"
 OBSERVER = ROOT / "tools/i2pr-interop/reference/i2pd-current/observe_decoded_delivery_status.py"
 RUNNER = ROOT / "tools/i2pr-interop/reference/i2pd-current/run_plan414.py"
+LAUNCHER = ROOT / "tools/i2pr-interop/src/main.rs"
+STATUS = ROOT / "tools/i2pr-interop/src/status.rs"
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
 REJECTION_COUNTERS = (
     "session_confirmed_part2_kdf_failure_count",
@@ -30,7 +33,22 @@ REJECTION_COUNTERS = (
 )
 
 
-def source_findings(driver: str, build: str, cmake: str, observer: str, runner: str) -> list[str]:
+PART1_CATEGORIES = {
+    "InvalidFixedLength": ("InvalidFixedLength", "invalid_fixed_length"),
+    "Truncated": ("Truncated", "truncated"),
+    "ExcessivePadding": ("ExcessivePadding", "excessive_padding"),
+    "DeobfuscationFailure": ("DeobfuscationFailed", "deobfuscation_failed"),
+    "AuthenticationFailure": ("AuthenticationFailed", "authentication_failed"),
+    "TranscriptMismatch": ("TranscriptMismatch", "transcript_mismatch"),
+    "InvalidKeyAgreement": ("KeyAgreementInvalid", "key_agreement_invalid"),
+}
+
+
+def source_findings(driver: str, build: str, cmake: str, observer: str, runner: str,
+                    launcher: str | None = None, status: str | None = None) -> list[str]:
+    launcher = LAUNCHER.read_text() if launcher is None else launcher
+    status = STATUS.read_text() if status is None else status
+    responder_allowlist = runner.partition("RESPONDER_REASON_CODES = frozenset({")[2].partition("})")[0]
     findings = []
     checks = {
         "pinned current revision": PIN in driver and PIN in build,
@@ -87,6 +105,22 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
             and "scenario-router-identity-role-mismatch" in runner
             and "self-test-swapped-or-duplicate-identities-accepted" in runner
         ),
+        "SessionConfirmed Part 1 protocol errors map to distinct fixed statuses": all(
+            re.search(
+                rf"HandshakeError::{error}\s*=>\s*\{{?\s*LauncherError::ResponderSessionConfirmedPart1"
+                rf"{suffix[0]}", launcher
+            ) is not None
+            and f"StatusReason::ResponderSessionConfirmedPart1{suffix[0]}" in launcher
+            and f'"responder_session_confirmed_part1_{suffix[1]}"' in status
+            for error, suffix in PART1_CATEGORIES.items()
+        ) and re.search(
+            r"HandshakeDriverError::Io\(_\)\s*=>\s*LauncherError::ResponderSessionConfirmedPart1IoFailed",
+            launcher,
+        ) is not None and '"responder_session_confirmed_part1_io_failed"' in status,
+        "evidence projection whitelists fixed responder reason codes": all(
+            f'"responder_session_confirmed_part1_{suffix}"' in responder_allowlist
+            for _, suffix in PART1_CATEGORIES.values()
+        ) and "reason not in RESPONDER_REASON_CODES" in runner,
     }
     findings.extend(name for name, passed in checks.items() if not passed)
     return findings
@@ -98,7 +132,9 @@ def self_test() -> bool:
     cmake = CMAKE.read_text()
     observer = OBSERVER.read_text()
     runner = RUNNER.read_text()
-    if source_findings(driver, build, cmake, observer, runner):
+    launcher = LAUNCHER.read_text()
+    status = STATUS.read_text()
+    if source_findings(driver, build, cmake, observer, runner, launcher, status):
         return False
     mutations = [
         (driver.replace("if (cfg.network_id != 2)", "if (cfg.network_id != 99)"), build, cmake),
@@ -120,7 +156,20 @@ def self_test() -> bool:
                         'i2p::log::Logger().Start();\n    i2p::log::Logger().SetLogLevel("debug");'),
          build, cmake, observer, runner),
     ]
-    normalized = [candidate if len(candidate) == 5 else (*candidate, observer, runner) for candidate in mutations]
+    normalized = [
+        (*candidate, observer, runner, launcher, status) if len(candidate) == 3
+        else (*candidate, launcher, status) if len(candidate) == 5
+        else candidate
+        for candidate in mutations
+    ]
+    normalized.extend([
+        (driver, build, cmake, observer, runner,
+         launcher.replace("LauncherError::ResponderSessionConfirmedPart1AuthenticationFailed",
+                          "LauncherError::ResponderSessionConfirmedPart1Failed"), status),
+        (driver, build, cmake, observer,
+         runner.replace('    "responder_session_confirmed_part1_authentication_failed",\n', ''),
+         launcher, status),
+    ])
     return all(source_findings(*candidate) for candidate in normalized)
 
 
@@ -135,7 +184,8 @@ def main() -> int:
         print("current-pin NTCP2 runner checker self-test failed")
         return 1
     findings = source_findings(DRIVER.read_text(), BUILD.read_text(), CMAKE.read_text(),
-                               OBSERVER.read_text(), RUNNER.read_text())
+                               OBSERVER.read_text(), RUNNER.read_text(),
+                               LAUNCHER.read_text(), STATUS.read_text())
     if findings:
         for finding in findings:
             print(f"current-pin NTCP2 runner check failed: {finding}")
