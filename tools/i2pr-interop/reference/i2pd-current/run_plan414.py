@@ -92,6 +92,12 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
         "session_created_received_count", "session_confirmed_received_count",
         "session_confirmed_sent_count", "session_request_aead_failure_count",
         "session_created_aead_failure_count", "session_confirmed_aead_failure_count",
+        "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
+        "session_confirmed_unexpected_router_info_size_count",
+        "session_confirmed_router_info_verification_failure_count",
+        "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+        "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
+        "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
         "reference_stages", "launcher_stages",
     }
     result: dict[str, object] = {}
@@ -112,7 +118,14 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
             "session_request_received_count", "session_created_received_count",
             "session_confirmed_received_count", "session_confirmed_sent_count",
             "session_request_aead_failure_count", "session_created_aead_failure_count",
-            "session_confirmed_aead_failure_count", "attempt_number",
+            "session_confirmed_aead_failure_count",
+            "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
+            "session_confirmed_unexpected_router_info_size_count",
+            "session_confirmed_router_info_verification_failure_count",
+            "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+            "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
+            "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
+            "attempt_number",
         }:
             if isinstance(value, int) and 0 <= value <= 0xFFFF:
                 result[key] = value
@@ -538,6 +551,12 @@ def run_direction(
                 "session_confirmed_received_count", "session_confirmed_sent_count",
                 "session_request_aead_failure_count", "session_created_aead_failure_count",
                 "session_confirmed_aead_failure_count",
+                "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
+                "session_confirmed_unexpected_router_info_size_count",
+                "session_confirmed_router_info_verification_failure_count",
+                "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+                "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
+                "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
             ):
                 value = observer_record.get(field)
                 if isinstance(value, int) and 0 <= value <= 0xFFFF:
@@ -597,6 +616,8 @@ def main() -> int:
                                        "router_hash": "a" * 64, "raw_stderr": "PRIVATE_SENTINEL"}],
                 "session_request_received_count": 1,
                 "session_confirmed_received_count": 1,
+                "session_confirmed_unexpected_block_count": 1,
+                "session_confirmed_wrong_static_key_count": 1,
                 "log_sha256": "b" * 64,
                 "private_path": "/private/path", "raw_stdout": "PRIVATE_SENTINEL",
             }
@@ -607,8 +628,10 @@ def main() -> int:
             stage_evidence = root / "stage-evidence.json"
             write_evidence(stage_evidence, [private], "rejected")
             stage_json = stage_evidence.read_text(encoding="utf-8")
-            if '"session_request_received_count":1' not in stage_json or any(
-                    value in stage_json for value in ("log_sha256", "b" * 64, "778899")):
+            if ('"session_request_received_count":1' not in stage_json
+                    or '"session_confirmed_unexpected_block_count":1' not in stage_json
+                    or '"session_confirmed_wrong_static_key_count":1' not in stage_json or any(
+                    value in stage_json for value in ("log_sha256", "b" * 64, "778899"))):
                 raise RunError("self-test-stage-count-evidence-failed")
             cleanup_root = root / "owned"
             cleanup_root.mkdir()

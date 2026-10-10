@@ -13,6 +13,19 @@ CMAKE = ROOT / "tools/i2pr-interop/reference/i2pd-current/CMakeLists.txt"
 OBSERVER = ROOT / "tools/i2pr-interop/reference/i2pd-current/observe_decoded_delivery_status.py"
 RUNNER = ROOT / "tools/i2pr-interop/reference/i2pd-current/run_plan414.py"
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
+REJECTION_COUNTERS = (
+    "session_confirmed_part2_kdf_failure_count",
+    "session_confirmed_unexpected_block_count",
+    "session_confirmed_unexpected_router_info_size_count",
+    "session_confirmed_router_info_verification_failure_count",
+    "session_confirmed_router_info_too_old_count",
+    "session_confirmed_router_info_from_future_count",
+    "session_confirmed_router_version_too_old_count",
+    "session_confirmed_router_info_update_failure_count",
+    "session_confirmed_address_not_found_count",
+    "session_confirmed_host_mismatch_count",
+    "session_confirmed_wrong_static_key_count",
+)
 
 
 def source_findings(driver: str, build: str, cmake: str, observer: str, runner: str) -> list[str]:
@@ -38,7 +51,19 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
         "closed stock handshake stage allowlist": "STAGE_PATTERNS = {" in observer
         and "session_request_received_count" in observer
         and "session_created_received_count" in observer
-        and "session_confirmed_received_count" in observer,
+        and "session_confirmed_received_count" in observer
+        and all(name in observer and name in runner for name in REJECTION_COUNTERS),
+        "source-verified SessionConfirmed rejection marker phrases": all(
+            phrase in observer for phrase in (
+                "SessionConfirmed Part2 KDF failed", "Unexpected block",
+                "Unexpected RouterInfo size", "RouterInfo verification failed in SessionConfirmed",
+                "RouterInfo is too old in SessionConfirmed", "RouterInfo is from future",
+                "Router version",
+                "Couldn't update RouterInfo from SessionConfirmed in netdb",
+                "Address not found in SessionConfirmed", "Host mismatch between published address",
+                "Wrong static key in SessionConfirmed",
+            )
+        ),
         "post-baseline bounded observer": "raw[baseline_offset:]" in observer
         and "MAX_LINE_BYTES = 4096" in observer,
         "no retained raw-log digest": '"log_sha256":' not in observer
@@ -64,6 +89,7 @@ def self_test() -> bool:
         (driver + '\n"local_router_hash_sha256":"\n', build, cmake),
         (driver, build, cmake + "\n-DI2PD_INTEROP_OBSERVER=1\n"),
         (driver, build, cmake, observer.replace("session_request_received_count", "request_stage_removed"), runner),
+        (driver, build, cmake, observer.replace(REJECTION_COUNTERS[0], "rejection_stage_removed"), runner),
         (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
         (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
         (driver.replace('Logger().SetLogLevel("debug");', ""), build, cmake, observer, runner),

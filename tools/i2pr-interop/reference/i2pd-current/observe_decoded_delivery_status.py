@@ -23,6 +23,17 @@ STAGE_PATTERNS = {
     "session_request_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionRequest AEAD verification failed\s*$"),
     "session_created_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionCreated AEAD verification failed\s*$"),
     "session_confirmed_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed Part[12] AEAD verification failed\s*$"),
+    "session_confirmed_part2_kdf_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed Part2 KDF failed\s*$"),
+    "session_confirmed_unexpected_block_count": re.compile(r"(?:^|\s)NTCP2: Unexpected block \d+ in SessionConfirmed\s*$"),
+    "session_confirmed_unexpected_router_info_size_count": re.compile(r"(?:^|\s)NTCP2: Unexpected RouterInfo size \d+ in SessionConfirmed\s*$"),
+    "session_confirmed_router_info_verification_failure_count": re.compile(r"(?:^|\s)NTCP2: RouterInfo verification failed in SessionConfirmed from .+$"),
+    "session_confirmed_router_info_too_old_count": re.compile(r"(?:^|\s)NTCP2: RouterInfo is too old in SessionConfirmed for \d+ seconds\s*$"),
+    "session_confirmed_router_info_from_future_count": re.compile(r"(?:^|\s)NTCP2: RouterInfo is from future for \d+ seconds\s*$"),
+    "session_confirmed_router_version_too_old_count": re.compile(r"(?:^|\s)NTCP2: Router version \d+\.\d+\.\d+ is too old in SessionConfirmed\s*$"),
+    "session_confirmed_router_info_update_failure_count": re.compile(r"(?:^|\s)NTCP2: Couldn't update RouterInfo from SessionConfirmed in netdb\s*$"),
+    "session_confirmed_address_not_found_count": re.compile(r"(?:^|\s)NTCP2: Address not found in SessionConfirmed\s*$"),
+    "session_confirmed_host_mismatch_count": re.compile(r"(?:^|\s)NTCP2: Host mismatch between published address .+ and actual endpoint .+$"),
+    "session_confirmed_wrong_static_key_count": re.compile(r"(?:^|\s)NTCP2: Wrong static key in SessionConfirmed\s*$"),
 }
 MAX_LINE_BYTES = 4096
 DIRECTIONS = {"i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"}
@@ -101,6 +112,28 @@ def self_test() -> None:
     assert stage_result["session_created_received_count"] == 1
     assert stage_result["session_confirmed_received_count"] == 1
     assert stage_result["session_confirmed_sent_count"] == 1
+    failure_markers = (
+        b"NTCP2: SessionConfirmed Part1 AEAD verification failed \n",
+        b"NTCP2: SessionConfirmed Part2 KDF failed\n",
+        b"NTCP2: SessionConfirmed Part2 AEAD verification failed \n",
+        b"NTCP2: Unexpected block 7 in SessionConfirmed\n",
+        b"NTCP2: Unexpected RouterInfo size 123 in SessionConfirmed\n",
+        b"NTCP2: RouterInfo verification failed in SessionConfirmed from 127.0.0.1:1234\n",
+        b"NTCP2: RouterInfo is too old in SessionConfirmed for 5401 seconds\n",
+        b"NTCP2: RouterInfo is from future for 121 seconds\n",
+        b"NTCP2: Router version 0.9.68 is too old in SessionConfirmed\n",
+        b"NTCP2: Couldn't update RouterInfo from SessionConfirmed in netdb\n",
+        b"NTCP2: Address not found in SessionConfirmed\n",
+        b"NTCP2: Host mismatch between published address 127.0.0.1 and actual endpoint 127.0.0.2\n",
+        b"NTCP2: Wrong static key in SessionConfirmed\n",
+    )
+    baseline_prefix = b"pre-baseline NTCP2: Wrong static key in SessionConfirmed\n"
+    failure_result = observe(baseline_prefix + b"".join(failure_markers), len(baseline_prefix))
+    failure_names = tuple(name for name in STAGE_PATTERNS if name.startswith("session_confirmed_")
+                          and name not in {"session_confirmed_received_count", "session_confirmed_sent_count"})
+    assert all(failure_result[name] == (2 if name == "session_confirmed_aead_failure_count" else 1)
+               for name in failure_names)
+    assert not any(value in json.dumps(failure_result) for value in ("127.0.0.1", "1234", "5401", "121"))
     assert stage_result["result"] == "rejected"
     assert stage_result["reason_code"] == "decoded-delivery-status-count-not-one"
 
