@@ -4,6 +4,8 @@ Status: closed
 
 **Recovery continuation (2026-10-10):** [Plan 431](../implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md), gated by Plan 430, extends the closed M8 **controlled-loopback** SSU2 qualification to opt-in non-loopback transport identity, socket and RouterInfo lifecycle. Two independent router families still gate broad normal/public capability claims. Normal-daemon public advertisement remains unqualified. See [core-router recovery](core-router-recovery-roadmap.md).
 
+**Corrective successor (2026-10-10):** [Plan 442](../implementation/core-router-recovery/442-ssu2-normal-owner-preparation-and-independent-topology.md), blocked on Plan 440, separates implementable runtime-owned SSU2 persistent-key/normal-process work from the separately authorized two-host non-loopback qualification needed by stopped Plan 431. Emissary's scoped `allow_local` SSU2 loopback tests prove loopback is a valid local transport mode; that does not establish public reachability. [Plan 443](../implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md) can exercise controlled multihop product networking after 440/432, but not close 431 or normal-public claims. [Cross-subsystem graph](core-router-recovery-roadmap.md).
+
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
