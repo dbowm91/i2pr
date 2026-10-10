@@ -1,6 +1,6 @@
 # Plan 420 — observe post-validation current-pin NTCP2 session progress
 
-Status: **active** — `in-progress-post-validation-session-progress-observation`.
+Status: **stopped** — `stopped-router-info-accepted-without-delivery-status`.
 Corrective successor to [Plan 419](../../closure/ntcp2-transport/419-status.md).
 
 ## Objective
