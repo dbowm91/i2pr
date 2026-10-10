@@ -72,6 +72,14 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
         "no retained raw-log digest": '"log_sha256":' not in observer
         and '"raw_log_sha256"' not in runner,
         "runner passes the log baseline": '"--baseline-offset", str(log_baseline)' in runner,
+        "closed direction selector exposes reverse-only mode": (
+            'choices=("forward", "reverse", "both")' in runner
+            and 'if selection == "reverse":' in runner
+            and 'return ("reverse",)' in runner
+            and 'if selection == "both":' in runner
+            and 'return ("forward", "reverse")' in runner
+            and "direction-selection-invalid" in runner
+        ),
     }
     findings.extend(name for name, passed in checks.items() if not passed)
     return findings
@@ -97,6 +105,7 @@ def self_test() -> bool:
                                                  "post_validation_stage_removed"), runner),
         (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
         (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
+        (driver, build, cmake, observer, runner.replace('return ("reverse",)', 'return ("forward",)')),
         (driver.replace('Logger().SetLogLevel("debug");', ""), build, cmake, observer, runner),
         (driver.replace('Logger().SetLogLevel("debug");\n    i2p::log::Logger().Start();',
                         'i2p::log::Logger().Start();\n    i2p::log::Logger().SetLogLevel("debug");'),

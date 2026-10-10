@@ -30,6 +30,16 @@ class RunError(RuntimeError):
         self.reason = reason
 
 
+def directions_for(selection: str) -> tuple[str, ...]:
+    if selection == "forward":
+        return ("forward",)
+    if selection == "reverse":
+        return ("reverse",)
+    if selection == "both":
+        return ("forward", "reverse")
+    raise RunError("direction-selection-invalid")
+
+
 def safe_reason(value: object) -> str | None:
     if not isinstance(value, str) or not value or len(value) > 80:
         return None
@@ -583,11 +593,23 @@ def main() -> int:
     parser.add_argument("--observer", type=Path)
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--work-parent", type=Path)
+    parser.add_argument("--direction", choices=("forward", "reverse", "both"), default="both")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         with tempfile.TemporaryDirectory(prefix="plan417-self-test-") as temporary:
             root = Path(temporary)
+            if (directions_for("forward") != ("forward",)
+                    or directions_for("reverse") != ("reverse",)
+                    or directions_for("both") != ("forward", "reverse")):
+                raise RunError("self-test-direction-selection-failed")
+            try:
+                directions_for("unknown")
+            except RunError as exc:
+                if exc.reason != "direction-selection-invalid":
+                    raise
+            else:
+                raise RunError("self-test-invalid-direction-accepted")
             staged = root / "events.jsonl"
             staged.write_text(json.dumps({
                 "phase": "terminal", "result": "failed", "reason_code": "wire-rejected",
@@ -692,19 +714,20 @@ def main() -> int:
         evidence.parent.mkdir(parents=True, exist_ok=True)
         if evidence.exists():
             raise RunError("evidence-already-exists")
-        first = run_direction(launcher, driver, manifest, observer, evidence, parent, attempts, "forward")
-        if first.get("result") != "passed":
-            write_evidence(evidence, attempts, "rejected")
-            print(json.dumps({"schema": "i2pr-plan417-evidence-v1", "result": "rejected",
-                              "reason_code": safe_reason(first.get("reason_code")) or "forward-rejected"},
-                             separators=(",", ":")))
-            return 2
-        second = run_direction(launcher, driver, manifest, observer, evidence, parent, attempts, "reverse")
-        result = "passed" if second.get("result") == "passed" else "rejected"
+        selected = directions_for(args.direction)
+        terminal: dict[str, object] | None = None
+        for direction in selected:
+            terminal = run_direction(
+                launcher, driver, manifest, observer, evidence, parent, attempts, direction
+            )
+            if terminal.get("result") != "passed":
+                break
+        result = "passed" if terminal is not None and terminal.get("result") == "passed" else "rejected"
         write_evidence(evidence, attempts, result)
         print(json.dumps({"schema": "i2pr-plan417-evidence-v1", "result": result,
                           **({} if result == "passed" else {
-                              "reason_code": safe_reason(second.get("reason_code")) or "reverse-rejected"})},
+                              "reason_code": safe_reason((terminal or {}).get("reason_code"))
+                              or "attempt-rejected"})},
                          separators=(",", ":")))
         return 0 if result == "passed" else 2
     except (OSError, RunError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
