@@ -1,8 +1,8 @@
 # NTCP2 Transport Roadmap
 
-Status: historical M3 closed (protocol defect localized); Plans 410/414/415/416/417/418 stopped before current-pin two-way evidence; Plan 419 is ready to count source-verified SessionConfirmed rejection stages; recovery Plans 434–435 remain gated.
+Status: historical M3 closed (protocol defect localized); Plans 410/414/415/416/417/418/419 stopped before current-pin two-way evidence; Plan 420 is ready to count post-validation and termination stages; recovery Plans 434–435 remain gated.
 
-**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. Plans 410, 414, 415, 416, and 417 stopped at their recorded evidence boundaries. Plan 418 enabled existing debug logs in the isolated helper; its forward attempt saw the SessionConfirmed receive marker before validation, but no connected peer or DeliveryStatus, and reverse was not run. Plan 419 is ready to count exact source-verified rejection markers in sanitized evidence and spend one forward attempt. Plan 434 remains blocked because authenticated two-way I2NP evidence is unavailable. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
+**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. Plans 410 through 419 stopped at their recorded evidence boundaries. Plan 419's one forward attempt saw no selected validation-rejection marker, I2NP block, or DeliveryStatus; helper timeout and launcher close recurred, and cleanup passed. Plan 420 is ready to count the first post-validation stock marker and session termination. Plan 434 remains blocked because authenticated two-way I2NP evidence is unavailable. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
 
 Long-term references:
 
@@ -39,7 +39,7 @@ Historic plans: 030–101 (global i2pr numbers, preserved).
 
 ## 4. Current state
 
-Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plans 410–418 stopped without authenticated two-way evidence. Plan 418's debug-stage evidence reached SessionConfirmed before validation, but the connection did not establish. Plan 419 owns bounded rejection-stage counters. Plan 434 remains blocked.
+Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plans 410–419 stopped without authenticated two-way evidence. Plan 419's rejection counters were all zero at the helper timeout. Plan 420 owns bounded post-validation and termination markers. Plan 434 remains blocked.
 
 ## 5. Target architecture
 
@@ -137,7 +137,8 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 416 | stopped | `plans/implementation/ntcp2-transport/416-current-pin-ntcp2-authentication-stage-diagnosis.md` | `plans/closure/ntcp2-transport/416-status.md`: source trace unresolved; a new plan must add sanitized handshake-stage observation |
 | 417 | stopped | `plans/implementation/ntcp2-transport/417-sanitized-stock-ntcp2-handshake-stage-observer.md` | `plans/closure/ntcp2-transport/417-status.md`: stage observer passed; helper log level filtered all debug milestones |
 | 418 | stopped | `plans/implementation/ntcp2-transport/418-current-pin-helper-debug-stage-logging.md` | `plans/closure/ntcp2-transport/418-status.md`: SessionConfirmed received before validation, no connected peer or DeliveryStatus |
-| 419 | ready | `plans/implementation/ntcp2-transport/419-session-confirmed-rejection-stage-observation.md` | Source-verified rejection counters and one forward attempt |
+| 419 | stopped | `plans/implementation/ntcp2-transport/419-session-confirmed-rejection-stage-observation.md` | `plans/closure/ntcp2-transport/419-status.md`: all rejection counters and DeliveryStatus zero; helper timeout recurred |
+| 420 | ready | `plans/implementation/ntcp2-transport/420-post-validation-session-progress-observation.md` | Count post-validation and termination markers during one forward attempt |
 
 ## 8. Cross-cutting requirements
 
