@@ -1,6 +1,8 @@
 # NTCP2 Transport Roadmap
 
-Status: closed
+Status: historical M3 closed (protocol defect localized); new recovery Plans 434–435 registered and gated.
+
+**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor, blocked on Plan 430. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
 
 Long-term references:
 
