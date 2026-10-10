@@ -1,6 +1,6 @@
 # Plan 444 — Configured shared bandwidth semantics and independent Java floodfill-selection controls
 
-Status: **registered / blocked on Plan 440**. Bounded infrastructure/one-family admission corrective feeding Plan 437; no dependence on full Plan 433/436 completion for *bandwidth classification*, but full normal floodfill eligibility still requires them.
+Status: **blocked — no configured, enforced ingress/egress budget exists to support a truthful class**. Plan 440 is closed. Bounded infrastructure/one-family admission corrective feeding Plan 437; no dependence on full Plan 433/436 completion for bandwidth classification, but full normal floodfill eligibility still requires them. Closure: `plans/closure/floodfill/444-status.md`.
 
 ## Objective and baseline
 
