@@ -65,10 +65,11 @@ Capability advertisement is an output of observed healthy owners and completed c
 | --- | --- | --- | --- |
 | 430 | passed | `plans/implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md` | Source inventory, readiness/claim contract, fail-closed negative controls; no capability promotion |
 | 410 | stopped | `plans/implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md` | `plans/closure/ntcp2-transport/410-status.md`: current profile and pristine helper build pass; stock i2pd exposes no decoded inbound NTCP2 I2NP observation |
+| 414 | in-progress | `plans/implementation/ntcp2-transport/414-stock-i2pd-decoded-message-observation.md` | Corrective to Plan 410; validate pinned source-to-debug-log proof and single-message attribution before any live attempt |
 | 431 | stopped | `plans/implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md` | `431-status.md`: resume only with authorized independently addressed non-loopback reference topology |
 | 432 | passed | `plans/implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md` | `plans/closure/core-router-recovery/432-status.md`: trusted local HTTPS SU3 cold start, validated cache persistence, and restart reuse |
 | 433 | blocked on 431,432 | `plans/implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md` | Independent-router multihop end-to-end application path |
-| 434 | blocked | `plans/implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md` | `plans/closure/ntcp2-transport/434-status.md` and Plan 410: current profile exists, but authoritative stock-i2pd I2NP receive evidence is unavailable without prohibited reference modification |
+| 434 | blocked | `plans/implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md` | `plans/closure/ntcp2-transport/434-status.md`; Plan 414 evaluates a stock-log path while preserving the no-reference-modification rule |
 | 435 | blocked on 433,434 | `plans/implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md` | Dual-transport operational profile, two-family gate |
 | 436 | blocked on 433 | `plans/implementation/transit-tunnels/436-normal-daemon-transit-participation-optin.md` | Opt-in participant forwarding and resource/lifecycle acceptance |
 | 437 | blocked on 433,436 | `plans/implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md` | Measured class and Java candidate selection |
