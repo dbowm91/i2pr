@@ -113,13 +113,13 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 444 | blocked | `plans/implementation/floodfill/444-configured-shared-bandwidth-class-and-java-selection-control.md` | `plans/closure/floodfill/444-status.md`: pinned Java class boundaries verified; missing enforceable global byte budget; **Plan 448** owns the shaper before Java selection |
 | 445 | blocked | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | `plans/closure/ntcp2-transport/445-status.md`: both custom stock i2pd helper sessions unestablished, no i2pr attempt; **Plan 446** normal stock-daemon control successor |
 | 446 | blocked | `plans/implementation/ntcp2-transport/446-real-i2pd-daemon-control-and-ntcp2-requalification.md` | `plans/closure/ntcp2-transport/446-status.md`: command-line datadir isolation not established; no protocol result, and no i2pr attempt |
-| 447 | **ready** | `plans/implementation/core-router-recovery/447-real-daemon-ssu2-netdb-sam-e2e-corrective.md` | Execute real `i2pr run` process; independently close startup/SAM, stock link/NetDB and nonzero-hop application gates |
+| 447 | blocked | `plans/implementation/core-router-recovery/447-real-daemon-ssu2-netdb-sam-e2e-corrective.md` | `plans/closure/core-router-recovery/447-status.md`: process-level SAM 3.1 Gate A partial evidence passed; stock-link/NetDB Gate B and multihop application Gate C not run |
 | 448 | **ready** | `plans/implementation/floodfill/448-global-bandwidth-governor-and-eligible-capability-class.md` | Enforce global configured ingress/egress share limits and truthful RouterInfo capacity before 444 Java selection |
 | 449 | **ready for harness; external proof environment-dependent** | `plans/implementation/core-router-recovery/449-portable-ssu2-independent-lan-qualification-lane.md` | Implement operator-ready LAN preflight, then require authorized two-host stock i2pd SSU2 traffic for Plan 431 qualification |
 
-Plan 446 now has a blocked closure record; Plans 447–449 remain registered until their own evidence is recorded. Earlier: no `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
+Plans 446 and 447 now have blocked closure records; Plans 448–449 remain registered until their own evidence is recorded. Earlier: no `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
-### Next executable batch (Plans 446–449; registered 2026-10-10)
+### Corrective sequence (Plans 446–449; registered 2026-10-10)
 
 Four independent **bounded corrective owners** are dependency-ready after Plan 440's closed evidence contract and previous Plan 432's HTTPS bootstrap:
 
@@ -130,7 +130,7 @@ Four independent **bounded corrective owners** are dependency-ready after Plan 4
 442 local key owner passed / 431 stopped -> 449 preflight then authorized private LAN -> 431 external gate -> 433
 ```
 
-The **local implementation** for each may progress separately; Plan 447 Gate A (normal-process startup and SAM) must not inherit the two-host Plan 449 requirement or Plan 446's NTCP2 positive control. Plan 448 is independent of NTCP2 and transit role qualification, but full `caps=f` remains blocked by Plan 437/438. The failed Plan 441/445 setup used *custom library-linked helper executables*, so a normal **stock i2pd daemon executable** positive control is now the prerequisite for source attribution. Prior attempts' closed status tokens and exact output remain authoritative; no more per-log micro-corrective loop.
+Plan 447 Gate A (normal-process startup and SAM) is independent of the two-host Plan 449 requirement and Plan 446's NTCP2 positive control; its black-box SAM process check passed, while Gates B/C remain blocked. Plan 448 remains independent of NTCP2 and transit role qualification, but full `caps=f` remains blocked by Plan 437/438. The Plan 446 launch did not prove data-directory isolation because it omitted the CLI `--datadir`; its closure records the possible default-directory use and requires a corrected runner before further traffic. Prior attempts' closed status tokens and exact output remain authoritative; no more per-log micro-corrective loop.
 
 Plan 449 cannot claim completion of full external qualification without an operator-authorized independently addressed host pair. Code-level LAN harness/preflight can be completed and closed **only as infrastructure**, not a release claim. All new successes must be recorded in new closure records; `specs/support.toml`, public RouterInfo, two-family conformance, Plan 101 default-off NTCP2 and Plan 431 non-loopback requirements remain unchanged.
 
