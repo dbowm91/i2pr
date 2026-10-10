@@ -6,6 +6,8 @@ Status: closed
 
 **Corrective successor (2026-10-10):** [Plan 442](../implementation/core-router-recovery/442-ssu2-normal-owner-preparation-and-independent-topology.md), blocked on Plan 440, separates implementable runtime-owned SSU2 persistent-key/normal-process work from the separately authorized two-host non-loopback qualification needed by stopped Plan 431. Emissary's scoped `allow_local` SSU2 loopback tests prove loopback is a valid local transport mode; that does not establish public reachability. [Plan 443](../implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md) can exercise controlled multihop product networking after 440/432, but not close 431 or normal-public claims. [Cross-subsystem graph](core-router-recovery-roadmap.md).
 
+**Next corrective owner (2026-10-10):** [Plan 449](../implementation/core-router-recovery/449-portable-ssu2-independent-lan-qualification-lane.md) is **registered / ready for bounded harness/preflight**, with external-run gate conditioned on an **authorized separately addressed two-host LAN**. Plan 442 local persistent transport identity and signed-loopback-SSU2 path passed, but Plan 431 still lacks real non-loopback reference evidence and remains stopped. Existing rootless/offline routine-test policy stays unchanged; partial preflight never authorizes a public bind or `R` advertisement. [Plan 447](../implementation/core-router-recovery/447-real-daemon-ssu2-netdb-sam-e2e-corrective.md) independently tests the actual normal daemon in controlled loopback without needing the LAN host. [Core recovery graph](core-router-recovery-roadmap.md).
+
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
