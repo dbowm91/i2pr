@@ -22,12 +22,12 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 ## Core-router operational recovery — registered 2026-10-10
 
-The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.md) explicitly includes **NTCP2 and optional floodfill** as completion requirements, not indefinitely deferred enhancements. Plan 430 passed as an infrastructure and invariant baseline; it changed no production network posture or support claim. Normal public SSU2/NTCP2, transit, and `caps=f` remain unqualified, and signed online HTTPS SU3 reseeding is not yet wired into normal bootstrap. Historical Plan 099/101, 161, 268, 303/306, and Proposal-170 ELS2 closure tokens are unchanged. Plans 431, 432, and 434 are now dependency-ready; the other 430–439 successors remain gated by their listed evidence.
+The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.md) explicitly includes **NTCP2 and optional floodfill** as completion requirements, not indefinitely deferred enhancements. Plan 430 passed as an infrastructure and invariant baseline; Plan 432 then delivered consented, verified HTTPS SU3 cold-start reseeding. Neither changed normal public network posture or support claims. Normal public SSU2/NTCP2, transit, and `caps=f` remain unqualified. Historical Plan 099/101, 161, 268, 303/306, and Proposal-170 ELS2 closure tokens are unchanged. Plan 431 is stopped, Plan 432 passed, and Plan 434 remains ready; the other 430–439 successors remain gated by their listed evidence.
 
 | Plan | State | Implementation handoff | Dependency / observable outcome |
 | --- | --- | --- | --- |
 | 431 | **stopped** | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | `closure/core-router-recovery/431-status.md`: independent non-loopback reference topology unavailable; 433 remains blocked |
-| 432 | **active** | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
+| 432 | **passed** | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | `closure/core-router-recovery/432-status.md`: local trusted HTTPS → validated cold-start cache → restart reuse |
 | 433 | blocked | [Live NetDB/tunnel/client composition](implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) | 431+432 → real independent-router multihop application path |
 | 434 | **ready** | [NTCP2 authenticated-link recovery](implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) | 430 → pinpoint Plan 099 discrepancy and qualify i2pd two-way I2NP |
 | 435 | blocked | [NTCP2 daemon and dual transports](implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) | 433+434 → guarded NTCP2 and SSU2 with i2pd+Java proof |
