@@ -21,9 +21,9 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 63 | 61 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 64 | 62 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 64 | 61 top level + 3 under `scripts/interop/` |
+| `check-*` on disk (all classes) | 65 | 62 top level + 3 under `scripts/interop/` |
 | Checker invocations in `ci.yml` | 41 | 39 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-61 `check-*` files exist on disk in `scripts/` (64 counting `scripts/interop/`),
+62 `check-*` files exist on disk in `scripts/` (65 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -53,6 +53,7 @@ counting method both numbers come from.
 
 | Script | What it catches | Floor | CI |
 | --- | --- | --- | --- |
+| `scripts/check-current-pin-ntcp2-runner.py` | Plan 410 fail-closed source guard for the network-ID-2 loopback profile, pristine current-pin library build and sanitized helper evidence. `--self-test` mutation-checks profile, network-ID, observer and identity-hash rules. | no | no |
 | `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
@@ -277,15 +278,14 @@ Count the rows in *Boundary checkers*, *Fixture and vector checkers*,
 whose `Floor` / `CI` column reads `yes`. This is the convention the
 **gap lists** below use.
 
-Recomputed 2026-10-07 (Plan 372; Plan 367's figures were already stale
-by one commit):
+Recomputed 2026-10-10 (Plan 410 added one tracked checker):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
 | Floor steps invoking a checker | 52 | 50 rows marked `Floor: yes` |
 | Total routine-floor steps | 62 | — |
 | Checkers executed by `ci.yml` | 39 | 42 rows marked `CI: yes` |
-| `check-*` files on disk | 61 (64 with `scripts/interop/`) | 63 checker rows |
+| `check-*` files on disk | 62 (65 with `scripts/interop/`) | 64 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.

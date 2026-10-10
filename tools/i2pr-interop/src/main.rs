@@ -290,11 +290,14 @@ fn prepare_state_command(
         Some(scenario::HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND) => {
             TopologyKind::HostLoopbackDevelopment
         }
+        Some(scenario::CURRENT_NETWORK_LOOPBACK_TOPOLOGY_KIND) => {
+            TopologyKind::CurrentNetworkLoopback
+        }
         Some(_) => {
             return emit_preparation("rejected", "prepare_topology_kind_invalid", None);
         }
     };
-    if network_id != scenario::PRIVATE_NETWORK_ID
+    if !network_id_matches_topology(network_id, topology)
         || local_port == 0
         || !is_endpoint_address(local_address, topology)
         || !state_dir.is_absolute()
@@ -313,9 +316,21 @@ fn prepare_state_command(
     }
     let prepared = if let Some(seed) = deterministic_seed {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        prepare_local_state_with_rng(state_dir, local_address, local_port, &mut rng)
+        prepare_local_state_with_rng(
+            state_dir,
+            local_address,
+            local_port,
+            network_id as u8,
+            &mut rng,
+        )
     } else {
-        prepare_local_state_with_rng(state_dir, local_address, local_port, &mut OsRng)
+        prepare_local_state_with_rng(
+            state_dir,
+            local_address,
+            local_port,
+            network_id as u8,
+            &mut OsRng,
+        )
     };
     match prepared {
         Ok(local) => emit_preparation("prepared", "", Some(&local)),
@@ -338,10 +353,21 @@ fn is_synthetic_address(address: IpAddr) -> bool {
 fn is_endpoint_address(address: IpAddr, topology: TopologyKind) -> bool {
     match topology {
         TopologyKind::Synthetic => is_synthetic_address(address),
-        TopologyKind::HostLoopbackDevelopment => match address {
-            IpAddr::V4(value) => value.is_loopback(),
-            IpAddr::V6(_) => false,
-        },
+        TopologyKind::HostLoopbackDevelopment | TopologyKind::CurrentNetworkLoopback => {
+            match address {
+                IpAddr::V4(value) => value.is_loopback(),
+                IpAddr::V6(_) => false,
+            }
+        }
+    }
+}
+
+fn network_id_matches_topology(network_id: u16, topology: TopologyKind) -> bool {
+    match topology {
+        TopologyKind::CurrentNetworkLoopback => network_id == scenario::CURRENT_NETWORK_ID,
+        TopologyKind::Synthetic | TopologyKind::HostLoopbackDevelopment => {
+            network_id == scenario::PRIVATE_NETWORK_ID
+        }
     }
 }
 
@@ -661,7 +687,7 @@ async fn execute_responder(
         None,
         *router_hash.as_bytes(),
         obfuscation_iv,
-        99,
+        scenario.network_id,
         ClockSkewPolicy::default_compatibility(),
     )
     .map_err(|_| LauncherError::ResponderNoiseStateFailed)?;
@@ -939,7 +965,7 @@ async fn execute_initiator(
         Some(peer.router_hash),
         *peer.router_hash.as_bytes(),
         peer.obfuscation_iv,
-        99,
+        scenario.network_id,
         ClockSkewPolicy::default_compatibility(),
     )
     .map_err(|e| {
@@ -1277,6 +1303,7 @@ fn prepare_local_state(scenario: &Scenario) -> Result<LocalState, LauncherError>
             &scenario.state_dir,
             scenario.local_address,
             scenario.local_port,
+            scenario.network_id,
             &mut rng,
         )
     } else {
@@ -1284,6 +1311,7 @@ fn prepare_local_state(scenario: &Scenario) -> Result<LocalState, LauncherError>
             &scenario.state_dir,
             scenario.local_address,
             scenario.local_port,
+            scenario.network_id,
             &mut OsRng,
         )
     }
@@ -1293,6 +1321,7 @@ fn prepare_local_state_with_rng<R>(
     state_dir: &Path,
     local_address: IpAddr,
     local_port: u16,
+    network_id: u8,
     rng: &mut R,
 ) -> Result<LocalState, LauncherError>
 where
@@ -1328,7 +1357,7 @@ where
             local_port,
             static_public,
             obfuscation_iv,
-            scenario::PRIVATE_NETWORK_ID as u8,
+            network_id,
         )?;
         let bytes = info
             .encode_to_vec(MAX_LOCAL_ROUTER_INFO_BYTES)
@@ -1338,6 +1367,9 @@ where
     };
     let info =
         decode_verified_router_info(&router_info_bytes).map_err(|_| LauncherError::StateInvalid)?;
+    if info.options().get("netId") != Some(network_id.to_string().as_str()) {
+        return Err(LauncherError::StateInvalid);
+    }
     let expected = SocketAddr::new(local_address, local_port);
     let parsed = exact_ntcp2_address(&info, expected).map_err(|_| LauncherError::StateInvalid)?;
     if parsed.static_public_key().as_bytes() != &static_public
@@ -1798,6 +1830,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     fn test_scenario(root: &Path) -> Scenario {
         Scenario::parse_str(
@@ -1854,6 +1887,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
         assert_eq!(first.router_hash, second.router_hash);
         assert_eq!(first.router_info, second.router_info);
         let info = decode_verified_router_info(&second.router_info).expect("verified info");
+        assert_eq!(info.options().get("netId"), Some("99"));
         assert!(
             exact_ntcp2_address(
                 &info,
@@ -1861,6 +1895,29 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
             )
             .is_ok()
         );
+        fs::remove_dir_all(root).expect("test cleanup");
+    }
+
+    #[test]
+    fn current_network_loopback_state_signs_network_id_two() {
+        let root = std::env::temp_dir().join(format!(
+            "i2pr-launcher-current-network-state-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        fs::create_dir(&root).expect("test root");
+        let mut rng = ChaCha8Rng::seed_from_u64(19);
+        let local = prepare_local_state_with_rng(
+            &root.join("state"),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            45_681,
+            scenario::CURRENT_NETWORK_ID as u8,
+            &mut rng,
+        )
+        .expect("current-network local state");
+        let info = decode_verified_router_info(&local.router_info).expect("verified info");
+        assert_eq!(info.options().get("netId"), Some("2"));
+        assert!(exact_ntcp2_address(&info, SocketAddr::from(([127, 0, 0, 1], 45_681))).is_ok());
         fs::remove_dir_all(root).expect("test cleanup");
     }
 

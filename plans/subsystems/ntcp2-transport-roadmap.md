@@ -1,8 +1,8 @@
 # NTCP2 Transport Roadmap
 
-Status: historical M3 closed (protocol defect localized); new recovery Plans 434–435 registered and gated.
+Status: historical M3 closed (protocol defect localized); Plan 410 stopped at the stock-reference receive-observation boundary; recovery Plans 434–435 remain gated.
 
-**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor, blocked on Plan 430. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
+**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. [Plan 410](../implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md) added the network-ID-2 loopback profile and built a helper against pristine current-pin i2pd, then stopped: its public API has no decoded inbound NTCP2 I2NP receive observation, and reference-router patching is prohibited. Plan 434 remains blocked because authenticated two-way I2NP evidence is unavailable. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
 
 Long-term references:
 
@@ -39,7 +39,7 @@ Historic plans: 030–101 (global i2pr numbers, preserved).
 
 ## 4. Current state
 
-Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101.
+Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plan 410's network-ID-2 profile and pristine helper build do not provide reference-side receive evidence; Plan 410 stopped and Plan 434 remains blocked.
 
 ## 5. Target architecture
 
