@@ -13,6 +13,7 @@ pub mod app_manager_bridge;
 pub mod app_runtime;
 #[cfg(test)]
 mod app_runtime_qualification;
+mod bandwidth_eligibility;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
@@ -423,6 +424,26 @@ fn build_daemon_graph_inner(
         ));
     }
 
+    let bandwidth = if config.bandwidth.enabled {
+        Some(
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: config.bandwidth.inbound_bytes_per_second,
+                outbound_bytes_per_second: config.bandwidth.outbound_bytes_per_second,
+                burst_bytes: config.bandwidth.burst_bytes,
+                control_reserve_percent: config.bandwidth.control_reserve_percent,
+                max_pending_requests: config.bandwidth.max_pending_requests,
+                max_pending_per_peer: config.bandwidth.max_pending_per_peer,
+            })
+            .map_err(|_| {
+                DaemonError::RuntimeSupervisorFailed(
+                    "normalized bandwidth limits failed runtime validation".to_owned(),
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
     let mut builder = i2pr_runtime::ServiceGraph::builder(i2pr_runtime::MAX_SERVICE_COUNT)
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!("failed to create service graph: {e}"))
@@ -600,6 +621,7 @@ fn build_daemon_graph_inner(
             bootstrap,
             group_lifecycle,
             shared_service_manager,
+            bandwidth,
         )?;
     }
 
@@ -1514,6 +1536,7 @@ async fn run_floodfill_evaluation(
 /// service child scope, and pumps the bounded central dispatcher
 /// until cancellation. No hidden standalone runtime coexists with
 /// this instance in counted tests.
+#[allow(clippy::too_many_arguments)]
 fn register_ssu2_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
@@ -1522,6 +1545,7 @@ fn register_ssu2_service(
     bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
     group_lifecycle: crate::service_lifecycle::ServiceLifecycleController,
     shared_service_manager: Option<Arc<crate::service_tunnels::ServiceTunnelManager>>,
+    bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity_with_keys,
@@ -1539,24 +1563,6 @@ fn register_ssu2_service(
     let addressbook = Arc::clone(addressbook);
     let floodfill_enabled = config.floodfill.enabled;
     let floodfill_config_path = config.source_path.clone();
-    let bandwidth = if config.bandwidth.enabled {
-        Some(
-            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
-                inbound_bytes_per_second: config.bandwidth.inbound_bytes_per_second,
-                outbound_bytes_per_second: config.bandwidth.outbound_bytes_per_second,
-                burst_bytes: config.bandwidth.burst_bytes,
-                max_pending_requests: config.bandwidth.max_pending_requests,
-                max_pending_per_peer: config.bandwidth.max_pending_per_peer,
-            })
-            .map_err(|_| {
-                DaemonError::RuntimeSupervisorFailed(
-                    "normalized bandwidth limits failed runtime validation".to_owned(),
-                )
-            })?,
-        )
-    } else {
-        None
-    };
     let inspection = Arc::clone(inspection);
     builder
         .register(service_spec(

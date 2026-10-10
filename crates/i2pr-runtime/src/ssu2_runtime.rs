@@ -102,8 +102,8 @@ use crate::ntcp2_runtime::{DialAdmission, DialBackoffConfig, DialKey};
 use crate::ntcp2_runtime::{DialBackoffDecision, IpPrefixPolicy};
 use crate::ssu2_peer_relay::{Ssu2PeerRelayConfig, Ssu2PeerRelayService};
 use crate::{
-    BandwidthDirection, BandwidthGovernor, BandwidthPeerKey, CancellationToken, ChildScope,
-    ChildTaskFailure,
+    BandwidthDirection, BandwidthGovernor, BandwidthPeerKey, BandwidthTrafficClass,
+    CancellationToken, ChildScope, ChildTaskFailure,
 };
 use i2pr_core::CancellationReason;
 
@@ -958,6 +958,7 @@ struct ActiveSession {
 struct StagedDatagram {
     bytes: Vec<u8>,
     addr: SocketAddr,
+    class: BandwidthTrafficClass,
 }
 
 fn bandwidth_peer_key(addr: SocketAddr) -> BandwidthPeerKey {
@@ -3113,6 +3114,24 @@ fn stage_one_locked(
     bytes: Vec<u8>,
     addr: SocketAddr,
 ) -> bool {
+    stage_class_locked(
+        state,
+        limits,
+        counters,
+        bytes,
+        addr,
+        BandwidthTrafficClass::Client,
+    )
+}
+
+fn stage_class_locked(
+    state: &mut ServiceState,
+    limits: &Ssu2RuntimeLimits,
+    counters: &ServiceCounters,
+    bytes: Vec<u8>,
+    addr: SocketAddr,
+    class: BandwidthTrafficClass,
+) -> bool {
     if bytes.is_empty() || bytes.len() > constants::MAX_DATAGRAM_IPV4_LENGTH {
         counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
         return false;
@@ -3125,7 +3144,7 @@ fn stage_one_locked(
         return false;
     }
     state.staged_bytes = state.staged_bytes.saturating_add(bytes.len());
-    let staged = StagedDatagram { bytes, addr };
+    let staged = StagedDatagram { bytes, addr, class };
     match addr.ip() {
         IpAddr::V4(_) => state.staged_v4.push_back(staged),
         IpAddr::V6(_) => state.staged_v6.push_back(staged),
@@ -3141,7 +3160,14 @@ fn stage_finals_locked(
     addr: &SocketAddr,
 ) {
     for bytes in finals {
-        let _ = stage_one_locked(state, limits, counters, bytes, *addr);
+        let _ = stage_class_locked(
+            state,
+            limits,
+            counters,
+            bytes,
+            *addr,
+            BandwidthTrafficClass::Control,
+        );
     }
 }
 
@@ -5631,6 +5657,7 @@ impl Ssu2RuntimeService {
         struct Send {
             bytes: Vec<u8>,
             addr: SocketAddr,
+            class: BandwidthTrafficClass,
             duplicates: bool,
         }
         let policy = self
@@ -5675,6 +5702,7 @@ impl Ssu2RuntimeService {
                 sends.push(Send {
                     bytes: datagram.bytes,
                     addr: datagram.addr,
+                    class: datagram.class,
                     duplicates,
                 });
             }
@@ -5688,12 +5716,14 @@ impl Ssu2RuntimeService {
                     state.fault_held = Some(StagedDatagram {
                         bytes: first.bytes,
                         addr: first.addr,
+                        class: first.class,
                     });
                 } else {
                     // Batched datagrams: the first joins at the tail.
                     sends.push(Send {
                         bytes: first.bytes,
                         addr: first.addr,
+                        class: first.class,
                         duplicates: false,
                     });
                     if let Ok(mut guard) = self.shared.faults.lock()
@@ -5710,10 +5740,11 @@ impl Ssu2RuntimeService {
             for _ in 0..times {
                 if let Some(governor) = &self.shared.bandwidth
                     && governor
-                        .acquire(
+                        .acquire_class(
                             BandwidthDirection::Outbound,
                             bandwidth_peer_key(send.addr),
                             send.bytes.len(),
+                            send.class,
                             cancellation,
                         )
                         .await
@@ -5734,10 +5765,11 @@ impl Ssu2RuntimeService {
             // delayed when the queue was empty).
             let admitted = if let Some(governor) = &self.shared.bandwidth {
                 governor
-                    .acquire(
+                    .acquire_class(
                         BandwidthDirection::Outbound,
                         bandwidth_peer_key(previous.addr),
                         previous.bytes.len(),
+                        previous.class,
                         cancellation,
                     )
                     .await

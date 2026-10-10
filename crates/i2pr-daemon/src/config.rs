@@ -811,6 +811,8 @@ struct RawBandwidthConfig {
     outbound_bytes_per_second: u64,
     #[serde(default)]
     share_percent: u8,
+    #[serde(default = "default_bandwidth_control_reserve_percent")]
+    control_reserve_percent: u8,
     #[serde(default = "default_bandwidth_burst_bytes")]
     burst_bytes: u64,
     #[serde(default = "default_bandwidth_pending_requests")]
@@ -826,6 +828,7 @@ impl Default for RawBandwidthConfig {
             inbound_bytes_per_second: 0,
             outbound_bytes_per_second: 0,
             share_percent: 0,
+            control_reserve_percent: default_bandwidth_control_reserve_percent(),
             burst_bytes: default_bandwidth_burst_bytes(),
             max_pending_requests: default_bandwidth_pending_requests(),
             max_pending_per_peer: default_bandwidth_pending_per_peer(),
@@ -847,6 +850,10 @@ fn default_profile() -> String {
 
 const fn default_bandwidth_burst_bytes() -> u64 {
     64 * 1024
+}
+
+const fn default_bandwidth_control_reserve_percent() -> u8 {
+    10
 }
 
 const fn default_bandwidth_pending_requests() -> usize {
@@ -1821,6 +1828,8 @@ pub struct BandwidthConfig {
     pub outbound_bytes_per_second: u64,
     /// Configured shared-capacity fraction in integer percent.
     pub share_percent: u8,
+    /// Guaranteed burst fraction reserved for control and recovery traffic.
+    pub control_reserve_percent: u8,
     /// Maximum instantaneous byte burst in either direction.
     pub burst_bytes: usize,
     /// Maximum global queued byte reservations.
@@ -3294,6 +3303,7 @@ fn normalize_bandwidth(
             inbound_bytes_per_second: 0,
             outbound_bytes_per_second: 0,
             share_percent: 0,
+            control_reserve_percent: 0,
             burst_bytes,
             max_pending_requests: raw.max_pending_requests,
             max_pending_per_peer: raw.max_pending_per_peer,
@@ -3325,10 +3335,17 @@ fn normalize_bandwidth(
             reason: "must be between 0 and 100",
         });
     }
+    if !(1..=50).contains(&raw.control_reserve_percent) {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth.control_reserve_percent",
+            reason: "must reserve between 1 and 50 percent of the burst for control traffic",
+        });
+    }
     let governor = i2pr_runtime::BandwidthGovernorConfig {
         inbound_bytes_per_second: raw.inbound_bytes_per_second,
         outbound_bytes_per_second: raw.outbound_bytes_per_second,
         burst_bytes,
+        control_reserve_percent: raw.control_reserve_percent,
         max_pending_requests: raw.max_pending_requests,
         max_pending_per_peer: raw.max_pending_per_peer,
     };
@@ -3341,6 +3358,7 @@ fn normalize_bandwidth(
         inbound_bytes_per_second: raw.inbound_bytes_per_second,
         outbound_bytes_per_second: raw.outbound_bytes_per_second,
         share_percent: raw.share_percent,
+        control_reserve_percent: raw.control_reserve_percent,
         burst_bytes,
         max_pending_requests: raw.max_pending_requests,
         max_pending_per_peer: raw.max_pending_per_peer,
@@ -3852,6 +3870,7 @@ data_dir = "./state"
         let default = Config::parse(MINIMAL).expect("default config");
         assert!(!default.bandwidth.enabled);
         assert_eq!(default.bandwidth.share_percent, 0);
+        assert_eq!(default.bandwidth.control_reserve_percent, 0);
 
         let configured = format!(
             "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n"
@@ -3860,6 +3879,7 @@ data_dir = "./state"
         assert!(parsed.bandwidth.enabled);
         assert_eq!(parsed.bandwidth.inbound_bytes_per_second, 131_072);
         assert_eq!(parsed.bandwidth.share_percent, 50);
+        assert_eq!(parsed.bandwidth.control_reserve_percent, 10);
     }
 
     #[test]
@@ -3913,6 +3933,17 @@ data_dir = "./state"
             Config::parse(&excessive_rate),
             Err(ConfigError::Semantic {
                 field: "bandwidth",
+                ..
+            })
+        ));
+
+        let missing_control_reserve = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\noutbound_bytes_per_second = 1024\nshare_percent = 10\ncontrol_reserve_percent = 0\n"
+        );
+        assert!(matches!(
+            Config::parse(&missing_control_reserve),
+            Err(ConfigError::Semantic {
+                field: "bandwidth.control_reserve_percent",
                 ..
             })
         ));

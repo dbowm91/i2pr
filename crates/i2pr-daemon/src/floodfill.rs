@@ -14,9 +14,57 @@ use i2pr_netdb::{
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody,
-    I2npMessage, OpaqueMessageBody, RouterInfo, TunnelGatewayMessage,
+    I2npMessage, Mapping, OpaqueMessageBody, RouterAddress, RouterInfo, TunnelGatewayMessage,
 };
 use i2pr_transport::{LinkId, PeerId};
+
+/// Builds a class-bearing floodfill record only after the healthy shared
+/// shaper, active floodfill role, and qualified SSU2 address all pass their
+/// independent gates. This remains a private construction path; the normal
+/// daemon does not publish a bandwidth tier under Plan 101.
+#[allow(dead_code)]
+fn build_floodfill_with_capacity(
+    builder: &i2pr_netdb::LocalRouterInfoBuilder<'_>,
+    published: Date,
+    options: Mapping,
+    address: RouterAddress,
+    role_permit: &i2pr_netdb::FloodfillAdvertisementPermit,
+    eligibility: &crate::bandwidth_eligibility::CapacityEligibility,
+    governor: &i2pr_runtime::BandwidthGovernor,
+) -> Result<i2pr_netdb::LocalRouterInfo, i2pr_netdb::LocalRouterInfoError> {
+    let class = eligibility.current_class(Some(governor)).ok_or(
+        i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+            context: "stale bandwidth eligibility",
+        },
+    )?;
+    builder.build_floodfill_with_bandwidth_class(published, options, address, role_permit, class)
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+fn build_reachable_floodfill_with_capacity(
+    builder: &i2pr_netdb::LocalRouterInfoBuilder<'_>,
+    published: Date,
+    options: Mapping,
+    address: RouterAddress,
+    role_permit: &i2pr_netdb::FloodfillAdvertisementPermit,
+    reachability: &i2pr_netdb::LoopbackReachabilityProof,
+    eligibility: &crate::bandwidth_eligibility::CapacityEligibility,
+    governor: &i2pr_runtime::BandwidthGovernor,
+) -> Result<i2pr_netdb::LocalRouterInfo, i2pr_netdb::LocalRouterInfoError> {
+    let class = eligibility.current_class(Some(governor)).ok_or(
+        i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+            context: "stale bandwidth eligibility",
+        },
+    )?;
+    builder.build_floodfill_reachable_with_bandwidth_class(
+        published,
+        options,
+        address,
+        role_permit,
+        reachability,
+        class,
+    )
+}
 
 #[derive(Debug)]
 pub enum FloodfillDaemonEffect {
@@ -2292,6 +2340,7 @@ impl FloodfillCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bandwidth_eligibility::CapacityEligibility;
     use i2pr_proto::{DatabaseStoreData, DatabaseStoreType, DeferredPayload};
 
     fn enable(coordinator: &mut FloodfillCoordinator) {
@@ -2349,6 +2398,64 @@ mod tests {
         );
         assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
         assert!(coordinator.advertisement_permit().is_none());
+    }
+
+    #[test]
+    fn capacity_routerinfo_stays_inside_role_address_and_current_shaper_gates() {
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 512 * 1024,
+                outbound_bytes_per_second: 256 * 1024,
+                burst_bytes: 128 * 1024,
+                control_reserve_percent: 10,
+                max_pending_requests: 16,
+                max_pending_per_peer: 2,
+            })
+            .expect("enabled shaper");
+        let eligibility = CapacityEligibility::issue(Some(&governor), 50).expect("class permit");
+        let mut coordinator = coordinator();
+        enable(&mut coordinator);
+        let role_permit = coordinator
+            .advertisement_permit()
+            .expect("active role permit");
+        let bundle = test_bundle();
+        let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&bundle);
+        let local = build_floodfill_with_capacity(
+            &builder,
+            Date::from_millis(TEST_WALL_MS),
+            controlled_router_options().expect("controlled options"),
+            test_material("127.0.0.1", true).address,
+            &role_permit,
+            &eligibility,
+            &governor,
+        )
+        .expect("role, qualified address, and current shaper gates");
+        assert_eq!(local.router_info().options().get("caps"), Some("fN"));
+
+        let replacement =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 1024 * 1024,
+                outbound_bytes_per_second: 1024 * 1024,
+                burst_bytes: 128 * 1024,
+                control_reserve_percent: 10,
+                max_pending_requests: 16,
+                max_pending_per_peer: 2,
+            })
+            .expect("replacement shaper");
+        assert!(matches!(
+            build_floodfill_with_capacity(
+                &builder,
+                Date::from_millis(TEST_WALL_MS + 1),
+                controlled_router_options().expect("controlled options"),
+                test_material("127.0.0.1", true).address,
+                &role_permit,
+                &eligibility,
+                &replacement,
+            ),
+            Err(i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                context: "stale bandwidth eligibility"
+            })
+        ));
     }
 
     fn coordinator() -> FloodfillCoordinator {

@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     ActiveLinkAdmission, ActiveLinkAdmissionError, ActiveLinkPermit, AddressFamily,
+    BandwidthDirection, BandwidthGovernor, BandwidthPeerKey, BandwidthTrafficClass,
     CancellationToken, ChildScope, ExactIoError, IoErrorKind, Ntcp2Deadline, Ntcp2RuntimeDeadlines,
     Ntcp2RuntimeLimits, WriteOutcome, read_exact, write_all_exact,
 };
@@ -273,6 +274,8 @@ impl AuthenticatedLink {
         limits: Ntcp2RuntimeLimits,
         deadlines: Ntcp2RuntimeDeadlines,
         admission: &ActiveLinkAdmission,
+        bandwidth: Option<BandwidthGovernor>,
+        peer_key: BandwidthPeerKey,
     ) -> Result<Self, AuthenticatedLinkStartError> {
         let active_permit = admission
             .admit()
@@ -282,6 +285,7 @@ impl AuthenticatedLink {
         let cancellation = CancellationToken::new();
         let state = Arc::new(LinkState::default());
         let (mut reader, mut writer) = stream.into_split();
+        let writer_bandwidth = bandwidth.clone();
         let writer_cancel = cancellation.clone();
         let writer_state = Arc::clone(&state);
         if scope
@@ -294,6 +298,8 @@ impl AuthenticatedLink {
                     child,
                     writer_cancel,
                     writer_state,
+                    writer_bandwidth,
+                    peer_key,
                 )
                 .await;
                 Ok(())
@@ -316,6 +322,8 @@ impl AuthenticatedLink {
                     child,
                     reader_cancel,
                     reader_state,
+                    bandwidth,
+                    peer_key,
                 )
                 .await;
                 Ok(())
@@ -470,6 +478,7 @@ impl fmt::Display for AuthenticatedLinkStartError {
 
 impl std::error::Error for AuthenticatedLinkStartError {}
 
+#[allow(clippy::too_many_arguments)]
 async fn writer_task(
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     mut commands: mpsc::Receiver<FrameCommand>,
@@ -478,6 +487,8 @@ async fn writer_task(
     child: CancellationToken,
     cancellation: CancellationToken,
     state: Arc<LinkState>,
+    bandwidth: Option<BandwidthGovernor>,
+    peer_key: BandwidthPeerKey,
 ) {
     loop {
         let mut command = tokio::select! {
@@ -499,6 +510,20 @@ async fn writer_task(
             }
         };
         let length = bytes.len();
+        if !acquire_wire_budget(
+            bandwidth.as_ref(),
+            BandwidthDirection::Outbound,
+            peer_key,
+            length,
+            &child,
+            &cancellation,
+        )
+        .await
+        {
+            state.closed.store(true, Ordering::Release);
+            let _ = cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+            break;
+        }
         let result = match Ntcp2Deadline::after(deadlines.write) {
             Ok(deadline) => write_all_exact(writer, &bytes, deadline, &cancellation).await,
             Err(_) => Err(ExactIoError {
@@ -528,6 +553,8 @@ async fn reader_task(
     child: CancellationToken,
     cancellation: CancellationToken,
     state: Arc<LinkState>,
+    bandwidth: Option<BandwidthGovernor>,
+    peer_key: BandwidthPeerKey,
 ) {
     loop {
         let mut prefix = [0_u8; 2];
@@ -538,6 +565,18 @@ async fn reader_task(
         if read_exact(reader, &mut prefix, deadline, &cancellation)
             .await
             .is_err()
+        {
+            break;
+        }
+        if !acquire_wire_budget(
+            bandwidth.as_ref(),
+            BandwidthDirection::Inbound,
+            peer_key,
+            prefix.len(),
+            &child,
+            &cancellation,
+        )
+        .await
         {
             break;
         }
@@ -553,6 +592,18 @@ async fn reader_task(
         if read_exact(reader, &mut ciphertext, deadline, &cancellation)
             .await
             .is_err()
+        {
+            break;
+        }
+        if !acquire_wire_budget(
+            bandwidth.as_ref(),
+            BandwidthDirection::Inbound,
+            peer_key,
+            ciphertext.len(),
+            &child,
+            &cancellation,
+        )
+        .await
         {
             break;
         }
@@ -588,9 +639,32 @@ async fn reader_task(
     let _ = cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
 }
 
+async fn acquire_wire_budget(
+    governor: Option<&BandwidthGovernor>,
+    direction: BandwidthDirection,
+    peer_key: BandwidthPeerKey,
+    bytes: usize,
+    child: &CancellationToken,
+    cancellation: &CancellationToken,
+) -> bool {
+    let Some(governor) = governor else {
+        return true;
+    };
+    tokio::select! {
+        biased;
+        _ = child.cancelled() => false,
+        _ = cancellation.cancelled() => false,
+        result = governor.acquire_class(direction, peer_key, bytes, BandwidthTrafficClass::Client, cancellation) => result.is_ok(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i2pr_transport_ntcp2::block::{Block, TimestampBlock};
+    use i2pr_transport_ntcp2::crypto::SplitKeys;
+    use i2pr_transport_ntcp2::frame::{FrameAssemblyPolicy, into_directional_states};
+    use std::time::Duration;
 
     #[test]
     fn queue_release_returns_to_baseline() {
@@ -601,5 +675,381 @@ mod tests {
         assert_eq!(state.queue_snapshot(), (0, 0));
         state.release_outbound(1);
         assert_eq!(state.queue_release_underflows.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn authenticated_socket_link_charges_framed_write_and_received_wire_bytes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let client = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("loopback connect");
+        let (server, _) = listener.accept().await.expect("loopback accept");
+
+        let governor = BandwidthGovernor::new(crate::BandwidthGovernorConfig {
+            inbound_bytes_per_second: 64 * 1024,
+            outbound_bytes_per_second: 128,
+            burst_bytes: 128 * 1024,
+            control_reserve_percent: 10,
+            max_pending_requests: 8,
+            max_pending_per_peer: 2,
+        })
+        .expect("valid shared shaper");
+        let peer = BandwidthPeerKey::from_hash([7; 32]);
+        let cancellation = CancellationToken::new();
+        governor
+            .acquire(BandwidthDirection::Outbound, peer, 117_964, &cancellation)
+            .await
+            .expect("consume the client-available initial burst");
+        let baseline = governor.snapshot();
+        let config = crate::Ntcp2RuntimeConfig::default();
+        let sender_service =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("sender service");
+        let receiver_service =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("receiver service");
+        let parent = CancellationToken::new();
+        let sender_scope = sender_service.child_scope(&parent);
+        let receiver_scope = receiver_service.child_scope(&parent);
+        let (sender_tx, sender_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x11; 32], [0x33; 32], [0x22; 32], [0x44; 32],
+        ));
+        let (receiver_tx, receiver_rx) = into_directional_states(
+            SplitKeys::from_material_for_test([0x33; 32], [0x11; 32], [0x44; 32], [0x22; 32]),
+        );
+        let sender = sender_service
+            .start_authenticated_link(
+                &sender_scope,
+                client,
+                AddressFamily::Ipv4,
+                1,
+                sender_tx,
+                sender_rx,
+                peer,
+            )
+            .expect("sender link");
+        let mut receiver = receiver_service
+            .start_authenticated_link(
+                &receiver_scope,
+                server,
+                AddressFamily::Ipv4,
+                2,
+                receiver_tx,
+                receiver_rx,
+                peer,
+            )
+            .expect("receiver link");
+        let policy = FrameAssemblyPolicy::new(
+            i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH,
+            0,
+            0,
+            0,
+            false,
+        )
+        .expect("frame policy");
+        let started = tokio::time::Instant::now();
+        sender
+            .send_blocks(
+                vec![Block::Timestamp(TimestampBlock::new(123))],
+                policy,
+                Ntcp2Deadline::after(Duration::from_secs(2)).expect("deadline"),
+                &cancellation,
+            )
+            .await
+            .expect("queue frame");
+        let received = tokio::time::timeout(Duration::from_secs(2), receiver.recv(&cancellation))
+            .await
+            .expect("bounded frame receive")
+            .expect("receive result")
+            .expect("received frame");
+        let wire_bytes = received.frame().length().ciphertext_length + 2;
+        let elapsed = started.elapsed();
+        drop(received);
+        let snapshot = governor.snapshot();
+        assert_eq!(
+            snapshot.outbound_bytes,
+            baseline.outbound_bytes + wire_bytes as u64
+        );
+        assert_eq!(snapshot.inbound_bytes, wire_bytes as u64);
+        let minimum_paced_nanos = (wire_bytes as u128)
+            .saturating_mul(1_000_000_000)
+            .div_ceil(128)
+            / 2;
+        assert!(
+            elapsed.as_nanos() >= minimum_paced_nanos,
+            "socket writer bypassed the configured budget: elapsed={elapsed:?}, bytes={wire_bytes}"
+        );
+        assert_eq!(sender.snapshot().written_bytes, wire_bytes as u64);
+        assert_eq!(receiver.snapshot().read_bytes, wire_bytes as u64);
+        assert_eq!(snapshot.pending_requests, 0);
+
+        sender.close();
+        receiver.close();
+        assert!(!sender_scope.shutdown().await.failed());
+        assert!(!receiver_scope.shutdown().await.failed());
+    }
+
+    #[tokio::test]
+    async fn authenticated_socket_budget_cancellation_releases_queue_across_restart() {
+        let governor = BandwidthGovernor::new(crate::BandwidthGovernorConfig {
+            inbound_bytes_per_second: 64 * 1024,
+            outbound_bytes_per_second: 64 * 1024,
+            burst_bytes: 128 * 1024,
+            control_reserve_percent: 10,
+            max_pending_requests: 8,
+            max_pending_per_peer: 2,
+        })
+        .expect("valid shared shaper");
+        let peer = BandwidthPeerKey::from_hash([9; 32]);
+        let no_cancel = CancellationToken::new();
+        governor
+            .acquire(BandwidthDirection::Outbound, peer, 117_964, &no_cancel)
+            .await
+            .expect("exhaust the outbound burst");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .expect("loopback connect");
+        let (server, _) = listener.accept().await.expect("loopback accept");
+        let config = crate::Ntcp2RuntimeConfig::default();
+        let service =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("first owner");
+        let parent = CancellationToken::new();
+        let scope = service.child_scope(&parent);
+        let (send_tx, send_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x11; 32], [0x33; 32], [0x22; 32], [0x44; 32],
+        ));
+        let (receive_tx, receive_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x33; 32], [0x11; 32], [0x44; 32], [0x22; 32],
+        ));
+        let sender = service
+            .start_authenticated_link(
+                &scope,
+                client,
+                AddressFamily::Ipv4,
+                3,
+                send_tx,
+                send_rx,
+                peer,
+            )
+            .expect("first authenticated link");
+        let receiver = service
+            .start_authenticated_link(
+                &scope,
+                server,
+                AddressFamily::Ipv4,
+                4,
+                receive_tx,
+                receive_rx,
+                peer,
+            )
+            .expect("first receiver link");
+        let policy = FrameAssemblyPolicy::new(
+            i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH,
+            0,
+            0,
+            0,
+            false,
+        )
+        .expect("frame policy");
+        sender
+            .send_blocks(
+                vec![Block::Timestamp(TimestampBlock::new(456))],
+                policy,
+                Ntcp2Deadline::after(Duration::from_secs(2)).expect("deadline"),
+                &no_cancel,
+            )
+            .await
+            .expect("frame enters bounded queue");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while governor.snapshot().pending_requests == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer reached the shared budget wait");
+
+        sender.close();
+        assert!(!scope.shutdown().await.failed());
+        assert_eq!(governor.snapshot().pending_requests, 0);
+        assert_eq!(sender.snapshot().queued_items, 0);
+        assert_eq!(sender.snapshot().queued_bytes, 0);
+        receiver.close();
+
+        // A fresh supervised link uses the same governor after owner restart.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("restart loopback listener");
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .expect("restart loopback connect");
+        let (server, _) = listener.accept().await.expect("restart loopback accept");
+        let restarted =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("restarted owner");
+        let restarted_scope = restarted.child_scope(&parent);
+        let (send_tx, send_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x11; 32], [0x33; 32], [0x22; 32], [0x44; 32],
+        ));
+        let (receive_tx, receive_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x33; 32], [0x11; 32], [0x44; 32], [0x22; 32],
+        ));
+        let restarted_sender = restarted
+            .start_authenticated_link(
+                &restarted_scope,
+                client,
+                AddressFamily::Ipv4,
+                5,
+                send_tx,
+                send_rx,
+                peer,
+            )
+            .expect("restarted sender");
+        let mut restarted_receiver = restarted
+            .start_authenticated_link(
+                &restarted_scope,
+                server,
+                AddressFamily::Ipv4,
+                6,
+                receive_tx,
+                receive_rx,
+                peer,
+            )
+            .expect("restarted receiver");
+        restarted_sender
+            .send_blocks(
+                vec![Block::Timestamp(TimestampBlock::new(789))],
+                policy,
+                Ntcp2Deadline::after(Duration::from_secs(2)).expect("restart deadline"),
+                &no_cancel,
+            )
+            .await
+            .expect("restart frame queues");
+        let received =
+            tokio::time::timeout(Duration::from_secs(2), restarted_receiver.recv(&no_cancel))
+                .await
+                .expect("restart frame receive deadline")
+                .expect("restart receive result")
+                .expect("restart received frame");
+        drop(received);
+        restarted_sender.close();
+        restarted_receiver.close();
+        assert!(!restarted_scope.shutdown().await.failed());
+        assert_eq!(governor.snapshot().pending_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn authenticated_socket_peers_share_asymmetric_governor_accounting() {
+        let governor = BandwidthGovernor::new(crate::BandwidthGovernorConfig {
+            inbound_bytes_per_second: 8 * 1024,
+            outbound_bytes_per_second: 2 * 1024,
+            burst_bytes: 128 * 1024,
+            control_reserve_percent: 10,
+            max_pending_requests: 8,
+            max_pending_per_peer: 2,
+        })
+        .expect("valid asymmetric shaper");
+        let config = crate::Ntcp2RuntimeConfig::default();
+        let sender_service =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("sender service");
+        let receiver_service =
+            crate::Ntcp2RuntimeService::new_with_bandwidth(config, Some(governor.clone()))
+                .expect("receiver service");
+        let parent = CancellationToken::new();
+        let sender_scope = sender_service.child_scope(&parent);
+        let receiver_scope = receiver_service.child_scope(&parent);
+        let policy = FrameAssemblyPolicy::new(
+            i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH,
+            0,
+            0,
+            0,
+            false,
+        )
+        .expect("frame policy");
+        let mut links = Vec::with_capacity(2);
+        for id in 1..=2_u64 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("loopback listener");
+            let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .expect("loopback connect");
+            let (server, _) = listener.accept().await.expect("loopback accept");
+            let (send_tx, send_rx) = into_directional_states(SplitKeys::from_material_for_test(
+                [0x11; 32], [0x33; 32], [0x22; 32], [0x44; 32],
+            ));
+            let (receive_tx, receive_rx) = into_directional_states(
+                SplitKeys::from_material_for_test([0x33; 32], [0x11; 32], [0x44; 32], [0x22; 32]),
+            );
+            let peer = BandwidthPeerKey::from_hash([id as u8; 32]);
+            let sender = sender_service
+                .start_authenticated_link(
+                    &sender_scope,
+                    client,
+                    AddressFamily::Ipv4,
+                    id * 2,
+                    send_tx,
+                    send_rx,
+                    peer,
+                )
+                .expect("sender link");
+            let receiver = receiver_service
+                .start_authenticated_link(
+                    &receiver_scope,
+                    server,
+                    AddressFamily::Ipv4,
+                    id * 2 + 1,
+                    receive_tx,
+                    receive_rx,
+                    peer,
+                )
+                .expect("receiver link");
+            links.push((sender, receiver));
+        }
+
+        let cancellation = CancellationToken::new();
+        for (index, (sender, _)) in links.iter().enumerate() {
+            sender
+                .send_blocks(
+                    vec![Block::Timestamp(TimestampBlock::new(100 + index as u32))],
+                    policy,
+                    Ntcp2Deadline::after(Duration::from_secs(2)).expect("deadline"),
+                    &cancellation,
+                )
+                .await
+                .expect("peer frame queues");
+        }
+        let mut wire_total = 0_u64;
+        for (_, receiver) in &mut links {
+            let received =
+                tokio::time::timeout(Duration::from_secs(2), receiver.recv(&cancellation))
+                    .await
+                    .expect("bounded peer receive")
+                    .expect("receive result")
+                    .expect("peer frame received");
+            wire_total += (received.frame().length().ciphertext_length + 2) as u64;
+            drop(received);
+        }
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.outbound_bytes, wire_total);
+        assert_eq!(snapshot.inbound_bytes, wire_total);
+        assert_eq!(snapshot.pending_requests, 0);
+        assert_eq!(governor.config().inbound_bytes_per_second, 8 * 1024);
+        assert_eq!(governor.config().outbound_bytes_per_second, 2 * 1024);
+
+        for (sender, receiver) in &links {
+            sender.close();
+            receiver.close();
+        }
+        assert!(!sender_scope.shutdown().await.failed());
+        assert!(!receiver_scope.shutdown().await.failed());
     }
 }

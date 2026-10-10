@@ -349,6 +349,22 @@ pub struct SplitKeys {
 }
 
 impl SplitKeys {
+    /// Constructs deterministic directional keys for local runtime adapter tests.
+    #[doc(hidden)]
+    pub fn from_material_for_test(
+        transmit_key: [u8; constants::KEY_LENGTH],
+        receive_key: [u8; constants::KEY_LENGTH],
+        transmit_lengths: [u8; constants::HASH_LENGTH],
+        receive_lengths: [u8; constants::HASH_LENGTH],
+    ) -> Self {
+        Self {
+            transmit: CipherState::from_key_for_test(transmit_key),
+            receive: CipherState::from_key_for_test(receive_key),
+            transmit_lengths: SipHashState::from_material_for_test(transmit_lengths),
+            receive_lengths: SipHashState::from_material_for_test(receive_lengths),
+        }
+    }
+
     /// Borrows the transmit cipher state for one data-phase frame.
     pub const fn transmit(&mut self) -> &mut CipherState {
         &mut self.transmit
