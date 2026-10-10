@@ -26,7 +26,7 @@ The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.m
 
 | Plan | State | Implementation handoff | Dependency / observable outcome |
 | --- | --- | --- | --- |
-| 430 | **ready** | [Executable baseline and role gates](implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md) | Existing closures; freeze factual source and no-false-claim readiness |
+| 430 | **active** | [Executable baseline and role gates](implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md) | Existing closures; freeze factual source and no-false-claim readiness |
 | 431 | blocked | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | 430 → controlled non-loopback bind, persistent identity, RouterInfo policy |
 | 432 | blocked | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
 | 433 | blocked | [Live NetDB/tunnel/client composition](implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) | 431+432 → real independent-router multihop application path |
