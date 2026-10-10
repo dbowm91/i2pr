@@ -4,9 +4,7 @@ Status: **passed-sam33-primary-subsession-shared-destination-profile**
 
 Date: 2026-10-10
 
-Implementation revision: worktree based on `299dca08`; implementation and
-closeout changes are present in the current worktree. No new commit was created
-for this closeout.
+Implementation commit: `8e262fe0bb86ca5ba189b1be892579542a773152`.
 
 Normative references: current official SAM V3 specification as refreshed in
 `specs/SOURCES.md`; pinned Java I2P `2.13.0`, revision
