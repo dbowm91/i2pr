@@ -21,10 +21,10 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 66 | 63 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
+| Top-level `scripts/` files | 67 | 64 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 66 | 63 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 41 | 39 `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 67 | 64 top level + 3 under `scripts/interop/` |
+| Checker steps in `ci.yml` | 42 | 40 distinct `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
@@ -80,6 +80,7 @@ counting method both numbers come from.
 | `scripts/trace-java-sam-source.py` | Plan 411 exact-pin source tracer for the stock Java SAM DATAGRAM bind path and its IOException-to-SESSION-STATUS mapping. Emits source names, method labels, line numbers, and token digests only. | no | no |
 | `scripts/check-managed-app-private-client-seams.py` | Plan 354 guard for the listener-independent SAM/I2CP connection seams: managed-profile host-target denial, and that both loopback listeners and trusted private connections drive one protocol driver. | yes | yes |
 | `scripts/check-router-readiness-contract.py` | Plan 430 fail-closed source guard for profile, network-readiness, service-health, reachability, independent protocol, operator-consent and generation evidence; `--self-test` mutation-checks each gate. | yes | yes |
+| `scripts/check-core-router-recovery-contract.py` | Plan 440 guard for evidence tiers, topology positive controls, per-session NTCP2 acceptance, and the separation between controlled integration and public qualification; `--self-test` mutation-checks each recovery gate. | yes | yes |
 | `scripts/check-floodfill-type5-serve.sh` | Plan 350 guard for the floodfill's servable record types. The bug it prevents is silent and data-only: `database_store_for_answer` and `lookup_body` each need a type-5 arm, and omitting either stores records nobody can fetch. | yes | **no** |
 | `scripts/check-ntcp2-interoperability.sh` | Plan 099 NTCP2 interoperability static boundary check, enforcing the durable invariants the retained development interop surface relies on. It enforces **no** behaviour and does not make NTCP2 an advertised transport. | yes | yes |
 | `scripts/check-tooling-inventory.py` | **Plan 372.** Derives every published inventory figure in this document from the tree — floor-step counts, `check-*` files, `ci.yml` invocations, workspace members, `rust-version`, the MSRV toolchain, fuzz targets, and the root `tests/` `.rs` count — and **fails closed** when one stops matching. Rule 3 requires every `check-*` script to have a row here, so adding a guard without documenting it is a failure. `--self-test` proves each rule rejects the violation it claims to detect. | yes | yes |
@@ -284,10 +285,10 @@ Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 52 | 50 rows marked `Floor: yes` |
-| Total routine-floor steps | 62 | — |
-| Checkers executed by `ci.yml` | 39 | 42 rows marked `CI: yes` |
-| `check-*` files on disk | 63 (66 with `scripts/interop/`) | 66 checker rows |
+| Floor steps invoking a checker | 54 | 51 rows marked `Floor: yes` |
+| Total routine-floor steps | 64 | — |
+| Checkers executed by `ci.yml` | 40 | 43 rows marked `CI: yes` |
+| `check-*` files on disk | 64 (67 with `scripts/interop/`) | 67 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.

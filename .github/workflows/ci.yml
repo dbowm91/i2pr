@@ -194,6 +194,10 @@ jobs:
         run: python3 scripts/check-managed-app-private-client-seams.py
       - name: Check router readiness claim contract
         run: python3 scripts/check-router-readiness-contract.py --self-test
+      - name: Check core-router recovery evidence contract
+        run: |
+          python3 scripts/check-core-router-recovery-contract.py
+          python3 scripts/check-core-router-recovery-contract.py --self-test
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh
