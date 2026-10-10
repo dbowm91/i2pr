@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload sanitized evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ssu2-external-evidence-${{ github.run_id }}
           path: target/interop/ssu2-evidence

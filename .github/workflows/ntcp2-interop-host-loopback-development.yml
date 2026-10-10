@@ -371,7 +371,7 @@ jobs:
 
       - name: upload-summary
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v6
         with:
           name: plan099-summary
           path: ${{ github.workspace }}/target/interop/plan099-evidence/plan099-summary.json
