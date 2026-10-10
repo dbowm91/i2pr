@@ -1,0 +1,29 @@
+# Plan 441 — NTCP2 stock control, single-session fixture and actionable handshake recovery
+
+Status: **registered / blocked on Plan 440**. Successor evidence lane to blocked Plan 434 and stopped diagnostics Plans 410, 414–424. Roadmap core-router-recovery and NTCP2 transport. Use the **existing** current-pin i2pd 2.61.0 cache/pristine helper; do not resurrect the network-ID-99 retired lane.
+
+## Objective and why
+
+Build one coherent, bounded *current pinned* NTCP2 qualification run that can prove the test topology itself works and provide session-specific I2NP evidence, replacing per-observation micro-plans. Existing Plan 420 saw a post-validation RI acceptance marker but no authenticated data, and Plan 424 found a closed responder SessionConfirmed read with unmatched helper terminal. Those are unresolved outcomes, not a diagnosed crypto bug.
+
+## Classification/invariants
+
+**Capability:** no public NTCP2. **Infrastructure:** stock-to-stock positive control, deterministic identity/address fixture, per-connection ephemeral correlation, stable current-pin event oracle, minimal independent i2pr listener/dialer evidence. **Invariant:** keep Plan 101 disabled-default public NTCP2; no reference source modifications, no raw router hash/secret/packet/endpoint persisted; exact network-ID-2 RI bind; bounds and cleanup. **Polish:** one sanitized JSON stage manifest and actionable failed-phase report. Exclusions: new generic NTCP2 harness framework, repeated 1-run administrative plans, unauthorized local-address routing/public topology, version inflation.
+
+## Ordered implementation
+
+1. **Preflight/positive control**: start stock i2pd 2.61.0 router A and stock peer B with *distinct* router hashes and persisted per-process keys; isolated loopback addresses and unique TCP ports, network-ID-2, explicit local-address allowance in test profile. Verify the actual stock-to-stock handshake (both directions), peer connected map and decoded DeliveryStatus/I2NP, not only a helper future. If the available pristine helper cannot perform stock-to-stock, instead exercise a naturally exposed stock i2pd service, with a separately documented oracle; do not require invasive stock changes.
+2. **Admissibility audit**: ensure each signed RI contains correct `s`, `i`, `v=2`, local keys and no unqualified `R`/bandwidth claim. Source inspect m3p2len and SessionConfirmed fragmentation/size, role mapping, SessionCreated/Confirmed flush/partial read, noise static key binding, per-role I2NP encoding, reference listener configuration, and connection keepalive. Negative controls: wrong net ID, wrong RI public key, wrong port, forbidden local-address policy.
+3. **One-session oracle**: run exactly one i2pr↔reference pair at a time per test generation, use a per-launch **local opaque test ID** for harness process messages and in-memory association; do not infer session identity from global stock log counts. Persist at most fixed stage enums, role, counters and ordinary sanitized exit categories; no test token, endpoint, secret, raw log or router hash in durable evidence. If a shared token cannot cross pristine reference boundaries, use exclusive single connection and bounded before/after counts plus connected-peer state; label inference limitations.
+4. **Controlled test**: once controls pass, forward and reverse i2pr vs stock i2pd, each with genuine TCP, SessionRequest/Created/Confirmed, authenticated link, decoded small and fragmented I2NP and DeliveryStatus echo. Preserve the first exact failure and stop; only modify i2pr crypto/runtime wire code for an independently reproducible code-owned defect. Test both roles with transcript vectors and negative/partial IO scenarios before retry.
+5. **Finite execution**: freeze budget per direction before run, allow the plan to iterate deterministic regression tests without creating new plan IDs, but stop live on new unclassified failure (no speculative tuning). Record baseline and post-cleanup resource counters and no leakage. Only once this coherent one-family gate passes does original Plan 434 proceed to its full handoff and Plan 435 dual-family qualification.
+
+## Failure, restart, compatibility, commands
+
+No change to normal-daemon config, RI or static key rotation. Each attempt has a finite deadline, retries disabled except declared budget, owned sockets/processes, preauth quota, flush/EOF attribution; emit sanitized status before destroying ephemeral datadir. On failed stock-to-stock control, STOP and classify fixture/environment, not NTCP2 semantic failure.
+
+Run `cargo test --locked -p i2pr-transport-ntcp2 --all-targets`; `cargo test --locked -p i2pr-runtime --all-targets`; `cargo test --locked -p i2pr-interop --all-targets`; `bash scripts/check-ntcp2-vectors.sh`; `python3 scripts/check-current-pin-ntcp2-runner.py --self-test`; pinned pristine-helper build; one explicit new controlled interop runner; `cargo fmt --all --check`, `cargo check --locked --workspace --all-targets` and full AGENTS.md floor. Do not imply a new runner path already exists.
+
+## Acceptance, stop and closure
+
+Require **(a)** proved stock-to-stock positive control; **(b)** i2pr forward and reverse fully authenticated connected NTCP2; **(c)** actual small and fragmented decoded I2NP/DeliveryStatus, session-specific and cleanup-verified; **(d)** negative controls; and **(e)** no supported-public claims. A partial authenticated Noise stage is retained evidence, never `passed`. STOP on failed control, missing correlation, or definite wire error outside scoped fix; register a specific corrective only when source-evidenced. Closure `plans/closure/ntcp2-transport/441-status.md`, then explicit Plan 434 amendment to unblock qualified successors if all criteria genuinely pass.
