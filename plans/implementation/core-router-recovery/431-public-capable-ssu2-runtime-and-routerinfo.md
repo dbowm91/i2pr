@@ -1,6 +1,6 @@
 # Plan 431 — Public-capable SSU2 runtime, persistent keys and truthful RouterInfo
 
-Status: registered / **ready**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; re-census source before production changes and consume generation-bound owner evidence. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
+Status: **stopped**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`; the required qualified independent non-loopback reference topology is unavailable under the supplied routine-work constraints. See `plans/closure/core-router-recovery/431-status.md`. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
 
 ## Objective and readiness
 

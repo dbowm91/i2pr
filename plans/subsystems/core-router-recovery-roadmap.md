@@ -64,7 +64,7 @@ Capability advertisement is an output of observed healthy owners and completed c
 | Plan | Status at registration | Implementation | Required proof |
 | --- | --- | --- | --- |
 | 430 | passed | `plans/implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md` | Source inventory, readiness/claim contract, fail-closed negative controls; no capability promotion |
-| 431 | ready | `plans/implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md` | Controlled non-loopback qualified SSU2, no false publication |
+| 431 | stopped | `plans/implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md` | `431-status.md`: resume only with authorized independently addressed non-loopback reference topology |
 | 432 | ready | `plans/implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md` | Verified remote SU3 bootstrap with isolated TLS tests |
 | 433 | blocked on 431,432 | `plans/implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md` | Independent-router multihop end-to-end application path |
 | 434 | ready | `plans/implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md` | Real bidirectional first-family authenticated I2NP |
@@ -94,4 +94,4 @@ The operational core is demonstrated only when a fresh identity and empty cache 
 
 ## 12. Current planning disposition
 
-Plan 430 closed as an infrastructure and invariant baseline; it activated no transport or network role and changed no support claim. Plans 431, 432, and 434 are now dependency-ready. Plans 433, 435, 436, 437, 438, and 439 remain blocked on their listed predecessor evidence. Existing closure/status records remain authoritative and unchanged; Plan 430's source-comment discrepancy is carried to Plan 438 for reconciliation before any floodfill promotion.
+Plan 430 closed as an infrastructure and invariant baseline; it activated no transport or network role and changed no support claim. Plan 431 stopped at the unavailable independent non-loopback qualification topology; Plans 432 and 434 remain independently executable. Plans 433, 435, 436, 437, 438, and 439 remain blocked on their listed predecessor evidence. Existing closure/status records remain authoritative and unchanged; Plan 430's source-comment discrepancy is carried to Plan 438 for reconciliation before any floodfill promotion.
