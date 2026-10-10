@@ -1,6 +1,6 @@
 # `i2pr-runtime` — Deep Dive
 
-Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~19.5k lines (14 modules + `lib.rs`)
+Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~19.5k lines (15 modules + `lib.rs`)
 
 **Purpose:** the sole production owner of Tokio in the workspace — it owns
 sockets, timers, bounded channels, tasks, and wakeable cancellation, and
@@ -21,6 +21,12 @@ the world. It is where:
   parent-chain reason walk via `cancel`.
 - Bounded service channels are built (command, event, request, latest-state)
   with resource charging via `channel`.
+- A process-shared, bounded byte-rate governor is provided by `bandwidth` and
+  injected by the daemon into the SSU2 socket owner. Its inbound limit applies
+  before packet processing; outbound bytes are reserved immediately before
+  `send_to`. It is disabled unless explicitly configured. The current SSU2
+  adapter has bounded per-peer waiters and FIFO pacing per direction, but does
+  not yet provide traffic-class priority or qualify an advertised capacity.
 - TCP listeners and NTCP2 link children are owned via `ntcp2_runtime`.
 - UDP sockets and SSU2 session children are owned via `ssu2_runtime`
   (Plans 158–160).
@@ -49,13 +55,14 @@ the production runtime owner. ADR 0002 records that decision.
 
 ## Module layout
 
-Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 19,503).
+Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 21,126).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- | --- |
 | `lib` | `src/lib.rs` | 149 | Crate root: module declarations, all `pub use` re-exports, `run_blocking`/`bounded_timeout` | `#![forbid(unsafe_code)]`, `run_blocking`, `bounded_timeout` |
 | `cancel` | `src/cancel.rs` | 169 | Hierarchical wakeable cancellation with first-reason-wins and parent-chain reason walking over `tokio_util::CancellationToken` | `CancellationToken` |
 | `channel` | `src/channel.rs` | 1908 | Typed bounded service channels (command/event/request/latest-state) with resource charging, overflow policies, privacy-safe counters | `ChannelSpec`, `ChannelName`, `CommunicationClass`, `OverflowPolicy`, `QueueCharge`, `RequestChannelParts`, `LatestState`, `*Sender`/`*Receiver`, `Received`, `ReceivedRequest`, `ChannelSnapshot`, all error types |
+| `bandwidth` | `src/bandwidth.rs` | 558 | Shared cancellable inbound/outbound byte token buckets with bounded FIFO waiter queues, independent direction scheduling and redacted peer keys | `BandwidthGovernor`, `BandwidthGovernorConfig`, `BandwidthDirection`, `BandwidthPeerKey`, `BandwidthGovernorSnapshot` |
 | `context` | `src/context.rs` | 692 | Per-service context bundle, readiness, health publication, `ChildScope` with bounded join/forced abort, internal `RuntimeClock` | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
 | `graph` | `src/graph.rs` | 648 | Service registration, deterministic topological ordering, full-graph validation before startup, restart policy | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `ServiceResult`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
 | `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 359 | Bounded data-phase receive oracle: one absolute deadline plus cumulative frame/byte/block/non-target-I2NP bounds, strict RouterInfo signature validation, exact DeliveryStatus correlation. Never wired into the production service graph | `OracleConfig`, `OracleCounters`, `OracleAccept`, `MatchedTarget`, `PeerRouterHashBinding`, `DataOracleError` (re-exported also as `DataOracle`) |
@@ -66,7 +73,7 @@ Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 19,503).
 | `observability` | `src/observability.rs` | 360 | Privacy-aware tracing events, bounded aggregate snapshots, shared `pub(crate) TaskCounters` | `RuntimeSnapshot`, `SupervisorSnapshot`, `ServiceSnapshot`, `SimulationSnapshot`, `RouterLifecycle`, `SnapshotError`, `event` |
 | `ssu2_controlled_peer_test` | `src/ssu2_controlled_peer_test.rs` | 767 | Bounded driver for the wire-real 7-message peer-test exchange; spawns ephemeral helper loop tasks under a caller-owned `ChildScope` and records nothing itself — outcomes return to the caller | `run_controlled_peer_test`, `ControlledPeerTestParams`, `ControlledPeerTestOutcome`, `ControlledPeerTestSigner` |
 | `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1191 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
-| `ssu2_runtime` | `src/ssu2_runtime.rs` | 7235 | Plan 158 bounded SSU2 UDP socket/session lifecycle, plus Plan 159 path validation/migration and conservative reachability observations, plus Plan 282 publication material and Plan 283 controlled peer test | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 7310 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
 `ssu2_runtime` is by far the largest module (7,235 lines, ~37% of the crate),
@@ -79,6 +86,10 @@ complete external surface; `context::RuntimeClock` and `observability::TaskCount
 are `pub(crate)` and are **not** part of it.
 
 - `cancel`: `CancellationToken`
+- `bandwidth`: `BandwidthAcquireError`, `BandwidthDirection`,
+  `BandwidthGovernor`, `BandwidthGovernorConfig`,
+  `BandwidthGovernorConfigError`, `BandwidthGovernorSnapshot`,
+  `BandwidthPeerKey`, and hard burst/rate/queue ceilings
 - `channel`: `ChannelConfigError`, `ChannelName`, `ChannelNameError`,
   `ChannelSnapshot`, `ChannelSpec`, `CommunicationClass`, `EventReceiver`,
   `EventSendError`, `EventSender`, `LatestState`, `LatestStateReceiver`,

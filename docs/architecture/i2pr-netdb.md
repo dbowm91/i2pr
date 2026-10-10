@@ -68,7 +68,7 @@ It must **not** own:
 ## Module layout
 
 `crates/i2pr-netdb/src/` holds 23 modules plus `lib.rs`
-(16 291 lines total; line counts from `wc -l`).
+(16 880 lines total; line counts from `wc -l`).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
@@ -80,7 +80,7 @@ It must **not** own:
 | `floodfill_service` | `floodfill_service.rs` | 1601 | Plan 273/274 synchronous bounded DatabaseStore admission plus DatabaseLookup selection and one-shot supplied-key ECIES reply effects | `FloodfillStoreService`, `FloodfillStorePolicy`, `FloodfillStoreStats`, `FloodfillStoreEffect`, `FloodfillAck`, `FloodfillIngress`, `FloodfillLookupEffect`, `FloodfillReplyIntent`, `FloodfillRole`, `FloodfillTime`, `ReplyProtection`, `LookupFailure`, `ReplicationCandidate` |
 | `lease_set` | `lease_set.rs` | 574 | Plan 272 validated classic LeaseSet and MetaLeaseSet plus their bounded stores | `ValidatedLeaseSet`, `ValidatedMetaLeaseSet`, `LeaseSetValidationContext`, `LeaseSetValidationError`, `LeaseSetStore`, `LeaseSetStoreConfig`, `LeaseSetInsertOutcome`, `MetaLeaseSetStore`, `MetaLeaseSetStoreConfig`, `MetaLeaseSetInsertOutcome` |
 | `lease_set2` | `lease_set2.rs` | 1000 | Plan 119 Standard LeaseSet2 validation, freshness policy, disclosure block, and bounded store | `ValidatedLeaseSet2`, `DestinationHash`, `LeaseSet2ValidationPolicy` / `LeaseSet2ValidationContext` / `LeaseSet2ValidationError`, `LeaseSetDisclosureBlock`, `LeaseSet2Store`, `LeaseSet2StoreConfig`, `LeaseSet2StoreStats`, `LeaseSet2InsertOutcome` |
-| `local` | `local.rs` | 703 | Local signed RouterInfo builder, controlled option declaration, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
+| `local` | `local.rs` | 812 | Local signed RouterInfo builder, controlled option declaration, data-only Java-compatible bandwidth-class derivation, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `BandwidthClass`, `BandwidthClassError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
 | `lookup_action` | `lookup_action.rs` | 476 | Typed action vocabulary emitted by the lookup machine; bounded gzip decompression; reply-path sink trait | `LookupAction`, `LookupOutcome`, `LookupFinalState`, `DecompressionError`, `ReplyPathSink`, `decompress_router_info`, `MAX_COMPRESSED_ROUTER_INFO_BYTES`, `MAX_DECOMPRESSED_ROUTER_INFO_BYTES`, `LOOKUP_EXCLUDED_PEER_BUDGET` |
 | `lookup_engine` | `lookup_engine.rs` | 1364 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 357 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
@@ -561,11 +561,13 @@ a `LocalRouterInfo`.
   the implemented I2NP surface. A controlled record omitting `netId` is
   marked unreachable by the reference, so it is always present.
 - **The non-advertisement guard** is `validate_options`
-  (`local.rs:268-282`): if a `caps` mapping is present, any of
+  (`local.rs:344-358`): if a `caps` mapping is present, any of
   `f B K L M N P R S U X` is refused with
   `LocalRouterInfoError::InvalidMapping { context: "caps" }`. That covers
   floodfill (`f`), bandwidth tiering (`B`), and the transport-capability
-  letters. The **normal** build path carries zero `RouterAddress` entries,
+  letters. `BandwidthClass` derives a data-only tier from configured rates;
+  it does not authorize publication or construct a `caps` value. The **normal**
+  build path carries zero `RouterAddress` entries,
   and a supplied transport style is `ForbiddenTransport { style }`.
 - `build_floodfill`, `build_floodfill_reachable`, and
   `build_floodfill_withdrawal` are the **controlled** paths, and each is

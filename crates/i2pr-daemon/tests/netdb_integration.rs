@@ -179,6 +179,15 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             refresh_interval: std::time::Duration::from_secs(6 * 60 * 60),
         },
         floodfill: i2pr_daemon::config::FloodfillConfig { enabled: false },
+        bandwidth: i2pr_daemon::config::BandwidthConfig {
+            enabled: false,
+            inbound_bytes_per_second: 0,
+            outbound_bytes_per_second: 0,
+            share_percent: 0,
+            burst_bytes: 64 * 1024,
+            max_pending_requests: 1024,
+            max_pending_per_peer: 1,
+        },
         source_path: None,
     }
 }

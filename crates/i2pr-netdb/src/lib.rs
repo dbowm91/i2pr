@@ -92,8 +92,8 @@ pub use lease_set2::{
     LeaseSet2ValidationPolicy, LeaseSetDisclosureBlock, ValidatedLeaseSet2,
 };
 pub use local::{
-    CONTROLLED_NET_ID, CONTROLLED_ROUTER_VERSION, LocalRouterInfo, LocalRouterInfoBuilder,
-    LocalRouterInfoError, controlled_router_options,
+    BandwidthClass, BandwidthClassError, CONTROLLED_NET_ID, CONTROLLED_ROUTER_VERSION,
+    LocalRouterInfo, LocalRouterInfoBuilder, LocalRouterInfoError, controlled_router_options,
 };
 pub use lookup_action::{
     DecompressionError, LOOKUP_EXCLUDED_PEER_BUDGET, LookupAction, LookupFinalState, LookupOutcome,

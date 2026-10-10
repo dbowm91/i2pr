@@ -1092,6 +1092,15 @@ impl Ssu2DaemonService {
         config: &Ssu2Config,
         identity: Ssu2IdentityMaterial,
     ) -> Result<Self, Ssu2ServiceError> {
+        Self::new_with_bandwidth(config, identity, None)
+    }
+
+    /// Creates the daemon-owned service with a shared process governor.
+    pub fn new_with_bandwidth(
+        config: &Ssu2Config,
+        identity: Ssu2IdentityMaterial,
+        bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
+    ) -> Result<Self, Ssu2ServiceError> {
         if !config.enabled {
             return Err(Ssu2ServiceError::ControlledProfile(
                 "SSU2 service requires enabled = true".to_owned(),
@@ -1113,7 +1122,7 @@ impl Ssu2DaemonService {
             }
         }
         let runtime = ssu2_runtime_config_from(config)?;
-        let service = Ssu2RuntimeService::new(runtime, identity)
+        let service = Ssu2RuntimeService::new_with_bandwidth(runtime, identity, bandwidth)
             .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
         Ok(Self { service })
     }
