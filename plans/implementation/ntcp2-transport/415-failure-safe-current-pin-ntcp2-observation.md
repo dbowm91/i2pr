@@ -1,6 +1,6 @@
 # Plan 415 — preserve sanitized evidence for current-pin NTCP2 attempts
 
-Status: **ready** — `registered-failure-safe-current-pin-ntcp2-observation`.
+Status: **stopped** — `stopped-forward-reference-helper-failed-on-peer-control-connect-timeout`.
 Corrective successor to Plan 414; see `plans/closure/ntcp2-transport/414-status.md`.
 
 ## Objective

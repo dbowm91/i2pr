@@ -1,8 +1,8 @@
 # NTCP2 Transport Roadmap
 
-Status: historical M3 closed (protocol defect localized); Plans 410/414 stopped before current-pin two-way evidence; Plan 415 is ready as a failure-safe corrective; recovery Plans 434–435 remain gated.
+Status: historical M3 closed (protocol defect localized); Plans 410/414/415 stopped before current-pin two-way evidence; recovery Plans 434–435 remain gated.
 
-**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. [Plan 410](../implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md) added the network-ID-2 loopback profile and built a helper against pristine current-pin i2pd, then stopped: its public API has no decoded inbound NTCP2 I2NP receive observation, and reference-router patching is prohibited. Plan 414 verified the pinned debug-log source path but its only forward attempt failed before preserving sanitized stage evidence. Plan 415 owns failure-safe capture and negative controls before any fresh attempt. Plan 434 remains blocked because authenticated two-way I2NP evidence is unavailable. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
+**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. [Plan 410](../implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md) added the network-ID-2 loopback profile and built a helper against pristine current-pin i2pd, then stopped: its public API has no decoded inbound NTCP2 I2NP receive observation, and reference-router patching is prohibited. Plan 414 verified the pinned debug-log source path but its only forward attempt failed before preserving sanitized stage evidence. Plan 415 repaired the failure record and negative-tested it; its sole forward attempt stopped with the helper's control-listening peer timeout and launcher receiver-frame-read failure, with cleanup passed. It did not establish authenticated DeliveryStatus receipt and did not run reverse. Plan 434 remains blocked because authenticated two-way I2NP evidence is unavailable. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
 
 Long-term references:
 
@@ -39,7 +39,7 @@ Historic plans: 030–101 (global i2pr numbers, preserved).
 
 ## 4. Current state
 
-Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plan 410's network-ID-2 profile and pristine helper build do not provide reference-side receive evidence; Plan 414 verified a candidate debug-log path but stopped after an unclassified forward failure. Plan 415 is ready to fix the runner evidence path; Plan 434 remains blocked.
+Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plan 410's network-ID-2 profile and pristine helper build do not provide reference-side receive evidence; Plan 414 verified a candidate debug-log path but stopped after an unclassified forward failure. Plan 415 preserved sanitized failure outcomes and stopped after its forward attempt ended with helper control-listening peer timeout and launcher receiver-frame-read failure. Plan 434 remains blocked.
 
 ## 5. Target architecture
 
@@ -133,7 +133,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 101 | archived | historical narrative (no status record) | `plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md` | — |
 | 410 | stopped | `plans/implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md` | `plans/closure/ntcp2-transport/410-status.md` |
 | 414 | stopped | `plans/implementation/ntcp2-transport/414-stock-i2pd-decoded-message-observation.md` | `plans/closure/ntcp2-transport/414-status.md` |
-| 415 | ready | `plans/implementation/ntcp2-transport/415-failure-safe-current-pin-ntcp2-observation.md` | failure record and two-direction one-message proof |
+| 415 | stopped | `plans/implementation/ntcp2-transport/415-failure-safe-current-pin-ntcp2-observation.md` | `plans/closure/ntcp2-transport/415-status.md`: failure record and negative controls passed; single forward helper timed out waiting for its control-listening peer; reverse not run |
 
 ## 8. Cross-cutting requirements
 
