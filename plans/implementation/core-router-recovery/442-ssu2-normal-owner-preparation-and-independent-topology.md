@@ -1,6 +1,6 @@
 # Plan 442 — SSU2 product-owner construction and independently addressed evidence lane
 
-Status: **registered / blocked on Plan 440**. New bounded corrective splitting Plan 431's implementation work from the unavailable non-loopback qualification host. Historical Plan 431 `stopped` status remains authoritative; this plan does not claim Plan 431 passed.
+Status: **blocked — local durable-identity owner passed; independently addressed LAN qualification environment unavailable**. Plan 440 is closed. Historical Plan 431 `stopped` status remains authoritative; this plan does not claim Plan 431 passed. Closure: `plans/closure/core-router-recovery/442-status.md`.
 
 ## Objective, readiness and classification
 

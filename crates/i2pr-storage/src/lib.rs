@@ -60,6 +60,12 @@ pub const NTCP2_TRANSPORT_KEY_FILE_NAME: &str = "ntcp2.static.key";
 pub const MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE: usize = 4096;
 /// Version of the NTCP2 static-key and IV format.
 pub const NTCP2_TRANSPORT_KEY_FORMAT_VERSION: u16 = 1;
+/// The private SSU2 transport identity filename.
+pub const SSU2_TRANSPORT_IDENTITY_FILE_NAME: &str = "ssu2.transport.identity";
+/// Maximum bytes accepted for a persisted SSU2 transport identity.
+pub const MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE: usize = 4096;
+/// Version of the private SSU2 transport identity format.
+pub const SSU2_TRANSPORT_IDENTITY_FORMAT_VERSION: u16 = 1;
 
 const MAGIC: &[u8; 8] = b"I2PRID\0\0";
 const CHECKSUM_LENGTH: usize = 32;
@@ -82,6 +88,11 @@ const NTCP2_FILE_LENGTH: usize = NTCP2_HEADER_LENGTH
     + NTCP2_PUBLIC_KEY_LENGTH
     + NTCP2_IV_LENGTH
     + NTCP2_CHECKSUM_LENGTH;
+const SSU2_MAGIC: &[u8; 8] = b"I2PRSS2\0";
+const SSU2_HEADER_LENGTH: usize = 16;
+const SSU2_PAYLOAD_LENGTH: usize = 32 + PRIVATE_KEY_LENGTH + PUBLIC_KEY_LENGTH + 32;
+const SSU2_CHECKSUM_LENGTH: usize = 32;
+const SSU2_FILE_LENGTH: usize = SSU2_HEADER_LENGTH + SSU2_PAYLOAD_LENGTH + SSU2_CHECKSUM_LENGTH;
 
 /// Errors returned while creating, loading, validating, or atomically storing
 /// a private router identity.
@@ -387,6 +398,258 @@ impl TransportStaticKeyStore {
         }
         decode_transport_static_key(&bytes)
     }
+}
+
+/// Persisted SSU2 static and introduction keys bound to one router identity.
+///
+/// Secret fields are non-cloneable and redacted from formatting. The router
+/// hash is public binding metadata; the private values zeroize on drop.
+pub struct Ssu2TransportIdentityMaterial {
+    router_hash: [u8; 32],
+    static_key: X25519PrivateKey,
+    intro_key: Zeroizing<[u8; 32]>,
+}
+
+impl Ssu2TransportIdentityMaterial {
+    /// Generates independent static and introduction keys with the caller RNG.
+    pub fn generate<R: TryCryptoRng + ?Sized>(
+        router_hash: [u8; 32],
+        rng: &mut R,
+    ) -> Result<Self, StorageError> {
+        let static_key = X25519PrivateKey::generate(rng)?;
+        let mut intro_key = Zeroizing::new([0_u8; 32]);
+        rng.try_fill_bytes(&mut *intro_key)
+            .map_err(|_| StorageError::Crypto(CryptoError::RandomnessUnavailable))?;
+        if intro_key.iter().all(|byte| *byte == 0) {
+            return Err(StorageError::Malformed {
+                context: "ssu2-intro-key",
+            });
+        }
+        Ok(Self {
+            router_hash,
+            static_key,
+            intro_key,
+        })
+    }
+
+    /// Returns the bound public router hash.
+    pub const fn router_hash(&self) -> &[u8; 32] {
+        &self.router_hash
+    }
+
+    /// Borrows the zeroizing private static key owner.
+    pub const fn static_key(&self) -> &X25519PrivateKey {
+        &self.static_key
+    }
+
+    /// Borrows the introduction key only for the signed RouterAddress handoff.
+    pub fn intro_key_bytes(&self) -> &[u8; 32] {
+        &self.intro_key
+    }
+}
+
+impl std::fmt::Debug for Ssu2TransportIdentityMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Ssu2TransportIdentityMaterial(..)")
+    }
+}
+
+/// Atomic, permission-hardened store for one router's SSU2 transport keys.
+pub struct Ssu2TransportIdentityStore {
+    path: PathBuf,
+}
+
+impl Ssu2TransportIdentityStore {
+    /// Creates the store under the existing private router data directory.
+    pub fn in_data_dir(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join(SSU2_TRANSPORT_IDENTITY_FILE_NAME),
+        }
+    }
+
+    /// Returns the exact identity file path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Loads existing keys or atomically creates them when the file is absent.
+    /// Existing malformed or differently bound keys fail closed.
+    pub fn load_or_generate<R: TryCryptoRng + ?Sized>(
+        &self,
+        expected_router_hash: [u8; 32],
+        rng: &mut R,
+    ) -> Result<Ssu2TransportIdentityMaterial, StorageError> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(_) => return self.load(expected_router_hash),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(storage_io("inspect SSU2 identity", source)),
+        }
+        let generated = Ssu2TransportIdentityMaterial::generate(expected_router_hash, rng)?;
+        match self.save_new(&generated) {
+            Ok(()) => Ok(generated),
+            Err(StorageError::AlreadyExists) => self.load(expected_router_hash),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Saves a new identity with atomic no-replace semantics.
+    pub fn save_new(&self, material: &Ssu2TransportIdentityMaterial) -> Result<(), StorageError> {
+        let encoded = encode_ssu2_transport_identity(material)?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        ensure_secure_directory(parent)?;
+        reject_existing_target(&self.path)?;
+        let (temporary_path, mut temporary) = create_temporary_file(parent, "ssu2.identity")?;
+        let result = (|| {
+            temporary
+                .write_all(&encoded)
+                .map_err(|source| storage_io("write temporary SSU2 identity", source))?;
+            temporary
+                .sync_all()
+                .map_err(|source| storage_io("sync temporary SSU2 identity", source))?;
+            drop(temporary);
+            fs::hard_link(&temporary_path, &self.path).map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    StorageError::AlreadyExists
+                } else {
+                    storage_io("install SSU2 identity", source)
+                }
+            })?;
+            fs::remove_file(&temporary_path)
+                .map_err(|source| storage_io("remove temporary SSU2 identity", source))?;
+            sync_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result
+    }
+
+    /// Loads and validates keys against the current router identity.
+    pub fn load(
+        &self,
+        expected_router_hash: [u8; 32],
+    ) -> Result<Ssu2TransportIdentityMaterial, StorageError> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        validate_existing_directory(parent)?;
+        let metadata = fs::symlink_metadata(&self.path)
+            .map_err(|source| storage_io("inspect SSU2 identity", source))?;
+        validate_identity_file_metadata(&metadata)?;
+        let length = usize::try_from(metadata.len()).map_err(|_| StorageError::TooLarge {
+            actual: usize::MAX,
+            maximum: MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE,
+        })?;
+        if length > MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE {
+            return Err(StorageError::TooLarge {
+                actual: length,
+                maximum: MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE,
+            });
+        }
+        let mut file =
+            File::open(&self.path).map_err(|source| storage_io("open SSU2 identity", source))?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
+        file.read_to_end(&mut bytes)
+            .map_err(|source| storage_io("read SSU2 identity", source))?;
+        if bytes.len() > MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE {
+            return Err(StorageError::TooLarge {
+                actual: bytes.len(),
+                maximum: MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE,
+            });
+        }
+        decode_ssu2_transport_identity(&bytes, expected_router_hash)
+    }
+}
+
+fn encode_ssu2_transport_identity(
+    material: &Ssu2TransportIdentityMaterial,
+) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::with_capacity(SSU2_FILE_LENGTH);
+    bytes.extend_from_slice(SSU2_MAGIC);
+    bytes.extend_from_slice(&SSU2_TRANSPORT_IDENTITY_FORMAT_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&RESERVED_HEADER.to_be_bytes());
+    bytes.extend_from_slice(&(SSU2_FILE_LENGTH as u32).to_be_bytes());
+    bytes.extend_from_slice(material.router_hash());
+    bytes.extend_from_slice(material.static_key.secret_bytes());
+    bytes.extend_from_slice(&material.static_key.public_bytes());
+    bytes.extend_from_slice(material.intro_key_bytes());
+    let checksum = sha256(&bytes);
+    bytes.extend_from_slice(checksum.as_bytes());
+    Ok(bytes)
+}
+
+/// Decodes one bounded exact-format SSU2 identity bound to `expected_router_hash`.
+pub fn decode_ssu2_transport_identity(
+    bytes: &[u8],
+    expected_router_hash: [u8; 32],
+) -> Result<Ssu2TransportIdentityMaterial, StorageError> {
+    if bytes.len() > MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE {
+        return Err(StorageError::TooLarge {
+            actual: bytes.len(),
+            maximum: MAX_SSU2_TRANSPORT_IDENTITY_FILE_SIZE,
+        });
+    }
+    if bytes.len() < SSU2_FILE_LENGTH {
+        return Err(StorageError::Truncated);
+    }
+    if bytes.len() > SSU2_FILE_LENGTH {
+        return Err(StorageError::TrailingBytes);
+    }
+    if &bytes[..8] != SSU2_MAGIC {
+        return Err(StorageError::Malformed {
+            context: "ssu2-magic",
+        });
+    }
+    let version = u16::from_be_bytes([bytes[8], bytes[9]]);
+    if version != SSU2_TRANSPORT_IDENTITY_FORMAT_VERSION {
+        return Err(StorageError::UnsupportedVersion { actual: version });
+    }
+    if u16::from_be_bytes([bytes[10], bytes[11]]) != RESERVED_HEADER
+        || u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize
+            != SSU2_FILE_LENGTH
+    {
+        return Err(StorageError::Malformed {
+            context: "ssu2-header",
+        });
+    }
+    let checksum_offset = SSU2_FILE_LENGTH - SSU2_CHECKSUM_LENGTH;
+    if !constant_time_eq(
+        sha256(&bytes[..checksum_offset]).as_bytes(),
+        &bytes[checksum_offset..],
+    ) {
+        return Err(StorageError::Integrity);
+    }
+    let mut offset = SSU2_HEADER_LENGTH;
+    let router_hash: [u8; 32] = bytes[offset..offset + 32]
+        .try_into()
+        .map_err(|_| StorageError::Truncated)?;
+    offset += 32;
+    if !constant_time_eq(&router_hash, &expected_router_hash) {
+        return Err(StorageError::Integrity);
+    }
+    let secret: [u8; PRIVATE_KEY_LENGTH] = bytes[offset..offset + PRIVATE_KEY_LENGTH]
+        .try_into()
+        .map_err(|_| StorageError::Truncated)?;
+    offset += PRIVATE_KEY_LENGTH;
+    let public: [u8; PUBLIC_KEY_LENGTH] = bytes[offset..offset + PUBLIC_KEY_LENGTH]
+        .try_into()
+        .map_err(|_| StorageError::Truncated)?;
+    offset += PUBLIC_KEY_LENGTH;
+    let intro: [u8; 32] = bytes[offset..offset + 32]
+        .try_into()
+        .map_err(|_| StorageError::Truncated)?;
+    if intro.iter().all(|byte| *byte == 0) {
+        return Err(StorageError::Malformed {
+            context: "ssu2-intro-key",
+        });
+    }
+    let key = X25519PrivateKey::from_bytes(secret);
+    if !constant_time_eq(&key.public_bytes(), &public) {
+        return Err(StorageError::Integrity);
+    }
+    Ok(Ssu2TransportIdentityMaterial {
+        router_hash,
+        static_key: key,
+        intro_key: Zeroizing::new(intro),
+    })
 }
 
 /// Decodes one bounded, exact-format NTCP2 static-key record.
@@ -1192,6 +1455,12 @@ mod tests {
         IdentityStore::in_data_dir(&data_dir)
     }
 
+    fn ssu2_store(directory: &tempfile::TempDir) -> Ssu2TransportIdentityStore {
+        let data_dir = directory.path().join("ssu2-state");
+        IdentityStore::prepare_directory(&data_dir).expect("private state directory");
+        Ssu2TransportIdentityStore::in_data_dir(&data_dir)
+    }
+
     fn write_fixture(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).expect("write fixture");
         #[cfg(unix)]
@@ -1283,6 +1552,70 @@ mod tests {
             .copy_from_slice(checksum.as_bytes());
         write_fixture(store.path(), &public_mismatch);
         assert!(matches!(store.load(), Err(StorageError::Integrity)));
+    }
+
+    #[test]
+    fn ssu2_identity_is_persistent_router_bound_and_exactly_decoded() {
+        let directory = tempdir().expect("directory");
+        let store = ssu2_store(&directory);
+        let router_hash = [0x42; 32];
+        let mut rng = ChaCha8Rng::seed_from_u64(442);
+        let first = store
+            .load_or_generate(router_hash, &mut rng)
+            .expect("generate persistent SSU2 identity");
+        let static_public = first.static_key().public_bytes();
+        let intro_key = *first.intro_key_bytes();
+        let saved = fs::read(store.path()).expect("read private SSU2 record");
+
+        let mut other_rng = ChaCha8Rng::seed_from_u64(999);
+        let restarted = store
+            .load_or_generate(router_hash, &mut other_rng)
+            .expect("reload persistent SSU2 identity");
+        assert_eq!(restarted.static_key().public_bytes(), static_public);
+        assert_eq!(restarted.intro_key_bytes(), &intro_key);
+        assert_eq!(fs::read(store.path()).expect("unchanged record"), saved);
+        assert!(matches!(
+            store.load([0x24; 32]),
+            Err(StorageError::Integrity)
+        ));
+
+        assert!(matches!(
+            decode_ssu2_transport_identity(&saved[..saved.len() - 1], router_hash),
+            Err(StorageError::Truncated)
+        ));
+        let mut trailing = saved.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_ssu2_transport_identity(&trailing, router_hash),
+            Err(StorageError::TrailingBytes)
+        ));
+        let mut corrupt = saved;
+        corrupt[SSU2_HEADER_LENGTH + 32] ^= 1;
+        assert!(matches!(
+            decode_ssu2_transport_identity(&corrupt, router_hash),
+            Err(StorageError::Integrity)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssu2_identity_file_has_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("directory");
+        let store = ssu2_store(&directory);
+        let mut rng = ChaCha8Rng::seed_from_u64(443);
+        store
+            .load_or_generate([0x43; 32], &mut rng)
+            .expect("persist SSU2 identity");
+        assert_eq!(
+            fs::metadata(store.path())
+                .expect("identity metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]

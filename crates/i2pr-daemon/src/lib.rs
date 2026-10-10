@@ -80,7 +80,7 @@ use i2pr_netdb::{
 use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
-use i2pr_storage::IdentityStore;
+use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1520,7 +1520,7 @@ fn register_ssu2_service(
     shared_service_manager: Option<Arc<crate::service_tunnels::ServiceTunnelManager>>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
-        Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
+        Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity_with_keys,
     };
     use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
@@ -1590,6 +1590,39 @@ fn register_ssu2_service(
                         }
                     };
                     let bundle = Arc::new(bundle);
+                    let router_hash = match bundle.identity().hash() {
+                        Ok(hash) => hash,
+                        Err(_) => {
+                            let detail = i2pr_core::HealthDetail::new(
+                                "SSU2 router identity hash unavailable",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let transport_store = Ssu2TransportIdentityStore::in_data_dir(&data_dir);
+                    let transport_identity = match transport_store
+                        .load_or_generate(*router_hash.as_bytes(), &mut i2pr_crypto::OsRng)
+                    {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SSU2 transport identity unavailable: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
                     // Controlled RouterInfo host/port: prefer IPv4
                     // loopback when bound, otherwise IPv6 loopback.
                     // An ephemeral `port = 0` uses a loopback
@@ -1625,7 +1658,12 @@ fn register_ssu2_service(
                             ),
                         );
                     };
-                    let identity = match generate_controlled_identity(&bundle, host, ri_port) {
+                    let identity = match generate_controlled_identity_with_keys(
+                        &bundle,
+                        host,
+                        ri_port,
+                        &transport_identity,
+                    ) {
                         Ok(identity) => identity,
                         Err(error) => {
                             let detail = i2pr_core::HealthDetail::new(format!(
