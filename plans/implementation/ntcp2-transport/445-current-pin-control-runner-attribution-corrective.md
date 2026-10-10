@@ -1,6 +1,6 @@
 # Plan 445 — Current-pin NTCP2 control runner attribution corrective
 
-Status: **registered / ready**. Corrective successor to Plan 441, which stopped
+Status: **blocked** — `blocked-stock-to-stock-control-helpers-not-established`. Closure: `plans/closure/ntcp2-transport/445-status.md`. Corrective successor to Plan 441, which stopped
 after its first stock-to-stock attempt returned exit 66 without preserving a
 bounded terminal category. Plan 441's historical stopped result remains
 immutable. Hard dependencies: Plan 440 passed; pinned helper source and build

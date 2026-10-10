@@ -111,7 +111,7 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 442 | ready | `plans/implementation/core-router-recovery/442-ssu2-normal-owner-preparation-and-independent-topology.md` | Durable SSU2 normal owner and separate external LAN evidence |
 | 443 | ready | `plans/implementation/core-router-recovery/443-controlled-router-product-integration-without-public-ssu2.md` | Isolated normal-daemon multihop app exchange; no public claim |
 | 444 | ready | `plans/implementation/floodfill/444-configured-shared-bandwidth-class-and-java-selection-control.md` | Enforced shared-bandwidth class and independent Java floodfill selection |
-| 445 | ready | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | Correct Plan 441's missing terminal-category evidence and allocate a fresh bounded control run |
+| 445 | blocked | `plans/implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md` | `445-status.md`: terminal categories identify both stock helpers' sessions as not established; no i2pr attempt followed |
 
 No `plans/closure/.../NNN-status.md` is created for corrective Plans 440–444 by registration; closure needs executed evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. Earlier registration convention: no `plans/closure/.../NNN-status.md` is created by registration; closure requires executed evidence. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
