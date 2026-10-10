@@ -53,7 +53,7 @@ use i2pr_api::sam::{
     server_state::apply_session_outcome,
     server_state::apply_stream_connect_outcome,
     server_state::apply_stream_forward_outcome,
-    server_state::dispatch as dispatch_command_state,
+    server_state::dispatch_with_server_max as dispatch_command_state,
     session::SamSessionId,
     streams::{SamStreamRegistry, SamStreamRegistryError, SamStreamState},
 };
@@ -66,13 +66,14 @@ use i2pr_runtime::CancellationToken;
 use i2pr_runtime::ChildScope;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::config::SamConfig;
 
+pub mod datagram_udp;
 pub mod fabric;
 pub mod faults;
 pub mod raw_stream;
@@ -118,6 +119,17 @@ pub(crate) fn sam_now_seconds() -> u32 {
         .unwrap_or(1)
 }
 
+/// Complete session-creation input for the SAM lifecycle owner.
+pub(crate) struct SessionCreateExecution<'a> {
+    pub session_id: SamSessionId,
+    pub style: i2pr_api::sam::session_create::SessionCreateStyle,
+    pub destination_source: i2pr_api::sam::session_create::DestinationSource,
+    pub from_port: u16,
+    pub to_port: u16,
+    pub children: &'a ChildScope,
+    pub cancellation: CancellationToken,
+}
+
 /// A live FORWARD registration owned by one SAM control socket.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForwardRegistration {
@@ -134,8 +146,8 @@ pub struct ForwardRegistration {
 /// Typed SAM service failure surfaced to the daemon supervisor.
 #[derive(Debug, Error)]
 pub enum SamServiceError {
-    /// Failed to bind the loopback TCP listener.
-    #[error("failed to bind SAM listener on {address}: {source}")]
+    /// Failed to bind a loopback SAM TCP or UDP listener.
+    #[error("failed to bind SAM socket on {address}: {source}")]
     Bind {
         /// Bind address.
         address: SocketAddr,
@@ -274,6 +286,9 @@ impl Default for StreamingPools {
 #[derive(Debug)]
 pub struct SamServiceState {
     config: SamConfig,
+    max_supported_version: i2pr_api::sam::version::SamVersion,
+    /// Bound loopback UDP bridge, installed by `bind` before service readiness.
+    udp_socket: Mutex<Option<Arc<UdpSocket>>>,
     connection_permits: Arc<tokio::sync::Semaphore>,
     session_registry: Arc<SamSessionRegistry>,
     destination_registry: Arc<Mutex<DestinationRegistry>>,
@@ -313,6 +328,13 @@ impl SamServiceState {
     /// Constructs a new SAM service state from a validated
     /// configuration.
     pub fn new(config: SamConfig) -> Result<Self, SamServiceError> {
+        Self::new_with_max_supported_version(config, i2pr_api::sam::version::MAX_SUPPORTED_VERSION)
+    }
+
+    pub(crate) fn new_with_max_supported_version(
+        config: SamConfig,
+        max_supported_version: i2pr_api::sam::version::SamVersion,
+    ) -> Result<Self, SamServiceError> {
         let session_registry = Arc::new(SamSessionRegistry::new(config.limits));
         let destination_registry = Arc::new(Mutex::new(DestinationRegistry::new(
             RegistryConfig::try_new(config.limits.max_sessions, 1024).map_err(|error| {
@@ -336,6 +358,8 @@ impl SamServiceState {
         )));
         Ok(Self {
             config,
+            max_supported_version,
+            udp_socket: Mutex::new(None),
             connection_permits,
             session_registry,
             destination_registry,
@@ -561,6 +585,13 @@ impl SamServiceState {
         SocketAddr::new(address, self.config.port)
     }
 
+    /// Returns the bound SAM Datagram/Raw UDP address, if the listener has
+    /// started binding. Primarily exposed so loopback integration clients can
+    /// use an ephemeral test port.
+    pub fn udp_bind_address(&self) -> Option<SocketAddr> {
+        self.udp_socket.lock().ok()?.as_ref()?.local_addr().ok()
+    }
+
     /// Executes one full session-creation transaction. The supplied
     /// destination source is either a freshly-generated TRANSIENT
     /// identity or a strict-decoded imported `SamPrivateDestination`.
@@ -587,13 +618,19 @@ impl SamServiceState {
     /// stream session, and (on driver-spawn failure) the bridge back
     /// to the pre-create baseline. The function never leaves a half-
     /// composed session.
-    pub fn execute_session_create(
+    pub(crate) fn execute_session_create(
         self: &Arc<Self>,
-        session_id: SamSessionId,
-        destination_source: i2pr_api::sam::session_create::DestinationSource,
-        children: &ChildScope,
-        cancellation: CancellationToken,
+        request: SessionCreateExecution<'_>,
     ) -> Result<SessionCreateApplied, SessionCreateError> {
+        let SessionCreateExecution {
+            session_id,
+            style,
+            destination_source,
+            from_port,
+            to_port,
+            children,
+            cancellation,
+        } = request;
         use i2pr_api::sam::session_create::DestinationSource;
 
         // Step 1: decode or generate the destination identity. The
@@ -618,7 +655,13 @@ impl SamServiceState {
         // transaction before we allocate any product material.
         let reservation = self
             .session_registry
-            .reserve_session(session_id.clone(), destination_id)
+            .reserve_session_with_style(
+                session_id.clone(),
+                destination_id,
+                from_port,
+                to_port,
+                style,
+            )
             .map_err(map_registry_error)?;
 
         // Step 3: prepare the localhost product material. A failure
@@ -690,7 +733,9 @@ impl SamServiceState {
         }
 
         // Step 6: register the stream-session slot.
-        if let Err(error) = self.stream_registry.register_session(session_id.clone()) {
+        if style == i2pr_api::sam::session_create::SessionCreateStyle::Stream
+            && let Err(error) = self.stream_registry.register_session(session_id.clone())
+        {
             drop(error);
             drop(product);
             self.teardown_session(&session_id, destination_id);
@@ -757,6 +802,7 @@ impl SamServiceState {
             destination_id,
             public_destination_b64: entry.public_destination_b64().to_owned(),
             private_destination_b64: private_destination_b64.clone(),
+            style,
         })
     }
 
@@ -764,6 +810,9 @@ impl SamServiceState {
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
     pub fn teardown_session(&self, session_id: &SamSessionId, destination_id: DestinationId) {
+        for child_id in self.session_registry.subsession_ids(session_id) {
+            self.remove_subsession(session_id, &child_id);
+        }
         if let Ok(mut drivers) = self.destination_drivers.lock()
             && let Some(driver) = drivers.remove(&destination_id)
         {
@@ -771,6 +820,7 @@ impl SamServiceState {
         }
         self.teardown_forwards_for_session(session_id);
         let _ = self.session_registry.remove_by_session(session_id);
+        self.teardown_subsession_streams(session_id, destination_id);
         if let Ok(mut destinations) = self.destination_registry.lock() {
             destinations.remove(&destination_id);
         }
@@ -784,7 +834,274 @@ impl SamServiceState {
         if let Ok(mut counters) = self.delivery_counters.lock() {
             counters.remove(&destination_id);
         }
-        let _ = self.stream_registry.unregister_session(session_id);
+    }
+
+    /// Registers a child session on a live PRIMARY without creating another
+    /// destination or tunnel pool.
+    pub fn add_subsession(
+        &self,
+        primary_id: &SamSessionId,
+        request: &i2pr_api::sam::command::SessionAddRequest,
+    ) -> Result<(), String> {
+        let child_id = SamSessionId::new(request.id.clone())
+            .ok_or_else(|| "subsession ID is invalid".to_owned())?;
+        let child = self
+            .session_registry
+            .add_subsession(
+                primary_id,
+                child_id.clone(),
+                i2pr_api::sam::registry::SamSubsessionConfig {
+                    style: request.style,
+                    from_port: request.from_port,
+                    to_port: request.to_port,
+                    listen_port: request.listen_port,
+                    host_port: request.port,
+                    host_address: request.host,
+                    raw_header: request.raw_header,
+                    protocol: request.protocol,
+                    listen_protocol: request.listen_protocol,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        if child.style() == i2pr_api::sam::session_create::SessionCreateStyle::Stream
+            && let Err(error) = self.stream_registry.register_session(child_id.clone())
+        {
+            let _ = self
+                .session_registry
+                .remove_subsession(primary_id, &child_id);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    /// Encodes the shared private destination on demand for SAM's status reply.
+    pub fn private_destination_for_session(&self, session_id: &SamSessionId) -> Option<String> {
+        let entry = self.session_registry.get(session_id)?;
+        let destinations = self.sam_destinations.lock().ok()?;
+        let bridge = destinations.get(entry.destination_id())?;
+        Some(bridge.with(|bridge| encode_private_for(bridge.identity().as_ref())))
+    }
+
+    /// Removes one child and its owned stream state while preserving sibling
+    /// subsessions and the PRIMARY destination.
+    pub fn remove_subsession(&self, primary_id: &SamSessionId, child_id: &SamSessionId) -> bool {
+        let entry = self.session_registry.get(child_id);
+        let Some(entry) = entry.filter(|entry| entry.parent_session_id() == Some(primary_id))
+        else {
+            return false;
+        };
+        let destination_id = entry.destination_id();
+        if self
+            .session_registry
+            .remove_subsession(primary_id, child_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return false;
+        }
+        self.teardown_forwards_for_session(child_id);
+        self.teardown_subsession_streams(child_id, destination_id);
+        true
+    }
+
+    /// Sends one managed-app datagram through the child selected on the same
+    /// PRIMARY. The operation has no host endpoint: routing uses only the
+    /// child's protocol/ports and the canonical Destination datagram owner.
+    pub(crate) fn send_managed_datagram(
+        &self,
+        primary_id: &SamSessionId,
+        child_id: &SamSessionId,
+        request: i2pr_client::datagram::DatagramSendRequest,
+    ) -> Result<(), ManagedDatagramError> {
+        let entry = self
+            .session_registry
+            .get(child_id)
+            .filter(|entry| entry.parent_session_id() == Some(primary_id))
+            .ok_or(ManagedDatagramError::UnknownChild)?;
+        if protocol_for_datagram_style(entry.style()).is_none()
+            || entry.protocol() != request.protocol
+        {
+            return Err(ManagedDatagramError::StyleMismatch);
+        }
+        let destination_id = entry.destination_id();
+        let destinations = self
+            .sam_destinations
+            .lock()
+            .map_err(|_| ManagedDatagramError::Unavailable)?;
+        let bridge = destinations
+            .get(destination_id)
+            .ok_or(ManagedDatagramError::Unavailable)?;
+        bridge
+            .with(|bridge| {
+                let identity = bridge.identity();
+                bridge.datagrams_mut().send(identity.as_ref(), &request)
+            })
+            .map_err(ManagedDatagramError::Datagram)?;
+        self.notify_outbound_signal(destination_id);
+        Ok(())
+    }
+
+    /// Drains events only for the selected child. Sibling protocols and I2P
+    /// destination ports remain queued for their own bounded operation.
+    pub(crate) fn receive_managed_datagram(
+        &self,
+        primary_id: &SamSessionId,
+        child_id: &SamSessionId,
+    ) -> Result<Option<i2pr_client::datagram::DatagramReceiveEvent>, ManagedDatagramError> {
+        let entry = self
+            .session_registry
+            .get(child_id)
+            .filter(|entry| entry.parent_session_id() == Some(primary_id))
+            .ok_or(ManagedDatagramError::UnknownChild)?;
+        let protocol = entry.listen_protocol();
+        let destinations = self
+            .sam_destinations
+            .lock()
+            .map_err(|_| ManagedDatagramError::Unavailable)?;
+        let bridge = destinations
+            .get(entry.destination_id())
+            .ok_or(ManagedDatagramError::Unavailable)?;
+        let mut event = bridge.with(|bridge| {
+            bridge
+                .datagrams_mut()
+                .pop_received_for_listener(protocol, entry.listen_port())
+        });
+        if let Some(event) = event.as_mut()
+            && entry.style() == i2pr_api::sam::session_create::SessionCreateStyle::Raw
+        {
+            event.payload.clone_from(&event.raw_payload);
+            event.from_hash = [0; 32];
+            event.from_destination = None;
+            event.sender_authenticated = false;
+            event.options = None;
+        }
+        Ok(event)
+    }
+
+    fn handle_udp_bridge_packet(&self, bytes: &[u8], peer: SocketAddr) -> Result<(), &'static str> {
+        if !peer.ip().is_loopback() {
+            return Err("non-loopback UDP source");
+        }
+        let packet = datagram_udp::parse_packet(bytes).map_err(|error| match error {
+            datagram_udp::DatagramPacketError::UnsupportedMessageControl => {
+                "unsupported optional SAM UDP message control"
+            }
+            _ => "invalid SAM UDP packet",
+        })?;
+        let child_id = SamSessionId::new(packet.id).ok_or("invalid SAM UDP session ID")?;
+        let entry = self
+            .session_registry
+            .get(&child_id)
+            .ok_or("unknown SAM UDP session ID")?;
+        let primary_id = entry
+            .parent_session_id()
+            .cloned()
+            .ok_or("SAM UDP requires a PRIMARY child")?;
+        let raw = entry.style() == i2pr_api::sam::session_create::SessionCreateStyle::Raw;
+        let protocol = if raw {
+            entry.protocol()
+        } else {
+            protocol_for_datagram_style(entry.style()).ok_or("SAM UDP session is not datagram")?
+        };
+        if raw {
+            if packet.protocol.is_some_and(|value| value != protocol) {
+                return Err("unsupported RAW protocol");
+            }
+        } else if packet.protocol.is_some() {
+            return Err("PROTOCOL is valid only for RAW");
+        }
+        let destination_hash = resolve_sam_udp_destination(self, packet.destination)
+            .ok_or("unresolved SAM UDP destination")?;
+        let request = i2pr_client::datagram::DatagramSendRequest {
+            destination_hash,
+            source_port: packet.from_port.unwrap_or(entry.from_port()),
+            destination_port: packet.to_port.unwrap_or(entry.to_port()),
+            protocol,
+            payload: packet.payload.to_vec(),
+            options: None,
+        };
+        self.send_managed_datagram(&primary_id, &child_id, request)
+            .map_err(|_| "SAM UDP datagram was rejected")
+    }
+
+    fn forward_host_datagrams(&self, destination_id: DestinationId) {
+        let Some(socket) = self.udp_socket.lock().ok().and_then(|slot| slot.clone()) else {
+            return;
+        };
+        let events = self
+            .sam_destinations
+            .lock()
+            .ok()
+            .and_then(|destinations| destinations.get(destination_id))
+            .map(|bridge| bridge.with(|bridge| bridge.datagrams_mut().drain_received()))
+            .unwrap_or_default();
+        for event in events {
+            let Some(entry) = self.session_registry.inbound_datagram_session(
+                destination_id,
+                event.protocol,
+                event.destination_port,
+            ) else {
+                continue;
+            };
+            let Some(port) = entry.host_port().filter(|port| *port != 0) else {
+                continue;
+            };
+            let raw_session =
+                entry.style() == i2pr_api::sam::session_create::SessionCreateStyle::Raw;
+            let Some(packet) =
+                datagram_udp::encode_received(&event, raw_session, entry.raw_header())
+            else {
+                continue;
+            };
+            let target = SocketAddr::new(
+                entry.host_address().unwrap_or(self.config.bind_address),
+                port,
+            );
+            if let Err(error) = socket.try_send_to(&packet, target) {
+                debug!(
+                    protocol = event.protocol,
+                    source_port = event.source_port,
+                    destination_port = event.destination_port,
+                    error = %error,
+                    "SAM UDP forwarding failed"
+                );
+            }
+        }
+    }
+
+    fn teardown_subsession_streams(
+        &self,
+        session_id: &SamSessionId,
+        destination_id: DestinationId,
+    ) {
+        let attachments = self
+            .stream_registry
+            .unregister_session(session_id)
+            .unwrap_or_default();
+        if let Some(bridge) = self
+            .sam_destinations
+            .lock()
+            .ok()
+            .and_then(|destinations| destinations.get(destination_id))
+        {
+            bridge.with(|bridge| {
+                for attachment in attachments {
+                    let Some(connection_id) = attachment.connection_id() else {
+                        continue;
+                    };
+                    let manager = match attachment.direction() {
+                        i2pr_api::sam::streams::SamStreamDirection::Outbound => {
+                            bridge.streaming_mut()
+                        }
+                        i2pr_api::sam::streams::SamStreamDirection::Inbound => {
+                            bridge.receiver_streaming_mut()
+                        }
+                    };
+                    let _ = manager.remove_connection(connection_id);
+                }
+            });
+        }
     }
 
     /// Removes one forward registration when its owning control socket ends.
@@ -959,6 +1276,11 @@ impl SamServiceState {
         &self,
         bind_address: SocketAddr,
     ) -> Result<(TcpListener, SocketAddr), SamServiceError> {
+        if !bind_address.ip().is_loopback() {
+            return Err(SamServiceError::InvalidConfig(
+                "SAM listeners must bind a loopback address".to_owned(),
+            ));
+        }
         let listener =
             TcpListener::bind(bind_address)
                 .await
@@ -967,7 +1289,28 @@ impl SamServiceState {
                     source,
                 })?;
         let bound_address = listener.local_addr().unwrap_or(bind_address);
+        self.bind_udp_socket(bound_address.ip()).await?;
         Ok((listener, bound_address))
+    }
+
+    async fn bind_udp_socket(&self, bind_ip: IpAddr) -> Result<Arc<UdpSocket>, SamServiceError> {
+        if let Some(socket) = self.udp_socket.lock().ok().and_then(|slot| slot.clone()) {
+            return Ok(socket);
+        }
+        let address = SocketAddr::new(bind_ip, self.config.udp_port);
+        let socket = Arc::new(
+            UdpSocket::bind(address)
+                .await
+                .map_err(|source| SamServiceError::Bind { address, source })?,
+        );
+        let mut slot = self.udp_socket.lock().map_err(|_| {
+            SamServiceError::InvalidConfig("SAM UDP socket lock poisoned".to_owned())
+        })?;
+        if let Some(existing) = slot.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        *slot = Some(Arc::clone(&socket));
+        Ok(socket)
     }
 
     /// Spawns the Plan 147 per-destination runtime driver task for
@@ -1033,14 +1376,18 @@ impl SamServiceState {
         let bind_address = listener
             .local_addr()
             .map_err(|_| SamServiceError::InvalidConfig("listener had no local_addr".to_owned()))?;
+        let udp_socket = self.bind_udp_socket(bind_address.ip()).await?;
+        let udp_address = udp_socket.local_addr().unwrap_or(bind_address);
         info!(
             address = %bind_address,
+            udp_address = %udp_address,
             max_clients = self.config.limits.max_clients,
             max_sessions = self.config.limits.max_sessions,
-            "SAM v3.1 loopback listener bound"
+            "SAM loopback TCP and UDP listeners bound"
         );
 
         let client_permits = Arc::clone(&self.connection_permits);
+        let mut datagram_buffer = [0_u8; 65_507];
 
         let child_token = cancellation.child_token();
         loop {
@@ -1049,6 +1396,19 @@ impl SamServiceState {
                 _ = child_token.cancelled() => {
                     debug!("sam listener cancellation observed");
                     break;
+                }
+                received = udp_socket.recv_from(&mut datagram_buffer) => {
+                    match received {
+                        Ok((length, peer)) => {
+                            if let Err(reason) = self.handle_udp_bridge_packet(
+                                &datagram_buffer[..length],
+                                peer,
+                            ) {
+                                debug!(reason, "SAM UDP datagram rejected");
+                            }
+                        }
+                        Err(error) => warn!(error = %error, "SAM UDP receive failed"),
+                    }
                 }
                 accept = listener.accept() => {
                     let (stream, peer) = match accept {
@@ -1123,6 +1483,132 @@ impl SamServiceState {
         .await;
         Ok(())
     }
+
+    /// Drives the dedicated manager-protocol datagram stream. Each request is
+    /// length-prefixed and bounded before allocation; no request names a host
+    /// address or can create a socket.
+    pub(crate) async fn drive_private_datagram_connection(
+        self: Arc<Self>,
+        mut stream: SamIoStream,
+        cancellation: CancellationToken,
+        service_cancellation: CancellationToken,
+    ) {
+        loop {
+            let mut length = [0_u8; 4];
+            let read = tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = service_cancellation.cancelled() => break,
+                result = stream.read_exact(&mut length) => result,
+            };
+            if read.is_err() {
+                break;
+            }
+            let declared = u32::from_be_bytes(length) as usize;
+            if declared == 0 || declared > i2pr_app_manager_proto::MAX_DATA_FRAME_BYTES {
+                break;
+            }
+            let mut request_bytes = vec![0_u8; declared];
+            let read = tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = service_cancellation.cancelled() => break,
+                result = stream.read_exact(&mut request_bytes) => result,
+            };
+            if read.is_err() {
+                break;
+            }
+            let reply = match i2pr_app_manager_proto::datagram::DatagramRequest::decode(
+                &request_bytes,
+            ) {
+                Ok(i2pr_app_manager_proto::datagram::DatagramRequest::Send {
+                    primary_id,
+                    child_id,
+                    destination_hash,
+                    source_port,
+                    destination_port,
+                    protocol,
+                    options,
+                    payload,
+                }) => match (SamSessionId::new(primary_id), SamSessionId::new(child_id)) {
+                    (Some(primary), Some(child)) => {
+                        let options = if options.is_empty() {
+                            Some(None)
+                        } else {
+                            i2pr_proto::Mapping::decode(
+                                &options,
+                                i2pr_app_manager_proto::datagram::MAX_DATAGRAM_OPTIONS_BYTES,
+                            )
+                            .ok()
+                            .map(Some)
+                        };
+                        match options {
+                            Some(options) => {
+                                let request = i2pr_client::datagram::DatagramSendRequest {
+                                    destination_hash,
+                                    source_port,
+                                    destination_port,
+                                    protocol,
+                                    payload,
+                                    options,
+                                };
+                                if self
+                                    .send_managed_datagram(&primary, &child, request)
+                                    .is_ok()
+                                {
+                                    i2pr_app_manager_proto::datagram::DatagramReply::Sent
+                                } else {
+                                    i2pr_app_manager_proto::datagram::DatagramReply::Rejected
+                                }
+                            }
+                            None => i2pr_app_manager_proto::datagram::DatagramReply::Rejected,
+                        }
+                    }
+                    _ => i2pr_app_manager_proto::datagram::DatagramReply::Rejected,
+                },
+                Ok(i2pr_app_manager_proto::datagram::DatagramRequest::Receive {
+                    primary_id,
+                    child_id,
+                }) => match (SamSessionId::new(primary_id), SamSessionId::new(child_id)) {
+                    (Some(primary), Some(child)) => {
+                        match self.receive_managed_datagram(&primary, &child) {
+                            Ok(Some(event)) => {
+                                let options = event.options.as_ref().and_then(|mapping| mapping.encode_to_vec(i2pr_app_manager_proto::datagram::MAX_DATAGRAM_OPTIONS_BYTES).ok()).unwrap_or_default();
+                                i2pr_app_manager_proto::datagram::DatagramReply::Event(
+                                    i2pr_app_manager_proto::datagram::DatagramEvent {
+                                        from_hash: event.from_hash,
+                                        sender_authenticated: event.sender_authenticated,
+                                        source_port: event.source_port,
+                                        destination_port: event.destination_port,
+                                        protocol: event.protocol,
+                                        received_at_ms: event.received_at_ms,
+                                        options,
+                                        payload: event.payload,
+                                    },
+                                )
+                            }
+                            Ok(None) => i2pr_app_manager_proto::datagram::DatagramReply::Empty,
+                            Err(_) => i2pr_app_manager_proto::datagram::DatagramReply::Rejected,
+                        }
+                    }
+                    _ => i2pr_app_manager_proto::datagram::DatagramReply::Rejected,
+                },
+                Err(_) => i2pr_app_manager_proto::datagram::DatagramReply::Rejected,
+            };
+            let Ok(encoded) = reply.encode() else { break };
+            if write_managed_datagram_reply(&mut stream, &encoded)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+}
+
+async fn write_managed_datagram_reply(stream: &mut SamIoStream, payload: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(payload.len()).map_err(|_| io::ErrorKind::InvalidData)?;
+    stream.write_all(&length.to_be_bytes()).await?;
+    stream.write_all(payload).await?;
+    stream.flush().await
 }
 
 /// Admission failure for the narrow private SAM connection seam.
@@ -1145,6 +1631,52 @@ fn encode_public_for(identity: &DestinationIdentity) -> String {
         i2pr_api::sam::private_destination::SamPrivateDestination::from_identity(identity)
             .expect("identity is fresh and should round-trip through the SAM codec");
     wrapper.encode_public_base64()
+}
+
+fn protocol_for_datagram_style(
+    style: i2pr_api::sam::session_create::SessionCreateStyle,
+) -> Option<u8> {
+    use i2pr_api::sam::session_create::SessionCreateStyle;
+    match style {
+        SessionCreateStyle::Datagram => Some(i2pr_client::datagram::DATAGRAM1_PROTOCOL),
+        SessionCreateStyle::Raw => Some(i2pr_client::datagram::RAW_DATAGRAM_PROTOCOL),
+        SessionCreateStyle::Datagram2 => Some(i2pr_client::datagram::DATAGRAM2_PROTOCOL),
+        SessionCreateStyle::Datagram3 => Some(i2pr_client::datagram::DATAGRAM3_PROTOCOL),
+        SessionCreateStyle::Stream | SessionCreateStyle::Primary => None,
+    }
+}
+
+fn resolve_sam_udp_destination(state: &SamServiceState, name: &str) -> Option<[u8; 32]> {
+    use i2pr_api::sam::naming::{decode_b32_destination_hash, resolve_public_destination};
+
+    if let Ok(canonical) = resolve_public_destination(name) {
+        return decode_public_destination_hash(&canonical);
+    }
+    if let Ok(hash) = decode_b32_destination_hash(name) {
+        return Some(hash);
+    }
+    state
+        .addressbook_lookup(name)
+        .and_then(|entry| decode_public_destination_hash(&entry.destination))
+}
+
+fn decode_public_destination_hash(value: &str) -> Option<[u8; 32]> {
+    let bytes = i2pr_api::sam::base64::decode(value, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE).ok()?;
+    let destination =
+        i2pr_proto::Destination::decode(&bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE).ok()?;
+    Some(*destination.hash().ok()?.as_bytes())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ManagedDatagramError {
+    #[error("unknown child for PRIMARY")]
+    UnknownChild,
+    #[error("datagram protocol does not match child style")]
+    StyleMismatch,
+    #[error("datagram owner is unavailable")]
+    Unavailable,
+    #[error(transparent)]
+    Datagram(#[from] i2pr_client::datagram::DatagramError),
 }
 
 fn encode_private_for(identity: &DestinationIdentity) -> String {
@@ -1172,6 +1704,10 @@ fn map_registry_error(error: SamSessionRegistryError) -> SessionCreateError {
         SamSessionRegistryError::SessionsFull { maximum } => {
             SessionCreateError::SessionsFull { maximum }
         }
+        SamSessionRegistryError::SubsessionsFull { maximum } => {
+            SessionCreateError::SubsessionsFull { maximum }
+        }
+        SamSessionRegistryError::SubsessionListenConflict { .. } => SessionCreateError::I2pError,
         SamSessionRegistryError::StreamAttachmentsFull { maximum } => {
             SessionCreateError::StreamAttachmentsFull { maximum }
         }
@@ -1203,6 +1739,12 @@ pub enum SessionCreateError {
     SessionsFull {
         /// Accepted ceiling.
         maximum: u16,
+    },
+    /// A PRIMARY reached its child-session ceiling.
+    #[error("PRIMARY subsession ceiling {maximum} reached")]
+    SubsessionsFull {
+        /// Accepted ceiling.
+        maximum: usize,
     },
     /// The per-session STREAM socket ceiling was reached.
     #[error("per-session STREAM socket ceiling {maximum} reached")]
@@ -1267,6 +1809,7 @@ impl SessionCreateError {
             | Self::UnknownSession(_)
             | Self::I2pError => ReplyResult::I2pError,
             Self::SessionsFull { .. }
+            | Self::SubsessionsFull { .. }
             | Self::StreamAttachmentsFull { .. }
             | Self::DestinationsFull { .. }
             | Self::CommandQueueFull { .. } => ReplyResult::I2pError,
@@ -1449,6 +1992,7 @@ async fn handle_connection(
     if let ServerConnectionState::SessionControl {
         session_id,
         destination_id,
+        ..
     } = &connection_state
         && pending_raw.is_none()
     {
@@ -1656,7 +2200,7 @@ async fn dispatch_command(
         return Ok(ConnectionDisposition::Continue { next_state: next });
     }
 
-    let dispatch = dispatch_command_state(state_conn.clone(), outcome);
+    let dispatch = dispatch_command_state(state_conn.clone(), outcome, state.max_supported_version);
     match dispatch {
         DispatchOutcome::Stay { reply } => {
             if let Some(reply) = reply {
@@ -1690,6 +2234,9 @@ async fn dispatch_command(
         }
         DispatchOutcome::RequireSessionCreate { request } => {
             let request = *request;
+            let style = request.style;
+            let from_port = request.from_port;
+            let to_port = request.to_port;
             let id = match SamSessionId::new(request.id.clone()) {
                 Some(id) => id,
                 None => {
@@ -1703,7 +2250,7 @@ async fn dispatch_command(
                     });
                 }
             };
-            if !matches!(state_conn, ServerConnectionState::UtilityReady) {
+            if !matches!(state_conn, ServerConnectionState::UtilityReady { .. }) {
                 let reply = Reply::Session(SessionStatus::error(
                     ReplyResult::I2pError,
                     Some("SESSION CREATE before HELLO".to_owned()),
@@ -1713,12 +2260,15 @@ async fn dispatch_command(
                     next_state: state_conn,
                 });
             }
-            let apply_result = match state.execute_session_create(
-                id,
-                request.destination,
-                raw_children,
-                session_cancellation,
-            ) {
+            let apply_result = match state.execute_session_create(SessionCreateExecution {
+                session_id: id,
+                style,
+                destination_source: request.destination,
+                from_port,
+                to_port,
+                children: raw_children,
+                cancellation: session_cancellation,
+            }) {
                 Ok(applied) => Ok(applied),
                 Err(error) => Err(SessionCreateFailed {
                     result: error.reply_result(),
@@ -1737,6 +2287,46 @@ async fn dispatch_command(
                     next_state: state_conn,
                 }),
             }
+        }
+        DispatchOutcome::RequireSessionAdd {
+            primary_id,
+            request,
+        } => {
+            let result = state.add_subsession(&primary_id, &request);
+            let reply = match result {
+                Ok(()) => Reply::Session(SessionStatus::ok_id(&request.id)),
+                Err(message) => {
+                    Reply::Session(SessionStatus::error(ReplyResult::I2pError, Some(message)))
+                }
+            };
+            write_reply(stream, &reply).await?;
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
+        }
+        DispatchOutcome::RequireSessionRemove {
+            primary_id,
+            child_id,
+        } => {
+            let child_id = SamSessionId::new(child_id);
+            let removed_id = child_id.as_ref().map(|id| id.as_str().to_owned());
+            let removed = child_id
+                .as_ref()
+                .is_some_and(|child_id| state.remove_subsession(&primary_id, child_id));
+            let reply = if removed {
+                Reply::Session(SessionStatus::ok_id(
+                    removed_id.as_deref().unwrap_or_default(),
+                ))
+            } else {
+                Reply::Session(SessionStatus::error(
+                    ReplyResult::InvalidId,
+                    Some("unknown subsession ID for this PRIMARY".to_owned()),
+                ))
+            };
+            write_reply(stream, &reply).await?;
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
         DispatchOutcome::RequireStreamConnect { request } => {
             let request = *request;
@@ -1790,8 +2380,9 @@ async fn dispatch_command(
         }
         DispatchOutcome::RequireNamingLookup { request } => {
             let request = *request;
+            let requested_name = request.name.clone();
             let outcome = execute_naming_lookup(&state, state_conn.clone(), request);
-            let outcome = apply_naming_lookup_outcome(outcome);
+            let outcome = apply_naming_lookup_outcome(requested_name, outcome);
             if let Some(reply) = outcome.reply() {
                 write_reply(stream, reply).await?;
             }
@@ -1988,7 +2579,7 @@ fn execute_naming_lookup(
     use i2pr_api::sam::server_state::{NamingLookupApplied, NamingLookupFailed};
 
     let name = request.name;
-    if name.eq_ignore_ascii_case("ME") {
+    let value = if name.eq_ignore_ascii_case("ME") {
         let session_id = match connection {
             ServerConnectionState::SessionControl { session_id, .. } => session_id,
             _ => {
@@ -1998,35 +2589,28 @@ fn execute_naming_lookup(
                 });
             }
         };
-        let value = state
+        state
             .session_registry()
             .get(&session_id)
             .map(|entry| entry.public_destination_b64().to_owned())
             .ok_or_else(|| NamingLookupFailed {
                 result: ReplyResult::InvalidId,
                 message: "session context no longer exists".to_owned(),
-            })?;
-        return Ok(NamingLookupApplied { value });
-    }
-
-    if let Ok(value) = resolve_public_destination(&name) {
-        return Ok(NamingLookupApplied { value });
-    }
-
-    if name.to_ascii_lowercase().ends_with(".b32.i2p") {
+            })?
+    } else if let Ok(value) = resolve_public_destination(&name) {
+        value
+    } else if name.to_ascii_lowercase().ends_with(".b32.i2p") {
         match decode_b32_destination_hash(&name) {
             Ok(hash) => {
                 let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes(hash));
-                if let Some(value) = state
+                state
                     .session_registry()
                     .public_destination_for_destination(&destination_id)
-                {
-                    return Ok(NamingLookupApplied { value });
-                }
-                return Err(NamingLookupFailed {
-                    result: ReplyResult::KeyNotFound,
-                    message: "destination is not present in the local naming surface".to_owned(),
-                });
+                    .ok_or_else(|| NamingLookupFailed {
+                        result: ReplyResult::KeyNotFound,
+                        message: "destination is not present in the local naming surface"
+                            .to_owned(),
+                    })?
             }
             Err(_) => {
                 return Err(NamingLookupFailed {
@@ -2035,32 +2619,63 @@ fn execute_naming_lookup(
                 });
             }
         }
-    }
-
-    // Plan 294: ordinary `.i2p` names consult the canonical address
-    // book when the subsystem is active; session-registry and Base32
-    // paths above always precede it. Inactive or absent stays
-    // KeyNotFound, exactly as before Plan 294. One trailing dot is
-    // the canonical DNS root marker and strips before the suffix
-    // check (the owner canonicalizes identically).
-    let bare = name.strip_suffix('.').unwrap_or(&name);
-    if bare.to_ascii_lowercase().ends_with(".i2p") {
-        if let Some(entry) = state.addressbook_lookup(&name) {
-            return Ok(NamingLookupApplied {
-                value: entry.destination,
+    } else {
+        // Plan 294: ordinary `.i2p` names consult the canonical address
+        // book when the subsystem is active; session-registry and Base32
+        // paths above always precede it. Inactive or absent stays
+        // KeyNotFound, exactly as before Plan 294. One trailing dot is
+        // the canonical DNS root marker and strips before the suffix
+        // check (the owner canonicalizes identically).
+        let bare = name.strip_suffix('.').unwrap_or(&name);
+        if bare.to_ascii_lowercase().ends_with(".i2p") {
+            if let Some(entry) = state.addressbook_lookup(&name) {
+                entry.destination
+            } else {
+                return Err(NamingLookupFailed {
+                    result: ReplyResult::KeyNotFound,
+                    message: "name is unavailable in the local naming surface".to_owned(),
+                });
+            }
+        } else {
+            // Non-`.i2p` names never reach naming authorities.
+            return Err(NamingLookupFailed {
+                result: ReplyResult::InvalidKey,
+                message: "name is unavailable in the local naming surface".to_owned(),
             });
         }
-        return Err(NamingLookupFailed {
-            result: ReplyResult::KeyNotFound,
-            message: "name is unavailable in the local naming surface".to_owned(),
-        });
-    }
+    };
 
-    // Non-`.i2p` names never reach naming authorities.
-    Err(NamingLookupFailed {
-        result: ReplyResult::InvalidKey,
-        message: "name is unavailable in the local naming surface".to_owned(),
-    })
+    let options = if request.include_lease_set_options {
+        let hash = decode_public_destination_hash(&value).ok_or_else(|| NamingLookupFailed {
+            result: ReplyResult::InvalidKey,
+            message: "resolved value is not a complete public Destination".to_owned(),
+        })?;
+        let resolved = state
+            .sam_destinations()
+            .lock()
+            .expect("sam destinations poisoned")
+            .resolve_local_lease_set2(&hash, sam_now_seconds())
+            .map_err(|error| NamingLookupFailed {
+                result: ReplyResult::I2pError,
+                message: format!("local LeaseSet2 validation failed: {error}"),
+            })?;
+        let Some((lease_set, _destination_id)) = resolved else {
+            return Err(NamingLookupFailed {
+                result: ReplyResult::LeaseSetNotFound,
+                message: "LeaseSet is not available in the local naming surface".to_owned(),
+            });
+        };
+        lease_set
+            .lease_set2()
+            .options()
+            .entries()
+            .iter()
+            .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(NamingLookupApplied { value, options })
 }
 
 /// Executes a `STREAM CONNECT` request after the HELLO handshake.
@@ -2093,6 +2708,8 @@ async fn execute_stream_connect(
         session_id,
         destination,
         silent,
+        from_port,
+        to_port,
     } = request;
 
     // Validate the session exists. STREAM CONNECT requires the
@@ -2117,7 +2734,15 @@ async fn execute_stream_connect(
             });
         }
     };
+    if entry.style() != i2pr_api::sam::session_create::SessionCreateStyle::Stream {
+        return Err(StreamConnectFailed {
+            result: ReplyResult::InvalidId,
+            message: "STREAM CONNECT requires a STREAM session or subsession ID".to_owned(),
+        });
+    }
     let destination_id = entry.destination_id();
+    let default_from_port = entry.from_port();
+    let default_to_port = entry.to_port();
 
     // Plan 223: decode the supplied Destination for both legacy shapes.
     // ElGamal/type-0 Destinations carry filler, not the X25519 static key;
@@ -2262,8 +2887,8 @@ async fn execute_stream_connect(
     // any `CryptoRng + RngCore`; we use the same `UnwrapMut(OsRng)`
     // wrap the runtime delivery path uses.
     let now_ms = streaming_now_ms();
-    let local_port: u16 = 0;
-    let remote_port: u16 = 0;
+    let local_port = from_port.unwrap_or(default_from_port);
+    let remote_port = to_port.unwrap_or(default_to_port);
     let mut connect_outcome: Result<
         i2pr_client::streaming::manager::ConnectOutcome,
         i2pr_client::streaming::manager::StreamingManagerError,
@@ -2336,6 +2961,17 @@ async fn execute_stream_connect(
     }
 
     let stream_id_value = attachment.stream_id;
+    if state
+        .stream_registry
+        .attach_connection(&session_id, stream_id_value, connection_id)
+        .is_err()
+    {
+        let _ = bridge.with(|bridge| bridge.streaming_mut().remove_connection(connection_id));
+        return Err(StreamConnectFailed {
+            result: ReplyResult::I2pError,
+            message: "STREAM CONNECT attachment ownership was lost".to_owned(),
+        });
+    }
     let _ = state.stream_registry.update_state(
         &session_id,
         stream_id_value,
@@ -2456,7 +3092,14 @@ async fn execute_stream_accept(
             });
         }
     };
+    if entry.style() != i2pr_api::sam::session_create::SessionCreateStyle::Stream {
+        return Err(StreamAcceptFailed {
+            result: ReplyResult::InvalidId,
+            message: "STREAM ACCEPT requires a STREAM session or subsession ID".to_owned(),
+        });
+    }
     let destination_id = entry.destination_id();
+    let listen_port = entry.listen_port();
 
     // Ensure a wildcard Streaming listener is bound on the
     // destination's StreamingManager. Idempotent: a second call
@@ -2495,7 +3138,7 @@ async fn execute_stream_accept(
         destinations.get(destination_id).map(|handle| {
             handle.with(|bridge| {
                 let manager = bridge.receiver_streaming_mut();
-                manager.listen(0)
+                manager.listen(listen_port)
             })
         })
     };
@@ -2528,6 +3171,7 @@ async fn execute_stream_accept(
         match wait_for_accept_established(
             state.clone(),
             destination_id,
+            listen_port,
             established_notify,
             deadline,
         )
@@ -2552,6 +3196,27 @@ async fn execute_stream_accept(
         return Err(StreamAcceptFailed {
             result: ReplyResult::I2pError,
             message: "STREAM ACCEPT waiter was claimed or released unexpectedly".to_owned(),
+        });
+    }
+
+    if state
+        .stream_registry
+        .attach_connection(&session_id, waiter.stream_id, inbound_connection_id)
+        .is_err()
+    {
+        let destinations = state.sam_destinations();
+        if let Ok(destinations) = destinations.lock()
+            && let Some(bridge) = destinations.get(destination_id)
+        {
+            bridge.with(|bridge| {
+                let _ = bridge
+                    .receiver_streaming_mut()
+                    .remove_connection(inbound_connection_id);
+            });
+        }
+        return Err(StreamAcceptFailed {
+            result: ReplyResult::I2pError,
+            message: "STREAM ACCEPT attachment ownership was lost".to_owned(),
         });
     }
 
@@ -2582,6 +3247,7 @@ async fn execute_stream_accept(
 async fn wait_for_accept_established(
     state: Arc<SamServiceState>,
     destination_id: DestinationId,
+    listen_port: u16,
     notify: Arc<tokio::sync::Notify>,
     deadline: Duration,
 ) -> Option<(
@@ -2627,10 +3293,10 @@ async fn wait_for_accept_established(
                     }
                     return None;
                 }
-                if manager.listener_backlog(0) == 0 {
+                if manager.listener_backlog(listen_port) == 0 {
                     return None;
                 }
-                let cid = match manager.accept(0) {
+                let cid = match manager.accept(listen_port) {
                     Some(cid) => cid,
                     None => return None,
                 };
@@ -3080,6 +3746,7 @@ async fn run_destination_driver(
             .unwrap_or_default();
         sweep.saturating_add_assign(second_sweep);
         state.record_delivery_counters(destination_id, sweep);
+        state.forward_host_datagrams(destination_id);
         if let Some(reason) = degrade_to_reason(sweep) {
             debug!(
                 destination = ?destination_id,
@@ -3146,6 +3813,7 @@ mod private_connection_tests {
             enabled: false,
             bind_address: "127.0.0.1".parse().expect("loopback IP"),
             port: 0,
+            udp_port: 0,
             limits: SamLimits::loopback_test_profile(),
         }
     }
@@ -3229,6 +3897,497 @@ mod private_connection_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i2pr_api::sam::session_create::DestinationSource;
+
+    async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut line = Vec::new();
+        loop {
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).await.expect("SAM line byte");
+            if byte[0] == b'\n' {
+                break;
+            }
+            line.push(byte[0]);
+        }
+        String::from_utf8(line).expect("SAM reply is UTF-8")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn staged_33_profile_runs_primary_child_commands_over_loopback_tcp() {
+        use tokio::io::AsyncWriteExt;
+
+        let config = SamConfig {
+            enabled: true,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        };
+        let state = Arc::new(
+            SamServiceState::new_with_max_supported_version(
+                config,
+                i2pr_api::sam::version::SamVersion::const_new(3, 3),
+            )
+            .expect("staged SAM 3.3 state"),
+        );
+        let (listener, address) = state.bind(state.bind_address()).await.expect("bind");
+        let cancellation = CancellationToken::new();
+        let children =
+            ChildScope::for_test(&cancellation, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let serving_state = Arc::clone(&state);
+        let serving_scope = children.clone();
+        let serving_cancellation = cancellation.clone();
+        children
+            .spawn(move |_| async move {
+                let _ = serving_state
+                    .serve(listener, serving_scope, serving_cancellation)
+                    .await;
+                Ok(())
+            })
+            .expect("serve SAM listener");
+
+        let mut control = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect control socket");
+        control
+            .write_all(b"HELLO VERSION MIN=3.1 MAX=3.3\n")
+            .await
+            .expect("HELLO");
+        assert_eq!(
+            read_sam_line(&mut control).await,
+            "HELLO REPLY RESULT=OK VERSION=3.3"
+        );
+        control
+            .write_all(b"SESSION CREATE STYLE=PRIMARY ID=primary DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create primary");
+        let created = read_sam_line(&mut control).await;
+        assert!(created.starts_with("SESSION STATUS RESULT=OK DESTINATION="));
+        assert_eq!(state.session_registry().session_count(), 1);
+
+        control
+            .write_all(b"SESSION ADD STYLE=STREAM ID=mail FROM_PORT=25 TO_PORT=110\n")
+            .await
+            .expect("add STREAM child");
+        let added = read_sam_line(&mut control).await;
+        assert_eq!(added, "SESSION STATUS RESULT=OK ID=\"mail\"");
+        let primary = SamSessionId::new("primary").expect("primary id");
+        let child = SamSessionId::new("mail").expect("child id");
+        let primary_entry = state.session_registry().get(&primary).expect("primary");
+        let child_entry = state.session_registry().get(&child).expect("child");
+        assert_eq!(child_entry.destination_id(), primary_entry.destination_id());
+        assert_eq!((child_entry.from_port(), child_entry.to_port()), (25, 110));
+
+        control
+            .write_all(b"SESSION REMOVE ID=mail\n")
+            .await
+            .expect("remove child");
+        assert_eq!(
+            read_sam_line(&mut control).await,
+            "SESSION STATUS RESULT=OK ID=\"mail\""
+        );
+        assert!(state.session_registry().get(&child).is_none());
+        assert!(state.session_registry().get(&primary).is_some());
+
+        control
+            .write_all(b"SESSION ADD STYLE=RAW ID=raw PORT=7655\n")
+            .await
+            .expect("add RAW child");
+        assert_eq!(
+            read_sam_line(&mut control).await,
+            "SESSION STATUS RESULT=OK ID=\"raw\""
+        );
+        drop(control);
+        for _ in 0..64 {
+            if state.session_registry().session_count() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(state.session_registry().session_count(), 0);
+        assert!(state.destination_registry().lock().unwrap().is_empty());
+        cancellation.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn staged_33_stream_children_route_nonzero_and_maximum_ports_over_tcp() {
+        use tokio::io::AsyncWriteExt;
+
+        let state = Arc::new(
+            SamServiceState::new_with_max_supported_version(
+                SamConfig {
+                    enabled: true,
+                    bind_address: "127.0.0.1".parse().unwrap(),
+                    port: 0,
+                    udp_port: 0,
+                    limits: SamLimits::loopback_test_profile(),
+                },
+                i2pr_api::sam::version::SamVersion::const_new(3, 3),
+            )
+            .expect("staged SAM 3.3 state"),
+        );
+        let (listener, address) = state.bind(state.bind_address()).await.expect("bind");
+        let cancellation = CancellationToken::new();
+        let children =
+            ChildScope::for_test(&cancellation, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let serving_state = Arc::clone(&state);
+        let serving_scope = children.clone();
+        let serving_cancellation = cancellation.clone();
+        children
+            .spawn(move |_| async move {
+                let _ = serving_state
+                    .serve(listener, serving_scope, serving_cancellation)
+                    .await;
+                Ok(())
+            })
+            .expect("serve SAM listener");
+
+        let mut peer = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("peer control");
+        peer.write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("peer HELLO");
+        assert!(read_sam_line(&mut peer).await.contains("VERSION=3.3"));
+        peer.write_all(b"SESSION CREATE STYLE=PRIMARY ID=peer DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create peer primary");
+        assert!(
+            read_sam_line(&mut peer)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        peer.write_all(b"SESSION ADD STYLE=STREAM ID=pop FROM_PORT=110\n")
+            .await
+            .expect("add port 110 listener");
+        assert!(read_sam_line(&mut peer).await.contains("ID=\"pop\""));
+        peer.write_all(b"SESSION ADD STYLE=STREAM ID=max-listener FROM_PORT=65535\n")
+            .await
+            .expect("add maximum-port listener");
+        assert!(
+            read_sam_line(&mut peer)
+                .await
+                .contains("ID=\"max-listener\"")
+        );
+        peer.write_all(b"NAMING LOOKUP NAME=ME\n")
+            .await
+            .expect("lookup peer Destination");
+        let naming = read_sam_line(&mut peer).await;
+        let peer_public = naming
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("VALUE="))
+            .expect("peer public Destination")
+            .trim_matches('"')
+            .to_owned();
+
+        let mut primary = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("primary control");
+        primary
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("primary HELLO");
+        assert!(read_sam_line(&mut primary).await.contains("VERSION=3.3"));
+        primary
+            .write_all(b"SESSION CREATE STYLE=PRIMARY ID=client DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create client primary");
+        assert!(
+            read_sam_line(&mut primary)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        primary
+            .write_all(b"SESSION ADD STYLE=STREAM ID=mail FROM_PORT=25\n")
+            .await
+            .expect("add mail child");
+        assert!(read_sam_line(&mut primary).await.contains("ID=\"mail\""));
+        primary
+            .write_all(b"SESSION ADD STYLE=STREAM ID=max-client FROM_PORT=65535\n")
+            .await
+            .expect("add maximum-port client child");
+        assert!(
+            read_sam_line(&mut primary)
+                .await
+                .contains("ID=\"max-client\"")
+        );
+
+        let datagram_host = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind one shared host datagram endpoint");
+        let host_port = datagram_host.local_addr().expect("host UDP port").port();
+        let datagram_children = [
+            ("dgram17", "DATAGRAM", 17_u8, 1017_u16),
+            ("dgram19", "DATAGRAM2", 19_u8, 1019_u16),
+            ("dgram20", "DATAGRAM3", 20_u8, 1020_u16),
+            ("raw18", "RAW", 18_u8, 1018_u16),
+            ("raw42", "RAW", 42_u8, 1042_u16),
+        ];
+        for (id, style, protocol, listen_port) in datagram_children {
+            let extra = if style == "RAW" {
+                format!(" PROTOCOL={protocol} LISTEN_PROTOCOL={protocol}")
+            } else {
+                String::new()
+            };
+            let command = format!(
+                "SESSION ADD STYLE={style} ID={id} PORT={host_port} LISTEN_PORT={listen_port}{extra}\n"
+            );
+            primary
+                .write_all(command.as_bytes())
+                .await
+                .expect("add shared-primary datagram child");
+            assert!(
+                read_sam_line(&mut primary)
+                    .await
+                    .contains(&format!("ID=\"{id}\"")),
+                "add {style} child {id}"
+            );
+        }
+        primary
+            .write_all(b"NAMING LOOKUP NAME=ME\n")
+            .await
+            .expect("lookup shared PRIMARY Destination");
+        let client_public = read_sam_line(&mut primary)
+            .await
+            .split_ascii_whitespace()
+            .find_map(|field| field.strip_prefix("VALUE="))
+            .expect("shared PRIMARY public Destination")
+            .trim_matches('"')
+            .to_owned();
+        let primary_id = SamSessionId::new("client").expect("client primary ID");
+        let destination_id = state
+            .session_registry
+            .get(&primary_id)
+            .expect("client PRIMARY registry entry")
+            .destination_id();
+        let destination_hash = *destination_id.as_hash().as_bytes();
+        for (id, _, _, _) in datagram_children {
+            let entry = state
+                .session_registry
+                .get(&SamSessionId::new(id).expect("datagram child ID"))
+                .expect("shared-primary datagram child");
+            assert_eq!(entry.destination_id(), destination_id);
+            assert_eq!(entry.parent_session_id(), Some(&primary_id));
+        }
+
+        // The child default TO_PORT is zero. Omitting the per-stream override
+        // must not reach the listener on port 110.
+        let mut omitted = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("omitted-port socket");
+        omitted
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("omitted-port HELLO");
+        assert!(read_sam_line(&mut omitted).await.contains("VERSION=3.3"));
+        let command = format!("STREAM CONNECT ID=mail DESTINATION={peer_public}\n");
+        omitted
+            .write_all(command.as_bytes())
+            .await
+            .expect("connect without TO_PORT");
+        assert!(read_sam_line(&mut omitted).await.contains("RESULT=TIMEOUT"));
+
+        async fn exchange_at_port(
+            address: SocketAddr,
+            child_id: &str,
+            peer_id: &str,
+            peer_public: &str,
+            port: u16,
+        ) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut accept = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("accept socket");
+            accept
+                .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+                .await
+                .expect("accept HELLO");
+            assert!(read_sam_line(&mut accept).await.contains("VERSION=3.3"));
+            let accept_command = format!("STREAM ACCEPT ID={peer_id}\n");
+            accept
+                .write_all(accept_command.as_bytes())
+                .await
+                .expect("STREAM ACCEPT");
+
+            let mut connect = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("connect socket");
+            connect
+                .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+                .await
+                .expect("connect HELLO");
+            assert!(read_sam_line(&mut connect).await.contains("VERSION=3.3"));
+            let connect_command =
+                format!("STREAM CONNECT ID={child_id} DESTINATION={peer_public} TO_PORT={port}\n");
+            connect
+                .write_all(connect_command.as_bytes())
+                .await
+                .expect("STREAM CONNECT");
+            let connect_status = read_sam_line(&mut connect).await;
+            assert!(
+                connect_status.starts_with("STREAM STATUS RESULT=OK"),
+                "CONNECT failed at target port {port}: {connect_status}"
+            );
+            assert!(
+                read_sam_line(&mut accept)
+                    .await
+                    .starts_with("STREAM STATUS RESULT=OK")
+            );
+            assert!(read_sam_line(&mut accept).await.starts_with("DESTINATION="));
+
+            let payload = format!("port-{port}").into_bytes();
+            connect.write_all(&payload).await.expect("send payload");
+            let mut received = vec![0_u8; payload.len()];
+            accept
+                .read_exact(&mut received)
+                .await
+                .expect("receive payload");
+            assert_eq!(received, payload);
+        }
+
+        exchange_at_port(address, "mail", "pop", &peer_public, 110).await;
+        exchange_at_port(
+            address,
+            "max-client",
+            "max-listener",
+            &peer_public,
+            u16::MAX,
+        )
+        .await;
+
+        // Exercise all protocol children through the same live PRIMARY that
+        // just completed the port-aware STREAM exchange. The real loopback UDP
+        // bridge carries host sends; the canonical manager handles inbound
+        // envelopes and forwards the selected child response to that endpoint.
+        for (id, _style, protocol, _listen_port) in datagram_children {
+            let payload = format!("same-primary-outbound-{protocol}").into_bytes();
+            let protocol_option = if protocol == 18 || protocol == 42 {
+                format!(" PROTOCOL={protocol}")
+            } else {
+                String::new()
+            };
+            let packet =
+                format!("3.3 {id} {client_public} FROM_PORT=77 TO_PORT=88{protocol_option}\n");
+            let packet = [packet.as_bytes(), payload.as_slice()].concat();
+            state
+                .handle_udp_bridge_packet(
+                    &packet,
+                    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), host_port),
+                )
+                .unwrap_or_else(|error| panic!("route host UDP datagram through {id}: {error}"));
+            let request = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let request = state
+                        .sam_destinations
+                        .lock()
+                        .unwrap()
+                        .get(destination_id)
+                        .expect("shared-primary destination")
+                        .with(|bridge| bridge.datagrams_mut().drain_outbound())
+                        .pop();
+                    if let Some(request) = request {
+                        break request;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("loopback SAM datagram reaches canonical owner");
+            assert_eq!(request.destination_hash, destination_hash);
+            assert_eq!((request.source_port, request.destination_port), (77, 88));
+            let envelope =
+                i2pr_proto::streaming::decode_client_payload(&request.application_payload, 65_536)
+                    .expect("shared-primary I2CP datagram envelope");
+            assert_eq!(envelope.protocol, protocol);
+            if protocol == 18 || protocol == 42 {
+                assert_eq!(envelope.payload, payload);
+            } else {
+                assert!(!envelope.payload.is_empty());
+            }
+        }
+
+        let mut rng = i2pr_crypto::OsRng;
+        let sender = DestinationIdentity::generate(&mut rng).expect("inbound datagram sender");
+        for (_id, _style, protocol, listen_port) in datagram_children {
+            let payload = format!("same-primary-inbound-{protocol}").into_bytes();
+            let mut sender_manager = i2pr_client::datagram::DatagramManager::new();
+            let transport = sender_manager
+                .send(
+                    &sender,
+                    &i2pr_client::datagram::DatagramSendRequest {
+                        destination_hash,
+                        source_port: 99,
+                        destination_port: listen_port,
+                        protocol,
+                        payload: payload.clone(),
+                        options: None,
+                    },
+                )
+                .expect("encode valid inbound protocol child payload");
+            let envelope = i2pr_proto::streaming::decode_client_payload(
+                &transport.application_payload,
+                65_536,
+            )
+            .expect("decode inbound datagram envelope");
+            state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(destination_id)
+                .expect("shared-primary destination")
+                .with(|bridge| {
+                    bridge.datagrams_mut().process_inbound_at(
+                        i2pr_client::datagram::DatagramInboundRequest {
+                            protocol: envelope.protocol,
+                            source_port: envelope.source_port,
+                            destination_port: envelope.destination_port,
+                            payload: &envelope.payload,
+                            transport_sender: *sender.id().as_hash().as_bytes(),
+                            recipient_hash: destination_hash,
+                            now_ms: u64::from(protocol),
+                            now_seconds: 1,
+                        },
+                    )
+                })
+                .expect("canonical manager accepts inbound protocol");
+            state.forward_host_datagrams(destination_id);
+            let mut received = vec![0_u8; 65_507];
+            let (length, _) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                datagram_host.recv_from(&mut received),
+            )
+            .await
+            .expect("inbound datagram forwarded to shared host endpoint")
+            .expect("receive forwarded datagram");
+            let received = &received[..length];
+            match protocol {
+                17 | 19 | 20 => {
+                    let newline = received.iter().position(|byte| *byte == b'\n').unwrap();
+                    assert!(
+                        received[..newline]
+                            .windows(10)
+                            .any(|window| window == b"FROM_PORT=")
+                    );
+                    assert!(received.ends_with(&payload));
+                }
+                18 | 42 => assert_eq!(received, payload),
+                _ => unreachable!(),
+            }
+        }
+
+        drop((peer, primary));
+        for _ in 0..64 {
+            if state.session_registry().session_count() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(state.session_registry().session_count(), 0);
+        cancellation.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+    }
 
     #[test]
     fn sam_service_state_can_be_constructed_with_disabled_profile() {
@@ -3236,6 +4395,7 @@ mod tests {
             enabled: false,
             bind_address: "127.0.0.1".parse().unwrap(),
             port: 0,
+            udp_port: 0,
             limits: SamLimits::defaults(),
         };
         let state = SamServiceState::new(config).expect("state");
@@ -3250,6 +4410,1119 @@ mod tests {
         assert_eq!(pools.len(), 1);
         pools.remove(&destination_id);
         assert!(pools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn udp_bridge_routes_raw_subsession_without_accepting_non_loopback_peers() {
+        let state = Arc::new(
+            SamServiceState::new(SamConfig {
+                enabled: false,
+                bind_address: "127.0.0.1".parse().unwrap(),
+                port: 0,
+                udp_port: 0,
+                limits: SamLimits::loopback_test_profile(),
+            })
+            .expect("state"),
+        );
+        assert!(
+            state.udp_bind_address().is_none(),
+            "private SAM state has no UDP listener"
+        );
+        let parent = CancellationToken::new();
+        let children = ChildScope::for_test(&parent, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let primary = SamSessionId::new("primary").unwrap();
+        let applied = state
+            .execute_session_create(SessionCreateExecution {
+                session_id: primary.clone(),
+                style: i2pr_api::sam::session_create::SessionCreateStyle::Primary,
+                destination_source: DestinationSource::Transient,
+                from_port: 0,
+                to_port: 0,
+                children: &children,
+                cancellation: parent.child_token(),
+            })
+            .expect("create primary");
+        let request = i2pr_api::sam::command::SessionAddRequest {
+            id: "raw42".to_owned(),
+            style: i2pr_api::sam::session_create::SessionCreateStyle::Raw,
+            from_port: 7,
+            to_port: 8,
+            port: Some(7655),
+            host: Some(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            raw_header: true,
+            protocol: 42,
+            listen_protocol: 43,
+            listen_port: 9,
+        };
+        state
+            .add_subsession(&primary, &request)
+            .expect("add RAW child");
+        let packet = format!(
+            "3.3 raw42 {} FROM_PORT=11 TO_PORT=12 PROTOCOL=42\npayload",
+            applied.public_destination_b64
+        );
+        state
+            .handle_udp_bridge_packet(
+                packet.as_bytes(),
+                SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 7655),
+            )
+            .expect("route loopback UDP datagram");
+        let destination_id = state
+            .session_registry
+            .get(&SamSessionId::new("raw42").unwrap())
+            .expect("child entry")
+            .destination_id();
+        let outbound = state
+            .sam_destinations
+            .lock()
+            .unwrap()
+            .get(destination_id)
+            .expect("bridge")
+            .with(|bridge| bridge.datagrams_mut().drain_outbound());
+        assert_eq!(outbound.len(), 1);
+        let envelope =
+            i2pr_proto::streaming::decode_client_payload(&outbound[0].application_payload, 65_536)
+                .expect("outbound I2CP payload");
+        assert_eq!(envelope.protocol, 42);
+        assert_eq!((envelope.source_port, envelope.destination_port), (11, 12));
+        assert_eq!(envelope.payload, b"payload");
+
+        let raw_d1 = i2pr_api::sam::command::SessionAddRequest {
+            id: "raw17".to_owned(),
+            style: i2pr_api::sam::session_create::SessionCreateStyle::Raw,
+            from_port: 0,
+            to_port: 0,
+            port: Some(7656),
+            host: None,
+            raw_header: false,
+            protocol: 42,
+            listen_protocol: i2pr_client::datagram::DATAGRAM1_PROTOCOL,
+            listen_port: 10,
+        };
+        state
+            .add_subsession(&primary, &raw_d1)
+            .expect("add RAW listener for protocol 17");
+        let mut rng = i2pr_crypto::OsRng;
+        let sender = DestinationIdentity::generate(&mut rng).expect("sender identity");
+        let mut sender_datagrams = i2pr_client::datagram::DatagramManager::new();
+        let outbound_d1 = sender_datagrams
+            .send(
+                &sender,
+                &i2pr_client::datagram::DatagramSendRequest {
+                    destination_hash: *applied.destination_id.as_hash().as_bytes(),
+                    source_port: 30,
+                    destination_port: 10,
+                    protocol: i2pr_client::datagram::DATAGRAM1_PROTOCOL,
+                    payload: b"private raw receiver".to_vec(),
+                    options: None,
+                },
+            )
+            .expect("encode protocol 17 message");
+        let datagram1 =
+            i2pr_proto::streaming::decode_client_payload(&outbound_d1.application_payload, 65_536)
+                .expect("decode sender client payload");
+        state
+            .sam_destinations
+            .lock()
+            .unwrap()
+            .get(applied.destination_id)
+            .expect("receiver bridge")
+            .with(|bridge| {
+                bridge.datagrams_mut().process_inbound_at(
+                    i2pr_client::datagram::DatagramInboundRequest {
+                        protocol: datagram1.protocol,
+                        source_port: datagram1.source_port,
+                        destination_port: datagram1.destination_port,
+                        payload: &datagram1.payload,
+                        transport_sender: *sender.id().as_hash().as_bytes(),
+                        recipient_hash: *applied.destination_id.as_hash().as_bytes(),
+                        now_ms: 1,
+                        now_seconds: 1,
+                    },
+                )
+            })
+            .expect("I2CP datagram payload accepted");
+        let received = state
+            .receive_managed_datagram(&primary, &SamSessionId::new("raw17").unwrap())
+            .expect("private RAW receive operation")
+            .expect("raw event");
+        assert_eq!(received.protocol, i2pr_client::datagram::DATAGRAM1_PROTOCOL);
+        assert_eq!(received.payload, datagram1.payload);
+        assert!(!received.sender_authenticated);
+        assert_eq!(received.from_hash, [0; 32]);
+
+        let rejected = state.handle_udp_bridge_packet(
+            packet.as_bytes(),
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)), 7655),
+        );
+        assert_eq!(rejected, Err("non-loopback UDP source"));
+        state.teardown_session(&primary, applied.destination_id);
+        parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn primary_datagram_children_share_destination_and_route_protocols_17_through_20() {
+        use i2pr_client::datagram::{
+            DATAGRAM1_PROTOCOL, DATAGRAM2_PROTOCOL, DATAGRAM3_PROTOCOL, DatagramInboundRequest,
+            DatagramManager, DatagramSendRequest, RAW_DATAGRAM_PROTOCOL,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let state = Arc::new(
+            SamServiceState::new(SamConfig {
+                enabled: false,
+                bind_address: "127.0.0.1".parse().unwrap(),
+                port: 0,
+                udp_port: 0,
+                limits: SamLimits::loopback_test_profile(),
+            })
+            .expect("state"),
+        );
+        let owner = CancellationToken::new();
+        let children = ChildScope::for_test(&owner, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let primary_id = SamSessionId::new("primary").expect("primary ID");
+        let primary = state
+            .execute_session_create(SessionCreateExecution {
+                session_id: primary_id.clone(),
+                style: i2pr_api::sam::session_create::SessionCreateStyle::Primary,
+                destination_source: DestinationSource::Transient,
+                from_port: 0,
+                to_port: 0,
+                children: &children,
+                cancellation: owner.child_token(),
+            })
+            .expect("create shared primary");
+        let destination_hash = *primary.destination_id.as_hash().as_bytes();
+
+        let child_specs = [
+            (
+                "dgram1",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram,
+                DATAGRAM1_PROTOCOL,
+                1017,
+            ),
+            (
+                "dgram2",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram2,
+                DATAGRAM2_PROTOCOL,
+                1019,
+            ),
+            (
+                "dgram3",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram3,
+                DATAGRAM3_PROTOCOL,
+                1020,
+            ),
+            (
+                "raw18",
+                i2pr_api::sam::session_create::SessionCreateStyle::Raw,
+                RAW_DATAGRAM_PROTOCOL,
+                1018,
+            ),
+            (
+                "raw42",
+                i2pr_api::sam::session_create::SessionCreateStyle::Raw,
+                42,
+                1042,
+            ),
+        ];
+        for (id, style, protocol, listen_port) in child_specs {
+            state
+                .add_subsession(
+                    &primary_id,
+                    &i2pr_api::sam::command::SessionAddRequest {
+                        id: id.to_owned(),
+                        style,
+                        from_port: 0,
+                        to_port: 0,
+                        port: Some(7655),
+                        host: None,
+                        raw_header: false,
+                        protocol,
+                        listen_protocol: protocol,
+                        listen_port,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("add child {id}: {error}"));
+            let entry = state
+                .session_registry
+                .get(&SamSessionId::new(id).expect("child ID"))
+                .expect("child registration");
+            assert_eq!(entry.destination_id(), primary.destination_id);
+        }
+
+        // Exercise the ordinary SAM UDP packet surface for each child and
+        // confirm the canonical destination manager emits protocols 17–20
+        // plus an opaque application-defined RAW protocol under one identity.
+        let loopback = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 45_678);
+        for (id, _style, protocol, _listen_port) in child_specs {
+            let payload = format!("outbound-{protocol}").into_bytes();
+            let protocol_option = if protocol == RAW_DATAGRAM_PROTOCOL || protocol == 42 {
+                format!(" PROTOCOL={protocol}")
+            } else {
+                String::new()
+            };
+            let packet = format!(
+                "3.3 {id} {} FROM_PORT=77 TO_PORT=88{protocol_option}\n",
+                primary.public_destination_b64
+            );
+            let packet = [packet.as_bytes(), payload.as_slice()].concat();
+            state
+                .handle_udp_bridge_packet(&packet, loopback)
+                .unwrap_or_else(|error| panic!("send through {id}: {error}"));
+            let request = state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(primary.destination_id)
+                .expect("primary destination bridge")
+                .with(|bridge| bridge.datagrams_mut().drain_outbound())
+                .pop()
+                .expect("canonical datagram outbound");
+            assert_eq!(request.destination_hash, destination_hash);
+            assert_eq!((request.source_port, request.destination_port), (77, 88));
+            let envelope =
+                i2pr_proto::streaming::decode_client_payload(&request.application_payload, 65_536)
+                    .expect("I2CP datagram envelope");
+            assert_eq!(envelope.protocol, protocol);
+            assert_eq!((envelope.source_port, envelope.destination_port), (77, 88));
+        }
+
+        // Build valid protocol 17/19/20 envelopes from a different sender,
+        // inject all protocols into the same canonical receive owner, then
+        // prove each SAM child selects only its configured I2CP protocol and
+        // destination port.
+        let mut rng = i2pr_crypto::OsRng;
+        let sender = DestinationIdentity::generate(&mut rng).expect("sender identity");
+        for (_id, _style, protocol, listen_port) in child_specs {
+            let payload = format!("inbound-{protocol}").into_bytes();
+            let mut sender_manager = DatagramManager::new();
+            let transport = sender_manager
+                .send(
+                    &sender,
+                    &DatagramSendRequest {
+                        destination_hash,
+                        source_port: 99,
+                        destination_port: listen_port,
+                        protocol,
+                        payload: payload.clone(),
+                        options: None,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("encode protocol {protocol}: {error}"));
+            let envelope = i2pr_proto::streaming::decode_client_payload(
+                &transport.application_payload,
+                65_536,
+            )
+            .expect("sender I2CP datagram envelope");
+            state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(primary.destination_id)
+                .expect("primary destination bridge")
+                .with(|bridge| {
+                    bridge
+                        .datagrams_mut()
+                        .process_inbound_at(DatagramInboundRequest {
+                            protocol: envelope.protocol,
+                            source_port: envelope.source_port,
+                            destination_port: envelope.destination_port,
+                            payload: &envelope.payload,
+                            transport_sender: *sender.id().as_hash().as_bytes(),
+                            recipient_hash: destination_hash,
+                            now_ms: u64::from(protocol),
+                            now_seconds: 1,
+                        })
+                })
+                .unwrap_or_else(|error| panic!("accept protocol {protocol}: {error}"));
+        }
+
+        for (id, _style, protocol, _listen_port) in child_specs {
+            let child_id = SamSessionId::new(id).expect("child ID");
+            let received = state
+                .receive_managed_datagram(&primary_id, &child_id)
+                .unwrap_or_else(|error| panic!("receive through {id}: {error}"))
+                .expect("child receives matching protocol and port");
+            assert_eq!(received.protocol, protocol);
+            assert_eq!(received.payload, format!("inbound-{protocol}").as_bytes());
+            assert_eq!(
+                received.destination_port,
+                child_specs
+                    .iter()
+                    .find(|(candidate, ..)| *candidate == id)
+                    .expect("child specification")
+                    .3
+            );
+            assert_eq!(
+                received.sender_authenticated,
+                protocol == DATAGRAM1_PROTOCOL || protocol == DATAGRAM2_PROTOCOL
+            );
+        }
+        assert_eq!(
+            state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(primary.destination_id)
+                .expect("one shared bridge")
+                .with(|bridge| bridge.datagrams().queue_len()),
+            0,
+            "every inbound event is consumed by exactly its matching child"
+        );
+
+        async fn private_request(
+            stream: &mut tokio::io::DuplexStream,
+            request: i2pr_app_manager_proto::datagram::DatagramRequest,
+        ) -> i2pr_app_manager_proto::datagram::DatagramReply {
+            let bytes = request.encode().expect("encode private datagram request");
+            stream
+                .write_all(&(bytes.len() as u32).to_be_bytes())
+                .await
+                .expect("write private datagram length");
+            stream
+                .write_all(&bytes)
+                .await
+                .expect("write private datagram request");
+            let mut length = [0_u8; 4];
+            stream
+                .read_exact(&mut length)
+                .await
+                .expect("read private datagram reply length");
+            let mut reply = vec![0_u8; u32::from_be_bytes(length) as usize];
+            stream
+                .read_exact(&mut reply)
+                .await
+                .expect("read private datagram reply");
+            i2pr_app_manager_proto::datagram::DatagramReply::decode(&reply)
+                .expect("decode private datagram reply")
+        }
+
+        let (mut private_client, private_router) = tokio::io::duplex(16 * 1024);
+        let private_state = Arc::clone(&state);
+        let private_cancellation = owner.child_token();
+        let private_service_cancellation = owner.child_token();
+        let private_driver = tokio::spawn(async move {
+            private_state
+                .drive_private_datagram_connection(
+                    Box::new(private_router),
+                    private_cancellation,
+                    private_service_cancellation,
+                )
+                .await;
+        });
+        let remote_destination = [0xA5; 32];
+        for (id, _style, protocol, _listen_port) in child_specs {
+            assert_eq!(
+                private_request(
+                    &mut private_client,
+                    i2pr_app_manager_proto::datagram::DatagramRequest::Send {
+                        primary_id: "primary".to_owned(),
+                        child_id: id.to_owned(),
+                        destination_hash: remote_destination,
+                        source_port: 300,
+                        destination_port: 400,
+                        protocol,
+                        options: Vec::new(),
+                        payload: format!("private-outbound-{protocol}").into_bytes(),
+                    },
+                )
+                .await,
+                i2pr_app_manager_proto::datagram::DatagramReply::Sent,
+                "private protocol {protocol} must use the child-scoped canonical sender"
+            );
+            let request = state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(primary.destination_id)
+                .expect("shared primary bridge")
+                .with(|bridge| bridge.datagrams_mut().drain_outbound())
+                .pop()
+                .expect("private request reached canonical datagram manager");
+            assert_eq!(request.destination_hash, remote_destination);
+            assert_eq!((request.source_port, request.destination_port), (300, 400));
+            let envelope =
+                i2pr_proto::streaming::decode_client_payload(&request.application_payload, 65_536)
+                    .expect("private canonical I2CP envelope");
+            assert_eq!(envelope.protocol, protocol);
+            let mut outbound_receiver = DatagramManager::new();
+            outbound_receiver
+                .process_inbound_at(DatagramInboundRequest {
+                    protocol: envelope.protocol,
+                    source_port: envelope.source_port,
+                    destination_port: envelope.destination_port,
+                    payload: &envelope.payload,
+                    transport_sender: destination_hash,
+                    recipient_hash: remote_destination,
+                    now_ms: u64::from(protocol) + 7_000,
+                    now_seconds: 8,
+                })
+                .unwrap_or_else(|error| panic!("verify private outbound {protocol}: {error}"));
+            let outbound_event = outbound_receiver
+                .pop_received_for_listener(protocol, 400)
+                .expect("private outbound envelope decodes at its I2CP recipient");
+            assert!(
+                outbound_event.payload == format!("private-outbound-{protocol}").as_bytes(),
+                "private outbound payload mismatch for protocol {protocol}"
+            );
+
+            // Inject a valid signed/enveloped inbound message into the same
+            // private destination and retrieve it through the typed service.
+            let payload = format!("private-inbound-{protocol}").into_bytes();
+            let mut sender_manager = DatagramManager::new();
+            let transport = sender_manager
+                .send(
+                    &sender,
+                    &DatagramSendRequest {
+                        destination_hash,
+                        source_port: 501,
+                        destination_port: _listen_port,
+                        protocol,
+                        payload: payload.clone(),
+                        options: None,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("encode private inbound {protocol}: {error}"));
+            let incoming = i2pr_proto::streaming::decode_client_payload(
+                &transport.application_payload,
+                65_536,
+            )
+            .expect("private inbound I2CP envelope");
+            state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(primary.destination_id)
+                .expect("shared primary bridge")
+                .with(|bridge| {
+                    bridge
+                        .datagrams_mut()
+                        .process_inbound_at(DatagramInboundRequest {
+                            protocol: incoming.protocol,
+                            source_port: incoming.source_port,
+                            destination_port: incoming.destination_port,
+                            payload: &incoming.payload,
+                            transport_sender: *sender.id().as_hash().as_bytes(),
+                            recipient_hash: destination_hash,
+                            now_ms: u64::from(protocol) + 5_000,
+                            now_seconds: 6,
+                        })
+                })
+                .unwrap_or_else(|error| panic!("accept private inbound {protocol}: {error}"));
+            let event = match private_request(
+                &mut private_client,
+                i2pr_app_manager_proto::datagram::DatagramRequest::Receive {
+                    primary_id: "primary".to_owned(),
+                    child_id: id.to_owned(),
+                },
+            )
+            .await
+            {
+                i2pr_app_manager_proto::datagram::DatagramReply::Event(event) => event,
+                other => panic!("private receive for protocol {protocol}: {other:?}"),
+            };
+            assert_eq!(event.protocol, protocol);
+            assert_eq!(event.source_port, 501);
+            assert_eq!(event.destination_port, _listen_port);
+            assert!(
+                event.payload == payload,
+                "private inbound payload mismatch for protocol {protocol}"
+            );
+            assert_eq!(
+                event.sender_authenticated,
+                protocol == DATAGRAM1_PROTOCOL || protocol == DATAGRAM2_PROTOCOL
+            );
+            if protocol == RAW_DATAGRAM_PROTOCOL || protocol == 42 {
+                assert_eq!(event.from_hash, [0; 32]);
+                assert!(!event.sender_authenticated);
+            }
+            assert!(event.options.is_empty());
+        }
+        drop(private_client);
+        private_driver.await.expect("private datagram driver join");
+
+        state.teardown_session(&primary_id, primary.destination_id);
+        assert!(state.session_registry.session_count() == 0);
+        assert!(state.destination_registry.lock().unwrap().is_empty());
+        owner.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires the exact-pinned Java I2P 2.13.0 SAM client classpath"]
+    async fn pinned_java_213_client_uses_sam33_primary_and_receives_datagram() {
+        use i2pr_client::datagram::{
+            DATAGRAM1_PROTOCOL, DatagramInboundRequest, DatagramManager, DatagramSendRequest,
+        };
+        use tokio::process::Command;
+
+        const PRIMARY_ID: &str = "primarySink";
+        const DATAGRAM_HOST_PORT: u16 = 9999;
+        let classpath = std::env::var("I2PR_SAM_368_JAVA_CLIENT_CLASSPATH")
+            .expect("Java lane supplies its exact-pinned SAM client classpath");
+        let temp = tempfile::tempdir().expect("temporary Java client state");
+        let key_path = temp.path().join("destination.txt");
+        let sink_path = temp.path().join("sink");
+        let stdout_path = temp.path().join("java.stdout");
+        let stderr_path = temp.path().join("java.stderr");
+        let java_log_path = temp.path().join("java.log");
+        let java_log_property = format!("-DloggerFilenameOverride={}", java_log_path.display());
+        std::fs::create_dir(&sink_path).expect("sink directory");
+
+        let state = Arc::new(
+            SamServiceState::new_with_max_supported_version(
+                SamConfig {
+                    enabled: true,
+                    bind_address: "127.0.0.1".parse().unwrap(),
+                    port: 0,
+                    udp_port: 0,
+                    limits: SamLimits::loopback_test_profile(),
+                },
+                i2pr_api::sam::version::SamVersion::const_new(3, 3),
+            )
+            .expect("staged SAM 3.3 state"),
+        );
+        let (listener, address) = state.bind(state.bind_address()).await.expect("bind");
+        let cancellation = CancellationToken::new();
+        let children =
+            ChildScope::for_test(&cancellation, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let serving_state = Arc::clone(&state);
+        let serving_scope = children.clone();
+        let serving_cancellation = cancellation.clone();
+        children
+            .spawn(move |_| async move {
+                let _ = serving_state
+                    .serve(listener, serving_scope, serving_cancellation)
+                    .await;
+                Ok(())
+            })
+            .expect("serve staged SAM endpoint");
+
+        let mut java = Command::new("java")
+            .args([
+                java_log_property.as_str(),
+                "-cp",
+                classpath.as_str(),
+                "net.i2p.sam.client.SAMStreamSink",
+                "-x",
+                "-m",
+                "1",
+                "-b",
+                "127.0.0.1",
+                "-p",
+            ])
+            .arg(address.port().to_string())
+            .arg(&key_path)
+            .arg(&sink_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(
+                std::fs::File::create(&stdout_path).expect("Java stdout log"),
+            ))
+            .stderr(std::process::Stdio::from(
+                std::fs::File::create(&stderr_path).expect("Java stderr log"),
+            ))
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start pinned Java I2P SAM client");
+
+        let required_children = ["stream98", "dg97", "dg96", "raw94"];
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
+            loop {
+                if let Some(status) = java.try_wait().expect("check Java client") {
+                    let diagnostics = [&stdout_path, &stderr_path, &java_log_path]
+                        .into_iter()
+                        .filter_map(|path| std::fs::read(path).ok())
+                        .flat_map(|bytes| {
+                            String::from_utf8_lossy(&bytes)
+                                .lines()
+                                .take(24)
+                                .map(|line| {
+                                    line.split_ascii_whitespace()
+                                        .map(|word| {
+                                            if word.len() > 80 {
+                                                "<redacted>"
+                                            } else {
+                                                word
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    panic!("pinned Java SAM client exited before PRIMARY setup (status={status}); {diagnostics}");
+                }
+                let ids = state.session_registry.session_ids();
+                if ids.iter().any(|id| id == PRIMARY_ID)
+                    && required_children
+                        .iter()
+                        .all(|required| ids.iter().any(|id| id == required))
+                    && !ids.iter().any(|id| id == "stream99" || id == "raw95")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("Java 2.13.0 PRIMARY and child command matrix completes");
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let sink_ready = std::fs::read_dir(&sink_path)
+                    .expect("read Java sink directory")
+                    .next()
+                    .is_some();
+                if key_path.is_file() && sink_ready {
+                    break;
+                }
+                if java.try_wait().expect("check Java client").is_some() {
+                    panic!("pinned Java SAM client exited after session setup");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("Java NAMING LOOKUP NAME=ME and Datagram1 receiver startup");
+
+        let primary_id = SamSessionId::new(PRIMARY_ID).expect("primary ID");
+        let (datagram_child, destination_id, destination_hash, destination, listen_port) = state
+            .session_registry
+            .with_entries(|sessions| {
+                sessions
+                    .iter()
+                    .find(|(_, entry)| {
+                        entry.parent_session_id() == Some(&primary_id)
+                            && entry.style()
+                                == i2pr_api::sam::session_create::SessionCreateStyle::Datagram
+                            && entry.host_port() == Some(DATAGRAM_HOST_PORT)
+                    })
+                    .map(|(id, entry)| {
+                        (
+                            id.as_str().to_owned(),
+                            entry.destination_id(),
+                            *entry.destination_id().as_hash().as_bytes(),
+                            entry.public_destination_b64().to_owned(),
+                            entry.listen_port(),
+                        )
+                    })
+            })
+            .expect("session registry snapshot")
+            .expect("Java DATAGRAM child with its loopback receive port");
+
+        let mut rng = i2pr_crypto::OsRng;
+        let sender = DestinationIdentity::generate(&mut rng).expect("datagram sender");
+        let payload = b"pinned-java-sam33-datagram";
+        let mut sender_manager = DatagramManager::new();
+        let transport = sender_manager
+            .send(
+                &sender,
+                &DatagramSendRequest {
+                    destination_hash,
+                    source_port: 77,
+                    destination_port: listen_port,
+                    protocol: DATAGRAM1_PROTOCOL,
+                    payload: payload.to_vec(),
+                    options: None,
+                },
+            )
+            .expect("encode authenticated Java-bound Datagram1");
+        let envelope =
+            i2pr_proto::streaming::decode_client_payload(&transport.application_payload, 65_536)
+                .expect("decode Java-bound I2CP payload");
+        state
+            .sam_destinations
+            .lock()
+            .unwrap()
+            .get(destination_id)
+            .expect("Java destination owner")
+            .with(|bridge| {
+                bridge
+                    .datagrams_mut()
+                    .process_inbound_at(DatagramInboundRequest {
+                        protocol: envelope.protocol,
+                        source_port: envelope.source_port,
+                        destination_port: envelope.destination_port,
+                        payload: &envelope.payload,
+                        transport_sender: *sender.id().as_hash().as_bytes(),
+                        recipient_hash: destination_hash,
+                        now_ms: 1,
+                        now_seconds: 1,
+                    })
+            })
+            .expect("accept valid Java-bound datagram");
+        state.forward_host_datagrams(destination_id);
+
+        let java_received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let found = std::fs::read_dir(&sink_path)
+                    .expect("read Java sink directory")
+                    .filter_map(Result::ok)
+                    .any(|entry| std::fs::read(entry.path()).is_ok_and(|bytes| bytes == payload));
+                if found {
+                    break;
+                }
+                if java.try_wait().expect("check Java client").is_some() {
+                    panic!("pinned Java client stopped before receiving datagram");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        if java_received.is_err() {
+            let sink_sizes = std::fs::read_dir(&sink_path)
+                .expect("read Java sink directory")
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.metadata().ok().map(|metadata| metadata.len()))
+                .collect::<Vec<_>>();
+            let diagnostic = [&stdout_path, &stderr_path, &java_log_path]
+                .into_iter()
+                .filter_map(|path| std::fs::read(path).ok())
+                .flat_map(|bytes| {
+                    String::from_utf8_lossy(&bytes)
+                        .lines()
+                        .filter(|line| line.contains("ERROR") || line.contains("WARN"))
+                        .take(12)
+                        .map(|line| {
+                            line.split_ascii_whitespace()
+                                .map(|word| if word.len() > 80 { "<redacted>" } else { word })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            panic!(
+                "pinned Java client did not receive datagram: sessions={}, sink_file_sizes={sink_sizes:?}, java_alive={}, {diagnostic}",
+                state.session_registry.session_count(),
+                java.try_wait().expect("check Java client").is_none(),
+            );
+        }
+
+        java.kill().await.expect("stop pinned Java SAM client");
+        let _ = java.wait().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state.session_registry.session_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Java PRIMARY owner loss tears down all children");
+        assert!(state.destination_registry.lock().unwrap().is_empty());
+        cancellation.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+        let _ = datagram_child;
+        let _ = destination;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires the exact-pinned Java I2P 2.13.0 SAM client classpath"]
+    async fn pinned_java_213_primary_datagrams_and_stream_share_one_destination() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::process::Command;
+
+        const PRIMARY_ID: &str = "javaProbe";
+        let classpath = std::env::var("I2PR_SAM_368_JAVA_CLIENT_CLASSPATH")
+            .expect("Java lane supplies its exact-pinned SAM client classpath");
+        let state = Arc::new(
+            SamServiceState::new_with_max_supported_version(
+                SamConfig {
+                    enabled: true,
+                    bind_address: "127.0.0.1".parse().unwrap(),
+                    port: 0,
+                    udp_port: 0,
+                    limits: SamLimits::loopback_test_profile(),
+                },
+                i2pr_api::sam::version::SamVersion::const_new(3, 3),
+            )
+            .expect("staged SAM 3.3 state"),
+        );
+        let (listener, address) = state.bind(state.bind_address()).await.expect("bind");
+        let cancellation = CancellationToken::new();
+        let children =
+            ChildScope::for_test(&cancellation, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let serving_state = Arc::clone(&state);
+        let serving_scope = children.clone();
+        let serving_cancellation = cancellation.clone();
+        children
+            .spawn(move |_| async move {
+                let _ = serving_state
+                    .serve(listener, serving_scope, serving_cancellation)
+                    .await;
+                Ok(())
+            })
+            .expect("serve staged SAM endpoint");
+
+        let mut java = Command::new("java")
+            .args(["-cp", classpath.as_str(), "Sam368PrimaryProbe", "127.0.0.1"])
+            .arg(address.port().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start Java SAM wire probe");
+        let stdout = java.stdout.take().expect("Java probe stdout");
+        let mut stdout = BufReader::new(stdout);
+        let mut ready = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            stdout.read_line(&mut ready),
+        )
+        .await
+        .expect("Java primary child matrix deadline")
+        .expect("read Java probe status");
+        if ready.is_empty() {
+            let status = java.wait().await.expect("wait for failed Java probe");
+            let mut diagnostic = String::new();
+            if let Some(mut stderr) = java.stderr.take() {
+                stderr
+                    .read_to_string(&mut diagnostic)
+                    .await
+                    .expect("read sanitized Java probe diagnostic");
+            }
+            panic!("Java probe exited before readiness ({status}): {diagnostic}");
+        }
+        assert_eq!(ready.trim(), "java_sam33_primary_child_matrix=passed");
+
+        let primary_id = SamSessionId::new(PRIMARY_ID).expect("primary ID");
+        let expected = [
+            (
+                "stream",
+                i2pr_api::sam::session_create::SessionCreateStyle::Stream,
+            ),
+            (
+                "datagram",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram,
+            ),
+            (
+                "datagram2",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram2,
+            ),
+            (
+                "datagram3",
+                i2pr_api::sam::session_create::SessionCreateStyle::Datagram3,
+            ),
+        ];
+        state
+            .session_registry
+            .with_entries(|sessions| {
+                let primary = sessions
+                    .iter()
+                    .find(|(id, _)| id.as_str() == PRIMARY_ID)
+                    .expect("Java-created PRIMARY");
+                for (id, style) in expected {
+                    let child = sessions
+                        .iter()
+                        .find(|(session_id, _)| session_id.as_str() == id)
+                        .unwrap_or_else(|| panic!("Java-created {id} child"));
+                    assert_eq!(child.1.style(), style, "Java child {id} style");
+                    assert_eq!(
+                        child.1.parent_session_id(),
+                        Some(&primary_id),
+                        "Java child {id} belongs to the one PRIMARY"
+                    );
+                    assert_eq!(
+                        child.1.destination_id(),
+                        primary.1.destination_id(),
+                        "Java child {id} shares the PRIMARY Destination"
+                    );
+                }
+                assert!(
+                    !sessions.iter().any(|(id, entry)| {
+                        id.as_str() == "raw"
+                            && entry.style()
+                                == i2pr_api::sam::session_create::SessionCreateStyle::Raw
+                    }),
+                    "Java SESSION REMOVE removed the RAW child"
+                );
+            })
+            .expect("Java primary child registry snapshot");
+
+        let destination_id = state
+            .session_registry
+            .get(&primary_id)
+            .expect("Java PRIMARY destination")
+            .destination_id();
+        let destination_hash = *destination_id.as_hash().as_bytes();
+        let mut rng = i2pr_crypto::OsRng;
+        let sender = DestinationIdentity::generate(&mut rng).expect("Java datagram sender");
+        for (protocol, destination_port) in [(17_u8, 18117_u16), (19, 18119), (20, 18120)] {
+            let payload = format!("java-protocol-{protocol}").into_bytes();
+            let mut manager = i2pr_client::datagram::DatagramManager::new();
+            let transport = manager
+                .send(
+                    &sender,
+                    &i2pr_client::datagram::DatagramSendRequest {
+                        destination_hash,
+                        source_port: 99,
+                        destination_port,
+                        protocol,
+                        payload,
+                        options: None,
+                    },
+                )
+                .expect("encode Java-bound datagram");
+            let envelope = i2pr_proto::streaming::decode_client_payload(
+                &transport.application_payload,
+                65_536,
+            )
+            .expect("decode Java-bound I2CP payload");
+            state
+                .sam_destinations
+                .lock()
+                .unwrap()
+                .get(destination_id)
+                .expect("Java shared datagram owner")
+                .with(|bridge| {
+                    bridge.datagrams_mut().process_inbound_at(
+                        i2pr_client::datagram::DatagramInboundRequest {
+                            protocol: envelope.protocol,
+                            source_port: envelope.source_port,
+                            destination_port: envelope.destination_port,
+                            payload: &envelope.payload,
+                            transport_sender: *sender.id().as_hash().as_bytes(),
+                            recipient_hash: destination_hash,
+                            now_ms: u64::from(protocol),
+                            now_seconds: 1,
+                        },
+                    )
+                })
+                .expect("queue Java-bound datagram on the shared owner");
+        }
+        state.forward_host_datagrams(destination_id);
+        let mut datagram_status = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stdout.read_line(&mut datagram_status),
+        )
+        .await
+        .expect("Java DATAGRAM1/2/3 receive deadline")
+        .expect("read Java datagram status");
+        assert_eq!(
+            datagram_status.trim(),
+            "java_sam33_datagram_17_19_20_receive=passed"
+        );
+
+        // A second primary supplies the remote STREAM listener. The Java
+        // created STREAM child is selected by its ID on a fresh SAM data
+        // connection, exactly as the PRIMARY control/data split requires.
+        let mut peer_control = TcpStream::connect(address)
+            .await
+            .expect("peer PRIMARY control");
+        peer_control
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("peer HELLO");
+        assert!(
+            read_sam_line(&mut peer_control)
+                .await
+                .contains("VERSION=3.3")
+        );
+        peer_control
+            .write_all(b"SESSION CREATE STYLE=PRIMARY ID=javaPeer DESTINATION=TRANSIENT\n")
+            .await
+            .expect("create peer PRIMARY");
+        assert!(
+            read_sam_line(&mut peer_control)
+                .await
+                .starts_with("SESSION STATUS RESULT=OK")
+        );
+        peer_control
+            .write_all(b"SESSION ADD STYLE=STREAM ID=javaPeerStream FROM_PORT=18111\n")
+            .await
+            .expect("add peer STREAM child");
+        assert!(
+            read_sam_line(&mut peer_control)
+                .await
+                .contains("javaPeerStream")
+        );
+        peer_control
+            .write_all(b"NAMING LOOKUP NAME=ME\n")
+            .await
+            .expect("lookup peer Destination");
+        let peer_public = read_sam_line(&mut peer_control)
+            .await
+            .split_ascii_whitespace()
+            .find_map(|field| field.strip_prefix("VALUE="))
+            .expect("peer public Destination")
+            .trim_matches('"')
+            .to_owned();
+
+        let mut accept = TcpStream::connect(address)
+            .await
+            .expect("peer STREAM accept control");
+        accept
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("accept HELLO");
+        assert!(read_sam_line(&mut accept).await.contains("VERSION=3.3"));
+        accept
+            .write_all(b"STREAM ACCEPT ID=javaPeerStream\n")
+            .await
+            .expect("accept Java primary child stream");
+
+        let mut connect = TcpStream::connect(address)
+            .await
+            .expect("Java child STREAM connect control");
+        connect
+            .write_all(b"HELLO VERSION MIN=3.3 MAX=3.3\n")
+            .await
+            .expect("connect HELLO");
+        assert!(read_sam_line(&mut connect).await.contains("VERSION=3.3"));
+        let connect_command =
+            format!("STREAM CONNECT ID=stream DESTINATION={peer_public} TO_PORT=18111\n");
+        connect
+            .write_all(connect_command.as_bytes())
+            .await
+            .expect("connect through Java PRIMARY child");
+        assert!(
+            read_sam_line(&mut connect)
+                .await
+                .starts_with("STREAM STATUS RESULT=OK")
+        );
+        assert!(
+            read_sam_line(&mut accept)
+                .await
+                .starts_with("STREAM STATUS RESULT=OK")
+        );
+        assert!(read_sam_line(&mut accept).await.starts_with("DESTINATION="));
+        let stream_payload = b"java-primary-child-stream-roundtrip";
+        connect
+            .write_all(stream_payload)
+            .await
+            .expect("send Java child stream bytes");
+        let mut stream_received = vec![0_u8; stream_payload.len()];
+        accept
+            .read_exact(&mut stream_received)
+            .await
+            .expect("receive Java child stream bytes");
+        assert_eq!(stream_received, stream_payload);
+        drop((accept, connect, peer_control));
+
+        let mut stdin = java.stdin.take().expect("Java probe control input");
+        stdin.write_all(b"close\n").await.expect("close Java probe");
+        drop(stdin);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), java.wait())
+            .await
+            .expect("Java probe exits after primary close")
+            .expect("wait for Java probe");
+        assert!(status.success(), "Java probe process exits successfully");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state.session_registry.session_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Java PRIMARY control loss removes remaining children");
+        assert!(state.destination_registry.lock().unwrap().is_empty());
+        cancellation.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
     }
 
     #[test]
@@ -3292,6 +5565,7 @@ mod tests {
             enabled: false,
             bind_address: "127.0.0.1".parse().unwrap(),
             port: 0,
+            udp_port: 0,
             limits: SamLimits::defaults(),
         };
         let state = SamServiceState::new(config).expect("state");
@@ -3301,6 +5575,7 @@ mod tests {
                 ServerConnectionState::AwaitHello,
                 NamingLookupRequest {
                     name: name.to_owned(),
+                    include_lease_set_options: false,
                 },
             )
         };

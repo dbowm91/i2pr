@@ -14,6 +14,7 @@
 //   i2psam_runner import  <host> <port> <private_file> <public_file>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -114,7 +115,14 @@ int transfer(SOCKET fd, const std::vector<unsigned char> &send_data,
     return 7;
   }
   if (received != expected_data) {
-    std::fprintf(stderr, "i2psam_runner: binary payload mismatch\n");
+    size_t mismatch = 0;
+    while (mismatch < received.size() && mismatch < expected_data.size() &&
+           received[mismatch] == expected_data[mismatch]) {
+      ++mismatch;
+    }
+    std::fprintf(stderr,
+                 "i2psam_runner: binary payload mismatch expected=%zu got=%zu first_offset=%zu\n",
+                 expected_data.size(), received.size(), mismatch);
     return 8;
   }
   std::vector<unsigned char> barrier;
@@ -153,6 +161,9 @@ int run_connect(const std::string &host, int port, const std::string &peer,
   const SOCKET fd = result.value->release();
   result.value.reset();
   const int rc = transfer(fd, send_data, expected_data);
+  // Allow the final authenticated transfer marker to drain through the
+  // loopback Streaming path before this short-lived harness closes its owner.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   ::close(fd);
   return rc;
 }
@@ -205,6 +216,7 @@ int run_accept(const std::string &host, int port, const std::string &send_path,
     }
   }
   const int rc = transfer(fd, send_data, expected_data);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   ::close(fd);
   return rc;
 }

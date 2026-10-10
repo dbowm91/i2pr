@@ -32,7 +32,7 @@ or shared milestone of another.
 | Portable service-tunnels/349 | [`implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md`](implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md) | [`closure/portable-service-tunnels/349-status.md`](closure/portable-service-tunnels/349-status.md) |
 | Portable service-tunnels/350 | [`implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md`](implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md) | [`closure/portable-service-tunnels/350-status.md`](closure/portable-service-tunnels/350-status.md) |
 | Portable service-tunnels/351 | [`implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md`](implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md) | [`closure/portable-service-tunnels/351-status.md`](closure/portable-service-tunnels/351-status.md) |
-| SAM/368 | [`implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`](implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md) | not closed — `registered`; SAM 3.1 Plan 151 remains the closed authority until a 3.3 profile is independently qualified |
+| SAM/368 | [`implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`](implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md) | [`closure/sam/368-status.md`](closure/sam/368-status.md) (`passed-sam33-primary-subsession-shared-destination-profile`) |
 | Managed native app runtime/368 | [`implementation/managed-native-app-runtime/368-trusted-appmanager-bridge-and-manager-protocol-foundation.md`](implementation/managed-native-app-runtime/368-trusted-appmanager-bridge-and-manager-protocol-foundation.md) | [`closure/managed-native-app-runtime/368-status.md`](closure/managed-native-app-runtime/368-status.md) (`passed-trusted-appmanager-bridge-and-manager-protocol-foundation`) |
 | Anonymity/296 | [`implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md`](implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md) | [`closure/anonymity/296-status.md`](closure/anonymity/296-status.md) |
 | Anonymity/297 | [`implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md`](implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md) | [`closure/anonymity/297-status.md`](closure/anonymity/297-status.md) |
@@ -55,7 +55,7 @@ managed-application line was integrated from
 Neither plan is renumbered and neither authority is rewritten or made an alias of the
 other. Cite them subsystem-qualified — **SAM/368** and **Managed native app
 runtime/368** — and read the owning subsystem's roadmap and registry rows for status.
-The two are unrelated in scope, ownership, and evidence: SAM/368 concerns the SAM 3.1
+The two are unrelated in scope, ownership, and evidence: SAM/368 concerns the SAM 3.3
 wire profile and `specs/support.toml`, while Managed native app runtime/368 concerns
 the private daemon-to-`AppManager` protocol, its bridge, and ADR 0035.
 

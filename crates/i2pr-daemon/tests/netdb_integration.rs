@@ -99,6 +99,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             enabled: false,
             bind_address: "127.0.0.1".parse().unwrap(),
             port: 7656,
+            udp_port: 0,
             limits: i2pr_api::sam::limits::SamLimits::defaults(),
         },
         ssu2: i2pr_daemon::config::Ssu2Config {

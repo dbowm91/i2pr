@@ -182,6 +182,7 @@ async fn drive_streamr_server(
                         destination_port: key.destination_port,
                         protocol: RAW_DATAGRAM_PROTOCOL,
                         payload: media.clone(),
+                        options: None,
                     };
                     if !admit_datagram(manager, runtime.destination_id, request) {
                         debug!(
@@ -477,6 +478,7 @@ async fn drive_streamr_client(drive: &ClientDrive<'_>) -> StreamrLoopOutcome {
                         destination_port: options.target_i2p_port,
                         protocol: DATAGRAM1_PROTOCOL,
                         payload: SUBSCRIBE.to_vec(),
+                        options: None,
                     };
                     if admit_datagram(manager, runtime.destination_id, request) {
                         subscribes_sent = subscribes_sent.saturating_add(1);
@@ -528,6 +530,7 @@ async fn drive_streamr_client(drive: &ClientDrive<'_>) -> StreamrLoopOutcome {
         destination_port: options.target_i2p_port,
         protocol: DATAGRAM1_PROTOCOL,
         payload: UNSUBSCRIBE.to_vec(),
+        options: None,
     };
     let _ = admit_datagram(manager, runtime.destination_id, bye);
     StreamrLoopOutcome::Stopped
@@ -548,10 +551,14 @@ mod tests {
     fn control_event(hash: [u8; 32], payload: Vec<u8>) -> DatagramReceiveEvent {
         DatagramReceiveEvent {
             from_hash: hash,
+            from_destination: None,
             source_port: 5001,
             destination_port: 0,
             protocol: DATAGRAM1_PROTOCOL,
+            raw_payload: payload.clone(),
             payload,
+            sender_authenticated: true,
+            options: None,
             received_at_ms: 0,
         }
     }
@@ -715,10 +722,14 @@ mod tests {
         let producer = [0x33_u8; 32];
         let good = DatagramReceiveEvent {
             from_hash: producer,
+            from_destination: None,
             source_port: 0,
             destination_port: 5001,
             protocol: RAW_DATAGRAM_PROTOCOL,
             payload: vec![0x55_u8; 100],
+            raw_payload: vec![0x55_u8; 100],
+            sender_authenticated: false,
+            options: None,
             received_at_ms: 0,
         };
         assert!(is_producer_media(&good, &producer, &options));

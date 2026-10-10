@@ -18,6 +18,17 @@ use crate::sam::{
 pub enum SessionCreateStyle {
     /// `STYLE=STREAM` (the M7 baseline).
     Stream,
+    /// `STYLE=PRIMARY` shared-Destination owner. `MASTER` is accepted as a
+    /// compatibility spelling for deployed i2pd and older Java I2P.
+    Primary,
+    /// Child style accepted only by `SESSION ADD`.
+    Datagram,
+    /// Proposal 163 authenticated Datagram2 child style.
+    Datagram2,
+    /// Proposal 163 unauthenticated Datagram3 child style.
+    Datagram3,
+    /// Child style accepted only by `SESSION ADD`.
+    Raw,
 }
 
 impl SessionCreateStyle {
@@ -25,6 +36,16 @@ impl SessionCreateStyle {
     pub fn parse(input: &str) -> Option<Self> {
         if input.eq_ignore_ascii_case("STREAM") {
             Some(Self::Stream)
+        } else if input.eq_ignore_ascii_case("PRIMARY") || input.eq_ignore_ascii_case("MASTER") {
+            Some(Self::Primary)
+        } else if input.eq_ignore_ascii_case("DATAGRAM") {
+            Some(Self::Datagram)
+        } else if input.eq_ignore_ascii_case("DATAGRAM2") {
+            Some(Self::Datagram2)
+        } else if input.eq_ignore_ascii_case("DATAGRAM3") {
+            Some(Self::Datagram3)
+        } else if input.eq_ignore_ascii_case("RAW") {
+            Some(Self::Raw)
         } else {
             None
         }
@@ -34,6 +55,11 @@ impl SessionCreateStyle {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stream => "STREAM",
+            Self::Primary => "PRIMARY",
+            Self::Datagram => "DATAGRAM",
+            Self::Datagram2 => "DATAGRAM2",
+            Self::Datagram3 => "DATAGRAM3",
+            Self::Raw => "RAW",
         }
     }
 }
@@ -57,6 +83,12 @@ pub enum SessionCreateError {
     /// The `DESTINATION=` value could not be parsed.
     #[error("invalid SESSION CREATE DESTINATION: {0}")]
     InvalidDestination(String),
+    /// The SAM 3.2 FROM_PORT option was invalid.
+    #[error("invalid SESSION CREATE FROM_PORT: {0}")]
+    InvalidFromPort(String),
+    /// The SAM 3.2 TO_PORT option was invalid.
+    #[error("invalid SESSION CREATE TO_PORT: {0}")]
+    InvalidToPort(String),
     /// The private-destination codec rejected the supplied `PRIV`.
     #[error("private destination invalid: {0}")]
     PrivateDestination(#[from] SamPrivateDestinationError),
@@ -74,6 +106,10 @@ pub struct SessionCreateRequest {
     pub style: SessionCreateStyle,
     /// The `DESTINATION=` value: `TRANSIENT` or a `PRIV` text.
     pub destination: DestinationSource,
+    /// Default local I2P source port.
+    pub from_port: u16,
+    /// Default remote I2P destination/listen port.
+    pub to_port: u16,
 }
 
 /// The source of a SAM session's destination.
@@ -115,11 +151,28 @@ pub fn parse_session_create(
     style: &str,
     destination: &str,
 ) -> Result<SessionCreateRequest, SessionCreateError> {
+    parse_session_create_with_ports(id, style, destination, None, None)
+}
+
+/// Parses SESSION CREATE with optional SAM 3.2 I2P port defaults.
+pub fn parse_session_create_with_ports(
+    id: &str,
+    style: &str,
+    destination: &str,
+    from_port: Option<&str>,
+    to_port: Option<&str>,
+) -> Result<SessionCreateRequest, SessionCreateError> {
     if id.is_empty() {
         return Err(SessionCreateError::MissingId);
     }
     let parsed_style = SessionCreateStyle::parse(style)
         .ok_or_else(|| SessionCreateError::UnsupportedStyle(style.to_owned()))?;
+    if !matches!(
+        parsed_style,
+        SessionCreateStyle::Stream | SessionCreateStyle::Primary
+    ) {
+        return Err(SessionCreateError::UnsupportedStyle(style.to_owned()));
+    }
     if destination.is_empty() {
         return Err(SessionCreateError::MissingDestination);
     }
@@ -129,10 +182,31 @@ pub fn parse_session_create(
         let wrapper = SamPrivateDestination::from_base64(destination)?;
         DestinationSource::Imported(wrapper)
     };
+    let from_port = from_port
+        .map(|value| {
+            super::command::parse_sam_port(value)
+                .ok_or_else(|| SessionCreateError::InvalidFromPort(value.to_owned()))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let to_port = to_port
+        .map(|value| {
+            super::command::parse_sam_port(value)
+                .ok_or_else(|| SessionCreateError::InvalidToPort(value.to_owned()))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if parsed_style == SessionCreateStyle::Primary && (from_port != 0 || to_port != 0) {
+        return Err(SessionCreateError::UnsupportedStyle(
+            "PRIMARY does not accept FROM_PORT or TO_PORT".to_owned(),
+        ));
+    }
     Ok(SessionCreateRequest {
         id: id.to_owned(),
         style: parsed_style,
         destination: destination_source,
+        from_port,
+        to_port,
     })
 }
 
@@ -156,7 +230,25 @@ mod tests {
         let request = parse_session_create("alpha", "STREAM", "TRANSIENT").expect("parse");
         assert_eq!(request.id, "alpha");
         assert_eq!(request.style, SessionCreateStyle::Stream);
+        assert_eq!((request.from_port, request.to_port), (0, 0));
         assert!(matches!(request.destination, DestinationSource::Transient));
+    }
+
+    #[test]
+    fn session_create_parses_port_defaults_and_rejects_overflow() {
+        let request = parse_session_create_with_ports(
+            "alpha",
+            "STREAM",
+            "TRANSIENT",
+            Some("65535"),
+            Some("110"),
+        )
+        .expect("valid ports");
+        assert_eq!((request.from_port, request.to_port), (u16::MAX, 110));
+        assert!(matches!(
+            parse_session_create_with_ports("alpha", "STREAM", "TRANSIENT", None, Some("65536")),
+            Err(SessionCreateError::InvalidToPort(_))
+        ));
     }
 
     #[test]

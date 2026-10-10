@@ -38,8 +38,12 @@ use i2pr_client::DestinationId;
 
 use crate::sam::limits::SamLimits;
 use crate::sam::session::{SamSessionCounters, SamSessionId};
+use crate::sam::session_create::SessionCreateStyle;
 
 use super::MAX_SAM_SESSION_ID_BYTES;
+
+/// Hard per-PRIMARY child-session ceiling.
+pub const MAX_SAM_SUBSESSIONS_PER_PRIMARY: usize = 64;
 
 /// State of the control-socket owner for one SAM session. Set by the
 /// per-socket task on disconnect; observed by the daemon's session
@@ -88,6 +92,47 @@ pub struct SamSessionEntry {
     public_destination_b64: String,
     control_owner: Arc<ControlOwnerState>,
     counters: SamSessionCounters,
+    from_port: u16,
+    to_port: u16,
+    listen_port: u16,
+    host_port: Option<u16>,
+    host_address: Option<std::net::IpAddr>,
+    raw_header: bool,
+    protocol: u8,
+    listen_protocol: u8,
+    style: SessionCreateStyle,
+    parent_session_id: Option<SamSessionId>,
+}
+
+/// Runtime-neutral configuration for one PRIMARY child entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SamSubsessionConfig {
+    /// Child style.
+    pub style: SessionCreateStyle,
+    /// Local I2P source port.
+    pub from_port: u16,
+    /// Remote I2P destination port.
+    pub to_port: u16,
+    /// Local I2P listener port for inbound traffic.
+    pub listen_port: u16,
+    /// Optional ordinary-SAM loopback UDP port.
+    pub host_port: Option<u16>,
+    /// Optional ordinary-SAM loopback UDP address.
+    pub host_address: Option<std::net::IpAddr>,
+    /// Whether RAW receive framing includes the I2P header.
+    pub raw_header: bool,
+    /// Outbound I2CP protocol for RAW.
+    pub protocol: u8,
+    /// Inbound I2CP listen protocol for RAW.
+    pub listen_protocol: u8,
+}
+
+struct SamSessionEntryConfig {
+    from_port: u16,
+    to_port: u16,
+    listen_port: u16,
+    style: SessionCreateStyle,
+    parent_session_id: Option<SamSessionId>,
 }
 
 impl SamSessionEntry {
@@ -98,12 +143,71 @@ impl SamSessionEntry {
         destination_id: DestinationId,
         public_destination_b64: String,
     ) -> Self {
+        Self::new_configured(
+            session_id,
+            destination_id,
+            public_destination_b64,
+            SamSessionEntryConfig {
+                from_port: 0,
+                to_port: 0,
+                listen_port: 0,
+                style: SessionCreateStyle::Stream,
+                parent_session_id: None,
+            },
+        )
+    }
+
+    /// Constructs a fresh entry with inherited I2P port defaults.
+    pub fn new_with_ports(
+        session_id: SamSessionId,
+        destination_id: DestinationId,
+        public_destination_b64: String,
+        from_port: u16,
+        to_port: u16,
+    ) -> Self {
+        Self::new_configured(
+            session_id,
+            destination_id,
+            public_destination_b64,
+            SamSessionEntryConfig {
+                from_port,
+                to_port,
+                listen_port: to_port,
+                style: SessionCreateStyle::Stream,
+                parent_session_id: None,
+            },
+        )
+    }
+
+    fn new_configured(
+        session_id: SamSessionId,
+        destination_id: DestinationId,
+        public_destination_b64: String,
+        config: SamSessionEntryConfig,
+    ) -> Self {
+        let SamSessionEntryConfig {
+            from_port,
+            to_port,
+            listen_port,
+            style,
+            parent_session_id,
+        } = config;
         Self {
             session_id,
             destination_id,
             public_destination_b64,
             control_owner: Arc::new(ControlOwnerState::new()),
             counters: SamSessionCounters::zero(),
+            from_port,
+            to_port,
+            listen_port,
+            host_port: None,
+            host_address: None,
+            raw_header: false,
+            protocol: session_style_protocol(style).unwrap_or(0),
+            listen_protocol: session_style_protocol(style).unwrap_or(0),
+            style,
+            parent_session_id,
         }
     }
 
@@ -131,6 +235,57 @@ impl SamSessionEntry {
     /// Returns the current resource counters.
     pub const fn counters(&self) -> SamSessionCounters {
         self.counters
+    }
+
+    /// Returns the default local I2P source port.
+    pub const fn from_port(&self) -> u16 {
+        self.from_port
+    }
+
+    /// Returns the default remote I2P destination port.
+    pub const fn to_port(&self) -> u16 {
+        self.to_port
+    }
+
+    /// Returns the I2P listen port for inbound routing.
+    pub const fn listen_port(&self) -> u16 {
+        self.listen_port
+    }
+
+    /// Optional host UDP bridge port supplied by a loopback SAM client.
+    /// Managed-app `sam_datagram` operations never bind or forward to it.
+    pub const fn host_port(&self) -> Option<u16> {
+        self.host_port
+    }
+
+    /// Optional loopback host selected by an ordinary SAM UDP client.
+    pub const fn host_address(&self) -> Option<std::net::IpAddr> {
+        self.host_address
+    }
+
+    /// Whether forwarded RAW datagrams include the SAM 3.2 metadata header.
+    pub const fn raw_header(&self) -> bool {
+        self.raw_header
+    }
+
+    /// Outbound I2CP protocol selected for this session.
+    pub const fn protocol(&self) -> u8 {
+        self.protocol
+    }
+
+    /// Inbound I2CP protocol used to route data to this session.
+    pub const fn listen_protocol(&self) -> u8 {
+        self.listen_protocol
+    }
+
+    /// Returns the negotiated SAM session style.
+    pub const fn style(&self) -> SessionCreateStyle {
+        self.style
+    }
+
+    /// Returns the owning PRIMARY ID for a child session.
+    pub fn parent_session_id(&self) -> Option<&SamSessionId> {
+        self.parent_session_id.as_ref()
     }
 
     /// Increments the live STREAM socket count, returning the new
@@ -215,6 +370,18 @@ pub enum SamSessionRegistryError {
         /// Accepted ceiling.
         maximum: u16,
     },
+    /// The per-PRIMARY child-session ceiling was reached.
+    SubsessionsFull {
+        /// Accepted child-session ceiling.
+        maximum: usize,
+    },
+    /// A sibling already claims an overlapping inbound I2P protocol/port.
+    SubsessionListenConflict {
+        /// Conflicting inbound I2P port.
+        port: u16,
+        /// Conflicting I2P protocol number.
+        protocol: u8,
+    },
     /// The per-session STREAM socket ceiling was reached.
     StreamAttachmentsFull {
         /// Accepted ceiling.
@@ -245,6 +412,16 @@ impl core::fmt::Display for SamSessionRegistryError {
             Self::SessionsFull { maximum } => {
                 write!(formatter, "session registry capacity {maximum} exceeded")
             }
+            Self::SubsessionsFull { maximum } => {
+                write!(
+                    formatter,
+                    "per-PRIMARY child-session ceiling {maximum} reached"
+                )
+            }
+            Self::SubsessionListenConflict { port, protocol } => write!(
+                formatter,
+                "PRIMARY already has an inbound child for protocol {protocol} and port {port}"
+            ),
             Self::StreamAttachmentsFull { maximum } => write!(
                 formatter,
                 "per-session stream attachment ceiling {maximum} reached"
@@ -333,6 +510,35 @@ impl SamSessionRegistry {
         session_id: SamSessionId,
         destination_id: DestinationId,
     ) -> Result<SamSessionReservation, SamSessionRegistryError> {
+        self.reserve_session_with_ports(session_id, destination_id, 0, 0)
+    }
+
+    /// Reserves a session together with inherited I2P port defaults.
+    pub fn reserve_session_with_ports(
+        &self,
+        session_id: SamSessionId,
+        destination_id: DestinationId,
+        from_port: u16,
+        to_port: u16,
+    ) -> Result<SamSessionReservation, SamSessionRegistryError> {
+        self.reserve_session_with_style(
+            session_id,
+            destination_id,
+            from_port,
+            to_port,
+            SessionCreateStyle::Stream,
+        )
+    }
+
+    /// Reserves a standalone or PRIMARY session with its protocol style.
+    pub fn reserve_session_with_style(
+        &self,
+        session_id: SamSessionId,
+        destination_id: DestinationId,
+        from_port: u16,
+        to_port: u16,
+        style: SessionCreateStyle,
+    ) -> Result<SamSessionReservation, SamSessionRegistryError> {
         if session_id.as_str().len() > MAX_SAM_SESSION_ID_BYTES {
             return Err(SamSessionRegistryError::UnknownSession { session_id });
         }
@@ -356,7 +562,25 @@ impl SamSessionRegistry {
         // the per-socket task) or roll back (drop the reservation).
         sessions.insert(
             session_id.clone(),
-            SamSessionEntry::new(session_id.clone(), destination_id, String::new()),
+            SamSessionEntry::new_configured(
+                session_id.clone(),
+                destination_id,
+                String::new(),
+                SamSessionEntryConfig {
+                    from_port,
+                    to_port,
+                    listen_port: match style {
+                        SessionCreateStyle::Primary => 0,
+                        SessionCreateStyle::Stream
+                        | SessionCreateStyle::Datagram
+                        | SessionCreateStyle::Datagram2
+                        | SessionCreateStyle::Datagram3
+                        | SessionCreateStyle::Raw => from_port,
+                    },
+                    style,
+                    parent_session_id: None,
+                },
+            ),
         );
         by_dest.insert(destination_id, session_id.clone());
         Ok(SamSessionReservation {
@@ -364,6 +588,138 @@ impl SamSessionRegistry {
             destination_id,
             generation,
         })
+    }
+
+    /// Adds a child entry that shares its PRIMARY's destination and identity.
+    pub fn add_subsession(
+        &self,
+        primary_id: &SamSessionId,
+        child_id: SamSessionId,
+        config: SamSubsessionConfig,
+    ) -> Result<SamSessionEntry, SamSessionRegistryError> {
+        let SamSubsessionConfig {
+            style,
+            from_port,
+            to_port,
+            listen_port,
+            host_port,
+            host_address,
+            raw_header,
+            protocol,
+            listen_protocol,
+        } = config;
+        if child_id.as_str().len() > MAX_SAM_SESSION_ID_BYTES {
+            return Err(SamSessionRegistryError::UnknownSession {
+                session_id: child_id,
+            });
+        }
+        if !matches!(
+            style,
+            SessionCreateStyle::Stream
+                | SessionCreateStyle::Datagram
+                | SessionCreateStyle::Datagram2
+                | SessionCreateStyle::Datagram3
+                | SessionCreateStyle::Raw
+        ) {
+            return Err(SamSessionRegistryError::UnknownSession {
+                session_id: child_id,
+            });
+        }
+        let mut sessions = self.by_session.lock()?;
+        if sessions.len() >= usize::from(self.limits.max_sessions) {
+            return Err(SamSessionRegistryError::SessionsFull {
+                maximum: self.limits.max_sessions,
+            });
+        }
+        if sessions.contains_key(&child_id) {
+            return Err(SamSessionRegistryError::DuplicateSession {
+                session_id: child_id,
+            });
+        }
+        let primary =
+            sessions
+                .get(primary_id)
+                .ok_or_else(|| SamSessionRegistryError::UnknownSession {
+                    session_id: primary_id.clone(),
+                })?;
+        if primary.style != SessionCreateStyle::Primary || primary.parent_session_id.is_some() {
+            return Err(SamSessionRegistryError::UnknownSession {
+                session_id: primary_id.clone(),
+            });
+        }
+        if sessions
+            .values()
+            .filter(|entry| entry.parent_session_id.as_ref() == Some(primary_id))
+            .count()
+            >= MAX_SAM_SUBSESSIONS_PER_PRIMARY
+        {
+            return Err(SamSessionRegistryError::SubsessionsFull {
+                maximum: MAX_SAM_SUBSESSIONS_PER_PRIMARY,
+            });
+        }
+        let conflicting = sessions.values().any(|entry| {
+            entry.parent_session_id.as_ref() == Some(primary_id)
+                && entry.listen_protocol == listen_protocol
+                && entry.listen_port == listen_port
+        });
+        if conflicting {
+            return Err(SamSessionRegistryError::SubsessionListenConflict {
+                port: listen_port,
+                protocol: listen_protocol,
+            });
+        }
+        let mut entry = SamSessionEntry::new_configured(
+            child_id.clone(),
+            primary.destination_id,
+            primary.public_destination_b64.clone(),
+            SamSessionEntryConfig {
+                from_port,
+                to_port,
+                listen_port,
+                style,
+                parent_session_id: Some(primary_id.clone()),
+            },
+        );
+        entry.host_port = host_port;
+        entry.host_address = host_address;
+        entry.raw_header = raw_header;
+        entry.protocol = protocol;
+        entry.listen_protocol = listen_protocol;
+        sessions.insert(child_id, clone_entry(&entry));
+        Ok(entry)
+    }
+
+    /// Lists child IDs owned by a PRIMARY in sorted order.
+    pub fn subsession_ids(&self, primary_id: &SamSessionId) -> Vec<SamSessionId> {
+        let mut ids = self
+            .by_session
+            .lock()
+            .map(|sessions| {
+                sessions
+                    .values()
+                    .filter(|entry| entry.parent_session_id.as_ref() == Some(primary_id))
+                    .map(|entry| entry.session_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    /// Removes one child only when it belongs to the supplied PRIMARY.
+    pub fn remove_subsession(
+        &self,
+        primary_id: &SamSessionId,
+        child_id: &SamSessionId,
+    ) -> Result<Option<SamSessionEntry>, SamSessionRegistryError> {
+        let mut sessions = self.by_session.lock()?;
+        if sessions
+            .get(child_id)
+            .is_none_or(|entry| entry.parent_session_id.as_ref() != Some(primary_id))
+        {
+            return Ok(None);
+        }
+        Ok(sessions.remove(child_id).map(|entry| clone_entry(&entry)))
     }
 
     /// Commits a reservation by replacing the cached SAM public-destination
@@ -416,7 +772,10 @@ impl SamSessionRegistry {
         let Some(entry) = sessions.remove(session_id) else {
             return Ok(None);
         };
-        by_dest.remove(&entry.destination_id);
+        if entry.parent_session_id.is_none() {
+            sessions.retain(|_, child| child.parent_session_id.as_ref() != Some(session_id));
+            by_dest.remove(&entry.destination_id);
+        }
         Ok(Some(entry))
     }
 
@@ -454,6 +813,35 @@ impl SamSessionRegistry {
         sessions.get(session_id).map(clone_entry)
     }
 
+    /// Selects the live datagram subsession for one inbound I2CP protocol
+    /// and destination port. Exact listen ports win over a port-zero
+    /// wildcard. Children without an ordinary UDP forwarding port remain
+    /// available to the private managed-app operation but are skipped here.
+    pub fn inbound_datagram_session(
+        &self,
+        destination_id: DestinationId,
+        protocol: u8,
+        destination_port: u16,
+    ) -> Option<SamSessionEntry> {
+        let sessions = self.by_session.lock().ok()?;
+        sessions
+            .values()
+            .filter(|entry| {
+                entry.destination_id == destination_id
+                    && (entry.listen_protocol == protocol || entry.listen_protocol == 0)
+                    && (entry.listen_port == destination_port || entry.listen_port == 0)
+                    && entry.host_port.is_some_and(|port| port != 0)
+            })
+            .min_by_key(|entry| {
+                (
+                    u8::from(entry.listen_protocol != protocol),
+                    u8::from(entry.listen_port != destination_port),
+                    entry.session_id.as_str(),
+                )
+            })
+            .map(clone_entry)
+    }
+
     /// Acquires the lock and runs the supplied closure against the
     /// session-id-keyed map. The closure must not await or block.
     pub fn with_entries<F, R>(&self, closure: F) -> Result<R, SamSessionRegistryError>
@@ -480,12 +868,36 @@ impl SamSessionRegistry {
     }
 }
 
+fn session_style_protocol(style: SessionCreateStyle) -> Option<u8> {
+    match style {
+        SessionCreateStyle::Stream => Some(i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER),
+        SessionCreateStyle::Datagram => Some(i2pr_proto::PROTOCOL_TYPE_DATAGRAM),
+        SessionCreateStyle::Raw => Some(i2pr_proto::PROTOCOL_TYPE_RAW),
+        SessionCreateStyle::Datagram2 => Some(i2pr_proto::PROTOCOL_TYPE_DATAGRAM2),
+        SessionCreateStyle::Datagram3 => Some(i2pr_proto::PROTOCOL_TYPE_DATAGRAM3),
+        SessionCreateStyle::Primary => None,
+    }
+}
+
 fn clone_entry(entry: &SamSessionEntry) -> SamSessionEntry {
-    SamSessionEntry::new(
+    let mut cloned = SamSessionEntry::new_configured(
         entry.session_id.clone(),
         entry.destination_id,
         entry.public_destination_b64.clone(),
-    )
+        SamSessionEntryConfig {
+            from_port: entry.from_port,
+            to_port: entry.to_port,
+            listen_port: entry.listen_port,
+            style: entry.style,
+            parent_session_id: entry.parent_session_id.clone(),
+        },
+    );
+    cloned.host_port = entry.host_port;
+    cloned.host_address = entry.host_address;
+    cloned.raw_header = entry.raw_header;
+    cloned.protocol = entry.protocol;
+    cloned.listen_protocol = entry.listen_protocol;
+    cloned
 }
 
 #[cfg(test)]
@@ -518,6 +930,212 @@ mod tests {
             registry.session_for_destination(&destination_id),
             Ok(Some(session_id.clone()))
         );
+    }
+
+    #[test]
+    fn session_port_defaults_survive_commit_and_lookup() {
+        let registry = SamSessionRegistry::new(SamLimits::defaults());
+        let session_id = SamSessionId::new("ports").unwrap();
+        let destination_id = destination(77);
+        let reservation = registry
+            .reserve_session_with_ports(session_id.clone(), destination_id, 25, 110)
+            .expect("reserve");
+        let entry = registry
+            .commit_reservation(&reservation, "PUB".to_owned())
+            .expect("commit");
+        assert_eq!((entry.from_port(), entry.to_port()), (25, 110));
+        let looked_up = registry.get(&session_id).expect("lookup");
+        assert_eq!((looked_up.from_port(), looked_up.to_port()), (25, 110));
+    }
+
+    #[test]
+    fn primary_children_share_destination_and_primary_close_removes_them() {
+        let registry = SamSessionRegistry::new(SamLimits::defaults());
+        let primary_id = SamSessionId::new("primary").unwrap();
+        let destination_id = destination(81);
+        let reservation = registry
+            .reserve_session_with_style(
+                primary_id.clone(),
+                destination_id,
+                0,
+                0,
+                SessionCreateStyle::Primary,
+            )
+            .expect("reserve primary");
+        registry
+            .commit_reservation(&reservation, "PUB".to_owned())
+            .expect("commit primary");
+        let child_id = SamSessionId::new("stream-child").unwrap();
+        let child = registry
+            .add_subsession(
+                &primary_id,
+                child_id.clone(),
+                SamSubsessionConfig {
+                    style: SessionCreateStyle::Stream,
+                    from_port: 23,
+                    to_port: 110,
+                    listen_port: 23,
+                    host_port: None,
+                    host_address: None,
+                    raw_header: false,
+                    protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+                    listen_protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+                },
+            )
+            .expect("add child");
+        assert_eq!(child.destination_id(), destination_id);
+        assert_eq!(child.parent_session_id(), Some(&primary_id));
+        assert_eq!((child.from_port(), child.to_port()), (23, 110));
+        assert_eq!(child.host_port(), None);
+        assert_eq!(
+            registry.session_for_destination(&destination_id).unwrap(),
+            Some(primary_id.clone())
+        );
+
+        let duplicate_listener = registry.add_subsession(
+            &primary_id,
+            SamSessionId::new("duplicate-listener").unwrap(),
+            SamSubsessionConfig {
+                style: SessionCreateStyle::Stream,
+                from_port: 23,
+                to_port: 110,
+                listen_port: 23,
+                host_port: None,
+                host_address: None,
+                raw_header: false,
+                protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+                listen_protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+            },
+        );
+        assert!(matches!(
+            duplicate_listener,
+            Err(SamSessionRegistryError::SubsessionListenConflict {
+                port: 23,
+                protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+            })
+        ));
+
+        let datagram_child = SamSessionId::new("datagram2-child").unwrap();
+        let datagram = registry
+            .add_subsession(
+                &primary_id,
+                datagram_child,
+                SamSubsessionConfig {
+                    style: SessionCreateStyle::Datagram2,
+                    from_port: 55,
+                    to_port: 66,
+                    listen_port: 55,
+                    host_port: Some(7655),
+                    host_address: Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                    raw_header: false,
+                    protocol: i2pr_proto::PROTOCOL_TYPE_DATAGRAM2,
+                    listen_protocol: i2pr_proto::PROTOCOL_TYPE_DATAGRAM2,
+                },
+            )
+            .expect("add Datagram2 child");
+        assert_eq!(datagram.host_port(), Some(7655));
+        assert_eq!(datagram.destination_id(), destination_id);
+
+        let raw_id = SamSessionId::new("raw-child").unwrap();
+        let raw = registry
+            .add_subsession(
+                &primary_id,
+                raw_id,
+                SamSubsessionConfig {
+                    style: SessionCreateStyle::Raw,
+                    from_port: 7,
+                    to_port: 8,
+                    listen_port: 9,
+                    host_port: Some(7656),
+                    host_address: Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                    raw_header: true,
+                    protocol: 42,
+                    listen_protocol: 0,
+                },
+            )
+            .expect("add custom RAW child");
+        assert_eq!((raw.protocol(), raw.listen_protocol()), (42, 0));
+        assert!(raw.raw_header());
+        let selected = registry
+            .inbound_datagram_session(destination_id, 43, 9)
+            .expect("custom raw protocol routes to the child");
+        assert_eq!(selected.host_port(), Some(7656));
+        assert_eq!(selected.host_address(), raw.host_address());
+        let raw_default = registry
+            .add_subsession(
+                &primary_id,
+                SamSessionId::new("raw-default").unwrap(),
+                SamSubsessionConfig {
+                    style: SessionCreateStyle::Raw,
+                    from_port: 0,
+                    to_port: 0,
+                    listen_port: 0,
+                    host_port: Some(7657),
+                    host_address: None,
+                    raw_header: false,
+                    protocol: 18,
+                    listen_protocol: 0,
+                },
+            )
+            .expect("add RAW default child");
+        let exact = registry
+            .inbound_datagram_session(destination_id, i2pr_proto::PROTOCOL_TYPE_DATAGRAM2, 55)
+            .expect("specific protocol/port beats RAW default");
+        assert_eq!(exact.session_id(), datagram.session_id());
+        let fallback = registry
+            .inbound_datagram_session(destination_id, 44, 99)
+            .expect("RAW default receives unmatched datagram protocols");
+        assert_eq!(fallback.session_id(), raw_default.session_id());
+        let ambiguous = registry.add_subsession(
+            &primary_id,
+            SamSessionId::new("ambiguous-raw").unwrap(),
+            SamSubsessionConfig {
+                style: SessionCreateStyle::Raw,
+                from_port: 10,
+                to_port: 11,
+                listen_port: 9,
+                host_port: Some(7657),
+                host_address: None,
+                raw_header: false,
+                protocol: 42,
+                listen_protocol: 0,
+            },
+        );
+        assert!(matches!(
+            ambiguous,
+            Err(SamSessionRegistryError::SubsessionListenConflict { .. })
+        ));
+
+        registry
+            .remove_by_session(&primary_id)
+            .expect("close primary");
+        assert!(!registry.contains(&primary_id));
+        assert!(!registry.contains(&child_id));
+        assert_eq!(
+            registry.session_for_destination(&destination_id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn ordinary_stream_session_listens_on_from_port_not_remote_to_port() {
+        let registry = SamSessionRegistry::new(SamLimits::defaults());
+        let session_id = SamSessionId::new("mail-stream").unwrap();
+        let reservation = registry
+            .reserve_session_with_style(
+                session_id.clone(),
+                destination(82),
+                25,
+                110,
+                SessionCreateStyle::Stream,
+            )
+            .expect("reserve stream");
+        let entry = registry
+            .commit_reservation(&reservation, "PUB".to_owned())
+            .expect("commit stream");
+        assert_eq!(entry.from_port(), 25);
+        assert_eq!(entry.to_port(), 110);
+        assert_eq!(entry.listen_port(), 25);
     }
 
     #[test]

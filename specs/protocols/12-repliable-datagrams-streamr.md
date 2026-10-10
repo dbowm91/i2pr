@@ -36,21 +36,32 @@ Planning authority: **Plan 291**
 - Subscribe addressing: `fromPort` = local UDP port, `toPort` = 0;
   replies swap the ports.
 
-## Wire selected for i2pr (Datagram1 + Raw)
+## Wire selected for i2pr (Datagram1, Raw, Datagram2, Datagram3)
 
 - I2CP protocol numbers (frozen inventory, unchanged):
   **Datagram1 = 17** (repliable, authenticated), **Raw = 18**
-  (non-repliable, unauthenticated). Datagram2 (19) and Datagram3
-  (20) stay unsupported.
+  (non-repliable, unauthenticated), **Datagram2 = 19** (repliable,
+  authenticated), and **Datagram3 = 20** (repliable, unauthenticated).
+  Plan 368's SAM adapter and Proposal 163 codecs are in progress; this dossier
+  records the wire support and does not itself claim a complete SAM 3.3 profile.
 - Datagram1 layout (spec): `from` = full Destination (387+ bytes),
   `signature` (64 bytes Ed25519 over the **payload** for non-DSA
   key types), `payload` (here: exactly 1 byte, `0x00`/`0x01`).
   i2pr destinations are Ed25519; DSA_SHA1-hash-then-sign is not
   implemented and verify-rejects.
 - Raw layout: application payload only, no `from`, no signature.
-- I2CP ports ride the standard client-payload envelope
-  (source/destination ports); unknown protocols keep the existing
-  typed `UnsupportedProtocol` drop.
+- Datagram2 layout and signature preimage follow Proposal 163: the complete
+  sender Destination, flags, optional Mapping, optional offline delegation,
+  and payload are covered with the recipient Destination hash prepended to the
+  signed bytes. Replay entries live for the configured bounded interval; when
+  all 1024 entries remain live, new Datagram2 messages fail closed until an
+  entry expires instead of evicting a still-live replay guard.
+- Datagram3 carries the sender hash, flags, optional Mapping, and payload.
+  The hash is exposed only as unauthenticated metadata.
+- I2CP ports and the protocol byte ride the standard client-payload envelope.
+  I2CP protocol is an opaque `u8`; the destination data plane preserves
+  application-defined RAW protocol values while the DatagramManager reserves
+  6 (Streaming) and 17/19/20 for their defined formats.
 
 ## Bounds selected (source in brackets)
 
@@ -82,15 +93,14 @@ Planning authority: **Plan 291**
   client forwards it **only** when it arrives on the configured
   producer's destination (binding by destination hash), and the
   server accepts media **only** from its loopback UDP socket.
-- Router-internal substrate only: SAM stays streaming-only
-  (`specs/protocols/08-sam.md` unchanged); no SAM DATAGRAM/RAW
-  surface is added.
+- This Plan-291 Streamr path remains router-internal. Plan 368 separately
+  adapts the canonical datagram owner to SAM PRIMARY/subsessions.
 
 ## Malformed input (all dropped, typed, counted)
 
 Null destination, empty payload, flag byte other than
 `0x00`/`0x01`, unparsable `from`, unsupported signing key type,
-signature failure, oversized payload, unknown protocol, expired
+signature failure, oversized payload, unsupported Streamr media protocol, expired
 subscriber refresh, over-cap subscription, non-loopback UDP
 peer — every one is a typed rejection, never an exception path
 and never a silent accept.

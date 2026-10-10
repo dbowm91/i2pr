@@ -452,6 +452,7 @@ mod tests {
                 enabled: true,
                 bind_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 7656,
+                udp_port: 0,
                 limits: i2pr_api::sam::limits::SamLimits::loopback_test_profile(),
             },
             i2cp: I2cpConfig::loopback_test_profile(8, 16, 64 * 1024, 64),
@@ -1263,10 +1264,11 @@ mod tests {
             outcome.steps()
         );
 
-        let instances: Vec<&str> = starts
+        let mut instances: Vec<&str> = starts
             .iter()
             .map(|record| record["detail"]["instance"].as_str().expect("an instance"))
             .collect();
+        instances.sort_unstable();
         assert_eq!(
             instances,
             vec!["101", "102"],

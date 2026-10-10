@@ -118,7 +118,7 @@ cannot be made to lie about router state.
 None of this establishes anonymity, privacy, or resistance to traffic analysis.
 The console is a local operator surface, not a privacy feature.
 
-## SAM 3.1 local adapter boundary
+## SAM local adapter boundary
 
 The SAM listener is experimental and loopback-only. Plan 139's `STREAM
 FORWARD` target is restricted to numeric loopback addresses or the literal

@@ -153,12 +153,14 @@ def bidirectional_transfer(
     thread.start()
     try:
         received = sam.recv_raw(len(expected_data), 120.0)
+    except (EOFError, TimeoutError) as error:
+        print(f"i2plib transfer payload receive failed: {type(error).__name__}", file=sys.stderr)
+        thread.join(timeout=2.0)
+        return 7
+    try:
         barrier = sam.recv_raw(len(TRANSFER_BARRIER), 120.0)
     except (EOFError, TimeoutError) as error:
-        print(
-            f"i2plib transfer receive failed expected={len(expected_data)}: {error}",
-            file=sys.stderr,
-        )
+        print(f"i2plib transfer barrier receive failed: {type(error).__name__}", file=sys.stderr)
         thread.join(timeout=2.0)
         return 7
     thread.join(timeout=120.0)
@@ -248,6 +250,11 @@ def run_accept(
                 peer_line = sam.recv_line(5.0)
                 if not peer_line.startswith("DESTINATION="):
                     return 10
+                # Let the CONNECT side finish parsing its SAM status before
+                # this independent ACCEPT peer starts raw bytes. The pinned
+                # i2psam socket reader consumes a reply with one recv() call
+                # and can discard a raw prefix coalesced with that line.
+                time.sleep(0.05)
             return bidirectional_transfer(sam, send_data, expected_data)
         finally:
             sam.close()

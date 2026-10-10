@@ -493,6 +493,8 @@ struct RawSamConfig {
     bind_address: String,
     #[serde(default = "default_sam_port")]
     port: u16,
+    #[serde(default = "default_sam_udp_port")]
+    udp_port: u16,
     #[serde(default = "default_sam_max_clients")]
     max_clients: u16,
     #[serde(default = "default_sam_max_sessions")]
@@ -517,6 +519,7 @@ impl Default for RawSamConfig {
             enabled: default_sam_enabled(),
             bind_address: default_sam_bind_address(),
             port: default_sam_port(),
+            udp_port: default_sam_udp_port(),
             max_clients: default_sam_max_clients(),
             max_sessions: default_sam_max_sessions(),
             max_stream_sockets_per_session: default_sam_stream_sockets_per_session(),
@@ -984,6 +987,10 @@ fn default_sam_bind_address() -> String {
 
 const fn default_sam_port() -> u16 {
     7656
+}
+
+const fn default_sam_udp_port() -> u16 {
+    7655
 }
 
 const fn default_sam_max_clients() -> u16 {
@@ -1597,7 +1604,7 @@ impl ConsoleConfig {
     }
 }
 
-/// Normalized SAM v3.1 service configuration (Plan 137).
+/// Normalized SAM loopback service configuration (Plans 137/368).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SamConfig {
     /// Whether the loopback SAM listener is enabled.
@@ -1606,6 +1613,8 @@ pub struct SamConfig {
     pub bind_address: IpAddr,
     /// Bind port. `0` selects an ephemeral port (used by integration tests).
     pub port: u16,
+    /// SAM datagram bridge UDP port. `0` selects an ephemeral port in tests.
+    pub udp_port: u16,
     /// Validated service limits.
     pub limits: SamLimits,
 }
@@ -2801,6 +2810,7 @@ fn normalize_sam(raw: &RawSamConfig, global: &RawLimitsConfig) -> Result<SamConf
         enabled: raw.enabled,
         bind_address,
         port: raw.port,
+        udp_port: raw.udp_port,
         limits,
     })
 }
@@ -4882,10 +4892,12 @@ data_dir = "./state"
         // without probing a specific host-global port.
         assert!(!default_sam_enabled());
         assert_eq!(default_sam_port(), 7656);
+        assert_eq!(default_sam_udp_port(), 7655);
         assert_eq!(default_sam_bind_address(), "127.0.0.1");
         let config = Config::parse(MINIMAL).expect("minimal config parses");
         assert!(!config.sam.enabled);
         assert_eq!(config.sam.port, 7656);
+        assert_eq!(config.sam.udp_port, 7655);
         assert_eq!(
             config.sam.bind_address,
             std::net::IpAddr::from([127, 0, 0, 1])

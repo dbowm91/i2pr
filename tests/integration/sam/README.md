@@ -16,6 +16,39 @@ Current authority:
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM,
 systemd, public I2P participation, or live NTCP2/SSU2.
 
+## Plan 368 staged profile checks
+
+`run-independent.sh` also runs the new staged SAM 3.3 loopback tests and records
+them through the same guarded evidence path. They cover PRIMARY child add/remove,
+private app-instance isolation, ordinary/private STREAM routing on ports 110
+and 65535 including an omitted-`TO_PORT` negative case, and the combined
+shared-PRIMARY data-plane fixture. Production negotiates the qualified SAM
+3.1–3.3 range. These local rows are not Java I2P interoperability evidence.
+
+`run-java-368.sh` is the separate Java 2.13.0 lane. It verifies the exact
+source pin, compiles the unmodified pinned `SAMStreamSink`, and runs it against
+the staged SAM 3.3 loopback profile. The current rows cover Java HELLO 3.3,
+PRIMARY creation, STREAM/DATAGRAM1/DATAGRAM2/DATAGRAM3/RAW child operations,
+`NAME=ME` correlation, Datagram1 receive framing, DATAGRAM1/2/3 receive traffic
+on one Java-created PRIMARY, a STREAM byte round trip through that PRIMARY's
+Java-created child, and primary-owner teardown. The ordinary profile fixture
+also combines STREAM with DATAGRAM1/2/3, RAW 18, and RAW 42 under one PRIMARY.
+The Java probe uses the unmodified pinned SAMStreamSink for its client-facing
+row and a small Java wire peer for the child/traffic matrix, with the exact
+Java 2.13.0 source pin checked before execution. Sanitized results are checked
+with `scripts/check-sam368-java-evidence.sh`. These rows prove local SAM
+interoperability and data-plane composition; they do not prove a live remote
+I2P tunnel round trip.
+
+`run-i2pd-368-diagnostic.sh` starts exact-pinned i2pd 2.61.0 with its SAM
+listener on loopback, NTCP2 bound to loopback, SSU2 disabled, and reseed and
+addressbook subscriptions disabled. The runtime row records its 3.3 HELLO and
+PRIMARY rejection; source-locked diagnostic rows record its MASTER spelling,
+STREAM-only child add, master-owned remove, and standalone DATAGRAM1/2/3 and RAW
+style handling. These findings are non-gating and do not change the normative
+Java/specification profile. `scripts/check-sam368-i2pd-evidence.sh` verifies the
+sanitized pin and result record.
+
 ## Retained reference/product evidence
 
 ### SAM Base64

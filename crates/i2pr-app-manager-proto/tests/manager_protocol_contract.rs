@@ -316,6 +316,10 @@ fn control_scoped_is_unrepresentable_and_typed_rejected() {
         Err(ManagerProtocolError::UnsupportedService)
     );
     assert_eq!(ManagerService::parse("sam"), Ok(ManagerService::Sam));
+    assert_eq!(
+        ManagerService::parse("sam_datagram"),
+        Ok(ManagerService::SamDatagram)
+    );
     assert_eq!(ManagerService::parse("i2cp"), Ok(ManagerService::I2cp));
     assert_eq!(
         ManagerService::parse("brokered_tcp"),
@@ -323,6 +327,10 @@ fn control_scoped_is_unrepresentable_and_typed_rejected() {
     );
     // Nor is there any administrator vocabulary on this protocol at all.
     assert_eq!(ManagerService::Sam.required_capability(), Capability::Sam);
+    assert_eq!(
+        ManagerService::SamDatagram.required_capability(),
+        Capability::Sam
+    );
     assert_eq!(ManagerService::I2cp.required_capability(), Capability::I2cp);
 }
 

@@ -59,8 +59,9 @@ pub use config::{
     RegistryConfig,
 };
 pub use datagram::{
-    DATAGRAM1_PROTOCOL, DatagramCounters, DatagramError, DatagramManager, DatagramReceiveEvent,
-    DatagramSendRequest, MAX_DATAGRAM_APPLICATION_PAYLOAD, MAX_DATAGRAM_FROM_BYTES,
+    DATAGRAM1_PROTOCOL, DATAGRAM2_PROTOCOL, DATAGRAM3_PROTOCOL, DatagramCounters, DatagramError,
+    DatagramInboundRequest, DatagramManager, DatagramReceiveEvent, DatagramSendRequest,
+    MAX_DATAGRAM_APPLICATION_PAYLOAD, MAX_DATAGRAM_FROM_BYTES, MAX_DATAGRAM_OPTIONS_BYTES,
     MAX_DATAGRAM_OUTBOUND_QUEUE, MAX_DATAGRAM_RECEIVE_QUEUE, RAW_DATAGRAM_PROTOCOL,
 };
 pub use dispatch::{

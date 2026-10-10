@@ -33,15 +33,14 @@
 //! ```
 //!
 //! Non-protocol-6 client payloads never reach Streaming; they surface
-//! as [`InboundStreamingOutcome::UnsupportedProtocol`] for future
-//! datagram/I2CP layers.
+//! as [`InboundStreamingOutcome::DatagramReceived`] for the canonical
+//! datagram manager, which applies its protocol-specific decoding rules.
 
 #![forbid(unsafe_code)]
 
 use i2pr_netdb::DestinationHash;
 use i2pr_proto::{
     ClientPayloadDecodeError, CodecError, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
-    PROTOCOL_TYPE_DATAGRAM, PROTOCOL_TYPE_RAW,
 };
 use i2pr_tunnel::TunnelRoleError;
 use rand_core::{CryptoRng, RngCore};
@@ -309,17 +308,11 @@ impl StreamingDestinationAdapter {
         let envelope = i2pr_proto::decode_i2cp_data_body(&data_payload)
             .map_err(StreamingAdapterError::I2cpDataBody)?;
         if envelope.protocol != i2pr_proto::PROTOCOL_TYPE_STREAMING {
-            if envelope.protocol == PROTOCOL_TYPE_DATAGRAM || envelope.protocol == PROTOCOL_TYPE_RAW
-            {
-                return Ok(InboundStreamingOutcome::DatagramReceived {
-                    protocol: envelope.protocol,
-                    source_port: envelope.from_port,
-                    destination_port: envelope.to_port,
-                    payload: envelope.payload,
-                });
-            }
-            return Ok(InboundStreamingOutcome::UnsupportedProtocol {
+            return Ok(InboundStreamingOutcome::DatagramReceived {
                 protocol: envelope.protocol,
+                source_port: envelope.from_port,
+                destination_port: envelope.to_port,
+                payload: envelope.payload,
             });
         }
         let observation = streaming

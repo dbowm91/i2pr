@@ -168,7 +168,7 @@ fn reserve_loopback_port() -> SocketAddr {
 /// explicitly rather than the product widening a default.
 fn sam_config(address: SocketAddr, data_dir: &Path) -> String {
     format!(
-        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = {}\n",
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n",
         data_dir.to_string_lossy(),
         address.port()
     )

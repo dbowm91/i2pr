@@ -16,8 +16,8 @@ authenticated* application principal into the router's private SAM/I2CP capabili
 gateway. This protocol carries that projection.
 
 **In scope:** handshake, bounded frames, request/reply correlation, app gateway
-session create/close, SAM/I2CP service open/close/reset, ordered service data
-octets, backend termination notification, bounded health and shutdown.
+session create/close, SAM/I2CP/datagram service open/close/reset, ordered service
+data octets, backend termination notification, bounded health and shutdown.
 
 **Explicitly out of scope.** A peer of this protocol cannot express any of:
 package install/update/uninstall; grant, revoke, or permission persistence;
@@ -34,7 +34,7 @@ This protocol is **not**:
 | Contract | Relationship |
 |---|---|
 | Managed application protocol v1 (`i2pr-app-proto`, `managed-native-app-runtime-v1.md`) | Separate protocol, separate magic, separate vocabulary. Shared value types only. |
-| SAM 3.1 (`i2pr-api`) | Carried as opaque octets on a service stream. Never parsed here. |
+| SAM 3.1 (`i2pr-api`) | `sam` is carried as opaque octets. `sam_datagram` is a separate typed binary service stream, never mixed into `sam`. |
 | I2CP (`i2pr-api`) | Carried as opaque octets on a service stream. Never parsed here. |
 | Proposal 170 / I2PControl (`i2pr-i2pcontrol`) | Not reachable. Its authority is strictly larger. |
 
@@ -187,8 +187,8 @@ The daemon enforces, in this order and before any backend allocation:
    Grants are then re-derived through the router's administrator-grant path. The
    manager's assertion is an *input*, never the authorization itself.
 6. **Service open**: the named session exists and is owned by this transport; the
-   service is `sam` or `i2cp`; and the session's immutable effective capabilities
-   contain the corresponding capability. A denial here is **side-effect free** — no
+   service is `sam`, `sam_datagram`, or `i2cp`; and the session's immutable effective capabilities
+   contain the corresponding capability (`sam_datagram` requires `sam`). A denial here is **side-effect free** — no
    backend context is created, no permit is consumed, no slot changes.
 
 A session's effective capabilities are fixed at creation and cannot change while
@@ -203,7 +203,7 @@ typed unsupported error.
 |---|---|---|---|
 | `create_session` | one app gateway session | session record only | no backend until a service open |
 | `close_session` | teardown of one session | tears down descendants | emits `session_ended` |
-| `open_service` (`sam`/`i2cp`) | one backend connection | backend context + permit | capability-gated, pre-allocation |
+| `open_service` (`sam`/`sam_datagram`/`i2cp`) | one backend connection | backend context + permit | capability-gated, pre-allocation |
 | `close_service` | one backend connection close | releases that stream | |
 | `reset_service` | one backend connection reset | releases that stream | bounded reason string |
 | `health` | a bounded status reply | nothing | |
@@ -251,6 +251,17 @@ For an authorised service open:
 - backpressure is bounded: a slow manager cannot cause unbounded buffering, and a
   bounded buffer fills into a deterministic stream reset rather than a stall or an
   allocation.
+
+The `sam_datagram` stream is a distinct binary operation protocol, with a
+four-byte big-endian length followed by one request/reply body. Request bodies
+carry only a PRIMARY ID, child ID, I2P destination hash, I2P ports, protocol
+number, bounded canonical Mapping bytes, and payload. Receive requests name only
+the PRIMARY and child; one reply returns at most one queued event. Bodies contain
+no host address, host port, resolver request, or socket operation. The daemon
+checks that the child belongs to the PRIMARY and that the protocol matches the
+child style before using the shared Destination datagram owner. Datagram3 source
+hashes are marked unauthenticated in the reply. The `sam` stream remains exact
+SAM octets and is not affected by this typed operation.
 
 ## 9. Failure, cancellation, and lifecycle semantics
 

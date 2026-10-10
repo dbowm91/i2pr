@@ -529,13 +529,22 @@ impl SamServiceState {
         let _ = self
             .stream_registry()
             .release_attachment(&session_id, attachment_id);
-        let forward_active = self
-            .stream_registry()
-            .inbound_mode(&session_id)
-            .is_ok_and(|mode| {
-                matches!(mode, i2pr_api::sam::streams::InboundMode::Forwarding { .. })
-            });
-        if self.stream_registry().attachment_count_for(&session_id) == 0 && !forward_active {
+        if self.stream_registry().attachment_count_for(&session_id) == 0
+            && let Some(entry) = self.session_registry().get(&session_id)
+            && entry.parent_session_id().is_none()
+            && !self
+                .stream_registry()
+                .inbound_mode(&session_id)
+                .is_ok_and(|mode| {
+                    matches!(mode, i2pr_api::sam::streams::InboundMode::Forwarding { .. })
+                })
+        {
+            // Standalone SAM sessions retain the existing last-stream cleanup
+            // behavior. A SAM 3.3 child is different: it does not own the
+            // shared Destination, so closing its last stream must leave the
+            // child and siblings alive until SESSION REMOVE or PRIMARY close.
+            // If the child was already removed, that explicit teardown owns
+            // the cleanup and this path does nothing.
             self.teardown_session(&session_id, destination_id);
         }
     }
@@ -671,24 +680,27 @@ impl SamServiceState {
             }
         };
         // Step 1: drain canonical + receiver outbound queues.
-        let requests: Vec<i2pr_client::streaming::transport::TransportSendRequest> =
-            sender.with(|bridge| {
-                let mut all = bridge.streaming_mut().drain_outbound();
-                all.extend(bridge.receiver_streaming_mut().drain_outbound());
-                all
-            });
+        let (stream_requests, datagram_requests) = sender.with(|bridge| {
+            let mut all = bridge.streaming_mut().drain_outbound();
+            all.extend(bridge.receiver_streaming_mut().drain_outbound());
+            let datagrams = bridge.datagrams_mut().drain_outbound();
+            (all, datagrams)
+        });
         // Plan 151 §8: apply the deterministic pre-start fault
         // profile (inert by default) before normal delivery. Fault
         // drops hold no production counters and never terminate the
         // connection; the sender's Streaming retransmit state owns
         // recovery. Handshake and CLOSE/RESET control always pass.
-        let requests = self.apply_test_fault_profile(requests);
-        if requests.is_empty() {
+        let stream_requests = self.apply_test_fault_profile(stream_requests);
+        let request_count = stream_requests
+            .len()
+            .saturating_add(datagram_requests.len());
+        if request_count == 0 {
             return Ok(Default::default());
         }
         debug!(
             destination = ?destination_id,
-            request_count = requests.len(),
+            request_count,
             "deliver_outbound drained queue"
         );
         let mut counters = crate::sam::fabric::DeliverySweepCounters {
@@ -712,7 +724,11 @@ impl SamServiceState {
         // bound is satisfied.
         let mut os_rng = i2pr_crypto::OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
-        for request in requests {
+        for (request, is_datagram) in stream_requests
+            .into_iter()
+            .map(|request| (request, false))
+            .chain(datagram_requests.into_iter().map(|request| (request, true)))
+        {
             let peer_destination_hash = request.destination_hash;
             let peer = destinations_arc
                 .lock()
@@ -727,7 +743,9 @@ impl SamServiceState {
                         "deliver_outbound: no peer bridge registered"
                     );
                     counters.unknown_peer = counters.unknown_peer.saturating_add(1);
-                    self.terminate_failed_delivery(destination_id, &request);
+                    if !is_datagram {
+                        self.terminate_failed_delivery(destination_id, &request);
+                    }
                     continue;
                 }
             };
@@ -747,7 +765,9 @@ impl SamServiceState {
                 Err(error) => {
                     debug!(error = %error, "local peer LeaseSet2 validation failed");
                     counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                    self.terminate_failed_delivery(destination_id, &request);
+                    if !is_datagram {
+                        self.terminate_failed_delivery(destination_id, &request);
+                    }
                     continue;
                 }
             };
@@ -782,7 +802,9 @@ impl SamServiceState {
                     } else {
                         counters.missing_factory = counters.missing_factory.saturating_add(1);
                     }
-                    self.terminate_failed_delivery(destination_id, &request);
+                    if !is_datagram {
+                        self.terminate_failed_delivery(destination_id, &request);
+                    }
                     continue;
                 }
             };
@@ -811,7 +833,9 @@ impl SamServiceState {
                 // the same sweep counters so the driver can wake
                 // waiters and avoid silent drops.
                 counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                self.terminate_failed_delivery(destination_id, &request);
+                if !is_datagram {
+                    self.terminate_failed_delivery(destination_id, &request);
+                }
             }
         }
         Ok(counters)

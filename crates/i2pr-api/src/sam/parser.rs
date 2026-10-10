@@ -238,8 +238,23 @@ fn ping_payload(tokens: &[Token]) -> Option<String> {
 
 const CRITICAL_HELLO: &[&str] = &["MIN", "MAX"];
 const CRITICAL_DEST: &[&str] = &["SIGNATURE_TYPE"];
-const CRITICAL_SESSION: &[&str] = &["ID", "DESTINATION", "SIGNATURE_TYPE", "STYLE"];
-const CRITICAL_STREAM: &[&str] = &["ID", "DESTINATION", "SILENT"];
+const CRITICAL_SESSION: &[&str] = &[
+    "ID",
+    "DESTINATION",
+    "SIGNATURE_TYPE",
+    "STYLE",
+    "FROM_PORT",
+    "TO_PORT",
+    "PORT",
+    "HOST",
+    "PROTOCOL",
+    "HEADER",
+    "LISTEN_PORT",
+    "LISTEN_PROTOCOL",
+    "sam.udp.host",
+    "sam.udp.port",
+];
+const CRITICAL_STREAM: &[&str] = &["ID", "DESTINATION", "SILENT", "FROM_PORT", "TO_PORT"];
 const CRITICAL_STREAM_ACCEPT: &[&str] = &["ID", "SILENT"];
 const CRITICAL_NAMING: &[&str] = &["NAME", "OPTIONS"];
 
@@ -292,18 +307,44 @@ fn recognise_dest(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
 fn recognise_session(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if tokens.len() < 2 || !tokens[1].text.eq_ignore_ascii_case("CREATE") {
         let action = tokens.get(1).map_or("", |token| token.text.as_str());
-        let kind = if action.eq_ignore_ascii_case("ADD") {
-            Some(CommandKind::SessionAdd)
-        } else if action.eq_ignore_ascii_case("REMOVE") {
-            Some(CommandKind::SessionRemove)
-        } else {
-            None
-        };
-        if let Some(kind) = kind {
-            return Ok(CommandOutcome::Unsupported(Unsupported {
-                kind,
-                reason: UnsupportedReason::UnsupportedCommandFamily(kind.as_str().to_owned()),
-            }));
+        if action.eq_ignore_ascii_case("ADD") {
+            let (options, errors) = collect_options(
+                &tokens[2..],
+                &[
+                    "ID",
+                    "STYLE",
+                    "DESTINATION",
+                    "PORT",
+                    "HOST",
+                    "FROM_PORT",
+                    "TO_PORT",
+                    "LISTEN_PORT",
+                    "LISTEN_PROTOCOL",
+                    "PROTOCOL",
+                    "HEADER",
+                    "sam.udp.host",
+                    "sam.udp.port",
+                ],
+            )?;
+            if let Some(reason) = errors.into_iter().next() {
+                return Ok(CommandOutcome::Malformed(MalformedCommand { reason }));
+            }
+            return Ok(CommandOutcome::Recognised(Command::new(
+                CommandKind::SessionAdd,
+                options,
+                None,
+            )));
+        }
+        if action.eq_ignore_ascii_case("REMOVE") {
+            let (options, errors) = collect_options(&tokens[2..], &["ID"])?;
+            if let Some(reason) = errors.into_iter().next() {
+                return Ok(CommandOutcome::Malformed(MalformedCommand { reason }));
+            }
+            return Ok(CommandOutcome::Recognised(Command::new(
+                CommandKind::SessionRemove,
+                options,
+                None,
+            )));
         }
         return Ok(CommandOutcome::UnknownAction(UnknownCommand {
             observed: format!("SESSION {}", action.to_ascii_uppercase()),
@@ -316,7 +357,7 @@ fn recognise_session(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     let command = Command::new(CommandKind::SessionCreate, options, None);
     if let Some(style_text) = command.value("STYLE") {
         let normalised = style_text.to_ascii_uppercase();
-        if normalised != "STREAM" {
+        if !matches!(normalised.as_str(), "STREAM" | "PRIMARY" | "MASTER") {
             return Ok(CommandOutcome::Unsupported(Unsupported {
                 kind: CommandKind::SessionCreate,
                 reason: UnsupportedReason::UnsupportedSessionStyle(UnsupportedStyle(normalised)),
@@ -340,12 +381,6 @@ fn recognise_stream(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
                 return Ok(CommandOutcome::Malformed(MalformedCommand { reason }));
             }
             let command = Command::new(CommandKind::StreamConnect, options, None);
-            if command.value("FROM_PORT").is_some() || command.value("TO_PORT").is_some() {
-                return Ok(CommandOutcome::Unsupported(Unsupported {
-                    kind: CommandKind::StreamConnect,
-                    reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
-                }));
-            }
             Ok(CommandOutcome::Recognised(command))
         }
         "ACCEPT" => {
@@ -396,16 +431,11 @@ fn recognise_naming(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if let Some(reason) = errors.into_iter().next() {
         return Ok(CommandOutcome::Malformed(MalformedCommand { reason }));
     }
-    let command = Command::new(CommandKind::NamingLookup, options, None);
-    if let Some(opts) = command.value("OPTIONS")
-        && opts.eq_ignore_ascii_case("true")
-    {
-        return Ok(CommandOutcome::Unsupported(Unsupported {
-            kind: CommandKind::NamingLookup,
-            reason: UnsupportedReason::NamingLookupOptions,
-        }));
-    }
-    Ok(CommandOutcome::Recognised(command))
+    Ok(CommandOutcome::Recognised(Command::new(
+        CommandKind::NamingLookup,
+        options,
+        None,
+    )))
 }
 
 fn collect_options(
@@ -454,6 +484,8 @@ fn collect_options(
                 "STYLE" => DuplicateOption::Style,
                 "NAME" => DuplicateOption::Name,
                 "SILENT" => DuplicateOption::Silent,
+                "FROM_PORT" => DuplicateOption::FromPort,
+                "TO_PORT" => DuplicateOption::ToPort,
                 _ => DuplicateOption::Id,
             };
             errors.push(MalformedReason::DuplicateOption(duplicate));
@@ -597,27 +629,37 @@ mod tests {
     }
 
     #[test]
-    fn parser_recognises_naming_lookup_options_unsupported() {
+    fn parser_retains_naming_lookup_options_for_typed_validation() {
         let outcome = parse_line("NAMING LOOKUP NAME=me OPTIONS=true").unwrap();
-        assert!(matches!(
-            outcome,
-            CommandOutcome::Unsupported(Unsupported {
-                reason: UnsupportedReason::NamingLookupOptions,
-                ..
-            })
-        ));
+        let command = outcome.command().expect("recognized NAMING LOOKUP");
+        let request = crate::sam::naming::parse_naming_lookup(command).unwrap();
+        assert!(request.include_lease_set_options);
     }
 
     #[test]
-    fn parser_handles_stream_connect_port_unsupported() {
-        let outcome = parse_line("STREAM CONNECT ID=alpha DESTINATION=foo FROM_PORT=1234").unwrap();
-        assert!(matches!(
-            outcome,
-            CommandOutcome::Unsupported(Unsupported {
-                reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
-                ..
-            })
-        ));
+    fn parser_retains_stream_connect_port_options_for_typed_validation() {
+        let outcome =
+            parse_line("STREAM CONNECT ID=alpha DESTINATION=foo FROM_PORT=1234 TO_PORT=65535")
+                .unwrap();
+        let command = outcome.command().expect("recognised STREAM CONNECT");
+        let request = crate::sam::command::parse_stream_connect(command).expect("valid ports");
+        assert_eq!(request.from_port, Some(1234));
+        assert_eq!(request.to_port, Some(u16::MAX));
+    }
+
+    #[test]
+    fn parser_rejects_duplicate_stream_connect_ports() {
+        for line in [
+            "STREAM CONNECT ID=a DESTINATION=x FROM_PORT=1 FROM_PORT=2",
+            "STREAM CONNECT ID=a DESTINATION=x TO_PORT=1 TO_PORT=2",
+        ] {
+            assert!(matches!(
+                parse_line(line).unwrap(),
+                CommandOutcome::Malformed(MalformedCommand {
+                    reason: MalformedReason::DuplicateOption(_),
+                })
+            ));
+        }
     }
 
     #[test]

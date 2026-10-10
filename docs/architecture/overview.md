@@ -46,7 +46,7 @@ Five conceptual planes cut across the crates:
 | Data | Authenticated links, I2NP messages, tunnel traffic, garlic, streaming packets | `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2`, `i2pr-tunnel`, `i2pr-client` |
 | Network state | RouterInfo / LeaseSet2 validation, store, lookup, publication, floodfill records, tunnel construction | `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-tunnel` |
 | Control | Config, identity persistence, Tokio/socket/timer ownership, supervision, composition | `i2pr-storage`, `i2pr-runtime`, `i2pr-daemon` |
-| Client / service | Destinations, ECIES sessions, Streaming, SAM 3.1, I2CP, HTTP/SOCKS5/IRC/generic service tunnels, I2PControl, naming | `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-addressbook`, `i2pr-i2pcontrol`, `i2pr-daemon` |
+| Client / service | Destinations, ECIES sessions, Streaming, SAM 3.3 local profile, I2CP, HTTP/SOCKS5/IRC/generic service tunnels, I2PControl, naming | `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-addressbook`, `i2pr-i2pcontrol`, `i2pr-daemon` |
 | Operator console | Loopback browser console: routing, embedded assets, themes, browser security, read-only overview | `i2pr-console`, `i2pr-daemon` |
 
 Hard boundaries (CI-enforced; fix code, never weaken scripts):
@@ -94,7 +94,7 @@ crates/
   i2pr-netdb-persist/       Cache loader + SU3 reseed + floodfill record envelope
   i2pr-tunnel/              Exploratory/transit pool, short-build, data plane
   i2pr-client/              Destination lifecycle, ECIES session/routing, Streaming
-  i2pr-api/                 Runtime-neutral SAM 3.1 + I2CP wire/state (no sockets)
+  i2pr-api/                 Runtime-neutral SAM 3.1–3.3 + I2CP wire/state (no sockets)
   i2pr-service-tunnels/     Runtime-neutral tunnel config/policy (no sockets)
   i2pr-addressbook/         Canonical `.i2p` naming owner (no I/O)
   i2pr-i2pcontrol/          Proposal 170 wire/domain contract (no I/O)
@@ -229,7 +229,7 @@ design choices. Every workspace crate appears exactly once.
 | 10 | `i2pr-netdb-persist` | Cache composition | `CacheLoader` + `ReseedIngestor` + versioned `floodfill_records` durable envelope. | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
 | 11 | `i2pr-tunnel` | Tunnel substrate | Tunnel identity, exploratory + transit pools, ECIES-X25519 short-build, canonical I2NP bridge, data plane, reply-path provider. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | 12 | `i2pr-client` | Destination runtime | Destination identity/pools/registry, LeaseSet2 lifecycle, ECIES-X25519-AEAD-Ratchet sessions, garlic, Streaming, client-owned destinations. | [i2pr-client.md](i2pr-client.md) |
-| 13 | `i2pr-api` | App protocols | SAM 3.1 parser/registry/STREAM bridge + I2CP preamble/frame/message codecs, connection/session/option machines, data plane. No sockets. | [i2pr-api.md](i2pr-api.md) |
+| 13 | `i2pr-api` | App protocols | SAM 3.1–3.3 parser/registry/PRIMARY child profile + I2CP preamble/frame/message codecs, connection/session/option machines, data plane. No sockets. | [i2pr-api.md](i2pr-api.md) |
 | 14 | `i2pr-service-tunnels` | Service policy | Runtime-neutral kinds, destination refs, ceilings, HTTP/SOCKS5/IRC parser + policy surfaces. Daemon owns listeners. | [i2pr-service-tunnels.md](i2pr-service-tunnels.md) |
 | 15 | `i2pr-addressbook` | Naming owner | Canonical `.i2p` books, precedence resolver, subscriptions, versioned generations. No I/O. | [i2pr-addressbook.md](i2pr-addressbook.md) |
 | 16 | `i2pr-i2pcontrol` | Control contract | Proposal 170 JSON-RPC 2.0 contract: envelope, auth vocabulary, method/type/selector inventories, tunnel option metadata, wire ceilings. No I/O. | [i2pr-i2pcontrol.md](i2pr-i2pcontrol.md) |
@@ -426,10 +426,10 @@ non-`Clone` `InboundDecryptionCapability`,
 `install_client_lease_set2`, typed `LeaseRequest`). Detail:
 [i2pr-client.md](i2pr-client.md).
 
-### 4.13 `i2pr-api` — SAM 3.1 and I2CP adapters
+### 4.13 `i2pr-api` — SAM 3.3 and I2CP adapters
 
 Runtime-neutral application-protocol adapters (no sockets, no
-Tokio). SAM 3.1: bounded line/command/reply parser, version
+Tokio). SAM 3.1–3.3: bounded line/command/reply parser, version
 negotiation, I2P Base64 codec (`-`/`~`, `=` padding),
 `SamPrivateDestination` codec, `SamSessionRegistry`,
 `LineReader`, `ServerConnectionState`, per-session
@@ -773,6 +773,7 @@ anonymity claim.
 | --- | --- | --- |
 | Destinations + garlic + LeaseSet2 + Streaming (M6 local) | Local product closed (Plan 134 authority; Plan 152 robustness corrective underneath); i2pd-family Streaming qualified (Plan 193). | `milestone6_interoperable = not-yet-claimed`; Java full-router compatibility retained/deferred at Plan 247; two-family conformance not claimed. |
 | SAM 3.1 (M7 localhost) | Final localhost acceptance closed (Plan 151; self-composed product Plan 149; external-client core Plan 150 retained). | No router-to-router claim; loopback-only, disabled by default. |
+| SAM 3.3 PRIMARY/subsessions | Plan 368 local profile; see `plans/registry.md` for current closure authority. | Negotiated range 3.1–3.3; loopback-only, disabled by default; no remote-router claim. |
 | SSU2 v2 (M8 direct interop) | Closed within bounded direct-IPv4 loopback scope vs exact-pinned i2pd, both directions + cached-token/malformed rows (Plan 161; lane isolation Plan 162). | No public advertisement; PQ-hybrid deferred (`ssu2_pq_v3_v4 = deferred-compatibility-watch`); SSU1 not implemented; IPv6 interop is infrastructure-limited debt. |
 | I2CP (M9 loopback) | Final acceptance closed, loopback-only (Plan 172; wire/data-plane Plan 170 retained; invalid-preamble hardening Plan 171). Independent Java/go clients proven on the loopback lane. | No remote-I2CP / public-network claim; no `HostLookup` resolution. |
 | Service tunnels (M10) | Local generic/HTTP/SOCKS5/IRC product + round-trip closed (Plans 174–180, 182); router-backed generic A/B (Plan 213) and product-only HTTP/IRC application closure (Plan 214/215, hosted double-pass) proven against exact-pinned i2pd. | No product blocker; Plan 204 convergence gate superseded by Plan 248. Outproxy: Plan 343 landed the provider **policy and route owner** with `no reachable request path` — there is no working outproxy and no direct clearnet fallback; Plan 327 stays blocked. |

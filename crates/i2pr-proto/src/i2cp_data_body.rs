@@ -326,14 +326,11 @@ impl core::fmt::Display for I2cpDataBodyEncodeError {
 impl std::error::Error for I2cpDataBodyEncodeError {}
 
 fn validate_protocol(protocol: u8) -> Result<(), I2cpDataBodyEncodeError> {
-    match protocol {
-        PROTOCOL_TYPE_STREAMING
-        | PROTOCOL_TYPE_DATAGRAM
-        | PROTOCOL_TYPE_RAW
-        | PROTOCOL_TYPE_DATAGRAM2
-        | PROTOCOL_TYPE_DATAGRAM3 => Ok(()),
-        other => Err(I2cpDataBodyEncodeError::UnknownProtocol { observed: other }),
-    }
+    // I2CP assigns meanings to selected protocol values, but the field itself
+    // is an opaque u8. Applications may use their own values; higher layers
+    // decide which reserved formats they understand.
+    let _ = protocol;
+    Ok(())
 }
 
 fn reserved_gzip_flag_value() -> u8 {
@@ -492,16 +489,6 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
     let from_port = u16::from_be_bytes([input[gzip_start + 4], input[gzip_start + 5]]);
     let to_port = u16::from_be_bytes([input[gzip_start + 6], input[gzip_start + 7]]);
     let protocol = input[gzip_start + 9];
-    match protocol {
-        PROTOCOL_TYPE_STREAMING
-        | PROTOCOL_TYPE_DATAGRAM
-        | PROTOCOL_TYPE_RAW
-        | PROTOCOL_TYPE_DATAGRAM2
-        | PROTOCOL_TYPE_DATAGRAM3 => {}
-        other => {
-            return Err(I2cpDataBodyDecodeError::UnknownProtocol { observed: other });
-        }
-    }
     // Inflate the general deflate stream (stored no-compression
     // members produced by [`encode_i2cp_data_body`] decode here
     // transparently). The stream is self-terminating; `total_in`
@@ -747,23 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_unknown_protocol() {
-        let mut encoded = encode_i2cp_data_body(0, 0, PROTOCOL_TYPE_RAW, b"x").expect("encode");
-        encoded[13] = 0xFE;
-        let error = decode_i2cp_data_body(&encoded).expect_err("unknown protocol must reject");
-        assert!(matches!(
-            error,
-            I2cpDataBodyDecodeError::UnknownProtocol { observed: 0xFE }
-        ));
-    }
-
-    #[test]
-    fn encode_rejects_unknown_protocol() {
-        let error = encode_i2cp_data_body(0, 0, 0xFE, b"x").expect_err("unknown protocol");
-        assert!(matches!(
-            error,
-            I2cpDataBodyEncodeError::UnknownProtocol { observed: 0xFE }
-        ));
+    fn arbitrary_i2cp_protocol_byte_round_trips() {
+        let encoded = encode_i2cp_data_body(0, 0, 0xFE, b"x").expect("encode custom protocol");
+        let decoded = decode_i2cp_data_body(&encoded).expect("decode custom protocol");
+        assert_eq!(decoded.protocol, 0xFE);
+        assert_eq!(decoded.payload, b"x");
     }
 
     #[test]

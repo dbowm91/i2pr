@@ -23,7 +23,7 @@ capability gateway:
 | --- | --- |
 | `create_session` | `session_opened` / `session_closed` |
 | `close_session` | `service_opened` / `service_closed` / `service_reset` |
-| `open_service` (`sam` \| `i2cp`) | `health_status` / `shutdown_ack` |
+| `open_service` (`sam` \| `sam_datagram` \| `i2cp`) | `health_status` / `shutdown_ack` |
 | `close_service` / `reset_service` | `rejected` (terminal, correlated) |
 | `health` / `shutdown` | `service_ended` / `session_ended` (notifications) |
 
@@ -50,7 +50,9 @@ Frozen protocol facts (see §4.3 of the reference spec):
 
 Types: `Handshake`/`ManagerRole`; `ManagerToDaemonMessage` and
 `DaemonToManagerMessage` (direction-strict, `deny_unknown_fields` tagged
-enums); `ManagerService` (`Sam`, `I2cp` only); `ManagerSessionId` and
+enums); `ManagerService` (`Sam`, `SamDatagram`, `I2cp`); bounded typed
+`datagram::DatagramRequest` / `DatagramReply` codecs on the distinct
+`sam_datagram` service stream; `ManagerSessionId` and
 `ManagerServiceStreamId` (opaque, daemon-assigned, non-zero, never reused);
 `ManagerGatewayLimits`; `EffectiveGrant`; `ManagerError`/`ManagerErrorCode`;
 `ServiceEndReason`; `Frame`/`FrameKind`; and the pure bounded accounting types

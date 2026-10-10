@@ -49,6 +49,7 @@ use crate::sam::limits::SamLimits;
 use crate::sam::session::SamSessionId;
 
 use super::command::StreamAcceptId;
+use i2pr_client::streaming::connection::ConnectionId;
 
 /// State of one STREAM socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +109,7 @@ pub struct SamStreamAttachment {
     /// is a non-secret view kept only to disambiguate per-stream
     /// cleanup paths.
     owning_destination: DestinationId,
+    connection_id: Option<ConnectionId>,
 }
 
 impl SamStreamAttachment {
@@ -134,6 +136,11 @@ impl SamStreamAttachment {
     /// Returns the owning destination identifier.
     pub const fn owning_destination(&self) -> DestinationId {
         self.owning_destination
+    }
+
+    /// Returns the underlying Streaming connection when it has been attached.
+    pub const fn connection_id(&self) -> Option<ConnectionId> {
+        self.connection_id
     }
 
     fn set_state(&mut self, state: SamStreamState) {
@@ -311,10 +318,12 @@ impl SamStreamRegistry {
     pub fn unregister_session(
         &self,
         session_id: &SamSessionId,
-    ) -> Result<(), SamStreamRegistryError> {
+    ) -> Result<Vec<SamStreamAttachment>, SamStreamRegistryError> {
         let mut sessions = self.sessions.lock()?;
-        sessions.remove(session_id);
-        Ok(())
+        Ok(sessions
+            .remove(session_id)
+            .map(|entry| entry.attachments.into_values().collect())
+            .unwrap_or_default())
     }
 
     /// Returns the number of registered SAM sessions that own at
@@ -395,6 +404,7 @@ impl SamStreamRegistry {
             state: SamStreamState::Connecting,
             peer_destination_b64,
             owning_destination,
+            connection_id: None,
         };
         entry.attachments.insert(stream_id, attachment);
         Ok(SamOutboundAttachment {
@@ -440,6 +450,7 @@ impl SamStreamRegistry {
             state: SamStreamState::WaitingAccept,
             peer_destination_b64: None,
             owning_destination,
+            connection_id: None,
         };
         entry.attachments.insert(stream_id, attachment);
         entry.pending_accepts.push_back(stream_id);
@@ -510,6 +521,7 @@ impl SamStreamRegistry {
                 state: SamStreamState::WaitingAccept,
                 peer_destination_b64: None,
                 owning_destination,
+                connection_id: None,
             },
         );
         Ok(SamAcceptWaiter { stream_id })
@@ -573,6 +585,28 @@ impl SamStreamRegistry {
             .get_mut(&stream_id)
             .ok_or(SamStreamRegistryError::UnknownStream { stream_id })?;
         attachment.set_state(state);
+        Ok(())
+    }
+
+    /// Associates a SAM socket with the underlying Streaming connection.
+    pub fn attach_connection(
+        &self,
+        session_id: &SamSessionId,
+        stream_id: StreamAcceptId,
+        connection_id: ConnectionId,
+    ) -> Result<(), SamStreamRegistryError> {
+        let mut sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        let attachment = entry
+            .attachments
+            .get_mut(&stream_id)
+            .ok_or(SamStreamRegistryError::UnknownStream { stream_id })?;
+        attachment.connection_id = Some(connection_id);
         Ok(())
     }
 
@@ -816,13 +850,22 @@ mod tests {
         let registry = SamStreamRegistry::new(SamLimits::defaults());
         let session = SamSessionId::new("alpha").unwrap();
         registry.register_session(session.clone()).unwrap();
-        registry
+        let outbound = registry
             .register_outbound(&session, destination(1), None)
+            .unwrap();
+        registry
+            .attach_connection(&session, outbound.stream_id, ConnectionId::new(53))
             .unwrap();
         registry
             .register_inbound_waiter(&session, destination(1))
             .unwrap();
-        registry.unregister_session(&session).unwrap();
+        let removed = registry.unregister_session(&session).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(
+            removed
+                .iter()
+                .any(|attachment| { attachment.connection_id() == Some(ConnectionId::new(53)) })
+        );
         assert_eq!(registry.attachment_count(), 0);
         assert_eq!(registry.pending_accept_count(), 0);
         assert_eq!(registry.active_session_count(), 0);

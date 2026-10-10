@@ -2537,6 +2537,7 @@ mod tests {
             enabled: true,
             bind_address: "127.0.0.1".parse().expect("loopback"),
             port: 0,
+            udp_port: 0,
             limits: SamLimits::default(),
         };
         let state = Arc::new(crate::sam::SamServiceState::new(config).expect("sam builds"));
