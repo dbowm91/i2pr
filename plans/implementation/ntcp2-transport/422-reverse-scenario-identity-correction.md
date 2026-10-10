@@ -1,6 +1,6 @@
 # Plan 422 — correct reverse current-pin scenario identity mapping
 
-Status: **active** — in-progress-reverse-scenario-identity-correction.
+Status: **stopped** — stopped-reverse-session-confirmed-part1-stage-failure.
 Corrective successor to [Plan 421](../../closure/ntcp2-transport/421-status.md).
 
 ## Objective
