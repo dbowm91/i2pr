@@ -80,6 +80,13 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
             and 'return ("forward", "reverse")' in runner
             and "direction-selection-invalid" in runner
         ),
+        "scenario identities follow the I2NP sender and receiver roles": (
+            "def scenario_identity_values(direction: str, i2pr_hash: str" in runner
+            and "return i2pr_hash, i2pd_hash" in runner
+            and "scenario_identity_values(" in runner
+            and "scenario-router-identity-role-mismatch" in runner
+            and "self-test-swapped-or-duplicate-identities-accepted" in runner
+        ),
     }
     findings.extend(name for name, passed in checks.items() if not passed)
     return findings
@@ -106,6 +113,8 @@ def self_test() -> bool:
         (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
         (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
         (driver, build, cmake, observer, runner.replace('return ("reverse",)', 'return ("forward",)')),
+        (driver, build, cmake, observer,
+         runner.replace("return i2pr_hash, i2pd_hash", "return i2pd_hash, i2pr_hash")),
         (driver.replace('Logger().SetLogLevel("debug");', ""), build, cmake, observer, runner),
         (driver.replace('Logger().SetLogLevel("debug");\n    i2p::log::Logger().Start();',
                         'i2p::log::Logger().Start();\n    i2p::log::Logger().SetLogLevel("debug");'),

@@ -40,6 +40,26 @@ def directions_for(selection: str) -> tuple[str, ...]:
     raise RunError("direction-selection-invalid")
 
 
+def scenario_identity_values(direction: str, i2pr_hash: str,
+                             i2pd_hash: str) -> tuple[str, str]:
+    if direction not in {"forward", "reverse"}:
+        raise RunError("scenario-direction-invalid")
+    if (len(i2pr_hash) != 64 or len(i2pd_hash) != 64
+            or i2pr_hash == i2pd_hash):
+        raise RunError("scenario-router-identities-invalid")
+    # The launcher is always the I2NP sender for the correlated response,
+    # even when stock i2pd initiates the NTCP2 connection.
+    return i2pr_hash, i2pd_hash
+
+
+def validate_scenario_identity_values(direction: str, sender_hash: str,
+                                      receiver_hash: str, i2pr_hash: str,
+                                      i2pd_hash: str) -> None:
+    expected = scenario_identity_values(direction, i2pr_hash, i2pd_hash)
+    if (sender_hash, receiver_hash) != expected:
+        raise RunError("scenario-router-identity-role-mismatch")
+
+
 def safe_reason(value: object) -> str | None:
     if not isinstance(value, str) or not value or len(value) > 80:
         return None
@@ -472,7 +492,9 @@ def run_direction(
         shutil.copyfile(i2pd_info, exchange / "i2pd.info")
         scenario_id = "i2pr-to-i2pd-ipv4" if direction == "forward" else "i2pd-to-i2pr-ipv4"
         role = "initiator" if direction == "forward" else "responder"
-        local_hash, peer_hash = (i2pr_hash, i2pd_hash) if direction == "forward" else (i2pd_hash, i2pr_hash)
+        local_hash, peer_hash = scenario_identity_values(
+            direction, i2pr_hash, i2pd_hash
+        )
         scenario = root / "scenario.toml"
         scenario.write_text(
             scenario_text(scenario_id, run_id, role, i2pr_port, ref_port,
@@ -603,6 +625,29 @@ def main() -> int:
                     or directions_for("reverse") != ("reverse",)
                     or directions_for("both") != ("forward", "reverse")):
                 raise RunError("self-test-direction-selection-failed")
+            i2pr_identity = "1" * 64
+            i2pd_identity = "2" * 64
+            for direction in ("forward", "reverse"):
+                sender, receiver = scenario_identity_values(
+                    direction, i2pr_identity, i2pd_identity
+                )
+                validate_scenario_identity_values(
+                    direction, sender, receiver, i2pr_identity, i2pd_identity
+                )
+                for invalid_pair in (
+                    (i2pd_identity, i2pr_identity),
+                    (i2pr_identity, i2pr_identity),
+                    (i2pd_identity, i2pd_identity),
+                ):
+                    try:
+                        validate_scenario_identity_values(
+                            direction, *invalid_pair, i2pr_identity, i2pd_identity
+                        )
+                    except RunError as exc:
+                        if exc.reason != "scenario-router-identity-role-mismatch":
+                            raise
+                    else:
+                        raise RunError("self-test-swapped-or-duplicate-identities-accepted")
             try:
                 directions_for("unknown")
             except RunError as exc:
