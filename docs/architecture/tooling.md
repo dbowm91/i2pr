@@ -53,7 +53,7 @@ counting method both numbers come from.
 
 | Script | What it catches | Floor | CI |
 | --- | --- | --- | --- |
-| `scripts/check-current-pin-ntcp2-runner.py` | Plan 410 fail-closed source guard for the network-ID-2 loopback profile, pristine current-pin library build and sanitized helper evidence. `--self-test` mutation-checks profile, network-ID, observer and identity-hash rules. | no | no |
+| `scripts/check-current-pin-ntcp2-runner.py` | Fail-closed source guard for the network-ID-2 loopback profile, pristine current-pin library build, post-baseline stage allowlist, and sanitized helper evidence. `--self-test` mutation-checks profile, network-ID, observer, baseline, and identity-hash rules. | no | no |
 | `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
@@ -462,12 +462,14 @@ secrets, tokens, or operational keys.
 
 The current-pin NTCP2 loopback tooling under
 `tools/i2pr-interop/reference/i2pd-current/` includes the pristine-library
-driver and Plan 414's bounded `run_plan414.py` runner and
-`observe_decoded_delivery_status.py` adapter. The runner permits one attempt
+driver and the bounded `run_plan414.py` runner and
+`observe_decoded_delivery_status.py` adapter. Plan 417 extends the adapter with
+fixed-name NTCP2 handshake-stage counts read only after an owned log baseline.
+The runner permits one attempt
 per direction, captures peer hashes only as ephemeral inputs, and deletes each
 owned attempt tree. The adapter consumes an owned ephemeral i2pd log, emits
-bounded sanitized counts and a digest, deletes the raw log on successful
-classification, and has a no-process `--self-test`.
+bounded sanitized counts without raw lines or log digests, consumes the raw log
+after classification, and has a no-process `--self-test`.
 
 Ten lane directories live under `tests/integration/`. Each lists its
 real driver scripts and its matching evidence checker.

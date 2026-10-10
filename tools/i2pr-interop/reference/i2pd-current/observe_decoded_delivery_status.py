@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +15,16 @@ PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
 TYPE_10 = re.compile(r"(?:^|\s)I2NP: Handling message with type 10\s*$")
 DECRYPTED = re.compile(r"(?:^|\s)NTCP2: Received message decrypted\s*$")
 I2NP_BLOCK = re.compile(r"(?:^|\s)NTCP2: I2NP\s*$")
+STAGE_PATTERNS = {
+    "session_request_received_count": re.compile(r"(?:^|\s)NTCP2: SessionRequest (?:received|updated) \d+\s*$"),
+    "session_created_received_count": re.compile(r"(?:^|\s)NTCP2: SessionCreated received \d+\s*$"),
+    "session_confirmed_received_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed received\s*$"),
+    "session_confirmed_sent_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed sent\s*$"),
+    "session_request_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionRequest AEAD verification failed\s*$"),
+    "session_created_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionCreated AEAD verification failed\s*$"),
+    "session_confirmed_aead_failure_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed Part[12] AEAD verification failed\s*$"),
+}
+MAX_LINE_BYTES = 4096
 DIRECTIONS = {"i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"}
 
 
@@ -23,33 +32,40 @@ class ObservationError(ValueError):
     pass
 
 
-def observe(raw: bytes) -> dict[str, object]:
+def observe(raw: bytes, baseline_offset: int = 0) -> dict[str, object]:
     if not raw or len(raw) > MAX_LOG_BYTES:
         raise ObservationError("log-size-invalid")
+    if not isinstance(baseline_offset, int) or baseline_offset < 0 or baseline_offset > len(raw):
+        raise ObservationError("baseline-offset-invalid")
     try:
-        text = raw.decode("utf-8", errors="strict")
+        text = raw[baseline_offset:].decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise ObservationError("log-encoding-invalid") from exc
 
     lines = text.splitlines()
+    if any(len(line.encode("utf-8")) > MAX_LINE_BYTES for line in lines):
+        raise ObservationError("log-line-too-large")
     type10_lines = [index for index, line in enumerate(lines) if TYPE_10.search(line)]
     decrypted = sum(bool(DECRYPTED.search(line)) for line in lines)
     block_lines = [index for index, line in enumerate(lines) if I2NP_BLOCK.search(line)]
-    type10 = len(type10_lines)
-    if type10 != 1:
-        raise ObservationError("decoded-delivery-status-count-not-one")
-    if decrypted < 1 or len(block_lines) != 1 or block_lines[0] >= type10_lines[0]:
-        raise ObservationError("ntcp2-decode-context-missing")
-
-    return {
-        "schema": "i2pr-stock-i2pd-decoded-i2np-observation-v1",
-        "reference_revision": PIN,
-        "i2np_type": 10,
-        "decoded_delivery_status_count": 1,
+    counts = {name: min(sum(bool(pattern.search(line)) for line in lines), 0xFFFF)
+              for name, pattern in STAGE_PATTERNS.items()}
+    counts.update({
+        "decoded_delivery_status_count": min(len(type10_lines), 0xFFFF),
         "decrypted_frame_count": min(decrypted, 0xFFFF),
-        "i2np_block_count": len(block_lines),
-        "log_sha256": hashlib.sha256(raw).hexdigest(),
-        "result": "observed",
+        "i2np_block_count": min(len(block_lines), 0xFFFF),
+    })
+    reason = None
+    if len(type10_lines) != 1:
+        reason = "decoded-delivery-status-count-not-one"
+    elif decrypted < 1 or len(block_lines) != 1 or block_lines[0] >= type10_lines[0]:
+        reason = "ntcp2-decode-context-missing"
+    return {
+        "schema": "i2pr-stock-i2pd-stage-observation-v2",
+        "reference_revision": PIN,
+        **counts,
+        "result": "rejected" if reason else "observed",
+        **({"reason_code": reason} if reason else {}),
     }
 
 
@@ -59,20 +75,49 @@ def self_test() -> None:
         b"2026-10-10 12:00:00 [Debug] NTCP2: I2NP\n"
         b"2026-10-10 12:00:00 [Debug] I2NP: Handling message with type 10\n"
     )
-    result = observe(fixture)
+    fixture = (
+        b"pre-baseline NTCP2: SessionRequest received 99\n"
+        b"pre-baseline NTCP2: SessionConfirmed received\n" + fixture
+    )
+    baseline = fixture.index(b"2026-10-10")
+    result = observe(fixture, baseline)
     assert result["result"] == "observed"
     assert result["decoded_delivery_status_count"] == 1
-    assert result["i2np_type"] == 10
+    assert result["i2np_block_count"] == 1
+    assert result["decrypted_frame_count"] == 1
+    assert "log_sha256" not in result
+    assert all(result[name] == 0 for name in (
+        "session_request_received_count", "session_created_received_count",
+        "session_confirmed_received_count", "session_confirmed_sent_count",
+    ))
+    stages = (
+        b"2026-10-10 NTCP2: SessionRequest received 64\n"
+        b"2026-10-10 NTCP2: SessionCreated received 80\n"
+        b"2026-10-10 NTCP2: SessionConfirmed received\n"
+        b"2026-10-10 NTCP2: SessionConfirmed sent\n"
+    )
+    stage_result = observe(stages)
+    assert stage_result["session_request_received_count"] == 1
+    assert stage_result["session_created_received_count"] == 1
+    assert stage_result["session_confirmed_received_count"] == 1
+    assert stage_result["session_confirmed_sent_count"] == 1
+    assert stage_result["result"] == "rejected"
+    assert stage_result["reason_code"] == "decoded-delivery-status-count-not-one"
 
-    invalid = [
-        b"",
+    rejected = [
         fixture.replace(b"type 10", b"type 2"),
         fixture + fixture,
         fixture.replace(b"NTCP2: I2NP", b"NTCP2: Options"),
+    ]
+    for candidate in rejected:
+        assert observe(candidate)["result"] == "rejected"
+    malformed = [
+        b"",
         fixture + b"\xff",
         b"x" * (MAX_LOG_BYTES + 1),
+        b"x" * (MAX_LINE_BYTES + 1),
     ]
-    for candidate in invalid:
+    for candidate in malformed:
         try:
             observe(candidate)
         except ObservationError:
@@ -84,7 +129,7 @@ def self_test() -> None:
         log = root / "i2pd.log"
         evidence = root.parent / (root.name + ".json")
         log.write_bytes(fixture)
-        consume_log(log, evidence, root, "i2pr-to-i2pd-ipv4")
+        consume_log(log, evidence, root, "i2pr-to-i2pd-ipv4", baseline_offset=0)
         assert not log.exists()
         record = json.loads(evidence.read_text(encoding="utf-8"))
         assert record["direction"] == "i2pr-to-i2pd-ipv4"
@@ -92,16 +137,15 @@ def self_test() -> None:
 
         bad_log = root / "bad.log"
         bad_log.write_bytes(fixture + fixture)
-        try:
-            consume_log(bad_log, evidence, root, "i2pr-to-i2pd-ipv4")
-        except ObservationError:
-            pass
-        else:
-            raise AssertionError("ambiguous log was accepted")
-        assert bad_log.exists(), "failed parse must not consume source before classification"
+        consume_log(bad_log, evidence, root, "i2pr-to-i2pd-ipv4", baseline_offset=0)
+        assert not bad_log.exists(), "classified log should be consumed from the owned tree"
+        rejected_record = json.loads(evidence.read_text(encoding="utf-8"))
+        assert rejected_record["result"] == "rejected"
+        evidence.unlink()
 
 
-def consume_log(log_path: Path, output_path: Path, owned_root: Path, direction: str) -> None:
+def consume_log(log_path: Path, output_path: Path, owned_root: Path, direction: str,
+                baseline_offset: int = 0) -> None:
     if direction not in DIRECTIONS:
         raise ObservationError("direction-not-allowlisted")
     root = owned_root.resolve(strict=True)
@@ -114,7 +158,7 @@ def consume_log(log_path: Path, output_path: Path, owned_root: Path, direction: 
     if output == log or output.is_relative_to(root) or output_path.is_symlink():
         raise ObservationError("output-path-not-separated")
     raw = log.read_bytes()
-    record = observe(raw)
+    record = observe(raw, baseline_offset)
     record["direction"] = direction
     encoded = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
     temp = output.with_name(output.name + ".tmp")
@@ -130,6 +174,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--owned-root", type=Path)
     parser.add_argument("--direction")
+    parser.add_argument("--baseline-offset", type=int, default=0)
     args = parser.parse_args()
 
     try:
@@ -137,11 +182,12 @@ def main() -> int:
             if any((args.consume_log, args.output, args.owned_root, args.direction)):
                 raise ObservationError("self-test-arguments-conflict")
             self_test()
-            print("plan414 observer self-test passed")
+            print("plan417 observer self-test passed")
             return 0
         if not all((args.consume_log, args.output, args.owned_root, args.direction)):
             raise ObservationError("consume-arguments-required")
-        consume_log(args.consume_log, args.output, args.owned_root, args.direction)
+        consume_log(args.consume_log, args.output, args.owned_root, args.direction,
+                    args.baseline_offset)
         return 0
     except (OSError, ObservationError) as exc:
         # Emit only a closed reason category; never echo paths or source bytes.

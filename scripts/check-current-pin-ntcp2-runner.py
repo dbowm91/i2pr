@@ -10,10 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "tools/i2pr-interop/reference/i2pd-current/src/i2pd_current_ntcp2_driver.cpp"
 BUILD = ROOT / "tools/i2pr-interop/reference/i2pd-current/build.sh"
 CMAKE = ROOT / "tools/i2pr-interop/reference/i2pd-current/CMakeLists.txt"
+OBSERVER = ROOT / "tools/i2pr-interop/reference/i2pd-current/observe_decoded_delivery_status.py"
+RUNNER = ROOT / "tools/i2pr-interop/reference/i2pd-current/run_plan414.py"
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
 
 
-def source_findings(driver: str, build: str, cmake: str) -> list[str]:
+def source_findings(driver: str, build: str, cmake: str, observer: str, runner: str) -> list[str]:
     findings = []
     checks = {
         "pinned current revision": PIN in driver and PIN in build,
@@ -28,6 +30,15 @@ def source_findings(driver: str, build: str, cmake: str) -> list[str]:
         "no identity hashes in evidence": "local_router_hash_sha256" not in driver
         and "peer_router_hash_sha256\\\":" not in driver,
         "no raw detail in evidence": '"detail"' not in driver,
+        "closed stock handshake stage allowlist": "STAGE_PATTERNS = {" in observer
+        and "session_request_received_count" in observer
+        and "session_created_received_count" in observer
+        and "session_confirmed_received_count" in observer,
+        "post-baseline bounded observer": "raw[baseline_offset:]" in observer
+        and "MAX_LINE_BYTES = 4096" in observer,
+        "no retained raw-log digest": '"log_sha256":' not in observer
+        and '"raw_log_sha256"' not in runner,
+        "runner passes the log baseline": '"--baseline-offset", str(log_baseline)' in runner,
     }
     findings.extend(name for name, passed in checks.items() if not passed)
     return findings
@@ -37,7 +48,9 @@ def self_test() -> bool:
     driver = DRIVER.read_text()
     build = BUILD.read_text()
     cmake = CMAKE.read_text()
-    if source_findings(driver, build, cmake):
+    observer = OBSERVER.read_text()
+    runner = RUNNER.read_text()
+    if source_findings(driver, build, cmake, observer, runner):
         return False
     mutations = [
         (driver.replace("if (cfg.network_id != 2)", "if (cfg.network_id != 99)"), build, cmake),
@@ -45,8 +58,12 @@ def self_test() -> bool:
         (driver.replace('set_string_option("reseed.urls", "");', ""), build, cmake),
         (driver + '\n"local_router_hash_sha256":"\n', build, cmake),
         (driver, build, cmake + "\n-DI2PD_INTEROP_OBSERVER=1\n"),
+        (driver, build, cmake, observer.replace("session_request_received_count", "request_stage_removed"), runner),
+        (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
+        (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
     ]
-    return all(source_findings(*candidate) for candidate in mutations)
+    normalized = [candidate if len(candidate) == 5 else (*candidate, observer, runner) for candidate in mutations]
+    return all(source_findings(*candidate) for candidate in normalized)
 
 
 def main() -> int:
@@ -59,7 +76,8 @@ def main() -> int:
             return 0
         print("current-pin NTCP2 runner checker self-test failed")
         return 1
-    findings = source_findings(DRIVER.read_text(), BUILD.read_text(), CMAKE.read_text())
+    findings = source_findings(DRIVER.read_text(), BUILD.read_text(), CMAKE.read_text(),
+                               OBSERVER.read_text(), RUNNER.read_text())
     if findings:
         for finding in findings:
             print(f"current-pin NTCP2 runner check failed: {finding}")

@@ -66,19 +66,9 @@ def project_stages(path: Path, reference: bool) -> list[dict[str, str]]:
     return projected
 
 
-def digest_file(path: Path) -> str | None:
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return None
-    if len(raw) > 16 * 1024 * 1024:
-        return None
-    return sha256(raw)
-
-
 def write_evidence(path: Path, attempts: list[dict[str, object]], result: str) -> None:
     record = {
-        "schema": "i2pr-plan415-evidence-v1",
+        "schema": "i2pr-plan417-evidence-v1",
         "reference_revision": PIN,
         "max_attempts_per_direction": MAX_ATTEMPTS_PER_DIRECTION,
         "directions": [sanitize_attempt(attempt) for attempt in attempts],
@@ -98,7 +88,11 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
         "direction", "attempt_number", "attempted", "result", "reason_code",
         "cleanup_result", "helper_return_code", "launcher_return_code",
         "observer_result", "observer_reason_code", "decoded_delivery_status_count",
-        "decrypted_frame_count", "i2np_block_count", "reference_stages", "launcher_stages",
+        "decrypted_frame_count", "i2np_block_count", "session_request_received_count",
+        "session_created_received_count", "session_confirmed_received_count",
+        "session_confirmed_sent_count", "session_request_aead_failure_count",
+        "session_created_aead_failure_count", "session_confirmed_aead_failure_count",
+        "reference_stages", "launcher_stages",
     }
     result: dict[str, object] = {}
     for key in allowed:
@@ -113,7 +107,13 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
         elif key in {"helper_return_code", "launcher_return_code"}:
             if isinstance(value, int) and -255 <= value <= 255:
                 result[key] = value
-        elif key in {"decoded_delivery_status_count", "decrypted_frame_count", "i2np_block_count", "attempt_number"}:
+        elif key in {
+            "decoded_delivery_status_count", "decrypted_frame_count", "i2np_block_count",
+            "session_request_received_count", "session_created_received_count",
+            "session_confirmed_received_count", "session_confirmed_sent_count",
+            "session_request_aead_failure_count", "session_created_aead_failure_count",
+            "session_confirmed_aead_failure_count", "attempt_number",
+        }:
             if isinstance(value, int) and 0 <= value <= 0xFFFF:
                 result[key] = value
         elif key in {"attempted"}:
@@ -403,13 +403,14 @@ def run_direction(
     launcher: Path, driver: Path, manifest: Path, observer: Path,
     evidence: Path, work_parent: Path, attempts: list[dict[str, object]], direction: str,
 ) -> dict[str, object]:
-    root = Path(tempfile.mkdtemp(prefix="plan415-", dir=work_parent))
+    root = Path(tempfile.mkdtemp(prefix="plan417-", dir=work_parent))
     helper: subprocess.Popen[str] | None = None
     launcher_process: subprocess.Popen[str] | None = None
     helper_rc: int | None = None
     launcher_rc: int | None = None
     message_id = 0
     peer_hash = ""
+    log_baseline = 0
     log_path = root / "i2pd-data" / "i2pd.log"
     helper_events = root / ("i2pd-listen" if direction == "forward" else "i2pd-dial") / "events.ndjson"
     status_path = root / "launcher-status.jsonl"
@@ -470,6 +471,7 @@ def run_direction(
             helper = subprocess.Popen([str(driver), "--config", str(active_config)],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             wait_for_event(helper_events, "event_kind", "listener_ready", helper, 15)
+            log_baseline = log_path.stat().st_size
             launcher_process = subprocess.Popen(
                 [str(launcher), "ntcp2", "dial", "--scenario-config", str(scenario)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -480,6 +482,7 @@ def run_direction(
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             wait_for_event(status_path, "phase", "listener_ready", launcher_process, 15)
+            log_baseline = log_path.stat().st_size if log_path.exists() else 0
             helper = subprocess.Popen([str(driver), "--config", str(active_config)],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         record["attempted"] = True
@@ -502,15 +505,14 @@ def run_direction(
             record["launcher_return_code"] = launcher_rc
         record["reference_stages"] = project_stages(helper_events, True)
         record["launcher_stages"] = project_stages(status_path, False)
-        # Hashes are computed only in memory for the observer and discarded.
-        _raw_log_digest = digest_file(log_path)
         if log_path.exists():
             summary = root / "sanitized-observation.json"
             try:
                 observed = subprocess.run(
                     [sys.executable, str(observer), "--consume-log", str(log_path),
                      "--owned-root", str(log_path.parent), "--output", str(summary),
-                     "--direction", "i2pr-to-i2pd-ipv4" if direction == "forward" else "i2pd-to-i2pr-ipv4"],
+                     "--direction", "i2pr-to-i2pd-ipv4" if direction == "forward" else "i2pd-to-i2pr-ipv4",
+                     "--baseline-offset", str(log_baseline)],
                     capture_output=True, text=True, timeout=10, check=False,
                 )
                 if observed.returncode == 0:
@@ -530,13 +532,16 @@ def run_direction(
             observer_reason = safe_reason(observer_record.get("reason_code"))
             if observer_reason is not None:
                 record["observer_reason_code"] = observer_reason
-            for field in ("decoded_delivery_status_count", "decrypted_frame_count", "i2np_block_count"):
+            for field in (
+                "decoded_delivery_status_count", "decrypted_frame_count", "i2np_block_count",
+                "session_request_received_count", "session_created_received_count",
+                "session_confirmed_received_count", "session_confirmed_sent_count",
+                "session_request_aead_failure_count", "session_created_aead_failure_count",
+                "session_confirmed_aead_failure_count",
+            ):
                 value = observer_record.get(field)
                 if isinstance(value, int) and 0 <= value <= 0xFFFF:
                     record[field] = value
-            observed_hash = observer_record.get("log_sha256")
-            # A digest may be consumed for in-memory correlation, never retained.
-            _ = isinstance(observed_hash, str) and len(observed_hash) == 64
         try:
             helper_ok = False
             launcher_ok = False
@@ -562,7 +567,7 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        with tempfile.TemporaryDirectory(prefix="plan415-self-test-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="plan417-self-test-") as temporary:
             root = Path(temporary)
             staged = root / "events.jsonl"
             staged.write_text(json.dumps({
@@ -590,12 +595,21 @@ def main() -> int:
                 "observer_reason_code": "log-ambiguous", "decoded_delivery_status_count": 2,
                 "reference_stages": [{"event_kind": "listener_ready", "message_id": 778899,
                                        "router_hash": "a" * 64, "raw_stderr": "PRIVATE_SENTINEL"}],
+                "session_request_received_count": 1,
+                "session_confirmed_received_count": 1,
+                "log_sha256": "b" * 64,
                 "private_path": "/private/path", "raw_stdout": "PRIVATE_SENTINEL",
             }
             sanitized = sanitize_attempt(private)
             if any(value in json.dumps(sanitized) for value in
                    ("778899", "a" * 64, "PRIVATE_SENTINEL", "/private/path")):
                 raise RunError("self-test-attempt-redaction-failed")
+            stage_evidence = root / "stage-evidence.json"
+            write_evidence(stage_evidence, [private], "rejected")
+            stage_json = stage_evidence.read_text(encoding="utf-8")
+            if '"session_request_received_count":1' not in stage_json or any(
+                    value in stage_json for value in ("log_sha256", "b" * 64, "778899")):
+                raise RunError("self-test-stage-count-evidence-failed")
             cleanup_root = root / "owned"
             cleanup_root.mkdir()
             (cleanup_root / "private.log").write_text("PRIVATE_SENTINEL", encoding="utf-8")
@@ -632,7 +646,7 @@ def main() -> int:
             shutil.rmtree(cleanup_failure_root)
             if MAX_ATTEMPTS_PER_DIRECTION != 1 or PIN != "635b013a612ff47278ef02acf8580a28e10e26c5":
                 raise RunError("self-test-contract-failed")
-        print("plan415 runner self-test passed")
+        print("plan417 runner self-test passed")
         return 0
     evidence: Path | None = None
     attempts: list[dict[str, object]] = []
@@ -654,14 +668,14 @@ def main() -> int:
         first = run_direction(launcher, driver, manifest, observer, evidence, parent, attempts, "forward")
         if first.get("result") != "passed":
             write_evidence(evidence, attempts, "rejected")
-            print(json.dumps({"schema": "i2pr-plan415-evidence-v1", "result": "rejected",
+            print(json.dumps({"schema": "i2pr-plan417-evidence-v1", "result": "rejected",
                               "reason_code": safe_reason(first.get("reason_code")) or "forward-rejected"},
                              separators=(",", ":")))
             return 2
         second = run_direction(launcher, driver, manifest, observer, evidence, parent, attempts, "reverse")
         result = "passed" if second.get("result") == "passed" else "rejected"
         write_evidence(evidence, attempts, result)
-        print(json.dumps({"schema": "i2pr-plan415-evidence-v1", "result": result,
+        print(json.dumps({"schema": "i2pr-plan417-evidence-v1", "result": result,
                           **({} if result == "passed" else {
                               "reason_code": safe_reason(second.get("reason_code")) or "reverse-rejected"})},
                          separators=(",", ":")))
@@ -673,7 +687,7 @@ def main() -> int:
                 write_evidence(evidence, attempts, "rejected")
             except OSError:
                 pass
-        print(json.dumps({"schema": "i2pr-plan414-evidence-v1", "result": "rejected", "reason_code": reason}, separators=(",", ":")))
+        print(json.dumps({"schema": "i2pr-plan417-evidence-v1", "result": "rejected", "reason_code": reason}, separators=(",", ":")))
         return 2
 
 
