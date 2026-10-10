@@ -237,9 +237,13 @@ impl Default for RawReseedConfig {
 #[serde(deny_unknown_fields)]
 struct RawReseedSource {
     #[serde(default)]
+    url: String,
+    #[serde(default)]
     signer_id: String,
     #[serde(default)]
     certificate_path: String,
+    #[serde(default)]
+    tls_root_path: String,
 }
 
 /// Raw Plan 167 I2CP listener configuration.
@@ -1483,10 +1487,14 @@ pub struct ReseedConfig {
 /// One trust-store entry for a Plan 104 SU3 reseed signer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReseedSourceConfig {
+    /// Explicit HTTPS endpoint for the signed reseed bundle.
+    pub url: Option<String>,
     /// Human-readable signer identifier carried in the SU3 header.
     pub signer_id: String,
     /// Filesystem path to the matching DER X.509 certificate.
     pub certificate_path: PathBuf,
+    /// Optional DER/PEM TLS trust root for a self-signed reseed endpoint.
+    pub tls_root_path: Option<PathBuf>,
 }
 
 /// Validated, opt-in signed NEWS feed configuration.
@@ -3178,7 +3186,9 @@ fn normalize_reseed(
         });
     }
     let mut sources = Vec::with_capacity(raw.sources.len());
-    for (index, raw_source) in raw.sources.iter().enumerate() {
+    let mut online_authorities = std::collections::BTreeSet::new();
+    let mut signer_ids = std::collections::BTreeSet::new();
+    for raw_source in &raw.sources {
         if raw_source.signer_id.is_empty() {
             return Err(ConfigError::Semantic {
                 field: "reseed.sources",
@@ -3191,18 +3201,60 @@ fn normalize_reseed(
                 reason: "signer identifier exceeds 256 bytes",
             });
         }
+        if !signer_ids.insert(raw_source.signer_id.to_ascii_lowercase()) {
+            return Err(ConfigError::Semantic {
+                field: "reseed.sources.signer_id",
+                reason: "signer identifiers must be unique",
+            });
+        }
         if raw_source.certificate_path.is_empty() {
             return Err(ConfigError::Semantic {
                 field: "reseed.sources",
                 reason: "certificate path must not be empty",
             });
         }
+        let url = if raw_source.url.is_empty() {
+            None
+        } else {
+            let authority = validate_reseed_url(&raw_source.url).map_err(|_| {
+                ConfigError::Semantic {
+                    field: "reseed.sources.url",
+                    reason: "must be an HTTPS i2pseeds.su3 URL with netid=2 and no credentials or fragment",
+                }
+            })?;
+            let host = if authority.starts_with('[') {
+                authority
+                    .split_once(']')
+                    .map(|(host, _)| host)
+                    .ok_or(ConfigError::Semantic {
+                        field: "reseed.sources.url",
+                        reason: "HTTPS authority is invalid",
+                    })?
+            } else if let Some((host, port)) = authority.rsplit_once(':')
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                host
+            } else {
+                authority
+            };
+            online_authorities.insert(host.to_ascii_lowercase());
+            Some(raw_source.url.clone())
+        };
         let path = PathBuf::from(&raw_source.certificate_path);
+        let tls_root_path = (!raw_source.tls_root_path.is_empty())
+            .then(|| PathBuf::from(&raw_source.tls_root_path));
         sources.push(ReseedSourceConfig {
+            url,
             signer_id: raw_source.signer_id.clone(),
             certificate_path: path,
+            tls_root_path,
         });
-        let _ = index;
+    }
+    if !online_authorities.is_empty() && online_authorities.len() < 2 {
+        return Err(ConfigError::Semantic {
+            field: "reseed.sources",
+            reason: "online reseed requires at least two independent HTTPS authorities",
+        });
     }
     Ok(ReseedConfig {
         enabled: raw.enabled,
@@ -3210,6 +3262,29 @@ fn normalize_reseed(
         max_su3_bytes: raw.max_su3_bytes as usize,
         sources,
     })
+}
+
+fn validate_reseed_url(url: &str) -> Result<&str, ()> {
+    let rest = url.strip_prefix("https://").ok_or(())?;
+    if rest.is_empty() || rest.contains('#') || rest.contains('@') || !rest.is_ascii() {
+        return Err(());
+    }
+    let (authority, target) = rest.split_once('/').map_or((rest, "/"), |(a, p)| (a, p));
+    let Some((path, query)) = target.split_once('?') else {
+        return Err(());
+    };
+    if authority.is_empty()
+        || authority
+            .bytes()
+            .any(|byte| matches!(byte, b'?' | b'#' | b'@'))
+        || authority.bytes().any(|byte| byte <= 0x20 || byte == 0x7f)
+        || target.contains('@')
+        || path.rsplit('/').next() != Some("i2pseeds.su3")
+        || query != "netid=2"
+    {
+        return Err(());
+    }
+    Ok(authority)
 }
 
 fn normalize_news(raw: &RawNewsConfig) -> Result<NewsConfig, ConfigError> {
@@ -4141,6 +4216,52 @@ data_dir = "./state"
         assert_eq!(config.reseed.sources.len(), 1);
         assert_eq!(config.reseed.sources[0].signer_id, "trusted");
         assert_eq!(config.reseed.sources[0].certificate_path, cert);
+    }
+
+    #[test]
+    fn online_reseed_requires_multiple_https_authorities_and_netid_two() {
+        let text = format!(
+            "{}\n[reseed]\nenabled = true\n[[reseed.sources]]\nurl = \"https://one.example/i2pseeds.su3?netid=2\"\nsigner_id = \"one\"\ncertificate_path = \"one.der\"\n[[reseed.sources]]\nurl = \"https://two.example/i2pseeds.su3?netid=2\"\nsigner_id = \"two\"\ncertificate_path = \"two.der\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("two explicit HTTPS authorities");
+        assert_eq!(config.reseed.sources.len(), 2);
+        assert_eq!(
+            config.reseed.sources[0].url.as_deref(),
+            Some("https://one.example/i2pseeds.su3?netid=2")
+        );
+
+        let single = text.replace(
+            "https://two.example/i2pseeds.su3?netid=2",
+            "https://one.example/second/i2pseeds.su3?netid=2",
+        );
+        assert!(matches!(
+            Config::parse(&single),
+            Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn online_reseed_rejects_http_and_wrong_network_id() {
+        for url in [
+            "http://one.example/i2pseeds.su3?netid=2",
+            "https://one.example/i2pseeds.su3?netid=1",
+        ] {
+            let text = format!(
+                "{}\n[reseed]\nenabled = true\n[[reseed.sources]]\nurl = {:?}\nsigner_id = \"one\"\ncertificate_path = \"one.der\"\n",
+                MINIMAL, url
+            );
+            assert!(matches!(
+                Config::parse(&text),
+                Err(ConfigError::Semantic {
+                    field: "reseed.sources.url",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

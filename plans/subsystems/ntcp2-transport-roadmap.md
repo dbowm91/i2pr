@@ -1,6 +1,8 @@
 # NTCP2 Transport Roadmap
 
-Status: closed
+Status: historical M3 closed (protocol defect localized); Plans 410/414/415/416/417/418/419/420/421/422/423/424 stopped before current-pin two-way evidence; recovery Plans 434–435 remain gated.
+
+**Recovery continuation (2026-10-10):** [Plan 434](../implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) is the bounded Plan 099 authenticated-link discrepancy successor. Plans 410 through 420 stopped at their recorded evidence boundaries. Plan 420 observed the post-validation RouterInfo marker and a session termination marker, but no I2NP block or DeliveryStatus. Plan 421 stopped before wire because its reverse scenario supplied the wrong expected sender identity. Plan 422 corrected that mapping but its reverse attempt failed at SessionConfirmed Part 1. Plan 423 split the existing bounded error categories and spent one reverse-only attempt; Plan 424 added exact operation/kind attribution and spent one reverse-only attempt. The responder's terminal result is a closed SessionConfirmed read, while the pinned helper reported session-not-established; no shared correlation establishes a common cause. Plan 434 remains blocked pending forward plus reverse authenticated I2NP evidence. [Plan 435](../implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) is normal-daemon activation plus independent two-family qualification, blocked on Plans 433/434. Neither plan authorizes a premature NTCP2 bind or advertisement; Plan 101 safety remains authoritative until executed qualified successor evidence. Cross-subsystem dependencies: [core-router recovery roadmap](core-router-recovery-roadmap.md). Historical NTCP2 closure records unchanged.
 
 Long-term references:
 
@@ -37,7 +39,7 @@ Historic plans: 030–101 (global i2pr numbers, preserved).
 
 ## 4. Current state
 
-Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101.
+Plan 099/100 exit (protocol-defect-localized at noise_authenticated); normal-daemon NTCP2 disabled per Plan 101. Plans 410–420 stopped without authenticated two-way evidence. Plan 420 reached the post-validation RouterInfo marker but observed no I2NP block or DeliveryStatus. Plans 421–424 exercised the current-pin reverse path; Plan 424 identified a closed responder SessionConfirmed read, but the helper outcome remains uncorrelated. Plan 434 remains blocked because authenticated two-way and correlated I2NP evidence are still absent (see the Plan 434 outcome amendment).
 
 ## 5. Target architecture
 
@@ -129,6 +131,18 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 99 | archived | historical narrative (no status record) | `plans/implementation/ntcp2-transport/099-milestone3-interop-exit-and-router-buildout-corrective-plan.md`; `plans/implementation/ntcp2-transport/099-ntcp2-interop-exit-harness-simplification-and-router-build-unblock.md` | `plans/closure/ntcp2-transport/099-status.md` |
 | 100 | archived | historical narrative (no status record) | `plans/implementation/ntcp2-transport/100-plan099-exit-gate-cleanup-and-router-handoff.md` | — |
 | 101 | archived | historical narrative (no status record) | `plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md` | — |
+| 410 | stopped | `plans/implementation/ntcp2-transport/410-current-pin-ntcp2-loopback-runner.md` | `plans/closure/ntcp2-transport/410-status.md` |
+| 414 | stopped | `plans/implementation/ntcp2-transport/414-stock-i2pd-decoded-message-observation.md` | `plans/closure/ntcp2-transport/414-status.md` |
+| 415 | stopped | `plans/implementation/ntcp2-transport/415-failure-safe-current-pin-ntcp2-observation.md` | `plans/closure/ntcp2-transport/415-status.md`: failure record and negative controls passed; single forward helper timed out waiting for its control-listening peer; reverse not run |
+| 416 | stopped | `plans/implementation/ntcp2-transport/416-current-pin-ntcp2-authentication-stage-diagnosis.md` | `plans/closure/ntcp2-transport/416-status.md`: source trace unresolved; a new plan must add sanitized handshake-stage observation |
+| 417 | stopped | `plans/implementation/ntcp2-transport/417-sanitized-stock-ntcp2-handshake-stage-observer.md` | `plans/closure/ntcp2-transport/417-status.md`: stage observer passed; helper log level filtered all debug milestones |
+| 418 | stopped | `plans/implementation/ntcp2-transport/418-current-pin-helper-debug-stage-logging.md` | `plans/closure/ntcp2-transport/418-status.md`: SessionConfirmed received before validation, no connected peer or DeliveryStatus |
+| 419 | stopped | `plans/implementation/ntcp2-transport/419-session-confirmed-rejection-stage-observation.md` | `plans/closure/ntcp2-transport/419-status.md`: all rejection counters and DeliveryStatus zero; helper timeout recurred |
+| 420 | stopped | `plans/implementation/ntcp2-transport/420-post-validation-session-progress-observation.md` | `plans/closure/ntcp2-transport/420-status.md`: RouterInfo accepted marker; no I2NP block or DeliveryStatus |
+| 421 | stopped | `plans/implementation/ntcp2-transport/421-current-pin-reverse-initiator-attempt.md` | `plans/closure/ntcp2-transport/421-status.md`: reverse scenario identity mismatch before wire |
+| 422 | stopped | `plans/implementation/ntcp2-transport/422-reverse-scenario-identity-correction.md` | `plans/closure/ntcp2-transport/422-status.md`: corrected mapping reached TCP; responder failed at SessionConfirmed Part 1 |
+| 423 | stopped | `plans/implementation/ntcp2-transport/423-session-confirmed-part1-error-classification.md` | `plans/closure/ntcp2-transport/423-status-amendment-plan-424-outcome.md`: operation identified as SessionConfirmed read closed; helper cause remains uncorrelated |
+| 424 | stopped | `plans/implementation/ntcp2-transport/424-reverse-responder-io-operation-attribution.md` | `plans/closure/ntcp2-transport/424-status.md`: exact responder read and IoErrorKind recorded; one reverse-only attempt spent |
 
 ## 8. Cross-cutting requirements
 

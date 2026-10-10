@@ -555,6 +555,13 @@ pub mod cache_seam {
         /// Ensures both the cache root and the staging directory exist
         /// with `0o700` permissions.
         pub fn prepare(&self) -> Result<(), CacheError> {
+            if let Some(parent) = self.root.parent()
+                && !parent.exists()
+            {
+                let grandparent = parent.parent().unwrap_or_else(|| Path::new("."));
+                ensure_secure_directory(grandparent).map_err(map_storage)?;
+                ensure_secure_directory(parent).map_err(map_storage)?;
+            }
             ensure_secure_directory(&self.root).map_err(map_storage)?;
             ensure_secure_directory(&self.pending_dir()).map_err(map_storage)?;
             Ok(())

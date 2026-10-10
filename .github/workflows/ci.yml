@@ -192,6 +192,8 @@ jobs:
         run: bash scripts/check-runtime-boundaries.sh
       - name: Check managed-app private client seams
         run: python3 scripts/check-managed-app-private-client-seams.py
+      - name: Check router readiness claim contract
+        run: python3 scripts/check-router-readiness-contract.py --self-test
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh

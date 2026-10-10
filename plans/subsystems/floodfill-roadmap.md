@@ -2,6 +2,8 @@
 
 Status: Plans 270–276 passed; Plans 277–282 and 278 stopped with retained bridge/route/delivery/qualification work; Plan 283 passed (Option 3 peer-test evidence driver + controlled activation); Plan 284 registered as the RouterInfo reference-acceptance corrective; type-5 support remains deferred.
 
+**Recovery continuation (2026-10-10):** [Plan 437](../implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md), blocked on Plans 433/436, derives an evidence-backed RouterInfo bandwidth class and re-proves stock Java floodfill **selection** without fabricated letters. [Plan 438](../implementation/floodfill/438-two-family-floodfill-and-normal-optin.md), blocked on 437, qualifies full i2pd+Java controlled matrix and guarded normal-daemon opt-in/withdrawal. These are forward successors to stopped Plan 306; earlier closure evidence and its blocked history are not rewritten. [Recovery roadmap](core-router-recovery-roadmap.md). Normal caps=f stays forbidden until two-family and health qualifications genuinely pass.
+
 Long-term references:
 - GUARDRAILS.md
 - specs/CONFORMANCE.md

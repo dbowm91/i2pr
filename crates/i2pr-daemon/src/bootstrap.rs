@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 use std::fmt;
+use std::io::Read as _;
 use std::path::Path;
 
 use i2pr_netdb::{
@@ -44,6 +45,7 @@ use crate::config::{Config, ReseedConfig, ReseedSourceConfig};
 /// hard ceiling matches the Plan 104 SU3 single-file cap and stops
 /// runaway allocations regardless of operator configuration.
 pub const MAX_RESEED_BYTES_HARD: usize = 16 * 1024 * 1024;
+const MAX_RESEED_SIGNER_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Maximum validated RouterInfos copied into the daemon's group-provider
 /// bootstrap handoff.
@@ -218,6 +220,7 @@ pub struct Bootstrap {
     last_reseed_summary: Option<ReseedSummary>,
     reseed_config: ReseedConfig,
     reseed_offline_path: Option<std::path::PathBuf>,
+    reseed_online_bundle: Option<Vec<u8>>,
 }
 
 impl Bootstrap {
@@ -234,6 +237,7 @@ impl Bootstrap {
             last_reseed_summary: None,
             reseed_config,
             reseed_offline_path: None,
+            reseed_online_bundle: None,
         }
     }
 
@@ -241,6 +245,14 @@ impl Bootstrap {
     /// offline reseed pipeline.
     pub fn with_offline_reseed_path(mut self, path: std::path::PathBuf) -> Self {
         self.reseed_offline_path = Some(path);
+        self
+    }
+
+    /// Supplies one HTTPS-acquired bundle that was bounded and prevalidated
+    /// before the bootstrap owner was constructed. The normal SU3 ingestion
+    /// path still verifies it again before any cache write.
+    pub fn with_online_reseed_bundle(mut self, bundle: Vec<u8>) -> Self {
+        self.reseed_online_bundle = Some(bundle);
         self
     }
 
@@ -298,10 +310,19 @@ impl Bootstrap {
         self.run_local(builder, now_seconds)?;
         let mut final_state = self.compute_state(policy);
         self.snapshot.state = final_state;
-        if matches!(final_state, BootstrapState::ReseedRequired) && policy.reseed_enabled {
+        if matches!(
+            final_state,
+            BootstrapState::Empty | BootstrapState::ReseedRequired
+        ) && policy.reseed_enabled
+        {
             self.snapshot.state = BootstrapState::Reseeding;
-            final_state = self.run_offline_reseed(data_dir, policy, now_seconds)?;
+            final_state = if let Some(bundle) = self.reseed_online_bundle.take() {
+                self.run_reseed_bundle(data_dir, policy, now_seconds, &bundle)?
+            } else {
+                self.run_offline_reseed(data_dir, policy, now_seconds)?
+            };
         }
+        self.snapshot.state = final_state;
         let snapshot = self.snapshot.clone();
         Ok(BootstrapReport {
             final_state,
@@ -377,6 +398,16 @@ impl Bootstrap {
             Ok(bytes) => bytes,
             Err(_) => return Ok(self.compute_state(policy)),
         };
+        self.run_reseed_bundle(data_dir, policy, now_seconds, &bundle)
+    }
+
+    fn run_reseed_bundle(
+        &mut self,
+        data_dir: &Path,
+        policy: BootstrapPolicy,
+        now_seconds: u64,
+        bundle: &[u8],
+    ) -> Result<BootstrapState, BootstrapError> {
         let trust = match build_trust_set(&self.reseed_config.sources) {
             Ok(trust) => trust,
             Err(error) => {
@@ -402,13 +433,8 @@ impl Bootstrap {
         let cache = ByteCache::in_data_dir(data_dir);
         let loader = CacheLoader::new(cache);
         let ingestor = ReseedIngestor::with_limits(&trust, limits);
-        match ingestor.ingest_su3_into(
-            &bundle,
-            now_seconds,
-            context,
-            &mut self.store,
-            Some(&loader),
-        ) {
+        match ingestor.ingest_su3_into(bundle, now_seconds, context, &mut self.store, Some(&loader))
+        {
             Ok(report) => {
                 let summary = ReseedSummary::from(&report);
                 self.reseed_report = Some(report);
@@ -496,7 +522,42 @@ pub fn build_trust_set(
 ) -> Result<ReseedSignerTrustSet, BootstrapError> {
     let mut trust = ReseedSignerTrustSet::new();
     for source in sources {
-        let bytes = std::fs::read(&source.certificate_path)
+        let metadata = std::fs::symlink_metadata(&source.certificate_path)
+            .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_RESEED_SIGNER_CERTIFICATE_BYTES as u64
+        {
+            return Err(BootstrapError::ReseedTrustSet(
+                "signer certificate is not a bounded regular file".to_owned(),
+            ));
+        }
+        let file = std::fs::File::open(&source.certificate_path)
+            .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::take(file, (MAX_RESEED_SIGNER_CERTIFICATE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
+        if bytes.is_empty() || bytes.len() > MAX_RESEED_SIGNER_CERTIFICATE_BYTES {
+            return Err(BootstrapError::ReseedTrustSet(
+                "signer certificate is empty or exceeds its byte limit".to_owned(),
+            ));
+        }
+        use x509_parser::prelude::{FromDer, X509Certificate};
+        let (_, certificate) = X509Certificate::from_der(&bytes)
+            .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
+        let common_names = certificate.subject().iter_common_name().collect::<Vec<_>>();
+        if common_names.len() != 1
+            || common_names[0]
+                .as_str()
+                .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?
+                != source.signer_id
+        {
+            return Err(BootstrapError::ReseedTrustSet(
+                "configured signer identifier does not match the certificate CN".to_owned(),
+            ));
+        }
+        let rsa = i2pr_su3::rsa_signer_from_certificate(&source.signer_id, &bytes)
             .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
         let signer_id = ReseedSignerId::new(&source.signer_id)
             .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
@@ -504,8 +565,8 @@ pub fn build_trust_set(
             signer_id,
             bytes,
             ReseedSignatureType::RsaSha512_4096,
-            0,
-            u64::MAX,
+            rsa.not_before,
+            rsa.not_after,
         )
         .map_err(|error| BootstrapError::ReseedTrustSet(error.to_string()))?;
         trust.add(signer);
@@ -532,6 +593,22 @@ pub fn bootstrap_with_offline_reseed(
     if let Some(path) = offline_reseed_path {
         bootstrap = bootstrap.with_offline_reseed_path(path);
     }
+    let policy = BootstrapPolicy::from_config(config);
+    bootstrap.run(&config.router.data_dir, builder, policy, now_seconds)
+}
+
+/// Validates and ingests an explicitly supplied online bundle using the
+/// same bounded owner as offline reseed.
+pub fn bootstrap_with_online_reseed(
+    config: &Config,
+    builder: &LocalRouterInfoBuilder<'_>,
+    now_seconds: u64,
+    bundle: Vec<u8>,
+) -> Result<BootstrapReport, BootstrapError> {
+    let store_config =
+        RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
+    let mut bootstrap =
+        Bootstrap::new(store_config, config.reseed.clone()).with_online_reseed_bundle(bundle);
     let policy = BootstrapPolicy::from_config(config);
     bootstrap.run(&config.router.data_dir, builder, policy, now_seconds)
 }
@@ -570,8 +647,10 @@ mod tests {
     #[test]
     fn build_trust_set_rejects_missing_certificate() {
         let sources = vec![ReseedSourceConfig {
+            url: None,
             signer_id: "missing".to_owned(),
             certificate_path: std::path::PathBuf::from("/nope/cert.pem"),
+            tls_root_path: None,
         }];
         let error = build_trust_set(&sources).unwrap_err();
         assert!(matches!(error, BootstrapError::ReseedTrustSet(_)));

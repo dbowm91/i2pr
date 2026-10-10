@@ -49,16 +49,16 @@ pub const MAX_ENTRY_UNCOMPRESSED_BYTES: u64 = 256 * 1024;
 pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The Plan 104 ceiling for signer identifier length (UTF-8 bytes).
-pub const MAX_SIGNER_ID_LEN: usize = 256;
+pub const MAX_SIGNER_ID_LEN: usize = 255;
 
 /// The Plan 104 ceiling for the SU3 version field length.
-pub const MAX_VERSION_LEN: usize = 16;
+pub const MAX_VERSION_LEN: usize = 64;
 
 /// The Plan 104 expected SU3 file type for reseed bundles.
-pub const RESEED_FILE_TYPE: u8 = 2; // ZIP
+pub const RESEED_FILE_TYPE: u8 = 0; // ZIP
 
 /// The Plan 104 expected SU3 content type for reseed bundles.
-pub const RESEED_CONTENT_TYPE: u8 = 0; // RESEED
+pub const RESEED_CONTENT_TYPE: u8 = 3; // RESEED
 
 /// The Plan 104 supported signature types.
 ///
@@ -248,6 +248,12 @@ pub enum ReseedParseError {
         /// Number of bytes needed.
         needed: u64,
         /// Number of bytes remaining in the input.
+        remaining: u64,
+    },
+    /// Bytes remained after the declared SU3 signature.
+    #[error("SU3 input contains {remaining} trailing bytes")]
+    TrailingBytes {
+        /// Number of bytes after the declared SU3 content and signature.
         remaining: u64,
     },
     /// The signer identifier could not be decoded as UTF-8.
@@ -481,60 +487,54 @@ pub struct ParsedSu3 {
 /// Returns the parsed header plus the byte range of the signed content
 /// and signature. The caller owns the bounds-checked input.
 fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
-    // SU3 header layout (little-endian for the length fields):
-    //
-    //  magic[6] = "I2Psu3"
-    //  format_version: u8
-    //  reserved1: u8 (must be 0)
-    //  reserved2: u8 (must be 0)
-    //  reserved3: u8 (must be 0)
-    //  signature_type: u16
-    //  signature_length: u16
-    //  content_length: u32 (little-endian)
-    //  file_type: u8
-    //  content_type: u8
-    //  reserved4: u8 (must be 0)
-    //  reserved5: u8 (must be 0)
-    //  reserved6: u8 (must be 0)
-    //  version_length: u16
-    //  version[version_length]
-    //  signer_id_length: u16
-    //  signer_id[signer_id_length]
-    //  content[content_length]
-    //  signature[signature_length]
-    const HEADER_PREFIX: usize = 6 + 1 + 1 + 1 + 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 2;
+    // Header offsets and integer byte order follow the SU3 specification
+    // and Java I2P's SU3File implementation (all integers are big endian).
+    const HEADER_PREFIX: usize = 40;
     const MAGIC: &[u8; 6] = b"I2Psu3";
-    if input.len() < HEADER_PREFIX {
+    if input.len() < MAGIC.len() {
         return Err(ReseedParseError::Truncated {
-            needed: HEADER_PREFIX as u64,
+            needed: MAGIC.len() as u64,
             remaining: input.len() as u64,
         });
     }
     if &input[..6] != MAGIC {
         return Err(ReseedParseError::MagicMismatch);
     }
-    let format_version = input[6];
-    if format_version != 1 {
+    if input.len() < HEADER_PREFIX {
+        return Err(ReseedParseError::Truncated {
+            needed: HEADER_PREFIX as u64,
+            remaining: input.len() as u64,
+        });
+    }
+    if input[6] != 0 {
+        return Err(ReseedParseError::NonZeroReserved { offset: 6 });
+    }
+    let format_version = input[7];
+    if format_version != 0 {
         return Err(ReseedParseError::UnsupportedFormatVersion {
             actual: format_version,
         });
     }
-    for offset in [7_usize, 8, 9] {
+    for offset in [12_usize, 14, 24, 26].into_iter().chain(28..HEADER_PREFIX) {
         if input[offset] != 0 {
             return Err(ReseedParseError::NonZeroReserved { offset });
         }
     }
-    let signature_type_code = read_u16_le(&input[10..12]);
-    let signature_length = read_u16_le(&input[12..14]) as usize;
-    let content_length = read_u32_le(&input[14..18]) as u64;
-    let file_type = input[18];
-    let content_type = input[19];
-    for offset in [20_usize, 21, 22] {
-        if input[offset] != 0 {
-            return Err(ReseedParseError::NonZeroReserved { offset });
-        }
-    }
-    let version_length = read_u16_le(&input[23..25]) as usize;
+    let signature_type_code = u16::from_be_bytes([input[8], input[9]]);
+    let signature_length = usize::from(u16::from_be_bytes([input[10], input[11]]));
+    let version_length = usize::from(input[13]);
+    let signer_id_length = usize::from(input[15]);
+    let content_length_u64 =
+        u64::from_be_bytes(
+            input[16..24]
+                .try_into()
+                .map_err(|_| ReseedParseError::Truncated {
+                    needed: 24,
+                    remaining: input.len() as u64,
+                })?,
+        );
+    let file_type = input[25];
+    let content_type = input[27];
 
     if file_type != RESEED_FILE_TYPE {
         return Err(ReseedParseError::UnsupportedFileType { actual: file_type });
@@ -552,13 +552,25 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
         }
     };
 
-    if content_length > MAX_SU3_BYTES as u64 {
+    if !(16..=MAX_VERSION_LEN).contains(&version_length) {
+        return Err(ReseedParseError::InvalidVersion);
+    }
+    if signer_id_length == 0 || signer_id_length > MAX_SIGNER_ID_LEN {
+        return Err(ReseedParseError::InvalidSignerId);
+    }
+    if content_length_u64 > MAX_SU3_BYTES as u64 {
         return Err(ReseedParseError::LengthExceeded {
             field: "content",
-            actual: content_length,
+            actual: content_length_u64,
             maximum: MAX_SU3_BYTES as u64,
         });
     }
+    let content_length =
+        usize::try_from(content_length_u64).map_err(|_| ReseedParseError::LengthExceeded {
+            field: "content",
+            actual: content_length_u64,
+            maximum: MAX_SU3_BYTES as u64,
+        })?;
     if signature_length > MAX_SU3_BYTES {
         return Err(ReseedParseError::LengthExceeded {
             field: "signature",
@@ -566,42 +578,51 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
             maximum: MAX_SU3_BYTES as u64,
         });
     }
+    if signature_length != 512 {
+        return Err(ReseedParseError::SignatureLengthMismatch {
+            actual: signature_length,
+            expected: 512,
+        });
+    }
 
-    let mut offset = HEADER_PREFIX;
-    offset = offset
-        .checked_add(version_length)
-        .ok_or(ReseedParseError::Truncated {
-            needed: u64::MAX,
-            remaining: input.len() as u64,
-        })?;
-    if offset > input.len() {
+    let version_end =
+        HEADER_PREFIX
+            .checked_add(version_length)
+            .ok_or(ReseedParseError::Truncated {
+                needed: u64::MAX,
+                remaining: input.len() as u64,
+            })?;
+    if version_end > input.len() {
         return Err(ReseedParseError::Truncated {
-            needed: offset as u64,
+            needed: version_end as u64,
             remaining: input.len() as u64,
         });
     }
-    let version_bytes = &input[HEADER_PREFIX..offset];
-    let version = std::str::from_utf8(version_bytes)
+    let version_bytes = &input[HEADER_PREFIX..version_end];
+    let version_end_offset = version_bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(version_bytes.len());
+    if version_end_offset == 0
+        || version_bytes[version_end_offset..]
+            .iter()
+            .any(|byte| *byte != 0)
+        || !version_bytes[..version_end_offset].is_ascii()
+        || version_bytes[..version_end_offset]
+            .iter()
+            .any(|byte| *byte < 0x20 || *byte > 0x7e)
+    {
+        return Err(ReseedParseError::InvalidVersion);
+    }
+    let version = std::str::from_utf8(&version_bytes[..version_end_offset])
         .map_err(|_| ReseedParseError::InvalidVersion)?
         .to_owned();
-    if version.is_empty() || version.len() > MAX_VERSION_LEN {
+    if version.parse::<u64>().is_err() || version.len() > MAX_VERSION_LEN {
         return Err(ReseedParseError::InvalidVersion);
     }
 
-    let signer_length_offset = offset;
-    if offset + 2 > input.len() {
-        return Err(ReseedParseError::Truncated {
-            needed: (offset + 2) as u64,
-            remaining: input.len() as u64,
-        });
-    }
-    let signer_id_length =
-        read_u16_le(&input[signer_length_offset..signer_length_offset + 2]) as usize;
-    if signer_id_length == 0 || signer_id_length > MAX_SIGNER_ID_LEN {
-        return Err(ReseedParseError::InvalidSignerId);
-    }
-    offset = offset
-        .checked_add(2 + signer_id_length)
+    let offset = version_end
+        .checked_add(signer_id_length)
         .ok_or(ReseedParseError::Truncated {
             needed: u64::MAX,
             remaining: input.len() as u64,
@@ -612,7 +633,7 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
             remaining: input.len() as u64,
         });
     }
-    let signer_id_bytes = &input[signer_length_offset + 2..offset];
+    let signer_id_bytes = &input[version_end..offset];
     let signer_id_str =
         std::str::from_utf8(signer_id_bytes).map_err(|_| ReseedParseError::InvalidSignerId)?;
     let signer_id =
@@ -621,7 +642,7 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
     let content_offset = offset;
     let content_end =
         content_offset
-            .checked_add(content_length as usize)
+            .checked_add(content_length)
             .ok_or(ReseedParseError::Truncated {
                 needed: u64::MAX,
                 remaining: input.len() as u64,
@@ -646,9 +667,14 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
             remaining: input.len() as u64,
         });
     }
+    if total_length < input.len() {
+        return Err(ReseedParseError::TrailingBytes {
+            remaining: (input.len() - total_length) as u64,
+        });
+    }
 
     Ok(ParsedSu3 {
-        content_length: content_length as usize,
+        content_length,
         signature_type,
         content_type,
         file_type,
@@ -658,22 +684,6 @@ fn parse_su3_header(input: &[u8]) -> Result<ParsedSu3, ReseedParseError> {
         signature_offset,
         total_length,
     })
-}
-
-fn read_u16_le(bytes: &[u8]) -> u16 {
-    let mut value = 0_u16;
-    for (index, byte) in bytes.iter().take(2).enumerate() {
-        value |= u16::from(*byte) << (8 * index);
-    }
-    value
-}
-
-fn read_u32_le(bytes: &[u8]) -> u32 {
-    let mut value = 0_u32;
-    for (index, byte) in bytes.iter().take(4).enumerate() {
-        value |= u32::from(*byte) << (8 * index);
-    }
-    value
 }
 
 /// Parses an SU3 bundle without verifying its signature. Returns the
@@ -1060,7 +1070,7 @@ fn report_validated(
     // never reaches here.
     let info = RouterInfo::decode(bytes, MAX_COMMON_STRUCTURE_SIZE)
         .map_err(|_| ReseedParseError::ZipDecode)?;
-    let expected = router_info_filename_hash(raw_name).ok_or(ReseedParseError::Truncated {
+    let expected = reseed_entry_hash(raw_name).ok_or(ReseedParseError::Truncated {
         needed: 0,
         remaining: 0,
     })?;
@@ -1075,10 +1085,9 @@ fn validate_ri_entry(
     context: ValidationContext,
     _limits: ReseedLimits,
 ) -> ReseedEntryReport {
-    // Filename must encode the I2P Base64 hash of the contained
-    // RouterIdentity; we accept the standard 52-char encoding (32-byte
-    // SHA-256 hash).
-    let expected_hash = match router_info_filename_hash(name) {
+    // Reseed entry names are exactly `routerInfo-{44-char-I2P-base64}.dat`.
+    // The decoded hash must bind to the contained RouterIdentity.
+    let expected_hash = match reseed_entry_hash(name) {
         Some(hash) => hash,
         None => {
             return ReseedEntryReport {
@@ -1132,17 +1141,21 @@ fn validate_ri_entry(
 /// Extracts the canonical I2P Base64 router hash from a reseed entry
 /// filename.
 ///
-/// Reseed entry filenames are conventionally `<base64hash>.b32` or
-/// `<base64hash>` where the prefix is the I2P Base64 encoding of the
-/// router hash. The helper accepts the base64 prefix (44 characters
-/// for a 32-byte SHA-256 hash: ten 4-char groups covering 30 bytes
-/// plus a 4-char final group with `~` padding for the 2-byte tail)
-/// and returns the matching `RouterHash`.
+/// Reseed ZIP filenames use `routerInfo-<base64hash>.dat`. Historical
+/// local fixtures may also use `<base64hash>.b32`, `<base64hash>.ri`,
+/// or the bare 44-character hash. The encoded prefix is the I2P Base64
+/// form of the 32-byte router hash.
 pub fn router_info_filename_hash(name: &str) -> Option<crate::router_info::RouterHash> {
-    let stem = name
-        .strip_suffix(".b32")
-        .or_else(|| name.strip_suffix(".ri"))
-        .unwrap_or(name);
+    let stem = if let Some(stem) = name
+        .strip_prefix("routerInfo-")
+        .and_then(|stem| stem.strip_suffix(".dat"))
+    {
+        stem
+    } else {
+        name.strip_suffix(".b32")
+            .or_else(|| name.strip_suffix(".ri"))
+            .unwrap_or(name)
+    };
     // The 32-byte SHA-256 hash encodes to 44 I2P Base64 characters.
     if stem.len() < 44 {
         return None;
@@ -1158,6 +1171,14 @@ pub fn router_info_filename_hash(name: &str) -> Option<crate::router_info::Route
     let mut hash = [0_u8; 32];
     hash.copy_from_slice(&decoded);
     Some(crate::router_info::RouterHash::from_bytes(hash))
+}
+
+fn reseed_entry_hash(name: &str) -> Option<crate::router_info::RouterHash> {
+    let encoded = name.strip_prefix("routerInfo-")?.strip_suffix(".dat")?;
+    if encoded.len() != 44 {
+        return None;
+    }
+    router_info_filename_hash(encoded)
 }
 
 #[cfg(test)]
@@ -1185,29 +1206,29 @@ mod tests {
         RouterIdentityBundle::generate(&mut i2rng).expect("identity")
     }
 
-    fn rsa_2048_pair(seed: u64) -> sad_rsa::RsaPrivateKey {
+    fn rsa_4096_pair(seed: u64) -> sad_rsa::RsaPrivateKey {
         let mut rng = sad_rng(seed);
-        sad_rsa::RsaPrivateKey::new(&mut rng, 2048).expect("RSA key")
+        sad_rsa::RsaPrivateKey::new(&mut rng, 4096).expect("RSA key")
     }
 
-    fn rsa_2048_public(seed: u64) -> (Vec<u8>, Vec<u8>) {
-        let private = rsa_2048_pair(seed);
+    fn rsa_4096_public(seed: u64) -> (Vec<u8>, Vec<u8>) {
+        let private = rsa_4096_pair(seed);
         let public = sad_rsa::RsaPublicKey::from(&private);
         let n = public.n_bytes().to_vec();
         let e = public.e_bytes().to_vec();
         (n, e)
     }
 
-    fn sign_with_rsa_2048(seed: u64, message: &[u8]) -> Vec<u8> {
-        let private = rsa_2048_pair(seed);
+    fn sign_with_rsa_4096(seed: u64, message: &[u8]) -> Vec<u8> {
+        let private = rsa_4096_pair(seed);
         let signing_key = SigningKey::<sad_rsa::sha2::Sha512>::new(private);
         let mut rng = sad_rng(seed);
         let sig: sad_rsa::pkcs1v15::Signature = signing_key.sign_with_rng(&mut rng, message);
         sig.to_bytes().to_vec()
     }
 
-    fn verify_rsa_2048(seed: u64, message: &[u8], signature: &[u8]) -> Result<(), String> {
-        let (n, e) = rsa_2048_public(seed);
+    fn verify_rsa_4096(seed: u64, message: &[u8], signature: &[u8]) -> Result<(), String> {
+        let (n, e) = rsa_4096_public(seed);
         let n_bits = (n.len() as u32).checked_mul(8).unwrap_or(2048);
         let e_bits = (e.len() as u32).checked_mul(8).unwrap_or(32);
         let n_int =
@@ -1253,33 +1274,33 @@ mod tests {
         let encoded = info
             .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
             .expect("encode");
-        (format!("{prefix}.b32"), encoded)
+        (format!("routerInfo-{prefix}.dat"), encoded)
     }
 
     fn make_su3(_archive_seed: u64, signer_seed: u64, archive: &[u8]) -> Vec<u8> {
         let signer_id_str = format!("test-signer-{signer_seed}");
-        // 2048-bit RSA produces a 256-byte PKCS#1 v1.5 signature.
-        let sig_len: u16 = 256;
+        // The reseed SU3 profile uses RSA-4096 and a 512-byte signature.
+        let sig_len: u16 = 512;
         let mut header = Vec::new();
         header.extend_from_slice(b"I2Psu3");
-        header.push(1); // format version
-        header.extend_from_slice(&[0, 0, 0]); // reserved
-        header.extend_from_slice(&6_u16.to_le_bytes()); // signature type
-        header.extend_from_slice(&sig_len.to_le_bytes()); // signature length
-        header.extend_from_slice(&(archive.len() as u32).to_le_bytes()); // content length
+        header.extend_from_slice(&[0, 0]); // unused byte, format version
+        header.extend_from_slice(&6_u16.to_be_bytes()); // signature type
+        header.extend_from_slice(&sig_len.to_be_bytes()); // signature length
+        header.extend_from_slice(&[0, 16, 0, signer_id_str.len() as u8]);
+        header.extend_from_slice(&(archive.len() as u64).to_be_bytes()); // content length
+        header.push(0); // reserved
         header.push(RESEED_FILE_TYPE);
+        header.push(0); // reserved
         header.push(RESEED_CONTENT_TYPE);
-        header.extend_from_slice(&[0, 0, 0]); // reserved
-        header.extend_from_slice(&1_u16.to_le_bytes()); // version length
-        header.push(b'1');
-        header.extend_from_slice(&(signer_id_str.len() as u16).to_le_bytes());
+        header.extend_from_slice(&[0; 12]); // reserved
+        header.extend_from_slice(b"1700000000\0\0\0\0\0\0"); // 16-byte version
         header.extend_from_slice(signer_id_str.as_bytes());
         header.extend_from_slice(archive);
-        let sig = sign_with_rsa_2048(signer_seed, &header);
+        let sig = sign_with_rsa_4096(signer_seed, &header);
         assert_eq!(
             sig.len(),
             sig_len as usize,
-            "RSA-2048 signature must be 256 bytes"
+            "RSA-4096 signature must be 512 bytes"
         );
         header.extend_from_slice(&sig);
         header
@@ -1295,20 +1316,34 @@ mod tests {
         assert!(matches!(error, ReseedParseError::MagicMismatch));
     }
 
+    fn empty_su3_frame() -> Vec<u8> {
+        let mut bytes = b"I2Psu3\0\0".to_vec();
+        bytes.extend_from_slice(&6_u16.to_be_bytes());
+        bytes.extend_from_slice(&512_u16.to_be_bytes());
+        bytes.extend_from_slice(&[0, 16, 0, 1]);
+        bytes.extend_from_slice(&0_u64.to_be_bytes());
+        bytes.extend_from_slice(&[0, RESEED_FILE_TYPE, 0, RESEED_CONTENT_TYPE]);
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(b"1700000000\0\0\0\0\0\0");
+        bytes.push(b'x');
+        bytes.extend_from_slice(&[0; 512]);
+        bytes
+    }
+
+    #[test]
+    fn su3_rejects_bytes_after_declared_signature() {
+        let mut bytes = empty_su3_frame();
+        bytes.push(0);
+        assert!(matches!(
+            parse_su3(&bytes),
+            Err(ReseedParseError::TrailingBytes { remaining: 1 })
+        ));
+    }
+
     #[test]
     fn parse_su3_rejects_unsupported_format_version() {
-        // Build a minimal valid header with format version 2.
-        let mut bytes = b"I2Psu3".to_vec();
-        bytes.push(2); // format version
-        bytes.extend_from_slice(&[0, 0, 0]); // reserved
-        bytes.extend_from_slice(&6_u16.to_le_bytes()); // signature type
-        bytes.extend_from_slice(&512_u16.to_le_bytes()); // signature length
-        bytes.extend_from_slice(&0_u32.to_le_bytes()); // content length
-        bytes.push(RESEED_FILE_TYPE);
-        bytes.push(RESEED_CONTENT_TYPE);
-        bytes.extend_from_slice(&[0, 0, 0]); // reserved
-        bytes.extend_from_slice(&0_u16.to_le_bytes()); // version length
-        bytes.extend_from_slice(&0_u16.to_le_bytes()); // signer length
+        let mut bytes = b"I2Psu3\0\x02".to_vec();
+        bytes.resize(40, 0);
         let error = parse_su3(&bytes).unwrap_err();
         assert!(matches!(
             error,
@@ -1318,21 +1353,19 @@ mod tests {
 
     #[test]
     fn parse_su3_rejects_wrong_file_or_content_type() {
-        let mut bytes = b"I2Psu3".to_vec();
-        bytes.push(1); // format version
-        bytes.extend_from_slice(&[0, 0, 0]); // reserved
-        bytes.extend_from_slice(&6_u16.to_le_bytes()); // signature type
-        bytes.extend_from_slice(&512_u16.to_le_bytes()); // signature length
-        bytes.extend_from_slice(&0_u32.to_le_bytes()); // content length
-        bytes.push(0); // wrong file type
-        bytes.push(RESEED_CONTENT_TYPE);
-        bytes.extend_from_slice(&[0, 0, 0]); // reserved
-        bytes.extend_from_slice(&0_u16.to_le_bytes()); // version length
-        bytes.extend_from_slice(&0_u16.to_le_bytes()); // signer length
+        let mut bytes = b"I2Psu3\0\0".to_vec();
+        bytes.extend_from_slice(&6_u16.to_be_bytes());
+        bytes.extend_from_slice(&512_u16.to_be_bytes());
+        bytes.extend_from_slice(&[0, 16, 0, 1]);
+        bytes.extend_from_slice(&0_u64.to_be_bytes());
+        bytes.extend_from_slice(&[0, 2, 0, RESEED_CONTENT_TYPE]);
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(b"1700000000\0\0\0\0\0\0");
+        bytes.push(b'x');
         let error = parse_su3(&bytes).unwrap_err();
         assert!(matches!(
             error,
-            ReseedParseError::UnsupportedFileType { actual: 0 }
+            ReseedParseError::UnsupportedFileType { actual: 2 }
         ));
     }
 
@@ -1343,6 +1376,8 @@ mod tests {
         let filename = format!("{encoded}.b32");
         let parsed = router_info_filename_hash(&filename).expect("parsed");
         assert_eq!(parsed, hash);
+        let reseed_name = format!("routerInfo-{encoded}.dat");
+        assert_eq!(router_info_filename_hash(&reseed_name), Some(hash));
     }
 
     #[test]
@@ -1358,7 +1393,7 @@ mod tests {
 
     #[test]
     fn su3_end_to_end_validates_and_ingests() {
-        // Build a deterministic 2048-bit RSA test signer.
+        // Build a deterministic 4096-bit RSA test signer.
         let signer_seed = 0xAA01_u64;
         let signer_id_str = format!("test-signer-{signer_seed}");
 
@@ -1370,7 +1405,7 @@ mod tests {
         // Build the ZIP archive.
         let archive = make_archive(&[(&filename1, &encoded1[..]), (&filename2, &encoded2[..])]);
 
-        // Build the SU3 bundle with RSA-2048 signature.
+        // Build the SU3 bundle with RSA-4096 signature.
         let su3 = make_su3(0xCC01, signer_seed, &archive);
 
         // Parse the SU3 header.
@@ -1381,11 +1416,11 @@ mod tests {
         // Verify the RSA signature over the signed region.
         let signed_region = &su3[..parsed.signature_offset];
         let signature = &su3[parsed.signature_offset..parsed.total_length];
-        verify_rsa_2048(signer_seed, signed_region, signature).expect("RSA signature must verify");
+        verify_rsa_4096(signer_seed, signed_region, signature).expect("RSA signature must verify");
 
         // Set up a trust set with the signer.
         let mut trust = ReseedSignerTrustSet::new();
-        let (modulus, exponent) = rsa_2048_public(signer_seed);
+        let (modulus, exponent) = rsa_4096_public(signer_seed);
         trust.add(TrustedSigner {
             signer_id: ReseedSignerId::new(&signer_id_str).expect("id"),
             certificate_der: Vec::new(),
@@ -1473,7 +1508,7 @@ mod tests {
         su3[tamper_offset] ^= 0xFF;
 
         let mut trust = ReseedSignerTrustSet::new();
-        let (modulus, exponent) = rsa_2048_public(signer_seed);
+        let (modulus, exponent) = rsa_4096_public(signer_seed);
         trust.add(TrustedSigner {
             signer_id: ReseedSignerId::new(&format!("test-signer-{signer_seed}")).expect("id"),
             certificate_der: Vec::new(),
@@ -1505,12 +1540,12 @@ mod tests {
         // to match the RouterIdentity hash of the fixture.
         let wrong_hash = [0x00_u8; 32];
         let wrong_base64 = crate::base64::encode(&wrong_hash).expect("encode wrong hash");
-        let wrong_name = format!("{wrong_base64}.b32");
+        let wrong_name = format!("routerInfo-{wrong_base64}.dat");
         let archive = make_archive(&[(&wrong_name, &good_encoded[..])]);
         let su3 = make_su3(0xCC03, signer_seed, &archive);
 
         let mut trust = ReseedSignerTrustSet::new();
-        let (modulus, exponent) = rsa_2048_public(signer_seed);
+        let (modulus, exponent) = rsa_4096_public(signer_seed);
         trust.add(TrustedSigner {
             signer_id: ReseedSignerId::new(&format!("test-signer-{signer_seed}")).expect("id"),
             certificate_der: Vec::new(),
