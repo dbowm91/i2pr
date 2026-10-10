@@ -340,9 +340,11 @@ and the evidence checker passed; the SAM command was not repeated.
 ## 4. Remaining Plan 375 work
 
 Plan 406 delivered the i2pd scope. Plan 375 remains blocked because its Java
-ELS2 driver and directions have not been executed. Plan 411 has attributed the
-earlier SAM setup failure, and Plan 412 owns the first Java no-auth requester
-direction. This remains implementation work; no Java ELS2 direction has passed.
+ELS2 driver and directions have not been executed. Plan 411 attributed the
+earlier SAM setup failure. Plan 412 found that the Java requester direction
+also depends on Plan 437 proving exact-pinned selection of controlled F under
+a truthful bandwidth tier; Plan 413 owns that handoff and remains blocked on
+Plans 433 and 436 through 437. No Java ELS2 direction has passed.
 
 > **Historical Plan 381 note (2026-10-08).** The i2pd-direction half now exists:
 > `tests/integration/els2/run-i2pd-els2.sh` plus the driver

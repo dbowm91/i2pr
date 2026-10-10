@@ -1,6 +1,6 @@
 # Plan 412 — stock Java no-auth ELS2 requester direction
 
-Status: **in-progress-java-els2-noauth-requester-direction**.
+Status: **blocked-java-floodfill-selection-requires-plan437-truthful-bandwidth-tier**.
 
 Subsystem: Proposal 170 / Java ELS2 qualification.
 
@@ -14,6 +14,11 @@ NONE/no-authorization row only.
 
 Hard prerequisites: Plans 373, 374's i2pd scope via 406, and 411's Java SAM
 substrate diagnosis passed; Plan 375's pin and ELS2 source matrix are frozen.
+The topology also depends on Plan 437: exact-pinned Java must select the
+controlled i2pr floodfill F with a truthful bandwidth tier. Plan 306 proves
+Java lists the controlled `fR` RouterInfo but does not select it while its
+tier is `Unknown`; Plan 437 owns that boundary and is blocked on Plans 433 and
+436. This plan is not dependency-ready until that selection proof passes.
 Plan 411 proved the old DATAGRAM setup failure comes from the default
 `127.0.0.1:7655` SAM UDP bind, before I2CP session construction. The Java
 driver must configure a unique loopback `sam.udp.port` for any DATAGRAM
@@ -44,6 +49,8 @@ i2pr-publisher-to-Java-consumer NONE direction.
    material or raw reference logs.
 7. This plan makes no Java-publisher, auth-mode, restart/rollover, whole-ELS2,
    or Proposal-170 conformance claim. Type 5 remains non-advertised.
+8. Do not spend the live attempt while Java's selection of F is unqualified;
+   a seeded RouterInfo is not proof that Java queried it.
 
 ## Scope
 
@@ -80,7 +87,7 @@ changes; running Plan 279 or modifying Java I2P.
 5. Add the evidence checker and negative self-tests proving it rejects missing
    lookup/store/payload stages, local injection, topology bypass, wrong pin,
    raw/private data, and incomplete payload integrity.
-6. Execute once under the frozen budget. Stop on unhealthy reference controls,
+6. After Plan 437 closes, execute once under the frozen budget. Stop on unhealthy reference controls,
    missing F lookup, no Java decrypt, or missing payload; do not convert setup
    failures into skips. Record a typed stop and exact next evidence if needed.
 
@@ -107,6 +114,11 @@ python3 -m unittest discover -s tests/planning -p 'test_*.py'
 Run formatting/whitespace checks and affected ELS2, package, SAM/I2CP, exact-pin,
 and source-lock guards. No production workspace floor is required unless
 production code changes.
+
+The commands above are the original acceptance targets. The live runner and
+evidence checker were not created or executed because the hard Plan 437
+candidate-selection prerequisite is still open; Plan 413 owns those live
+acceptance steps after the dependency closes.
 
 ## Acceptance and closure evidence
 

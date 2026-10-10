@@ -76,7 +76,7 @@ counting method both numbers come from.
 | `scripts/check-outproxy-wire-lane-evidence.py` | Implementation of `check-outproxy-wire-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
 | `scripts/check-els2-live-lane-evidence.sh` | Plan 381 evidence-integrity check for the live ELS2 external driver lane. Wrapper; execs the `.py` beside it. | yes | **no** |
 | `scripts/check-els2-live-lane-evidence.py` | Implementation of `check-els2-live-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
-| `scripts/check-java-sam-diagnostic.py` | Plan 411 evidence-integrity guard for the one-attempt, loopback-only Java SAM/I2CP diagnosis. Checks the exact Java pin, closed stage/result vocabulary, one-request budget, response/source digests, secret-field exclusion, and full source-path facts; `--self-test` mutation-tests the rules. | yes | yes (`--self-test`) |
+| `scripts/check-java-sam-diagnostic.py` | Plan 411 evidence-integrity guard for the one-attempt, loopback-only Java SAM/I2CP diagnosis. Checks the exact Java pin, closed stage/result vocabulary, one-request budget, response/source digests, secret-field exclusion, and full source-path facts; `--self-test` mutation-tests the rules. | no | no |
 | `scripts/trace-java-sam-source.py` | Plan 411 exact-pin source tracer for the stock Java SAM DATAGRAM bind path and its IOException-to-SESSION-STATUS mapping. Emits source names, method labels, line numbers, and token digests only. | no | no |
 | `scripts/check-managed-app-private-client-seams.py` | Plan 354 guard for the listener-independent SAM/I2CP connection seams: managed-profile host-target denial, and that both loopback listeners and trusted private connections drive one protocol driver. | yes | yes |
 | `scripts/check-router-readiness-contract.py` | Plan 430 fail-closed source guard for profile, network-readiness, service-health, reachability, independent protocol, operator-consent and generation evidence; `--self-test` mutation-checks each gate. | yes | yes |
@@ -287,7 +287,7 @@ Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 | Floor steps invoking a checker | 52 | 50 rows marked `Floor: yes` |
 | Total routine-floor steps | 62 | — |
 | Checkers executed by `ci.yml` | 39 | 42 rows marked `CI: yes` |
-| `check-*` files on disk | 63 (66 with `scripts/interop/`) | 65 checker rows |
+| `check-*` files on disk | 63 (66 with `scripts/interop/`) | 66 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
