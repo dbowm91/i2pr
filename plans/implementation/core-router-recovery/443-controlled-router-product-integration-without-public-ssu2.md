@@ -1,6 +1,6 @@
 # Plan 443 — Controlled real-router integration independent of public SSU2 qualification
 
-Status: **registered / blocked on Plan 440; Plan 432 passed**. Targeted dependency corrective to Plan 433; the original Plan 433 external/public product acceptance remains blocked by 431.
+Status: **blocked — controlled daemon-owned component path passed; normal-process and stock-to-stock topology gate remains open**. Plans 440 and 432 are closed. Targeted dependency corrective to Plan 433; original Plan 433 external/public product acceptance remains blocked by 431. Closure: `plans/closure/core-router-recovery/443-status.md`.
 
 ## Objective and why
 
