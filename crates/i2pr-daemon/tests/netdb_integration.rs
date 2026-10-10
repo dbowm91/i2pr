@@ -105,6 +105,8 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             port: 0,
             advertise: false,
             introducer_service: false,
+            qualification_profile:
+                i2pr_daemon::config::Ssu2QualificationProfile::ControlledLoopback,
             max_pending_handshakes: 64,
             max_active_sessions: 64,
             max_pending_per_ip: 4,

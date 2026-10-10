@@ -1046,6 +1046,10 @@ fn service_tunnels_active(config: &Config) -> bool {
 /// makes the I2PControl service depend on it, so the two must not drift
 /// apart; [`register_ssu2_service`] registers this exact name.
 const SSU2_SERVICE_NAME: &str = "ssu2-router";
+// A signed placeholder is required by the runtime constructor before the
+// socket exists. It is overwritten from the OS-reported endpoint before the
+// service reports readiness or hands the owner to a product consumer.
+const SSU2_PREBIND_ROUTER_INFO_PORT: u16 = 44_001;
 
 /// Supervisor service name for the loopback router console (Plan 356).
 const CONSOLE_SERVICE_NAME: &str = "router-console";
@@ -1521,6 +1525,7 @@ fn register_ssu2_service(
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity_with_keys,
+        generate_private_lan_identity_with_keys,
     };
     use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
@@ -1642,32 +1647,11 @@ fn register_ssu2_service(
                             );
                         }
                     };
-                    // Controlled RouterInfo host/port: prefer IPv4
-                    // loopback when bound, otherwise IPv6 loopback.
-                    // An ephemeral `port = 0` uses a loopback
-                    // placeholder for the in-band RouterInfo because
-                    // `advertise = false` means the record is never
-                    // published; authentication binds through the
-                    // static key with out-of-band dial addresses.
-                    let (host, ri_port) = if ssu2_config.bind_ipv4.is_some() {
-                        (
-                            "127.0.0.1",
-                            if ssu2_config.port == 0 {
-                                44001
-                            } else {
-                                ssu2_config.port
-                            },
-                        )
-                    } else if ssu2_config.bind_ipv6.is_some() {
-                        (
-                            "::1",
-                            if ssu2_config.port == 0 {
-                                44001
-                            } else {
-                                ssu2_config.port
-                            },
-                        )
-                    } else {
+                    // Seed the runtime with a valid local identity, then replace
+                    // its RouterInfo from the OS-reported socket endpoint before
+                    // readiness or any owned product receives the handle.
+                    let bind_ip = ssu2_config.bind_ipv4.or(ssu2_config.bind_ipv6);
+                    let Some(bind_ip) = bind_ip else {
                         let detail =
                             i2pr_core::HealthDetail::new("SSU2 service has no loopback bind").ok();
                         return i2pr_runtime::ServiceResult::Failed(
@@ -1677,12 +1661,29 @@ fn register_ssu2_service(
                             ),
                         );
                     };
-                    let identity = match generate_controlled_identity_with_keys(
-                        &bundle,
-                        host,
-                        ri_port,
-                        &transport_identity,
-                    ) {
+                    let initial_host = bind_ip.to_string();
+                    let initial_port = if ssu2_config.port == 0 {
+                        SSU2_PREBIND_ROUTER_INFO_PORT
+                    } else {
+                        ssu2_config.port
+                    };
+                    let identity = match if ssu2_config.qualification_profile
+                        == crate::config::Ssu2QualificationProfile::PrivateLan
+                    {
+                        generate_private_lan_identity_with_keys(
+                            &bundle,
+                            &initial_host,
+                            initial_port,
+                            &transport_identity,
+                        )
+                    } else {
+                        generate_controlled_identity_with_keys(
+                            &bundle,
+                            &initial_host,
+                            initial_port,
+                            &transport_identity,
+                        )
+                    } {
                         Ok(identity) => identity,
                         Err(error) => {
                             let detail = i2pr_core::HealthDetail::new(format!(
@@ -1730,6 +1731,73 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    let bound = handle.local_v4().or_else(|| handle.local_v6());
+                    let Some(bound) = bound else {
+                        handle.shutdown();
+                        let detail = i2pr_core::HealthDetail::new(
+                            "SSU2 runtime reported no bound endpoint",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    };
+                    let signed = match if ssu2_config.qualification_profile
+                        == crate::config::Ssu2QualificationProfile::PrivateLan
+                    {
+                        generate_private_lan_identity_with_keys(
+                            &bundle,
+                            &bound.ip().to_string(),
+                            bound.port(),
+                            &transport_identity,
+                        )
+                    } else {
+                        generate_controlled_identity_with_keys(
+                            &bundle,
+                            &bound.ip().to_string(),
+                            bound.port(),
+                            &transport_identity,
+                        )
+                    } {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            handle.shutdown();
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SSU2 bound RouterInfo failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+                        .unwrap_or(0);
+                    if handle
+                        .service()
+                        .install_local_router_info(signed.router_info, now_ms)
+                        .is_err()
+                    {
+                        handle.shutdown();
+                        let detail = i2pr_core::HealthDetail::new(
+                            "SSU2 bound RouterInfo did not match the live socket and keys",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
                     // Plan 295: publish the cloned runtime service so
                     // the inspection plane reads session/error
                     // snapshots and primes the metrics windows without

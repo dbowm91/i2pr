@@ -855,10 +855,9 @@ pub fn ssu2_runtime_config_from(
             scheduler_poll_max: config.scheduler_poll_max,
         },
         prefixes: i2pr_runtime::IpPrefixPolicy::default(),
-        // The daemon SSU2 service is always an explicitly configured loopback bind
-        // (enforced by `Ssu2DaemonService::new`). Permitting explicit-bind corroboration
-        // changes nothing by itself: counting still requires the controlled-qualification
-        // recording call, which only the M12 activation composition performs.
+        // Explicit-bind corroboration is inert for the private-LAN profile;
+        // the runtime rejects non-loopback publication and this composition
+        // never records reachability evidence for that profile.
         explicit_bind_corroboration: true,
         // Same posture for the controlled peer-test evidence path (Plan 283): the
         // service parses and routes peer-test datagrams but never responds on its
@@ -871,10 +870,17 @@ pub fn ssu2_runtime_config_from(
         .map_err(|error| Ssu2ServiceError::RuntimeConfig(format!("{error}")))
 }
 
-/// Builds the loopback socket selection for the daemon-owned service.
+fn private_lan_bind_valid(config: &Ssu2Config) -> bool {
+    config.enabled
+        && config.port >= 1024
+        && config.bind_ipv6.is_none()
+        && matches!(config.bind_ipv4, Some(std::net::IpAddr::V4(ip)) if ip.is_private())
+}
+
+/// Builds the profile-permitted socket selection for the daemon-owned service.
 ///
 /// Both families are re-validated fail-closed here so a future config
-/// bypass cannot reach the socket layer. At least one loopback family
+/// bypass cannot reach the socket layer. At least one permitted family
 /// must be present; `port` comes from the daemon surface (`0` selects
 /// an ephemeral port for tests).
 pub fn ssu2_socket_config_from(config: &Ssu2Config) -> Result<Ssu2SocketConfig, Ssu2ServiceError> {
@@ -888,11 +894,23 @@ pub fn ssu2_socket_config_from(config: &Ssu2Config) -> Result<Ssu2SocketConfig, 
             "SSU2 controlled profile forbids advertise/introducer".to_owned(),
         ));
     }
+    if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+        && !private_lan_bind_valid(config)
+    {
+        return Err(Ssu2ServiceError::ControlledProfile(
+            "private-LAN SSU2 requires one RFC1918 IPv4 bind and an explicit non-privileged port"
+                .to_owned(),
+        ));
+    }
     let ipv4 = match config.bind_ipv4 {
         Some(ip) => {
-            if !ip.is_loopback() {
+            let allowed = ip.is_loopback()
+                || (config.qualification_profile
+                    == crate::config::Ssu2QualificationProfile::PrivateLan
+                    && matches!(ip, std::net::IpAddr::V4(address) if address.is_private()));
+            if !allowed {
                 return Err(Ssu2ServiceError::ControlledProfile(
-                    "SSU2 IPv4 bind must be loopback".to_owned(),
+                    "SSU2 IPv4 bind is outside the selected qualification profile".to_owned(),
                 ));
             }
             Some(SocketAddr::new(ip, config.port))
@@ -985,9 +1003,33 @@ pub fn generate_controlled_identity_with_keys(
     port: u16,
     transport: &Ssu2TransportIdentityMaterial,
 ) -> Result<Ssu2IdentityMaterial, Ssu2ServiceError> {
-    if host != "127.0.0.1" && host != "::1" {
+    generate_identity_with_keys(bundle, host, port, transport, false)
+}
+
+pub(crate) fn generate_private_lan_identity_with_keys(
+    bundle: &RouterIdentityBundle,
+    host: &str,
+    port: u16,
+    transport: &Ssu2TransportIdentityMaterial,
+) -> Result<Ssu2IdentityMaterial, Ssu2ServiceError> {
+    generate_identity_with_keys(bundle, host, port, transport, true)
+}
+
+fn generate_identity_with_keys(
+    bundle: &RouterIdentityBundle,
+    host: &str,
+    port: u16,
+    transport: &Ssu2TransportIdentityMaterial,
+    private_lan: bool,
+) -> Result<Ssu2IdentityMaterial, Ssu2ServiceError> {
+    let host_ip: std::net::IpAddr = host.parse().map_err(|_| {
+        Ssu2ServiceError::ControlledProfile("SSU2 identity host must be an IP literal".to_owned())
+    })?;
+    let allowed_host = host_ip.is_loopback()
+        || (private_lan && matches!(host_ip, std::net::IpAddr::V4(ip) if ip.is_private()));
+    if !allowed_host {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "SSU2 controlled identity requires a loopback host".to_owned(),
+            "SSU2 identity host is outside the selected qualification profile".to_owned(),
         ));
     }
     if port == 0 {
@@ -1010,7 +1052,7 @@ pub fn generate_controlled_identity_with_keys(
     }
     let intro = IntroKey::new(intro_bytes);
     let options = Mapping::from_entries(vec![
-        ("host".to_string(), host.to_string()),
+        ("host".to_string(), host_ip.to_string()),
         ("port".to_string(), port.to_string()),
         ("v".to_string(), "2".to_string()),
         ("s".to_string(), i2p_b64_encode(&static_key.public_bytes())),
@@ -1077,8 +1119,8 @@ pub fn verify_reference_router_info(
 /// One daemon-owned SSU2 service instance.
 ///
 /// Construction validates the strict profile and maps daemon ceilings
-/// to the runtime policy; [`Ssu2DaemonService::start`] binds loopback
-/// UDP sockets under the caller-owned [`ChildScope`]. The handle is
+/// to the runtime policy; [`Ssu2DaemonService::start`] binds only the
+/// profile-permitted UDP sockets under the caller-owned [`ChildScope`]. The handle is
 /// the only runtime owner in counted tests: no hidden standalone
 /// runtime coexists with it.
 #[derive(Clone, Debug)]
@@ -1111,13 +1153,25 @@ impl Ssu2DaemonService {
                 "SSU2 controlled profile forbids advertise/introducer".to_owned(),
             ));
         }
+        if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+            && !private_lan_bind_valid(config)
+        {
+            return Err(Ssu2ServiceError::ControlledProfile(
+                "private-LAN SSU2 requires one RFC1918 IPv4 bind and an explicit non-privileged port"
+                    .to_owned(),
+            ));
+        }
         if config.bind_ipv4.is_none() && config.bind_ipv6.is_none() {
             return Err(Ssu2ServiceError::NoSocket);
         }
         for bind in [config.bind_ipv4, config.bind_ipv6].into_iter().flatten() {
-            if !bind.is_loopback() {
+            let allowed = bind.is_loopback()
+                || (config.qualification_profile
+                    == crate::config::Ssu2QualificationProfile::PrivateLan
+                    && matches!(bind, std::net::IpAddr::V4(ip) if ip.is_private()));
+            if !allowed {
                 return Err(Ssu2ServiceError::ControlledProfile(
-                    "SSU2 bind must be loopback".to_owned(),
+                    "SSU2 bind is outside the selected qualification profile".to_owned(),
                 ));
             }
         }
@@ -1137,7 +1191,7 @@ impl Ssu2DaemonService {
         RouterDeliveryService::new(self.service.clone())
     }
 
-    /// Binds loopback sockets and starts supervised loop tasks.
+    /// Binds profile-permitted sockets and starts supervised loop tasks.
     pub async fn start(
         &self,
         scope: &ChildScope,
@@ -1552,6 +1606,15 @@ mod tests {
         let sockets = ssu2_socket_config_from(&config.ssu2).expect("ipv6 sockets");
         assert!(sockets.ipv4.is_none());
         assert!(sockets.ipv6.is_some());
+
+        let text = "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n";
+        let config = crate::config::Config::parse(text).expect("private-LAN profile");
+        let sockets = ssu2_socket_config_from(&config.ssu2).expect("private IPv4 socket");
+        assert_eq!(
+            sockets.ipv4.expect("v4"),
+            "192.168.10.25:44123".parse().unwrap()
+        );
+        assert!(sockets.ipv6.is_none());
     }
 
     #[test]
@@ -1609,6 +1672,99 @@ mod tests {
             generate_controlled_identity_with_keys(&wrong_router, "127.0.0.1", 44001, &transport,)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn private_lan_identity_is_signed_for_rfc1918_endpoint_only() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use rand_core::OsRng;
+
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let transport =
+            Ssu2TransportIdentityMaterial::generate(hash, &mut OsRng).expect("transport keys");
+        let generated =
+            generate_private_lan_identity_with_keys(&bundle, "192.168.10.25", 44123, &transport)
+                .expect("signed private-LAN identity");
+        let info = i2pr_proto::RouterInfo::decode(
+            &generated.router_info,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .expect("RouterInfo decodes");
+        i2pr_crypto::verify_router_info(&info).expect("signature verifies");
+        assert_eq!(
+            info.router_identity()
+                .hash()
+                .expect("router hash")
+                .as_bytes(),
+            &hash
+        );
+        let address = info
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .expect("SSU2 address");
+        assert_eq!(address.options().get("host"), Some("192.168.10.25"));
+        assert_eq!(address.options().get("port"), Some("44123"));
+        assert_eq!(
+            address.options().get("s"),
+            Some(i2p_b64_encode(&transport.static_key().public_bytes()).as_str())
+        );
+        assert_eq!(
+            address.options().get("i"),
+            Some(i2p_b64_encode(transport.intro_key_bytes()).as_str())
+        );
+        assert!(
+            generate_controlled_identity_with_keys(&bundle, "192.168.10.25", 44123, &transport)
+                .is_err()
+        );
+        assert!(
+            generate_private_lan_identity_with_keys(&bundle, "198.51.100.2", 44123, &transport)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly selected, locally assigned RFC1918 IPv4 interface"]
+    async fn private_lan_profile_binds_only_the_inventory_endpoint() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use rand_core::OsRng;
+
+        let endpoint: SocketAddr = std::env::var("I2PR_PRIVATE_LAN_BIND")
+            .expect("explicit invocation requires I2PR_PRIVATE_LAN_BIND inventory")
+            .parse()
+            .expect("inventory endpoint must be an IP:port literal");
+        assert!(matches!(endpoint.ip(), std::net::IpAddr::V4(ip) if ip.is_private()));
+        assert!(endpoint.port() >= 1024);
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"{}\"\nbind_ipv6 = \"\"\nport = {}\n",
+            endpoint.ip(),
+            endpoint.port()
+        );
+        let config = crate::config::Config::parse(&text)
+            .expect("profile validates")
+            .ssu2;
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("router identity");
+        let hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let transport =
+            Ssu2TransportIdentityMaterial::generate(hash, &mut OsRng).expect("transport keys");
+        let identity = generate_private_lan_identity_with_keys(
+            &bundle,
+            &endpoint.ip().to_string(),
+            endpoint.port(),
+            &transport,
+        )
+        .expect("private RouterInfo");
+        let service = Ssu2DaemonService::new(&config, identity).expect("qualified service");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let handle = service
+            .start(&scope, &config)
+            .await
+            .expect("bind inventory endpoint");
+        assert_eq!(handle.local_v4(), Some(endpoint));
+        token.cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+        scope.shutdown().await;
     }
 
     #[test]

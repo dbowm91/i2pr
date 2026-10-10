@@ -559,6 +559,8 @@ struct RawSsu2Config {
     advertise: bool,
     #[serde(default = "default_ssu2_introducer_service")]
     introducer_service: bool,
+    #[serde(default = "default_ssu2_qualification_profile")]
+    qualification_profile: String,
     #[serde(default = "default_ssu2_max_pending_handshakes")]
     max_pending_handshakes: usize,
     #[serde(default = "default_ssu2_max_active_sessions")]
@@ -590,6 +592,7 @@ impl Default for RawSsu2Config {
             port: default_ssu2_port(),
             advertise: default_ssu2_advertise(),
             introducer_service: default_ssu2_introducer_service(),
+            qualification_profile: default_ssu2_qualification_profile(),
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
             max_active_sessions: default_ssu2_max_active_sessions(),
             max_pending_per_ip: default_ssu2_max_pending_per_ip(),
@@ -1200,6 +1203,10 @@ const fn default_ssu2_introducer_service() -> bool {
     false
 }
 
+fn default_ssu2_qualification_profile() -> String {
+    String::from("controlled_loopback")
+}
+
 const fn default_ssu2_max_pending_handshakes() -> usize {
     64
 }
@@ -1685,16 +1692,20 @@ impl SamConfig {
 /// Re-export of the Plan 137 service-limits type.
 pub use i2pr_api::sam::limits::SamLimits;
 
-/// Normalized Plan 184 SSU2 runtime configuration.
-///
-/// The daemon parses and validates this surface and starts the
-/// daemon-owned SSU2 service only under the strict Plan 184
-/// controlled profile: loopback bind, `advertise = false`,
-/// `introducer_service = false`, no wildcard/non-loopback exposure.
-/// Broader publication/exposure remains rejected fail-closed.
+/// Explicit bind profile for the daemon-owned SSU2 socket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2QualificationProfile {
+    /// Existing default-off, loopback-only controlled profile.
+    ControlledLoopback,
+    /// Explicit RFC1918 IPv4 bind for a private qualification lab.
+    PrivateLan,
+}
+
+/// Normalized SSU2 runtime configuration. The private-LAN profile is
+/// source-side qualification only and cannot authorize publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ssu2Config {
-    /// Whether the SSU2 UDP runtime is enabled (strict controlled profile only).
+    /// Whether the SSU2 UDP runtime is enabled under the selected profile.
     pub enabled: bool,
     /// IPv4 bind literal, or `None` when the IPv4 socket is disabled.
     pub bind_ipv4: Option<IpAddr>,
@@ -1707,6 +1718,8 @@ pub struct Ssu2Config {
     pub advertise: bool,
     /// Whether introducer service is offered (always false).
     pub introducer_service: bool,
+    /// Explicit socket profile. `PrivateLan` does not authorize publication.
+    pub qualification_profile: Ssu2QualificationProfile,
     /// Maximum pending (unauthenticated) handshakes.
     pub max_pending_handshakes: usize,
     /// Maximum active (authenticated) sessions.
@@ -2902,6 +2915,7 @@ fn parse_ssu2_bind(
     field: &'static str,
     value: &str,
     ipv6: bool,
+    private_lan: bool,
 ) -> Result<Option<IpAddr>, ConfigError> {
     if value.trim().is_empty() {
         return Ok(None);
@@ -2920,20 +2934,35 @@ fn parse_ssu2_bind(
             reason: "address family does not match its bind field",
         });
     }
-    if !address.is_loopback() {
+    if address.is_loopback() {
+        return Ok(Some(address));
+    }
+    let is_private_ipv4 = match address {
+        IpAddr::V4(ip) => ip.is_private(),
+        IpAddr::V6(_) => false,
+    };
+    if !private_lan || !is_private_ipv4 {
         return Err(ConfigError::Semantic {
             field,
-            reason: "must be a loopback address while non-loopback SSU2 exposure is unsupported",
+            reason: "must be loopback, or RFC1918 IPv4 under private_lan_qualification",
         });
     }
     Ok(Some(address))
 }
 
 fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
-    // Plan 184 §3: the daemon accepts `enabled = true` only under the
-    // strict controlled profile (loopback bind, non-advertised, no
-    // introducer/relay publication). Broader exposure stays rejected
-    // fail-closed; protocol semantics are unchanged from Plan 161.
+    let private_lan = match raw.qualification_profile.as_str() {
+        "controlled_loopback" => false,
+        "private_lan_qualification" => true,
+        _ => {
+            return Err(ConfigError::Semantic {
+                field: "ssu2.qualification_profile",
+                reason: "must be controlled_loopback or private_lan_qualification",
+            });
+        }
+    };
+    // SSU2 remains opt-in and non-advertised. Private-LAN qualification
+    // is an explicit local bind profile, not a public publication permit.
     if raw.advertise {
         return Err(ConfigError::Semantic {
             field: "ssu2.advertise",
@@ -2946,16 +2975,20 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "SSU2 introducer service is unavailable in this milestone",
         });
     }
-    let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false)?;
-    let bind_ipv6 = parse_ssu2_bind("ssu2.bind_ipv6", &raw.bind_ipv6, true)?;
-    // Plan 184 §3 strict controlled profile: an enabled service must
-    // bind at least one loopback family and must never advertise or
-    // offer introducer service (both rejected above). `parse_ssu2_bind`
-    // already rejects wildcard/non-loopback literals fail-closed.
+    let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false, private_lan)?;
+    let bind_ipv6 = parse_ssu2_bind("ssu2.bind_ipv6", &raw.bind_ipv6, true, false)?;
     if raw.enabled && bind_ipv4.is_none() && bind_ipv6.is_none() {
         return Err(ConfigError::Semantic {
             field: "ssu2.enabled",
-            reason: "SSU2 activation requires at least one loopback bind address",
+            reason: "SSU2 activation requires a bind address permitted by its qualification profile",
+        });
+    }
+    let private_lan_ipv4 =
+        bind_ipv4.is_some_and(|ip| matches!(ip, IpAddr::V4(address) if address.is_private()));
+    if private_lan && (!raw.enabled || !private_lan_ipv4 || bind_ipv6.is_some() || raw.port == 0) {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.qualification_profile",
+            reason: "private_lan_qualification requires enabled=true, one RFC1918 IPv4 bind, no IPv6 bind, and an explicit nonzero port",
         });
     }
     // Port 0 selects an ephemeral port for integration tests; a
@@ -3036,6 +3069,11 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         port: raw.port,
         advertise: raw.advertise,
         introducer_service: raw.introducer_service,
+        qualification_profile: if private_lan {
+            Ssu2QualificationProfile::PrivateLan
+        } else {
+            Ssu2QualificationProfile::ControlledLoopback
+        },
         max_pending_handshakes: raw.max_pending_handshakes,
         max_active_sessions: raw.max_active_sessions,
         max_pending_per_ip: raw.max_pending_per_ip,
@@ -4523,6 +4561,10 @@ data_dir = "./state"
         assert_eq!(config.ssu2.port, 0);
         assert!(!config.ssu2.advertise);
         assert!(!config.ssu2.introducer_service);
+        assert_eq!(
+            config.ssu2.qualification_profile,
+            Ssu2QualificationProfile::ControlledLoopback
+        );
         assert_eq!(config.ssu2.max_pending_handshakes, 64);
         assert_eq!(config.ssu2.max_active_sessions, 64);
         assert_eq!(config.ssu2.max_pending_per_ip, 4);
@@ -4576,6 +4618,45 @@ data_dir = "./state"
                 "broad exposure `{extra}` must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn ssu2_private_lan_profile_requires_explicit_private_ipv4_endpoint() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("valid private-LAN profile");
+        assert_eq!(
+            config.ssu2.qualification_profile,
+            Ssu2QualificationProfile::PrivateLan
+        );
+        assert_eq!(
+            config.ssu2.bind_ipv4,
+            Some("192.168.10.25".parse().unwrap())
+        );
+        assert_eq!(config.ssu2.port, 44123);
+        assert!(!config.ssu2.advertise);
+        assert!(!config.ssu2.introducer_service);
+
+        for invalid in [
+            "bind_ipv4 = \"100.64.1.2\"\nport = 44123",
+            "bind_ipv4 = \"192.168.10.25\"\nport = 0",
+            "bind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"::1\"\nport = 44123",
+            "bind_ipv4 = \"0.0.0.0\"\nport = 44123",
+            "bind_ipv4 = \"198.51.100.2\"\nport = 44123",
+        ] {
+            let invalid = format!(
+                "{}\n[ssu2]\nenabled = true\nqualification_profile = \"private_lan_qualification\"\n{}\n",
+                MINIMAL, invalid
+            );
+            assert!(Config::parse(&invalid).is_err(), "accepted {invalid:?}");
+        }
+        let disabled = format!(
+            "{}\n[ssu2]\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nport = 44123\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&disabled).is_err());
     }
 
     #[test]

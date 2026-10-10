@@ -590,10 +590,9 @@ fn controlled_ssu2_and_sam_survive_real_process_restart() {
     let mut first = router.spawn();
     let reply = await_sam_ready(&mut first);
     assert!(reply.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
-    assert!(
-        std::net::UdpSocket::bind(("127.0.0.1", ssu2_port)).is_err(),
-        "the ordinary daemon must own the configured SSU2 UDP socket"
-    );
+    let conflict = std::net::UdpSocket::bind(("127.0.0.1", ssu2_port))
+        .expect_err("the ordinary daemon must own the configured SSU2 UDP socket");
+    assert_eq!(conflict.kind(), std::io::ErrorKind::AddrInUse);
 
     let transport_identity = router.data_dir.join("ssu2.transport.identity");
     let first_identity = std::fs::read(&transport_identity)
