@@ -465,7 +465,8 @@ The current-pin NTCP2 loopback tooling under
 driver and the bounded `run_plan414.py` runner and
 `observe_decoded_delivery_status.py` adapter. Plan 417 extends the adapter with
 fixed-name NTCP2 handshake-stage counts read only after an owned log baseline.
-The runner permits one attempt
+The private helper enables the pinned logger's existing debug level before
+startup; no reference source or binary is patched. The runner permits one attempt
 per direction, captures peer hashes only as ephemeral inputs, and deletes each
 owned attempt tree. The adapter consumes an owned ephemeral i2pd log, emits
 bounded sanitized counts without raw lines or log digests, consumes the raw log

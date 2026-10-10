@@ -30,6 +30,11 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
         "no identity hashes in evidence": "local_router_hash_sha256" not in driver
         and "peer_router_hash_sha256\\\":" not in driver,
         "no raw detail in evidence": '"detail"' not in driver,
+        "private helper enables debug before logger startup": (
+            driver.count('Logger().SetLogLevel("debug")') == 1
+            and driver.find("Logger().SendTo") < driver.find('Logger().SetLogLevel("debug")')
+            < driver.find("Logger().Start")
+        ),
         "closed stock handshake stage allowlist": "STAGE_PATTERNS = {" in observer
         and "session_request_received_count" in observer
         and "session_created_received_count" in observer
@@ -61,6 +66,10 @@ def self_test() -> bool:
         (driver, build, cmake, observer.replace("session_request_received_count", "request_stage_removed"), runner),
         (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
         (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
+        (driver.replace('Logger().SetLogLevel("debug");', ""), build, cmake, observer, runner),
+        (driver.replace('Logger().SetLogLevel("debug");\n    i2p::log::Logger().Start();',
+                        'i2p::log::Logger().Start();\n    i2p::log::Logger().SetLogLevel("debug");'),
+         build, cmake, observer, runner),
     ]
     normalized = [candidate if len(candidate) == 5 else (*candidate, observer, runner) for candidate in mutations]
     return all(source_findings(*candidate) for candidate in normalized)

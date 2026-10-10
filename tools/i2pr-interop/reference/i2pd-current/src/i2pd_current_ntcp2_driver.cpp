@@ -973,10 +973,11 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
     // SessionRequest with `networkID 99 mismatch. Expected 2`.
     i2p::context.SetNetID(cfg.network_id);
 
-    // Plan 091: start the logger so i2pd transport warnings
-    // (KDF failure, MAC mismatch, etc.) are visible in the driver
-    // log file. The driver stops the logger in main() before exit.
+    // Plan 091: start the logger so transport warnings and its fixed
+    // debug milestones are visible in the private driver log. The
+    // driver stops the logger in main() before exit.
     i2p::log::Logger().SendTo((cfg.data_dir / "i2pd.log").string());
+    i2p::log::Logger().SetLogLevel("debug");
     i2p::log::Logger().Start();
 
     // Step 6: context.Init(). This loads the local identity (or
