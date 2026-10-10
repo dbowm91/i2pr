@@ -39,9 +39,45 @@ cargo test --locked -p i2pr-daemon -- --test-threads=1
 cargo test --locked -p i2pr-netdb --all-targets
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 scripts/check-adr-number-uniqueness.py
+python3 scripts/check-router-readiness-contract.py
+python3 scripts/check-router-readiness-contract.py --self-test
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-m12-floodfill-boundaries.sh
 # plus the full AGENTS.md floor, new anti-vacuity checker, and CI
 ```
+
+## Execution audit — 2026-10-10
+
+The working source was re-censused at `02b428eb` before implementation. The
+registered source description is partly historical; the following are current
+entry points and boundaries:
+
+| Concern | Current source authority | Observed behavior |
+| --- | --- | --- |
+| Persistent router identity | `crates/i2pr-storage/src/lib.rs::IdentityStore::{load,create}`; `crates/i2pr-daemon/src/lib.rs::bootstrap_daemon` | Router signing identity is loaded from the protected data directory before bootstrap. The controlled SSU2 service still generates separate ephemeral SSU2 transport material. |
+| SSU2 config and socket | `crates/i2pr-daemon/src/config.rs::{normalize_ssu2,parse_ssu2_bind}`; `crates/i2pr-daemon/src/router_i2np.rs::{ssu2_socket_config_from,Ssu2DaemonService}`; `crates/i2pr-runtime/src/ssu2_runtime.rs::Ssu2RuntimeService::start` | Config refuses advertisement and introducer service, accepts only loopback bind literals, and runtime binds the validated socket config. No public profile is activated. |
+| NTCP2 config and listener | `crates/i2pr-daemon/src/config.rs::normalize_ntcp2`; `crates/i2pr-runtime/src/ntcp2_runtime.rs` | `enabled=true` is rejected before listener composition. Existing runtime handshake support is not normal-daemon activation authority. |
+| Local RouterInfo construction and publication | `crates/i2pr-netdb/src/local.rs::LocalRouterInfoBuilder`; `crates/i2pr-daemon/src/bootstrap.rs`; `crates/i2pr-daemon/src/lib.rs::run_daemon` | The ordinary builder signs a validated zero-address record. The SSU2 runtime's replacement path verifies signature, freshness, local identity, `netId`, SSU2 style/key, and exact bound endpoint before installation. |
+| Reseed and cache | `crates/i2pr-daemon/src/bootstrap.rs::{Bootstrap::run,run_offline_reseed}`; `crates/i2pr-netdb-persist/src/reseed_ingest.rs` | The bootstrap pipeline may load cache and optionally ingest a caller-supplied offline SU3. It has no HTTPS acquisition path. |
+| NetDB client/store and tunnel composition | `crates/i2pr-daemon/src/netdb_tunnels.rs::NetDbTunnelCoordinator`; `crates/i2pr-daemon/src/service_product.rs` | These provide bounded validated store/lookup/publication and local controlled product composition. They do not establish independent public-router reachability. |
+| Transit | `crates/i2pr-daemon/src/transit_volume.rs::TransitParticipation`; `crates/i2pr-daemon/src/lib.rs` composition | A real controlled transit owner exists, but ordinary daemon inspection publishes `TransitParticipation::Disabled`; no normal public opt-in is enabled by this plan. |
+| Floodfill | `crates/i2pr-daemon/src/config.rs::{default_floodfill_enabled,normalize_floodfill}`; `crates/i2pr-daemon/src/floodfill.rs::{evaluate_normal_eligibility,prepare_normal_activation}`; `crates/i2pr-netdb/src/local.rs::LocalRouterInfoBuilder::build_floodfill` | A guarded opt-in state machine already exists and defaults off. It requires measured reachable SSU2 material and an opaque role permit. This is infrastructure, not proof of two-family floodfill capability. |
+
+The `i2pr-core::router_readiness` contract now represents the four deployment
+profiles, five ordered service/network stages plus `Degraded`, and independent
+health, reachability, protocol qualification, operator authorization and owner
+generation facts. It is a decision result, not a capability token; the existing
+owner-specific RouterInfo permits remain mandatory. The new source checker
+mutation-tests each decision fact and checks current activation, identity and
+publication restrictions. Plan 431 must wire fresh owner-generation evidence
+into the contract before any normal SSU2 address can be considered.
+
+One source comment is inconsistent with its closure authority: the normal
+floodfill eligibility comment in `crates/i2pr-daemon/src/floodfill.rs` describes
+the surface as having passed two-family qualification via Plan 279, while
+`plans/closure/floodfill/279-status.md` stopped before any matrix row and
+`306-status.md` retained the bandwidth-selection boundary. No support claim is
+derived from that comment. Plan 438 owns reconciliation before any normal
+`caps=f` promotion; the prior closure records remain unchanged.
 
 Acceptance: one checked-in truthful source/evidence inventory, reviewed profile/readiness/eligibility contract, negative tests that detect deliberate forbidden activation and false-ready mutation, and deterministic status projection with no current `specs/support.toml` promotion. Stop if branch HEAD changed incompatible owner contracts or the proposed claim gate requires unapproved architectural changes; file a new ADR or corrective. Closure `plans/closure/core-router-recovery/430-status.md` must report exact commits, command outcomes, tests not run, guard-mutation results, unresolved risk severities, and explicit 431/432/434 readiness disposition. Handoff lists source files, migrations (none expected), and deviations.
