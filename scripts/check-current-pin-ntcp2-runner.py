@@ -25,6 +25,8 @@ REJECTION_COUNTERS = (
     "session_confirmed_address_not_found_count",
     "session_confirmed_host_mismatch_count",
     "session_confirmed_wrong_static_key_count",
+    "session_confirmed_router_info_accepted_count",
+    "ntcp2_session_terminated_count",
 )
 
 
@@ -62,6 +64,7 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
                 "Couldn't update RouterInfo from SessionConfirmed in netdb",
                 "Address not found in SessionConfirmed", "Host mismatch between published address",
                 "Wrong static key in SessionConfirmed",
+                "SessionConfirmed from", "Session with",
             )
         ),
         "post-baseline bounded observer": "raw[baseline_offset:]" in observer
@@ -90,6 +93,8 @@ def self_test() -> bool:
         (driver, build, cmake + "\n-DI2PD_INTEROP_OBSERVER=1\n"),
         (driver, build, cmake, observer.replace("session_request_received_count", "request_stage_removed"), runner),
         (driver, build, cmake, observer.replace(REJECTION_COUNTERS[0], "rejection_stage_removed"), runner),
+        (driver, build, cmake, observer.replace("session_confirmed_router_info_accepted_count",
+                                                 "post_validation_stage_removed"), runner),
         (driver, build, cmake, observer.replace("raw[baseline_offset:]", "raw"), runner),
         (driver, build, cmake, observer, runner.replace('"--baseline-offset", str(log_baseline)', '"--baseline-offset", "0"')),
         (driver.replace('Logger().SetLogLevel("debug");', ""), build, cmake, observer, runner),

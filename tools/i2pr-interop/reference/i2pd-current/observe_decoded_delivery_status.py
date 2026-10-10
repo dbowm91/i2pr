@@ -34,6 +34,8 @@ STAGE_PATTERNS = {
     "session_confirmed_address_not_found_count": re.compile(r"(?:^|\s)NTCP2: Address not found in SessionConfirmed\s*$"),
     "session_confirmed_host_mismatch_count": re.compile(r"(?:^|\s)NTCP2: Host mismatch between published address .+ and actual endpoint .+$"),
     "session_confirmed_wrong_static_key_count": re.compile(r"(?:^|\s)NTCP2: Wrong static key in SessionConfirmed\s*$"),
+    "session_confirmed_router_info_accepted_count": re.compile(r"(?:^|\s)NTCP2: SessionConfirmed from .+$"),
+    "ntcp2_session_terminated_count": re.compile(r"(?:^|\s)NTCP2: Session with .+ terminated\s*$"),
 }
 MAX_LINE_BYTES = 4096
 DIRECTIONS = {"i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"}
@@ -130,10 +132,19 @@ def self_test() -> None:
     baseline_prefix = b"pre-baseline NTCP2: Wrong static key in SessionConfirmed\n"
     failure_result = observe(baseline_prefix + b"".join(failure_markers), len(baseline_prefix))
     failure_names = tuple(name for name in STAGE_PATTERNS if name.startswith("session_confirmed_")
-                          and name not in {"session_confirmed_received_count", "session_confirmed_sent_count"})
+                          and name not in {"session_confirmed_received_count", "session_confirmed_sent_count",
+                                           "session_confirmed_router_info_accepted_count"})
     assert all(failure_result[name] == (2 if name == "session_confirmed_aead_failure_count" else 1)
                for name in failure_names)
     assert not any(value in json.dumps(failure_result) for value in ("127.0.0.1", "1234", "5401", "121"))
+    progress_log = (
+        b"NTCP2: SessionConfirmed from 127.0.0.1:2345 (RouterHashSecret)\n"
+        b"NTCP2: Session with 127.0.0.1:2345 (RouterHashSecret) terminated\n"
+    )
+    progress_result = observe(progress_log)
+    assert progress_result["session_confirmed_router_info_accepted_count"] == 1
+    assert progress_result["ntcp2_session_terminated_count"] == 1
+    assert not any(value in json.dumps(progress_result) for value in ("127.0.0.1", "2345", "RouterHashSecret"))
     assert stage_result["result"] == "rejected"
     assert stage_result["reason_code"] == "decoded-delivery-status-count-not-one"
 

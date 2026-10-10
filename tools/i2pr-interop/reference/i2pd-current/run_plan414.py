@@ -95,7 +95,7 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
         "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
         "session_confirmed_unexpected_router_info_size_count",
         "session_confirmed_router_info_verification_failure_count",
-        "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+        "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count", "session_confirmed_router_info_accepted_count", "ntcp2_session_terminated_count",
         "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
         "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
         "reference_stages", "launcher_stages",
@@ -122,7 +122,7 @@ def sanitize_attempt(attempt: dict[str, object]) -> dict[str, object]:
             "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
             "session_confirmed_unexpected_router_info_size_count",
             "session_confirmed_router_info_verification_failure_count",
-            "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+            "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count", "session_confirmed_router_info_accepted_count", "ntcp2_session_terminated_count",
             "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
             "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
             "attempt_number",
@@ -554,7 +554,7 @@ def run_direction(
                 "session_confirmed_part2_kdf_failure_count", "session_confirmed_unexpected_block_count",
                 "session_confirmed_unexpected_router_info_size_count",
                 "session_confirmed_router_info_verification_failure_count",
-                "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count",
+                "session_confirmed_router_info_too_old_count", "session_confirmed_router_info_from_future_count", "session_confirmed_router_version_too_old_count", "session_confirmed_router_info_accepted_count", "ntcp2_session_terminated_count",
                 "session_confirmed_router_info_update_failure_count", "session_confirmed_address_not_found_count",
                 "session_confirmed_host_mismatch_count", "session_confirmed_wrong_static_key_count",
             ):
@@ -618,6 +618,8 @@ def main() -> int:
                 "session_confirmed_received_count": 1,
                 "session_confirmed_unexpected_block_count": 1,
                 "session_confirmed_wrong_static_key_count": 1,
+                "session_confirmed_router_info_accepted_count": 1,
+                "ntcp2_session_terminated_count": 1,
                 "log_sha256": "b" * 64,
                 "private_path": "/private/path", "raw_stdout": "PRIVATE_SENTINEL",
             }
@@ -630,7 +632,9 @@ def main() -> int:
             stage_json = stage_evidence.read_text(encoding="utf-8")
             if ('"session_request_received_count":1' not in stage_json
                     or '"session_confirmed_unexpected_block_count":1' not in stage_json
-                    or '"session_confirmed_wrong_static_key_count":1' not in stage_json or any(
+                    or '"session_confirmed_wrong_static_key_count":1' not in stage_json
+                    or '"session_confirmed_router_info_accepted_count":1' not in stage_json
+                    or '"ntcp2_session_terminated_count":1' not in stage_json or any(
                     value in stage_json for value in ("log_sha256", "b" * 64, "778899"))):
                 raise RunError("self-test-stage-count-evidence-failed")
             cleanup_root = root / "owned"
