@@ -1,6 +1,6 @@
 # Plan 434 — NTCP2 authenticated-link discrepancy recovery (Plan 099 successor)
 
-Status: registered / **ready**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`. New NTCP2 plan of record under plans/subsystems/ntcp2-transport-roadmap.md; historical Plans 030–101 remain closed without rewriting closure records.
+Status: **active**. Plan 430 passed at `fd6b41ead53fdfad86f230d105e0e2977f92830a`. Activation follows Plan 432 closure commit `e518214`. New NTCP2 plan of record under plans/subsystems/ntcp2-transport-roadmap.md; historical Plans 030–101 remain closed without rewriting closure records.
 
 ## Objective and rationale
 
