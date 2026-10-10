@@ -1,6 +1,6 @@
 # Plan 448 — Enforced global bandwidth governor and honest RouterInfo bandwidth class
 
-Status: **registered / ready**. Date: 2026-10-10. Owner: floodfill / router capacity policy with daemon/runtime transport adapters. New production-infrastructure corrective to blocked Plan 444 (`plans/closure/floodfill/444-status.md`) and predecessor to the Java candidate-selection remainder of Plan 444 and original Plan 437. Roadmaps: `plans/subsystems/floodfill-roadmap.md` and `plans/subsystems/core-router-recovery-roadmap.md`. Baseline: `work/plans-440-444-emissary-evidence-recovery`; recheck exact working commit.
+Status: **in progress**. Date: 2026-10-10. Owner: floodfill / router capacity policy with daemon/runtime transport adapters. New production-infrastructure corrective to blocked Plan 444 (`plans/closure/floodfill/444-status.md`) and predecessor to the Java candidate-selection remainder of Plan 444 and original Plan 437. Roadmaps: `plans/subsystems/floodfill-roadmap.md` and `plans/subsystems/core-router-recovery-roadmap.md`. Baseline: `work/plans-440-444-emissary-evidence-recovery`; recheck exact working commit.
 
 ## Objective and why this is the blocker
 
