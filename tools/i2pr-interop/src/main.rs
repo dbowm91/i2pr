@@ -27,9 +27,10 @@ use i2pr_proto::{
     RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
-    CancellationToken, HandshakeClock, HandshakeDriverConfig, HandshakeDriverError, Ntcp2Deadline,
-    Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeService,
-    PaddingProfile as DriverPaddingProfile, bounded_timeout, run_blocking,
+    CancellationToken, HandshakeClock, HandshakeDriverConfig, HandshakeDriverError, IoErrorKind,
+    Ntcp2Deadline, Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeService,
+    PaddingProfile as DriverPaddingProfile, ResponderHandshakeIoOperation, bounded_timeout,
+    run_blocking,
 };
 use i2pr_storage::{IdentityStore, StorageError, TransportStaticKeyStore};
 use i2pr_transport::MAX_I2NP_MESSAGE_BYTES;
@@ -143,7 +144,7 @@ enum LauncherError {
     ResponderMessage1DecodeFailed,
     ResponderMessage1OptionsInvalid,
     ResponderNoiseStateFailed,
-    ResponderSessionCreatedWriteFailed,
+    ResponderSessionCreatedWriteIoFailed,
     ResponderSessionConfirmedPart1Failed,
     ResponderSessionConfirmedPart1InvalidFixedLength,
     ResponderSessionConfirmedPart1Truncated,
@@ -153,6 +154,14 @@ enum LauncherError {
     ResponderSessionConfirmedPart1TranscriptMismatch,
     ResponderSessionConfirmedPart1KeyAgreementInvalid,
     ResponderSessionConfirmedPart1IoFailed,
+    ResponderSessionCreatedWriteClosed,
+    ResponderSessionCreatedWriteDeadline,
+    ResponderSessionCreatedWriteCancelled,
+    ResponderSessionCreatedWriteFailed,
+    ResponderSessionConfirmedReadClosed,
+    ResponderSessionConfirmedReadDeadline,
+    ResponderSessionConfirmedReadCancelled,
+    ResponderSessionConfirmedReadIoFailed,
     ResponderSessionConfirmedPart2Failed,
     ResponderRouterIdentityVerificationFailed,
     ResponderHandshakeTimeout,
@@ -854,14 +863,18 @@ fn classify_responder_data_phase_error(error: LauncherError) -> LauncherError {
 /// peer-controlled bytes.
 fn map_responder_stage_error(error: HandshakeDriverError) -> LauncherError {
     match error {
-        HandshakeDriverError::ResponderStage { phase_label, inner } => match phase_label {
+        HandshakeDriverError::ResponderStage {
+            phase_label,
+            inner,
+            io_operation,
+        } => match phase_label {
             "need_request" => LauncherError::ResponderMessage1DecodeFailed,
             "await_replay" => LauncherError::ResponderAdmissionRejected,
             "await_request_padding" | "need_peer_timestamp" => {
                 LauncherError::ResponderMessage1OptionsInvalid
             }
             "need_created_padding" => LauncherError::ResponderSessionCreatedWriteFailed,
-            "await_confirmed" => classify_await_confirmed(&inner),
+            "await_confirmed" => classify_await_confirmed(&inner, io_operation),
             "done" => LauncherError::ResponderRouterIdentityVerificationFailed,
             // Closed label set; an unknown label is a typed blocker.
             _ => LauncherError::ResponderRouterIdentityVerificationFailed,
@@ -898,10 +911,45 @@ fn map_responder_stage_error(error: HandshakeDriverError) -> LauncherError {
 ///
 /// The ordering of the operations matches the state-machine order, so
 /// the first matching variant wins.
-fn classify_await_confirmed(inner: &HandshakeDriverError) -> LauncherError {
+fn classify_await_confirmed(
+    inner: &HandshakeDriverError,
+    io_operation: Option<ResponderHandshakeIoOperation>,
+) -> LauncherError {
     let HandshakeDriverError::Protocol(error) = inner else {
         return match inner {
-            HandshakeDriverError::Io(_) => LauncherError::ResponderSessionConfirmedPart1IoFailed,
+            HandshakeDriverError::Io(error) => match (io_operation, error.kind) {
+                (Some(ResponderHandshakeIoOperation::SessionCreatedWrite), IoErrorKind::Closed) => {
+                    LauncherError::ResponderSessionCreatedWriteClosed
+                }
+                (
+                    Some(ResponderHandshakeIoOperation::SessionCreatedWrite),
+                    IoErrorKind::Deadline,
+                ) => LauncherError::ResponderSessionCreatedWriteDeadline,
+                (
+                    Some(ResponderHandshakeIoOperation::SessionCreatedWrite),
+                    IoErrorKind::Cancelled,
+                ) => LauncherError::ResponderSessionCreatedWriteCancelled,
+                (Some(ResponderHandshakeIoOperation::SessionCreatedWrite), IoErrorKind::Failed) => {
+                    LauncherError::ResponderSessionCreatedWriteIoFailed
+                }
+                (
+                    Some(ResponderHandshakeIoOperation::SessionConfirmedRead),
+                    IoErrorKind::Closed,
+                ) => LauncherError::ResponderSessionConfirmedReadClosed,
+                (
+                    Some(ResponderHandshakeIoOperation::SessionConfirmedRead),
+                    IoErrorKind::Deadline,
+                ) => LauncherError::ResponderSessionConfirmedReadDeadline,
+                (
+                    Some(ResponderHandshakeIoOperation::SessionConfirmedRead),
+                    IoErrorKind::Cancelled,
+                ) => LauncherError::ResponderSessionConfirmedReadCancelled,
+                (
+                    Some(ResponderHandshakeIoOperation::SessionConfirmedRead),
+                    IoErrorKind::Failed,
+                ) => LauncherError::ResponderSessionConfirmedReadIoFailed,
+                _ => LauncherError::ResponderSessionConfirmedPart1IoFailed,
+            },
             _ => LauncherError::ResponderSessionConfirmedPart1Failed,
         };
     };
@@ -1702,6 +1750,38 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
             StatusResult::AuthenticationFailed,
             StatusReason::ResponderSessionConfirmedPart1IoFailed,
         ),
+        LauncherError::ResponderSessionCreatedWriteClosed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionCreatedWriteClosed,
+        ),
+        LauncherError::ResponderSessionCreatedWriteDeadline => (
+            StatusResult::Timeout,
+            StatusReason::ResponderSessionCreatedWriteDeadline,
+        ),
+        LauncherError::ResponderSessionCreatedWriteCancelled => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionCreatedWriteCancelled,
+        ),
+        LauncherError::ResponderSessionCreatedWriteIoFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionCreatedWriteIoFailed,
+        ),
+        LauncherError::ResponderSessionConfirmedReadClosed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedReadClosed,
+        ),
+        LauncherError::ResponderSessionConfirmedReadDeadline => (
+            StatusResult::Timeout,
+            StatusReason::ResponderSessionConfirmedReadDeadline,
+        ),
+        LauncherError::ResponderSessionConfirmedReadCancelled => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedReadCancelled,
+        ),
+        LauncherError::ResponderSessionConfirmedReadIoFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedReadIoFailed,
+        ),
         LauncherError::ResponderSessionConfirmedPart2Failed => (
             StatusResult::AuthenticationFailed,
             StatusReason::ResponderSessionConfirmedPart2Failed,
@@ -2101,6 +2181,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
         for (label, expected) in labelled {
             let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
                 phase_label: label,
+                io_operation: None,
                 inner: Box::new(HandshakeDriverError::Protocol(
                     i2pr_transport_ntcp2::handshake::HandshakeError::Truncated,
                 )),
@@ -2118,6 +2199,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
         // rather than the broad `HandshakeFailed`.
         let unknown = map_responder_stage_error(HandshakeDriverError::ResponderStage {
             phase_label: "unrecognised",
+            io_operation: None,
             inner: Box::new(HandshakeDriverError::Protocol(
                 i2pr_transport_ntcp2::handshake::HandshakeError::Truncated,
             )),
@@ -2174,6 +2256,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
             let label = format!("{protocol_error:?}");
             let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
                 phase_label: "await_confirmed",
+                io_operation: None,
                 inner: Box::new(HandshakeDriverError::Protocol(protocol_error)),
             });
             assert_eq!(
@@ -2181,13 +2264,69 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
                 "part-1 variant {label} did not retain its closed category"
             );
         }
-        let io = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+        let io_cases = [
+            (
+                ResponderHandshakeIoOperation::SessionCreatedWrite,
+                IoErrorKind::Closed,
+                LauncherError::ResponderSessionCreatedWriteClosed,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionCreatedWrite,
+                IoErrorKind::Deadline,
+                LauncherError::ResponderSessionCreatedWriteDeadline,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionCreatedWrite,
+                IoErrorKind::Cancelled,
+                LauncherError::ResponderSessionCreatedWriteCancelled,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionCreatedWrite,
+                IoErrorKind::Failed,
+                LauncherError::ResponderSessionCreatedWriteIoFailed,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionConfirmedRead,
+                IoErrorKind::Closed,
+                LauncherError::ResponderSessionConfirmedReadClosed,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionConfirmedRead,
+                IoErrorKind::Deadline,
+                LauncherError::ResponderSessionConfirmedReadDeadline,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionConfirmedRead,
+                IoErrorKind::Cancelled,
+                LauncherError::ResponderSessionConfirmedReadCancelled,
+            ),
+            (
+                ResponderHandshakeIoOperation::SessionConfirmedRead,
+                IoErrorKind::Failed,
+                LauncherError::ResponderSessionConfirmedReadIoFailed,
+            ),
+        ];
+        for (operation, kind, expected) in io_cases {
+            let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+                phase_label: "await_confirmed",
+                io_operation: Some(operation),
+                inner: Box::new(HandshakeDriverError::Io(i2pr_runtime::ExactIoError {
+                    kind,
+                })),
+            });
+            assert_eq!(mapped, expected, "operation {operation:?}, kind {kind:?}");
+        }
+        let unattributed = map_responder_stage_error(HandshakeDriverError::ResponderStage {
             phase_label: "await_confirmed",
+            io_operation: None,
             inner: Box::new(HandshakeDriverError::Io(i2pr_runtime::ExactIoError {
-                kind: i2pr_runtime::IoErrorKind::Closed,
+                kind: IoErrorKind::Closed,
             })),
         });
-        assert_eq!(io, LauncherError::ResponderSessionConfirmedPart1IoFailed);
+        assert_eq!(
+            unattributed,
+            LauncherError::ResponderSessionConfirmedPart1IoFailed
+        );
         // Identity verification: identity, malformed, signature, peer
         // key, static-key.
         for identity in [
@@ -2200,6 +2339,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
             let label = format!("{identity:?}");
             let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
                 phase_label: "await_confirmed",
+                io_operation: None,
                 inner: Box::new(HandshakeDriverError::Protocol(identity)),
             });
             assert_eq!(
@@ -2211,6 +2351,7 @@ run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefd
         // Part-two failures: any other bounded protocol error.
         let part2 = map_responder_stage_error(HandshakeDriverError::ResponderStage {
             phase_label: "await_confirmed",
+            io_operation: None,
             inner: Box::new(HandshakeDriverError::Protocol(
                 HandshakeError::LocalPolicyDenied,
             )),

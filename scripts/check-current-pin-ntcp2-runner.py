@@ -43,6 +43,27 @@ PART1_CATEGORIES = {
     "InvalidKeyAgreement": ("KeyAgreementInvalid", "key_agreement_invalid"),
 }
 
+RESPONDER_IO_CODES = (
+    "responder_session_created_write_closed",
+    "responder_session_created_write_deadline",
+    "responder_session_created_write_cancelled",
+    "responder_session_created_write_io_failed",
+    "responder_session_confirmed_read_closed",
+    "responder_session_confirmed_read_deadline",
+    "responder_session_confirmed_read_cancelled",
+    "responder_session_confirmed_read_io_failed",
+)
+RESPONDER_IO_CLASSIFICATIONS = (
+    ("SessionCreatedWrite", "Closed", "responder_session_created_write_closed"),
+    ("SessionCreatedWrite", "Deadline", "responder_session_created_write_deadline"),
+    ("SessionCreatedWrite", "Cancelled", "responder_session_created_write_cancelled"),
+    ("SessionCreatedWrite", "Failed", "responder_session_created_write_io_failed"),
+    ("SessionConfirmedRead", "Closed", "responder_session_confirmed_read_closed"),
+    ("SessionConfirmedRead", "Deadline", "responder_session_confirmed_read_deadline"),
+    ("SessionConfirmedRead", "Cancelled", "responder_session_confirmed_read_cancelled"),
+    ("SessionConfirmedRead", "Failed", "responder_session_confirmed_read_io_failed"),
+)
+
 
 def source_findings(driver: str, build: str, cmake: str, observer: str, runner: str,
                     launcher: str | None = None, status: str | None = None) -> list[str]:
@@ -113,14 +134,20 @@ def source_findings(driver: str, build: str, cmake: str, observer: str, runner: 
             and f"StatusReason::ResponderSessionConfirmedPart1{suffix[0]}" in launcher
             and f'"responder_session_confirmed_part1_{suffix[1]}"' in status
             for error, suffix in PART1_CATEGORIES.items()
-        ) and re.search(
-            r"HandshakeDriverError::Io\(_\)\s*=>\s*LauncherError::ResponderSessionConfirmedPart1IoFailed",
+        ) and 'ResponderHandshakeIoOperation::SessionCreatedWrite' in launcher
+        and 'ResponderHandshakeIoOperation::SessionConfirmedRead' in launcher
+        and all(re.search(
+            rf"\(\s*Some\(ResponderHandshakeIoOperation::{operation}\),\s*IoErrorKind::{kind},?\s*\)\s*=>\s*(?:\{{\s*)?LauncherError::Responder{''.join(word.title() for word in code.removeprefix('responder_').split('_'))}",
             launcher,
-        ) is not None and '"responder_session_confirmed_part1_io_failed"' in status,
+        ) for operation, kind, code in RESPONDER_IO_CLASSIFICATIONS)
+        and all(f"StatusReason::Responder{''.join(word.title() for word in code.removeprefix('responder_').split('_'))}" in launcher
+                for code in RESPONDER_IO_CODES)
+        and all(f'"{code}"' in status for code in RESPONDER_IO_CODES),
         "evidence projection whitelists fixed responder reason codes": all(
             f'"responder_session_confirmed_part1_{suffix}"' in responder_allowlist
             for _, suffix in PART1_CATEGORIES.values()
-        ) and "reason not in RESPONDER_REASON_CODES" in runner,
+        ) and all(f'"{code}"' in responder_allowlist for code in RESPONDER_IO_CODES)
+        and "reason not in RESPONDER_REASON_CODES" in runner,
     }
     findings.extend(name for name, passed in checks.items() if not passed)
     return findings
@@ -169,6 +196,12 @@ def self_test() -> bool:
         (driver, build, cmake, observer,
          runner.replace('    "responder_session_confirmed_part1_authentication_failed",\n', ''),
          launcher, status),
+        (driver, build, cmake, observer, runner,
+         launcher.replace("IoErrorKind::Deadline", "IoErrorKind::Cancelled", 1), status),
+        (driver, build, cmake, observer, runner,
+         launcher.replace("ResponderHandshakeIoOperation::SessionCreatedWrite", "ResponderHandshakeIoOperation::SessionConfirmedRead", 1), status),
+        (driver, build, cmake, observer,
+         runner.replace('"responder_session_created_write_closed",', '', 1), launcher, status),
     ])
     return all(source_findings(*candidate) for candidate in normalized)
 

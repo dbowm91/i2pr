@@ -83,7 +83,7 @@ pub enum StatusReason {
     ResponderMessage1DecodeFailed,
     ResponderMessage1OptionsInvalid,
     ResponderNoiseStateFailed,
-    ResponderSessionCreatedWriteFailed,
+    ResponderSessionCreatedWriteIoFailed,
     ResponderSessionConfirmedPart1Failed,
     ResponderSessionConfirmedPart1InvalidFixedLength,
     ResponderSessionConfirmedPart1Truncated,
@@ -93,6 +93,14 @@ pub enum StatusReason {
     ResponderSessionConfirmedPart1TranscriptMismatch,
     ResponderSessionConfirmedPart1KeyAgreementInvalid,
     ResponderSessionConfirmedPart1IoFailed,
+    ResponderSessionCreatedWriteClosed,
+    ResponderSessionCreatedWriteDeadline,
+    ResponderSessionCreatedWriteCancelled,
+    ResponderSessionCreatedWriteFailed,
+    ResponderSessionConfirmedReadClosed,
+    ResponderSessionConfirmedReadDeadline,
+    ResponderSessionConfirmedReadCancelled,
+    ResponderSessionConfirmedReadIoFailed,
     ResponderSessionConfirmedPart2Failed,
     ResponderRouterIdentityVerificationFailed,
     ResponderHandshakeTimeout,
@@ -322,6 +330,30 @@ pub(crate) fn reason_name(value: StatusReason) -> &'static str {
         }
         StatusReason::ResponderSessionConfirmedPart1IoFailed => {
             "responder_session_confirmed_part1_io_failed"
+        }
+        StatusReason::ResponderSessionCreatedWriteClosed => {
+            "responder_session_created_write_closed"
+        }
+        StatusReason::ResponderSessionCreatedWriteDeadline => {
+            "responder_session_created_write_deadline"
+        }
+        StatusReason::ResponderSessionCreatedWriteCancelled => {
+            "responder_session_created_write_cancelled"
+        }
+        StatusReason::ResponderSessionCreatedWriteIoFailed => {
+            "responder_session_created_write_io_failed"
+        }
+        StatusReason::ResponderSessionConfirmedReadClosed => {
+            "responder_session_confirmed_read_closed"
+        }
+        StatusReason::ResponderSessionConfirmedReadDeadline => {
+            "responder_session_confirmed_read_deadline"
+        }
+        StatusReason::ResponderSessionConfirmedReadCancelled => {
+            "responder_session_confirmed_read_cancelled"
+        }
+        StatusReason::ResponderSessionConfirmedReadIoFailed => {
+            "responder_session_confirmed_read_io_failed"
         }
         StatusReason::ResponderSessionConfirmedPart2Failed => {
             "responder_session_confirmed_part2_failed"
