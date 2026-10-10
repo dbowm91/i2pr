@@ -1,6 +1,6 @@
 # Plan 414 — stock i2pd decoded-message observation for Plan 410
 
-Status: **active** — `in-progress-stock-i2pd-debug-log-inbound-i2np-observation`.
+Status: **stopped** — `stopped-forward-attempt-failed-with-unclassified-stage`.
 Corrective successor to Plan 410; see `plans/closure/ntcp2-transport/410-status.md`.
 
 ## Objective
