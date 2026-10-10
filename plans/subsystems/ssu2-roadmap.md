@@ -2,6 +2,8 @@
 
 Status: closed
 
+**Recovery continuation (2026-10-10):** [Plan 431](../implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md), gated by Plan 430, extends the closed M8 **controlled-loopback** SSU2 qualification to opt-in non-loopback transport identity, socket and RouterInfo lifecycle. Two independent router families still gate broad normal/public capability claims. Normal-daemon public advertisement remains unqualified. See [core-router recovery](core-router-recovery-roadmap.md).
+
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
