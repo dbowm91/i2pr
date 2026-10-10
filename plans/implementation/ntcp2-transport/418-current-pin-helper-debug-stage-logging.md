@@ -1,6 +1,6 @@
 # Plan 418 — enable stock debug-stage logging in the current-pin helper
 
-Status: **active** — `in-progress-current-pin-helper-debug-stage-logging`.
+Status: **stopped** — `stopped-forward-session-confirmed-received-without-connected-peer`.
 Corrective successor to [Plan 417](../../closure/ntcp2-transport/417-status.md).
 
 ## Objective
