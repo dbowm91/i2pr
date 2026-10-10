@@ -1,6 +1,7 @@
 # Plan 423 — classify reverse SessionConfirmed Part 1 failures precisely
 
-Status: **stopped** — stopped-reverse-session-confirmed-read-closed.
+Status: **stopped** — `stopped-reverse-session-confirmed-io-operation-unattributed`.
+Status amendment: `plans/closure/ntcp2-transport/423-status-amendment-plan-424.md`.
 Corrective successor to [Plan 422](../../closure/ntcp2-transport/422-status.md).
 
 ## Objective
