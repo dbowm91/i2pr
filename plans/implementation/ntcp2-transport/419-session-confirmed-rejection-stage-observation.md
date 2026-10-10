@@ -1,6 +1,6 @@
 # Plan 419 — observe SessionConfirmed rejection stages safely
 
-Status: **ready** — `registered-session-confirmed-rejection-stage-observation`.
+Status: **active** — `in-progress-session-confirmed-rejection-stage-observation`.
 Corrective successor to [Plan 418](../../closure/ntcp2-transport/418-status.md).
 
 ## Objective
