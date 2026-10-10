@@ -151,8 +151,8 @@ Source-evidenced blockers from 446–449 are separate, not one serial prerequisi
 
 | Plan | State at registration | Implementation | Required evidence |
 | --- | --- | --- | --- |
-| 450 | ready | `plans/implementation/core-router-recovery/450-real-daemon-gate-a-router-lifecycle-and-readiness.md` | Real `i2pr run` black-box signed identity, bound SSU2/SAM, restart and truthful staged readiness; **no peer needed** |
-| 451 | blocked on 450 Gate A | `plans/implementation/core-router-recovery/451-real-process-ssu2-netdb-multihop-application-acceptance.md` | Normal process + pinned i2pd, authenticated I2NP/NetDB, >0-hop bidirectional external-SAM Streaming |
+| 450 | passed | `plans/implementation/core-router-recovery/450-real-daemon-gate-a-router-lifecycle-and-readiness.md` | `plans/closure/core-router-recovery/450-status.md`: real-process SSU2 bind, persistent transport identity, SAM STREAM session and restart; Gate B/C remain open |
+| 451 | ready | `plans/implementation/core-router-recovery/451-real-process-ssu2-netdb-multihop-application-acceptance.md` | Plan 450 Gate A closed; controlled normal-process SSU2/NetDB and nonzero-hop application evidence |
 | 452 | ready | `plans/implementation/ntcp2-transport/452-real-i2pd-isolated-datadir-and-stock-ntcp2-control.md` | Disjoint CLI-datadir normal i2pd stock control, real dial trigger and decoded I2NP; only then i2pr NTCP2 |
 | 453 | ready | `plans/implementation/core-router-recovery/453-ssu2-nonloopback-owner-without-external-claim.md` | Guarded nonloopback bind/RI owner local source and negative tests; independent LAN qualification **remains open** |
 | 454 | ready | `plans/implementation/floodfill/454-shared-bandwidth-enforcement-and-capability-permit.md` | One governor for enabled transports, reserved control budgets, socket rate evidence and opaque class permit; no `fR` promotion |
