@@ -1,6 +1,6 @@
 # Plan 430 — Core-router executable baseline and public-role safety gates
 
-Status: **active**. Date: 2026-10-10. Registered baseline: `main@8fd5eb10824909ddebbd99c8b3800dac71eae211`; execution branch begins at `02b428ebc4c83ce4c979b182fe91782c61f29b7a`. Re-census before production changes. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
+Status: **passed** via `plans/closure/core-router-recovery/430-status.md`. Date: 2026-10-10. Registered baseline: `main@8fd5eb10824909ddebbd99c8b3800dac71eae211`; execution branch began at `02b428ebc4c83ce4c979b182fe91782c61f29b7a`. Roadmap: `plans/subsystems/core-router-recovery-roadmap.md`.
 
 ## Objective and readiness
 

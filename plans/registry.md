@@ -22,15 +22,14 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 ## Core-router operational recovery — registered 2026-10-10
 
-The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.md) explicitly includes **NTCP2 and optional floodfill** as completion requirements, not indefinitely deferred enhancements. This line is planning-only: normal public SSU2/NTCP2, transit, and `caps=f` remain non-advertised/unqualified; signed online HTTPS SU3 reseeding is not yet wired into normal bootstrap. Historical Plan 099/101, 161, 268, 303/306, and Proposal-170 ELS2 closure tokens are unchanged. One dependency-ready plan: **430**. No implementation/closure pass is claimed.
+The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.md) explicitly includes **NTCP2 and optional floodfill** as completion requirements, not indefinitely deferred enhancements. Plan 430 passed as an infrastructure and invariant baseline; it changed no production network posture or support claim. Normal public SSU2/NTCP2, transit, and `caps=f` remain unqualified, and signed online HTTPS SU3 reseeding is not yet wired into normal bootstrap. Historical Plan 099/101, 161, 268, 303/306, and Proposal-170 ELS2 closure tokens are unchanged. Plans 431, 432, and 434 are now dependency-ready; the other 430–439 successors remain gated by their listed evidence.
 
 | Plan | State | Implementation handoff | Dependency / observable outcome |
 | --- | --- | --- | --- |
-| 430 | **active** | [Executable baseline and role gates](implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md) | Existing closures; freeze factual source and no-false-claim readiness |
-| 431 | blocked | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | 430 → controlled non-loopback bind, persistent identity, RouterInfo policy |
-| 432 | blocked | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
+| 431 | **ready** | [Public-capable SSU2](implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md) | 430 → controlled non-loopback bind, persistent identity, RouterInfo policy |
+| 432 | **ready** | [Verified HTTPS SU3 reseed](implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) | 430 → opt-in signed online bootstrap |
 | 433 | blocked | [Live NetDB/tunnel/client composition](implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) | 431+432 → real independent-router multihop application path |
-| 434 | blocked | [NTCP2 authenticated-link recovery](implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) | 430 → pinpoint Plan 099 discrepancy and qualify i2pd two-way I2NP |
+| 434 | **ready** | [NTCP2 authenticated-link recovery](implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md) | 430 → pinpoint Plan 099 discrepancy and qualify i2pd two-way I2NP |
 | 435 | blocked | [NTCP2 daemon and dual transports](implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md) | 433+434 → guarded NTCP2 and SSU2 with i2pd+Java proof |
 | 436 | blocked | [Normal-daemon transit opt-in](implementation/transit-tunnels/436-normal-daemon-transit-participation-optin.md) | 433 → M11 participant product and bounded admission |
 | 437 | blocked | [Truthful floodfill bandwidth class](implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md) | 433+436 → measured Java-eligible bandwidth, no fake cap |
@@ -41,7 +40,7 @@ The new [core-router recovery roadmap](subsystems/core-router-recovery-roadmap.m
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Core-router operational recovery | registered; Plan 430 ready, 431–439 dependency-blocked | `plans/subsystems/core-router-recovery-roadmap.md` | Plans 430–439 public SSU2/reseed, live router, NTCP2, transit, floodfill and full acceptance | Strict default-off and no false RouterInfo publication; Plan 430 is the first executable gate. No production source or support claims changed. |
+| Core-router operational recovery | active; Plan 430 passed; Plans 431/432/434 ready | `plans/subsystems/core-router-recovery-roadmap.md` | Plans 431–439 public SSU2/reseed, live router, NTCP2, transit, floodfill and full acceptance | Strict default-off and no false RouterInfo publication; Plan 433+ remain gated by independent transport/reseed evidence. No support claim changed. |
 | Workspace foundation | closed (milestones) / parallel corrective lane active | `plans/subsystems/workspace-foundation-roadmap.md` | Plans 000–025 closed; parallel lane Plans 359–367 | **Milestones stay closed; the lane does not reopen them.** Plan 360 fixed the product-path defect where `i2pr run` opened no listener. Plans 361/362/365/366 closed four guard gaps in which an assertion read as enforcing a boundary while enforcing nothing — 366 was the worst, scanning 1 of 13 console files; 365's premise was a `ci.yml` that did not parse, which no floor step could see. Plan 364 (floodfill) landed in the same batch. No capability or advertisement claim. |
 | NTCP2 transport | closed | `plans/subsystems/ntcp2-transport-roadmap.md` | Plans 030–101 exited (defect localized, daemon NTCP2 disabled) | New NTCP2 work needs a new plan-of-record |
 | NetDB | closed | `plans/subsystems/netdb-roadmap.md` | Plans 102–106 closed (handoff via Plan 106) | — |
@@ -271,6 +270,7 @@ Parallel anonymity work is beside, not beneath, M12. Plans 297–305 remain stop
 ## Recently closed work
 
 | Subsystem | Plan | State | Closure record |
+| Core-router operational recovery | 430 executable baseline and public-role safety gates | passed (infrastructure only) | `plans/closure/core-router-recovery/430-status.md` (`passed-core-router-baseline-and-public-role-safety-gates`) |
 | SAM | 368 SAM 3.3 PRIMARY/subsession shared-Destination profile | closed | `plans/closure/sam/368-status.md` (`passed-sam33-primary-subsession-shared-destination-profile`; implementation `8e262fe0`; full local routine floor and pinned Java/i2pd diagnostic lanes passed) |
 | Managed native app runtime | 409 external Rust managed-app SDK and package builder | passed | `plans/closure/managed-native-app-runtime/409-status.md` (`passed-external-rust-managed-app-sdk-and-package-builder`) |
 | Managed native app runtime | 408 host-owned loopback local-service ingress | passed | `plans/closure/managed-native-app-runtime/408-status.md` (`passed-host-owned-loopback-local-service-ingress`) |

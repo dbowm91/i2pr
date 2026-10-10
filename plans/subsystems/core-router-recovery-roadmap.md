@@ -63,11 +63,11 @@ Capability advertisement is an output of observed healthy owners and completed c
 
 | Plan | Status at registration | Implementation | Required proof |
 | --- | --- | --- | --- |
-| 430 | ready | `plans/implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md` | One reproducible baseline and fail-closed eligibility contract |
-| 431 | blocked on 430 | `plans/implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md` | Controlled non-loopback qualified SSU2, no false publication |
-| 432 | blocked on 430 | `plans/implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md` | Verified remote SU3 bootstrap with isolated TLS tests |
+| 430 | passed | `plans/implementation/core-router-recovery/430-executable-baseline-and-public-role-gates.md` | Source inventory, readiness/claim contract, fail-closed negative controls; no capability promotion |
+| 431 | ready | `plans/implementation/core-router-recovery/431-public-capable-ssu2-runtime-and-routerinfo.md` | Controlled non-loopback qualified SSU2, no false publication |
+| 432 | ready | `plans/implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md` | Verified remote SU3 bootstrap with isolated TLS tests |
 | 433 | blocked on 431,432 | `plans/implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md` | Independent-router multihop end-to-end application path |
-| 434 | blocked on 430 | `plans/implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md` | Real bidirectional first-family authenticated I2NP |
+| 434 | ready | `plans/implementation/ntcp2-transport/434-ntcp2-authenticated-link-discrepancy-recovery.md` | Real bidirectional first-family authenticated I2NP |
 | 435 | blocked on 433,434 | `plans/implementation/ntcp2-transport/435-ntcp2-daemon-activation-and-dual-transport.md` | Dual-transport operational profile, two-family gate |
 | 436 | blocked on 433 | `plans/implementation/transit-tunnels/436-normal-daemon-transit-participation-optin.md` | Opt-in participant forwarding and resource/lifecycle acceptance |
 | 437 | blocked on 433,436 | `plans/implementation/floodfill/437-truthful-bandwidth-tier-and-java-selection.md` | Measured class and Java candidate selection |
@@ -94,4 +94,4 @@ The operational core is demonstrated only when a fresh identity and empty cache 
 
 ## 12. Current planning disposition
 
-Only Plan 430 is dependency-ready on registration. Plans 431–439 are registered but blocked in dependency order. Existing subsystem closure/status records remain authoritative and unchanged; add forward references in subsystem roadmaps and `plans/registry.md`. This branch consists of plans only; no executed network tests or feature activation are claimed.
+Plan 430 closed as an infrastructure and invariant baseline; it activated no transport or network role and changed no support claim. Plans 431, 432, and 434 are now dependency-ready. Plans 433, 435, 436, 437, 438, and 439 remain blocked on their listed predecessor evidence. Existing closure/status records remain authoritative and unchanged; Plan 430's source-comment discrepancy is carried to Plan 438 for reconciliation before any floodfill promotion.
