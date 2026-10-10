@@ -26,10 +26,11 @@ The termination count is process-wide and the permitted evidence intentionally
 does not retain identity or endpoint values, so it cannot be correlated with
 the accepted RouterInfo marker. No authenticated connected-link or I2NP
 delivery claim follows from this attempt. No actionable implementation defect
-was localized in this bounded forward diagnostic. Plan 421 is registered to
-spend the untried reverse direction once. Plans 433–439 remain blocked on
-their recorded dependencies; normal-daemon NTCP2 remains disabled and
-non-advertised.
+was localized in this bounded forward diagnostic. Plan 421 then exposed a
+reverse-only scenario identity mismatch before wire; Plan 422 is registered to
+correct and test that mapping and spend the reverse direction once. Plans
+433–439 remain blocked on their recorded dependencies; normal-daemon NTCP2
+remains disabled and non-advertised.
 
 ## Requirement-to-evidence matrix
 

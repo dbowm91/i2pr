@@ -1,6 +1,6 @@
 # Plan 421 — bounded current-pin reverse NTCP2 attempt
 
-Status: **active** — `in-progress-current-pin-reverse-initiator-attempt`.
+Status: **stopped** — `stopped-reverse-launcher-identity-role-mismatch`.
 Corrective successor to [Plan 420](../../closure/ntcp2-transport/420-status.md).
 
 ## Objective
