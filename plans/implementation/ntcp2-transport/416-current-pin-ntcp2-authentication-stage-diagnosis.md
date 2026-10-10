@@ -1,6 +1,6 @@
 # Plan 416 — diagnose the current-pin NTCP2 authentication-stage failure
 
-Status: **active** — `in-progress-current-pin-ntcp2-authentication-stage-diagnosis`.
+Status: **stopped** — `stopped-source-trace-did-not-localize-an-i2pr-owned-correction`.
 Corrective successor to [Plan 415](../../closure/ntcp2-transport/415-status.md).
 
 ## Objective
