@@ -24,7 +24,7 @@ fails. The two rows that can be inflated by build artifacts — the
 | Top-level `scripts/` files | 67 | 64 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
 | `check-*` on disk (all classes) | 67 | 64 top level + 3 under `scripts/interop/` |
-| Checker steps in `ci.yml` | 42 | 40 distinct `check-*` + 2 `python3` test discoveries |
+| Checker invocations in `ci.yml` | 42 | 40 distinct `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |

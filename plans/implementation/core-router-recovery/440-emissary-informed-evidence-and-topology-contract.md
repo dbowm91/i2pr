@@ -1,6 +1,6 @@
 # Plan 440 — Emissary-informed router/test architecture and evidence-contract reconciliation
 
-Status: **registered / ready**. Owner core-router-recovery; evidence plan for the new corrective sequence; predecessor Plan 430 passed, Plan 432 passed. Base: recovery branch `work/plans-430-439-core-router-recovery` with Plan 424 terminal. Roadmap `plans/subsystems/core-router-recovery-roadmap.md`.
+Status: **passed** — `passed-evidence-topology-and-qualification-contract-with-fail-closed-successor-gates`. Closure: `plans/closure/core-router-recovery/440-status.md`. Implementation: `82eea4b9ad5510eb3a91764c6de53e9d25c225ee`. Owner core-router-recovery; predecessor Plan 430 passed, Plan 432 passed. Base: recovery branch `work/plans-430-439-core-router-recovery` with Plan 424 terminal. Roadmap `plans/subsystems/core-router-recovery-roadmap.md`.
 
 ## Objective and readiness
 
