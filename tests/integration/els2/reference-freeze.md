@@ -316,11 +316,33 @@ source-proof baseline, i2pr HEAD was `d616f0868db4e56bd311d74095347209d69f5aa0`
 and `Cargo.lock` SHA-256 was
 `5389da3fa5dcd74e13d4c6421c3a2079c98b4e9ee117a8b575ca9c80e4a92bce`.
 
+## 3.6 Plan 411 Java SAM session-create diagnosis
+
+Plan 411 performed one fresh Java 2.13.0 loopback run, separate from the spent
+Plan 279 runner. Its single DATAGRAM `SESSION CREATE` returned `I2P_ERROR` in
+the `session-create` stage. Before starting Java, an ephemeral bind probe found
+that UDP `127.0.0.1:7655` was unavailable. The exact-pinned source trace
+attributes the response to `SAMv3Handler.execSessionMessage`: its DATAGRAM
+branch obtains the `SAMv3DatagramServer` before constructing
+`SAMv3DatagramSession`; the server binds the default UDP port, and the caught
+`IOException` becomes the SAM error reply. Therefore I2CP session creation was
+never reached. The sanitized response digest and source-fact digests are
+packaged in `tests/integration/els2/evidence/plan411/`; raw response and router
+logs were not retained.
+
+This is a host port collision in the SAM helper setup, not an ELS2 result or a
+Java protocol defect. A Java driver that needs a DATAGRAM helper must pass an
+available loopback `sam.udp.host` and `sam.udp.port` in `SESSION CREATE`.
+Plan 411's first post-request runner exit occurred in its source-trace
+postprocessor. The source trace was then generated offline from the exact pin
+and the evidence checker passed; the SAM command was not repeated.
+
 ## 4. Remaining Plan 375 work
 
-Plan 406 delivered the i2pd scope. Plan 375 remains active because its Java
-ELS2 live driver and directions have not been executed. This is implementation
-work, not an environmental blocker.
+Plan 406 delivered the i2pd scope. Plan 375 remains blocked because its Java
+ELS2 driver and directions have not been executed. Plan 411 has attributed the
+earlier SAM setup failure, and Plan 412 owns the first Java no-auth requester
+direction. This remains implementation work; no Java ELS2 direction has passed.
 
 > **Historical Plan 381 note (2026-10-08).** The i2pd-direction half now exists:
 > `tests/integration/els2/run-i2pd-els2.sh` plus the driver

@@ -23,7 +23,9 @@ reuse or execute `tests/integration/floodfill/run-java-floodfill.sh`.
 **Infrastructure/diagnostic.** This plan attributes a setup failure and does
 not qualify ELS2 or change a product capability.
 
-1. Java I2P remains byte-for-byte unmodified at the frozen pin.
+1. Java I2P remains byte-for-byte unmodified at the frozen pin. Run the
+   reference under JDK 21; compile the existing test-only launcher with
+   `javac --release 17`, since this host has no JDK 21 compiler.
 2. Every listener and peer endpoint is IPv4 loopback; reseed and public
    networking remain disabled.
 3. One clean invocation contains one `SESSION CREATE` request. No retries,
@@ -40,10 +42,13 @@ not qualify ELS2 or change a product capability.
 ## Scope
 
 In scope: a new independent runner under `tests/integration/els2/`, an evidence
-checker with negative self-tests, the minimum isolated Java topology needed to
-exercise the SAM-hosted router's I2CP session path, exact-pinned source tracing
-of the returned error, and a closure record with a precise diagnosis or an
-explicit unresolved stop.
+checker with negative self-tests, one fresh Java router with loopback SAM and
+I2CP listeners, one exact SAM request, an ephemeral preflight observation of
+the default UDP bind `127.0.0.1:7655`, exact-pinned source tracing of the
+returned error, and a closure record with a precise diagnosis or an explicit
+unresolved stop. The pinned SAM source calls `getV3DatagramServer` before
+constructing the client session, so client tunnels and an i2pr peer are not
+required to attribute an address-bind failure.
 
 Out of scope: the Plan 375 Java ELS2 driver/matrix; the spent Plan 279 runner;
 any Java source or binary patch; production Rust code; network-ID or bandwidth
@@ -53,17 +58,18 @@ changes.
 ## Ordered work packages
 
 1. Add a new runner that validates the cached Java revision/build metadata,
-   compiles only the existing test-only `ControlledRouter`, and creates fresh
-   datadirs/ports. Start the minimum mutually seeded Java-only loopback mesh
-   that can support a client SAM session, with a live Java floodfill and two
-   transit relays. Do not invoke the Plan 279 runner or its i2pr qualification
-   driver.
+   compiles only the existing test-only `ControlledRouter`, and creates a fresh
+   datadir plus loopback ports. Preflight whether UDP `127.0.0.1:7655` can be
+   bound; record only a boolean. Start one stock Java router with reseed and
+   public update disabled. Do not invoke the Plan 279 runner or its i2pr
+   qualification driver.
 2. Send one `HELLO VERSION`, then one uniquely identified DATAGRAM
    `SESSION CREATE` with a transient destination and signature type 7. Capture
    the complete response only in ephemeral scratch. Map it through a closed
    classifier (`established`, `address-in-use`, `sam-error`, `timeout`,
    `transport-error`, `invalid-response`) and emit its SHA-256, never its raw
-   text. Bound router startup, SAM connect/read, teardown, and total runner
+   text. Bound router startup, SAM bind/readiness to 300 seconds, SAM connect/read,
+   teardown, and total runner
    time; all child processes are owned and terminated on every exit path.
 3. At the exact Java pin, trace the observed response string through the
    responsible SAM/I2CP code path. Record source filenames, methods, and the

@@ -1,0 +1,12 @@
+{
+  "attempts": 1,
+  "elapsed_ms": 8,
+  "java_pin": "9134f808337b401e8e53c73734c81fab04280c9d",
+  "outcome": "address-in-use",
+  "protocol_result": "I2P_ERROR",
+  "response_sha256": "29d48c2e8655d95fb37f54a26ee303b8f8f72e74e993e060ff40c9a5b877c61a",
+  "schema": "i2pr-java-sam-diagnostic-v1",
+  "stage": "session-create",
+  "topology": "single-fresh-java-router-loopback-only",
+  "udp_127_0_0_1_7655_available_before_start": false
+}
