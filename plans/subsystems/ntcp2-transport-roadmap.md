@@ -141,7 +141,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 420 | stopped | `plans/implementation/ntcp2-transport/420-post-validation-session-progress-observation.md` | `plans/closure/ntcp2-transport/420-status.md`: RouterInfo accepted marker; no I2NP block or DeliveryStatus |
 | 421 | stopped | `plans/implementation/ntcp2-transport/421-current-pin-reverse-initiator-attempt.md` | `plans/closure/ntcp2-transport/421-status.md`: reverse scenario identity mismatch before wire |
 | 422 | stopped | `plans/implementation/ntcp2-transport/422-reverse-scenario-identity-correction.md` | `plans/closure/ntcp2-transport/422-status.md`: corrected mapping reached TCP; responder failed at SessionConfirmed Part 1 |
-| 423 | ready | `plans/implementation/ntcp2-transport/423-session-confirmed-part1-error-classification.md` | Expose finite safe HandshakeError categories and spend one reverse-only attempt |
+| 423 | active | `plans/implementation/ntcp2-transport/423-session-confirmed-part1-error-classification.md` | Expose finite safe HandshakeError categories and spend one reverse-only attempt |
 
 ## 8. Cross-cutting requirements
 
