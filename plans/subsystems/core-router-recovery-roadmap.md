@@ -57,7 +57,7 @@ Capability advertisement is an output of observed healthy owners and completed c
                    433 + 435 + 436 + 438 -> 439 complete-router product acceptance
 ```
 
-431/432/434 were independently executable after 430's common contract and baseline closed. Plan 431 is stopped at the unavailable non-loopback topology, Plan 432 passed, and Plan 434 is blocked on the current-pin reverse i2pd initiator path; corrective Plan 410 is registered to provide that harness path. Plan 435 depends on 433 + 434. Plan 437 depends on 433 + 436. Plan 438 depends on 437. Plan 439 is the final evidence gate. Other active work lines are not overridden. A blocked step must record its blocker and bounded next evidence, not loop indefinitely.
+431/432/434 were independently executable after 430's common contract and baseline closed. Plan 431 stopped at the unavailable non-loopback topology, Plan 432 passed, and Plan 434 remains blocked: corrective Plan 410 added and built the current-network-ID loopback profile against pristine pinned i2pd, then stopped because stock i2pd exposes no public decoded inbound NTCP2 I2NP observation. No admissible two-way evidence can be produced without changing the reference router, which is prohibited. Plan 435 depends on 433 + 434. Plan 437 depends on 433 + 436. Plan 438 depends on 437. Plan 439 is the final evidence gate. Other active work lines are not overridden. A blocked step must record its blocker and bounded next evidence, not loop indefinitely.
 
 ## 7. Milestones
 
