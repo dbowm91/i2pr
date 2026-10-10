@@ -1,6 +1,6 @@
 # Plan 422 — correct reverse current-pin scenario identity mapping
 
-Status: **ready** — registered-reverse-scenario-identity-correction.
+Status: **active** — in-progress-reverse-scenario-identity-correction.
 Corrective successor to [Plan 421](../../closure/ntcp2-transport/421-status.md).
 
 ## Objective
