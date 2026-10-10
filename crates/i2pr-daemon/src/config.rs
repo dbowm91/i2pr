@@ -63,6 +63,8 @@ struct RawConfig {
     news: RawNewsConfig,
     #[serde(default)]
     floodfill: RawFloodfillConfig,
+    #[serde(default)]
+    bandwidth: RawBandwidthConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -794,6 +796,40 @@ struct RawFloodfillConfig {
     enabled: bool,
 }
 
+/// Explicit process-wide transport byte-rate policy.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBandwidthConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    inbound_bytes_per_second: u64,
+    #[serde(default)]
+    outbound_bytes_per_second: u64,
+    #[serde(default)]
+    share_percent: u8,
+    #[serde(default = "default_bandwidth_burst_bytes")]
+    burst_bytes: u64,
+    #[serde(default = "default_bandwidth_pending_requests")]
+    max_pending_requests: usize,
+    #[serde(default = "default_bandwidth_pending_per_peer")]
+    max_pending_per_peer: usize,
+}
+
+impl Default for RawBandwidthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            inbound_bytes_per_second: 0,
+            outbound_bytes_per_second: 0,
+            share_percent: 0,
+            burst_bytes: default_bandwidth_burst_bytes(),
+            max_pending_requests: default_bandwidth_pending_requests(),
+            max_pending_per_peer: default_bandwidth_pending_per_peer(),
+        }
+    }
+}
+
 impl Default for RawFloodfillConfig {
     fn default() -> Self {
         Self {
@@ -804,6 +840,18 @@ impl Default for RawFloodfillConfig {
 
 fn default_profile() -> String {
     String::from("balanced")
+}
+
+const fn default_bandwidth_burst_bytes() -> u64 {
+    64 * 1024
+}
+
+const fn default_bandwidth_pending_requests() -> usize {
+    1024
+}
+
+const fn default_bandwidth_pending_per_peer() -> usize {
+    1
 }
 
 fn default_filter() -> String {
@@ -1728,6 +1776,8 @@ pub struct Config {
     pub addressbook: crate::addressbook::AddressBookSubsystemConfig,
     /// Normal floodfill opt-in (Plan 279; default off, intent only).
     pub floodfill: FloodfillConfig,
+    /// Explicit global transport capacity and bandwidth-class policy.
+    pub bandwidth: BandwidthConfig,
 }
 
 /// Normalized Plan 279 normal floodfill opt-in.
@@ -1744,6 +1794,26 @@ pub struct Config {
 pub struct FloodfillConfig {
     /// Whether the operator requests floodfill eligibility evaluation.
     pub enabled: bool,
+}
+
+/// Immutable global bandwidth policy. Disabled remains the default for
+/// compatibility; no class can be derived while it is disabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BandwidthConfig {
+    /// Whether byte enforcement and class derivation are explicitly enabled.
+    pub enabled: bool,
+    /// Inbound accepted-processing ceiling in bytes per second.
+    pub inbound_bytes_per_second: u64,
+    /// Outbound socket-write ceiling in bytes per second.
+    pub outbound_bytes_per_second: u64,
+    /// Configured shared-capacity fraction in integer percent.
+    pub share_percent: u8,
+    /// Maximum instantaneous byte burst in either direction.
+    pub burst_bytes: usize,
+    /// Maximum global queued byte reservations.
+    pub max_pending_requests: usize,
+    /// Maximum queued byte reservations for one peer.
+    pub max_pending_per_peer: usize,
 }
 
 /// Normalized service-tunnel configuration.
@@ -1889,6 +1959,7 @@ impl Config {
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
         let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
         let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &netdb)?;
+        let bandwidth = normalize_bandwidth(&raw.bandwidth, &ssu2)?;
 
         Ok(Self {
             source_path: None,
@@ -1920,6 +1991,7 @@ impl Config {
             service_tunnels,
             addressbook,
             floodfill,
+            bandwidth,
         })
     }
 }
@@ -3145,6 +3217,98 @@ fn normalize_floodfill(
     })
 }
 
+fn normalize_bandwidth(
+    raw: &RawBandwidthConfig,
+    ssu2: &Ssu2Config,
+) -> Result<BandwidthConfig, ConfigError> {
+    let burst_bytes = usize::try_from(raw.burst_bytes).map_err(|_| ConfigError::Semantic {
+        field: "bandwidth.burst_bytes",
+        reason: "does not fit this host",
+    })?;
+    if burst_bytes == 0 || burst_bytes > i2pr_runtime::MAX_BANDWIDTH_BURST_BYTES {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth.burst_bytes",
+            reason: "must be between 1 byte and the 4 MiB ceiling",
+        });
+    }
+    if raw.max_pending_requests == 0
+        || raw.max_pending_requests > i2pr_runtime::MAX_BANDWIDTH_PENDING_REQUESTS
+        || raw.max_pending_per_peer == 0
+        || raw.max_pending_per_peer > raw.max_pending_requests
+    {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth.max_pending_requests",
+            reason: "queue limits must be positive, bounded, and per-peer <= global",
+        });
+    }
+    if !raw.enabled {
+        if raw.inbound_bytes_per_second != 0
+            || raw.outbound_bytes_per_second != 0
+            || raw.share_percent != 0
+        {
+            return Err(ConfigError::Semantic {
+                field: "bandwidth.enabled",
+                reason: "must be true when byte rates or share are configured",
+            });
+        }
+        return Ok(BandwidthConfig {
+            enabled: false,
+            inbound_bytes_per_second: 0,
+            outbound_bytes_per_second: 0,
+            share_percent: 0,
+            burst_bytes,
+            max_pending_requests: raw.max_pending_requests,
+            max_pending_per_peer: raw.max_pending_per_peer,
+        });
+    }
+    if !ssu2.enabled {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth.enabled",
+            reason: "requires an active runtime transport owner (SSU2 is currently the only normal-daemon owner)",
+        });
+    }
+    if raw.inbound_bytes_per_second == 0 || raw.outbound_bytes_per_second == 0 {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth",
+            reason: "enabled policy requires positive inbound and outbound byte rates",
+        });
+    }
+    if raw.inbound_bytes_per_second > i2pr_runtime::MAX_BANDWIDTH_BYTES_PER_SECOND
+        || raw.outbound_bytes_per_second > i2pr_runtime::MAX_BANDWIDTH_BYTES_PER_SECOND
+    {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth",
+            reason: "inbound and outbound rates must be at most 10 GiB/s",
+        });
+    }
+    if raw.share_percent > 100 {
+        return Err(ConfigError::Semantic {
+            field: "bandwidth.share_percent",
+            reason: "must be between 0 and 100",
+        });
+    }
+    let governor = i2pr_runtime::BandwidthGovernorConfig {
+        inbound_bytes_per_second: raw.inbound_bytes_per_second,
+        outbound_bytes_per_second: raw.outbound_bytes_per_second,
+        burst_bytes,
+        max_pending_requests: raw.max_pending_requests,
+        max_pending_per_peer: raw.max_pending_per_peer,
+    };
+    governor.validate().map_err(|_| ConfigError::Semantic {
+        field: "bandwidth",
+        reason: "rate governor limits are outside the supported bounds",
+    })?;
+    Ok(BandwidthConfig {
+        enabled: true,
+        inbound_bytes_per_second: raw.inbound_bytes_per_second,
+        outbound_bytes_per_second: raw.outbound_bytes_per_second,
+        share_percent: raw.share_percent,
+        burst_bytes,
+        max_pending_requests: raw.max_pending_requests,
+        max_pending_per_peer: raw.max_pending_per_peer,
+    })
+}
+
 fn normalize_reseed(
     raw: &RawReseedConfig,
     netdb: &NetDbConfig,
@@ -3643,6 +3807,77 @@ data_dir = "./state"
         assert_eq!(config.limits.max_tasks, DEFAULT_MAX_TASKS);
         assert_eq!(config.logging.format, LogFormat::Text);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn bandwidth_is_disabled_by_default_and_requires_explicit_bounded_policy() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.bandwidth.enabled);
+        assert_eq!(default.bandwidth.share_percent, 0);
+
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n"
+        );
+        let parsed = Config::parse(&configured).expect("valid explicit limits");
+        assert!(parsed.bandwidth.enabled);
+        assert_eq!(parsed.bandwidth.inbound_bytes_per_second, 131_072);
+        assert_eq!(parsed.bandwidth.share_percent, 50);
+    }
+
+    #[test]
+    fn bandwidth_rejects_incomplete_rates_share_and_unbounded_queues() {
+        let missing_rate = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\nshare_percent = 10\n"
+        );
+        assert!(matches!(
+            Config::parse(&missing_rate),
+            Err(ConfigError::Semantic {
+                field: "bandwidth",
+                ..
+            })
+        ));
+
+        let excessive_share = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\noutbound_bytes_per_second = 1024\nshare_percent = 101\n"
+        );
+        assert!(matches!(
+            Config::parse(&excessive_share),
+            Err(ConfigError::Semantic {
+                field: "bandwidth.share_percent",
+                ..
+            })
+        ));
+
+        let excessive_queue = format!("{MINIMAL}\n[bandwidth]\nmax_pending_requests = 20000\n");
+        assert!(matches!(
+            Config::parse(&excessive_queue),
+            Err(ConfigError::Semantic {
+                field: "bandwidth.max_pending_requests",
+                ..
+            })
+        ));
+
+        let unowned = format!(
+            "{MINIMAL}\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\noutbound_bytes_per_second = 1024\nshare_percent = 10\n"
+        );
+        assert!(matches!(
+            Config::parse(&unowned),
+            Err(ConfigError::Semantic {
+                field: "bandwidth.enabled",
+                ..
+            })
+        ));
+
+        let excessive_rate = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1099511627777\noutbound_bytes_per_second = 1024\nshare_percent = 10\n"
+        );
+        assert!(matches!(
+            Config::parse(&excessive_rate),
+            Err(ConfigError::Semantic {
+                field: "bandwidth",
+                ..
+            })
+        ));
     }
 
     #[test]

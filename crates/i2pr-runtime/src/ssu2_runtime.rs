@@ -101,7 +101,10 @@ use zeroize::Zeroize;
 use crate::ntcp2_runtime::{DialAdmission, DialBackoffConfig, DialKey};
 use crate::ntcp2_runtime::{DialBackoffDecision, IpPrefixPolicy};
 use crate::ssu2_peer_relay::{Ssu2PeerRelayConfig, Ssu2PeerRelayService};
-use crate::{CancellationToken, ChildScope, ChildTaskFailure};
+use crate::{
+    BandwidthDirection, BandwidthGovernor, BandwidthPeerKey, CancellationToken, ChildScope,
+    ChildTaskFailure,
+};
 use i2pr_core::CancellationReason;
 
 /// Hard maximum for any Plan 158 runtime duration.
@@ -957,6 +960,20 @@ struct StagedDatagram {
     addr: SocketAddr,
 }
 
+fn bandwidth_peer_key(addr: SocketAddr) -> BandwidthPeerKey {
+    use std::hash::{Hash, Hasher};
+
+    // Retained only as a private scheduler key; never format or export it.
+    let mut digest = [0_u8; 32];
+    for lane in 0..4 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        lane.hash(&mut hasher);
+        addr.hash(&mut hasher);
+        digest[lane * 8..(lane + 1) * 8].copy_from_slice(&hasher.finish().to_be_bytes());
+    }
+    BandwidthPeerKey::from_local_digest(digest)
+}
+
 /// One cached future-handshake token learned from a NewToken block.
 struct CachedToken {
     value: u64,
@@ -1031,6 +1048,7 @@ fn subnet_down(map: &mut HashMap<SubnetKey, usize>, key: &SubnetKey) {
 /// Shared runtime state behind one `Clone` service owner.
 struct Shared {
     config: Ssu2RuntimeConfig,
+    bandwidth: Option<BandwidthGovernor>,
     local_peer: PeerId,
     local_static: [u8; 32],
     local_intro: IntroKey,
@@ -1281,6 +1299,15 @@ impl Ssu2RuntimeService {
         config: Ssu2RuntimeConfig,
         identity: Ssu2IdentityMaterial,
     ) -> Result<Self, Ssu2RuntimeConfigError> {
+        Self::new_with_bandwidth(config, identity, None)
+    }
+
+    /// Creates a runtime service with an optional process-shared byte governor.
+    pub fn new_with_bandwidth(
+        config: Ssu2RuntimeConfig,
+        identity: Ssu2IdentityMaterial,
+        bandwidth: Option<BandwidthGovernor>,
+    ) -> Result<Self, Ssu2RuntimeConfigError> {
         config.validate()?;
         if identity.router_info.is_empty()
             || identity.router_info.len() > constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES
@@ -1359,6 +1386,7 @@ impl Ssu2RuntimeService {
         Ok(Self {
             shared: Arc::new(Shared {
                 config,
+                bandwidth,
                 local_peer: PeerId::from_hash(identity.router_hash),
                 local_static: identity.static_secret_bytes,
                 local_intro: identity.intro_key,
@@ -5594,7 +5622,12 @@ impl Ssu2RuntimeService {
     /// boundary: it waits in `fault_held` until a successor transmits
     /// (or the next flush finds an empty queue, which releases it with
     /// only a scheduling delay).
-    async fn flush_staged(&self, socket: &UdpSocket, is_v4: bool) {
+    async fn flush_staged(
+        &self,
+        socket: &UdpSocket,
+        is_v4: bool,
+        cancellation: &CancellationToken,
+    ) {
         struct Send {
             bytes: Vec<u8>,
             addr: SocketAddr,
@@ -5675,6 +5708,19 @@ impl Ssu2RuntimeService {
         for send in sends {
             let times = if send.duplicates { 2 } else { 1 };
             for _ in 0..times {
+                if let Some(governor) = &self.shared.bandwidth
+                    && governor
+                        .acquire(
+                            BandwidthDirection::Outbound,
+                            bandwidth_peer_key(send.addr),
+                            send.bytes.len(),
+                            cancellation,
+                        )
+                        .await
+                        .is_err()
+                {
+                    continue;
+                }
                 if socket.send_to(&send.bytes, send.addr).await.is_ok() {
                     self.shared
                         .counters
@@ -5686,7 +5732,20 @@ impl Ssu2RuntimeService {
         if let Some(previous) = previous_held {
             // Released one position behind its successor (or merely
             // delayed when the queue was empty).
-            if socket.send_to(&previous.bytes, previous.addr).await.is_ok() {
+            let admitted = if let Some(governor) = &self.shared.bandwidth {
+                governor
+                    .acquire(
+                        BandwidthDirection::Outbound,
+                        bandwidth_peer_key(previous.addr),
+                        previous.bytes.len(),
+                        cancellation,
+                    )
+                    .await
+                    .is_ok()
+            } else {
+                true
+            };
+            if admitted && socket.send_to(&previous.bytes, previous.addr).await.is_ok() {
                 self.shared
                     .counters
                     .datagrams_sent
@@ -5762,15 +5821,31 @@ impl Ssu2RuntimeService {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
                     self.deliver_inbound(inbound, &inbound_tx);
-                    self.flush_staged(&socket, is_v4).await;
+                    self.flush_staged(&socket, is_v4, &child).await;
                 }
                 result = socket.recv_from(&mut buffer) => {
                     match result {
                         Ok((len, source)) => {
                             self.shared.counters.datagrams_received.fetch_add(1, Ordering::Relaxed);
+                            let admitted = if let Some(governor) = &self.shared.bandwidth {
+                                governor
+                                    .acquire(
+                                        BandwidthDirection::Inbound,
+                                        bandwidth_peer_key(source),
+                                        len,
+                                        &child,
+                                    )
+                                    .await
+                                    .is_ok()
+                            } else {
+                                true
+                            };
+                            if !admitted {
+                                continue;
+                            }
                             let inbound = self.handle_datagram(&buffer[..len], source, is_v4, local_addr);
                             self.deliver_inbound(inbound, &inbound_tx);
-                            self.flush_staged(&socket, is_v4).await;
+                            self.flush_staged(&socket, is_v4, &child).await;
                         }
                         Err(_) => {
                             // Local socket failure, not peer traffic:
@@ -5785,7 +5860,7 @@ impl Ssu2RuntimeService {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
                     self.deliver_inbound(inbound, &inbound_tx);
-                    self.flush_staged(&socket, is_v4).await;
+                    self.flush_staged(&socket, is_v4, &child).await;
                 }
             }
         }

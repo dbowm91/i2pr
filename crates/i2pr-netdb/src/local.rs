@@ -18,6 +18,82 @@ use thiserror::Error;
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
 use crate::{FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address};
 
+/// Conservative Java-compatible bandwidth tier derived from configured
+/// directional byte rates and the operator's integer share percentage.
+/// This value is data only; it carries no RouterInfo publication authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BandwidthClass {
+    /// Shared capacity below 12 KiB/s.
+    K,
+    /// Shared capacity through 48 KiB/s.
+    L,
+    /// Shared capacity through 64 KiB/s.
+    M,
+    /// Shared capacity through 128 KiB/s.
+    N,
+    /// Shared capacity through 256 KiB/s.
+    O,
+    /// Shared capacity through 2000 KiB/s.
+    P,
+    /// Shared capacity above 2000 KiB/s.
+    X,
+}
+
+/// Why an operator bandwidth class cannot be derived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BandwidthClassError {
+    /// Share must be an integer percentage from 0 through 100.
+    InvalidShare,
+    /// Multiplying the limiting configured rate by share overflowed.
+    ArithmeticOverflow,
+}
+
+impl BandwidthClass {
+    /// Derives a class from the configured bottleneck rate in bytes per second.
+    /// Rates are first integer-normalized to KiB/s, then the integer share
+    /// percentage is applied before Java-compatible thresholds. A zero share
+    /// yields no class.
+    pub fn from_configured_rates(
+        inbound_bytes_per_second: u64,
+        outbound_bytes_per_second: u64,
+        share_percent: u8,
+    ) -> Result<Option<Self>, BandwidthClassError> {
+        if share_percent > 100 {
+            return Err(BandwidthClassError::InvalidShare);
+        }
+        if share_percent == 0 {
+            return Ok(None);
+        }
+        let bottleneck_kib = inbound_bytes_per_second.min(outbound_bytes_per_second) / 1024;
+        let shared_kib = bottleneck_kib
+            .checked_mul(u64::from(share_percent))
+            .ok_or(BandwidthClassError::ArithmeticOverflow)?
+            / 100;
+        Ok(Some(match shared_kib {
+            0..12 => Self::K,
+            12..=48 => Self::L,
+            49..=64 => Self::M,
+            65..=128 => Self::N,
+            129..=256 => Self::O,
+            257..=2000 => Self::P,
+            _ => Self::X,
+        }))
+    }
+
+    /// Returns the one-letter protocol representation.
+    pub const fn as_capability(self) -> char {
+        match self {
+            Self::K => 'K',
+            Self::L => 'L',
+            Self::M => 'M',
+            Self::N => 'N',
+            Self::O => 'O',
+            Self::P => 'P',
+            Self::X => 'X',
+        }
+    }
+}
+
 /// Errors raised by [`LocalRouterInfoBuilder`].
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum LocalRouterInfoError {
@@ -388,6 +464,43 @@ pub fn options_to_btree(options: &Mapping) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bandwidth_class_uses_integer_kib_boundaries_and_share() {
+        let class = |kib: u64| {
+            BandwidthClass::from_configured_rates(kib * 1024, kib * 1024, 100)
+                .expect("valid rates")
+                .expect("nonzero share")
+        };
+        assert_eq!(class(11), BandwidthClass::K);
+        assert_eq!(class(12), BandwidthClass::L);
+        assert_eq!(class(48), BandwidthClass::L);
+        assert_eq!(class(49), BandwidthClass::M);
+        assert_eq!(class(64), BandwidthClass::M);
+        assert_eq!(class(65), BandwidthClass::N);
+        assert_eq!(class(128), BandwidthClass::N);
+        assert_eq!(class(129), BandwidthClass::O);
+        assert_eq!(class(256), BandwidthClass::O);
+        assert_eq!(class(257), BandwidthClass::P);
+        assert_eq!(class(2000), BandwidthClass::P);
+        assert_eq!(class(2001), BandwidthClass::X);
+        assert_eq!(
+            BandwidthClass::from_configured_rates(512 * 1024, 256 * 1024, 50),
+            Ok(Some(BandwidthClass::N))
+        );
+        assert_eq!(
+            BandwidthClass::from_configured_rates(13 * 1024 + 900, 13 * 1024 + 900, 90),
+            Ok(Some(BandwidthClass::K))
+        );
+        assert_eq!(
+            BandwidthClass::from_configured_rates(10 * 1024, 10 * 1024, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            BandwidthClass::from_configured_rates(12 * 1024, 12 * 1024, 101),
+            Err(BandwidthClassError::InvalidShare)
+        );
+    }
     use i2pr_crypto::RouterIdentityBundle;
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;

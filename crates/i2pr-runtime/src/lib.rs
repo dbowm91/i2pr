@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+mod bandwidth;
 mod cancel;
 mod channel;
 mod context;
@@ -26,6 +27,11 @@ mod ssu2_peer_relay;
 mod ssu2_runtime;
 mod supervisor;
 
+pub use bandwidth::{
+    BandwidthAcquireError, BandwidthDirection, BandwidthGovernor, BandwidthGovernorConfig,
+    BandwidthGovernorConfigError, BandwidthGovernorSnapshot, BandwidthPeerKey,
+    MAX_BANDWIDTH_BURST_BYTES, MAX_BANDWIDTH_BYTES_PER_SECOND, MAX_BANDWIDTH_PENDING_REQUESTS,
+};
 pub use cancel::CancellationToken;
 pub use channel::{
     ChannelConfigError, ChannelName, ChannelNameError, ChannelSnapshot, ChannelSpec,

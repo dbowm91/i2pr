@@ -286,7 +286,7 @@ Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
 | Floor steps invoking a checker | 54 | 51 rows marked `Floor: yes` |
-| Total routine-floor steps | 64 | — |
+| Total routine-floor steps | 65 | — |
 | Checkers executed by `ci.yml` | 40 | 43 rows marked `CI: yes` |
 | `check-*` files on disk | 64 (67 with `scripts/interop/`) | 67 checker rows |
 
@@ -487,7 +487,7 @@ real driver scripts and its matching evidence checker.
 | `tests/integration/ntcp2/` | `manifest.toml` + Python `harness/` (23 modules, incl. `test_execution_lane.py`); subtrees `config/`, `evidence/`, `evidence-receipts/`, `mixed-scenarios/`, `qualification/`, `reference-drivers/`, `reference-observation-qualification/`, `reference-scenarios/`, `scenarios/` | `check-ntcp2-interoperability.sh`, `check-constrained-host-lane-boundary.sh`, `check-rootless-interop-boundary.sh`, `check-multipass-interop-boundary.sh`, `interop/check-p243-host-qualified.sh` | `ntcp2-interop-ubuntu.yml`, `ntcp2-interop-rootless.yml`, `ntcp2-interop-host-loopback-development.yml` |
 | `tests/integration/sam/` | `run-independent.sh`, `run-java-368.sh`, `run-i2pd-368-diagnostic.sh` (plus `clients/build.sh`, `reference/`, `clients/`, `evidence.md`, `README.md`) | `check-sam-acceptance-evidence.sh`, `check-sam368-java-evidence.sh`, `check-sam368-i2pd-evidence.sh` | `sam-external.yml` |
 | `tests/integration/service-tunnels/` | `run-independent.sh`, `run-plan213-generic.sh`, `run-plan214-applications.sh`, `test-plan215-tunnels-conf.sh`, `hold_sam_session.py` (plus `clients/`, `fixtures/`) | `check-service-tunnel-acceptance-evidence.sh`, `check-service-tunnel-boundaries.sh` | `service-tunnels-external.yml` |
-| `tests/integration/ssu2/` | `run-independent.sh` | `check-ssu2-acceptance-evidence.sh` | `ssu2-external.yml` |
+| `tests/integration/ssu2/` | `run-independent.sh`, `plan449-operator-preflight.md` | `check-ssu2-acceptance-evidence.sh`; root-level `scripts/plan449-ssu2-preflight.py --self-test` is a local-only host-inventory validator | `ssu2-external.yml` |
 
 `tests/integration/ntcp2/harness/test_execution_lane.py` is also run in
 routine CI (`ci.yml`, Linux) via

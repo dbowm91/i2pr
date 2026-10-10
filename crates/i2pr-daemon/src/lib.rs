@@ -1534,6 +1534,24 @@ fn register_ssu2_service(
     let addressbook = Arc::clone(addressbook);
     let floodfill_enabled = config.floodfill.enabled;
     let floodfill_config_path = config.source_path.clone();
+    let bandwidth = if config.bandwidth.enabled {
+        Some(
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: config.bandwidth.inbound_bytes_per_second,
+                outbound_bytes_per_second: config.bandwidth.outbound_bytes_per_second,
+                burst_bytes: config.bandwidth.burst_bytes,
+                max_pending_requests: config.bandwidth.max_pending_requests,
+                max_pending_per_peer: config.bandwidth.max_pending_per_peer,
+            })
+            .map_err(|_| {
+                DaemonError::RuntimeSupervisorFailed(
+                    "normalized bandwidth limits failed runtime validation".to_owned(),
+                )
+            })?,
+        )
+    } else {
+        None
+    };
     let inspection = Arc::clone(inspection);
     builder
         .register(service_spec(
@@ -1545,6 +1563,7 @@ fn register_ssu2_service(
                 let router_info_store_config = router_info_store_config;
                 let inspection = Arc::clone(&inspection);
                 let floodfill_config_path = floodfill_config_path.clone();
+                let bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
                 let service_runtime_active = service_runtime_active;
                 let bootstrap = bootstrap.clone();
@@ -1678,7 +1697,11 @@ fn register_ssu2_service(
                             );
                         }
                     };
-                    let daemon_service = match Ssu2DaemonService::new(&ssu2_config, identity) {
+                    let daemon_service = match Ssu2DaemonService::new_with_bandwidth(
+                        &ssu2_config,
+                        identity,
+                        bandwidth,
+                    ) {
                         Ok(service) => service,
                         Err(error) => {
                             let detail = i2pr_core::HealthDetail::new(format!(

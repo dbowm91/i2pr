@@ -6,6 +6,8 @@ Status: historical M3 closed (protocol defect localized); Plans 410/414/415/416/
 
 **Corrective successor (2026-10-10):** [Plan 441](../implementation/ntcp2-transport/441-current-pin-single-session-control-and-interop-recovery.md) replaced the repeated single-event Plan 410/414–424 diagnostic loop with a stock-to-stock positive control followed by an isolated single-session i2pr/i2pd control. Its first stock-control run exited 66 on both helpers, but the runner did not retain a terminal reason; it is blocked as unclassified environment evidence, not protocol rejection. [Plan 445](../implementation/ntcp2-transport/445-current-pin-control-runner-attribution-corrective.md) corrected the receipt and spent one fresh stock-control budget. Both pristine helpers reported `control-*-session-not-established`; the positive control therefore remains blocked and no i2pr wire attempt followed. This remains an evidence/source-localization lane feeding Plan 434, not an NTCP2 release qualification or rewrite of old closure outcomes. [Emissary architecture/source comparison](../diagnostics/2026-10-10-emissary-router-qualification-comparison.md) is read-only and uses no copied code. [Cross-subsystem graph](core-router-recovery-roadmap.md). Plan 101 still forbids normal-daemon NTCP2 activation.
 
+**Plan 446 outcome (2026-10-10):** [`446-status.md`](../closure/ntcp2-transport/446-status.md) is `blocked-normal-i2pd-control-fixture-datadir-isolation-not-established`. Source inspection showed that pinned i2pd initializes its data directory before parsing the config file, so config-only `datadir` does not isolate a process. The first bounded launch omitted `--datadir`; no protocol evidence is admissible and no i2pr attempt followed. The record notes that the account's default i2pd directory may have been selected; it was not inspected or cleaned. Any successor must prove unique command-line data directories before launch and establish the egress boundary before attempting protocol traffic. Plans 441/445 and Plan 101 remain unchanged. [Core recovery graph](core-router-recovery-roadmap.md).
+
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
@@ -145,6 +147,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 422 | stopped | `plans/implementation/ntcp2-transport/422-reverse-scenario-identity-correction.md` | `plans/closure/ntcp2-transport/422-status.md`: corrected mapping reached TCP; responder failed at SessionConfirmed Part 1 |
 | 423 | stopped | `plans/implementation/ntcp2-transport/423-session-confirmed-part1-error-classification.md` | `plans/closure/ntcp2-transport/423-status-amendment-plan-424-outcome.md`: operation identified as SessionConfirmed read closed; helper cause remains uncorrelated |
 | 424 | stopped | `plans/implementation/ntcp2-transport/424-reverse-responder-io-operation-attribution.md` | `plans/closure/ntcp2-transport/424-status.md`: exact responder read and IoErrorKind recorded; one reverse-only attempt spent |
+| 446 | blocked | `plans/implementation/ntcp2-transport/446-real-i2pd-daemon-control-and-ntcp2-requalification.md` | `plans/closure/ntcp2-transport/446-status.md`: isolated normal-daemon control not established; no NTCP2/I2NP evidence |
 
 ## 8. Cross-cutting requirements
 
