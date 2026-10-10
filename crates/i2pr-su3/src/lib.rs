@@ -15,7 +15,7 @@ use thiserror::Error;
 pub const DEFAULT_MAX_SU3_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SIGNER_ID_BYTES: usize = 256;
 pub const MAX_VERSION_BYTES: usize = 64;
-const HEADER_PREFIX: usize = 25;
+const HEADER_PREFIX: usize = 40;
 
 /// Caller-owned ceilings applied before any content is exposed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +46,7 @@ pub struct Su3Header {
     pub file_type: u8,
     pub content_type: u8,
     pub version: String,
+    pub version_length: usize,
     pub signer_id: String,
     content_offset: usize,
     signature_offset: usize,
@@ -195,25 +196,33 @@ pub fn parse(input: &[u8], limits: Su3Limits) -> Result<Su3Header, Su3Error> {
     if input.get(..6) != Some(b"I2Psu3") {
         return Err(Su3Error::MagicMismatch);
     }
-    if input[6] != 1 {
-        return Err(Su3Error::UnsupportedFormatVersion);
-    }
-    if input[7..10].iter().any(|byte| *byte != 0) || input[20..23].iter().any(|byte| *byte != 0) {
+    if input[6] != 0 {
         return Err(Su3Error::NonZeroReserved);
     }
-    let signature_type = u16::from_le_bytes([input[10], input[11]]);
-    let signature_length = usize::from(u16::from_le_bytes([input[12], input[13]]));
-    let content_length = usize::try_from(u32::from_le_bytes([
-        input[14], input[15], input[16], input[17],
-    ]))
+    if input[7] != 0 {
+        return Err(Su3Error::UnsupportedFormatVersion);
+    }
+    if input[12] != 0 || input[14] != 0 || input[24] != 0 || input[26] != 0 {
+        return Err(Su3Error::NonZeroReserved);
+    }
+    if input[28..HEADER_PREFIX].iter().any(|byte| *byte != 0) {
+        return Err(Su3Error::NonZeroReserved);
+    }
+    let signature_type = u16::from_be_bytes([input[8], input[9]]);
+    let signature_length = usize::from(u16::from_be_bytes([input[10], input[11]]));
+    let content_length = usize::try_from(u64::from_be_bytes(
+        input[16..24]
+            .try_into()
+            .map_err(|_| Su3Error::InvalidLength)?,
+    ))
     .map_err(|_| Su3Error::InvalidLength)?;
     if content_length > limits.max_content_bytes {
         return Err(Su3Error::ContentTooLarge);
     }
-    let file_type = input[18];
-    let content_type = input[19];
-    let version_length = usize::from(u16::from_le_bytes([input[23], input[24]]));
-    if version_length == 0 || version_length > limits.max_version_bytes {
+    let file_type = input[25];
+    let content_type = input[27];
+    let version_length = usize::from(input[13]);
+    if version_length < 16 || version_length > limits.max_version_bytes {
         return Err(Su3Error::InvalidVersion);
     }
     let version_end = HEADER_PREFIX
@@ -222,24 +231,26 @@ pub fn parse(input: &[u8], limits: Su3Limits) -> Result<Su3Header, Su3Error> {
     let version_bytes = input
         .get(HEADER_PREFIX..version_end)
         .ok_or(Su3Error::InvalidLength)?;
-    if !version_bytes.is_ascii()
-        || version_bytes
+    let version_end_offset = version_bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(version_bytes.len());
+    if version_bytes[version_end_offset..]
+        .iter()
+        .any(|byte| *byte != 0)
+        || version_end_offset == 0
+        || !version_bytes[..version_end_offset].is_ascii()
+        || version_bytes[..version_end_offset]
             .iter()
             .any(|byte| *byte < 0x20 || *byte > 0x7e)
     {
         return Err(Su3Error::InvalidVersion);
     }
-    let signer_length_bytes = input
-        .get(version_end..version_end.checked_add(2).ok_or(Su3Error::InvalidLength)?)
-        .ok_or(Su3Error::InvalidLength)?;
-    let signer_length = usize::from(u16::from_le_bytes([
-        signer_length_bytes[0],
-        signer_length_bytes[1],
-    ]));
+    let signer_length = usize::from(input[15]);
     if signer_length == 0 || signer_length > limits.max_signer_id_bytes {
         return Err(Su3Error::InvalidSignerId);
     }
-    let signer_start = version_end + 2;
+    let signer_start = version_end;
     let content_offset = signer_start
         .checked_add(signer_length)
         .ok_or(Su3Error::InvalidLength)?;
@@ -270,9 +281,10 @@ pub fn parse(input: &[u8], limits: Su3Limits) -> Result<Su3Header, Su3Error> {
         content_length,
         file_type,
         content_type,
-        version: std::str::from_utf8(version_bytes)
+        version: std::str::from_utf8(&version_bytes[..version_end_offset])
             .map_err(|_| Su3Error::InvalidVersion)?
             .to_owned(),
+        version_length,
         signer_id: signer_id.to_owned(),
         content_offset,
         signature_offset,
@@ -294,7 +306,7 @@ pub fn verify_rsa_sha512(
             max_file_bytes: input.len(),
             max_content_bytes: header.content_length,
             max_signer_id_bytes: header.signer_id.len(),
-            max_version_bytes: header.version.len(),
+            max_version_bytes: header.version_length,
         },
     )?;
     if &reparsed != header {
@@ -338,17 +350,17 @@ mod tests {
     use super::*;
 
     fn fixture() -> Vec<u8> {
-        let version = b"20261004";
+        let version = b"20261004\0\0\0\0\0\0\0\0";
         let signer = b"trusted";
         let content = b"payload";
-        let mut bytes = b"I2Psu3\x01\0\0\0".to_vec();
-        bytes.extend_from_slice(&6_u16.to_le_bytes());
-        bytes.extend_from_slice(&0_u16.to_le_bytes());
-        bytes.extend_from_slice(&(content.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&[1, 4, 0, 0, 0]);
-        bytes.extend_from_slice(&(version.len() as u16).to_le_bytes());
+        let mut bytes = b"I2Psu3\0\0".to_vec();
+        bytes.extend_from_slice(&6_u16.to_be_bytes());
+        bytes.extend_from_slice(&0_u16.to_be_bytes());
+        bytes.extend_from_slice(&[0, 16, 0, signer.len() as u8]);
+        bytes.extend_from_slice(&(content.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(&[0, 1, 0, 4]);
+        bytes.extend_from_slice(&[0; 12]);
         bytes.extend_from_slice(version);
-        bytes.extend_from_slice(&(signer.len() as u16).to_le_bytes());
         bytes.extend_from_slice(signer);
         bytes.extend_from_slice(content);
         bytes
@@ -386,7 +398,7 @@ mod tests {
     fn verifier_rejects_header_changed_after_framing_parse() {
         let mut bytes = fixture();
         let header = parse(&bytes, Su3Limits::default()).unwrap();
-        bytes[18] = 2;
+        bytes[25] = 2;
         let signer = RsaSha512Signer {
             signer_id: "trusted".to_owned(),
             modulus: vec![1; 256],

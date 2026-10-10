@@ -39,6 +39,27 @@ normal-daemon role, or floodfill capability is implemented by this documentation
 
 ## Required MVP reseed behavior
 
+### SU3 reseed envelope (frozen against the official SU3 specification)
+
+- The SU3 format marker is `0` at byte 7 (byte 6 is unused and zero); all
+  multi-byte fields use network byte order. The fixed header is 40 bytes.
+- Signature type `6` means RSA-SHA512-4096; signature length is 512 bytes.
+- Reseed uses file type `0` (ZIP) and content type `3` (RESEED).
+- Version length and signer-ID length are one-byte fields at bytes 13 and 15;
+  the version is at least 16 bytes and the signer ID is UTF-8. Reseed versions
+  are Unix timestamps. The signer ID must match the trusted certificate CN,
+  and verification must enforce the certificate validity interval.
+- Content length is an eight-byte network-order value at bytes 16–23. All
+  unused bytes must be zero, and parsers must consume exactly the declared
+  header, version, signer ID, content, and signature.
+
+These values are cross-checked against the [official SU3 specification](https://i2p.net/en/docs/specs/updates/)
+and pinned Java I2P 2.13.0
+[`SU3File.java`](https://github.com/i2p/i2p.i2p/blob/9134f808337b401e8e53c73734c81fab04280c9d/core/java/src/net/i2p/crypto/SU3File.java).
+The prior Plan 104 parser used a different header layout and byte order; Plan
+432 records and corrects that source defect without rewriting earlier closure
+records.
+
 - Configure multiple independent HTTPS reseed sources and a local/offline bundle path.
 - Send the current production network ID and reject cross-network material.
 - Enforce HTTPS certificate validation separately from SU3 signature validation.

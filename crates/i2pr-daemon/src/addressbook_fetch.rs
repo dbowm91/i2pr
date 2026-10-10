@@ -9,6 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::time::Duration;
 
+use rustls_pki_types::pem::PemObject as _;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -64,6 +65,71 @@ pub(crate) trait BoundedContentFetcher: Send + Sync {
 pub(crate) struct LoopbackProxyFetcher {
     pub(crate) host: String,
     pub(crate) port: u16,
+}
+
+/// Explicitly configured direct HTTPS fetcher for signed reseed bundles.
+/// It has no ambient proxy, redirect, credential, or compression behavior.
+pub(crate) async fn fetch_reseed_https(
+    url: &str,
+    tls_root_path: Option<&std::path::Path>,
+    max_body_bytes: usize,
+    timeout: Duration,
+) -> Result<FetchResponse, FetchError> {
+    if max_body_bytes == 0 {
+        return Err(FetchError::InvalidRequest);
+    }
+    let parsed = parse_http_url(url)?;
+    if !parsed.https || parsed.target.contains('#') {
+        return Err(FetchError::InvalidRequest);
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(path) = tls_root_path {
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| FetchError::InvalidRequest)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 64 * 1024 {
+            return Err(FetchError::InvalidRequest);
+        }
+        let bytes = std::fs::read(path).map_err(|_| FetchError::InvalidRequest)?;
+        let certificates = if bytes.starts_with(b"-----BEGIN CERTIFICATE-----") {
+            rustls_pki_types::CertificateDer::pem_slice_iter(&bytes)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| FetchError::InvalidRequest)?
+        } else {
+            vec![rustls_pki_types::CertificateDer::from(bytes)]
+        };
+        if certificates.is_empty() {
+            return Err(FetchError::InvalidRequest);
+        }
+        for certificate in certificates {
+            roots
+                .add(certificate)
+                .map_err(|_| FetchError::InvalidRequest)?;
+        }
+    }
+    let tls = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let server_name = rustls_pki_types::ServerName::try_from(parsed.server_name.clone())
+        .map_err(|_| FetchError::InvalidRequest)?;
+    let request = build_request(parsed.authority, &parsed.target, None, false)?;
+    tokio::time::timeout(timeout, async move {
+        let address = (parsed.server_name.as_str(), parsed.port);
+        let stream = TcpStream::connect(address)
+            .await
+            .map_err(|_| FetchError::Unavailable)?;
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls));
+        let stream = connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|_| FetchError::Unavailable)?;
+        let response = exchange(stream, request, max_body_bytes).await?;
+        if response.status != 200 || response.body.is_empty() {
+            return Err(FetchError::InvalidResponse);
+        }
+        Ok(response)
+    })
+    .await
+    .map_err(|_| FetchError::Timeout)?
 }
 
 impl BoundedContentFetcher for LoopbackProxyFetcher {
@@ -204,6 +270,7 @@ struct ParsedUrl<'a> {
     authority: &'a str,
     target: String,
     server_name: String,
+    port: u16,
 }
 
 fn parse_http_url(url: &str) -> Result<ParsedUrl<'_>, FetchError> {
@@ -230,6 +297,7 @@ fn parse_http_url(url: &str) -> Result<ParsedUrl<'_>, FetchError> {
         return Err(FetchError::InvalidRequest);
     }
     let server_name = authority_hostname(authority)?;
+    let port = authority_port(authority, https)?;
     let suffix = &rest[end_authority..];
     let suffix = suffix.split('#').next().unwrap_or_default();
     let target = if suffix.is_empty() {
@@ -247,7 +315,19 @@ fn parse_http_url(url: &str) -> Result<ParsedUrl<'_>, FetchError> {
         authority,
         target,
         server_name,
+        port,
     })
+}
+
+fn authority_port(authority: &str, https: bool) -> Result<u16, FetchError> {
+    let port = authority
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or(if https { 443 } else { 80 });
+    if port == 0 {
+        return Err(FetchError::InvalidRequest);
+    }
+    Ok(port)
 }
 
 fn authority_hostname(authority: &str) -> Result<String, FetchError> {
@@ -543,6 +623,46 @@ fn parse_response(bytes: &[u8], max_body_bytes: usize) -> Result<FetchResponse, 
 mod tests {
     use super::*;
 
+    async fn local_tls_response(response: &'static [u8]) -> (String, std::path::PathBuf) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("test certificate");
+        let certificate = certified.cert.der().clone();
+        let key = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
+        );
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.clone()], key)
+            .expect("test TLS config");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind test listener");
+        let port = listener.local_addr().unwrap().port();
+        let path = std::env::temp_dir().join(format!("i2pr-reseed-tls-root-{port}.der"));
+        std::fs::write(&path, certificate.as_ref()).expect("write test trust root");
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept test client");
+            let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server));
+            let mut stream = acceptor.accept(stream).await.expect("TLS accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 512];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+                assert!(request.len() < 4096, "bounded test request");
+            }
+            assert!(request.starts_with(b"GET /i2pseeds.su3?netid=2 HTTP/1.1\r\n"));
+            stream.write_all(response).await.expect("write response");
+            stream.shutdown().await.expect("close test response");
+        });
+        (
+            format!("https://localhost:{port}/i2pseeds.su3?netid=2"),
+            path,
+        )
+    }
+
     #[test]
     fn parses_bounded_success_and_not_modified_responses() {
         let response = parse_response(
@@ -566,6 +686,65 @@ mod tests {
             parse_response(response, 3).unwrap_err(),
             FetchError::ResponseOverBound
         );
+    }
+
+    #[tokio::test]
+    async fn direct_https_reseed_uses_explicit_tls_root_and_bounded_response() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndata";
+        let (url, root) = local_tls_response(response).await;
+        let fetched = fetch_reseed_https(&url, Some(&root), 4, Duration::from_secs(2))
+            .await
+            .expect("trusted bounded response");
+        assert_eq!(fetched.status, 200);
+        assert_eq!(fetched.body, b"data");
+        std::fs::remove_file(root).expect("remove test trust root");
+    }
+
+    #[tokio::test]
+    async fn direct_https_reseed_rejects_untrusted_tls_and_plain_http() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata";
+        let (url, root) = local_tls_response(response).await;
+        assert_eq!(
+            fetch_reseed_https(&url, None, 16, Duration::from_secs(2))
+                .await
+                .unwrap_err(),
+            FetchError::Unavailable
+        );
+        std::fs::remove_file(root).expect("remove untrusted test root");
+        assert_eq!(
+            fetch_reseed_https(
+                "http://localhost/i2pseeds.su3?netid=2",
+                None,
+                16,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err(),
+            FetchError::InvalidRequest
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_https_reseed_rejects_redirect_and_oversized_body() {
+        let redirect = b"HTTP/1.1 302 Found\r\nLocation: https://other.invalid/i2pseeds.su3?netid=2\r\nContent-Length: 0\r\n\r\n";
+        let (url, root) = local_tls_response(redirect).await;
+        assert_eq!(
+            fetch_reseed_https(&url, Some(&root), 64, Duration::from_secs(2))
+                .await
+                .unwrap_err(),
+            FetchError::Redirect
+        );
+        std::fs::remove_file(root).expect("remove redirect test root");
+
+        let oversized = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n12345";
+        let (url, root) = local_tls_response(oversized).await;
+        assert_eq!(
+            fetch_reseed_https(&url, Some(&root), 4, Duration::from_secs(2))
+                .await
+                .unwrap_err(),
+            FetchError::ResponseOverBound
+        );
+        std::fs::remove_file(root).expect("remove oversized test root");
     }
 
     #[test]
