@@ -1,6 +1,6 @@
 # Plan 417 — add sanitized stock NTCP2 handshake-stage observations
 
-Status: **ready** — `registered-sanitized-stock-ntcp2-handshake-stage-observer`.
+Status: **active** — `in-progress-sanitized-stock-ntcp2-handshake-stage-observer`.
 Corrective successor to [Plan 416](../../closure/ntcp2-transport/416-status.md).
 
 ## Objective
