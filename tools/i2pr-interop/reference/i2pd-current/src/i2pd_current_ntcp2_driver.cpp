@@ -48,6 +48,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -145,6 +146,15 @@ std::optional<std::string> read_file(const std::filesystem::path& path,
     return text;
 }
 
+std::optional<std::uintmax_t> log_offset(const std::filesystem::path& path) {
+    std::error_code error;
+    auto size = std::filesystem::file_size(path, error);
+    if (error || size > (8u << 20)) {
+        return std::nullopt;
+    }
+    return size;
+}
+
 std::string json_escape(std::string_view text) {
     std::string out;
     out.reserve(text.size() + 2);
@@ -207,6 +217,45 @@ struct DriverConfig {
     std::string run_identity_sha256;
     std::string topology_kind;
 };
+
+bool wait_for_one_decoded_delivery_status(const DriverConfig& cfg,
+                                          std::uintmax_t baseline,
+                                          std::uint32_t timeout_ms) {
+    const auto path = cfg.data_dir / "i2pd.log";
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto content = read_file(path, 8u << 20);
+        if (!content || content->size() < baseline) {
+            return false;
+        }
+        std::istringstream lines(content->substr(static_cast<std::size_t>(baseline)));
+        std::string line;
+        std::size_t decrypted = 0;
+        std::size_t blocks = 0;
+        std::size_t delivery_status = 0;
+        while (std::getline(lines, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            auto ends_with = [&line](std::string_view suffix) {
+                return line.size() >= suffix.size() &&
+                    line.compare(line.size() - suffix.size(), suffix.size(), suffix) == 0;
+            };
+            decrypted += ends_with("NTCP2: Received message decrypted");
+            blocks += ends_with("NTCP2: I2NP");
+            delivery_status += ends_with("I2NP: Handling message with type 10");
+        }
+        if (delivery_status > 1 || blocks > 1) {
+            return false;
+        }
+        if (decrypted > 0 && blocks == 1 && delivery_status == 1) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+}
 
 void parse_strict_config(const std::filesystem::path& path,
                          DriverConfig& out,
@@ -1197,6 +1246,13 @@ int run_listen(const DriverConfig& cfg) {
         return 66;
     }
     emit_event(writer, cfg, "listener_ready");
+    auto receive_log_baseline = log_offset(cfg.data_dir / "i2pd.log");
+    if (!receive_log_baseline) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt, std::string("receive-log-baseline-unavailable"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
 
 #ifdef I2PD_INTEROP_OBSERVER
     // Plan 091: the listener waits boundedly for the i2pd transport
@@ -1332,6 +1388,18 @@ int run_listen(const DriverConfig& cfg) {
     emit_event(writer, cfg, "ntcp2_authenticated", std::nullopt, std::nullopt,
                std::nullopt, std::nullopt);
 
+    if (!wait_for_one_decoded_delivery_status(
+            cfg, *receive_log_baseline, cfg.data_phase_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("listening-decoded-delivery-status-missing-or-ambiguous"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "i2np_message_decoded",
+               cfg.delivery_status_message_id, /*i2np_type=*/10,
+               /*frame_sequence=*/0);
+
     auto reply = i2p::CreateDeliveryStatusMsg(cfg.delivery_status_message_id);
     std::future<std::shared_ptr<i2p::transport::TransportSession>> future;
     try {
@@ -1412,6 +1480,13 @@ int run_dial(const DriverConfig& cfg) {
     std::string create_failure;
     if (!construct_delivery_status_message(cfg, writer, message,
                                             create_failure)) {
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    auto receive_log_baseline = log_offset(cfg.data_dir / "i2pd.log");
+    if (!receive_log_baseline) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt, std::string("receive-log-baseline-unavailable"));
         shutdown_runtime(rt, nullptr, nullptr);
         return 66;
     }
@@ -1505,6 +1580,18 @@ int run_dial(const DriverConfig& cfg) {
     emit_event(writer, cfg, "frame_emitted", cfg.delivery_status_message_id,
                /*i2np_type=*/10, /*frame_sequence=*/0);
 #endif
+
+    if (!wait_for_one_decoded_delivery_status(
+            cfg, *receive_log_baseline, cfg.data_phase_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("dialing-decoded-delivery-status-missing-or-ambiguous"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "i2np_message_decoded",
+               cfg.delivery_status_message_id, /*i2np_type=*/10,
+               /*frame_sequence=*/0);
 
     shutdown_runtime(rt, nullptr, nullptr);
     emit_event(writer, cfg, "terminal_clean");

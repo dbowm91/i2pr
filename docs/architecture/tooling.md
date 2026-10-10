@@ -460,6 +460,15 @@ secrets, tokens, or operational keys.
 
 ## Integration and interop lanes
 
+The current-pin NTCP2 loopback tooling under
+`tools/i2pr-interop/reference/i2pd-current/` includes the pristine-library
+driver and Plan 414's bounded `run_plan414.py` runner and
+`observe_decoded_delivery_status.py` adapter. The runner permits one attempt
+per direction, captures peer hashes only as ephemeral inputs, and deletes each
+owned attempt tree. The adapter consumes an owned ephemeral i2pd log, emits
+bounded sanitized counts and a digest, deletes the raw log on successful
+classification, and has a no-process `--self-test`.
+
 Ten lane directories live under `tests/integration/`. Each lists its
 real driver scripts and its matching evidence checker.
 

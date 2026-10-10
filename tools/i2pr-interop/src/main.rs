@@ -107,6 +107,11 @@ enum Ntcp2Command {
         #[arg(long = "state-dir")]
         state_dir: PathBuf,
     },
+    /// Return a validated Router Hash for an ephemeral runner input.
+    RouterHash {
+        #[arg(long = "router-info")]
+        router_info: PathBuf,
+    },
 }
 
 #[allow(dead_code)]
@@ -247,6 +252,41 @@ fn inspect_router_info(state_dir: &Path) -> ExitCode {
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush());
     if write_result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
+}
+
+fn router_hash_command(path: &Path) -> ExitCode {
+    let Ok(metadata) = fs::metadata(path) else {
+        return emit_inspection("rejected", "router_info_unavailable");
+    };
+    if !metadata.is_file() || metadata.len() > MAX_LOCAL_ROUTER_INFO_BYTES as u64 {
+        return emit_inspection("rejected", "router_info_size_invalid");
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return emit_inspection("rejected", "router_info_unavailable");
+    };
+    let Ok(info) = RouterInfo::decode(&bytes, MAX_LOCAL_ROUTER_INFO_BYTES) else {
+        return emit_inspection("rejected", "router_info_structural_validation_failed");
+    };
+    if i2pr_crypto::verify_router_info(&info).is_err() {
+        return emit_inspection("rejected", "router_info_signature_validation_failed");
+    }
+    let Ok(hash) = router_identity_hash(info.router_identity()) else {
+        return emit_inspection("rejected", "router_identity_hash_failed");
+    };
+    let line = format!(
+        "{{\"schema\":1,\"type\":\"i2pr-interop-router-hash\",\"result\":\"validated\",\"router_hash_sha256\":\"{}\"}}",
+        hex_lower(hash.as_bytes())
+    );
+    let mut stdout = io::stdout().lock();
+    let result = stdout
+        .write_all(line.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush());
+    if result.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
@@ -1823,6 +1863,7 @@ fn main() -> ExitCode {
                     inspect_router_info(&state_dir)
                 }
             }
+            Ntcp2Command::RouterHash { router_info } => router_hash_command(&router_info),
         },
     }
 }
