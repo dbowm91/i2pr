@@ -33,10 +33,11 @@ limitation; the independent stock application exchange itself completed.
 Gate C, the stock-to-i2pr direction, and the bounded negative matrix remain
 open. The adjacent Plan 458 ordinary-process attempt reaches i2pr's SAM
 listener but its router product rejects `SESSION CREATE` before a stream can
-start. Its latest bounded attempt localizes the failure to the inbound tunnel
-build stage (`failure_stage=inbound-build`), without identifying the cause.
-Plan 455 remains blocked at the first missing event: a stock-owned request
-successfully delivered to an i2pr NTCP2 responder.
+start. Follow-up bounded attempts moved between the inbound and outbound
+build stages (`failure_stage=inbound-build` / `outbound-build`) without
+identifying why one direction fails to install. Plan 455 remains blocked at
+the first missing event: a stock-owned request successfully delivered to an
+i2pr NTCP2 responder.
 
 Plan 455 therefore remains blocked; this result is not a protocol failure and
 does not qualify daemon activation, stock peer selection, or bidirectional

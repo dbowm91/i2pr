@@ -689,9 +689,15 @@ pub enum ServiceProductError {
     /// The outbound exploratory build never installed.
     #[error("outbound exploratory build never installed")]
     OutboundBuildMissing,
+    /// A terminal failure was returned for a deferred outbound build.
+    #[error("outbound exploratory build was rejected")]
+    OutboundBuildRejected,
     /// The inbound exploratory build never installed.
     #[error("inbound exploratory build never installed")]
     InboundBuildMissing,
+    /// A terminal failure was returned for a deferred inbound build.
+    #[error("inbound exploratory build was rejected")]
+    InboundBuildRejected,
     /// The reference LeaseSet2 never resolved through the lookup.
     #[error("reference LeaseSet2 never resolved within the bounded wait")]
     LookupTimeout,
@@ -731,8 +737,14 @@ fn router_network_sam_failure_stage(
         ServiceProductError::InboundBuildMissing => {
             RouterNetworkSamProvisioningFailure::InboundBuild
         }
+        ServiceProductError::InboundBuildRejected => {
+            RouterNetworkSamProvisioningFailure::InboundBuildRejected
+        }
         ServiceProductError::OutboundBuildMissing => {
             RouterNetworkSamProvisioningFailure::OutboundBuild
+        }
+        ServiceProductError::OutboundBuildRejected => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildRejected
         }
         ServiceProductError::LookupTimeout => RouterNetworkSamProvisioningFailure::NetDbLookup,
         ServiceProductError::Dial(_) => RouterNetworkSamProvisioningFailure::PeerDial,
@@ -766,8 +778,16 @@ mod router_network_sam_failure_stage_tests {
             Failure::InboundBuild
         );
         assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildRejected),
+            Failure::InboundBuildRejected
+        );
+        assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::OutboundBuildMissing),
             Failure::OutboundBuild
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildRejected),
+            Failure::OutboundBuildRejected
         );
         assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::Provisioning(
@@ -4868,6 +4888,15 @@ async fn provision_all_service_router_material(
                     continue;
                 };
                 for outcome in routed.coordinator {
+                    if matches!(
+                        &outcome,
+                        BuildCoordinatorOutcome::DestinationBuildFailed {
+                            destination_id,
+                            direction: BuildDirection::Inbound,
+                        } if *destination_id == runtime.destination_id
+                    ) {
+                        return Err(ServiceProductError::InboundBuildRejected);
+                    }
                     if let BuildCoordinatorOutcome::DestinationEstablished {
                         attempt_id,
                         destination_id,
@@ -4983,6 +5012,15 @@ async fn provision_all_service_router_material(
                     continue;
                 };
                 for outcome in routed.coordinator {
+                    if matches!(
+                        &outcome,
+                        BuildCoordinatorOutcome::DestinationBuildFailed {
+                            destination_id,
+                            direction: BuildDirection::Outbound,
+                        } if *destination_id == runtime.destination_id
+                    ) {
+                        return Err(ServiceProductError::OutboundBuildRejected);
+                    }
                     let BuildCoordinatorOutcome::DestinationEstablished {
                         attempt_id,
                         destination_id,

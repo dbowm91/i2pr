@@ -38,15 +38,19 @@ started, so this run supplies no request/reply or nonzero-hop evidence. Its
 scratch roots and child processes were cleaned; no raw reference logs or
 identities were retained.
 
-A follow-up used one fixed-label diagnostic path from deferred product
-activation through the private completion channel and SAM `MESSAGE`. The same
-ordinary-process topology again reached `SESSION CREATE` and stopped before
-the stream; the sanitized driver output localized the failure to
-`inbound-build`. This identifies the product stage that timed out, but does
-not establish why the inbound tunnel was not installed. No raw reference logs,
-destination identity, or dynamic error details cross the SAM response or are
-retained. Plan 458 remains blocked pending a source-owned correction and a
-successful nonzero-hop bidirectional exchange.
+Follow-up attempts carried a closed-set stage from deferred product activation
+through the private completion channel and SAM `MESSAGE`. The activation loops
+also now stop immediately when the coordinator reports a terminal
+`DestinationBuildFailed` for this SAM destination instead of discarding that
+outcome and waiting for the build deadline. On the next bounded run both
+inbound builds completed and the failure moved to `outbound-build`; a later
+run stopped at `inbound-build`. These timeout labels mean no matching build
+installed before the configured deadline. They do not establish why the
+selected peers did not complete the request. Neither run reached a stream.
+No raw reference logs, destination identity, or dynamic error details cross
+the SAM response or are retained. Plan 458 remains blocked pending a source
+correction for the intermittent build completion and a successful nonzero-hop
+bidirectional exchange.
 
 The workspace floor initially exposed a regression in the separate local
 co-owned test fabric: its delivery guard required an inbound-tunnel factory
@@ -91,6 +95,8 @@ All results below are local Linux evidence, not CI results.
 | `rtk bash tests/integration/m6-interop/run-streaming.sh` | Passed previously at Plan 193 service-group scope; not SAM destination composition evidence. |
 | `python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked: four pinned local peers and ordinary `i2pr run` reached external SAM `SESSION CREATE`, which returned a router-product provisioning failure before any stream exchange. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked before stream setup; corrected ordinary-process result was `failure_stage=inbound-build`. The runner's scratch peers and process were cleaned. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after terminal build-failure handling | Blocked before stream setup at `failure_stage=outbound-build`; both inbound builds had completed on this attempt. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after matching outbound handling | Blocked before stream setup at `failure_stage=inbound-build`; no matching inbound build installed before its deadline. |
 
 The full workspace floor initially exposed a local co-owned SAM delivery test
 regression: `plan144_full_handshake_reaches_bidirectional_established` failed
