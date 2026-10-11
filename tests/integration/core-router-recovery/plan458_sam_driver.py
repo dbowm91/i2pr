@@ -145,6 +145,7 @@ def main():
     parser.add_argument("--i2pd-sam", required=True)
     parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--evidence", required=True)
+    parser.add_argument("--stock-control", action="store_true")
     args = parser.parse_args()
 
     i2pr_session, i2pr_public = create_session(args.i2pr_sam, "p458router", args.timeout)
@@ -176,7 +177,15 @@ def main():
                 raise RuntimeError(f"{label}: {failure[0]}")
             if accepted != sent:
                 raise RuntimeError(f"{label}: sender/receiver digest mismatch")
-            outcomes[label] = sent
+            evidence_label = (
+                {
+                    "i2pr-to-i2pd": "stock-f-to-stock-c",
+                    "i2pd-to-i2pr": "stock-c-to-stock-f",
+                }[label]
+                if args.stock_control
+                else label
+            )
+            outcomes[evidence_label] = sent
     finally:
         i2pr_session.close()
         i2pd_session.close()

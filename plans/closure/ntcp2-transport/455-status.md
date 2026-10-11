@@ -1,6 +1,6 @@
-# Plan 455 status: blocked — stock-owned send and reverse direction remain unproven
+# Plan 455 status: blocked — stock-to-i2pr direction and negative matrix remain open
 
-Closure token: `blocked-stock-owned-workload-and-reverse-direction-unproven`
+Closure token: `blocked-stock-to-i2pr-and-negative-matrix-unproven`
 
 Plan: [`455-initiated-i2np-and-stock-peer-workload-recovery.md`](../../implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md)
 
@@ -21,10 +21,20 @@ received, dropped” marker. This independently establishes decoded receipt. The
 old DeliveryStatus marker remains absent and no reply was expected from this
 one-way probe.
 
-Gate B's legitimate stock-owned outbound workload and stock-to-stock dial
-control, and Gate C's stock-to-i2pr direction, remain unproven. No reverse
-attempt or negative matrix was run. Plan 455 therefore remains blocked at the
-first missing event: a real stock-owned I2NP send that selects/dials a peer.
+Gate B passed its stock-owned workload and stock-to-stock control. Four pinned
+stock routers were configured with NTCP2 enabled and SSU2 disabled; an external
+SAM driver completed exact-byte STREAM exchanges in both directions between
+two stock routers. Because NTCP2 was the only enabled router transport, the
+successful stock-generated traffic demonstrates the real NTCP2 message path.
+The pinned debug `SessionConfirmed sent` and authenticated-frame log marker
+set was incomplete in this run, so source-level stage attribution remains a
+limitation; the independent stock application exchange itself completed.
+
+Gate C, the stock-to-i2pr direction, and the bounded negative matrix remain
+open. The adjacent Plan 458 ordinary-process attempt reaches i2pr's SAM
+listener but its router product rejects `SESSION CREATE` before a stream can
+start. Plan 455 remains blocked at the first missing event: a stock-owned
+request successfully delivered to an i2pr NTCP2 responder.
 
 Plan 455 therefore remains blocked; this result is not a protocol failure and
 does not qualify daemon activation, stock peer selection, or bidirectional
@@ -42,9 +52,9 @@ real-peer acceptance gates pass.
 | i2pr-initiated TCP and authentication | Passed: status reported `authenticated_sessions=1`. |
 | i2pr-initiated NTCP2 and I2NP send | Passed: one session authenticated; one compressed DatabaseStore was reported written by the runtime writer. |
 | Stock decoded receipt | Passed: exact-pinned stock NetDB emitted one own-RouterInfo DatabaseStore drop marker. This is the Gate A receive evidence. |
-| Legitimate stock-owned outbound workload and stock-to-stock control | Not established. Plan 452's two-idle-peer control remains `no-dial-trigger`; no eligible stock-owned send selected a peer or produced a dial. |
-| Stock-to-i2pr direction | Not run; Gate B trigger and stock self-control are unavailable. |
-| Negative matrix / repeat | Not run. The bounded Gate A probe was repeated to correct and verify its write-completion and status parsing; no protocol retry or negative matrix was attempted. |
+| Legitimate stock-owned outbound workload and stock-to-stock control | Passed at whole-application scope: two pinned stock SAM peers exchanged exact bytes over a four-peer topology with SSU2 disabled and NTCP2 listeners active. The required debug handshake/frame marker set was incomplete. |
+| Stock-to-i2pr direction | Not completed. The stock SAM client has no i2pr destination because router-backed `SESSION CREATE` fails before stream setup (Plan 458). |
+| Negative matrix / repeat | Not run. One Gate A probe and one stock workload topology were exercised; no negative matrix or repeat was attempted. |
 
 ## Commands and outcomes
 
@@ -58,9 +68,19 @@ plan455_stock_delivery_status_log_markers=0
 plan455_stock_database_store_self_drop_markers=1
 ```
 
+The stock-owned SAM driver completed these exact-byte exchanges before its
+outer checker stopped at an optional debug-marker check:
+
+```text
+stock-f-to-stock-c=passed bytes=1816
+stock-c-to-stock-f=passed bytes=2328
+```
+
 | Command | Outcome |
 | --- | --- |
 | `rtk bash tests/integration/ntcp2/plan455_direct_stock_attempt.sh` | Passed Gate A; one authenticated session, one sent I2NP, and one stock NetDb receipt marker. |
+| `rtk python3 tests/integration/ntcp2/plan455_stock_sam_trigger.py` | Both stock SAM STREAM directions exchanged exact bytes on the NTCP2-only topology; the first invocation then returned 1 because the additional debug-marker check was absent. The runner now treats those debug counts as auxiliary and was not rerun under the one-topology budget. |
+| `rtk python3 -m py_compile tests/integration/ntcp2/plan455_stock_sam_trigger.py tests/integration/core-router-recovery/plan458_sam_driver.py` | Passed. |
 | `rtk cargo test --locked -p i2pr-interop --all-targets` | Passed, 34 tests. |
 | `rtk cargo clippy --locked -p i2pr-interop --all-targets --all-features -- -D warnings` | Passed. |
 | `rtk cargo test --locked -p i2pr-transport-ntcp2 --all-targets` | Prior Plan 455 run passed, 35 tests. |
@@ -85,16 +105,16 @@ The process runner is [`plan455_direct_stock_attempt.sh`](../../../tests/integra
 
 ## Limitations and findings
 
-Critical: none. High: none localized. Medium: the stock-owned outbound I2NP
-trigger, selected-peer dial, reference self-control, and reverse stock-to-i2pr
-direction remain unproven. Low: the Gate A probe is intentionally one-way and
-uses a NetDB self-drop marker; it does not prove stock reply behavior.
+Critical: none. High: none localized. Medium: stock SAM traffic passed in an
+NTCP2-only stock topology, but exact transport stage markers were incomplete;
+the stock-to-i2pr direction and negative matrix remain open. Low: Gate A is a
+one-way NetDB self-drop probe and does not prove stock reply behavior.
 
 ## Unblock audit and disposition
 
 - Plan 456 and its hard dependencies, Plans 450 and 454, are closed. Its controlled source/lifecycle result is independent of Plan 455 stock-peer selection.
 - Plan 457 has the Plan 456 source/lifecycle pass and Plan 455 Gate A, but remains blocked on Gates B/C and its own dual-family/failure-continuity evidence.
 - Plans 434, 435, and 452 retain their existing blocked status; this record does not rewrite their evidence.
-- No new plan is registered. Gate A is retained as independent evidence. Continue only with a bounded, eligible stock-owned send topology; do not repeat observer-only attempts.
+- No new plan is registered. Gates A and B are retained as independent evidence. Continue only with the normal-daemon responder/product path needed for Gate C; do not repeat the stock-only topology or observer-only attempts.
 
-Disposition: **blocked**, with Gate A passed and Gates B/C explicitly open.
+Disposition: **blocked**, with Gates A/B passed at the evidence scope above and Gate C plus the negative matrix open.

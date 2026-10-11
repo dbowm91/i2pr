@@ -177,9 +177,9 @@ This work supersedes **only the execution priority/order**, not any historical c
 
 | Plan | Registered state | Path | Success boundary |
 | --- | --- | --- | --- |
-| 455 | blocked P0 | `plans/implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md` | `plans/closure/ntcp2-transport/455-status.md`: Gate A stock NetDb decoded receipt passed; stock-owned send/dial and reverse direction unproven |
+| 455 | blocked P0 | `plans/implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md` | `plans/closure/ntcp2-transport/455-status.md`: Gates A/B passed; stock-to-i2pr delivery and negative matrix remain open |
 | 456 | passed at controlled lifecycle scope P0 | `plans/implementation/ntcp2-transport/456-guarded-normal-daemon-ntcp2-service-owner.md` | `plans/closure/ntcp2-transport/456-status.md`: controlled listener, signed key/RI lifecycle, authenticated matching peer and restart; no external/public claim |
-| 457 | blocked on 455 P1 | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | `plans/closure/ntcp2-transport/457-status.md`: Plan 455 Gate A receipt passed; stock-owned trigger, reverse direction, and dual-family continuity remain unproven |
+| 457 | blocked on 455 P1 | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | `plans/closure/ntcp2-transport/457-status.md`: Plan 455 Gates A/B passed; stock-to-i2pr delivery and dual-family continuity remain unproven |
 | 458 | blocked P2 | `plans/implementation/core-router-recovery/458-remote-sam-product-composition-corrective.md` | Shared dynamic SAM destination composition and rollback paths implemented; four-peer ordinary-process lane reaches SAM but fails at product provisioning before stream exchange. M6 service-group Streaming is lower-layer evidence only. |
 
 No baseline status becomes `passed` on plan registration. The partial failures of 451/452 remain authoritative; 455 may retain valid i2pr-initiated evidence if a stock test topology cannot make a valid reference outbound send. A final public capability still requires the unrelated external address and two-family gates in Plans 431/433/435/439.
