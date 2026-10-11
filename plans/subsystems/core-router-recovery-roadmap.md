@@ -177,10 +177,10 @@ This work supersedes **only the execution priority/order**, not any historical c
 
 | Plan | Registered state | Path | Success boundary |
 | --- | --- | --- | --- |
-| 455 | ready P0 | `plans/implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md` | Real stock normal process receives initiated i2pr NTCP2/I2NP; correctly induced stock-to-stock and reverse controls with distinct evidence tiers |
-| 456 | ready P0 | `plans/implementation/ntcp2-transport/456-guarded-normal-daemon-ntcp2-service-owner.md` | `i2pr run` controlled NTCP2 owner bound, signed key/IV/RI, shared governed I2NP dispatch and restart, default/public refuse |
-| 457 | blocked on 455/456 P1 | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | Normal daemon authenticated real I2NP in both TCP directions and independent surviving SSU2 fallback |
-| 458 | queued ready P2 | `plans/implementation/core-router-recovery/458-remote-sam-product-composition-corrective.md` | Proper network-backed SAM STREAM through the daemon's existing destination groups (no duplicate router owner) |
+| 455 | blocked P0 | `plans/implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md` | `plans/closure/ntcp2-transport/455-status.md`: authenticated sender and one I2NP send; stock receipt/trigger/reverse direction unproven |
+| 456 | passed at controlled lifecycle scope P0 | `plans/implementation/ntcp2-transport/456-guarded-normal-daemon-ntcp2-service-owner.md` | `plans/closure/ntcp2-transport/456-status.md`: controlled listener, signed key/RI lifecycle, authenticated matching peer and restart; no external/public claim |
+| 457 | blocked on 455 P1 | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | `plans/closure/ntcp2-transport/457-status.md`: stock receipt and send trigger remain unproven |
+| 458 | active P2 | `plans/implementation/core-router-recovery/458-remote-sam-product-composition-corrective.md` | SAM-created destination sessions through the existing SSU2/NetDB/service-product owner; external M6 preflight, NetDB, and service-group Streaming lanes passed, but SAM destination composition remains unimplemented |
 
 No baseline status becomes `passed` on plan registration. The partial failures of 451/452 remain authoritative; 455 may retain valid i2pr-initiated evidence if a stock test topology cannot make a valid reference outbound send. A final public capability still requires the unrelated external address and two-family gates in Plans 431/433/435/439.
 

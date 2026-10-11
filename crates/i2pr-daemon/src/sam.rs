@@ -286,6 +286,10 @@ impl Default for StreamingPools {
 #[derive(Debug)]
 pub struct SamServiceState {
     config: SamConfig,
+    /// Production SAM sessions require the router-owned network product.
+    /// Local synthetic tunnel material is available only to explicit local
+    /// service states used by bounded self-composition tests.
+    session_product_mode: SamSessionProductMode,
     max_supported_version: i2pr_api::sam::version::SamVersion,
     /// Bound loopback UDP bridge, installed by `bind` before service readiness.
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
@@ -324,16 +328,53 @@ pub struct SamServiceState {
     addressbook: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SamSessionProductMode {
+    LocalOnly,
+    RouterNetwork,
+}
+
 impl SamServiceState {
     /// Constructs a new SAM service state from a validated
-    /// configuration.
+    /// configuration. Normal states require the router-owned network
+    /// product and fail closed until it is attached.
     pub fn new(config: SamConfig) -> Result<Self, SamServiceError> {
+        Self::new_router_network(config)
+    }
+
+    /// Constructs the explicit synthetic local-only SAM product used by
+    /// local self-composition and protocol tests.
+    pub fn new_local_only(config: SamConfig) -> Result<Self, SamServiceError> {
         Self::new_with_max_supported_version(config, i2pr_api::sam::version::MAX_SUPPORTED_VERSION)
+    }
+
+    /// Constructs the normal-daemon SAM state. SESSION CREATE stays
+    /// fail-closed until the supervised SSU2 owner publishes a usable
+    /// router-backed destination product; it never falls back to synthetic
+    /// localhost tunnel material.
+    pub(crate) fn new_router_network(config: SamConfig) -> Result<Self, SamServiceError> {
+        Self::new_with_mode(
+            config,
+            i2pr_api::sam::version::MAX_SUPPORTED_VERSION,
+            SamSessionProductMode::RouterNetwork,
+        )
     }
 
     pub(crate) fn new_with_max_supported_version(
         config: SamConfig,
         max_supported_version: i2pr_api::sam::version::SamVersion,
+    ) -> Result<Self, SamServiceError> {
+        Self::new_with_mode(
+            config,
+            max_supported_version,
+            SamSessionProductMode::LocalOnly,
+        )
+    }
+
+    fn new_with_mode(
+        config: SamConfig,
+        max_supported_version: i2pr_api::sam::version::SamVersion,
+        session_product_mode: SamSessionProductMode,
     ) -> Result<Self, SamServiceError> {
         let session_registry = Arc::new(SamSessionRegistry::new(config.limits));
         let destination_registry = Arc::new(Mutex::new(DestinationRegistry::new(
@@ -358,6 +399,7 @@ impl SamServiceState {
         )));
         Ok(Self {
             config,
+            session_product_mode,
             max_supported_version,
             udp_socket: Mutex::new(None),
             connection_permits,
@@ -622,6 +664,9 @@ impl SamServiceState {
         self: &Arc<Self>,
         request: SessionCreateExecution<'_>,
     ) -> Result<SessionCreateApplied, SessionCreateError> {
+        if self.session_product_mode == SamSessionProductMode::RouterNetwork {
+            return Err(SessionCreateError::RouterNetworkProductUnavailable);
+        }
         let SessionCreateExecution {
             session_id,
             style,
@@ -1722,6 +1767,10 @@ fn map_registry_error(error: SamSessionRegistryError) -> SessionCreateError {
 /// Typed SAM session-creation failure returned to the per-socket task.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SessionCreateError {
+    /// The production SAM service has no live router-backed destination
+    /// product attached yet; never substitute the local synthetic fabric.
+    #[error("router-backed SAM destination product is unavailable")]
+    RouterNetworkProductUnavailable,
     /// The OS CSPRNG could not produce fresh key material.
     #[error("randomness unavailable for TRANSIENT destination generation")]
     RandomnessUnavailable,
@@ -1800,6 +1849,7 @@ impl SessionCreateError {
             Self::DuplicateDestination => ReplyResult::DuplicatedDestination,
             Self::InvalidPrivateDestination => ReplyResult::InvalidKey,
             Self::RandomnessUnavailable
+            | Self::RouterNetworkProductUnavailable
             | Self::DestinationRuntime(_)
             | Self::DestinationRegistryLocked
             | Self::SamDestinationsLocked
@@ -3836,7 +3886,7 @@ mod private_connection_tests {
         let mut config = private_config();
         config.limits.hello_timeout = Duration::MAX;
         config.limits.command_timeout = Duration::MAX;
-        let state = Arc::new(SamServiceState::new(config).expect("service state"));
+        let state = Arc::new(SamServiceState::new_local_only(config).expect("service state"));
         let parent = CancellationToken::new();
         let children = ChildScope::for_test(&parent, i2pr_runtime::ChildFailurePolicy::FailParent);
         let (mut client, router) = tokio::io::duplex(4096);
@@ -4398,8 +4448,39 @@ mod tests {
             udp_port: 0,
             limits: SamLimits::defaults(),
         };
-        let state = SamServiceState::new(config).expect("state");
+        let state = SamServiceState::new_local_only(config).expect("state");
         assert_eq!(state.session_registry.session_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn router_network_mode_fails_closed_without_a_product_attachment() {
+        let state = Arc::new(
+            SamServiceState::new(SamConfig {
+                enabled: false,
+                bind_address: "127.0.0.1".parse().unwrap(),
+                port: 0,
+                udp_port: 0,
+                limits: SamLimits::loopback_test_profile(),
+            })
+            .expect("router-backed SAM state"),
+        );
+        let parent = CancellationToken::new();
+        let children = ChildScope::for_test(&parent, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let error = state
+            .execute_session_create(SessionCreateExecution {
+                session_id: SamSessionId::new("network").expect("valid session id"),
+                style: i2pr_api::sam::session_create::SessionCreateStyle::Stream,
+                destination_source: DestinationSource::Transient,
+                from_port: 0,
+                to_port: 0,
+                children: &children,
+                cancellation: parent.clone(),
+            })
+            .expect_err("missing network product must not use local fabric");
+        assert_eq!(error, SessionCreateError::RouterNetworkProductUnavailable);
+        assert_eq!(state.session_registry().session_count(), 0);
+        parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
     }
 
     #[test]
@@ -4415,7 +4496,7 @@ mod tests {
     #[tokio::test]
     async fn udp_bridge_routes_raw_subsession_without_accepting_non_loopback_peers() {
         let state = Arc::new(
-            SamServiceState::new(SamConfig {
+            SamServiceState::new_local_only(SamConfig {
                 enabled: false,
                 bind_address: "127.0.0.1".parse().unwrap(),
                 port: 0,
@@ -4570,7 +4651,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let state = Arc::new(
-            SamServiceState::new(SamConfig {
+            SamServiceState::new_local_only(SamConfig {
                 enabled: false,
                 bind_address: "127.0.0.1".parse().unwrap(),
                 port: 0,
@@ -5568,7 +5649,7 @@ mod tests {
             udp_port: 0,
             limits: SamLimits::defaults(),
         };
-        let state = SamServiceState::new(config).expect("state");
+        let state = SamServiceState::new_local_only(config).expect("state");
         let lookup = |name: &str| {
             execute_naming_lookup(
                 &state,

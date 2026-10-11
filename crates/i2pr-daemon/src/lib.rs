@@ -751,6 +751,7 @@ fn register_sam_service(
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
+    let sam_product_mode = config.sam_product_mode;
     let address = sam_config.bind_socket();
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
@@ -760,13 +761,22 @@ fn register_sam_service(
             ServiceClassification::Optional,
             move |ctx| {
                 let sam_config = sam_config.clone();
+                let sam_product_mode = sam_product_mode;
                 let inspection = Arc::clone(&inspection);
                 let addressbook = Arc::clone(&addressbook);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
                 Box::pin(async move {
-                    let state = match SamServiceState::new(sam_config) {
+                    let state_result = match sam_product_mode {
+                        crate::config::SamProductMode::RouterNetwork => {
+                            SamServiceState::new_router_network(sam_config)
+                        }
+                        crate::config::SamProductMode::LocalOnly => {
+                            SamServiceState::new_local_only(sam_config)
+                        }
+                    };
+                    let state = match state_result {
                         Ok(state) => Arc::new(state),
                         Err(error) => {
                             let detail = i2pr_core::HealthDetail::new(format!(

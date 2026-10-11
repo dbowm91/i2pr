@@ -325,7 +325,7 @@ fn controlled_ntcp2_client_session(
 /// listener. Both remain opt-in; the test names the loopback profile itself.
 fn controlled_ssu2_sam_config(address: SocketAddr, ssu2_port: u16, data_dir: &Path) -> String {
     format!(
-        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nproduct_mode = \"local-only\"\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
         data_dir.to_string_lossy(),
         address.port(),
         ssu2_port

@@ -2540,7 +2540,8 @@ mod tests {
             udp_port: 0,
             limits: SamLimits::default(),
         };
-        let state = Arc::new(crate::sam::SamServiceState::new(config).expect("sam builds"));
+        let state =
+            Arc::new(crate::sam::SamServiceState::new_local_only(config).expect("sam builds"));
         let registry = state.session_registry();
         for (name, seed) in [("beta", 2_u8), ("alpha", 1_u8)] {
             let session = SamSessionId::new(name).expect("session id");

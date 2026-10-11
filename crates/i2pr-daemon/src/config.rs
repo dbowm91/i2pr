@@ -502,6 +502,8 @@ impl Default for RawAppRuntimeConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSamConfig {
+    #[serde(default)]
+    product_mode: SamProductMode,
     #[serde(default = "default_sam_enabled")]
     enabled: bool,
     #[serde(default = "default_sam_bind_address")]
@@ -531,6 +533,7 @@ struct RawSamConfig {
 impl Default for RawSamConfig {
     fn default() -> Self {
         Self {
+            product_mode: SamProductMode::RouterNetwork,
             enabled: default_sam_enabled(),
             bind_address: default_sam_bind_address(),
             port: default_sam_port(),
@@ -1814,6 +1817,10 @@ pub struct Config {
     pub news: NewsConfig,
     /// SAM v3.1 service settings.
     pub sam: SamConfig,
+    /// Session product selected for normal-daemon SAM CREATE. The default
+    /// uses the router-owned network product; synthetic local tunnels require
+    /// an explicit local-only qualification setting.
+    pub sam_product_mode: SamProductMode,
     /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
@@ -1834,6 +1841,18 @@ pub struct Config {
     pub floodfill: FloodfillConfig,
     /// Explicit global transport capacity and bandwidth-class policy.
     pub bandwidth: BandwidthConfig,
+}
+
+/// Product backend used for normal-daemon SAM-created destinations.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SamProductMode {
+    /// Use the shared SSU2/NetDB/destination product; creation fails closed
+    /// until that owner has published an attachment.
+    #[default]
+    RouterNetwork,
+    /// Use synthetic same-process delivery for explicit local qualification.
+    LocalOnly,
 }
 
 /// Normalized Plan 279 normal floodfill opt-in.
@@ -2043,6 +2062,7 @@ impl Config {
             app_runtime,
             news,
             sam,
+            sam_product_mode: raw.sam.product_mode,
             ssu2,
             i2cp,
             i2pcontrol,
@@ -3944,7 +3964,17 @@ data_dir = "./state"
         let config = Config::parse(&text).expect("valid defaults");
         assert_eq!(config.limits.max_tasks, DEFAULT_MAX_TASKS);
         assert_eq!(config.logging.format, LogFormat::Text);
+        assert_eq!(config.sam_product_mode, SamProductMode::RouterNetwork);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn sam_local_only_product_requires_explicit_profile() {
+        let config = Config::parse(&format!(
+            "{MINIMAL}\n[sam]\nproduct_mode = \"local-only\"\n"
+        ))
+        .expect("explicit local-only qualification profile");
+        assert_eq!(config.sam_product_mode, SamProductMode::LocalOnly);
     }
 
     #[test]

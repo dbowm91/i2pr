@@ -101,6 +101,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             udp_port: 0,
             limits: i2pr_api::sam::limits::SamLimits::defaults(),
         },
+        sam_product_mode: i2pr_daemon::config::SamProductMode::RouterNetwork,
         ssu2: i2pr_daemon::config::Ssu2Config {
             enabled: false,
             bind_ipv4: Some("127.0.0.1".parse().unwrap()),
