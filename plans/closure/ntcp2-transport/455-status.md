@@ -90,8 +90,9 @@ plan455_ntcp2_authenticated_frame_markers=0
 | `rtk python3 -m py_compile tests/integration/ntcp2/plan455_stock_sam_trigger.py tests/integration/core-router-recovery/plan458_sam_driver.py` | Passed. |
 | `rtk cargo test --locked -p i2pr-interop --all-targets` | Passed, 34 tests. |
 | `rtk cargo clippy --locked -p i2pr-interop --all-targets --all-features -- -D warnings` | Passed. |
-| `rtk cargo test --locked -p i2pr-transport-ntcp2 --all-targets` | Prior Plan 455 run passed, 35 tests. |
-| `rtk cargo test --locked -p i2pr-runtime --all-targets -- --test-threads=1` | Prior Plan 455 run passed, 129 passed / 1 ignored. |
+| `rtk cargo test --locked -p i2pr-transport-ntcp2 --all-targets` | Passed, 35 tests (2 suites) on the current tree. These cover protocol codecs, signature/key binding, and malformed-input controls; they are not the full stock-peer matrix. |
+| `rtk cargo test --locked -p i2pr-runtime --all-targets -- --test-threads=1` | Passed, 131 tests / 1 ignored (5 suites) on the current tree. Runtime admission, cancellation, and lifecycle controls pass; the external no-dial/address/restart matrix remains unrun. |
+| `rtk bash scripts/check-ntcp2-vectors.sh` and `rtk python3 scripts/check-current-pin-ntcp2-runner.py --self-test` | Passed; vector hashes match and the runner self-test passes. |
 | `rtk cargo test --locked --workspace --all-targets -- --test-threads=1` | Passed, 4,821 tests; 39 ignored across 187 suites (1,068.53s). |
 | `rtk cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Passed. |
 | `rtk cargo doc --locked --workspace --no-deps` with `RUSTDOCFLAGS="-D warnings"` | Passed; 33 crates documented. |
