@@ -16,7 +16,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use i2pr_core::CancellationReason;
-use i2pr_crypto::X25519PrivateKey;
+use i2pr_crypto::{X25519PrivateKey, router_identity_hash, verify_router_info};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -30,9 +30,11 @@ use crate::{
     BandwidthGovernor, BandwidthPeerKey, CancellationToken, ChildScope, ChildScopeError,
     ChildTaskFailure,
 };
+use i2pr_proto::{Hash as RouterHash, RouterInfo};
+use i2pr_transport_ntcp2::address::Ntcp2RouterAddress;
 use i2pr_transport_ntcp2::frame::{ReceiveState, TransmitState};
 use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
-use i2pr_transport_ntcp2::state_machine::ResponderState;
+use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 
 /// Hard maximum for one Plan 035 runtime duration.
 pub const MAX_NTCP2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
@@ -1343,8 +1345,14 @@ impl DialAttempt {
             config,
             cancellation,
         )
-        .await?;
-        Ok((self, result))
+        .await;
+        match result {
+            Ok(handshake) => Ok((self, handshake)),
+            Err(error) => {
+                let _ = self.backoff.record_failure(self.key);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -2080,6 +2088,88 @@ impl Ntcp2RuntimeService {
             .await
     }
 
+    /// Selects and dials one literal loopback NTCP2 address from a
+    /// signature-verified RouterInfo, authenticates the advertised peer, and
+    /// promotes the socket into the ordinary bounded link owner.
+    ///
+    /// Loopback restriction is intentional for the daemon's controlled
+    /// qualification profile. Public routing policy belongs to a separately
+    /// qualified profile and cannot be enabled by this helper.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn dial_authenticated_loopback_peer(
+        &self,
+        scope: &ChildScope,
+        peer_info: &RouterInfo,
+        expected_peer_hash: [u8; 32],
+        local_static: X25519PrivateKey,
+        local_router_info: &[u8],
+        network_id: u8,
+        id: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<AuthenticatedLink, DialOutcome> {
+        if verify_router_info(peer_info).is_err()
+            || peer_info.options().get("netId") != Some(network_id.to_string().as_str())
+        {
+            return Err(DialOutcome::Failed);
+        }
+        let peer_hash =
+            router_identity_hash(peer_info.router_identity()).map_err(|_| DialOutcome::Failed)?;
+        if peer_hash.as_bytes() != &expected_peer_hash {
+            return Err(DialOutcome::Failed);
+        }
+        let mut target = None;
+        for address in peer_info.addresses() {
+            let Ok(address) = Ntcp2RouterAddress::parse(address) else {
+                continue;
+            };
+            let Some(endpoint) = address.endpoint() else {
+                continue;
+            };
+            if !endpoint.ip().is_loopback() {
+                continue;
+            }
+            let Ok(target_value) = address.resolved_dial_target(endpoint.socket_addr()) else {
+                continue;
+            };
+            target = Some(target_value);
+            break;
+        }
+        let target = target.ok_or(DialOutcome::Failed)?;
+        let attempt = self.dial(target.socket_addr(), cancellation).await?;
+        let ephemeral =
+            X25519PrivateKey::generate(&mut i2pr_crypto::OsRng).map_err(|_| DialOutcome::Failed)?;
+        let state = InitiatorState::new(
+            local_static,
+            ephemeral,
+            target.expected_static_public_key(),
+            Some(RouterHash::from_bytes(expected_peer_hash)),
+            expected_peer_hash,
+            *target.obfuscation_iv().as_bytes(),
+            network_id,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .map_err(|_| DialOutcome::Failed)?;
+        let handshake_config = HandshakeDriverConfig {
+            deadlines: self.config.deadlines,
+            ..HandshakeDriverConfig::default()
+        };
+        let (attempt, handshake) = attempt
+            .drive_initiator_handshake(
+                state,
+                local_router_info,
+                &self.replay,
+                handshake_config,
+                cancellation,
+            )
+            .await
+            .map_err(|_| DialOutcome::Failed)?;
+        if handshake.authenticated.peer().router_hash.as_bytes() != &expected_peer_hash {
+            return Err(DialOutcome::Failed);
+        }
+        self.promote_authenticated_dial(scope, attempt, handshake, id)
+            .map_err(|_| DialOutcome::ResourceDenied)
+    }
+
     /// Dials one resolved literal target under the configured deadline.
     pub async fn dial(
         &self,
@@ -2260,6 +2350,68 @@ impl Ntcp2RuntimeService {
 mod tests {
     use super::*;
 
+    fn i2p_base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+        let mut output = String::new();
+        for chunk in bytes.chunks(3) {
+            let mut value = 0_u32;
+            for byte in chunk {
+                value = (value << 8) | u32::from(*byte);
+            }
+            value <<= 8 * (3 - chunk.len());
+            let digits = if chunk.len() == 1 {
+                2
+            } else if chunk.len() == 2 {
+                3
+            } else {
+                4
+            };
+            for index in 0..digits {
+                output.push(ALPHABET[((value >> (18 - 6 * index)) & 0x3f) as usize] as char);
+            }
+            for _ in digits..4 {
+                output.push('=');
+            }
+        }
+        output
+    }
+
+    fn signed_peer_info(
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        static_key: [u8; 32],
+        iv: [u8; 16],
+        endpoint: SocketAddr,
+        network_id: u8,
+    ) -> RouterInfo {
+        let address = i2pr_proto::RouterAddress::new(
+            1,
+            i2pr_proto::Date::from_millis(86_400_000),
+            "NTCP2".to_owned(),
+            i2pr_proto::Mapping::from_entries(vec![
+                ("host".to_owned(), endpoint.ip().to_string()),
+                ("port".to_owned(), endpoint.port().to_string()),
+                ("v".to_owned(), "2".to_owned()),
+                ("s".to_owned(), i2p_base64(&static_key)),
+                ("i".to_owned(), i2p_base64(&iv)),
+            ])
+            .expect("address options"),
+        )
+        .expect("address");
+        bundle
+            .sign_router_info(
+                i2pr_proto::Date::from_millis(1_000),
+                vec![address],
+                Vec::new(),
+                i2pr_proto::Mapping::from_entries(vec![(
+                    "netId".to_owned(),
+                    network_id.to_string(),
+                )])
+                .expect("router options"),
+            )
+            .expect("signed RouterInfo")
+    }
+
     #[test]
     fn limits_and_prefixes_are_bounded() {
         assert!(IpPrefixPolicy::new(33, 64).is_err());
@@ -2272,6 +2424,173 @@ mod tests {
             limits.validate(),
             Err(Ntcp2RuntimeConfigError::ZeroLimit { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn outbound_loopback_selection_completes_authenticated_session() {
+        use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+
+        let responder_bundle =
+            RouterIdentityBundle::from_private_bytes([0x31; 32], [0x32; 32], &mut OsRng)
+                .expect("responder identity");
+        let initiator_bundle =
+            RouterIdentityBundle::from_private_bytes([0x41; 32], [0x42; 32], &mut OsRng)
+                .expect("initiator identity");
+        let responder_static = X25519PrivateKey::from_bytes([0x51; 32]);
+        let initiator_static = X25519PrivateKey::from_bytes([0x61; 32]);
+        let responder_iv = [0x71; 16];
+        let cancellation = CancellationToken::new();
+        let responder_scope = ChildScope::new(
+            &cancellation,
+            crate::ChildFailurePolicy::FailParent,
+            crate::observability::TaskCounters::new(),
+        );
+        let initiator_scope = ChildScope::new(
+            &cancellation,
+            crate::ChildFailurePolicy::FailParent,
+            crate::observability::TaskCounters::new(),
+        );
+        let responder = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let initiator = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let mut listener = responder
+            .listen(
+                "127.0.0.1:0".parse().expect("loopback address"),
+                &responder_scope,
+            )
+            .await
+            .expect("listener");
+        let endpoint = listener.local_addr();
+        let peer_info = signed_peer_info(
+            &responder_bundle,
+            responder_static.public_bytes(),
+            responder_iv,
+            endpoint,
+            2,
+        );
+        let peer_hash = responder_bundle.identity().hash().expect("peer hash");
+        let peer_info_bytes = peer_info
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("peer RouterInfo bytes");
+        let local_address = i2pr_proto::RouterAddress::new(
+            1,
+            i2pr_proto::Date::from_millis(86_400_000),
+            "NTCP2".to_owned(),
+            i2pr_proto::Mapping::from_entries(vec![
+                ("v".to_owned(), "2".to_owned()),
+                ("s".to_owned(), i2p_base64(&initiator_static.public_bytes())),
+            ])
+            .expect("local address options"),
+        )
+        .expect("local address");
+        let local_info = initiator_bundle
+            .sign_router_info(
+                i2pr_proto::Date::from_millis(1_000),
+                vec![local_address],
+                Vec::new(),
+                i2pr_proto::Mapping::from_entries(vec![("netId".to_owned(), "2".to_owned())])
+                    .expect("router options"),
+            )
+            .expect("local signed RouterInfo")
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("local RouterInfo bytes");
+        let wrong_network_info = signed_peer_info(
+            &responder_bundle,
+            responder_static.public_bytes(),
+            responder_iv,
+            endpoint,
+            3,
+        );
+        assert!(matches!(
+            initiator
+                .dial_authenticated_loopback_peer(
+                    &initiator_scope,
+                    &wrong_network_info,
+                    *peer_hash.as_bytes(),
+                    X25519PrivateKey::from_bytes([0x62; 32]),
+                    &local_info,
+                    2,
+                    10,
+                    &cancellation,
+                )
+                .await,
+            Err(DialOutcome::Failed)
+        ));
+        let dial = initiator.dial_authenticated_loopback_peer(
+            &initiator_scope,
+            &peer_info,
+            *peer_hash.as_bytes(),
+            initiator_static,
+            &local_info,
+            2,
+            11,
+            &cancellation,
+        );
+        let accept = async {
+            let inbound = listener.next().await.expect("accepted stream");
+            let responder_hash = responder_bundle.identity().hash().expect("responder hash");
+            let responder_identity = Ntcp2ResponderIdentity::new(
+                responder_static.secret_bytes(),
+                *responder_hash.as_bytes(),
+                responder_iv,
+                2,
+                &peer_info_bytes,
+            );
+            let (inbound, handshake) = responder
+                .authenticate_inbound(inbound, responder_identity, &cancellation)
+                .await
+                .expect("authenticated inbound");
+            responder
+                .promote_authenticated_inbound(&responder_scope, inbound, handshake, 12)
+                .expect("inbound link")
+        };
+        let (outbound, inbound) = tokio::join!(dial, accept);
+        let outbound = outbound.expect("authenticated outbound link");
+        let inbound = inbound;
+        outbound.close();
+        inbound.close();
+    }
+
+    #[tokio::test]
+    async fn failed_initiator_handshake_records_bounded_backoff() {
+        use i2pr_crypto::X25519PrivateKey;
+        use i2pr_transport_ntcp2::crypto::PublicKeyBytes;
+        use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
+        use i2pr_transport_ntcp2::state_machine::InitiatorState;
+
+        let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("listener endpoint");
+        let cancellation = CancellationToken::new();
+        let (attempt, accepted) =
+            tokio::join!(runtime.dial(address, &cancellation), listener.accept(),);
+        let attempt = attempt.expect("connected attempt");
+        let (_stream, _) = accepted.expect("accepted connection");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel(CancellationReason::OperatorRequest);
+        let state = InitiatorState::new(
+            X25519PrivateKey::from_bytes([0x11; 32]),
+            X25519PrivateKey::from_bytes([0x12; 32]),
+            PublicKeyBytes::new([0x13; 32]).expect("peer key"),
+            Some(RouterHash::from_bytes([0x14; 32])),
+            [0x14; 32],
+            [0x15; 16],
+            2,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .expect("initiator state");
+        assert!(
+            attempt
+                .drive_initiator_handshake(
+                    state,
+                    &[],
+                    runtime.replay_cache(),
+                    HandshakeDriverConfig::default(),
+                    &cancelled,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(runtime.dial_admission().snapshot().entries, 1);
     }
 
     #[test]

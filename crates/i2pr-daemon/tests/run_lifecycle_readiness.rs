@@ -43,6 +43,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+use i2pr_proto::{Date, Mapping, RouterAddress};
+use i2pr_runtime::{CancellationToken, Ntcp2RuntimeConfig, Ntcp2RuntimeService};
+use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
 use tempfile::TempDir;
 
 /// Upper bound on how long the daemon may take to become observable. The
@@ -182,6 +186,139 @@ fn controlled_ntcp2_config(port: u16, data_dir: &Path) -> String {
         data_dir.to_string_lossy(),
         port,
     )
+}
+
+fn test_i2p_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+    let mut output = String::new();
+    for chunk in bytes.chunks(3) {
+        let mut value = 0_u32;
+        for byte in chunk {
+            value = (value << 8) | u32::from(*byte);
+        }
+        value <<= 8 * (3 - chunk.len());
+        let digits = if chunk.len() == 1 {
+            2
+        } else if chunk.len() == 2 {
+            3
+        } else {
+            4
+        };
+        for index in 0..digits {
+            output.push(ALPHABET[((value >> (18 - 6 * index)) & 0x3f) as usize] as char);
+        }
+        for _ in digits..4 {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn controlled_ntcp2_client_session(
+    router: &Router,
+    endpoint: SocketAddr,
+    network_id: u8,
+) -> Result<(), String> {
+    let bundle = IdentityStore::in_data_dir(&router.data_dir)
+        .load()
+        .map_err(|_| "router identity unavailable".to_owned())?;
+    let router_hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| "router identity hash unavailable".to_owned())?;
+    let transport = Ntcp2TransportIdentityStore::in_data_dir(&router.data_dir)
+        .load(*router_hash.as_bytes())
+        .map_err(|_| "NTCP2 transport identity unavailable".to_owned())?;
+    let peer_info_bytes = i2pr_daemon::router_i2np::generate_controlled_ntcp2_router_info(
+        &bundle,
+        endpoint.ip(),
+        endpoint.port(),
+        u16::from(network_id),
+        &transport,
+    )
+    .map_err(|_| "daemon NTCP2 RouterInfo could not be reconstructed".to_owned())?;
+    let peer_info = i2pr_proto::RouterInfo::decode(&peer_info_bytes, 1 << 20)
+        .map_err(|_| "daemon NTCP2 RouterInfo could not be decoded".to_owned())?;
+    i2pr_crypto::verify_router_info(&peer_info)
+        .map_err(|_| "daemon NTCP2 RouterInfo signature invalid".to_owned())?;
+    let responder_hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| "router identity hash unavailable".to_owned())?;
+    if i2pr_crypto::router_identity_hash(peer_info.router_identity())
+        .map_err(|_| "RouterInfo identity hash unavailable".to_owned())?
+        != responder_hash
+    {
+        return Err("daemon NTCP2 RouterInfo identity mismatch".to_owned());
+    }
+    let address = peer_info
+        .addresses()
+        .iter()
+        .find(|address| address.transport_style() == "NTCP2")
+        .ok_or_else(|| "daemon NTCP2 RouterAddress missing".to_owned())?;
+    if address.options().get("host") != Some(endpoint.ip().to_string().as_str())
+        || address.options().get("port") != Some(endpoint.port().to_string().as_str())
+        || address.options().get("v") != Some("2")
+        || address.options().get("s")
+            != Some(test_i2p_base64(&transport.transport().key().public_bytes()).as_str())
+        || address.options().get("i") != Some(test_i2p_base64(transport.transport().iv()).as_str())
+    {
+        return Err("daemon NTCP2 RouterAddress material or endpoint mismatch".to_owned());
+    }
+    let client_bundle =
+        RouterIdentityBundle::from_private_bytes([0x91; 32], [0x92; 32], &mut OsRng)
+            .map_err(|_| "client identity generation failed".to_owned())?;
+    let client_static = X25519PrivateKey::from_bytes([0x93; 32]);
+    let client_address = RouterAddress::new(
+        1,
+        Date::from_millis(86_400_000),
+        "NTCP2".to_owned(),
+        Mapping::from_entries(vec![
+            ("v".to_owned(), "2".to_owned()),
+            (
+                "s".to_owned(),
+                test_i2p_base64(&client_static.public_bytes()),
+            ),
+        ])
+        .map_err(|_| "client address options invalid".to_owned())?,
+    )
+    .map_err(|_| "client address invalid".to_owned())?;
+    let client_info = client_bundle
+        .sign_router_info(
+            Date::from_millis(1_000),
+            vec![client_address],
+            Vec::new(),
+            Mapping::from_entries(vec![("netId".to_owned(), network_id.to_string())])
+                .map_err(|_| "client RouterInfo options invalid".to_owned())?,
+        )
+        .map_err(|_| "client RouterInfo signing failed".to_owned())?
+        .encode_to_vec(1 << 20)
+        .map_err(|_| "client RouterInfo encoding failed".to_owned())?;
+    let cancellation = CancellationToken::new();
+    let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default())
+        .map_err(|_| "client NTCP2 runtime config invalid".to_owned())?;
+    let scope = runtime.child_scope(&cancellation);
+    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "client runtime creation failed".to_owned())?;
+    tokio_runtime.block_on(async {
+        let link = runtime
+            .dial_authenticated_loopback_peer(
+                &scope,
+                &peer_info,
+                *responder_hash.as_bytes(),
+                client_static,
+                &client_info,
+                network_id,
+                1,
+                &cancellation,
+            )
+            .await
+            .map_err(|_| "daemon rejected NTCP2 authentication".to_owned())?;
+        link.close();
+        Ok(())
+    })
 }
 
 /// Configures the ordinary daemon's controlled loopback SSU2 owner and SAM
@@ -674,6 +811,12 @@ fn controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart(
         std::thread::sleep(POLL_INTERVAL);
     }
     drop(first_socket.expect("controlled NTCP2 listener did not bind"));
+    assert!(
+        controlled_ntcp2_client_session(&router, address, 3).is_err(),
+        "the daemon must reject a wrong-network authenticated session"
+    );
+    controlled_ntcp2_client_session(&router, address, 2)
+        .expect("matching-network client must authenticate to the real daemon process");
     let first_keys = std::fs::read(&key_path).expect("persist NTCP2 identity-bound keys");
     assert!(!first_keys.is_empty());
     first.interrupt();

@@ -628,6 +628,7 @@ fn build_daemon_graph_inner(
             config.network.network_id,
             &config.router.data_dir,
             bandwidth.clone(),
+            bootstrap.clone(),
         )?;
     }
 
@@ -1562,6 +1563,7 @@ fn register_ntcp2_service(
     network_id: u16,
     data_dir: &std::path::Path,
     bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
 ) -> Result<(), DaemonError> {
     use i2pr_runtime::{
         IpPrefixPolicy, Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits,
@@ -1574,6 +1576,14 @@ fn register_ntcp2_service(
 
     let config = config.clone();
     let data_dir = data_dir.to_path_buf();
+    let peer_records = bootstrap
+        .and_then(|bootstrap| {
+            bootstrap
+                .lock()
+                .ok()
+                .map(|owner| owner.validated_router_info_snapshot())
+        })
+        .unwrap_or_default();
     let limits = Ntcp2RuntimeLimits {
         max_active_links: config.max_active_links,
         max_replay_entries: config.max_replay_entries,
@@ -1598,6 +1608,7 @@ fn register_ntcp2_service(
     let spec = service_spec(NTCP2_SERVICE_NAME, ServiceClassification::Optional, move |ctx| {
         let config = config.clone();
         let data_dir = data_dir.clone();
+        let peer_records = peer_records.clone();
         let bandwidth = bandwidth.clone();
         let cancellation = ctx.cancellation().clone();
         let children = ctx.children();
@@ -1699,6 +1710,75 @@ fn register_ntcp2_service(
             if let Err(result) = signal_running(NTCP2_SERVICE_NAME, &readiness) {
                 listener.shutdown();
                 return result;
+            }
+            if !peer_records.is_empty() {
+                let outbound_runtime = runtime.clone();
+                let outbound_peers = peer_records.clone();
+                let outbound_local_info = Arc::clone(&router_info);
+                let outbound_static_secret = Arc::clone(&static_secret);
+                let outbound_scope = children.clone();
+                let outbound_next_link = Arc::clone(&next_link);
+                let outbound_cancel = cancellation.clone();
+                let _ = children.spawn(move |task_cancel| async move {
+                    let local_info = outbound_local_info.as_ref().clone();
+                    let mut cursor = 0usize;
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = task_cancel.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(Duration::from_secs(15)) => {}
+                        }
+                        let Some(candidate) = outbound_peers.get(cursor % outbound_peers.len()) else {
+                            return Ok(());
+                        };
+                        cursor = cursor.wrapping_add(1);
+                        if candidate.key().as_bytes() == &router_hash {
+                            continue;
+                        }
+                        let static_key = i2pr_crypto::X25519PrivateKey::from_bytes(
+                            **outbound_static_secret,
+                        );
+                        let raw_id = outbound_next_link.fetch_add(1, Ordering::Relaxed);
+                        let Ok(mut link) = outbound_runtime.dial_authenticated_loopback_peer(
+                            &outbound_scope,
+                            candidate.router_info(),
+                            *candidate.key().as_bytes(),
+                            static_key,
+                            &local_info,
+                            network_id as u8,
+                            raw_id,
+                            &outbound_cancel,
+                        ).await else {
+                            continue;
+                        };
+                        let peer = i2pr_transport::PeerId::from_hash(
+                            i2pr_proto::Hash::from_bytes(*candidate.key().as_bytes()),
+                        );
+                        let Some(link_id) = i2pr_transport::LinkId::new(raw_id).ok() else {
+                            link.close();
+                            continue;
+                        };
+                        loop {
+                            tokio::select! {
+                                biased;
+                                _ = task_cancel.cancelled() => break,
+                                received = link.recv_i2np_messages(&task_cancel) => {
+                                    let Ok(Some(messages)) = received else { break; };
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|value| value.as_millis().min(u128::from(u64::MAX)) as u64)
+                                        .unwrap_or(0);
+                                    for bytes in messages {
+                                        let _ = crate::router_i2np::dispatch_router_i2np_parts(
+                                            peer, link_id, &bytes, now_ms,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        link.close();
+                    }
+                });
             }
             loop {
                 tokio::select! {
