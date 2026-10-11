@@ -78,10 +78,10 @@ pub use ntcp2_runtime::{
     DialBackoffDecision, DialBackoffSnapshot, DialKey, DialKeyError, DialOutcome, ExactIoError,
     InboundAdmission, InboundChunk, InboundPermit, IoErrorKind, IpPrefixPolicy, LinkHandle, LinkId,
     LinkSendError, LinkSnapshot, LinkStartError, LinkTermination, ListenerHandle, ListenerSnapshot,
-    Ntcp2Deadline, Ntcp2DeadlineError, Ntcp2Event, Ntcp2EventKind, Ntcp2RuntimeConfig,
-    Ntcp2RuntimeConfigError, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits, Ntcp2RuntimeService,
-    ReplayCache, ReplayCacheDecision, ReplayCacheSnapshot, RuntimeLimitKind, WriteOutcome,
-    read_exact, write_all_exact,
+    Ntcp2Deadline, Ntcp2DeadlineError, Ntcp2Event, Ntcp2EventKind, Ntcp2ResponderIdentity,
+    Ntcp2RuntimeConfig, Ntcp2RuntimeConfigError, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits,
+    Ntcp2RuntimeService, ReplayCache, ReplayCacheDecision, ReplayCacheSnapshot, RuntimeLimitKind,
+    WriteOutcome, read_exact, write_all_exact,
 };
 pub use observability::{
     MAX_SNAPSHOT_CHANNELS, MAX_SNAPSHOT_RESOURCES, RouterLifecycle, RuntimeSnapshot,

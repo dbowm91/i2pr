@@ -16,6 +16,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use i2pr_core::CancellationReason;
+use i2pr_crypto::X25519PrivateKey;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -30,6 +31,8 @@ use crate::{
     ChildTaskFailure,
 };
 use i2pr_transport_ntcp2::frame::{ReceiveState, TransmitState};
+use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
+use i2pr_transport_ntcp2::state_machine::ResponderState;
 
 /// Hard maximum for one Plan 035 runtime duration.
 pub const MAX_NTCP2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
@@ -312,6 +315,47 @@ pub struct Ntcp2RuntimeConfig {
     pub deadlines: Ntcp2RuntimeDeadlines,
     /// Subnet accounting policy.
     pub prefixes: IpPrefixPolicy,
+}
+
+/// Borrowed local responder material for one controlled inbound handshake.
+pub struct Ntcp2ResponderIdentity<'a> {
+    static_secret: &'a [u8; 32],
+    router_hash: [u8; 32],
+    obfuscation_iv: [u8; 16],
+    network_id: u8,
+    router_info: &'a [u8],
+}
+
+impl<'a> Ntcp2ResponderIdentity<'a> {
+    /// Binds static material and signed local RouterInfo for one handshake.
+    pub const fn new(
+        static_secret: &'a [u8; 32],
+        router_hash: [u8; 32],
+        obfuscation_iv: [u8; 16],
+        network_id: u8,
+        router_info: &'a [u8],
+    ) -> Self {
+        Self {
+            static_secret,
+            router_hash,
+            obfuscation_iv,
+            network_id,
+            router_info,
+        }
+    }
+}
+
+impl fmt::Debug for Ntcp2ResponderIdentity<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Ntcp2ResponderIdentity")
+            .field("static_secret", &"<redacted>")
+            .field("router_hash", &self.router_hash)
+            .field("obfuscation_iv", &"<redacted>")
+            .field("network_id", &self.network_id)
+            .field("router_info_length", &self.router_info.len())
+            .finish()
+    }
 }
 
 impl Ntcp2RuntimeConfig {
@@ -1996,6 +2040,44 @@ impl Ntcp2RuntimeService {
             .await?
             .start(scope)
             .map_err(|_| IoErrorKind::Failed)
+    }
+
+    /// Authenticates one admitted inbound socket using this service's
+    /// configured handshake deadline and replay owner.
+    pub async fn authenticate_inbound(
+        &self,
+        inbound: InboundChunk,
+        identity: Ntcp2ResponderIdentity<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(AuthenticatedInboundStream, HandshakeRun), HandshakeDriverError> {
+        let local_static = X25519PrivateKey::from_bytes(*identity.static_secret);
+        let ephemeral = X25519PrivateKey::generate(&mut i2pr_crypto::OsRng)
+            .map_err(i2pr_transport_ntcp2::handshake::HandshakeError::from)
+            .map_err(HandshakeDriverError::Protocol)?;
+        let responder = ResponderState::new(
+            local_static,
+            ephemeral,
+            None,
+            identity.router_hash,
+            identity.obfuscation_iv,
+            identity.network_id,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .map_err(HandshakeDriverError::Protocol)?;
+        let config = HandshakeDriverConfig {
+            deadlines: self.config.deadlines,
+            ..HandshakeDriverConfig::default()
+        };
+        inbound
+            .into_stream()
+            .drive_responder_handshake(
+                responder,
+                identity.router_info,
+                &self.replay,
+                config,
+                cancellation,
+            )
+            .await
     }
 
     /// Dials one resolved literal target under the configured deadline.

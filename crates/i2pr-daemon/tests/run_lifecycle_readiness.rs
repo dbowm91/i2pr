@@ -176,6 +176,14 @@ fn sam_config(address: SocketAddr, data_dir: &Path) -> String {
     )
 }
 
+fn controlled_ntcp2_config(port: u16, data_dir: &Path) -> String {
+    format!(
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = {}\n",
+        data_dir.to_string_lossy(),
+        port,
+    )
+}
+
 /// Configures the ordinary daemon's controlled loopback SSU2 owner and SAM
 /// listener. Both remain opt-in; the test names the loopback profile itself.
 fn controlled_ssu2_sam_config(address: SocketAddr, ssu2_port: u16, data_dir: &Path) -> String {
@@ -640,6 +648,108 @@ fn controlled_ssu2_and_sam_survive_real_process_restart() {
     second.interrupt();
     let (status, output) = second.finish();
     assert!(status.success(), "second run failed: {status}\n{output}");
+}
+
+#[test]
+fn controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart() {
+    let address = reserve_loopback_port();
+    let router = Router::new(|data_dir| controlled_ntcp2_config(address.port(), data_dir));
+    router.generate_identity();
+    let key_path = router.data_dir.join("ntcp2.transport.identity");
+
+    let mut first = router.spawn();
+    let mut first_socket = None;
+    let deadline = Instant::now() + READY_DEADLINE;
+    while Instant::now() < deadline {
+        if key_path.exists()
+            && let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200))
+        {
+            first_socket = Some(socket);
+            break;
+        }
+        if let Some(status) = first.child.try_wait().expect("check daemon") {
+            let (_, output) = first.finish();
+            panic!("NTCP2 daemon exited before bind ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    drop(first_socket.expect("controlled NTCP2 listener did not bind"));
+    let first_keys = std::fs::read(&key_path).expect("persist NTCP2 identity-bound keys");
+    assert!(!first_keys.is_empty());
+    first.interrupt();
+    let (status, output) = first.finish();
+    assert!(status.success(), "shutdown failed: {status}\n{output}");
+
+    let mut second = router.spawn();
+    let mut second_socket = None;
+    let deadline = Instant::now() + READY_DEADLINE;
+    while Instant::now() < deadline {
+        if let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+            second_socket = Some(socket);
+            break;
+        }
+        if let Some(status) = second.child.try_wait().expect("check restarted daemon") {
+            let (_, output) = second.finish();
+            panic!("restarted NTCP2 daemon exited before bind ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    drop(second_socket.expect("restarted NTCP2 listener did not bind"));
+    let second_keys = std::fs::read(&key_path).expect("read restarted NTCP2 keys");
+    assert_eq!(second_keys, first_keys, "restart must preserve key and IV");
+    second.interrupt();
+    let (status, output) = second.finish();
+    assert!(
+        status.success(),
+        "restarted shutdown failed: {status}\n{output}"
+    );
+}
+
+#[test]
+fn occupied_controlled_ntcp2_port_degrades_without_stopping_router() {
+    let address = reserve_loopback_port();
+    let ssu2_port = reserve_loopback_udp_port();
+    let router = Router::new(|data_dir| {
+        format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
+            controlled_ntcp2_config(address.port(), data_dir),
+            ssu2_port,
+        )
+    });
+    router.generate_identity();
+    let occupier = TcpListener::bind(address).expect("occupy configured NTCP2 port");
+
+    let mut child = router.spawn();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Some(status) = child.child.try_wait().expect("check daemon") {
+            let (_, output) = child.finish();
+            panic!("optional NTCP2 bind failure stopped the router ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    assert!(
+        child
+            .child
+            .try_wait()
+            .expect("router remains running")
+            .is_none(),
+        "the optional NTCP2 bind failure must not stop the daemon"
+    );
+    let ssu2_conflict = std::net::UdpSocket::bind(("127.0.0.1", ssu2_port))
+        .expect_err("SSU2 must remain bound while NTCP2 degrades");
+    assert_eq!(ssu2_conflict.kind(), std::io::ErrorKind::AddrInUse);
+    drop(occupier);
+    child.interrupt();
+    let (status, output) = child.finish();
+    assert!(
+        status.success(),
+        "router shutdown failed: {status}\n{output}"
+    );
+    assert!(
+        !router.data_dir.join("ntcp2.transport.identity").exists(),
+        "a failed pre-key bind must not create NTCP2 key material"
+    );
 }
 
 #[test]

@@ -2004,7 +2004,7 @@ impl Config {
             });
         }
 
-        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
+        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, raw.network.network_id)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
@@ -3148,7 +3148,7 @@ fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), C
     Ok(())
 }
 
-fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
+fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config, ConfigError> {
     let qualification_profile = match (raw.enabled, raw.qualification_profile.as_str()) {
         (false, "disabled") => Ntcp2QualificationProfile::Disabled,
         (true, "controlled_loopback") => Ntcp2QualificationProfile::ControlledLoopback,
@@ -3189,6 +3189,12 @@ fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
             return Err(ConfigError::Semantic {
                 field: "transport.ntcp2.listen_port",
                 reason: "controlled_loopback requires an explicit non-privileged port",
+            });
+        }
+        if network_id > u16::from(u8::MAX) {
+            return Err(ConfigError::Semantic {
+                field: "network.network_id",
+                reason: "controlled NTCP2 requires a network ID representable by the handshake",
             });
         }
     }
@@ -4444,6 +4450,7 @@ data_dir = "./state"
             valid.replace("127.0.0.1", "0.0.0.0"),
             valid.replace("listen_port = 44321", "listen_port = 0"),
             valid.replace("listen_port = 44321", "listen_port = 443"),
+            valid.replace("[router]", "[network]\nnetwork_id = 300\n[router]"),
         ] {
             assert!(matches!(
                 Config::parse(&invalid),

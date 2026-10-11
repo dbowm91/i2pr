@@ -85,7 +85,7 @@ pub struct HandshakeStageObservation {
 /// is intentionally infallible and synchronous: the driver never
 /// awaits, locks, or allocates inside the callback, and a panicking
 /// observer must never influence the handshake result.
-pub trait HandshakeProgressObserver {
+pub trait HandshakeProgressObserver: Sync {
     /// Called once per handshake stage observation. The driver
     /// invokes the callback exactly once for every stage it
     /// recognises and is structurally unable to invoke the callback

@@ -355,7 +355,18 @@ pub fn dispatch_router_i2np(
     inbound: &i2pr_runtime::Ssu2InboundI2np,
     now_ms: u64,
 ) -> Result<RouterI2npOutcome, RouterI2npError> {
-    dispatch_inner(inbound, now_ms).map(|(_, outcome)| outcome)
+    dispatch_router_i2np_parts(inbound.peer, inbound.link_id, &inbound.bytes, now_ms)
+}
+
+/// Dispatches one authenticated I2NP message from any router transport through
+/// the same bounded decoder used by the SSU2 owner.
+pub fn dispatch_router_i2np_parts(
+    peer: PeerId,
+    link_id: LinkId,
+    bytes: &[u8],
+    now_ms: u64,
+) -> Result<RouterI2npOutcome, RouterI2npError> {
+    dispatch_inner_parts(peer, link_id, bytes, now_ms).map(|(_, outcome)| outcome)
 }
 
 #[allow(dead_code)]
@@ -466,7 +477,15 @@ fn dispatch_inner(
     inbound: &i2pr_runtime::Ssu2InboundI2np,
     now_ms: u64,
 ) -> Result<(Option<I2npMessage>, RouterI2npOutcome), RouterI2npError> {
-    let bytes = inbound.bytes.as_slice();
+    dispatch_inner_parts(inbound.peer, inbound.link_id, &inbound.bytes, now_ms)
+}
+
+fn dispatch_inner_parts(
+    peer: PeerId,
+    link_id: LinkId,
+    bytes: &[u8],
+    now_ms: u64,
+) -> Result<(Option<I2npMessage>, RouterI2npOutcome), RouterI2npError> {
     if bytes.is_empty() {
         return Err(RouterI2npError::Empty);
     }
@@ -484,8 +503,8 @@ fn dispatch_inner(
             None,
             RouterI2npOutcome::Unsupported {
                 type_byte: first,
-                peer: inbound.peer,
-                link_id: inbound.link_id,
+                peer,
+                link_id,
                 encoded_len: bytes.len(),
             },
         ));
@@ -531,8 +550,8 @@ fn dispatch_inner(
         header_kind,
         message_id,
         expiration_ms,
-        inbound.peer,
-        inbound.link_id,
+        peer,
+        link_id,
         bytes.len(),
     )?;
     Ok((Some(message), outcome))
