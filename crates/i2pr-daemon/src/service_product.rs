@@ -98,7 +98,8 @@ use crate::service_delivery::{
 };
 use crate::service_tunnels::{
     DeferredActivationRequest, DestinationProductOperation, EncryptedTargetStatus,
-    RemoteTargetProjection, ServiceTunnelManager, ServiceTunnelManagerConfig,
+    RemoteTargetProjection, RouterNetworkSamProvisioningFailure, ServiceTunnelManager,
+    ServiceTunnelManagerConfig,
 };
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
@@ -715,6 +716,72 @@ pub enum ServiceProductError {
     /// counted remote path.
     #[error("router network state missing or expired: {0}")]
     RouterState(String),
+}
+
+/// Secret-free failure stage for the normal-process SAM provisioning
+/// boundary. Never emit a provisioning error's formatted detail here: some
+/// callers include destination-scoped context that should stay in memory.
+fn router_network_sam_failure_stage(
+    error: &ServiceProductError,
+) -> RouterNetworkSamProvisioningFailure {
+    match error {
+        ServiceProductError::DestinationSelection(_) => {
+            RouterNetworkSamProvisioningFailure::DestinationPeerSelection
+        }
+        ServiceProductError::InboundBuildMissing => {
+            RouterNetworkSamProvisioningFailure::InboundBuild
+        }
+        ServiceProductError::OutboundBuildMissing => {
+            RouterNetworkSamProvisioningFailure::OutboundBuild
+        }
+        ServiceProductError::LookupTimeout => RouterNetworkSamProvisioningFailure::NetDbLookup,
+        ServiceProductError::Dial(_) => RouterNetworkSamProvisioningFailure::PeerDial,
+        ServiceProductError::SessionTimeout => RouterNetworkSamProvisioningFailure::PeerSession,
+        ServiceProductError::NoSsu2Address => RouterNetworkSamProvisioningFailure::PeerAddress,
+        ServiceProductError::NoSocket | ServiceProductError::Bind => {
+            RouterNetworkSamProvisioningFailure::TransportBind
+        }
+        ServiceProductError::Provisioning(detail)
+            if detail.starts_with("SAM destination LS2 publication failed:") =>
+        {
+            RouterNetworkSamProvisioningFailure::LeaseSetPublication
+        }
+        ServiceProductError::Provisioning(_) => {
+            RouterNetworkSamProvisioningFailure::DestinationProvisioning
+        }
+        ServiceProductError::RouterState(_) => RouterNetworkSamProvisioningFailure::RouterState,
+        _ => RouterNetworkSamProvisioningFailure::ProductActivation,
+    }
+}
+
+#[cfg(test)]
+mod router_network_sam_failure_stage_tests {
+    use super::{ServiceProductError, router_network_sam_failure_stage};
+    use crate::service_tunnels::RouterNetworkSamProvisioningFailure as Failure;
+
+    #[test]
+    fn stage_labels_are_bounded_and_do_not_echo_provisioning_details() {
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildMissing),
+            Failure::InboundBuild
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildMissing),
+            Failure::OutboundBuild
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::Provisioning(
+                "SAM destination LS2 publication failed: destination-secret".to_owned()
+            )),
+            Failure::LeaseSetPublication
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::Provisioning(
+                "private destination and internal detail".to_owned()
+            )),
+            Failure::DestinationProvisioning
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2409,11 +2476,15 @@ impl ServiceProduct {
         let response = match result {
             Ok(()) if sam_session && request.completion.is_closed() => {
                 self.retire_sam_destination(request.destination_id);
-                Err("SAM session was cancelled during destination provisioning".to_owned())
+                Err(RouterNetworkSamProvisioningFailure::ActivationCancelled)
             }
             Ok(()) => Ok(()),
-            Err(_) => {
+            Err(error) => {
                 if sam_session {
+                    tracing::warn!(
+                        failure_stage = router_network_sam_failure_stage(&error).label(),
+                        "router-network SAM destination provisioning failed"
+                    );
                     self.cancel_destination_builds(request.destination_id);
                     for slot in self
                         .manager
@@ -2446,7 +2517,7 @@ impl ServiceProduct {
                         .server_destination_ids
                         .retain(|id| *id != request.destination_id);
                 }
-                Err("deferred destination provisioning failed".to_owned())
+                Err(router_network_sam_failure_stage(&error))
             }
         };
         let _ = request.completion.send(response);

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import socket
 import subprocess
@@ -213,6 +214,18 @@ threshold = 0
         shutil.copyfile(source, target)
         os.chmod(target, 0o600)
 
+    def router_network_sam_failure_stage(self):
+        log = self.scratch / "i2pr.stderr"
+        if not log.is_file():
+            return None
+        for line in log.read_text(errors="replace").splitlines():
+            if "router-network SAM destination provisioning failed" not in line:
+                continue
+            match = re.search(r'failure_stage=["\']?([a-z0-9-]+)', line)
+            if match:
+                return match.group(1)
+        return None
+
     def run(self):
         if not I2PD.is_file() or not os.access(I2PD, os.X_OK):
             raise RuntimeError("pinned i2pd binary is missing")
@@ -362,7 +375,11 @@ introducer_service = false
             check=False,
         )
         if driver.returncode:
-            raise RuntimeError(f"SAM driver stopped with exit {driver.returncode}")
+            stage = self.router_network_sam_failure_stage()
+            suffix = f"; router_product_failure_stage={stage}" if stage else ""
+            raise RuntimeError(
+                f"SAM driver stopped with exit {driver.returncode}{suffix}"
+            )
 
 
 def main():

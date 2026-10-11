@@ -38,6 +38,16 @@ started, so this run supplies no request/reply or nonzero-hop evidence. Its
 scratch roots and child processes were cleaned; no raw reference logs or
 identities were retained.
 
+A follow-up used one fixed-label diagnostic path from deferred product
+activation through the private completion channel and SAM `MESSAGE`. The same
+ordinary-process topology again reached `SESSION CREATE` and stopped before
+the stream; the sanitized driver output localized the failure to
+`inbound-build`. This identifies the product stage that timed out, but does
+not establish why the inbound tunnel was not installed. No raw reference logs,
+destination identity, or dynamic error details cross the SAM response or are
+retained. Plan 458 remains blocked pending a source-owned correction and a
+successful nonzero-hop bidirectional exchange.
+
 The workspace floor initially exposed a regression in the separate local
 co-owned test fabric: its delivery guard required an inbound-tunnel factory
 even though `bridge_to_peer` receives the tunnel directly. The guard now checks
@@ -80,6 +90,7 @@ All results below are local Linux evidence, not CI results.
 | `rtk bash tests/integration/m6-interop/run-netdb.sh` | Passed previously; lower-layer control only. |
 | `rtk bash tests/integration/m6-interop/run-streaming.sh` | Passed previously at Plan 193 service-group scope; not SAM destination composition evidence. |
 | `python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked: four pinned local peers and ordinary `i2pr run` reached external SAM `SESSION CREATE`, which returned a router-product provisioning failure before any stream exchange. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked before stream setup; corrected ordinary-process result was `failure_stage=inbound-build`. The runner's scratch peers and process were cleaned. |
 
 The full workspace floor initially exposed a local co-owned SAM delivery test
 regression: `plan144_full_handshake_reaches_bidirectional_established` failed
@@ -94,6 +105,9 @@ provisioning.
 - Router-network SAM continues to use the daemon's existing identity, SSU2
   owner, NetDB and bounded product channels; no second router or socket owner
   was added.
+- Provisioning failure crosses the private product channel as a closed enum;
+  SAM exposes only its fixed lowercase stage label, never a formatted lower
+  level error, destination identifier, or key material.
 - Dynamic SAM destinations have a fixed capacity of eight and are private to
   the session. Requests do not fall back to local synthetic tunnels.
 - SAM remains loopback-only, disabled by default, experimental and

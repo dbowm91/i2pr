@@ -961,14 +961,17 @@ impl SamServiceState {
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         }
-        if manager
+        if let Err(failure) = manager
             .ensure_router_network_sam_destination_active(destination_id, &cancellation, 120_000)
             .await
-            .is_err()
         {
             let _ = manager.unregister_router_network_sam_destination(destination_id);
             self.session_registry.rollback_reservation(&reservation);
-            return Err(SessionCreateError::RouterNetworkDestinationProvisioningFailed);
+            return Err(
+                SessionCreateError::RouterNetworkDestinationProvisioningFailed {
+                    stage: failure.label(),
+                },
+            );
         }
         let Some(summary) = manager.service_router_network_summary(destination_id) else {
             let _ = manager.unregister_router_network_sam_destination(destination_id);
@@ -2005,8 +2008,8 @@ pub enum SessionCreateError {
     RouterNetworkProductUnavailable,
     /// The router product is running, but it could not install this
     /// destination's real tunnel and publication material.
-    #[error("router-backed SAM destination provisioning failed")]
-    RouterNetworkDestinationProvisioningFailed,
+    #[error("router-backed SAM destination provisioning failed at {stage}")]
+    RouterNetworkDestinationProvisioningFailed { stage: &'static str },
     /// The OS CSPRNG could not produce fresh key material.
     #[error("randomness unavailable for TRANSIENT destination generation")]
     RandomnessUnavailable,
@@ -2086,7 +2089,7 @@ impl SessionCreateError {
             Self::InvalidPrivateDestination => ReplyResult::InvalidKey,
             Self::RandomnessUnavailable
             | Self::RouterNetworkProductUnavailable
-            | Self::RouterNetworkDestinationProvisioningFailed
+            | Self::RouterNetworkDestinationProvisioningFailed { .. }
             | Self::DestinationRuntime(_)
             | Self::DestinationRegistryLocked
             | Self::SamDestinationsLocked

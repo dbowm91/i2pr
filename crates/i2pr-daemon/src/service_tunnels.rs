@@ -648,7 +648,55 @@ const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
 pub(crate) struct DeferredActivationRequest {
     pub(crate) destination_id: DestinationId,
     pub(crate) operation: DestinationProductOperation,
-    pub(crate) completion: oneshot::Sender<Result<(), String>>,
+    pub(crate) completion: oneshot::Sender<Result<(), RouterNetworkSamProvisioningFailure>>,
+}
+
+/// Fixed, non-secret outcomes for router-network SAM destination activation.
+/// These labels cross the private product channel and the SAM error surface;
+/// they never carry destination ids or formatted lower-level errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RouterNetworkSamProvisioningFailure {
+    DestinationUnavailable,
+    ProductOwnerUnavailable,
+    ActivationCancelled,
+    ActivationDeadline,
+    ProductOwnerStopped,
+    DestinationPeerSelection,
+    InboundBuild,
+    OutboundBuild,
+    NetDbLookup,
+    PeerDial,
+    PeerSession,
+    PeerAddress,
+    TransportBind,
+    LeaseSetPublication,
+    RouterState,
+    DestinationProvisioning,
+    ProductActivation,
+}
+
+impl RouterNetworkSamProvisioningFailure {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::DestinationUnavailable => "destination-unavailable",
+            Self::ProductOwnerUnavailable => "product-owner-unavailable",
+            Self::ActivationCancelled => "activation-cancelled",
+            Self::ActivationDeadline => "activation-deadline",
+            Self::ProductOwnerStopped => "product-owner-stopped",
+            Self::DestinationPeerSelection => "destination-peer-selection",
+            Self::InboundBuild => "inbound-build",
+            Self::OutboundBuild => "outbound-build",
+            Self::NetDbLookup => "netdb-lookup",
+            Self::PeerDial => "peer-dial",
+            Self::PeerSession => "peer-session",
+            Self::PeerAddress => "peer-address",
+            Self::TransportBind => "transport-bind",
+            Self::LeaseSetPublication => "leaseset-publication",
+            Self::RouterState => "router-state",
+            Self::DestinationProvisioning => "destination-provisioning",
+            Self::ProductActivation => "product-activation",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -903,7 +951,9 @@ impl ServiceTunnelManager {
             )),
             response = result => match response {
                 Ok(Ok(())) => Ok(()),
-                Ok(Err(reason)) => Err(ServiceTunnelError::InvalidConfig(reason)),
+                Ok(Err(reason)) => Err(ServiceTunnelError::InvalidConfig(
+                    reason.label().to_owned(),
+                )),
                 Err(_) => Err(ServiceTunnelError::InvalidConfig(
                     "deferred activation owner stopped".to_owned(),
                 )),
@@ -1189,57 +1239,41 @@ impl ServiceTunnelManager {
         destination_id: DestinationId,
         cancellation: &CancellationToken,
         timeout_ms: u64,
-    ) -> Result<(), ServiceTunnelError> {
+    ) -> Result<(), RouterNetworkSamProvisioningFailure> {
         let exists = self
             .sam_network_destinations
             .lock()
             .ok()
             .is_some_and(|sessions| sessions.contains_key(&destination_id));
         if !exists {
-            return Err(ServiceTunnelError::InvalidConfig(
-                "router-network SAM destination is unavailable".to_owned(),
-            ));
+            return Err(RouterNetworkSamProvisioningFailure::DestinationUnavailable);
         }
         if !self.deferred_activation_enabled.load(Ordering::Acquire) {
-            return Err(ServiceTunnelError::InvalidConfig(
-                "router-network SAM product owner is unavailable".to_owned(),
-            ));
+            return Err(RouterNetworkSamProvisioningFailure::ProductOwnerUnavailable);
         }
         let (completion, result) = oneshot::channel();
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(timeout_ms.clamp(1, 120_000));
         tokio::select! {
             biased;
-            _ = cancellation.cancelled() => Err(ServiceTunnelError::InvalidConfig(
-                "router-network SAM activation cancelled".to_owned(),
-            )),
-            _ = tokio::time::sleep_until(deadline) => Err(ServiceTunnelError::InvalidConfig(
-                "router-network SAM activation deadline reached".to_owned(),
-            )),
+            _ = cancellation.cancelled() => Err(RouterNetworkSamProvisioningFailure::ActivationCancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(RouterNetworkSamProvisioningFailure::ActivationDeadline),
             sent = self.deferred_activation_tx.send(DeferredActivationRequest {
                 destination_id,
                 operation: DestinationProductOperation::Activate,
                 completion,
             }) => {
                 if sent.is_err() {
-                    return Err(ServiceTunnelError::InvalidConfig(
-                        "router-network SAM product owner stopped".to_owned(),
-                    ));
+                    return Err(RouterNetworkSamProvisioningFailure::ProductOwnerStopped);
                 }
                 tokio::select! {
                     biased;
-                    _ = cancellation.cancelled() => Err(ServiceTunnelError::InvalidConfig(
-                        "router-network SAM activation cancelled".to_owned(),
-                    )),
-                    _ = tokio::time::sleep_until(deadline) => Err(ServiceTunnelError::InvalidConfig(
-                        "router-network SAM activation deadline reached".to_owned(),
-                    )),
+                    _ = cancellation.cancelled() => Err(RouterNetworkSamProvisioningFailure::ActivationCancelled),
+                    _ = tokio::time::sleep_until(deadline) => Err(RouterNetworkSamProvisioningFailure::ActivationDeadline),
                     response = result => match response {
                         Ok(Ok(())) => Ok(()),
-                        Ok(Err(reason)) => Err(ServiceTunnelError::InvalidConfig(reason)),
-                        Err(_) => Err(ServiceTunnelError::InvalidConfig(
-                            "router-network SAM product owner stopped".to_owned(),
-                        )),
+                        Ok(Err(failure)) => Err(failure),
+                        Err(_) => Err(RouterNetworkSamProvisioningFailure::ProductOwnerStopped),
                     }
                 }
             }

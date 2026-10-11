@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import re
 import socket
 import threading
 
@@ -86,7 +87,14 @@ def create_session(endpoint, session_id, timeout):
     created = sam.line()
     if not created.startswith("SESSION STATUS RESULT=OK"):
         sam.close()
-        raise RuntimeError(f"SAM SESSION CREATE failed: {created.split(' ', 4)[:4]}")
+        stage = re.search(
+            r"router-backed SAM destination provisioning failed at ([a-z0-9-]+)",
+            created,
+        )
+        bounded_stage = f" failure_stage={stage.group(1)}" if stage else ""
+        raise RuntimeError(
+            f"SAM SESSION CREATE failed: {created.split(' ', 4)[:4]}{bounded_stage}"
+        )
     sam.send_line("NAMING LOOKUP NAME=ME")
     named = sam.line()
     public = field(named, "VALUE")

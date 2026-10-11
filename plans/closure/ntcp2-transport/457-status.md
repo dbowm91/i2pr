@@ -16,7 +16,7 @@ Plan 457 requires both real-process directions, decoded/correlated I2NP, simulta
 | --- | --- |
 | Plan 456 guarded normal-daemon source/lifecycle | Passed; see [`456-status.md`](456-status.md). |
 | i2pr initiator to stock peer, authenticated decoded I2NP with correlated response | Plan 455 Gate A receive is established by the stock NetDb marker; a correlated reply is not part of the one-way probe. |
-| Stock initiator to normal daemon | Blocked; the stock-only SAM workload passes, but the i2pr router-backed SAM destination cannot be provisioned, so no stock-to-i2pr stream/delivery was demonstrated. |
+| Stock initiator to normal daemon | Blocked; the stock-only SAM workload passes, but the latest bounded Plan 458 attempt fails at the fixed `inbound-build` stage before an i2pr router-backed SAM destination can be provisioned, so no stock-to-i2pr stream/delivery was demonstrated. |
 | Concurrent NTCP2 and SSU2 use by one real daemon and per-family failure continuity | Not run; no qualified real-peer workload exists for the required observation. |
 | Negative, contention, restart, and orphan-task matrix under real peer load | Not run at this scope; local lifecycle and runtime controls remain covered by Plan 456 and the full workspace tests. |
 | Public/two-family Plan 435 qualification | Out of scope and not established. |
