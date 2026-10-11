@@ -3171,10 +3171,13 @@ fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
             });
         }
     };
-    let bind_address: IpAddr = raw.bind_address.parse().map_err(|_| ConfigError::Semantic {
-        field: "transport.ntcp2.bind_address",
-        reason: "must be an IP address literal",
-    })?;
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "transport.ntcp2.bind_address",
+            reason: "must be an IP address literal",
+        })?;
     if qualification_profile == Ntcp2QualificationProfile::ControlledLoopback {
         if !bind_address.is_loopback() {
             return Err(ConfigError::Semantic {
@@ -4432,7 +4435,10 @@ data_dir = "./state"
             "127.0.0.1".parse::<IpAddr>().unwrap()
         );
         assert_eq!(config.transport.ntcp2.listen_port, 44321);
-        assert!(!path.exists(), "config parsing must not create the data directory");
+        assert!(
+            !path.exists(),
+            "config parsing must not create the data directory"
+        );
 
         for invalid in [
             valid.replace("127.0.0.1", "0.0.0.0"),

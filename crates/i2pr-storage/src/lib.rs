@@ -60,6 +60,12 @@ pub const NTCP2_TRANSPORT_KEY_FILE_NAME: &str = "ntcp2.static.key";
 pub const MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE: usize = 4096;
 /// Version of the NTCP2 static-key and IV format.
 pub const NTCP2_TRANSPORT_KEY_FORMAT_VERSION: u16 = 1;
+/// Private NTCP2 transport identity filename bound to the router identity.
+pub const NTCP2_TRANSPORT_IDENTITY_FILE_NAME: &str = "ntcp2.transport.identity";
+/// Maximum bytes accepted for a persisted NTCP2 transport identity.
+pub const MAX_NTCP2_TRANSPORT_IDENTITY_FILE_SIZE: usize = 4096;
+/// Version of the private NTCP2 transport identity format.
+pub const NTCP2_TRANSPORT_IDENTITY_FORMAT_VERSION: u16 = 1;
 /// The private SSU2 transport identity filename.
 pub const SSU2_TRANSPORT_IDENTITY_FILE_NAME: &str = "ssu2.transport.identity";
 /// Maximum bytes accepted for a persisted SSU2 transport identity.
@@ -88,6 +94,8 @@ const NTCP2_FILE_LENGTH: usize = NTCP2_HEADER_LENGTH
     + NTCP2_PUBLIC_KEY_LENGTH
     + NTCP2_IV_LENGTH
     + NTCP2_CHECKSUM_LENGTH;
+const NTCP2_IDENTITY_MAGIC: &[u8; 8] = b"I2PRN2I\0";
+const NTCP2_IDENTITY_FILE_LENGTH: usize = 8 + 2 + 2 + 32 + NTCP2_FILE_LENGTH + 32;
 const SSU2_MAGIC: &[u8; 8] = b"I2PRSS2\0";
 const SSU2_HEADER_LENGTH: usize = 16;
 const SSU2_PAYLOAD_LENGTH: usize = 32 + PRIVATE_KEY_LENGTH + PUBLIC_KEY_LENGTH + 32;
@@ -301,6 +309,131 @@ impl TransportStaticKeyMaterial {
     /// zeroizing wrapper; callers cannot clone it through this API.
     pub fn into_parts(self) -> (TransportStaticKey, [u8; NTCP2_IV_LENGTH]) {
         (self.key, self.iv)
+    }
+}
+
+/// NTCP2 transport material durably associated with one RouterIdentity.
+pub struct Ntcp2TransportIdentityMaterial {
+    router_hash: [u8; 32],
+    transport: TransportStaticKeyMaterial,
+}
+
+impl Ntcp2TransportIdentityMaterial {
+    /// Returns the RouterIdentity hash this independent transport key belongs to.
+    pub const fn router_hash(&self) -> &[u8; 32] {
+        &self.router_hash
+    }
+
+    /// Borrows the independent static-key and IV material.
+    pub const fn transport(&self) -> &TransportStaticKeyMaterial {
+        &self.transport
+    }
+}
+
+impl std::fmt::Debug for Ntcp2TransportIdentityMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Ntcp2TransportIdentityMaterial(..)")
+    }
+}
+
+/// Atomic, permission-hardened NTCP2 key store bound to a RouterIdentity hash.
+pub struct Ntcp2TransportIdentityStore {
+    path: PathBuf,
+}
+
+impl Ntcp2TransportIdentityStore {
+    /// Creates the store under the private router data directory.
+    pub fn in_data_dir(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join(NTCP2_TRANSPORT_IDENTITY_FILE_NAME),
+        }
+    }
+
+    /// Returns the exact identity file path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Loads the identity-bound keys or creates them atomically when absent.
+    pub fn load_or_generate<R: TryCryptoRng + ?Sized>(
+        &self,
+        expected_router_hash: [u8; 32],
+        rng: &mut R,
+    ) -> Result<Ntcp2TransportIdentityMaterial, StorageError> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(_) => return self.load(expected_router_hash),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(storage_io("inspect NTCP2 identity", source)),
+        }
+        let material = Ntcp2TransportIdentityMaterial {
+            router_hash: expected_router_hash,
+            transport: TransportStaticKeyMaterial::generate(rng)?,
+        };
+        match self.save_new(&material) {
+            Ok(()) => Ok(material),
+            Err(StorageError::AlreadyExists) => self.load(expected_router_hash),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Saves identity-bound material with atomic no-replace semantics.
+    pub fn save_new(&self, material: &Ntcp2TransportIdentityMaterial) -> Result<(), StorageError> {
+        let encoded = encode_ntcp2_transport_identity(material)?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        ensure_secure_directory(parent)?;
+        reject_existing_target(&self.path)?;
+        let (temporary_path, mut temporary) = create_temporary_file(parent, "ntcp2.identity")?;
+        let result = (|| {
+            temporary
+                .write_all(&encoded)
+                .map_err(|source| storage_io("write temporary NTCP2 identity", source))?;
+            temporary
+                .sync_all()
+                .map_err(|source| storage_io("sync temporary NTCP2 identity", source))?;
+            drop(temporary);
+            fs::hard_link(&temporary_path, &self.path).map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    StorageError::AlreadyExists
+                } else {
+                    storage_io("install NTCP2 identity", source)
+                }
+            })?;
+            fs::remove_file(&temporary_path)
+                .map_err(|source| storage_io("remove temporary NTCP2 identity", source))?;
+            sync_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result
+    }
+
+    /// Loads the persisted keys and requires their bound RouterIdentity hash to match.
+    pub fn load(
+        &self,
+        expected_router_hash: [u8; 32],
+    ) -> Result<Ntcp2TransportIdentityMaterial, StorageError> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        validate_existing_directory(parent)?;
+        let metadata = fs::symlink_metadata(&self.path)
+            .map_err(|source| storage_io("inspect NTCP2 identity", source))?;
+        validate_identity_file_metadata(&metadata)?;
+        let length = usize::try_from(metadata.len()).map_err(|_| StorageError::TooLarge {
+            actual: usize::MAX,
+            maximum: MAX_NTCP2_TRANSPORT_IDENTITY_FILE_SIZE,
+        })?;
+        if length > MAX_NTCP2_TRANSPORT_IDENTITY_FILE_SIZE {
+            return Err(StorageError::TooLarge {
+                actual: length,
+                maximum: MAX_NTCP2_TRANSPORT_IDENTITY_FILE_SIZE,
+            });
+        }
+        let mut file =
+            File::open(&self.path).map_err(|source| storage_io("open NTCP2 identity", source))?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
+        file.read_to_end(&mut bytes)
+            .map_err(|source| storage_io("read NTCP2 identity", source))?;
+        decode_ntcp2_transport_identity(&bytes, expected_router_hash)
     }
 }
 
@@ -1181,6 +1314,68 @@ fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
     Ok(bundle)
 }
 
+fn encode_ntcp2_transport_identity(
+    material: &Ntcp2TransportIdentityMaterial,
+) -> Result<Zeroizing<Vec<u8>>, StorageError> {
+    let transport = encode_ntcp2_transport_key(&material.transport)?;
+    let mut bytes = Vec::with_capacity(NTCP2_IDENTITY_FILE_LENGTH);
+    bytes.extend_from_slice(NTCP2_IDENTITY_MAGIC);
+    bytes.extend_from_slice(&NTCP2_TRANSPORT_IDENTITY_FORMAT_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&RESERVED_HEADER.to_be_bytes());
+    bytes.extend_from_slice(&material.router_hash);
+    bytes.extend_from_slice(&transport);
+    let checksum = sha256(&bytes);
+    bytes.extend_from_slice(checksum.as_bytes());
+    if bytes.len() != NTCP2_IDENTITY_FILE_LENGTH {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 identity encoded length",
+        });
+    }
+    Ok(Zeroizing::new(bytes))
+}
+
+fn decode_ntcp2_transport_identity(
+    bytes: &[u8],
+    expected_router_hash: [u8; 32],
+) -> Result<Ntcp2TransportIdentityMaterial, StorageError> {
+    if bytes.len() < NTCP2_IDENTITY_FILE_LENGTH {
+        return Err(StorageError::Truncated);
+    }
+    if bytes.len() > NTCP2_IDENTITY_FILE_LENGTH {
+        return Err(StorageError::TrailingBytes);
+    }
+    if &bytes[..8] != NTCP2_IDENTITY_MAGIC {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 identity magic",
+        });
+    }
+    let version = u16::from_be_bytes([bytes[8], bytes[9]]);
+    if version != NTCP2_TRANSPORT_IDENTITY_FORMAT_VERSION {
+        return Err(StorageError::UnsupportedVersion { actual: version });
+    }
+    if bytes[10..12] != RESERVED_HEADER.to_be_bytes() {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 identity reserved header",
+        });
+    }
+    let router_hash: [u8; 32] = bytes[12..44]
+        .try_into()
+        .map_err(|_| StorageError::Truncated)?;
+    if !constant_time_eq(&router_hash, &expected_router_hash) {
+        return Err(StorageError::Integrity);
+    }
+    let checksum_offset = NTCP2_IDENTITY_FILE_LENGTH - NTCP2_CHECKSUM_LENGTH;
+    let expected_checksum = sha256(&bytes[..checksum_offset]);
+    if !constant_time_eq(expected_checksum.as_bytes(), &bytes[checksum_offset..]) {
+        return Err(StorageError::Integrity);
+    }
+    let transport = decode_ntcp2_transport_key(&bytes[44..checksum_offset])?;
+    Ok(Ntcp2TransportIdentityMaterial {
+        router_hash,
+        transport,
+    })
+}
+
 fn encode_ntcp2_transport_key(
     material: &TransportStaticKeyMaterial,
 ) -> Result<Zeroizing<Vec<u8>>, StorageError> {
@@ -1461,6 +1656,12 @@ mod tests {
         Ssu2TransportIdentityStore::in_data_dir(&data_dir)
     }
 
+    fn ntcp2_store(directory: &tempfile::TempDir) -> Ntcp2TransportIdentityStore {
+        let data_dir = directory.path().join("ntcp2-state");
+        IdentityStore::prepare_directory(&data_dir).expect("private state directory");
+        Ntcp2TransportIdentityStore::in_data_dir(&data_dir)
+    }
+
     fn write_fixture(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).expect("write fixture");
         #[cfg(unix)]
@@ -1486,6 +1687,37 @@ mod tests {
             loaded.encryption_key().secret_bytes(),
             original.encryption_key().secret_bytes()
         );
+    }
+
+    #[test]
+    fn ntcp2_identity_store_binds_restart_material_to_router_hash() {
+        let directory = tempdir().expect("directory");
+        let store = ntcp2_store(&directory);
+        let router = bundle(144);
+        let router_hash = *router.identity().hash().expect("router hash").as_bytes();
+        let mut rng = ChaCha8Rng::seed_from_u64(145);
+        let original = store
+            .load_or_generate(router_hash, &mut rng)
+            .expect("generate bound NTCP2 material");
+        let public = original.transport().key().public_bytes();
+        let iv = *original.transport().iv();
+
+        let restarted = store
+            .load_or_generate(router_hash, &mut rng)
+            .expect("load bound NTCP2 material");
+        assert_eq!(restarted.router_hash(), &router_hash);
+        assert_eq!(restarted.transport().key().public_bytes(), public);
+        assert_eq!(restarted.transport().iv(), &iv);
+
+        let wrong_hash = *bundle(146)
+            .identity()
+            .hash()
+            .expect("different router hash")
+            .as_bytes();
+        assert!(matches!(
+            store.load(wrong_hash),
+            Err(StorageError::Integrity)
+        ));
     }
 
     #[test]

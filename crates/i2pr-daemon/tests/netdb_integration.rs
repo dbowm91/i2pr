@@ -66,8 +66,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
         transport: i2pr_daemon::config::TransportConfig {
             ntcp2: Ntcp2Config {
                 enabled: false,
-                qualification_profile:
-                    i2pr_daemon::config::Ntcp2QualificationProfile::Disabled,
+                qualification_profile: i2pr_daemon::config::Ntcp2QualificationProfile::Disabled,
                 bind_address: "127.0.0.1".parse().unwrap(),
                 listen_port: 0,
                 connect_timeout: std::time::Duration::from_millis(1000),

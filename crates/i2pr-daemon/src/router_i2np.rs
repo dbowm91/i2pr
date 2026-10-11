@@ -52,7 +52,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
-use i2pr_netdb::controlled_router_options;
+use i2pr_netdb::{CONTROLLED_ROUTER_VERSION, controlled_router_options};
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
     SHORT_BUILD_RECORD_SIZE,
@@ -63,7 +63,7 @@ use i2pr_runtime::{
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
     Ssu2ServiceHandle, Ssu2SocketConfig, constants,
 };
-use i2pr_storage::Ssu2TransportIdentityMaterial;
+use i2pr_storage::{Ntcp2TransportIdentityMaterial, Ssu2TransportIdentityMaterial};
 use i2pr_transport::{EncodedI2npMessage, LinkId, MAX_I2NP_MESSAGE_BYTES, PeerId};
 use thiserror::Error;
 
@@ -1006,6 +1006,83 @@ pub fn generate_controlled_identity_with_keys(
     generate_identity_with_keys(bundle, host, port, transport, false)
 }
 
+/// Builds a fresh, signed NTCP2 RouterInfo for the explicit loopback profile.
+///
+/// The persisted static key must already be bound to the supplied RouterIdentity.
+/// This RouterInfo is local handshake material only; callers must not publish it.
+pub fn generate_controlled_ntcp2_router_info(
+    bundle: &RouterIdentityBundle,
+    host: std::net::IpAddr,
+    port: u16,
+    network_id: u16,
+    transport: &Ntcp2TransportIdentityMaterial,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    if !host.is_loopback() || port < 1024 {
+        return Err(Ssu2ServiceError::ControlledProfile(
+            "NTCP2 controlled profile requires a loopback endpoint and fixed port".to_owned(),
+        ));
+    }
+    let network_id = u8::try_from(network_id).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if transport.router_hash() != hash.as_bytes() {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    let static_key = transport.transport().key();
+    let options = Mapping::from_entries(vec![
+        ("host".to_owned(), host.to_string()),
+        ("port".to_owned(), port.to_string()),
+        ("v".to_owned(), "2".to_owned()),
+        ("s".to_owned(), i2p_b64_encode(&static_key.public_bytes())),
+        ("i".to_owned(), i2p_b64_encode(transport.transport().iv())),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let address = RouterAddress::new(
+        10,
+        Date::from_millis(wall_secs().saturating_add(86_400).saturating_mul(1000)),
+        "NTCP2".to_owned(),
+        options,
+    )
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let router_options = Mapping::from_entries(vec![
+        (
+            "router.version".to_owned(),
+            CONTROLLED_ROUTER_VERSION.to_owned(),
+        ),
+        ("netId".to_owned(), network_id.to_string()),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let info = bundle
+        .sign_router_info(
+            Date::from_millis(wall_secs().saturating_mul(1000)),
+            vec![address],
+            Vec::new(),
+            router_options,
+        )
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let encoded = info
+        .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let decoded =
+        i2pr_proto::RouterInfo::decode(&encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    i2pr_crypto::verify_router_info(&decoded).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let published_address = decoded
+        .addresses()
+        .iter()
+        .find(|candidate| candidate.transport_style() == "NTCP2")
+        .ok_or(Ssu2ServiceError::InvalidIdentity)?;
+    if published_address.options().get("host") != Some(host.to_string().as_str())
+        || published_address.options().get("port") != Some(port.to_string().as_str())
+        || published_address.options().get("v") != Some("2")
+    {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    Ok(encoded)
+}
+
 pub(crate) fn generate_private_lan_identity_with_keys(
     bundle: &RouterIdentityBundle,
     host: &str,
@@ -1627,6 +1704,70 @@ mod tests {
         let material =
             generate_controlled_identity(&bundle, "127.0.0.1", 44001).expect("controlled");
         assert!(!material.router_info.is_empty());
+    }
+
+    #[test]
+    fn ntcp2_router_info_is_fresh_signed_loopback_and_identity_bound() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
+        use rand_core::OsRng;
+        use tempfile::tempdir;
+
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let router_hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let directory = tempdir().expect("temporary data directory");
+        let data_dir = directory.path().join("router-data");
+        IdentityStore::prepare_directory(&data_dir).expect("private directory");
+        let store = Ntcp2TransportIdentityStore::in_data_dir(&data_dir);
+        let transport = store
+            .load_or_generate(router_hash, &mut OsRng)
+            .expect("identity-bound transport material");
+
+        let encoded = generate_controlled_ntcp2_router_info(
+            &bundle,
+            "127.0.0.1".parse().expect("loopback literal"),
+            44_321,
+            2,
+            &transport,
+        )
+        .expect("signed local NTCP2 RouterInfo");
+        let router_info = i2pr_proto::RouterInfo::decode(
+            &encoded,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .expect("RouterInfo decodes");
+        i2pr_crypto::verify_router_info(&router_info).expect("RouterInfo signature");
+        assert_eq!(
+            router_info
+                .router_identity()
+                .hash()
+                .expect("signed router hash"),
+            bundle.identity().hash().expect("router hash")
+        );
+        let address = router_info
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "NTCP2")
+            .expect("one NTCP2 address");
+        assert_eq!(address.options().get("host"), Some("127.0.0.1"));
+        assert_eq!(address.options().get("port"), Some("44321"));
+        assert_eq!(address.options().get("v"), Some("2"));
+        assert_eq!(
+            router_info.options().get("netId"),
+            Some("2"),
+            "controlled address uses the active test network ID"
+        );
+
+        assert!(
+            generate_controlled_ntcp2_router_info(
+                &bundle,
+                "0.0.0.0".parse().expect("wildcard"),
+                44_321,
+                2,
+                &transport,
+            )
+            .is_err()
+        );
     }
 
     #[test]
