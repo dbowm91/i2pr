@@ -4917,7 +4917,7 @@ async fn provision_all_service_router_material(
                 outbound_reply_router: None,
                 originator_hash: Some(peer.local_hash),
             });
-            if let Some(inbound) = inbound {
+            let inbound_attempt_id = if let Some(inbound) = inbound {
                 let submission = coordinator
                     .submit_destination(
                         inbound,
@@ -4930,10 +4930,15 @@ async fn provision_all_service_router_material(
                         &mut rng,
                     )
                     .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-                if matches!(submission, SubmitResult::Rejected { .. }) {
-                    return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                match submission {
+                    SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
+                    SubmitResult::Rejected { .. } => {
+                        return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                    }
                 }
-            }
+            } else {
+                None
+            };
             // Wait for both installs.
             let mut installed_inbound = false;
             let mut local_receive_tunnel = None;
@@ -4971,9 +4976,10 @@ async fn provision_all_service_router_material(
                         matches!(
                             outcome,
                             BuildCoordinatorOutcome::InvalidReply {
+                                attempt_id,
                                 direction: BuildDirection::Inbound,
                                 ..
-                            }
+                            } if Some(*attempt_id) == inbound_attempt_id
                         )
                     })
                 {
@@ -5086,9 +5092,12 @@ async fn provision_all_service_router_material(
                     &mut rng,
                 )
                 .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-            if matches!(submission, SubmitResult::Rejected { .. }) {
-                return Err(ServiceProductError::OutboundBuildDeliveryRejected);
-            }
+            let outbound_attempt_id = match submission {
+                SubmitResult::Submitted { attempt_id, .. } => attempt_id,
+                SubmitResult::Rejected { .. } => {
+                    return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                }
+            };
             let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
             let mut binding = None;
             while binding.is_none() && tokio::time::Instant::now() < install_deadline {
@@ -5108,21 +5117,21 @@ async fn provision_all_service_router_material(
                 };
                 let matching_build_reply = matches!(
                     &routed.dispatcher,
-                    RouterI2npOutcome::TunnelBuildReserved {
-                        kind: RouterI2npKind::ShortTunnelBuild,
-                        message_id: routed_message_id,
+                    RouterI2npOutcome::Unsupported {
+                        type_byte: 19,
                         peer,
                         ..
-                    } if *routed_message_id == message_id && Some(*peer) == outbound_reply_peer
+                    } if Some(*peer) == outbound_reply_peer
                 );
                 if matching_build_reply
                     && routed.coordinator.iter().any(|outcome| {
                         matches!(
                             outcome,
                             BuildCoordinatorOutcome::InvalidReply {
+                                attempt_id,
                                 direction: BuildDirection::Outbound,
                                 ..
-                            }
+                            } if *attempt_id == outbound_attempt_id
                         )
                     })
                 {

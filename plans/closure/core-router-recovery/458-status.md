@@ -73,6 +73,25 @@ to the inbound timeout. No matching terminal invalid-reply event was observed
 in these runs, so the new correlation checks did not identify the remaining
 cause. No more Plan 458 attempts were made after this exact source correction.
 
+## 2026-10-11 exact-attempt reply correlation
+
+Further inspection found that an outbound short-build reply is carried inside
+an I2NP `TunnelGateway` (type 19), and the coordinator can reject its decoded
+inner reply after authenticating the selected peer and matching the pending
+tunnel. The activation path previously recognized direct short-build invalid
+replies but could miss this wrapped invalid-reply outcome. Invalid-reply
+outcomes now retain their `BuildAttemptId`; inbound and outbound activation
+match that exact attempt, and the outbound path recognizes the type-19 gateway
+response from the selected terminal peer. This avoids attributing an unrelated
+concurrent destination's reply to the SAM session.
+
+The single bounded pinned-peer rerun after this source correction still
+stopped at `failure_stage=outbound-build` before SAM stream setup. No matching
+attempt-scoped invalid-reply event was surfaced, so the type-19 path did not
+localize the unresolved build installation failure. The scratch topology was
+cleaned. No further run is justified without a distinct source-level cause;
+Plan 458 remains blocked and no Plan 455 stock-to-i2pr delivery is established.
+
 The fixed stage mapping test, the 9-case real-process lifecycle suite, daemon
 Clippy, service-tunnel boundary checker, and planning unittest suite passed
 locally. The full workspace floor then completed against the final source
@@ -131,6 +150,12 @@ All results below are local Linux evidence, not CI results.
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after submit-result and strict-reply source corrections | Blocked before stream setup; the SAM client observed the generic `destination-registry` category before registration and summary failures received separate labels. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after registration/summary stage separation | Blocked before stream setup at `failure_stage=outbound-build`. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after exact outbound invalid-reply correlation | Blocked before stream setup at `failure_stage=inbound-build`; no matching invalid reply was correlated. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after type-19 gateway and exact-attempt invalid-reply correlation | Blocked before stream setup at `failure_stage=outbound-build`; no matching attempt-scoped invalid reply was observed. |
+| `rtk cargo test --locked -p i2pr-daemon --test exploratory_build_unit -- --test-threads=1` | Passed, 15 tests, after attempt IDs were added to invalid-reply outcomes. |
+| `rtk cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed after exact-attempt correlation. |
+| `rtk cargo fmt --all --check` | Passed after exact-attempt correlation. |
+| `rtk bash scripts/check-service-tunnel-boundaries.sh` | Passed after exact-attempt correlation. |
+| `rtk python3 -m unittest discover -s tests/planning -p 'test_*.py'` | Passed, 51 tests; expected missing-workflow warning emitted by test fixture. |
 | `rtk cargo test --locked -p i2pr-daemon --lib router_network_sam_failure_stage_tests -- --test-threads=1` | Passed after the bounded stage additions. |
 | `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1` | Passed: 9 tests after the SAM failure mapping change. |
 | `rtk cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed after the corrective changes. |

@@ -421,6 +421,8 @@ pub enum BuildCoordinatorOutcome {
     /// not reach Established. The coordinator never weakens the
     /// decoder.
     InvalidReply {
+        /// Attempt whose authenticated reply failed validation.
+        attempt_id: BuildAttemptId,
         /// Direction that failed.
         direction: BuildDirection,
         /// Short reason from the state machine.
@@ -1149,7 +1151,11 @@ impl ExploratoryBuildCoordinator {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
                 let direction = self.pending.get(&attempt_id).map(|p| p.direction);
                 if let Some(direction) = direction {
-                    return vec![BuildCoordinatorOutcome::InvalidReply { direction, reason }];
+                    return vec![BuildCoordinatorOutcome::InvalidReply {
+                        attempt_id,
+                        direction,
+                        reason,
+                    }];
                 }
                 return Vec::new();
             }
@@ -1194,7 +1200,11 @@ impl ExploratoryBuildCoordinator {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
                 let direction = self.pending.get(&attempt_id).map(|p| p.direction);
                 if let Some(direction) = direction {
-                    return vec![BuildCoordinatorOutcome::InvalidReply { direction, reason }];
+                    return vec![BuildCoordinatorOutcome::InvalidReply {
+                        attempt_id,
+                        direction,
+                        reason,
+                    }];
                 }
                 return Vec::new();
             }
@@ -1264,6 +1274,7 @@ impl ExploratoryBuildCoordinator {
                 let direction = self.pending.get(&attempt_id).map(|p| p.direction);
                 if let Some(direction) = direction {
                     return vec![BuildCoordinatorOutcome::InvalidReply {
+                        attempt_id,
                         direction,
                         reason: "garlic build-reply unwrap failed",
                     }];
@@ -1311,6 +1322,7 @@ impl ExploratoryBuildCoordinator {
                     destination_id,
                     direction,
                     vec![BuildCoordinatorOutcome::InvalidReply {
+                        attempt_id,
                         direction,
                         reason: "state machine did not reach terminal",
                     }],
@@ -1322,6 +1334,7 @@ impl ExploratoryBuildCoordinator {
                     destination_id,
                     direction,
                     vec![BuildCoordinatorOutcome::InvalidReply {
+                        attempt_id,
                         direction,
                         reason: "state machine rejected the reply",
                     }],
@@ -1352,6 +1365,7 @@ impl ExploratoryBuildCoordinator {
                         self.counters.invalid_replies =
                             self.counters.invalid_replies.saturating_add(1);
                         return vec![BuildCoordinatorOutcome::InvalidReply {
+                            attempt_id: pending.attempt_id,
                             direction: pending.direction,
                             reason: "established material could not be extracted",
                         }];
@@ -1388,6 +1402,7 @@ impl ExploratoryBuildCoordinator {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
                 self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::InvalidReply {
+                    attempt_id: pending.attempt_id,
                     direction: pending.direction,
                     reason: "multi-record reply rejected",
                 }]
@@ -1396,6 +1411,7 @@ impl ExploratoryBuildCoordinator {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
                 self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::InvalidReply {
+                    attempt_id: pending.attempt_id,
                     direction: pending.direction,
                     reason: "cryptography primitive failed",
                 }]
@@ -1570,7 +1586,7 @@ impl ExploratoryBuildCoordinator {
             ShortBuildOutcome::Cancelled => BuildCoordinatorOutcome::Cancelled {
                 direction: pending.direction,
             },
-            other => map_terminal(other, pending.direction),
+            other => map_terminal(other, pending.direction, pending.attempt_id),
         };
         scope_destination_terminal(pending.destination_id, pending.direction, vec![terminal]).pop()
     }
@@ -1774,7 +1790,11 @@ fn map_construction_error(error: ShortBuildConstructionError) -> BuildCoordinato
     }
 }
 
-fn map_terminal(outcome: ShortBuildOutcome, direction: BuildDirection) -> BuildCoordinatorOutcome {
+fn map_terminal(
+    outcome: ShortBuildOutcome,
+    direction: BuildDirection,
+    attempt_id: BuildAttemptId,
+) -> BuildCoordinatorOutcome {
     match outcome {
         ShortBuildOutcome::Established { .. } => BuildCoordinatorOutcome::InvalidRegistration {
             direction,
@@ -1791,10 +1811,12 @@ fn map_terminal(outcome: ShortBuildOutcome, direction: BuildDirection) -> BuildC
         ShortBuildOutcome::TimedOut => BuildCoordinatorOutcome::TimedOut { direction },
         ShortBuildOutcome::Cancelled => BuildCoordinatorOutcome::Cancelled { direction },
         ShortBuildOutcome::InvalidReply => BuildCoordinatorOutcome::InvalidReply {
+            attempt_id,
             direction,
             reason: "multi-record reply rejected",
         },
         ShortBuildOutcome::CryptoFailed => BuildCoordinatorOutcome::InvalidReply {
+            attempt_id,
             direction,
             reason: "cryptography primitive failed",
         },
