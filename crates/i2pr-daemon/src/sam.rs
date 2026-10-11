@@ -915,6 +915,9 @@ impl SamServiceState {
             .ok()
             .and_then(|manager| manager.as_ref().map(Arc::clone))
             .ok_or(SessionCreateError::RouterNetworkProductUnavailable)?;
+        if !manager.router_network_sam_factory_ready() {
+            return Err(SessionCreateError::RouterNetworkProductUnavailable);
+        }
         let SessionCreateExecution {
             session_id,
             style,
