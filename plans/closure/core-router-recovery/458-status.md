@@ -92,6 +92,12 @@ localize the unresolved build installation failure. The scratch topology was
 cleaned. No further run is justified without a distinct source-level cause;
 Plan 458 remains blocked and no Plan 455 stock-to-i2pr delivery is established.
 
+A deterministic coordinator regression now feeds a malformed Garlic payload
+inside a type-19 gateway from the selected terminal peer and verifies that the
+result is `InvalidReply` for the exact pending `BuildAttemptId`. This validates
+the new correlation contract without claiming that the external run emitted
+that reply.
+
 The fixed stage mapping test, the 9-case real-process lifecycle suite, daemon
 Clippy, service-tunnel boundary checker, and planning unittest suite passed
 locally. The full workspace floor then completed against the final source
@@ -152,6 +158,7 @@ All results below are local Linux evidence, not CI results.
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after exact outbound invalid-reply correlation | Blocked before stream setup at `failure_stage=inbound-build`; no matching invalid reply was correlated. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after type-19 gateway and exact-attempt invalid-reply correlation | Blocked before stream setup at `failure_stage=outbound-build`; no matching attempt-scoped invalid reply was observed. |
 | `rtk cargo test --locked -p i2pr-daemon --test exploratory_build_unit -- --test-threads=1` | Passed, 15 tests, after attempt IDs were added to invalid-reply outcomes. |
+| `rtk cargo test --locked -p i2pr-daemon --lib wrapped_outbound_invalid_reply_keeps_its_exact_attempt_id -- --test-threads=1` | Passed: malformed type-19 Garlic reply produced an invalid-reply outcome scoped to its exact attempt. |
 | `rtk cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed after exact-attempt correlation. |
 | `rtk cargo fmt --all --check` | Passed after exact-attempt correlation. |
 | `rtk bash scripts/check-service-tunnel-boundaries.sh` | Passed after exact-attempt correlation. |
