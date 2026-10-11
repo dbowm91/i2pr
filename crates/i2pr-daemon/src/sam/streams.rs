@@ -649,9 +649,11 @@ impl SamDestinationBridge {
     /// material used by the co-owned delivery seam. Router-network bridges
     /// stay out of that route and use the shared daemon product owner.
     fn has_local_product_material(&self) -> bool {
-        self.lease_set2.is_some()
-            && self.outbound_role.is_some()
-            && self.inbound_tunnel_factory.is_some()
+        // `bridge_to_peer` receives the peer's inbound tunnel from the
+        // caller, so this co-owned delivery seam needs only the sender's
+        // signed LeaseSet2 and outbound role. The runtime driver separately
+        // requires an inbound factory when it provisions repeated deliveries.
+        self.lease_set2.is_some() && self.outbound_role.is_some()
     }
 
     /// Plan 210 §E — runs the canonical

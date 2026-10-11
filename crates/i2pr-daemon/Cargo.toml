@@ -78,5 +78,9 @@ path = "src/main.rs"
 name = "sam_loopback_listener"
 path = "examples/sam_loopback_listener.rs"
 
+[[example]]
+name = "plan458_export_router_info"
+path = "examples/plan458_export_router_info.rs"
+
 [lints]
 workspace = true

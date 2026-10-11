@@ -29,6 +29,22 @@ Streaming lane passes at its service-group/in-process scope and is not evidence
 for SAM-created destinations. Plan 458 is therefore blocked rather than
 passed.
 
+A bounded ordinary-process attempt used four locally seeded, exact-pinned
+i2pd 2.61.0 floodfill peers with independently signed family identities, then
+started the regular `i2pr run` and connected an external SAM client. Router
+startup and the SAM listener succeeded, but SAM `SESSION CREATE` returned a
+non-success router-product provisioning result. The stream exchange never
+started, so this run supplies no request/reply or nonzero-hop evidence. Its
+scratch roots and child processes were cleaned; no raw reference logs or
+identities were retained.
+
+The workspace floor initially exposed a regression in the separate local
+co-owned test fabric: its delivery guard required an inbound-tunnel factory
+even though `bridge_to_peer` receives the tunnel directly. The guard now checks
+only the signed LeaseSet2 and outbound role required by that API; router-only
+bridges still have neither and remain excluded. The exact Plan 144 full
+handshake regression test passes after this correction.
+
 ## Requirement-to-evidence matrix
 
 | Requirement | Evidence / result |
@@ -52,17 +68,26 @@ All results below are local Linux evidence, not CI results.
 | `rtk cargo test --locked -p i2pr-daemon router_network_sam --lib -- --test-threads=1` | Passed, 6 tests. |
 | `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1` | Passed, 9 tests. |
 | `rtk cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1` | Passed, 4 tests. |
+| `rtk cargo test --locked -p i2pr-daemon --test sam_stream_independent plan144_full_handshake_reaches_bidirectional_established -- --exact --test-threads=1` | Passed after correcting the local delivery material guard. |
 | `rtk cargo test --locked -p i2pr-daemon --test i2pcontrol_shared_service_manager -- --test-threads=1` | Passed, 6 tests. |
 | `rtk cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed. |
+| `rtk cargo test --locked --workspace --all-targets -- --test-threads=1` | Passed, 4,821 tests; 39 ignored across 187 suites (1,068.53s). |
+| `rtk cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Passed. |
+| `RUSTDOCFLAGS="-D warnings" rtk cargo doc --locked --workspace --no-deps` | Passed; 33 crates documented. |
+| `rtk cargo test --locked --workspace --doc` | Passed, 29 suites. |
 | `rtk bash scripts/check-service-tunnel-boundaries.sh` | Passed. |
 | `rtk bash tests/integration/m6-interop/run-preflight.sh` | Passed previously; lower-layer control only. |
 | `rtk bash tests/integration/m6-interop/run-netdb.sh` | Passed previously; lower-layer control only. |
 | `rtk bash tests/integration/m6-interop/run-streaming.sh` | Passed previously at Plan 193 service-group scope; not SAM destination composition evidence. |
+| `python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked: four pinned local peers and ordinary `i2pr run` reached external SAM `SESSION CREATE`, which returned a router-product provisioning failure before any stream exchange. |
 
-The initial full lifecycle rerun exposed a stale “product unavailable” assertion
-for the SAM-only configuration. The final run passed after adding the explicit
-activation-owner readiness check. The normal-process positive remote exchange
-and the rest of the repository routine floor were not run for this closure.
+The full workspace floor initially exposed a local co-owned SAM delivery test
+regression: `plan144_full_handshake_reaches_bidirectional_established` failed
+because the guard required an inbound-tunnel factory that this direct API does
+not use. After narrowing the guard to the signed LeaseSet2 and outbound role,
+the test passed on its own and the full workspace test suite passed. The
+ordinary-process positive remote SAM exchange remains blocked at session
+provisioning.
 
 ## Compatibility and security
 
