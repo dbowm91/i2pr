@@ -86,11 +86,12 @@ use crate::encrypted_service_resolver::{
 };
 use crate::exploratory_build::{
     BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
-    PeerBuildMaterial,
+    PeerBuildMaterial, SubmitResult,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
-    Ssu2DaemonHandle, Ssu2DaemonService, generate_controlled_identity, verify_reference_router_info,
+    RouterI2npKind, RouterI2npOutcome, Ssu2DaemonHandle, Ssu2DaemonService,
+    generate_controlled_identity, verify_reference_router_info,
 };
 use crate::sam::streams::RouterNetworkSummary;
 use crate::service_delivery::{
@@ -692,12 +693,24 @@ pub enum ServiceProductError {
     /// A terminal failure was returned for a deferred outbound build.
     #[error("outbound exploratory build was rejected")]
     OutboundBuildRejected,
+    /// The initial outbound build could not enter the router delivery queue.
+    #[error("outbound exploratory build delivery was rejected")]
+    OutboundBuildDeliveryRejected,
     /// The inbound exploratory build never installed.
     #[error("inbound exploratory build never installed")]
     InboundBuildMissing,
     /// A terminal failure was returned for a deferred inbound build.
     #[error("inbound exploratory build was rejected")]
     InboundBuildRejected,
+    /// The initial inbound build could not enter the router delivery queue.
+    #[error("inbound exploratory build delivery was rejected")]
+    InboundBuildDeliveryRejected,
+    /// The matching inbound build reply failed strict decoding or validation.
+    #[error("inbound exploratory build reply was invalid")]
+    InboundBuildInvalidReply,
+    /// The matching outbound build reply failed strict decoding or validation.
+    #[error("outbound exploratory build reply was invalid")]
+    OutboundBuildInvalidReply,
     /// The reference LeaseSet2 never resolved through the lookup.
     #[error("reference LeaseSet2 never resolved within the bounded wait")]
     LookupTimeout,
@@ -740,11 +753,23 @@ fn router_network_sam_failure_stage(
         ServiceProductError::InboundBuildRejected => {
             RouterNetworkSamProvisioningFailure::InboundBuildRejected
         }
+        ServiceProductError::InboundBuildDeliveryRejected => {
+            RouterNetworkSamProvisioningFailure::InboundBuildDeliveryRejected
+        }
+        ServiceProductError::InboundBuildInvalidReply => {
+            RouterNetworkSamProvisioningFailure::InboundBuildInvalidReply
+        }
+        ServiceProductError::OutboundBuildInvalidReply => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildInvalidReply
+        }
         ServiceProductError::OutboundBuildMissing => {
             RouterNetworkSamProvisioningFailure::OutboundBuild
         }
         ServiceProductError::OutboundBuildRejected => {
             RouterNetworkSamProvisioningFailure::OutboundBuildRejected
+        }
+        ServiceProductError::OutboundBuildDeliveryRejected => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildDeliveryRejected
         }
         ServiceProductError::LookupTimeout => RouterNetworkSamProvisioningFailure::NetDbLookup,
         ServiceProductError::Dial(_) => RouterNetworkSamProvisioningFailure::PeerDial,
@@ -774,6 +799,18 @@ mod router_network_sam_failure_stage_tests {
     #[test]
     fn stage_labels_are_bounded_and_do_not_echo_provisioning_details() {
         assert_eq!(
+            Failure::DestinationRegistration.label(),
+            "destination-registration"
+        );
+        assert_eq!(
+            Failure::DestinationSummaryMissing.label(),
+            "destination-summary-missing"
+        );
+        assert_eq!(
+            Failure::DestinationSummaryIncomplete.label(),
+            "destination-summary-incomplete"
+        );
+        assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::InboundBuildMissing),
             Failure::InboundBuild
         );
@@ -782,12 +819,28 @@ mod router_network_sam_failure_stage_tests {
             Failure::InboundBuildRejected
         );
         assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildDeliveryRejected),
+            Failure::InboundBuildDeliveryRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildInvalidReply),
+            Failure::InboundBuildInvalidReply
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildInvalidReply),
+            Failure::OutboundBuildInvalidReply
+        );
+        assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::OutboundBuildMissing),
             Failure::OutboundBuild
         );
         assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::OutboundBuildRejected),
             Failure::OutboundBuildRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildDeliveryRejected),
+            Failure::OutboundBuildDeliveryRejected
         );
         assert_eq!(
             router_network_sam_failure_stage(&ServiceProductError::Provisioning(
@@ -4830,6 +4883,10 @@ async fn provision_all_service_router_material(
             let inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?;
+            let outbound_reply_peer = outbound_peers
+                .as_ref()
+                .and_then(|peers| peers.last())
+                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
             let mut outbound = outbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
                 direction: BuildDirection::Outbound,
@@ -4840,8 +4897,17 @@ async fn provision_all_service_router_material(
                 originator_hash: None,
             });
             if let Some(outbound) = outbound.take() {
-                pending_outbound.push((outbound, outbound_bridge, message_base | 0x01));
+                pending_outbound.push((
+                    outbound,
+                    outbound_bridge,
+                    message_base | 0x01,
+                    outbound_reply_peer,
+                ));
             }
+            let inbound_reply_peer = inbound_peers
+                .as_ref()
+                .and_then(|peers| peers.last())
+                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
             let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
                 direction: BuildDirection::Inbound,
@@ -4852,7 +4918,7 @@ async fn provision_all_service_router_material(
                 originator_hash: Some(peer.local_hash),
             });
             if let Some(inbound) = inbound {
-                coordinator
+                let submission = coordinator
                     .submit_destination(
                         inbound,
                         &delivery,
@@ -4864,6 +4930,9 @@ async fn provision_all_service_router_material(
                         &mut rng,
                     )
                     .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+                if matches!(submission, SubmitResult::Rejected { .. }) {
+                    return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                }
             }
             // Wait for both installs.
             let mut installed_inbound = false;
@@ -4887,6 +4956,29 @@ async fn provision_all_service_router_material(
                 let Ok(routed) = routed else {
                     continue;
                 };
+                let matching_build_reply = matches!(
+                    &routed.dispatcher,
+                    RouterI2npOutcome::TunnelBuildReserved {
+                        kind: RouterI2npKind::ShortTunnelBuild,
+                        message_id,
+                        peer,
+                        ..
+                    } if *message_id == (message_base | 0x02)
+                        && Some(*peer) == inbound_reply_peer
+                );
+                if matching_build_reply
+                    && routed.coordinator.iter().any(|outcome| {
+                        matches!(
+                            outcome,
+                            BuildCoordinatorOutcome::InvalidReply {
+                                direction: BuildDirection::Inbound,
+                                ..
+                            }
+                        )
+                    })
+                {
+                    return Err(ServiceProductError::InboundBuildInvalidReply);
+                }
                 for outcome in routed.coordinator {
                     if matches!(
                         &outcome,
@@ -4976,13 +5068,13 @@ async fn provision_all_service_router_material(
                 "startup cancelled before outbound pool start".to_owned(),
             ));
         }
-        for (outbound, bridge, message_id) in pending_outbound {
+        for (outbound, bridge, message_id, outbound_reply_peer) in pending_outbound {
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
                     "operating-system randomness unavailable".to_owned(),
                 )
             })?;
-            coordinator
+            let submission = coordinator
                 .submit_destination(
                     outbound,
                     &delivery,
@@ -4994,6 +5086,9 @@ async fn provision_all_service_router_material(
                     &mut rng,
                 )
                 .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            if matches!(submission, SubmitResult::Rejected { .. }) {
+                return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+            }
             let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
             let mut binding = None;
             while binding.is_none() && tokio::time::Instant::now() < install_deadline {
@@ -5011,6 +5106,28 @@ async fn provision_all_service_router_material(
                 let Ok(routed) = routed else {
                     continue;
                 };
+                let matching_build_reply = matches!(
+                    &routed.dispatcher,
+                    RouterI2npOutcome::TunnelBuildReserved {
+                        kind: RouterI2npKind::ShortTunnelBuild,
+                        message_id: routed_message_id,
+                        peer,
+                        ..
+                    } if *routed_message_id == message_id && Some(*peer) == outbound_reply_peer
+                );
+                if matching_build_reply
+                    && routed.coordinator.iter().any(|outcome| {
+                        matches!(
+                            outcome,
+                            BuildCoordinatorOutcome::InvalidReply {
+                                direction: BuildDirection::Outbound,
+                                ..
+                            }
+                        )
+                    })
+                {
+                    return Err(ServiceProductError::OutboundBuildInvalidReply);
+                }
                 for outcome in routed.coordinator {
                     if matches!(
                         &outcome,

@@ -34,11 +34,13 @@ source-level stage attribution.
 Gate C, the stock-to-i2pr direction, and the bounded negative matrix remain
 open. The adjacent Plan 458 ordinary-process attempt reaches i2pr's SAM
 listener but its router product rejects `SESSION CREATE` before a stream can
-start. Follow-up bounded attempts moved between the inbound and outbound
-build stages (`failure_stage=inbound-build` / `outbound-build`) without
-identifying why one direction fails to install. Plan 455 remains blocked at
-the first missing event: a stock-owned request successfully delivered to an
-i2pr NTCP2 responder.
+start. Plan 458's source correction now detects rejected build submissions and
+correlates exact-peer/message-ID invalid replies. Its latest bounded run still
+stopped at `failure_stage=inbound-build`; the preceding corrected run stopped
+at `outbound-build`, and neither reached a stream. These are product tunnel
+provisioning results, not NTCP2 delivery observations. Plan 455 remains blocked
+at the first missing event: a stock-owned request successfully delivered to
+an i2pr NTCP2 responder.
 
 Plan 455 therefore remains blocked; this result is not a protocol failure and
 does not qualify daemon activation, stock peer selection, or bidirectional

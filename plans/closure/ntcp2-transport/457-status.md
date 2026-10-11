@@ -16,7 +16,7 @@ Plan 457 requires both real-process directions, decoded/correlated I2NP, simulta
 | --- | --- |
 | Plan 456 guarded normal-daemon source/lifecycle | Passed; see [`456-status.md`](456-status.md). |
 | i2pr initiator to stock peer, authenticated decoded I2NP with correlated response | Plan 455 Gate A receive is established by the stock NetDb marker; a correlated reply is not part of the one-way probe. |
-| Stock initiator to normal daemon | Blocked; the stock-only SAM workload passes, but bounded Plan 458 attempts fail before stream setup at inbound or outbound tunnel provisioning, so no stock-to-i2pr stream/delivery was demonstrated. |
+| Stock initiator to normal daemon | Blocked; the stock-only SAM workload passes, but corrected Plan 458 attempts still stop before stream setup at `inbound-build` or `outbound-build`, so no stock-to-i2pr stream/delivery was demonstrated. |
 | Concurrent NTCP2 and SSU2 use by one real daemon and per-family failure continuity | Not run; no qualified real-peer workload exists for the required observation. |
 | Negative, contention, restart, and orphan-task matrix under real peer load | Not run at this scope; local lifecycle and runtime controls remain covered by Plan 456 and the full workspace tests. |
 | Public/two-family Plan 435 qualification | Out of scope and not established. |
@@ -43,7 +43,7 @@ The daemon remains default-off for NTCP2 outside the named loopback qualificatio
 - Medium blocker: no stock-to-i2pr I2NP delivery, correlated reverse data, or dual-family continuity; Plan 455 Gates A/B have independent evidence.
 - Plan 455 is not a protocol-failure finding and remains blocked with its sender-side evidence retained.
 - Plan 456 is closed at its stated controlled source/lifecycle scope.
-- Plan 458 is independent; its bounded SAM product composition is implemented, but its ordinary-process SAM provisioning attempt remains blocked before stream exchange.
+- Plan 458's exact-peer/message-ID invalid-reply checks and rejected-submission handling are implemented, but its latest ordinary-process attempt remains blocked at `inbound-build` before stream exchange. This is product tunnel evidence, not NTCP2 delivery or dual-family evidence.
 - Plans 434/435/452 remain unchanged; this closure makes no public/two-family qualification claim.
 
 Disposition: **blocked** pending Plan 455 stock-to-i2pr delivery and Plan 457's dual-family/failure-continuity gates. The stock-owned workload control is retained; resume at the router-backed destination provisioning boundary.

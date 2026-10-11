@@ -71,6 +71,41 @@ def field(line, key):
     return line.split(needle, 1)[1].split(" ", 1)[0]
 
 
+def session_create_failure_category(message):
+    match = re.search(
+        r"router-backed SAM destination provisioning failed at ([a-z0-9-]+)",
+        message,
+    )
+    if match:
+        return match.group(1)
+    static_prefixes = (
+        ("destination runtime construction failed:", "destination-runtime-construction"),
+        ("destination registry capacity ", "destination-registry-capacity"),
+        ("destination registry command queue full", "destination-registry-queue-full"),
+        ("destination registry mutex poisoned", "destination-registry-poisoned"),
+        ("duplicate destination", "duplicate-destination"),
+        ("I2P error", "i2p-error"),
+    )
+    for prefix, category in static_prefixes:
+        if message.startswith(prefix):
+            return category
+    destination_match = re.match(r"destination ([a-z0-9]+)", message)
+    if destination_match:
+        destination_categories = {
+            "identity",
+            "pool",
+            "registry",
+            "runtime",
+            "session",
+            "tunnel",
+        }
+        second = destination_match.group(1)
+        if second in destination_categories:
+            return f"destination-{second}"
+        return "destination-error"
+    return "unclassified"
+
+
 def create_session(endpoint, session_id, timeout):
     sam = SamSocket(endpoint, timeout)
     sam.hello()
@@ -87,13 +122,11 @@ def create_session(endpoint, session_id, timeout):
     created = sam.line()
     if not created.startswith("SESSION STATUS RESULT=OK"):
         sam.close()
-        stage = re.search(
-            r"router-backed SAM destination provisioning failed at ([a-z0-9-]+)",
-            created,
-        )
-        bounded_stage = f" failure_stage={stage.group(1)}" if stage else ""
+        message = re.search(r'MESSAGE="([^"\\]*)', created)
+        category = session_create_failure_category(message.group(1) if message else "")
         raise RuntimeError(
-            f"SAM SESSION CREATE failed: {created.split(' ', 4)[:4]}{bounded_stage}"
+            "SAM SESSION CREATE failed: status=I2P_ERROR "
+            f"failure_category={category}"
         )
     sam.send_line("NAMING LOOKUP NAME=ME")
     named = sam.line()

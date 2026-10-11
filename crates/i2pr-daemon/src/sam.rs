@@ -959,7 +959,9 @@ impl SamServiceState {
             .is_err()
         {
             self.session_registry.rollback_reservation(&reservation);
-            return Err(SessionCreateError::I2pError);
+            return Err(SessionCreateError::RouterNetworkDestinationProvisioningFailed {
+                stage: crate::service_tunnels::RouterNetworkSamProvisioningFailure::DestinationRegistration.label(),
+            });
         }
         if let Err(failure) = manager
             .ensure_router_network_sam_destination_active(destination_id, &cancellation, 120_000)
@@ -976,7 +978,9 @@ impl SamServiceState {
         let Some(summary) = manager.service_router_network_summary(destination_id) else {
             let _ = manager.unregister_router_network_sam_destination(destination_id);
             self.session_registry.rollback_reservation(&reservation);
-            return Err(SessionCreateError::I2pError);
+            return Err(SessionCreateError::RouterNetworkDestinationProvisioningFailed {
+                stage: crate::service_tunnels::RouterNetworkSamProvisioningFailure::DestinationSummaryMissing.label(),
+            });
         };
         if summary.inbound_receive_count == 0
             || summary.lease_count == 0
@@ -984,7 +988,9 @@ impl SamServiceState {
         {
             let _ = manager.unregister_router_network_sam_destination(destination_id);
             self.session_registry.rollback_reservation(&reservation);
-            return Err(SessionCreateError::I2pError);
+            return Err(SessionCreateError::RouterNetworkDestinationProvisioningFailed {
+                stage: crate::service_tunnels::RouterNetworkSamProvisioningFailure::DestinationSummaryIncomplete.label(),
+            });
         }
 
         let runtime = match DestinationRuntime::with_shared_identity(

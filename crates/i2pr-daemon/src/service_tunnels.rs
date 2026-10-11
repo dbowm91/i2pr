@@ -656,6 +656,9 @@ pub(crate) struct DeferredActivationRequest {
 /// they never carry destination ids or formatted lower-level errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RouterNetworkSamProvisioningFailure {
+    DestinationRegistration,
+    DestinationSummaryMissing,
+    DestinationSummaryIncomplete,
     DestinationUnavailable,
     ProductOwnerUnavailable,
     ActivationCancelled,
@@ -664,8 +667,12 @@ pub(crate) enum RouterNetworkSamProvisioningFailure {
     DestinationPeerSelection,
     InboundBuild,
     InboundBuildRejected,
+    InboundBuildDeliveryRejected,
+    InboundBuildInvalidReply,
+    OutboundBuildInvalidReply,
     OutboundBuild,
     OutboundBuildRejected,
+    OutboundBuildDeliveryRejected,
     NetDbLookup,
     PeerDial,
     PeerSession,
@@ -680,6 +687,9 @@ pub(crate) enum RouterNetworkSamProvisioningFailure {
 impl RouterNetworkSamProvisioningFailure {
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::DestinationRegistration => "destination-registration",
+            Self::DestinationSummaryMissing => "destination-summary-missing",
+            Self::DestinationSummaryIncomplete => "destination-summary-incomplete",
             Self::DestinationUnavailable => "destination-unavailable",
             Self::ProductOwnerUnavailable => "product-owner-unavailable",
             Self::ActivationCancelled => "activation-cancelled",
@@ -688,8 +698,12 @@ impl RouterNetworkSamProvisioningFailure {
             Self::DestinationPeerSelection => "destination-peer-selection",
             Self::InboundBuild => "inbound-build",
             Self::InboundBuildRejected => "inbound-build-rejected",
+            Self::InboundBuildDeliveryRejected => "inbound-build-delivery-rejected",
+            Self::InboundBuildInvalidReply => "inbound-build-invalid-reply",
+            Self::OutboundBuildInvalidReply => "outbound-build-invalid-reply",
             Self::OutboundBuild => "outbound-build",
             Self::OutboundBuildRejected => "outbound-build-rejected",
+            Self::OutboundBuildDeliveryRejected => "outbound-build-delivery-rejected",
             Self::NetDbLookup => "netdb-lookup",
             Self::PeerDial => "peer-dial",
             Self::PeerSession => "peer-session",

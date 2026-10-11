@@ -52,6 +52,37 @@ the SAM response or are retained. Plan 458 remains blocked pending a source
 correction for the intermittent build completion and a successful nonzero-hop
 bidirectional exchange.
 
+## 2026-10-11 bounded corrective continuation
+
+Source inspection found the activation path discarded the initial build
+submission result, so a rejected delivery could wait until the install
+deadline. It also ignored a matching strict-decode `InvalidReply` in both
+inbound and outbound activation loops. The path now returns immediately for a
+rejected submission and correlates invalid replies by the selected terminal
+peer, short-build kind, and exact message ID. SAM still reports only fixed
+failure labels and retains the same rollback behavior. Registration and
+post-activation summary failures now have separate fixed labels from the
+generic SAM catch-all.
+
+A bounded ordinary-process rerun after those changes stopped at
+`failure_stage=inbound-build`, before either SAM STREAM exchange began. An
+intermediate run stopped at `failure_stage=outbound-build`; another surfaced
+the previous generic `destination-registry` category before the registration
+and summary branches were separated. The exact-stage rerun again alternated
+to the inbound timeout. No matching terminal invalid-reply event was observed
+in these runs, so the new correlation checks did not identify the remaining
+cause. No more Plan 458 attempts were made after this exact source correction.
+
+The fixed stage mapping test, the 9-case real-process lifecycle suite, daemon
+Clippy, service-tunnel boundary checker, and planning unittest suite passed
+locally. The full workspace floor then completed against the final source
+change: 4,822 tests passed and 39 were ignored across 187 suites, with
+workspace Clippy, documentation, doc tests, and all listed planning,
+dependency, boundary, evidence, vector, workflow, and license checks passing.
+Plan 458 remains blocked: no nonzero-hop request/reply stream or exact-byte
+exchange was completed, and the reason a selected tunnel build does not
+install remains unresolved.
+
 The workspace floor initially exposed a regression in the separate local
 co-owned test fabric: its delivery guard required an inbound-tunnel factory
 even though `bridge_to_peer` receives the tunnel directly. The guard now checks
@@ -97,6 +128,15 @@ All results below are local Linux evidence, not CI results.
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` | Blocked before stream setup; corrected ordinary-process result was `failure_stage=inbound-build`. The runner's scratch peers and process were cleaned. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after terminal build-failure handling | Blocked before stream setup at `failure_stage=outbound-build`; both inbound builds had completed on this attempt. |
 | `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after matching outbound handling | Blocked before stream setup at `failure_stage=inbound-build`; no matching inbound build installed before its deadline. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after submit-result and strict-reply source corrections | Blocked before stream setup; the SAM client observed the generic `destination-registry` category before registration and summary failures received separate labels. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after registration/summary stage separation | Blocked before stream setup at `failure_stage=outbound-build`. |
+| `rtk python3 tests/integration/core-router-recovery/run_plan458_sam_product.py` after exact outbound invalid-reply correlation | Blocked before stream setup at `failure_stage=inbound-build`; no matching invalid reply was correlated. |
+| `rtk cargo test --locked -p i2pr-daemon --lib router_network_sam_failure_stage_tests -- --test-threads=1` | Passed after the bounded stage additions. |
+| `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1` | Passed: 9 tests after the SAM failure mapping change. |
+| `rtk cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed after the corrective changes. |
+| `rtk bash scripts/check-service-tunnel-boundaries.sh` | Passed after the corrective changes. |
+| `rtk python3 -m unittest discover -s tests/planning -p 'test_*.py'` | Passed: 51 tests; expected temp-repo missing-workflow warning emitted by its workflow validity fixture. |
+| `rtk cargo fmt --all --check`; `rtk cargo check --locked --workspace --all-targets`; sibling app build; workspace test/Clippy/doc/doc-test commands and all remaining `AGENTS.md` floor checkers | Passed on the final corrective source: 4,822 workspace tests passed, 39 ignored across 187 suites; all remaining commands exited successfully. |
 
 The full workspace floor initially exposed a local co-owned SAM delivery test
 regression: `plan144_full_handshake_reaches_bidirectional_established` failed
