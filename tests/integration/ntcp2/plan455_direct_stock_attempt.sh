@@ -127,7 +127,7 @@ write_deadline_ms = 30000
 queue_deadline_ms = 5000
 drain_deadline_ms = 5000
 padding_profile = "representative"
-smoke_message_profile = "delivery-status"
+smoke_message_profile = "router-info-database-store"
 expected_result_class = "authenticated-handshake-and-directional-data-phase"
 status_path = "status.jsonl"
 delivery_status_message_id = 4550101
@@ -151,6 +151,7 @@ python3 - "${scratch}/initiator.status" "${scratch}/stock.log" "${initiator_exit
 import json
 import pathlib
 import sys
+import time
 
 status_path, log_path, exit_code = sys.argv[1:]
 records = []
@@ -163,17 +164,32 @@ for line in pathlib.Path(status_path).read_text(errors="replace").splitlines():
         records.append(row)
 terminal = next((row for row in reversed(records) if row.get("phase") == "terminal"), {})
 counters = terminal.get("counters", {})
-log_lines = pathlib.Path(log_path).read_text(errors="replace").splitlines()
+log_file = pathlib.Path(log_path)
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    log_lines = log_file.read_text(errors="replace").splitlines()
+    if any("Database store with own RouterInfo received, dropped" in line for line in log_lines):
+        break
+    time.sleep(0.1)
 receiver_markers = sum(
     1 for line in log_lines
     if "DeliveryStatus" in line or "Delivery status" in line
+)
+database_store_markers = sum(
+    1 for line in log_lines
+    if "Database store with own RouterInfo received, dropped" in line
 )
 print(f"plan455_initiator_exit={exit_code}")
 print(f"plan455_authenticated_sessions={counters.get('authenticated', 0)}")
 print(f"plan455_i2np_messages_sent={counters.get('i2np_sent', 0)}")
 print(f"plan455_stock_delivery_status_log_markers={receiver_markers}")
-if exit_code != 0 or counters.get("authenticated") != 1 or counters.get("i2np_sent") != 1:
+print(f"plan455_stock_database_store_self_drop_markers={database_store_markers}")
+if (
+    int(exit_code) != 0
+    or int(counters.get("authenticated", 0)) != 1
+    or int(counters.get("i2np_sent", 0)) != 1
+):
     raise SystemExit(2)
-if receiver_markers == 0:
+if database_store_markers == 0:
     raise SystemExit(3)
 PY

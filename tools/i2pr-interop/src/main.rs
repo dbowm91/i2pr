@@ -16,6 +16,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -23,7 +25,8 @@ use i2pr_crypto::{
     OsRng, RouterIdentityBundle, TransportStaticKey, X25519PrivateKey, router_identity_hash,
 };
 use i2pr_proto::{
-    Date, DeliveryStatusMessage, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, Mapping,
+    DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, DeliveryStatusMessage, Hash,
+    I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE, Mapping,
     RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
@@ -42,7 +45,7 @@ use i2pr_transport_ntcp2::handshake::{ClockSkewPolicy, HandshakeError};
 use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 use i2pr_transport_ntcp2::{Ntcp2Endpoint, Ntcp2RouterAddress};
 
-use crate::scenario::{DataPhaseMode, Role, Scenario, TopologyKind};
+use crate::scenario::{DataPhaseMode, Role, Scenario, SmokeMessageProfile, TopologyKind};
 use crate::status::{
     StatusCounters, StatusPhase, StatusReason, StatusResult, StatusWriter, emit_stdout_status,
 };
@@ -212,6 +215,7 @@ struct LocalState {
 }
 
 struct PeerState {
+    router_info: Vec<u8>,
     router_hash: Hash,
     static_public: PublicKeyBytes,
     obfuscation_iv: [u8; 16],
@@ -774,7 +778,10 @@ async fn execute_responder(
         deadlines,
         counters,
         scenario.data_phase_mode,
+        scenario.smoke_message_profile,
         scenario.delivery_status_message_id,
+        &[],
+        Hash::from_bytes([0; 32]),
         &scenario.expected_sender_router_hash_sha256,
         &scenario.expected_receiver_router_hash_sha256,
     )
@@ -1109,7 +1116,10 @@ async fn execute_initiator(
         deadlines,
         counters,
         scenario.data_phase_mode,
+        scenario.smoke_message_profile,
         scenario.delivery_status_message_id,
+        &peer.router_info,
+        peer.router_hash,
         &scenario.expected_sender_router_hash_sha256,
         &scenario.expected_receiver_router_hash_sha256,
     )
@@ -1130,7 +1140,10 @@ async fn exchange_directional(
     deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
     mode: DataPhaseMode,
+    profile: SmokeMessageProfile,
     delivery_status_message_id: u32,
+    peer_router_info: &[u8],
+    peer_router_hash: Hash,
     expected_sender_router_hash_sha256: &str,
     expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
@@ -1143,6 +1156,9 @@ async fn exchange_directional(
                 deadlines,
                 counters,
                 delivery_status_message_id,
+                profile,
+                peer_router_info,
+                peer_router_hash,
                 expected_sender_router_hash_sha256,
                 expected_receiver_router_hash_sha256,
             )
@@ -1177,12 +1193,16 @@ async fn exchange_directional(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_i2np_block(
     link: &mut i2pr_runtime::AuthenticatedLink,
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
     message_id: u32,
+    profile: SmokeMessageProfile,
+    peer_router_info: &[u8],
+    peer_router_hash: Hash,
     _expected_sender_router_hash_sha256: &str,
     expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
@@ -1193,14 +1213,13 @@ async fn send_i2np_block(
     if message_id == 0 {
         return Err(LauncherError::SenderDeliveryStatusMessageIdZero);
     }
-    let seconds = unix_seconds();
-    let message = I2npMessage::new_short_transport(
+    let message = build_smoke_message(
+        profile,
         message_id,
-        seconds,
-        I2npBody::DeliveryStatus(DeliveryStatusMessage::new(
-            message_id,
-            Date::from_millis(unix_millis()),
-        )),
+        unix_seconds(),
+        unix_millis(),
+        peer_router_info,
+        peer_router_hash,
     )
     .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
     // Plan 065: re-decode the constructed message and verify the
@@ -1215,12 +1234,14 @@ async fn send_i2np_block(
         MAX_I2NP_MESSAGE_BYTES,
     )
     .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
-    if decoded.header().message_id() != Some(message_id)
-        || match decoded.body() {
-            I2npBody::DeliveryStatus(inner) => inner.message_id != message_id,
-            _ => true,
+    let body_matches = match (profile, decoded.body()) {
+        (SmokeMessageProfile::RouterInfoDatabaseStore, I2npBody::DatabaseStore(store)) => {
+            store.key == peer_router_hash && store.reply_token == 0
         }
-    {
+        (_, I2npBody::DeliveryStatus(inner)) => inner.message_id == message_id,
+        _ => false,
+    };
+    if decoded.header().message_id() != Some(message_id) || !body_matches {
         return Err(LauncherError::SenderDeliveryStatusConstructionFailed);
     }
     let block = I2npMessageBlock::from_bytes(
@@ -1244,6 +1265,22 @@ async fn send_i2np_block(
     )
     .await
     .map_err(|_| LauncherError::SenderFrameWriteFailed)?;
+    let write_deadline = tokio::time::Instant::now() + deadlines.write;
+    loop {
+        let snapshot = link.snapshot();
+        if snapshot.written_frames >= 1 {
+            break;
+        }
+        if snapshot.closed {
+            return Err(LauncherError::SenderFrameWriteFailed);
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(LauncherError::SenderCancellationObserved),
+            _ = tokio::time::sleep_until(write_deadline) => return Err(LauncherError::SenderFrameWriteFailed),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
     counters.frames_sent = 1;
     counters.i2np_sent = 1;
     // Plan 065: record the bounded message_id and the expected peer
@@ -1253,6 +1290,51 @@ async fn send_i2np_block(
     counters.delivery_status_message_id = message_id;
     counters.expected_peer_router_hash_sha256 = expected_receiver_router_hash_sha256.to_owned();
     Ok(())
+}
+
+fn build_smoke_message(
+    profile: SmokeMessageProfile,
+    message_id: u32,
+    expiration_seconds: u32,
+    timestamp_ms: u64,
+    peer_router_info: &[u8],
+    peer_router_hash: Hash,
+) -> Result<I2npMessage, i2pr_proto::CodecError> {
+    let body = match profile {
+        SmokeMessageProfile::RouterInfoDatabaseStore => {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(peer_router_info).map_err(|_| {
+                i2pr_proto::CodecError::InvalidFieldValue {
+                    offset: 0,
+                    context: "DatabaseStore RouterInfo compression",
+                }
+            })?;
+            let compressed =
+                encoder
+                    .finish()
+                    .map_err(|_| i2pr_proto::CodecError::InvalidFieldValue {
+                        offset: 0,
+                        context: "DatabaseStore RouterInfo compression",
+                    })?;
+            I2npBody::DatabaseStore(Box::new(DatabaseStoreMessage {
+                key: peer_router_hash,
+                reply_token: 0,
+                reply_tunnel_id: None,
+                reply_gateway: None,
+                data: DatabaseStoreData::RouterInfoCompressed(DeferredPayload::new(
+                    compressed,
+                    MAX_I2NP_PAYLOAD_SIZE,
+                )?),
+            }))
+        }
+        SmokeMessageProfile::DeliveryStatus | SmokeMessageProfile::Fixed12BytePayload => {
+            I2npBody::DeliveryStatus(DeliveryStatusMessage::new(
+                message_id,
+                Date::from_millis(timestamp_ms),
+            ))
+        }
+    };
+    I2npMessage::new_short_transport(message_id, expiration_seconds, body)
 }
 
 /// Plan 093: bounded correlated send-block entry point. The
@@ -1276,6 +1358,9 @@ pub(crate) async fn correlated_send_block(
         deadlines,
         counters,
         delivery_status_message_id,
+        SmokeMessageProfile::DeliveryStatus,
+        &[],
+        Hash::from_bytes([0; 32]),
         expected_sender_router_hash_sha256,
         expected_receiver_router_hash_sha256,
     )
@@ -1520,6 +1605,7 @@ fn prepare_peer_state(scenario: &Scenario) -> Result<PeerState, LauncherError> {
     let router_hash = router_identity_hash(info.router_identity())
         .map_err(|_| LauncherError::PeerRouterInfoInvalid)?;
     Ok(PeerState {
+        router_info: bytes,
         router_hash,
         static_public: target.expected_static_public_key(),
         obfuscation_iv: *target.obfuscation_iv().as_bytes(),
@@ -2004,7 +2090,41 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn router_info_database_store_probe_round_trips_compressed_target_record() {
+        let router_info = b"bounded public router info fixture";
+        let router_hash = Hash::from_bytes([0x5a; 32]);
+        let message = build_smoke_message(
+            SmokeMessageProfile::RouterInfoDatabaseStore,
+            4550101,
+            2_000_000_000,
+            2_000_000_000_000,
+            router_info,
+            router_hash,
+        )
+        .expect("DatabaseStore probe message");
+        let bytes = message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .expect("short transport encoding");
+        let decoded = I2npMessage::decode_short_transport(&bytes, MAX_I2NP_MESSAGE_BYTES)
+            .expect("strict short transport decode");
+        assert_eq!(decoded.header().message_id(), Some(4550101));
+        let I2npBody::DatabaseStore(store) = decoded.body() else {
+            panic!("expected DatabaseStore body");
+        };
+        assert_eq!(store.key, router_hash);
+        assert_eq!(store.reply_token, 0);
+        let DatabaseStoreData::RouterInfoCompressed(payload) = &store.data else {
+            panic!("expected compressed RouterInfo payload");
+        };
+        let mut decoder = flate2::read::GzDecoder::new(payload.as_bytes());
+        let mut restored = Vec::new();
+        decoder.read_to_end(&mut restored).expect("gzip decode");
+        assert_eq!(restored, router_info);
+    }
 
     fn test_scenario(root: &Path) -> Scenario {
         Scenario::parse_str(

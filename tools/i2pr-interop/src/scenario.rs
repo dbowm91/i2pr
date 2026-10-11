@@ -75,6 +75,7 @@ pub enum PaddingProfile {
 pub enum SmokeMessageProfile {
     DeliveryStatus,
     Fixed12BytePayload,
+    RouterInfoDatabaseStore,
 }
 
 /// Plan 045 directional data-phase selector. The four allowlisted values map
@@ -388,6 +389,7 @@ impl Scenario {
         let smoke_message_profile = match raw.smoke_message_profile.as_str() {
             "delivery-status" => SmokeMessageProfile::DeliveryStatus,
             "fixed-12-byte-payload" => SmokeMessageProfile::Fixed12BytePayload,
+            "router-info-database-store" => SmokeMessageProfile::RouterInfoDatabaseStore,
             _ => return Err(ScenarioError::InvalidSmokeMessageProfile),
         };
         let expected_result_class = match raw.expected_result_class.as_str() {
@@ -419,6 +421,13 @@ impl Scenario {
             "round-trip-delivery-status" => DataPhaseMode::RoundTripDeliveryStatus,
             _ => return Err(ScenarioError::InvalidDataPhaseMode),
         };
+        if (smoke_message_profile == SmokeMessageProfile::RouterInfoDatabaseStore
+            && (role != Role::Initiator || data_phase_mode != DataPhaseMode::InitiatorDataOnly))
+            || (data_phase_mode == DataPhaseMode::RoundTripDeliveryStatus
+                && smoke_message_profile != SmokeMessageProfile::DeliveryStatus)
+        {
+            return Err(ScenarioError::InvalidSmokeMessageProfile);
+        }
         let data_phase_required_peer_action = match raw
             .data_phase_required_peer_action
             .as_deref()
@@ -847,6 +856,34 @@ run_identity_sha256 = "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacef
             SmokeMessageProfile::Fixed12BytePayload
         );
         assert_eq!(scenario.delivery_status_message_id, 42);
+    }
+
+    #[test]
+    fn database_store_probe_is_limited_to_one_way_i2pr_initiation() {
+        let input = VALID
+            .replace(
+                "smoke_message_profile = \"delivery-status\"",
+                "smoke_message_profile = \"router-info-database-store\"",
+            )
+            .replace(
+                "deterministic_seed = 1",
+                "data_phase_mode = \"initiator-data-only\"\ndeterministic_seed = 1",
+            );
+        let scenario = Scenario::parse_str(&input, &std::env::temp_dir())
+            .expect("bounded DatabaseStore probe scenario");
+        assert_eq!(
+            scenario.smoke_message_profile,
+            SmokeMessageProfile::RouterInfoDatabaseStore
+        );
+
+        let invalid = input.replace(
+            "data_phase_mode = \"initiator-data-only\"",
+            "data_phase_mode = \"round-trip-delivery-status\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&invalid, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidSmokeMessageProfile)
+        );
     }
 
     #[test]

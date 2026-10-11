@@ -1,21 +1,21 @@
-# Plan 457 status: blocked — Plan 455 stock receipt and send trigger remain unavailable
+# Plan 457 status: blocked — Plan 455 stock-owned send and reverse direction remain unavailable
 
-Closure token: `blocked-plan455-stock-i2np-receipt-and-trigger`
+Closure token: `blocked-plan455-stock-owned-workload-and-reverse-direction`
 
 Plan: [`457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md`](../../implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md)
 
 ## Outcome
 
-Plan 456's controlled normal-daemon NTCP2 source/lifecycle pass is complete. Plan 455 remains blocked: one i2pr-initiated NTCP2 session authenticated and sent one I2NP DeliveryStatus, but the pinned stock i2pd process exposed no decoded receipt marker or correlated reply. No legitimate stock-owned send trigger was available, and the reverse stock-to-i2pr direction was not run.
+Plan 456's controlled normal-daemon NTCP2 source/lifecycle pass is complete. Plan 455 Gate A now passes: one i2pr-initiated NTCP2 session sent a compressed I2NP DatabaseStore, and the pinned stock i2pd NetDb worker logged its own-RouterInfo drop after decoding it. Plan 455 remains blocked because no legitimate stock-owned send trigger or reverse stock-to-i2pr direction has been demonstrated.
 
-Plan 457 requires both real-process directions, decoded/correlated I2NP, simultaneous single-router NTCP2/SSU2 use, and each family continuing after the other is stopped. The missing independent stock receipt and stock-owned trigger prevent the required real peer evidence. Those prerequisites are environmental/evidentiary, not evidence of a transport protocol failure. No source change or weakened test was made to manufacture the missing traffic.
+Plan 457 requires both real-process directions, decoded/correlated I2NP, simultaneous single-router NTCP2/SSU2 use, and each family continuing after the other is stopped. Gate A resolves stock receipt in the i2pr-to-stock direction, but the missing stock-owned trigger and reverse direction still prevent the required bidirectional real-peer evidence. Those prerequisites are environmental/evidentiary, not evidence of a transport protocol failure. No source change or weakened test was made to manufacture the missing traffic.
 
 ## Requirement disposition
 
 | Requirement | Result |
 | --- | --- |
 | Plan 456 guarded normal-daemon source/lifecycle | Passed; see [`456-status.md`](456-status.md). |
-| i2pr initiator to stock peer, authenticated decoded I2NP with correlated response | Blocked by Plan 455: sender-side authentication and send exist, independent stock receipt/reply does not. |
+| i2pr initiator to stock peer, authenticated decoded I2NP with correlated response | Plan 455 Gate A receive is established by the stock NetDb marker; a correlated reply is not part of the one-way probe. |
 | Stock initiator to normal daemon | Blocked; no stock-owned send trigger/selected peer was demonstrated. |
 | Concurrent NTCP2 and SSU2 use by one real daemon and per-family failure continuity | Not run; no qualified real-peer workload exists for the required observation. |
 | Negative, contention, restart, and orphan-task matrix under real peer load | Not run at this scope; local lifecycle and runtime controls remain covered by Plan 456 and the full workspace tests. |
@@ -25,9 +25,12 @@ Plan 457 requires both real-process directions, decoded/correlated I2NP, simulta
 
 | Command | Outcome |
 | --- | --- |
-| `rtk cargo test --locked --workspace --all-targets -- --test-threads=1` | Passed: 4,805 passed, 39 ignored across 186 suites (1,245.32s). This validates repository regressions, not missing peer interoperability. |
-| `rtk bash tests/integration/ntcp2/plan455_direct_stock_attempt.sh` | Prior executed Plan 455 result: initiator exit 0, one authenticated session, one I2NP send, zero stock DeliveryStatus receipt markers; Gate A remains incomplete. |
-| `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1` | Passed, 7 local real-process lifecycle cases; does not substitute for independent stock-peer traffic. |
+| `rtk cargo test --locked --workspace --all-targets -- --test-threads=1` | Passed: 4,821 passed, 39 ignored across 187 suites (1,068.53s). This validates repository regressions, not missing peer interoperability. |
+| `rtk bash tests/integration/ntcp2/plan455_direct_stock_attempt.sh` | Gate A passed: initiator exit 0, one authenticated session, one I2NP send, and one stock DatabaseStore self-drop marker. |
+| `rtk cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Passed. |
+| `RUSTDOCFLAGS="-D warnings" rtk cargo doc --locked --workspace --no-deps` | Passed. |
+| `rtk cargo test --locked --workspace --doc` | Passed, 29 suites. |
+| `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1` | Passed previously, 7 local real-process lifecycle cases; does not substitute for independent stock-peer traffic. |
 
 ## Security and compatibility
 
@@ -36,10 +39,10 @@ The daemon remains default-off for NTCP2 outside the named loopback qualificatio
 ## Findings and unblock audit
 
 - Critical/high findings: none.
-- Medium blocker: no stock-side decoded receipt/correlated reply and no stock-owned outbound trigger; exact first missing observation remains the one recorded by Plan 455.
+- Medium blocker: no stock-owned outbound trigger/selected-peer dial or stock-to-i2pr direction; Plan 455 Gate A decoded receipt is now established.
 - Plan 455 is not a protocol-failure finding and remains blocked with its sender-side evidence retained.
 - Plan 456 is closed at its stated controlled source/lifecycle scope.
-- Plan 458 is independent and ready to proceed as a separate SAM product-composition workstream.
+- Plan 458 is independent; its bounded SAM product composition is implemented, but its ordinary-process SAM provisioning attempt remains blocked before stream exchange.
 - Plans 434/435/452 remain unchanged; this closure makes no public/two-family qualification claim.
 
-Disposition: **blocked** pending the Plan 455 peer workload and receipt evidence. Resume only after a concrete eligible stock-owned send topology or a confirmed fixture correction is available.
+Disposition: **blocked** pending the Plan 455 stock-owned workload and reverse-direction evidence, followed by Plan 457's dual-family/failure-continuity gates. Resume when a concrete eligible stock-owned send topology is available.
