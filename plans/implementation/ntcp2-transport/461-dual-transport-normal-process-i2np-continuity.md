@@ -1,0 +1,22 @@
+# Plan 461 — Dual-family NTCP2/SSU2 normal-process I2NP continuity
+
+**State:** registered / **blocked on Plan 459 and Plan 460 actual peer receipt, P1** (2026-10-11). Owner: NTCP2 transport/core-router composition. Corrective to `plans/closure/ntcp2-transport/457-status.md`. Existing Plan 456 normal controlled NTCP2 source/lifecycle and Plan 454 shared governor passed. The Plan 458 SAM product tunnel-build blocker is **not a dependency**; Plan 435's full public/two-family qualification remains separate.
+
+## Problem
+
+Before Plan 459, daemon NTCP2 used independent background outbound attempts over a captured bootstrap RouterInfo snapshot, received frames into `dispatch_router_i2np_parts` and discarded classification outcomes. A healthy NTCP2 socket was therefore not proof that the **ordinary daemon's** NetDB/tunnel/router I2NP workload could use NTCP2. The source gap must be closed before meaningful dual-transport assertions.
+
+**Capability:** same daemon, one signed router identity, NTCP2 and SSU2 authenticated links both deliver real product-owned router I2NP with bounded family failover. **Infrastructure:** request-driven validated RouterInfo selection, established link registry and durable health/backoff. **Invariant:** no second NetDB/socket owner, correct peer and family identity, shared Plan 454 wire budgets, default-off NTCP2 and no public claims. **Polish:** redacted per-family route/health summaries.
+
+## Work
+
+1. Trace `lib.rs::register_ntcp2_service`, `register_ssu2_service`, `service_product.rs`, `router_i2np.rs`, `ntcp2_link.rs`, common bootstrap/NetDB and router transport contracts. Make outbound real router I2NP requests consume **one** policy-driven authenticated transport chooser; opportunistic periodic NTCP2 dial may be retained only as health activity, never counted as a product send. Do not route on startup-cached RI after it expires or is revoked. Preserve bound, bounded, eligible peer and established session generation.
+2. Use a controlled normal-process pinned i2pd 2.61.0 fixture with **actual signed** (a) NTCP2-only, (b) SSU2-only and (c) dual-address candidate (if reference can legitimately provide it). Confirm a meaningful DatabaseStore/Lookup or other router-I2NP message reaches the same NetDB/tunnel product through each eligible family, then a real correlated response when type requires it. Record actual family and endpoint-admissible route selected—not inferred from a listening socket.
+3. Failure-continuity tests: deliberately stop **only** NTCP2 and verify subsequent router-I2NP over working SSU2; restart then stop **only** SSU2 and verify subsequent NTCP2 traffic still reaches the product. Validate route eligibility, bounded reselect/backoff, no stale/double sends or session alias, peer restart, no unbounded queue growth or loop. Never falsify stock RI to create a dual-transport advertisement or count a duplicate protocol stack as failover.
+4. Negative/fault matrix: malformed/stale RI, wrong network ID or router hash, static keys changed, expired address, wrong peer link generation, half-open TCP, SSU2 link dropout, cancelled in-flight send, shared governor saturation, disabled NTCP2, zero public capability, and resource return after repeated restarts. Use only source-authorized local topology (no root/netns/public I2P). Keep I2NP effect/receipt counters bounded and privacy-safe.
+
+## Tests and closure
+
+`cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd` before focused daemon tests; `cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1`; `cargo test --locked -p i2pr-runtime --all-targets -- --test-threads=1`; `cargo test --locked -p i2pr-transport-ntcp2 --all-targets`; `bash scripts/check-runtime-boundaries.sh`; `bash scripts/check-ntcp2-vectors.sh`; `bash scripts/check-ssu2-vectors.sh`; newly explicit real-process dual-family I2NP lane; full `AGENTS.md` floor. External lane fail-hard if explicitly invoked without pinned references.
+
+Pass `plans/closure/ntcp2-transport/461-status.md` only with executed **both transports sharing the normal daemon product**, each one-family fault survived by the other, validated peer/identity/bandwidth/retry boundaries and original default/public refusal. Evidence from a single family is *partial*, not a pass. Historical Plan 457 remains blocked until its full acceptance matrix is independently reconciled; Plan 435 still owns second-family Java/full normal/public qualification, and Plan 458 application-SAM tunnel build remains separately blocked.

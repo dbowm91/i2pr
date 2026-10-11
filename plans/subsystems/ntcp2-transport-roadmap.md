@@ -163,6 +163,17 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 456 | passed at controlled source/lifecycle scope | `passed-controlled-normal-daemon-ntcp2-owner-lifecycle` | `plans/implementation/ntcp2-transport/456-guarded-normal-daemon-ntcp2-service-owner.md` | `plans/closure/ntcp2-transport/456-status.md`: real loopback process owner, signed key/RI lifecycle, matching-peer authentication and restart; external/public qualification excluded |
 | 457 | blocked on 455 | `blocked-plan455-stock-to-i2pr-and-dual-family-continuity` | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | `plans/closure/ntcp2-transport/457-status.md`: Plan 456 and Plan 455 Gates A/B passed; stock-to-i2pr delivery and dual-family failure continuity remain unproven |
 
+### Plans 459–461: actual daemon NTCP2 product dispatch first (2026-10-11)
+
+**Critical source discovery:** `crates/i2pr-daemon/src/lib.rs::register_ntcp2_service` has **two** authenticated link receive loops that call `dispatch_router_i2np_parts(...)` and discard the returned typed outcome. `router_i2np.rs` only decodes/classifies; the live `ServiceProduct::poll_inbound` consumes SSU2 events. Successful Plan 456 NTCP2 handshake and Plan 455 **i2pr→stock** stock-decoded DatabaseStore do not close normal **stock→i2pr** NetDB/tunnel consumption.
+
+1. **[459](../implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md), ready P0:** remove the parse-only sink for initiated and responder links; route authenticated I2NP through a bounded transport-neutral shared NetDB/tunnel product with proper replies and admission while retaining SSU2 behavior.
+2. **[460](../implementation/ntcp2-transport/460-stock-to-i2pr-ntcp2-without-sam-destination.md), blocked until 459, P0-next:** use an actual normal stock-i2pd router request against a real `i2pr run` NTCP2 responder. Separate a stock reply on an i2pr-initiated link from a **new stock-initiated** connection. Neither direction requires the *i2pr client SAM destination* to build tunnels (Plan 458).
+3. **[461](../implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md), blocked until 459/460, P1:** explicit request-driven NTCP2/SSU2 router-I2NP selection and either-family failure continuity through the same product. Controlled one-family evidence does **not** replace Plan 435's external two-family/public admission.
+4. **[462](../implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md), independent P2:** actual tunnel installation problem remains separate from NTCP2 evidence.
+
+**Do not** claim a generic `dispatch_router_i2np_parts` classification is a live NetDB operation, or that an NTCP2 socket bound implies the normal router can route over it. No protocol or peer-support claim changes merely because these plans are registered. Preserve historical 455/456/457 closures and Plan 101 default-off/advertisement guard.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;
