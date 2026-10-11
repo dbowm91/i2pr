@@ -819,7 +819,7 @@ mod tests {
         assert!(!receiver_scope.shutdown().await.failed());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn authenticated_socket_budget_cancellation_releases_queue_across_restart() {
         let governor = BandwidthGovernor::new(crate::BandwidthGovernorConfig {
             inbound_bytes_per_second: 64 * 1024,
@@ -909,6 +909,7 @@ mod tests {
         assert_eq!(sender.snapshot().queued_items, 0);
         assert_eq!(sender.snapshot().queued_bytes, 0);
         receiver.close();
+        tokio::time::advance(Duration::from_secs(2)).await;
 
         // A fresh supervised link uses the same governor after owner restart.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
