@@ -210,7 +210,12 @@ fn plan143_local_seam_pump_drives_synthetic_streaming_packet() {
         let _ = outcome;
     });
     let ls2_a_validated = {
-        let bridge_ls2 = handle_a.with(|bridge| bridge.lease_set2().clone());
+        let bridge_ls2 = handle_a.with(|bridge| {
+            bridge
+                .lease_set2()
+                .expect("local fixture LeaseSet2")
+                .clone()
+        });
         i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
             bridge_ls2,
             Some(handle_a.with(|bridge| bridge.identity_netdb_key())),
@@ -219,7 +224,12 @@ fn plan143_local_seam_pump_drives_synthetic_streaming_packet() {
         .expect("validated ls2 a")
     };
     let ls2_b_validated = {
-        let bridge_ls2 = handle_b.with(|bridge| bridge.lease_set2().clone());
+        let bridge_ls2 = handle_b.with(|bridge| {
+            bridge
+                .lease_set2()
+                .expect("local fixture LeaseSet2")
+                .clone()
+        });
         i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
             bridge_ls2,
             Some(handle_b.with(|bridge| bridge.identity_netdb_key())),

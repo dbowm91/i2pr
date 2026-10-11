@@ -2281,8 +2281,16 @@ impl ServiceTunnelManager {
                 .expect("sam destinations poisoned")
                 .get(destination_id)
                 .expect("sender still registered");
-            let (peer_lease_set2, peer_identity_key) =
-                peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+            let Some((peer_lease_set2, peer_identity_key)) = peer.with(|bridge| {
+                bridge
+                    .lease_set2()
+                    .cloned()
+                    .map(|lease_set2| (lease_set2, bridge.identity_netdb_key()))
+            }) else {
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, request);
+                continue;
+            };
             let peer_lease_set2 = match ValidatedLeaseSet2::from_lease_set2(
                 peer_lease_set2,
                 Some(peer_identity_key),
@@ -2389,8 +2397,19 @@ impl ServiceTunnelManager {
             .expect("sam destinations poisoned")
             .get(destination_id)
             .expect("sender still registered");
-        let (peer_lease_set2, peer_identity_key) =
-            peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+        let Some((peer_lease_set2, peer_identity_key)) = peer.with(|bridge| {
+            bridge
+                .lease_set2()
+                .cloned()
+                .map(|lease_set2| (lease_set2, bridge.identity_netdb_key()))
+        }) else {
+            for (offset, request) in group.iter().enumerate() {
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, request);
+                handled[group_start + offset] = true;
+            }
+            return;
+        };
         let peer_lease_set2 = match ValidatedLeaseSet2::from_lease_set2(
             peer_lease_set2,
             Some(peer_identity_key),
@@ -9834,7 +9853,11 @@ mod plan212_router_backed_service_destination_tests {
         assert!(!manager.has_service_router_material(destination_id, test_now_ms()));
         // Local fabric material still exists on the bridge.
         let has_local = manager.with_destination_bridge(destination_id, |bridge| {
-            !bridge.lease_set2().leases().is_empty()
+            !bridge
+                .lease_set2()
+                .expect("local fixture bridge has a LeaseSet2")
+                .leases()
+                .is_empty()
         });
         assert_eq!(has_local, Some(true));
     }
