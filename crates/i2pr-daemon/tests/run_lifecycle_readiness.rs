@@ -726,6 +726,49 @@ fn run_binds_configured_listener_and_shuts_down_cleanly() {
 }
 
 #[test]
+fn router_network_sam_keeps_serving_without_claiming_product_readiness() {
+    let address = reserve_loopback_port();
+    let router = Router::new(|data_dir| sam_config(address, data_dir));
+    router.generate_identity();
+
+    let mut child = router.spawn();
+    let hello = await_sam_ready(&mut child);
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+
+    let mut client = TcpStream::connect_timeout(&router.sam_address, Duration::from_secs(2))
+        .expect("connect to the real SAM listener");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set SAM reply deadline");
+    client
+        .write_all(
+            b"HELLO VERSION MIN=3.1 MAX=3.1\nSESSION CREATE STYLE=STREAM ID=network DESTINATION=TRANSIENT\n",
+        )
+        .expect("send SAM CREATE in the default router-network mode");
+    let mut reader = BufReader::new(client);
+    let mut hello = String::new();
+    let mut session = String::new();
+    reader.read_line(&mut hello).expect("read SAM HELLO");
+    reader
+        .read_line(&mut session)
+        .expect("read SAM SESSION CREATE");
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+    assert!(
+        session.starts_with("SESSION STATUS RESULT=I2P_ERROR"),
+        "missing router product must refuse SESSION CREATE: {session:?}"
+    );
+    assert!(session.contains("router-backed SAM destination product is unavailable"));
+    drop(reader);
+
+    child.interrupt();
+    let (status, output) = child.finish();
+    assert!(
+        status.success(),
+        "router shutdown failed: {status}\n{output}"
+    );
+}
+
+#[test]
 fn controlled_ssu2_and_sam_survive_real_process_restart() {
     let address = reserve_loopback_port();
     let ssu2_port = reserve_loopback_udp_port();

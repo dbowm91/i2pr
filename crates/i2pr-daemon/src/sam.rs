@@ -290,6 +290,8 @@ pub struct SamServiceState {
     /// Local synthetic tunnel material is available only to explicit local
     /// service states used by bounded self-composition tests.
     session_product_mode: SamSessionProductMode,
+    sam_serving: std::sync::atomic::AtomicBool,
+    router_network_product_ready: std::sync::atomic::AtomicBool,
     max_supported_version: i2pr_api::sam::version::SamVersion,
     /// Bound loopback UDP bridge, installed by `bind` before service readiness.
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
@@ -400,6 +402,8 @@ impl SamServiceState {
         Ok(Self {
             config,
             session_product_mode,
+            sam_serving: std::sync::atomic::AtomicBool::new(false),
+            router_network_product_ready: std::sync::atomic::AtomicBool::new(false),
             max_supported_version,
             udp_socket: Mutex::new(None),
             connection_permits,
@@ -441,6 +445,25 @@ impl SamServiceState {
     /// Returns the validated SAM configuration.
     pub const fn config(&self) -> &SamConfig {
         &self.config
+    }
+
+    /// Whether the SAM listener has bound and entered its accept loop.
+    pub fn is_serving(&self) -> bool {
+        self.sam_serving.load(Ordering::Acquire)
+    }
+
+    /// Stable redacted label for the configured SAM session product mode.
+    pub const fn product_mode_name(&self) -> &'static str {
+        match self.session_product_mode {
+            SamSessionProductMode::LocalOnly => "local-only",
+            SamSessionProductMode::RouterNetwork => "router-network",
+        }
+    }
+
+    /// Whether the shared router-backed SAM destination product is attached.
+    /// Local-only mode is intentionally never reported as remotely ready.
+    pub fn router_network_product_ready(&self) -> bool {
+        self.router_network_product_ready.load(Ordering::Acquire)
     }
 
     /// Returns the SAM session registry handle.
@@ -1422,6 +1445,7 @@ impl SamServiceState {
             .local_addr()
             .map_err(|_| SamServiceError::InvalidConfig("listener had no local_addr".to_owned()))?;
         let udp_socket = self.bind_udp_socket(bind_address.ip()).await?;
+        self.sam_serving.store(true, Ordering::Release);
         let udp_address = udp_socket.local_addr().unwrap_or(bind_address);
         info!(
             address = %bind_address,
@@ -1498,6 +1522,7 @@ impl SamServiceState {
                 }
             }
         }
+        self.sam_serving.store(false, Ordering::Release);
         let _ = child_token.cancel(i2pr_core::CancellationReason::ParentScope);
         Ok(())
     }

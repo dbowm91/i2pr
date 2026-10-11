@@ -1008,7 +1008,11 @@ fn register_i2cp_service(
 pub fn build_shared_service_manager(
     config: &Config,
 ) -> Result<Option<Arc<crate::service_tunnels::ServiceTunnelManager>>, DaemonError> {
-    if !(config.i2pcontrol.enabled || (config.ssu2.enabled && service_tunnels_active(config))) {
+    if !(config.i2pcontrol.enabled
+        || (config.ssu2.enabled && service_tunnels_active(config))
+        || (config.sam.enabled
+            && config.sam_product_mode == crate::config::SamProductMode::RouterNetwork))
+    {
         return Ok(None);
     }
     let manager = crate::service_tunnels::ServiceTunnelManager::new(
@@ -1074,7 +1078,7 @@ pub fn build_outbound_secret_store(
     }
 }
 
-/// Whether the service-tunnel runtime must come up for this configuration.
+/// Whether the shared network product owner must come up for this configuration.
 ///
 /// Plan 337: the destination-group product owns the one shared
 /// `ServiceTunnelManager`, so it must exist whenever a service tunnel can
@@ -1083,9 +1087,12 @@ pub fn build_outbound_secret_store(
 /// none configured. Before Plan 337 the gate was "at least one startup
 /// tunnel is enabled", which meant a control-created tunnel had no product
 /// to be published through. I2PControl is disabled by default, so an
-/// ordinary profile is unaffected.
+/// ordinary profile is unaffected. Plan 458 also starts the shared owner
+/// for enabled router-network SAM, without eagerly creating service groups.
 fn service_tunnels_active(config: &Config) -> bool {
     config.i2pcontrol.enabled
+        || (config.sam.enabled
+            && config.sam_product_mode == crate::config::SamProductMode::RouterNetwork)
         || config
             .service_tunnels
             .tunnels

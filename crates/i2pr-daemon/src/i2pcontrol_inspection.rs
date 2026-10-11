@@ -1747,6 +1747,9 @@ fn sam_value(handles: &InspectionHandles) -> serde_json::Value {
     serde_json::json!({
         "enabled": handles.sam_endpoint.enabled,
         "bind": handles.sam_endpoint.bind.map(|address| address.to_string()),
+        "serving": live.as_ref().is_some_and(|state| state.is_serving()),
+        "product_mode": live.as_ref().map(|state| state.product_mode_name()),
+        "router_network_product_ready": live.as_ref().is_some_and(|state| state.router_network_product_ready()),
         "session_count": session_count,
         "sessions": sessions,
     })
@@ -2522,6 +2525,9 @@ mod tests {
             serde_json::json!({
                 "enabled": false,
                 "bind": null,
+                "serving": false,
+                "product_mode": null,
+                "router_network_product_ready": false,
                 "session_count": 0,
                 "sessions": [],
             })
@@ -2570,6 +2576,12 @@ mod tests {
         let value = client_service_result(ClientService::Sam, &handles);
         assert_eq!(value["enabled"], serde_json::json!(true));
         assert_eq!(value["bind"], serde_json::json!("127.0.0.1:7656"));
+        assert_eq!(value["serving"], serde_json::json!(false));
+        assert_eq!(value["product_mode"], serde_json::json!("local-only"));
+        assert_eq!(
+            value["router_network_product_ready"],
+            serde_json::json!(false)
+        );
         assert_eq!(value["session_count"], serde_json::json!(2));
         // Deterministic sorted order, no destination material, no sockets.
         assert_eq!(value["sessions"], serde_json::json!(["alpha", "beta"]));

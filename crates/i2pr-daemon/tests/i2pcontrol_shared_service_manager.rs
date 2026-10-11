@@ -123,6 +123,38 @@ fn plan337_a_control_only_router_still_gets_the_service_runtime() {
     );
 }
 
+/// Plan 458: normal SAM requires the same shared router product owner, even
+/// when no configured service-tunnel groups exist. Constructing the manager
+/// must not eagerly manufacture a service Destination.
+#[test]
+fn plan458_router_network_sam_owns_shared_manager_without_service_groups() {
+    let data = tempfile::tempdir().expect("temp data dir");
+    let config = Config::parse(&format!(
+        "schema_version = 1\n[router]\ndata_dir = {:?}\n[sam]\nenabled = true\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n",
+        data.path().to_string_lossy()
+    ))
+    .expect("router-network SAM profile");
+    assert_eq!(
+        config.sam_product_mode,
+        i2pr_daemon::config::SamProductMode::RouterNetwork
+    );
+    assert!(
+        !config
+            .service_tunnels
+            .tunnels
+            .tunnels
+            .iter()
+            .any(|tunnel| tunnel.enabled),
+        "the row must not depend on eager service groups"
+    );
+    assert!(
+        i2pr_daemon::build_shared_service_manager(&config)
+            .expect("build shared network owner")
+            .is_some(),
+        "normal SAM needs the same router-owned product manager"
+    );
+}
+
 /// Plan 337: the control plane must start **after** the SSU2 service.
 ///
 /// The graph's default order is lexical, and `i2pcontrol` sorts before
