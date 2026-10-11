@@ -1,6 +1,6 @@
 # Plan 459 — Live NTCP2 router-I2NP product dispatch and response ownership
 
-**State:** **active P0** (2026-10-11). Owner: NTCP2 transport + daemon composition. Baseline: `work/plans-455-458-ntcp2-first-unblock@a3173774b9037266eece08d84ec63dc0edd1f3d8`. Corrective to Plans 455/457 following Plan 456's scoped source/lifecycle pass. Plans 450, 454, 456 passed their bounded interface requirements. **No dependency** on Plan 458 SAM tunnel installation or a public/LAN network.
+**State:** **blocked P0** (2026-10-11). Closure: [`459-status.md`](../../closure/ntcp2-transport/459-status.md). Owner: NTCP2 transport + daemon composition. Baseline: `work/plans-455-458-ntcp2-first-unblock@a3173774b9037266eece08d84ec63dc0edd1f3d8`. Corrective to Plans 455/457 following Plan 456's scoped source/lifecycle pass. Plans 450, 454, 456 passed their bounded interface requirements. **No dependency** on Plan 458 SAM tunnel installation or a public/LAN network. Source handoff and responder-side RouterInfo effect are implemented; normal-daemon initiator-role product receipt and a correlated live reply remain open.
 
 ## Actual source gap
 

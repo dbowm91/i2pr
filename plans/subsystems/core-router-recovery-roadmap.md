@@ -201,8 +201,8 @@ Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build tim
 
 | Plan | State at registration | Handoff | Pass gate |
 | --- | --- | --- | --- |
-| 459 | active P0 | `plans/implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md` | NTCP2 inbound/outbound effects truly consumed in one owner, response where required, SSU2 regressions |
-| 460 | blocked on 459 P0-next | `plans/implementation/ntcp2-transport/460-stock-to-i2pr-ntcp2-without-sam-destination.md` | Real pinned stock I2NP arriving at live daemon plus distinct fresh stock-initiation and product receipt |
+| 459 | blocked P0 | `plans/implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md` | Shared bounded ingress and responder-side RouterInfo effect landed; daemon initiator-role receipt and correlated live reply remain open |
+| 460 | blocked P0-next | `plans/implementation/ntcp2-transport/460-stock-to-i2pr-ntcp2-without-sam-destination.md` | Pinned source lacks an eligible direct target for the controlled non-floodfill/non-transit i2pr role; useful tunnel-build trigger needs a live transit consumer |
 | 461 | blocked on 459/460 P1 | `plans/implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md` | Same normal daemon over both protocol families, request-driven routing and either-family failure survival |
 | 462 | ready P2 queued | `plans/implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md` | First proven source/fixture divergence fixed and external nonzero-hop SAM exchange, not another observer-only pass |
 

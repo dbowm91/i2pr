@@ -1,6 +1,6 @@
 # Plan 460 — Stock-to-i2pr NTCP2 interoperability independent of client SAM tunnels
 
-**State:** registered / **blocked on Plan 459 live ingress source handoff, P0 next** (2026-10-11). Owner: NTCP2 interoperability. Source baseline: `work/plans-455-458-ntcp2-first-unblock@a3173774b9037266eece08d84ec63dc0edd1f3d8`. Corrective successor to `plans/closure/ntcp2-transport/455-status.md` (Gates A/B passed, Gate C open) and Plan 457. **Not dependent** on Plan 458 SAM tunnel builds, a full client Destination, external LAN or public reachability.
+**State:** **blocked P0-next** (2026-10-11). Closure: [`460-status.md`](../../closure/ntcp2-transport/460-status.md). Owner: NTCP2 interoperability. Source baseline: `work/plans-455-458-ntcp2-first-unblock@a3173774b9037266eece08d84ec63dc0edd1f3d8`. Corrective successor to `plans/closure/ntcp2-transport/455-status.md` (Gates A/B passed, Gate C open) and Plan 457. Plan 459's bounded live-ingress interface and responder-side RouterInfo effect are now available. The pinned stock call graph has no eligible direct RouterInfo/NetDB send to the current non-floodfill, non-transit controlled i2pr role; a useful stock tunnel-build trigger would require a live i2pr transit consumer. **Not dependent** on Plan 458 SAM tunnel builds, a full client Destination, external LAN or public reachability.
 
 ## Distinct evidence tiers
 
