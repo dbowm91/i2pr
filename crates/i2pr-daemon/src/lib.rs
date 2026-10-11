@@ -2647,7 +2647,7 @@ mod tests {
         assert!(matches!(
             err,
             crate::config::ConfigError::Semantic {
-                field: "transport.ntcp2.enabled",
+                field: "transport.ntcp2.qualification_profile",
                 ..
             }
         ));
