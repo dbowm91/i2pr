@@ -398,6 +398,74 @@ mod normal_daemon_owner_tests {
     use crate::router_i2np::Ssu2DaemonService;
 
     #[tokio::test]
+    async fn normal_owner_starts_without_configured_destination_groups() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n",
+            directory.path().to_string_lossy(),
+        );
+        let config = crate::config::Config::parse(&config_text).expect("valid empty-group config");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x458);
+        let bundle = Arc::new(RouterIdentityBundle::generate(&mut rng).expect("router identity"));
+        let identity =
+            crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", 44_001)
+                .expect("controlled identity");
+        let daemon_service =
+            Ssu2DaemonService::new(&config.ssu2, identity).expect("strict controlled SSU2 service");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+        let handle = daemon_service
+            .start(&scope, &config.ssu2)
+            .await
+            .expect("existing SSU2 owner");
+        let endpoint = handle.local_v4().expect("bound loopback endpoint");
+        let spec = ServiceProductSpec {
+            data_dir: directory.path().to_path_buf(),
+            ssu2_bind: endpoint,
+            router_bundle: bundle,
+            service_tunnels: Arc::new(config.service_tunnels.tunnels.clone()),
+            aliases: Arc::new(config.service_tunnels.aliases.clone()),
+            aggregate_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_aggregate,
+            per_service_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_per_service,
+            reference: None,
+            extra_bootstrap_peers: Vec::new(),
+            options: ServiceProductOptions::default(),
+            addressbook: crate::addressbook::AddressBookManager::activate(
+                config.addressbook.clone(),
+            )
+            .shared(),
+            shared_manager: None,
+        };
+        let product = ServiceProduct::start_over_existing_daemon(
+            spec,
+            handle,
+            scope,
+            token,
+            Vec::new(),
+            RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
+        )
+        .await
+        .expect("SSU2 owner is independent of configured Destination groups");
+
+        assert_eq!(
+            product.readiness(),
+            ServiceProductReadiness::RouterReadyWithoutConfiguredGroups
+        );
+        assert!(product.readiness().router_ready());
+        assert!(product.inner.destination_ids.is_empty());
+        assert!(product.inner.deferred_destination_ids.is_empty());
+        assert!(product.manager.runtime_spec_ids().is_empty());
+        product.shutdown().await.expect("clean product shutdown");
+    }
+
+    #[tokio::test]
     async fn normal_owner_fails_closed_on_empty_validated_store_and_releases_listener() {
         let directory = tempfile::tempdir().expect("temporary data directory");
         let port_probe = TcpListener::bind("127.0.0.1:0")
@@ -877,6 +945,10 @@ pub struct ServiceProduct {
 pub(crate) enum ServiceProductReadiness {
     /// Local-only qualification product with no router-backed pool request.
     LocalOnly,
+    /// The SSU2/NetDB owner is running with no configured Destination groups.
+    /// This is router readiness only; it does not claim that a SAM session
+    /// can create or use a router-backed Destination.
+    RouterReadyWithoutConfiguredGroups,
     /// Router readiness and every configured Destination group's usable
     /// pool threshold passed before service supervisors were started.
     RouterReadyGroupsUsable { groups: u16 },
@@ -1304,16 +1376,18 @@ impl LeasePublicationFailureStage {
 
 impl ServiceProductReadiness {
     pub(crate) const fn router_ready(self) -> bool {
-        matches!(
-            self,
-            Self::RouterReadyGroupsUsable { groups } if groups > 0
-        ) || matches!(
-            self,
-            Self::RouterReadyWithDeferredGroups {
-                ready_groups,
-                deferred_groups
-            } if ready_groups.saturating_add(deferred_groups) > 0
-        )
+        matches!(self, Self::RouterReadyWithoutConfiguredGroups)
+            || matches!(
+                self,
+                Self::RouterReadyGroupsUsable { groups } if groups > 0
+            )
+            || matches!(
+                self,
+                Self::RouterReadyWithDeferredGroups {
+                    ready_groups,
+                    deferred_groups
+                } if ready_groups.saturating_add(deferred_groups) > 0
+            )
     }
 }
 
@@ -1959,16 +2033,9 @@ impl ServiceProduct {
             return Err(error);
         }
         manager.enable_deferred_activation();
-        if destination_ids.is_empty() && deferred_destination_ids.is_empty() {
-            manager.shutdown().await;
-            token.cancel(i2pr_core::CancellationReason::OperatorRequest);
-            ssu2_handle.shutdown();
-            let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
-            return Err(ServiceProductError::Provisioning(
-                "enabled service configuration produced no Destination groups".to_owned(),
-            ));
-        }
-        let readiness = if deferred_destination_ids.is_empty() {
+        let readiness = if destination_ids.is_empty() && deferred_destination_ids.is_empty() {
+            ServiceProductReadiness::RouterReadyWithoutConfiguredGroups
+        } else if deferred_destination_ids.is_empty() {
             ServiceProductReadiness::RouterReadyGroupsUsable {
                 groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
             }
