@@ -68,6 +68,17 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
+/// Maximum number of live normal SAM destinations attached to the shared
+/// router network product. SAM already has a session quota; this independent
+/// ceiling keeps the manager's remote-product registry bounded as well.
+pub(crate) const MAX_ROUTER_NETWORK_SAM_DESTINATIONS: usize = 8;
+
+struct RouterNetworkSamDestination {
+    identity: Arc<DestinationIdentity>,
+    bridge: SamDestinationHandle,
+    cancellation: CancellationToken,
+}
+
 use crate::destination_streaming::{
     PumpConfig, PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint, run_stream_pump,
 };
@@ -370,6 +381,10 @@ pub struct ServiceTunnelManager {
     sam_destinations: Mutex<SamDestinations>,
     /// Destination runtime registry (one per spec).
     destination_registry: Mutex<DestinationRegistry>,
+    /// Ephemeral SAM-owned destinations attached to the shared router
+    /// product. These are deliberately separate from configured service
+    /// runtimes and survive service-generation replacement.
+    sam_network_destinations: Mutex<HashMap<DestinationId, RouterNetworkSamDestination>>,
     /// Destination configuration (shared, balanced profile).
     destination_config: DestinationConfig,
     /// Plan 292 sweep reduction overrides by service id. A present
@@ -731,12 +746,19 @@ impl ServiceTunnelManager {
             runtimes: Mutex::new(HashMap::new()),
             sam_destinations: Mutex::new(SamDestinations::new()),
             destination_registry: Mutex::new(DestinationRegistry::new(
-                RegistryConfig::try_new(specs_count.max(1), 1024).map_err(|error| {
+                RegistryConfig::try_new(
+                    specs_count
+                        .saturating_add(MAX_ROUTER_NETWORK_SAM_DESTINATIONS as u16)
+                        .max(1),
+                    1024,
+                )
+                .map_err(|error| {
                     ServiceTunnelError::InvalidConfig(format!(
                         "destination registry config rejected: {error}"
                     ))
                 })?,
             )),
+            sam_network_destinations: Mutex::new(HashMap::new()),
             destination_config: DestinationConfig::service_compatibility_profile(),
             reduced_shaping: Mutex::new(HashMap::new()),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
@@ -892,6 +914,118 @@ impl ServiceTunnelManager {
     /// Returns the validated configuration.
     pub fn config(&self) -> &ServiceTunnelManagerConfig {
         &self.config
+    }
+
+    /// Registers an ephemeral SAM identity with the shared router product.
+    /// The returned id is the same id derived from `identity`; callers keep
+    /// ownership of the identity Arc and provision its real tunnel material
+    /// through the product before reporting CREATE success.
+    #[allow(dead_code)] // consumed by the bounded SAM/product factory integration
+    pub(crate) fn register_router_network_sam_destination(
+        &self,
+        identity: Arc<DestinationIdentity>,
+    ) -> Result<DestinationId, ServiceTunnelError> {
+        let destination_id = identity.id();
+        let bridge = SamDestinationHandle::new(SamDestinationBridge::with_router_identity(
+            Arc::clone(&identity),
+            service_now_seconds(),
+            i2pr_client::streaming::StreamingConfig::balanced(),
+        ));
+        let runtime = DestinationRuntime::with_shared_identity(
+            Arc::clone(&identity),
+            self.destination_config,
+        )
+        .map_err(|error| {
+            ServiceTunnelError::DestinationRuntime(format!("SAM destination runtime: {error}"))
+        })?;
+
+        // Keep the three manager views coherent under the same lock set.
+        // Reconcile never holds these locks together, so this order cannot
+        // form a lock cycle with generation replacement.
+        let mut sessions = self.sam_network_destinations.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("SAM destination registry poisoned".to_owned())
+        })?;
+        if sessions.contains_key(&destination_id) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "SAM destination is already registered".to_owned(),
+            ));
+        }
+        if sessions.len() >= MAX_ROUTER_NETWORK_SAM_DESTINATIONS {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-network SAM destination limit reached".to_owned(),
+            ));
+        }
+        let mut destinations = self.destination_registry.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("destination registry poisoned".to_owned())
+        })?;
+        let mut sam_destinations = self.sam_destinations.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("SAM bridge registry poisoned".to_owned())
+        })?;
+        destinations.insert(runtime).map_err(|error| {
+            ServiceTunnelError::DestinationRuntime(format!(
+                "SAM destination registry insert: {error}"
+            ))
+        })?;
+        sam_destinations.install_handle(destination_id, bridge.clone());
+        sessions.insert(
+            destination_id,
+            RouterNetworkSamDestination {
+                identity,
+                bridge,
+                cancellation: CancellationToken::new(),
+            },
+        );
+        Ok(destination_id)
+    }
+
+    /// Removes one ephemeral SAM destination and its router-product views.
+    /// Configured service destinations are never affected.
+    #[allow(dead_code)] // consumed by the bounded SAM/product factory integration
+    pub(crate) fn unregister_router_network_sam_destination(
+        &self,
+        destination_id: DestinationId,
+    ) -> bool {
+        let Ok(mut sessions) = self.sam_network_destinations.lock() else {
+            return false;
+        };
+        let Some(session) = sessions.remove(&destination_id) else {
+            return false;
+        };
+        let _ = session
+            .cancellation
+            .cancel(i2pr_core::CancellationReason::ParentScope);
+        if let Ok(mut destinations) = self.sam_destinations.lock() {
+            let _ = destinations.remove(destination_id);
+        }
+        if let Ok(mut registry) = self.destination_registry.lock() {
+            let _ = registry.remove(&destination_id);
+        }
+        if let Ok(mut signals) = self.outbound_signals.lock() {
+            signals.remove(&destination_id);
+        }
+        if let Ok(mut drivers) = self.destination_drivers.lock()
+            && let Some(token) = drivers.remove(&destination_id)
+        {
+            let _ = token.cancel(i2pr_core::CancellationReason::ParentScope);
+        }
+        if let Ok(mut counters) = self.delivery_counters.lock() {
+            counters.remove(&destination_id);
+        }
+        if let Ok(mut owners) = self.inbound_owners.lock() {
+            owners.remove(destination_id.as_netdb_key().as_bytes());
+        }
+        let receive_ids = session
+            .bridge
+            .with(|bridge| bridge.router_inbound_receive_ids());
+        if let Ok(mut owners) = self.inbound_tunnel_owners.lock() {
+            for receive_id in receive_ids {
+                owners.remove(&receive_id);
+            }
+        }
+        // Drop the retained identity and bridge only after all registry
+        // references have been removed.
+        drop(session);
+        true
     }
 
     /// Returns the router data directory, which is also where each
@@ -1384,6 +1518,9 @@ impl ServiceTunnelManager {
         self: &Arc<Self>,
         new_runtimes: &HashMap<String, Arc<ServiceRuntime>>,
     ) -> Result<(), ServiceTunnelError> {
+        let sam_sessions = self.sam_network_destinations.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("SAM destination registry poisoned".to_owned())
+        })?;
         {
             let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
             runtimes.clear();
@@ -1404,6 +1541,9 @@ impl ServiceTunnelManager {
                         .install_handle(runtime.group.destination_id, runtime.group.bridge.clone());
                 }
             }
+            for (destination_id, session) in sam_sessions.iter() {
+                sam_destinations.install_handle(*destination_id, session.bridge.clone());
+            }
         }
         {
             let mut destination_registry = self
@@ -1412,7 +1552,8 @@ impl ServiceTunnelManager {
                 .expect("destination registry poisoned");
             *destination_registry = DestinationRegistry::new(
                 RegistryConfig::try_new(
-                    u16::try_from(new_runtimes.len().max(1)).unwrap_or(u16::MAX),
+                    u16::try_from(new_runtimes.len().saturating_add(sam_sessions.len()).max(1))
+                        .unwrap_or(u16::MAX),
                     1024,
                 )
                 .map_err(|error| {
@@ -1446,6 +1587,30 @@ impl ServiceTunnelManager {
                         "{} mirror destination registry insert: {error}",
                         runtime.spec_id
                     )));
+                }
+            }
+            for (destination_id, session) in sam_sessions.iter() {
+                // A session may share neither identity nor id with a
+                // configured service destination. Registration rejects
+                // collisions; this check protects a concurrently changed
+                // manager generation during replacement.
+                if seen.insert(*destination_id) {
+                    let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                        Arc::clone(&session.identity),
+                        self.destination_config,
+                    )
+                    .map_err(|error| {
+                        ServiceTunnelError::DestinationRuntime(format!(
+                            "SAM mirror destination runtime: {error}"
+                        ))
+                    })?;
+                    destination_registry
+                        .insert(mirror_dest_runtime)
+                        .map_err(|error| {
+                            ServiceTunnelError::DestinationRuntime(format!(
+                                "SAM mirror destination registry insert: {error}"
+                            ))
+                        })?;
                 }
             }
         }
@@ -1686,6 +1851,7 @@ impl ServiceTunnelManager {
                 .cancellation
                 .cancel(i2pr_core::CancellationReason::ParentScope);
         }
+        drop(runtimes);
         // Plan 182: delivery drivers are owned by the same
         // supervisor scope, but cancel them explicitly so an
         // idle driver cannot outlive the runtimes it serves.
@@ -1693,6 +1859,13 @@ impl ServiceTunnelManager {
         if let Ok(drivers) = self.destination_drivers.lock() {
             for (_, token) in drivers.iter() {
                 let _ = token.cancel(i2pr_core::CancellationReason::ParentScope);
+            }
+        }
+        if let Ok(sessions) = self.sam_network_destinations.lock() {
+            for session in sessions.values() {
+                let _ = session
+                    .cancellation
+                    .cancel(i2pr_core::CancellationReason::ParentScope);
             }
         }
     }
@@ -10378,5 +10551,157 @@ mod plan296_sweep_policy_tests {
         );
         assert_eq!(manager.server_dial_targets_for(legacy), vec![addr_a]);
         assert_eq!(manager.server_dial_targets_for(legacy), vec![addr_a]);
+    }
+}
+
+#[cfg(test)]
+mod router_network_sam_destination_registry_tests {
+    use super::*;
+
+    fn identity() -> Arc<DestinationIdentity> {
+        let mut rng = OsRng;
+        Arc::new(DestinationIdentity::generate(&mut rng).expect("identity generates"))
+    }
+
+    fn manager() -> ServiceTunnelManager {
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: PathBuf::new(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds")
+    }
+
+    #[test]
+    fn router_network_sam_destinations_are_bounded_and_removable() {
+        let manager = manager();
+        let mut registered = Vec::new();
+        for _ in 0..MAX_ROUTER_NETWORK_SAM_DESTINATIONS {
+            let identity = identity();
+            let id = identity.id();
+            assert_eq!(
+                manager
+                    .register_router_network_sam_destination(identity)
+                    .expect("registration succeeds"),
+                id
+            );
+            registered.push(id);
+        }
+        assert_eq!(
+            manager
+                .sam_network_destinations
+                .lock()
+                .expect("SAM map")
+                .len(),
+            MAX_ROUTER_NETWORK_SAM_DESTINATIONS
+        );
+
+        let overflow = identity();
+        assert!(
+            manager
+                .register_router_network_sam_destination(Arc::clone(&overflow))
+                .is_err()
+        );
+        let overflow_id = overflow.id();
+        assert!(
+            manager
+                .sam_destinations
+                .lock()
+                .expect("bridge map")
+                .get(overflow_id)
+                .is_none()
+        );
+
+        let released = registered.pop().expect("one session");
+        assert!(manager.unregister_router_network_sam_destination(released));
+        assert!(
+            manager
+                .destination_registry
+                .lock()
+                .expect("destination registry")
+                .get(&released)
+                .is_none()
+        );
+        assert_eq!(
+            manager
+                .register_router_network_sam_destination(overflow)
+                .expect("released capacity is reusable"),
+            overflow_id
+        );
+    }
+
+    #[test]
+    fn duplicate_router_network_sam_registration_does_not_replace_bridge() {
+        let manager = manager();
+        let identity = identity();
+        let id = identity.id();
+        manager
+            .register_router_network_sam_destination(Arc::clone(&identity))
+            .expect("first registration");
+        let original = manager
+            .sam_destinations
+            .lock()
+            .expect("bridge map")
+            .get(id)
+            .expect("bridge installed");
+        assert!(original.with(|bridge| bridge.lease_set2().is_none()));
+
+        assert!(
+            manager
+                .register_router_network_sam_destination(identity)
+                .is_err()
+        );
+        let after = manager
+            .sam_destinations
+            .lock()
+            .expect("bridge map")
+            .get(id)
+            .expect("bridge remains installed");
+        assert_eq!(
+            original.peer_destination_hash(),
+            after.peer_destination_hash()
+        );
+    }
+
+    #[tokio::test]
+    async fn service_reconcile_preserves_router_network_sam_destinations() {
+        let manager = Arc::new(manager());
+        let identity = identity();
+        let id = identity.id();
+        manager
+            .register_router_network_sam_destination(identity)
+            .expect("SAM destination registration");
+        manager.prepare().await.expect("empty generation prepares");
+
+        manager
+            .reconcile(
+                Arc::new(ServiceTunnelSet {
+                    tunnels: Vec::new(),
+                }),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("empty generation reconciles");
+
+        assert!(
+            manager
+                .destination_registry
+                .lock()
+                .expect("destination registry")
+                .get(&id)
+                .is_some()
+        );
+        assert!(
+            manager
+                .sam_destinations
+                .lock()
+                .expect("bridge registry")
+                .get(id)
+                .is_some()
+        );
     }
 }
