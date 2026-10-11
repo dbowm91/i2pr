@@ -25,7 +25,10 @@ use crate::ntcp2_driver::{
     drive_responder_handshake,
 };
 use crate::ntcp2_link::{AuthenticatedLink, AuthenticatedLinkStartError};
-use crate::{CancellationToken, ChildScope, ChildScopeError, ChildTaskFailure};
+use crate::{
+    BandwidthGovernor, BandwidthPeerKey, CancellationToken, ChildScope, ChildScopeError,
+    ChildTaskFailure,
+};
 use i2pr_transport_ntcp2::frame::{ReceiveState, TransmitState};
 
 /// Hard maximum for one Plan 035 runtime duration.
@@ -273,6 +276,8 @@ pub enum Ntcp2RuntimeConfigError {
     DeadlineTooLong { field: &'static str },
     /// A prefix was outside its address-family width.
     InvalidPrefix,
+    /// The shared shaper cannot admit one maximum-size encrypted NTCP2 frame.
+    BandwidthBurstTooSmall { minimum: usize },
 }
 
 impl fmt::Display for Ntcp2RuntimeConfigError {
@@ -288,6 +293,10 @@ impl fmt::Display for Ntcp2RuntimeConfigError {
                 write!(formatter, "NTCP2 deadline exceeds its bound: {field}")
             }
             Self::InvalidPrefix => formatter.write_str("invalid IP prefix width"),
+            Self::BandwidthBurstTooSmall { minimum } => write!(
+                formatter,
+                "NTCP2 bandwidth burst is too small; at least {minimum} bytes are required"
+            ),
         }
     }
 }
@@ -1920,6 +1929,7 @@ pub struct Ntcp2RuntimeService {
     active_links: ActiveLinkAdmission,
     replay: ReplayCache,
     backoff: DialAdmission,
+    bandwidth: Option<BandwidthGovernor>,
 }
 
 impl fmt::Debug for Ntcp2RuntimeService {
@@ -1931,7 +1941,29 @@ impl fmt::Debug for Ntcp2RuntimeService {
 impl Ntcp2RuntimeService {
     /// Creates a bounded runtime service without opening a socket.
     pub fn new(config: Ntcp2RuntimeConfig) -> Result<Self, Ntcp2RuntimeConfigError> {
+        Self::new_with_bandwidth(config, None)
+    }
+
+    /// Creates a dormant or controlled NTCP2 service with a shared process governor.
+    pub fn new_with_bandwidth(
+        config: Ntcp2RuntimeConfig,
+        bandwidth: Option<BandwidthGovernor>,
+    ) -> Result<Self, Ntcp2RuntimeConfigError> {
         config.validate()?;
+        if let Some(governor) = &bandwidth {
+            let shaper = governor.config();
+            let usable_percent = 100_u64 - u64::from(shaper.control_reserve_percent);
+            let maximum_wire = i2pr_transport_ntcp2::constants::MAX_WIRE_FRAME_LENGTH as u64;
+            let minimum_burst = maximum_wire
+                .saturating_mul(100)
+                .div_ceil(usable_percent)
+                .min(usize::MAX as u64) as usize;
+            if shaper.burst_bytes < minimum_burst {
+                return Err(Ntcp2RuntimeConfigError::BandwidthBurstTooSmall {
+                    minimum: minimum_burst,
+                });
+            }
+        }
         Ok(Self {
             admission: InboundAdmission::new(config)?,
             active_links: ActiveLinkAdmission::new(config.limits.max_active_links)?,
@@ -1940,6 +1972,7 @@ impl Ntcp2RuntimeService {
                 DialBackoffConfig::default(),
                 config.limits.max_backoff_entries,
             )?,
+            bandwidth,
             config,
         })
     }
@@ -2062,6 +2095,7 @@ impl Ntcp2RuntimeService {
     ///
     /// Unlike [`Self::start_link`], this path retains protocol frame state and
     /// exposes parsed authenticated frames rather than raw byte counters.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_authenticated_link(
         &self,
         scope: &ChildScope,
@@ -2070,6 +2104,7 @@ impl Ntcp2RuntimeService {
         id: u64,
         transmit: TransmitState,
         receive: ReceiveState,
+        peer_key: BandwidthPeerKey,
     ) -> Result<AuthenticatedLink, AuthenticatedLinkStartError> {
         AuthenticatedLink::start_with_admission(
             scope,
@@ -2081,6 +2116,8 @@ impl Ntcp2RuntimeService {
             self.config.limits,
             self.config.deadlines,
             &self.active_links,
+            self.bandwidth.clone(),
+            peer_key,
         )
     }
 
@@ -2094,8 +2131,11 @@ impl Ntcp2RuntimeService {
         id: u64,
     ) -> Result<AuthenticatedLink, AuthenticatedLinkStartError> {
         let (stream, permit, family) = inbound.into_parts();
+        let peer_key =
+            BandwidthPeerKey::from_hash(*handshake.authenticated.peer().router_hash.as_bytes());
         let (transmit, receive) = handshake.authenticated.into_data_phase();
-        let link = self.start_authenticated_link(scope, stream, family, id, transmit, receive)?;
+        let link =
+            self.start_authenticated_link(scope, stream, family, id, transmit, receive, peer_key)?;
         drop(permit);
         Ok(link)
     }
@@ -2112,8 +2152,10 @@ impl Ntcp2RuntimeService {
         attempt.mark_authenticated();
         let family = attempt.family();
         let stream = attempt.into_stream();
+        let peer_key =
+            BandwidthPeerKey::from_hash(*handshake.authenticated.peer().router_hash.as_bytes());
         let (transmit, receive) = handshake.authenticated.into_data_phase();
-        self.start_authenticated_link(scope, stream, family, id, transmit, receive)
+        self.start_authenticated_link(scope, stream, family, id, transmit, receive, peer_key)
     }
 
     /// Returns active-link lease counters.
@@ -2148,6 +2190,35 @@ mod tests {
             limits.validate(),
             Err(Ntcp2RuntimeConfigError::ZeroLimit { .. })
         ));
+    }
+
+    #[test]
+    fn shared_shaper_must_fit_a_maximum_data_frame_above_the_control_reserve() {
+        let make_governor = |burst_bytes| {
+            BandwidthGovernor::new(crate::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 1024,
+                outbound_bytes_per_second: 1024,
+                burst_bytes,
+                control_reserve_percent: 10,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("valid governor")
+        };
+        assert!(matches!(
+            Ntcp2RuntimeService::new_with_bandwidth(
+                Ntcp2RuntimeConfig::default(),
+                Some(make_governor(64 * 1024)),
+            ),
+            Err(Ntcp2RuntimeConfigError::BandwidthBurstTooSmall { minimum: 72_819 })
+        ));
+        assert!(
+            Ntcp2RuntimeService::new_with_bandwidth(
+                Ntcp2RuntimeConfig::default(),
+                Some(make_governor(128 * 1024)),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

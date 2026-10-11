@@ -80,6 +80,7 @@ const EXIT_IDENTITY: i32 = 41;
 /// A test-owned config file plus the router data directory it points at.
 struct Router {
     _directory: TempDir,
+    data_dir: PathBuf,
     config: PathBuf,
     /// The loopback address the config names for the SAM listener.
     sam_address: SocketAddr,
@@ -118,6 +119,7 @@ impl Router {
         });
         Router {
             _directory: directory,
+            data_dir,
             config,
             sam_address,
         }
@@ -172,6 +174,22 @@ fn sam_config(address: SocketAddr, data_dir: &Path) -> String {
         data_dir.to_string_lossy(),
         address.port()
     )
+}
+
+/// Configures the ordinary daemon's controlled loopback SSU2 owner and SAM
+/// listener. Both remain opt-in; the test names the loopback profile itself.
+fn controlled_ssu2_sam_config(address: SocketAddr, ssu2_port: u16, data_dir: &Path) -> String {
+    format!(
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
+        data_dir.to_string_lossy(),
+        address.port(),
+        ssu2_port
+    )
+}
+
+fn reserve_loopback_udp_port() -> u16 {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve UDP port");
+    socket.local_addr().expect("reserved UDP address").port()
 }
 
 /// Config naming no listener at all.
@@ -560,6 +578,68 @@ fn run_binds_configured_listener_and_shuts_down_cleanly() {
         );
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+#[test]
+fn controlled_ssu2_and_sam_survive_real_process_restart() {
+    let address = reserve_loopback_port();
+    let ssu2_port = reserve_loopback_udp_port();
+    let router = Router::new(|data_dir| controlled_ssu2_sam_config(address, ssu2_port, data_dir));
+    router.generate_identity();
+
+    let mut first = router.spawn();
+    let reply = await_sam_ready(&mut first);
+    assert!(reply.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+    let conflict = std::net::UdpSocket::bind(("127.0.0.1", ssu2_port))
+        .expect_err("the ordinary daemon must own the configured SSU2 UDP socket");
+    assert_eq!(conflict.kind(), std::io::ErrorKind::AddrInUse);
+
+    let transport_identity = router.data_dir.join("ssu2.transport.identity");
+    let first_identity = std::fs::read(&transport_identity)
+        .expect("the normal SSU2 owner must persist its transport identity");
+    assert!(!first_identity.is_empty());
+
+    let mut client = TcpStream::connect_timeout(&router.sam_address, Duration::from_secs(2))
+        .expect("connect to the real SAM listener");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set SAM read deadline");
+    client
+        .write_all(b"HELLO VERSION MIN=3.1 MAX=3.1\nSESSION CREATE STYLE=STREAM ID=gate-a DESTINATION=TRANSIENT\n")
+        .expect("send SAM session create");
+    let mut reader = BufReader::new(client);
+    let mut hello = String::new();
+    let mut session = String::new();
+    reader.read_line(&mut hello).expect("read SAM HELLO");
+    reader
+        .read_line(&mut session)
+        .expect("read SAM SESSION CREATE");
+    assert!(
+        hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"),
+        "{hello:?}"
+    );
+    assert!(
+        session.starts_with("SESSION STATUS RESULT=OK"),
+        "{session:?}"
+    );
+    drop(reader);
+
+    first.interrupt();
+    let (status, output) = first.finish();
+    assert!(status.success(), "first run failed: {status}\n{output}");
+
+    let mut second = router.spawn();
+    let reply = await_sam_ready(&mut second);
+    assert!(reply.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+    let second_identity = std::fs::read(&transport_identity)
+        .expect("restart must retain the SSU2 transport identity");
+    assert_eq!(
+        first_identity, second_identity,
+        "transport identity rotated on restart"
+    );
+    second.interrupt();
+    let (status, output) = second.finish();
+    assert!(status.success(), "second run failed: {status}\n{output}");
 }
 
 #[test]

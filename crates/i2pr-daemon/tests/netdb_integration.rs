@@ -105,6 +105,8 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             port: 0,
             advertise: false,
             introducer_service: false,
+            qualification_profile:
+                i2pr_daemon::config::Ssu2QualificationProfile::ControlledLoopback,
             max_pending_handshakes: 64,
             max_active_sessions: 64,
             max_pending_per_ip: 4,
@@ -184,6 +186,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             inbound_bytes_per_second: 0,
             outbound_bytes_per_second: 0,
             share_percent: 0,
+            control_reserve_percent: 0,
             burst_bytes: 64 * 1024,
             max_pending_requests: 1024,
             max_pending_per_peer: 1,

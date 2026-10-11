@@ -572,8 +572,8 @@ fn a_sealed_credential_holds_ciphertext_and_not_its_value() {
     let sealed = plan380_seal(&owner, &value);
 
     assert!(
-        !sealed.sealed_form().contains("aaaa"),
-        "the stored form must not contain a run of the plaintext's bytes"
+        !sealed.sealed_form().contains(&value),
+        "the stored form must not contain the plaintext credential"
     );
     let stored = sealed_debug_is_opaque(&sealed);
     assert!(

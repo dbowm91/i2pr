@@ -28,9 +28,10 @@ mod ssu2_runtime;
 mod supervisor;
 
 pub use bandwidth::{
-    BandwidthAcquireError, BandwidthDirection, BandwidthGovernor, BandwidthGovernorConfig,
-    BandwidthGovernorConfigError, BandwidthGovernorSnapshot, BandwidthPeerKey,
-    MAX_BANDWIDTH_BURST_BYTES, MAX_BANDWIDTH_BYTES_PER_SECOND, MAX_BANDWIDTH_PENDING_REQUESTS,
+    BandwidthAcquireError, BandwidthDirection, BandwidthEnforcementPermit, BandwidthGovernor,
+    BandwidthGovernorConfig, BandwidthGovernorConfigError, BandwidthGovernorSnapshot,
+    BandwidthPeerKey, BandwidthTrafficClass, MAX_BANDWIDTH_BURST_BYTES,
+    MAX_BANDWIDTH_BYTES_PER_SECOND, MAX_BANDWIDTH_PENDING_REQUESTS,
 };
 pub use cancel::CancellationToken;
 pub use channel::{

@@ -92,6 +92,13 @@ impl BandwidthClass {
             Self::X => 'X',
         }
     }
+
+    /// Whether Java's pinned floodfill policy accepts this class for the
+    /// router's own floodfill role. Peer selection is separate: Java may
+    /// still return a remote class-L floodfill as a last-resort candidate.
+    pub const fn supports_floodfill_role(self) -> bool {
+        matches!(self, Self::N | Self::O | Self::P | Self::X)
+    }
 }
 
 /// Errors raised by [`LocalRouterInfoBuilder`].
@@ -235,6 +242,23 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         self.build_floodfill_with_caps(published, options, address, permit, "f")
     }
 
+    /// Builds a floodfill RouterInfo with a capacity tier supplied by the
+    /// daemon's current enforcement-eligibility gate. The class is appended
+    /// only beside the existing opaque role permit and qualified address gate.
+    /// Ordinary `build` and `build_floodfill` do not acquire a tier implicitly.
+    pub fn build_floodfill_with_bandwidth_class(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+        permit: &FloodfillAdvertisementPermit,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        let mut suffix = String::from("f");
+        suffix.push(class.as_capability());
+        self.build_floodfill_with_caps(published, options, address, permit, &suffix)
+    }
+
     /// Builds a floodfill RouterInfo carrying `caps=fR` for a
     /// peer-test-confirmed loopback address (Plan 306, ADR 0030).
     ///
@@ -255,6 +279,23 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         _proof: &LoopbackReachabilityProof,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         self.build_floodfill_with_caps(published, options, address, permit, "fR")
+    }
+
+    /// Reachable counterpart to [`Self::build_floodfill_with_bandwidth_class`].
+    /// Both the floodfill-role permit and address-bound reachability proof are
+    /// required before the enforced capacity tier is appended.
+    pub fn build_floodfill_reachable_with_bandwidth_class(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+        permit: &FloodfillAdvertisementPermit,
+        _proof: &LoopbackReachabilityProof,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        let mut suffix = String::from("fR");
+        suffix.push(class.as_capability());
+        self.build_floodfill_with_caps(published, options, address, permit, &suffix)
     }
 
     fn build_floodfill_with_caps(
@@ -664,6 +705,49 @@ mod tests {
             .expect("reachable build");
         assert_eq!(local.router_info().options().get("caps"), Some("fR"));
         assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    #[test]
+    fn capacity_tier_is_appended_only_with_role_and_address_gates() {
+        let signer = bundle(0x410);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let permit = active_role_permit();
+        let tiered = builder
+            .build_floodfill_with_bandwidth_class(
+                Date::from_millis(101),
+                options.clone(),
+                qualified_ssu2_test_address(),
+                &permit,
+                BandwidthClass::N,
+            )
+            .expect("role-qualified floodfill with enforced class");
+        assert_eq!(tiered.router_info().options().get("caps"), Some("fN"));
+
+        let proof = LoopbackReachabilityProof::attest_confirmed_peer_test();
+        let reachable = builder
+            .build_floodfill_reachable_with_bandwidth_class(
+                Date::from_millis(101),
+                options,
+                qualified_ssu2_test_address(),
+                &permit,
+                &proof,
+                BandwidthClass::N,
+            )
+            .expect("role and reachability qualified tier");
+        assert_eq!(reachable.router_info().options().get("caps"), Some("fRN"));
+
+        assert!(matches!(
+            builder.build_floodfill_with_bandwidth_class(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), Mapping::empty(),)
+                    .unwrap(),
+                &permit,
+                BandwidthClass::N,
+            ),
+            Err(LocalRouterInfoError::UnqualifiedFloodfillAddress)
+        ));
     }
 
     /// Plan 306/ADR 0030: the proof does not launder caller bytes. Any
