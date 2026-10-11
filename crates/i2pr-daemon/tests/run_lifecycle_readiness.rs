@@ -804,6 +804,10 @@ fn router_network_sam_with_no_service_groups_keeps_router_serving() {
         session.starts_with("SESSION STATUS RESULT=I2P_ERROR"),
         "an empty product must still reject remote SESSION CREATE: {session:?}"
     );
+    assert!(
+        session.contains("router-backed SAM destination provisioning failed"),
+        "a running product must report its failed route provisioning: {session:?}"
+    );
     drop(reader);
 
     assert!(
