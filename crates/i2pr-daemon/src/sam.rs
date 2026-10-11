@@ -292,6 +292,9 @@ pub struct SamServiceState {
     session_product_mode: SamSessionProductMode,
     sam_serving: std::sync::atomic::AtomicBool,
     router_network_product_ready: std::sync::atomic::AtomicBool,
+    /// The one shared manager/product seam used by normal router-network SAM
+    /// sessions. Local-only qualification states leave this empty.
+    router_network_manager: Mutex<Option<Arc<crate::service_tunnels::ServiceTunnelManager>>>,
     max_supported_version: i2pr_api::sam::version::SamVersion,
     /// Bound loopback UDP bridge, installed by `bind` before service readiness.
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
@@ -404,6 +407,7 @@ impl SamServiceState {
             session_product_mode,
             sam_serving: std::sync::atomic::AtomicBool::new(false),
             router_network_product_ready: std::sync::atomic::AtomicBool::new(false),
+            router_network_manager: Mutex::new(None),
             max_supported_version,
             udp_socket: Mutex::new(None),
             connection_permits,
@@ -464,6 +468,21 @@ impl SamServiceState {
     /// Local-only mode is intentionally never reported as remotely ready.
     pub fn router_network_product_ready(&self) -> bool {
         self.router_network_product_ready.load(Ordering::Acquire)
+            || self
+                .router_network_manager
+                .lock()
+                .ok()
+                .and_then(|manager| manager.as_ref().map(Arc::clone))
+                .is_some_and(|manager| manager.router_network_sam_factory_ready())
+    }
+
+    pub(crate) fn attach_router_network_manager(
+        &self,
+        manager: Arc<crate::service_tunnels::ServiceTunnelManager>,
+    ) {
+        if let Ok(mut slot) = self.router_network_manager.lock() {
+            *slot = Some(manager);
+        }
     }
 
     /// Returns the SAM session registry handle.
@@ -511,6 +530,11 @@ impl SamServiceState {
     pub fn notify_outbound_signal(&self, destination_id: DestinationId) {
         let notify = self.outbound_signal(destination_id);
         notify.notify_one();
+        if let Ok(manager) = self.router_network_manager.lock()
+            && let Some(manager) = manager.as_ref()
+        {
+            manager.notify_outbound_signal(destination_id);
+        }
     }
 
     /// Returns (or lazily creates) the established-signal
@@ -874,6 +898,181 @@ impl SamServiceState {
         })
     }
 
+    /// Creates a normal router-network SAM destination through the shared
+    /// SSU2/NetDB product. The reservation stays private until the product
+    /// has installed real inbound/outbound tunnels, a validated LS2, and the
+    /// manager-owned delivery driver.
+    pub(crate) async fn execute_router_network_session_create(
+        self: &Arc<Self>,
+        request: SessionCreateExecution<'_>,
+    ) -> Result<SessionCreateApplied, SessionCreateError> {
+        if self.session_product_mode != SamSessionProductMode::RouterNetwork {
+            return Err(SessionCreateError::RouterNetworkProductUnavailable);
+        }
+        let manager = self
+            .router_network_manager
+            .lock()
+            .ok()
+            .and_then(|manager| manager.as_ref().map(Arc::clone))
+            .ok_or(SessionCreateError::RouterNetworkProductUnavailable)?;
+        let SessionCreateExecution {
+            session_id,
+            style,
+            destination_source,
+            from_port,
+            to_port,
+            cancellation,
+            ..
+        } = request;
+        use i2pr_api::sam::session_create::DestinationSource;
+
+        let identity = match destination_source {
+            DestinationSource::Transient => {
+                let mut rng = OsRng;
+                DestinationIdentity::generate(&mut rng)
+                    .map_err(|_| SessionCreateError::RandomnessUnavailable)?
+            }
+            DestinationSource::Imported(wrapper) => wrapper
+                .into_identity()
+                .map_err(|_| SessionCreateError::InvalidPrivateDestination)?,
+        };
+        let public_destination_b64 = encode_public_for(&identity);
+        let private_destination_b64 = encode_private_for(&identity);
+        let destination_id = identity.id();
+        let identity_arc = Arc::new(identity);
+        let reservation = self
+            .session_registry
+            .reserve_session_with_style(
+                session_id.clone(),
+                destination_id,
+                from_port,
+                to_port,
+                style,
+            )
+            .map_err(map_registry_error)?;
+
+        if manager
+            .register_router_network_sam_destination(Arc::clone(&identity_arc))
+            .is_err()
+        {
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        }
+        if manager
+            .ensure_router_network_sam_destination_active(destination_id, &cancellation, 120_000)
+            .await
+            .is_err()
+        {
+            let _ = manager.unregister_router_network_sam_destination(destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::RouterNetworkProductUnavailable);
+        }
+        let Some(summary) = manager.service_router_network_summary(destination_id) else {
+            let _ = manager.unregister_router_network_sam_destination(destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        };
+        if summary.inbound_receive_count == 0
+            || summary.lease_count == 0
+            || !summary.inbound_owner_registered
+        {
+            let _ = manager.unregister_router_network_sam_destination(destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        }
+
+        let runtime = match DestinationRuntime::with_shared_identity(
+            Arc::clone(&identity_arc),
+            self.destination_config,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = manager.unregister_router_network_sam_destination(destination_id);
+                self.session_registry.rollback_reservation(&reservation);
+                return Err(SessionCreateError::DestinationRuntime(error.to_string()));
+            }
+        };
+        let inserted = match self.destination_registry.lock() {
+            Ok(mut destinations) => destinations.insert(runtime),
+            Err(_) => {
+                let _ = manager.unregister_router_network_sam_destination(destination_id);
+                self.session_registry.rollback_reservation(&reservation);
+                return Err(SessionCreateError::DestinationRegistryLocked);
+            }
+        };
+        if let Err(error) = inserted {
+            let _ = manager.unregister_router_network_sam_destination(destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(match error {
+                i2pr_client::RegistryError::DuplicateDestination { .. } => {
+                    SessionCreateError::DuplicateDestination
+                }
+                i2pr_client::RegistryError::CapacityExceeded { maximum } => {
+                    SessionCreateError::DestinationsFull { maximum }
+                }
+                i2pr_client::RegistryError::CommandQueueFull { maximum } => {
+                    SessionCreateError::CommandQueueFull { maximum }
+                }
+                _ => SessionCreateError::I2pError,
+            });
+        }
+        if self
+            .streaming_pools
+            .lock()
+            .map_err(|_| SessionCreateError::StreamingPoolsLocked)
+            .and_then(|mut pools| {
+                pools
+                    .install(destination_id)
+                    .map_err(|_| SessionCreateError::I2pError)
+            })
+            .is_err()
+        {
+            self.teardown_session(&session_id, destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        }
+        if style == i2pr_api::sam::session_create::SessionCreateStyle::Stream
+            && self
+                .stream_registry
+                .register_session(session_id.clone())
+                .is_err()
+        {
+            self.teardown_session(&session_id, destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        }
+        let Some(bridge_handle) = manager.router_network_sam_bridge(destination_id) else {
+            self.teardown_session(&session_id, destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::I2pError);
+        };
+        if let Ok(mut destinations) = self.sam_destinations.lock() {
+            destinations.install_handle(destination_id, bridge_handle);
+        } else {
+            self.teardown_session(&session_id, destination_id);
+            self.session_registry.rollback_reservation(&reservation);
+            return Err(SessionCreateError::SamDestinationsLocked);
+        }
+
+        let entry = match self
+            .session_registry
+            .commit_reservation(&reservation, public_destination_b64)
+        {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.teardown_session(&session_id, destination_id);
+                return Err(map_registry_error(error));
+            }
+        };
+        Ok(SessionCreateApplied {
+            session_id,
+            destination_id,
+            public_destination_b64: entry.public_destination_b64().to_owned(),
+            private_destination_b64,
+            style,
+        })
+    }
+
     /// Tears a session down exactly once. Called from the
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
@@ -899,6 +1098,11 @@ impl SamServiceState {
             bridges.remove(destination_id);
         }
         self.drop_destination_signals(destination_id);
+        if let Ok(manager) = self.router_network_manager.lock()
+            && let Some(manager) = manager.as_ref()
+        {
+            let _ = manager.request_router_network_sam_retirement(destination_id);
+        }
         if let Ok(mut counters) = self.delivery_counters.lock() {
             counters.remove(&destination_id);
         }
@@ -2335,7 +2539,7 @@ async fn dispatch_command(
                     next_state: state_conn,
                 });
             }
-            let apply_result = match state.execute_session_create(SessionCreateExecution {
+            let execution = SessionCreateExecution {
                 session_id: id,
                 style,
                 destination_source: request.destination,
@@ -2343,7 +2547,13 @@ async fn dispatch_command(
                 to_port,
                 children: raw_children,
                 cancellation: session_cancellation,
-            }) {
+            };
+            let result = if state.product_mode_name() == "router-network" {
+                state.execute_router_network_session_create(execution).await
+            } else {
+                state.execute_session_create(execution)
+            };
+            let apply_result = match result {
                 Ok(applied) => Ok(applied),
                 Err(error) => Err(SessionCreateFailed {
                     result: error.reply_result(),
@@ -4504,6 +4714,57 @@ mod tests {
             .expect_err("missing network product must not use local fabric");
         assert_eq!(error, SessionCreateError::RouterNetworkProductUnavailable);
         assert_eq!(state.session_registry().session_count(), 0);
+        parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let _ = children.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn router_network_create_rolls_back_when_shared_product_is_not_ready() {
+        let manager = Arc::new(
+            crate::service_tunnels::ServiceTunnelManager::new(
+                crate::service_tunnels::ServiceTunnelManagerConfig {
+                    data_dir: std::path::PathBuf::new(),
+                    aggregate_connection_ceiling: 4,
+                    per_service_connection_ceiling: 2,
+                    specs: Arc::new(i2pr_service_tunnels::ServiceTunnelSet {
+                        tunnels: Vec::new(),
+                    }),
+                    aliases: Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
+                },
+            )
+            .expect("manager"),
+        );
+        let state = Arc::new(
+            SamServiceState::new(SamConfig {
+                enabled: false,
+                bind_address: "127.0.0.1".parse().unwrap(),
+                port: 0,
+                udp_port: 0,
+                limits: SamLimits::loopback_test_profile(),
+            })
+            .expect("router-backed SAM state"),
+        );
+        state.attach_router_network_manager(Arc::clone(&manager));
+        assert!(!state.router_network_product_ready());
+        let parent = CancellationToken::new();
+        let children = ChildScope::for_test(&parent, i2pr_runtime::ChildFailurePolicy::FailParent);
+
+        let error = state
+            .execute_router_network_session_create(SessionCreateExecution {
+                session_id: SamSessionId::new("network-unready").expect("valid session id"),
+                style: i2pr_api::sam::session_create::SessionCreateStyle::Stream,
+                destination_source: DestinationSource::Transient,
+                from_port: 0,
+                to_port: 0,
+                children: &children,
+                cancellation: parent.clone(),
+            })
+            .await
+            .expect_err("CREATE must wait for the router-owned product");
+
+        assert_eq!(error, SessionCreateError::RouterNetworkProductUnavailable);
+        assert_eq!(state.session_registry().session_count(), 0);
+        assert_eq!(manager.router_network_sam_destination_count(), 0);
         parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
         let _ = children.shutdown().await;
     }

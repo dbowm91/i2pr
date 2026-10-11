@@ -589,7 +589,13 @@ fn build_daemon_graph_inner(
     let shared_service_manager = build_shared_service_manager(config)?;
 
     if config.sam.enabled {
-        register_sam_service(&mut builder, config, inspection, &addressbook)?;
+        register_sam_service(
+            &mut builder,
+            config,
+            inspection,
+            &addressbook,
+            shared_service_manager.clone(),
+        )?;
     }
 
     if config.app_runtime.enabled {
@@ -749,12 +755,14 @@ fn register_sam_service(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
+    shared_service_manager: Option<Arc<crate::service_tunnels::ServiceTunnelManager>>,
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
     let sam_product_mode = config.sam_product_mode;
     let address = sam_config.bind_socket();
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
+    let shared_service_manager = shared_service_manager.clone();
     builder
         .register(service_spec(
             SAM_SERVICE_NAME,
@@ -764,6 +772,7 @@ fn register_sam_service(
                 let sam_product_mode = sam_product_mode;
                 let inspection = Arc::clone(&inspection);
                 let addressbook = Arc::clone(&addressbook);
+                let shared_service_manager = shared_service_manager.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -791,6 +800,11 @@ fn register_sam_service(
                             );
                         }
                     };
+                    if sam_product_mode == crate::config::SamProductMode::RouterNetwork
+                        && let Some(manager) = shared_service_manager
+                    {
+                        state.attach_router_network_manager(manager);
+                    }
                     // Publish the live owner for the Plan 288
                     // inspection plane (read-only snapshot access).
                     inspection.publish_sam(Arc::clone(&state));

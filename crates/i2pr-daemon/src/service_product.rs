@@ -70,6 +70,7 @@ use i2pr_transport::Deadline;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::identity::TunnelId;
+use i2pr_tunnel::pool::TunnelSlot;
 use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -96,8 +97,8 @@ use crate::service_delivery::{
     RemoteDeliveryCounters, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
 };
 use crate::service_tunnels::{
-    DeferredActivationRequest, EncryptedTargetStatus, RemoteTargetProjection, ServiceTunnelManager,
-    ServiceTunnelManagerConfig,
+    DeferredActivationRequest, DestinationProductOperation, EncryptedTargetStatus,
+    RemoteTargetProjection, ServiceTunnelManager, ServiceTunnelManagerConfig,
 };
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
@@ -767,6 +768,8 @@ struct ProductInner {
         i2pr_client::DestinationId,
         Arc<crate::service_tunnels::ServiceRuntime>,
     >,
+    sam_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
+    sam_destination_slots: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>>,
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
@@ -1834,6 +1837,8 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                sam_destination_ids: std::collections::HashSet::new(),
+                sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
@@ -2062,6 +2067,8 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                sam_destination_ids: std::collections::HashSet::new(),
+                sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
@@ -2366,14 +2373,130 @@ impl ServiceProduct {
                 return;
             }
         };
+        if request.operation == DestinationProductOperation::Retire {
+            self.retire_sam_destination(request.destination_id);
+            let _ = request.completion.send(Ok(()));
+            return;
+        }
         if request.completion.is_closed() {
             return;
         }
+        if !self
+            .inner
+            .deferred_destination_ids
+            .contains(&request.destination_id)
+            && let Some(runtime) = self
+                .manager
+                .router_network_sam_runtime(request.destination_id)
+        {
+            self.inner
+                .destination_runtimes
+                .insert(request.destination_id, runtime);
+            self.inner
+                .deferred_destination_ids
+                .insert(request.destination_id);
+            self.inner
+                .sam_destination_ids
+                .insert(request.destination_id);
+        }
+        let sam_session = self
+            .manager
+            .router_network_sam_runtime(request.destination_id)
+            .is_some();
         let result = self
             .activate_deferred_destination(request.destination_id)
             .await;
-        let response = result.map_err(|_| "deferred destination provisioning failed".to_owned());
+        let response = match result {
+            Ok(()) if sam_session && request.completion.is_closed() => {
+                self.retire_sam_destination(request.destination_id);
+                Err("SAM session was cancelled during destination provisioning".to_owned())
+            }
+            Ok(()) => Ok(()),
+            Err(_) => {
+                if sam_session {
+                    self.cancel_destination_builds(request.destination_id);
+                    for slot in self
+                        .manager
+                        .destination_tunnel_slots(request.destination_id)
+                    {
+                        let _ = self.inner.coordinator.remove_slot(slot);
+                    }
+                    let _ = self
+                        .manager
+                        .unregister_router_network_sam_destination(request.destination_id);
+                    self.inner
+                        .destination_runtimes
+                        .remove(&request.destination_id);
+                    self.inner
+                        .deferred_destination_ids
+                        .remove(&request.destination_id);
+                    self.inner
+                        .sam_destination_ids
+                        .remove(&request.destination_id);
+                    self.inner
+                        .destination_build_progress
+                        .remove(&request.destination_id);
+                    self.inner
+                        .deferred_activation_failures
+                        .remove(&request.destination_id);
+                    self.inner
+                        .destination_ids
+                        .retain(|id| *id != request.destination_id);
+                    self.inner
+                        .server_destination_ids
+                        .retain(|id| *id != request.destination_id);
+                }
+                Err("deferred destination provisioning failed".to_owned())
+            }
+        };
         let _ = request.completion.send(response);
+    }
+
+    fn retire_sam_destination(&mut self, destination_id: i2pr_client::DestinationId) {
+        if !self.inner.sam_destination_ids.remove(&destination_id) {
+            let _ = self
+                .manager
+                .unregister_router_network_sam_destination(destination_id);
+            return;
+        }
+        self.cancel_destination_builds(destination_id);
+        if let Some(slots) = self.inner.sam_destination_slots.remove(&destination_id) {
+            for slot in slots {
+                let _ = self.inner.coordinator.remove_slot(slot);
+            }
+        }
+        self.inner.destination_runtimes.remove(&destination_id);
+        self.inner
+            .destination_build_progress
+            .remove(&destination_id);
+        self.inner
+            .destination_ids
+            .retain(|id| *id != destination_id);
+        self.inner
+            .server_destination_ids
+            .retain(|id| *id != destination_id);
+        self.inner.publication_pending.remove(&destination_id);
+        self.inner.publication_retry_after.remove(&destination_id);
+        let _ = self
+            .manager
+            .unregister_router_network_sam_destination(destination_id);
+    }
+
+    fn retire_orphaned_sam_destinations(&mut self) {
+        let orphaned = self
+            .inner
+            .sam_destination_ids
+            .iter()
+            .copied()
+            .filter(|destination_id| {
+                self.manager
+                    .router_network_sam_runtime(*destination_id)
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        for destination_id in orphaned {
+            self.retire_sam_destination(destination_id);
+        }
     }
 
     async fn activate_deferred_destination(
@@ -2429,6 +2552,43 @@ impl ServiceProduct {
         .await;
         match result {
             Ok(()) => {
+                let sam_session = self
+                    .manager
+                    .router_network_sam_runtime(destination_id)
+                    .is_some();
+                if sam_session {
+                    publish_service_ls2_for_service(
+                        &self.manager,
+                        &self.inner.destination_tunnels,
+                        &mut self.inner.ssu2_handle,
+                        destination_id,
+                        self.inner.options,
+                    )
+                    .await
+                    .map_err(|error| {
+                        ServiceProductError::Provisioning(format!(
+                            "SAM destination LS2 publication failed: {error:?}"
+                        ))
+                    })?;
+                    self.manager.spawn_destination_driver(
+                        destination_id,
+                        &self.scope,
+                        self.token.clone(),
+                    );
+                    let driver_live = self.manager.destination_driver_live(destination_id);
+                    if !driver_live {
+                        return Err(ServiceProductError::Provisioning(
+                            "SAM destination delivery driver did not start".to_owned(),
+                        ));
+                    }
+                    self.inner.server_destination_ids.push(destination_id);
+                    self.inner.publication_pending.insert(destination_id);
+                    self.inner.sam_destination_ids.insert(destination_id);
+                    self.inner.sam_destination_slots.insert(
+                        destination_id,
+                        self.manager.destination_tunnel_slots(destination_id),
+                    );
+                }
                 self.inner.deferred_destination_ids.remove(&destination_id);
                 self.inner.destination_ids.push(destination_id);
                 Ok(())
@@ -2565,6 +2725,24 @@ impl ServiceProduct {
                     self.inner.server_destination_ids.push(destination_id);
                 }
             }
+            // SAM sessions live beside the configured service generation;
+            // preserve their router runtimes and pool maintenance across an
+            // I2PControl/service-tunnel reconcile.
+            let sam_destination_ids = self
+                .inner
+                .sam_destination_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            for destination_id in sam_destination_ids {
+                if let Some(runtime) = self.manager.router_network_sam_runtime(destination_id) {
+                    self.inner
+                        .destination_runtimes
+                        .insert(destination_id, runtime);
+                    self.inner.destination_ids.push(destination_id);
+                    self.inner.server_destination_ids.push(destination_id);
+                }
+            }
             if self.inner.local_router_hash.is_some() {
                 for destination_id in self.inner.destination_ids.iter().copied() {
                     let has_router_state = self
@@ -2618,6 +2796,7 @@ impl ServiceProduct {
             self.inner.service_generation_id = current_generation;
         }
         self.process_deferred_activation_request().await;
+        self.retire_orphaned_sam_destinations();
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
             self.record_destination_build_outcome(&outcome);
