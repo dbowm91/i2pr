@@ -37,6 +37,11 @@ fn build_floodfill_with_capacity(
             context: "stale bandwidth eligibility",
         },
     )?;
+    if !class.supports_floodfill_role() {
+        return Err(i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+            context: "floodfill bandwidth class below pinned Java floor",
+        });
+    }
     builder.build_floodfill_with_bandwidth_class(published, options, address, role_permit, class)
 }
 
@@ -56,6 +61,11 @@ fn build_reachable_floodfill_with_capacity(
             context: "stale bandwidth eligibility",
         },
     )?;
+    if !class.supports_floodfill_role() {
+        return Err(i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+            context: "floodfill bandwidth class below pinned Java floor",
+        });
+    }
     builder.build_floodfill_reachable_with_bandwidth_class(
         published,
         options,
@@ -2454,6 +2464,43 @@ mod tests {
             ),
             Err(i2pr_netdb::LocalRouterInfoError::InvalidMapping {
                 context: "stale bandwidth eligibility"
+            })
+        ));
+    }
+
+    #[test]
+    fn capacity_routerinfo_rejects_truthful_classes_below_java_floodfill_floor() {
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 48 * 1024,
+                outbound_bytes_per_second: 48 * 1024,
+                burst_bytes: 128 * 1024,
+                control_reserve_percent: 10,
+                max_pending_requests: 16,
+                max_pending_per_peer: 2,
+            })
+            .expect("enabled shaper");
+        let eligibility =
+            CapacityEligibility::issue(Some(&governor), 100).expect("truthful low class permit");
+        let mut coordinator = coordinator();
+        enable(&mut coordinator);
+        let role_permit = coordinator
+            .advertisement_permit()
+            .expect("active role permit");
+        let bundle = test_bundle();
+        let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&bundle);
+        assert!(matches!(
+            build_floodfill_with_capacity(
+                &builder,
+                Date::from_millis(TEST_WALL_MS),
+                controlled_router_options().expect("controlled options"),
+                test_material("127.0.0.1", true).address,
+                &role_permit,
+                &eligibility,
+                &governor,
+            ),
+            Err(i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                context: "floodfill bandwidth class below pinned Java floor"
             })
         ));
     }

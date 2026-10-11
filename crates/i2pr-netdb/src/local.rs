@@ -92,6 +92,13 @@ impl BandwidthClass {
             Self::X => 'X',
         }
     }
+
+    /// Whether Java's pinned floodfill policy accepts this class for the
+    /// router's own floodfill role. Peer selection is separate: Java may
+    /// still return a remote class-L floodfill as a last-resort candidate.
+    pub const fn supports_floodfill_role(self) -> bool {
+        matches!(self, Self::N | Self::O | Self::P | Self::X)
+    }
 }
 
 /// Errors raised by [`LocalRouterInfoBuilder`].
