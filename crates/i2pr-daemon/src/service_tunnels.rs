@@ -1868,6 +1868,14 @@ impl ServiceTunnelManager {
                     .cancel(i2pr_core::CancellationReason::ParentScope);
             }
         }
+        let sam_destination_ids = self
+            .sam_network_destinations
+            .lock()
+            .map(|sessions| sessions.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for destination_id in sam_destination_ids {
+            let _ = self.unregister_router_network_sam_destination(destination_id);
+        }
     }
 
     /// Stops admission across the committed service generation while keeping
@@ -10702,6 +10710,34 @@ mod router_network_sam_destination_registry_tests {
                 .expect("bridge registry")
                 .get(id)
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_shutdown_removes_router_network_sam_destinations() {
+        let manager = manager();
+        let identity = identity();
+        let id = identity.id();
+        manager
+            .register_router_network_sam_destination(identity)
+            .expect("SAM destination registration");
+
+        manager.shutdown().await;
+
+        assert!(
+            manager
+                .sam_network_destinations
+                .lock()
+                .expect("SAM map")
+                .is_empty()
+        );
+        assert!(
+            manager
+                .destination_registry
+                .lock()
+                .expect("destination registry")
+                .get(&id)
+                .is_none()
         );
     }
 }
