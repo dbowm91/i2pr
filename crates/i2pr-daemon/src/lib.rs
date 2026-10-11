@@ -132,7 +132,7 @@ fn readiness_expectation(service: &str) -> &'static str {
         ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
         SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
         NTCP2_SERVICE_NAME => "controlled NTCP2 TCP listener bound with local RouterInfo ready",
-        SSU2_SERVICE_NAME => "controlled SSU2 router owner running",
+        SSU2_SERVICE_NAME => "authenticated router I2NP owner running",
         APP_RUNTIME_SERVICE_NAME => {
             "i2pr-appd manager child spawned and manager handshake completed"
         }
@@ -658,7 +658,7 @@ fn build_daemon_graph_inner(
         )?;
     }
 
-    if config.ssu2.enabled {
+    if config.ssu2.enabled || config.transport.ntcp2.enabled {
         register_ssu2_service(
             &mut builder,
             config,
@@ -1510,9 +1510,11 @@ impl NormalSsu2Owner {
     async fn process_group_inbound(
         &mut self,
         inbound: &i2pr_runtime::Ssu2InboundI2np,
+        outcome: crate::router_i2np::RouterI2npOutcome,
+        message: Option<&i2pr_proto::I2npMessage>,
     ) -> Result<(), crate::service_product::ServiceProductError> {
         if let Self::Groups(product) = self {
-            product.process_inbound(inbound).await;
+            product.process_inbound(inbound, outcome, message).await;
             product.advance_destination_pools().await?;
         }
         Ok(())
@@ -2034,6 +2036,7 @@ fn register_ntcp2_service(
         },
     )
     .startup_requirement(i2pr_core::StartupRequirement::Optional)
+    .depends_on(ServiceName::new(SSU2_SERVICE_NAME).expect("static service name"))
     .depends_on(ServiceName::new(LIFECYCLE_SERVICE_NAME).expect("static service name"));
     builder.register(spec).map_err(|error| {
         DaemonError::RuntimeSupervisorFailed(format!("failed to register NTCP2 service: {error}"))
@@ -2066,8 +2069,8 @@ fn register_ssu2_service(
     ntcp2_delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
-        Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity_with_keys,
-        generate_private_lan_identity_with_keys,
+        Ssu2DaemonService, decode_authenticated_router_i2np, floodfill_body_from_message,
+        generate_controlled_identity_with_keys, generate_private_lan_identity_with_keys,
     };
     use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
@@ -2107,11 +2110,84 @@ fn register_ssu2_service(
                 let children = ctx.children();
                 let readiness = ctx.readiness();
                 Box::pin(async move {
+                    if !ssu2_config.enabled {
+                        if readiness.signal_ready().is_err() {
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    i2pr_core::HealthDetail::new(
+                                        "router ingress owner readiness signal was rejected",
+                                    )
+                                    .ok(),
+                                ),
+                            );
+                        }
+                        loop {
+                            let inbound = tokio::select! {
+                                _ = cancellation.cancelled() => {
+                                    return i2pr_runtime::ServiceResult::RequestedShutdown;
+                                }
+                                inbound = async {
+                                    router_ingress.lock().await.recv().await
+                                } => inbound,
+                            };
+                            let Some(inbound) = inbound else {
+                                return i2pr_runtime::ServiceResult::RequestedShutdown;
+                            };
+                            if inbound.transport == AuthenticatedRouterTransport::Ntcp2
+                                && !ntcp2_delivery.is_current(
+                                    inbound.inbound.peer,
+                                    inbound.inbound.link_id,
+                                )
+                            {
+                                continue;
+                            }
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|duration| {
+                                    duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                })
+                                .unwrap_or(0);
+                            let Ok(decoded) = decode_authenticated_router_i2np(
+                                &inbound.inbound,
+                                now_ms,
+                            ) else {
+                                tracing::debug!(
+                                    "authenticated router ingress rejected by bounded I2NP decoder"
+                                );
+                                continue;
+                            };
+                            if let (
+                                Some(bootstrap),
+                                Some(i2pr_proto::I2npBody::DatabaseStore(store)),
+                            ) = (
+                                bootstrap.as_ref(),
+                                decoded.message().map(i2pr_proto::I2npMessage::body),
+                            ) {
+                                match bootstrap.lock() {
+                                    Ok(mut bootstrap) => match bootstrap
+                                        .ingest_authenticated_router_store(store, now_ms)
+                                    {
+                                        Ok(outcome) => tracing::debug!(
+                                            ?outcome,
+                                            "authenticated RouterInfo store applied"
+                                        ),
+                                        Err(error) => tracing::debug!(
+                                            reason = %error,
+                                            "authenticated unsolicited DatabaseStore refused"
+                                        ),
+                                    },
+                                    Err(_) => tracing::warn!(
+                                        "bootstrap NetDB lock poisoned; authenticated RouterInfo store refused"
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     // Strict profile is enforced twice: once at config
                     // parse time and again here so a future bypass
                     // cannot reach socket ownership.
-                    if !ssu2_config.enabled
-                        || ssu2_config.advertise
+                    if ssu2_config.advertise
                         || ssu2_config.introducer_service
                     {
                         let detail = i2pr_core::HealthDetail::new(
@@ -2580,6 +2656,12 @@ fn register_ssu2_service(
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
                                     .unwrap_or(0);
+                                let decoded = match decode_authenticated_router_i2np(&inbound, now_ms) {
+                                    Ok(decoded) => decoded,
+                                    Err(_) => continue,
+                                };
+                                let outcome = decoded.outcome();
+                                let message = decoded.message();
                                 let mut served = false;
                                 if let Some(state) = floodfill.as_mut() {
                                     let time = i2pr_netdb::FloodfillTime {
@@ -2590,7 +2672,13 @@ fn register_ssu2_service(
                                             .min(u128::from(u64::MAX))
                                             as u64,
                                     };
-                                    match state.handle_inbound(&inbound, time) {
+                                    match state.handle_decoded_inbound(
+                                        inbound.peer,
+                                        inbound.link_id,
+                                        outcome,
+                                        floodfill_body_from_message(message),
+                                        time,
+                                    ) {
                                         Ok(crate::floodfill::FloodfillDispatchOutcome::Ignored(_)) => {}
                                         Ok(_) => {
                                             state
@@ -2606,7 +2694,30 @@ fn register_ssu2_service(
                                         Err(_) => {}
                                     }
                                 }
-                                if owner.process_group_inbound(&inbound).await.is_err() {
+                                if !served
+                                    && let Some(i2pr_proto::I2npBody::DatabaseStore(store)) =
+                                        message.map(i2pr_proto::I2npMessage::body)
+                                    && let Some(bootstrap) = bootstrap.as_ref()
+                                {
+                                    match bootstrap.lock() {
+                                        Ok(mut bootstrap) => match bootstrap
+                                            .ingest_authenticated_router_store(store, now_ms)
+                                        {
+                                            Ok(outcome) => tracing::debug!(
+                                                ?outcome,
+                                                "authenticated NTCP2/SSU2 RouterInfo store applied"
+                                            ),
+                                            Err(error) => tracing::debug!(
+                                                reason = %error,
+                                                "authenticated unsolicited DatabaseStore refused"
+                                            ),
+                                        },
+                                        Err(_) => tracing::warn!(
+                                            "bootstrap NetDB lock poisoned; authenticated RouterInfo store refused"
+                                        ),
+                                    }
+                                }
+                                if owner.process_group_inbound(&inbound, outcome, message).await.is_err() {
                                     owner.shutdown().await;
                                     let detail = i2pr_core::HealthDetail::new(
                                         "Destination-group pool advancement failed",
@@ -2630,11 +2741,7 @@ fn register_ssu2_service(
                                     // disabled probe so the production
                                     // caller references the live-owner
                                     // module without dispatching.
-                                    if let Ok(outcome) =
-                                        dispatch_router_i2np(&inbound, now_ms)
-                                    {
-                                        let _ = controlled_transit_disabled_probe(&outcome);
-                                    }
+                                    let _ = controlled_transit_disabled_probe(&outcome);
                                 }
                             }
                             _ = evaluation.tick() => {

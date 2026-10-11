@@ -1630,6 +1630,19 @@ impl FloodfillServiceState {
         self.coordinator.handle_authenticated_i2np(inbound, time)
     }
 
+    /// Applies an already decoded message from the shared normal-router owner.
+    pub fn handle_decoded_inbound(
+        &mut self,
+        peer: PeerId,
+        link_id: LinkId,
+        outcome: crate::router_i2np::RouterI2npOutcome,
+        body: Option<crate::router_i2np::FloodfillControlBody>,
+        time: FloodfillTime,
+    ) -> Result<FloodfillDispatchOutcome, crate::router_i2np::RouterI2npError> {
+        self.coordinator
+            .handle_authenticated_decoded(peer, link_id, outcome, body, time)
+    }
+
     /// Pops one queued daemon effect for bounded delivery.
     pub fn pop_effect(&mut self) -> Option<FloodfillLeasedEffect> {
         self.coordinator.pop_effect()
@@ -2233,8 +2246,25 @@ impl FloodfillCoordinator {
         inbound: &i2pr_runtime::Ssu2InboundI2np,
         time: FloodfillTime,
     ) -> Result<FloodfillDispatchOutcome, crate::router_i2np::RouterI2npError> {
-        let (outcome, body) =
-            crate::router_i2np::dispatch_router_i2np_with_floodfill_body(inbound, time.wall_ms)?;
+        let decoded = crate::router_i2np::decode_authenticated_router_i2np(inbound, time.wall_ms)?;
+        self.handle_authenticated_decoded(
+            inbound.peer,
+            inbound.link_id,
+            decoded.outcome(),
+            crate::router_i2np::floodfill_body_from_message(decoded.message()),
+            time,
+        )
+    }
+
+    /// Applies shared-owner decoded data without running another I2NP decoder.
+    pub fn handle_authenticated_decoded(
+        &mut self,
+        peer: PeerId,
+        link_id: LinkId,
+        outcome: crate::router_i2np::RouterI2npOutcome,
+        body: Option<crate::router_i2np::FloodfillControlBody>,
+        time: FloodfillTime,
+    ) -> Result<FloodfillDispatchOutcome, crate::router_i2np::RouterI2npError> {
         if !self.role.accepts_new_work() {
             return Ok(FloodfillDispatchOutcome::Ignored(outcome));
         }
@@ -2244,22 +2274,13 @@ impl FloodfillCoordinator {
         };
         match body {
             Some(crate::router_i2np::FloodfillControlBody::DatabaseStore(message)) => {
-                Ok(FloodfillDispatchOutcome::Store(self.handle_store(
-                    inbound.peer,
-                    inbound.link_id,
-                    message_id,
-                    &message,
-                    time,
-                )))
+                Ok(FloodfillDispatchOutcome::Store(
+                    self.handle_store(peer, link_id, message_id, &message, time),
+                ))
             }
-            Some(crate::router_i2np::FloodfillControlBody::DatabaseLookup(lookup)) => {
-                Ok(FloodfillDispatchOutcome::Lookup(self.handle_lookup(
-                    inbound.peer,
-                    inbound.link_id,
-                    &lookup,
-                    time,
-                )))
-            }
+            Some(crate::router_i2np::FloodfillControlBody::DatabaseLookup(lookup)) => Ok(
+                FloodfillDispatchOutcome::Lookup(self.handle_lookup(peer, link_id, &lookup, time)),
+            ),
             None => Ok(FloodfillDispatchOutcome::Ignored(outcome)),
         }
     }

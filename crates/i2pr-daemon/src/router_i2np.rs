@@ -343,6 +343,50 @@ pub struct RouterI2npTransitBuild<'a> {
     pub link_id: LinkId,
 }
 
+/// One canonical bounded decode of an authenticated router message. The
+/// normal daemon owner shares this value with NetDB, tunnel, and service
+/// consumers so each one observes the same peer/link attribution.
+pub struct DecodedRouterI2np {
+    message: Option<I2npMessage>,
+    outcome: RouterI2npOutcome,
+}
+
+impl DecodedRouterI2np {
+    /// Returns the decoded standard or short-transport message, if its type
+    /// is recognized and supported by the codec.
+    pub fn message(&self) -> Option<&I2npMessage> {
+        self.message.as_ref()
+    }
+
+    /// Returns the typed admission and dispatch classification.
+    pub const fn outcome(&self) -> RouterI2npOutcome {
+        self.outcome
+    }
+}
+
+/// Decodes one authenticated message once for all normal router consumers.
+pub fn decode_authenticated_router_i2np(
+    inbound: &i2pr_runtime::Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<DecodedRouterI2np, RouterI2npError> {
+    let (message, outcome) =
+        dispatch_inner_parts(inbound.peer, inbound.link_id, &inbound.bytes, now_ms)?;
+    Ok(DecodedRouterI2np { message, outcome })
+}
+
+/// Projects the NetDB control bodies from the canonical decoded message.
+pub fn floodfill_body_from_message(message: Option<&I2npMessage>) -> Option<FloodfillControlBody> {
+    match message.map(I2npMessage::body) {
+        Some(I2npBody::DatabaseStore(message)) => {
+            Some(FloodfillControlBody::DatabaseStore((**message).clone()))
+        }
+        Some(I2npBody::DatabaseLookup(message)) => {
+            Some(FloodfillControlBody::DatabaseLookup((**message).clone()))
+        }
+        _ => None,
+    }
+}
+
 /// Dispatches one authenticated inbound I2NP message.
 ///
 /// The caller passes the live [`i2pr_runtime::Ssu2InboundI2np`]
@@ -462,17 +506,11 @@ pub fn dispatch_router_i2np_with_floodfill_body(
     inbound: &i2pr_runtime::Ssu2InboundI2np,
     now_ms: u64,
 ) -> Result<(RouterI2npOutcome, Option<FloodfillControlBody>), RouterI2npError> {
-    let (message, outcome) = dispatch_inner(inbound, now_ms)?;
-    let body = match message.map(I2npMessage::into_body) {
-        Some(I2npBody::DatabaseStore(message)) => {
-            Some(FloodfillControlBody::DatabaseStore(*message))
-        }
-        Some(I2npBody::DatabaseLookup(message)) => {
-            Some(FloodfillControlBody::DatabaseLookup(*message))
-        }
-        _ => None,
-    };
-    Ok((outcome, body))
+    let decoded = decode_authenticated_router_i2np(inbound, now_ms)?;
+    Ok((
+        decoded.outcome(),
+        floodfill_body_from_message(decoded.message()),
+    ))
 }
 
 fn dispatch_inner(

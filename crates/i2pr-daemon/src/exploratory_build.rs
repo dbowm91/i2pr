@@ -1084,6 +1084,16 @@ impl ExploratoryBuildCoordinator {
         now_ms: u64,
     ) -> Result<InboundRouteOutcome, RouterI2npError> {
         let outcome = dispatch_router_i2np(inbound, now_ms)?;
+        Ok(self.route_inbound_i2np_classified(inbound, outcome))
+    }
+
+    /// Routes the coordinator portion of an already decoded authenticated
+    /// message without running another I2NP decoder.
+    pub(crate) fn route_inbound_i2np_classified(
+        &mut self,
+        inbound: &Ssu2InboundI2np,
+        outcome: RouterI2npOutcome,
+    ) -> InboundRouteOutcome {
         let coordinator_outcomes = match outcome {
             RouterI2npOutcome::TunnelBuildReserved {
                 kind,
@@ -1098,10 +1108,10 @@ impl ExploratoryBuildCoordinator {
             } => self.route_tunnel_gateway_reply(peer, inbound.bytes.as_slice()),
             _ => Vec::new(),
         };
-        Ok(InboundRouteOutcome {
+        InboundRouteOutcome {
             dispatcher: outcome,
             coordinator: coordinator_outcomes,
-        })
+        }
     }
 
     fn route_build_outcome(
