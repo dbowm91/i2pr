@@ -1,6 +1,6 @@
 # Plan 462 — Normal-process SAM tunnel-build first-divergence corrective
 
-**State:** registered / **ready P2, execute after NTCP2 Plans 459–461 priority work** (2026-10-11). Owner: core-router-recovery / destination-product. Corrective successor to `plans/closure/core-router-recovery/458-status.md`, which confirms the SAM remote product owner is integrated, but real `i2pr run` with four exact-pinned i2pd references still alternates `inbound-build` and `outbound-build` timeouts before STREAM setup. **Independent** of Plans 459–461, and must not block any NTCP2 transport evidence.
+**State:** blocked P2 (2026-10-11). Owner: core-router-recovery / destination-product. Corrective successor to `plans/closure/core-router-recovery/458-status.md`, which confirms the SAM remote product owner is integrated, but real `i2pr run` with four exact-pinned i2pd references still alternates `inbound-build` and `outbound-build` timeouts before STREAM setup. The bounded source and M6 lane comparison found no first causal divergence, so no source correction or post-correction rerun is justified. See [`plans/closure/core-router-recovery/462-status.md`](../../closure/core-router-recovery/462-status.md). **Independent** of Plans 459–461, and must not block any NTCP2 transport evidence.
 
 ## Focused problem and non-goals
 
