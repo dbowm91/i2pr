@@ -26,9 +26,10 @@ stock routers were configured with NTCP2 enabled and SSU2 disabled; an external
 SAM driver completed exact-byte STREAM exchanges in both directions between
 two stock routers. Because NTCP2 was the only enabled router transport, the
 successful stock-generated traffic demonstrates the real NTCP2 message path.
-The pinned debug `SessionConfirmed sent` and authenticated-frame log marker
-set was incomplete in this run, so source-level stage attribution remains a
-limitation; the independent stock application exchange itself completed.
+The corrected bounded repeat exited successfully with eight `SessionConfirmed
+sent` markers and zero authenticated-frame debug markers. The application
+exchange is a passing control; missing authenticated-frame markers limit only
+source-level stage attribution.
 
 Gate C, the stock-to-i2pr direction, and the bounded negative matrix remain
 open. The adjacent Plan 458 ordinary-process attempt reaches i2pr's SAM
@@ -55,9 +56,9 @@ real-peer acceptance gates pass.
 | i2pr-initiated TCP and authentication | Passed: status reported `authenticated_sessions=1`. |
 | i2pr-initiated NTCP2 and I2NP send | Passed: one session authenticated; one compressed DatabaseStore was reported written by the runtime writer. |
 | Stock decoded receipt | Passed: exact-pinned stock NetDB emitted one own-RouterInfo DatabaseStore drop marker. This is the Gate A receive evidence. |
-| Legitimate stock-owned outbound workload and stock-to-stock control | Passed at whole-application scope: two pinned stock SAM peers exchanged exact bytes over a four-peer topology with SSU2 disabled and NTCP2 listeners active. The required debug handshake/frame marker set was incomplete. |
+| Legitimate stock-owned outbound workload and stock-to-stock control | Passed at whole-application scope: two pinned stock SAM peers exchanged exact bytes over a four-peer topology with SSU2 disabled and NTCP2 listeners active. The corrected run exited 0 with 8 SessionConfirmed-sent markers and 0 authenticated-frame debug markers; the latter limits stage attribution only. |
 | Stock-to-i2pr direction | Not completed. The stock SAM client has no i2pr destination because router-backed `SESSION CREATE` fails before stream setup (Plan 458). |
-| Negative matrix / repeat | Not run. One Gate A probe and one stock workload topology were exercised; no negative matrix or repeat was attempted. |
+| Negative matrix / repeat | The one permitted repeat of the stock workload topology passed after the optional-marker checker correction. The bounded negative matrix remains open. |
 
 ## Commands and outcomes
 
@@ -71,18 +72,21 @@ plan455_stock_delivery_status_log_markers=0
 plan455_stock_database_store_self_drop_markers=1
 ```
 
-The stock-owned SAM driver completed these exact-byte exchanges before its
-outer checker stopped at an optional debug-marker check:
+The corrected stock-owned SAM driver completed these exact-byte exchanges and
+exited 0:
 
 ```text
 stock-f-to-stock-c=passed bytes=1816
 stock-c-to-stock-f=passed bytes=2328
+plan455_ntcp2_only_stock_peers=4
+plan455_ntcp2_session_confirmed_sent_markers=8
+plan455_ntcp2_authenticated_frame_markers=0
 ```
 
 | Command | Outcome |
 | --- | --- |
 | `rtk bash tests/integration/ntcp2/plan455_direct_stock_attempt.sh` | Passed Gate A; one authenticated session, one sent I2NP, and one stock NetDb receipt marker. |
-| `rtk python3 tests/integration/ntcp2/plan455_stock_sam_trigger.py` | Both stock SAM STREAM directions exchanged exact bytes on the NTCP2-only topology; the first invocation then returned 1 because the additional debug-marker check was absent. The runner now treats those debug counts as auxiliary and was not rerun under the one-topology budget. |
+| `rtk python3 tests/integration/ntcp2/plan455_stock_sam_trigger.py` | Initial invocation exchanged exact bytes but failed its optional debug-marker assertion. After that assertion was corrected to auxiliary counts, the one permitted repeat exited 0 with both exchanges, four NTCP2-only peers, 8 SessionConfirmed-sent markers, and 0 authenticated-frame debug markers. |
 | `rtk python3 -m py_compile tests/integration/ntcp2/plan455_stock_sam_trigger.py tests/integration/core-router-recovery/plan458_sam_driver.py` | Passed. |
 | `rtk cargo test --locked -p i2pr-interop --all-targets` | Passed, 34 tests. |
 | `rtk cargo clippy --locked -p i2pr-interop --all-targets --all-features -- -D warnings` | Passed. |
