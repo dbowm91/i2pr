@@ -43,6 +43,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+use i2pr_proto::{Date, Mapping, RouterAddress};
+use i2pr_runtime::{CancellationToken, Ntcp2RuntimeConfig, Ntcp2RuntimeService};
+use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
 use tempfile::TempDir;
 
 /// Upper bound on how long the daemon may take to become observable. The
@@ -176,11 +180,152 @@ fn sam_config(address: SocketAddr, data_dir: &Path) -> String {
     )
 }
 
+fn controlled_ntcp2_config(port: u16, data_dir: &Path) -> String {
+    format!(
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = {}\n",
+        data_dir.to_string_lossy(),
+        port,
+    )
+}
+
+fn test_i2p_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+    let mut output = String::new();
+    for chunk in bytes.chunks(3) {
+        let mut value = 0_u32;
+        for byte in chunk {
+            value = (value << 8) | u32::from(*byte);
+        }
+        value <<= 8 * (3 - chunk.len());
+        let digits = if chunk.len() == 1 {
+            2
+        } else if chunk.len() == 2 {
+            3
+        } else {
+            4
+        };
+        for index in 0..digits {
+            output.push(ALPHABET[((value >> (18 - 6 * index)) & 0x3f) as usize] as char);
+        }
+        for _ in digits..4 {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn controlled_ntcp2_client_session(
+    router: &Router,
+    endpoint: SocketAddr,
+    network_id: u8,
+) -> Result<(), String> {
+    let bundle = IdentityStore::in_data_dir(&router.data_dir)
+        .load()
+        .map_err(|_| "router identity unavailable".to_owned())?;
+    let router_hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| "router identity hash unavailable".to_owned())?;
+    let transport = Ntcp2TransportIdentityStore::in_data_dir(&router.data_dir)
+        .load(*router_hash.as_bytes())
+        .map_err(|_| "NTCP2 transport identity unavailable".to_owned())?;
+    let peer_info_bytes = i2pr_daemon::router_i2np::generate_controlled_ntcp2_router_info(
+        &bundle,
+        endpoint.ip(),
+        endpoint.port(),
+        u16::from(network_id),
+        &transport,
+    )
+    .map_err(|_| "daemon NTCP2 RouterInfo could not be reconstructed".to_owned())?;
+    let peer_info = i2pr_proto::RouterInfo::decode(&peer_info_bytes, 1 << 20)
+        .map_err(|_| "daemon NTCP2 RouterInfo could not be decoded".to_owned())?;
+    i2pr_crypto::verify_router_info(&peer_info)
+        .map_err(|_| "daemon NTCP2 RouterInfo signature invalid".to_owned())?;
+    let responder_hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| "router identity hash unavailable".to_owned())?;
+    if i2pr_crypto::router_identity_hash(peer_info.router_identity())
+        .map_err(|_| "RouterInfo identity hash unavailable".to_owned())?
+        != responder_hash
+    {
+        return Err("daemon NTCP2 RouterInfo identity mismatch".to_owned());
+    }
+    let address = peer_info
+        .addresses()
+        .iter()
+        .find(|address| address.transport_style() == "NTCP2")
+        .ok_or_else(|| "daemon NTCP2 RouterAddress missing".to_owned())?;
+    if address.options().get("host") != Some(endpoint.ip().to_string().as_str())
+        || address.options().get("port") != Some(endpoint.port().to_string().as_str())
+        || address.options().get("v") != Some("2")
+        || address.options().get("s")
+            != Some(test_i2p_base64(&transport.transport().key().public_bytes()).as_str())
+        || address.options().get("i") != Some(test_i2p_base64(transport.transport().iv()).as_str())
+    {
+        return Err("daemon NTCP2 RouterAddress material or endpoint mismatch".to_owned());
+    }
+    let client_bundle =
+        RouterIdentityBundle::from_private_bytes([0x91; 32], [0x92; 32], &mut OsRng)
+            .map_err(|_| "client identity generation failed".to_owned())?;
+    let client_static = X25519PrivateKey::from_bytes([0x93; 32]);
+    let client_address = RouterAddress::new(
+        1,
+        Date::from_millis(86_400_000),
+        "NTCP2".to_owned(),
+        Mapping::from_entries(vec![
+            ("v".to_owned(), "2".to_owned()),
+            (
+                "s".to_owned(),
+                test_i2p_base64(&client_static.public_bytes()),
+            ),
+        ])
+        .map_err(|_| "client address options invalid".to_owned())?,
+    )
+    .map_err(|_| "client address invalid".to_owned())?;
+    let client_info = client_bundle
+        .sign_router_info(
+            Date::from_millis(1_000),
+            vec![client_address],
+            Vec::new(),
+            Mapping::from_entries(vec![("netId".to_owned(), network_id.to_string())])
+                .map_err(|_| "client RouterInfo options invalid".to_owned())?,
+        )
+        .map_err(|_| "client RouterInfo signing failed".to_owned())?
+        .encode_to_vec(1 << 20)
+        .map_err(|_| "client RouterInfo encoding failed".to_owned())?;
+    let cancellation = CancellationToken::new();
+    let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default())
+        .map_err(|_| "client NTCP2 runtime config invalid".to_owned())?;
+    let scope = runtime.child_scope(&cancellation);
+    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "client runtime creation failed".to_owned())?;
+    tokio_runtime.block_on(async {
+        let link = runtime
+            .dial_authenticated_loopback_peer(
+                &scope,
+                &peer_info,
+                *responder_hash.as_bytes(),
+                client_static,
+                &client_info,
+                network_id,
+                1,
+                &cancellation,
+            )
+            .await
+            .map_err(|_| "daemon rejected NTCP2 authentication".to_owned())?;
+        link.close();
+        Ok(())
+    })
+}
+
 /// Configures the ordinary daemon's controlled loopback SSU2 owner and SAM
 /// listener. Both remain opt-in; the test names the loopback profile itself.
 fn controlled_ssu2_sam_config(address: SocketAddr, ssu2_port: u16, data_dir: &Path) -> String {
     format!(
-        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[sam]\nenabled = true\nproduct_mode = \"local-only\"\nbind_address = \"127.0.0.1\"\nport = {}\nudp_port = 0\n\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
         data_dir.to_string_lossy(),
         address.port(),
         ssu2_port
@@ -581,6 +726,103 @@ fn run_binds_configured_listener_and_shuts_down_cleanly() {
 }
 
 #[test]
+fn router_network_sam_keeps_serving_without_claiming_product_readiness() {
+    let address = reserve_loopback_port();
+    let router = Router::new(|data_dir| sam_config(address, data_dir));
+    router.generate_identity();
+
+    let mut child = router.spawn();
+    let hello = await_sam_ready(&mut child);
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+
+    let mut client = TcpStream::connect_timeout(&router.sam_address, Duration::from_secs(2))
+        .expect("connect to the real SAM listener");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set SAM reply deadline");
+    client
+        .write_all(
+            b"HELLO VERSION MIN=3.1 MAX=3.1\nSESSION CREATE STYLE=STREAM ID=network DESTINATION=TRANSIENT\n",
+        )
+        .expect("send SAM CREATE in the default router-network mode");
+    let mut reader = BufReader::new(client);
+    let mut hello = String::new();
+    let mut session = String::new();
+    reader.read_line(&mut hello).expect("read SAM HELLO");
+    reader
+        .read_line(&mut session)
+        .expect("read SAM SESSION CREATE");
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+    assert!(
+        session.starts_with("SESSION STATUS RESULT=I2P_ERROR"),
+        "missing router product must refuse SESSION CREATE: {session:?}"
+    );
+    assert!(session.contains("router-backed SAM destination product is unavailable"));
+    drop(reader);
+
+    child.interrupt();
+    let (status, output) = child.finish();
+    assert!(
+        status.success(),
+        "router shutdown failed: {status}\n{output}"
+    );
+}
+
+#[test]
+fn router_network_sam_with_no_service_groups_keeps_router_serving() {
+    let address = reserve_loopback_port();
+    let ssu2_port = reserve_loopback_udp_port();
+    let router = Router::new(|data_dir| {
+        controlled_ssu2_sam_config(address, ssu2_port, data_dir)
+            .replace("product_mode = \"local-only\"\n", "")
+    });
+    router.generate_identity();
+
+    let mut child = router.spawn();
+    let hello = await_sam_ready(&mut child);
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+
+    let mut client = TcpStream::connect_timeout(&router.sam_address, Duration::from_secs(2))
+        .expect("connect to the real SAM listener");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set SAM reply deadline");
+    client
+        .write_all(
+            b"HELLO VERSION MIN=3.1 MAX=3.1\nSESSION CREATE STYLE=STREAM ID=network DESTINATION=TRANSIENT\n",
+        )
+        .expect("send SAM CREATE in router-network mode");
+    let mut reader = BufReader::new(client);
+    let mut hello = String::new();
+    let mut session = String::new();
+    reader.read_line(&mut hello).expect("read SAM HELLO");
+    reader
+        .read_line(&mut session)
+        .expect("read SAM SESSION CREATE");
+    assert!(hello.starts_with("HELLO REPLY RESULT=OK VERSION=3.1"));
+    assert!(
+        session.starts_with("SESSION STATUS RESULT=I2P_ERROR"),
+        "an empty product must still reject remote SESSION CREATE: {session:?}"
+    );
+    assert!(
+        session.contains("router-backed SAM destination provisioning failed"),
+        "a running product must report its failed route provisioning: {session:?}"
+    );
+    drop(reader);
+
+    assert!(
+        child.child.try_wait().expect("try_wait").is_none(),
+        "missing SAM destination composition must not stop the router"
+    );
+    child.interrupt();
+    let (status, output) = child.finish();
+    assert!(
+        status.success(),
+        "router shutdown failed: {status}\n{output}"
+    );
+}
+
+#[test]
 fn controlled_ssu2_and_sam_survive_real_process_restart() {
     let address = reserve_loopback_port();
     let ssu2_port = reserve_loopback_udp_port();
@@ -640,6 +882,114 @@ fn controlled_ssu2_and_sam_survive_real_process_restart() {
     second.interrupt();
     let (status, output) = second.finish();
     assert!(status.success(), "second run failed: {status}\n{output}");
+}
+
+#[test]
+fn controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart() {
+    let address = reserve_loopback_port();
+    let router = Router::new(|data_dir| controlled_ntcp2_config(address.port(), data_dir));
+    router.generate_identity();
+    let key_path = router.data_dir.join("ntcp2.transport.identity");
+
+    let mut first = router.spawn();
+    let mut first_socket = None;
+    let deadline = Instant::now() + READY_DEADLINE;
+    while Instant::now() < deadline {
+        if key_path.exists()
+            && let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200))
+        {
+            first_socket = Some(socket);
+            break;
+        }
+        if let Some(status) = first.child.try_wait().expect("check daemon") {
+            let (_, output) = first.finish();
+            panic!("NTCP2 daemon exited before bind ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    drop(first_socket.expect("controlled NTCP2 listener did not bind"));
+    assert!(
+        controlled_ntcp2_client_session(&router, address, 3).is_err(),
+        "the daemon must reject a wrong-network authenticated session"
+    );
+    controlled_ntcp2_client_session(&router, address, 2)
+        .expect("matching-network client must authenticate to the real daemon process");
+    let first_keys = std::fs::read(&key_path).expect("persist NTCP2 identity-bound keys");
+    assert!(!first_keys.is_empty());
+    first.interrupt();
+    let (status, output) = first.finish();
+    assert!(status.success(), "shutdown failed: {status}\n{output}");
+
+    let mut second = router.spawn();
+    let mut second_socket = None;
+    let deadline = Instant::now() + READY_DEADLINE;
+    while Instant::now() < deadline {
+        if let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+            second_socket = Some(socket);
+            break;
+        }
+        if let Some(status) = second.child.try_wait().expect("check restarted daemon") {
+            let (_, output) = second.finish();
+            panic!("restarted NTCP2 daemon exited before bind ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    drop(second_socket.expect("restarted NTCP2 listener did not bind"));
+    let second_keys = std::fs::read(&key_path).expect("read restarted NTCP2 keys");
+    assert_eq!(second_keys, first_keys, "restart must preserve key and IV");
+    second.interrupt();
+    let (status, output) = second.finish();
+    assert!(
+        status.success(),
+        "restarted shutdown failed: {status}\n{output}"
+    );
+}
+
+#[test]
+fn occupied_controlled_ntcp2_port_degrades_without_stopping_router() {
+    let address = reserve_loopback_port();
+    let ssu2_port = reserve_loopback_udp_port();
+    let router = Router::new(|data_dir| {
+        format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nbind_ipv6 = \"\"\nport = {}\nadvertise = false\nintroducer_service = false\n",
+            controlled_ntcp2_config(address.port(), data_dir),
+            ssu2_port,
+        )
+    });
+    router.generate_identity();
+    let occupier = TcpListener::bind(address).expect("occupy configured NTCP2 port");
+
+    let mut child = router.spawn();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Some(status) = child.child.try_wait().expect("check daemon") {
+            let (_, output) = child.finish();
+            panic!("optional NTCP2 bind failure stopped the router ({status}):\n{output}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    assert!(
+        child
+            .child
+            .try_wait()
+            .expect("router remains running")
+            .is_none(),
+        "the optional NTCP2 bind failure must not stop the daemon"
+    );
+    let ssu2_conflict = std::net::UdpSocket::bind(("127.0.0.1", ssu2_port))
+        .expect_err("SSU2 must remain bound while NTCP2 degrades");
+    assert_eq!(ssu2_conflict.kind(), std::io::ErrorKind::AddrInUse);
+    drop(occupier);
+    child.interrupt();
+    let (status, output) = child.finish();
+    assert!(
+        status.success(),
+        "router shutdown failed: {status}\n{output}"
+    );
+    assert!(
+        !router.data_dir.join("ntcp2.transport.identity").exists(),
+        "a failed pre-key bind must not create NTCP2 key material"
+    );
 }
 
 #[test]

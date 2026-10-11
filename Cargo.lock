@@ -1239,6 +1239,7 @@ name = "i2pr-interop"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "flate2",
  "i2pr-crypto",
  "i2pr-proto",
  "i2pr-runtime",

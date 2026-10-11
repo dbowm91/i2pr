@@ -754,8 +754,18 @@ impl SamServiceState {
                 .expect("sam destinations poisoned")
                 .get(destination_id)
                 .expect("sender still registered");
-            let (peer_lease_set2, peer_identity_key) =
-                peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+            let Some((peer_lease_set2, peer_identity_key)) = peer.with(|bridge| {
+                bridge
+                    .lease_set2()
+                    .cloned()
+                    .map(|lease_set2| (lease_set2, bridge.identity_netdb_key()))
+            }) else {
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                if !is_datagram {
+                    self.terminate_failed_delivery(destination_id, &request);
+                }
+                continue;
+            };
             let peer_lease_set2 = match i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
                 peer_lease_set2,
                 Some(peer_identity_key),

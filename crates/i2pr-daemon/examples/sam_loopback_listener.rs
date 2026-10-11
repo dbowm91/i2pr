@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let state = Arc::new(SamServiceState::new(sam_config(port))?);
+    let state = Arc::new(SamServiceState::new_local_only(sam_config(port))?);
     let bind_address = state.bind_address();
     let (listener, bound_address) = state.bind(bind_address).await?;
     let parent = CancellationToken::new();

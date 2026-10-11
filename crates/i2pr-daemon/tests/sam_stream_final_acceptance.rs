@@ -77,7 +77,7 @@ async fn start_listener(
     ChildScope,
     CancellationToken,
 ) {
-    let state = Arc::new(SamServiceState::new(config.clone()).expect("state"));
+    let state = Arc::new(SamServiceState::new_local_only(config.clone()).expect("state"));
     if let Some(profile) = faults {
         state.install_test_fault_profile(profile);
     }

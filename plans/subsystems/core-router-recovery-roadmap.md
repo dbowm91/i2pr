@@ -159,6 +159,31 @@ Source-evidenced blockers from 446–449 are separate, not one serial prerequisi
 
 **Acceptance discipline:** prior successes are lower-layer regression baselines, not prerequisites to repeat in every new fixture. A positive stock control is mandatory for an asserted stock selection/topology claim when ambiguous; a valid observed authenticated i2pr link need not be discarded simply because a different full stock-to-stock topology was not tested. Distinguish fixture-ineligible, no-dial-trigger, transport, NetDB, tunnel and application boundaries. Finite attempts prevent unchanged retries, **not** a repeat after a proved fixture correction. No Emissary implementation/vectors copied; only documented behavior is consulted. All normal/public claims stay controlled by `GUARDRAILS.md`, `specs/CONFORMANCE.md`, `specs/support.toml` and the historical closure authority.
 
+### NTCP2-prioritized corrective queue — Plans 455–458 (2026-10-10)
+
+This work supersedes **only the execution priority/order**, not any historical closure, support claim, or original final public gates. Plan 452's two ordinary i2pd routers used explicit disjoint CLI datadirs and known peer RouterInfos but made zero outbound attempts: i2pd's `Transports::PostMessages` only reaches `ConnectToPeer` on an I2NP send. A sound test must *induce* a real outbound message. The current daemon rejects NTCP2 outright in `config::normalize_ntcp2`, despite the existing transport/runtime and Plan 454 accountancy adapters. Plan 451's missing SAM remote product remains a distinct secondary source gap.
+
+```text
+                          P0 parallel, no SAM/public/LAN dependency:
+452 no-dial-trigger ----> 455 initiated i2pr→i2pd I2NP + stock-originated send control
+450 real run + 454 -----> 456 guarded real-daemon NTCP2 owner / persistent RI lifecycle
+                               |               |
+                               +------ 457 <---+  whole-process NTCP2 I2NP + SSU2 fallback
+                                               -> 434/435 later full two-family/public gate
+
+451 SAM local-only fabric -> 458 remote SAM owner (P2 after NTCP2 priority work)
+444 Java candidate/store -> existing Plan 444 (deferred, no duplicate planning)
+```
+
+| Plan | Registered state | Path | Success boundary |
+| --- | --- | --- | --- |
+| 455 | blocked P0 | `plans/implementation/ntcp2-transport/455-initiated-i2np-and-stock-peer-workload-recovery.md` | `plans/closure/ntcp2-transport/455-status.md`: Gates A/B passed; stock-to-i2pr delivery and negative matrix remain open |
+| 456 | passed at controlled lifecycle scope P0 | `plans/implementation/ntcp2-transport/456-guarded-normal-daemon-ntcp2-service-owner.md` | `plans/closure/ntcp2-transport/456-status.md`: controlled listener, signed key/RI lifecycle, authenticated matching peer and restart; no external/public claim |
+| 457 | blocked on 455 P1 | `plans/implementation/ntcp2-transport/457-real-process-ntcp2-i2np-and-ssu2-fallback-acceptance.md` | `plans/closure/ntcp2-transport/457-status.md`: Plan 455 Gates A/B passed; stock-to-i2pr delivery and dual-family continuity remain unproven |
+| 458 | blocked P2 | `plans/implementation/core-router-recovery/458-remote-sam-product-composition-corrective.md` | Shared dynamic SAM composition now stops on rejected build submission and correlates exact-attempt invalid replies, including type-19 `TunnelGateway` replies with a deterministic attempt-ID regression; latest four-peer ordinary-process attempt still times out at outbound build before stream exchange. Cause remains unknown; M6 service-group Streaming is lower-layer evidence only. |
+
+No baseline status becomes `passed` on plan registration. The partial failures of 451/452 remain authoritative; 455 may retain valid i2pr-initiated evidence if a stock test topology cannot make a valid reference outbound send. A final public capability still requires the unrelated external address and two-family gates in Plans 431/433/435/439.
+
 ## 8. Cross-cutting invariants
 
 No network-supplied raw router identity becomes trusted without validation. Do not couple transport public key to destination/client identity or allow correlation between multiple client destinations via service metadata. Preserve non-advertised defaults and explicit operator authorization for changes in public exposure. Enforce per-address and global pending-handshake, verified-link, byte, fragment, NetDB, tunnel, and floodfill budgets. All network activity is cancellable and recoverable; snapshots and logs exclude secret/identity-bearing full values. Retain protocol specifications and clean-room provenance; Emissary is an **architectural reference only** outside the Proposal 170 ADR 0028 exception.

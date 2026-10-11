@@ -131,6 +131,7 @@ fn readiness_expectation(service: &str) -> &'static str {
         CONSOLE_SERVICE_NAME => "loopback router console listener bound and accepting",
         ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
         SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
+        NTCP2_SERVICE_NAME => "controlled NTCP2 TCP listener bound with local RouterInfo ready",
         SSU2_SERVICE_NAME => "controlled SSU2 router owner running",
         APP_RUNTIME_SERVICE_NAME => {
             "i2pr-appd manager child spawned and manager handshake completed"
@@ -418,9 +419,17 @@ fn build_daemon_graph_inner(
             "enabled service tunnels require service_tunnels.enabled = true".to_owned(),
         ));
     }
-    if config.transport.ntcp2.enabled {
+    if config.transport.ntcp2.enabled
+        && config.transport.ntcp2.qualification_profile
+            != crate::config::Ntcp2QualificationProfile::ControlledLoopback
+    {
         return Err(DaemonError::RuntimeSupervisorFailed(
-            "NTCP2 activation is not available while support is experimental".to_string(),
+            "enabled NTCP2 requires the controlled-loopback qualification profile".to_string(),
+        ));
+    }
+    if config.transport.ntcp2.enabled && config.network.network_id > u16::from(u8::MAX) {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "controlled NTCP2 network ID exceeds the handshake width".to_owned(),
         ));
     }
 
@@ -580,7 +589,13 @@ fn build_daemon_graph_inner(
     let shared_service_manager = build_shared_service_manager(config)?;
 
     if config.sam.enabled {
-        register_sam_service(&mut builder, config, inspection, &addressbook)?;
+        register_sam_service(
+            &mut builder,
+            config,
+            inspection,
+            &addressbook,
+            shared_service_manager.clone(),
+        )?;
     }
 
     if config.app_runtime.enabled {
@@ -610,6 +625,17 @@ fn build_daemon_graph_inner(
 
     if config.news.enabled {
         register_news_refresh_service(&mut builder, config, inspection)?;
+    }
+
+    if config.transport.ntcp2.enabled {
+        register_ntcp2_service(
+            &mut builder,
+            &config.transport.ntcp2,
+            config.network.network_id,
+            &config.router.data_dir,
+            bandwidth.clone(),
+            bootstrap.clone(),
+        )?;
     }
 
     if config.ssu2.enabled {
@@ -729,24 +755,37 @@ fn register_sam_service(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
+    shared_service_manager: Option<Arc<crate::service_tunnels::ServiceTunnelManager>>,
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
+    let sam_product_mode = config.sam_product_mode;
     let address = sam_config.bind_socket();
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
+    let shared_service_manager = shared_service_manager.clone();
     builder
         .register(service_spec(
             SAM_SERVICE_NAME,
             ServiceClassification::Optional,
             move |ctx| {
                 let sam_config = sam_config.clone();
+                let sam_product_mode = sam_product_mode;
                 let inspection = Arc::clone(&inspection);
                 let addressbook = Arc::clone(&addressbook);
+                let shared_service_manager = shared_service_manager.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
                 Box::pin(async move {
-                    let state = match SamServiceState::new(sam_config) {
+                    let state_result = match sam_product_mode {
+                        crate::config::SamProductMode::RouterNetwork => {
+                            SamServiceState::new_router_network(sam_config)
+                        }
+                        crate::config::SamProductMode::LocalOnly => {
+                            SamServiceState::new_local_only(sam_config)
+                        }
+                    };
+                    let state = match state_result {
                         Ok(state) => Arc::new(state),
                         Err(error) => {
                             let detail = i2pr_core::HealthDetail::new(format!(
@@ -761,6 +800,11 @@ fn register_sam_service(
                             );
                         }
                     };
+                    if sam_product_mode == crate::config::SamProductMode::RouterNetwork
+                        && let Some(manager) = shared_service_manager
+                    {
+                        state.attach_router_network_manager(manager);
+                    }
                     // Publish the live owner for the Plan 288
                     // inspection plane (read-only snapshot access).
                     inspection.publish_sam(Arc::clone(&state));
@@ -978,7 +1022,11 @@ fn register_i2cp_service(
 pub fn build_shared_service_manager(
     config: &Config,
 ) -> Result<Option<Arc<crate::service_tunnels::ServiceTunnelManager>>, DaemonError> {
-    if !(config.i2pcontrol.enabled || (config.ssu2.enabled && service_tunnels_active(config))) {
+    if !(config.i2pcontrol.enabled
+        || (config.ssu2.enabled && service_tunnels_active(config))
+        || (config.sam.enabled
+            && config.sam_product_mode == crate::config::SamProductMode::RouterNetwork))
+    {
         return Ok(None);
     }
     let manager = crate::service_tunnels::ServiceTunnelManager::new(
@@ -1044,7 +1092,7 @@ pub fn build_outbound_secret_store(
     }
 }
 
-/// Whether the service-tunnel runtime must come up for this configuration.
+/// Whether the shared network product owner must come up for this configuration.
 ///
 /// Plan 337: the destination-group product owns the one shared
 /// `ServiceTunnelManager`, so it must exist whenever a service tunnel can
@@ -1053,9 +1101,12 @@ pub fn build_outbound_secret_store(
 /// none configured. Before Plan 337 the gate was "at least one startup
 /// tunnel is enabled", which meant a control-created tunnel had no product
 /// to be published through. I2PControl is disabled by default, so an
-/// ordinary profile is unaffected.
+/// ordinary profile is unaffected. Plan 458 also starts the shared owner
+/// for enabled router-network SAM, without eagerly creating service groups.
 fn service_tunnels_active(config: &Config) -> bool {
     config.i2pcontrol.enabled
+        || (config.sam.enabled
+            && config.sam_product_mode == crate::config::SamProductMode::RouterNetwork)
         || config
             .service_tunnels
             .tunnels
@@ -1068,6 +1119,8 @@ fn service_tunnels_active(config: &Config) -> bool {
 /// makes the I2PControl service depend on it, so the two must not drift
 /// apart; [`register_ssu2_service`] registers this exact name.
 const SSU2_SERVICE_NAME: &str = "ssu2-router";
+/// Stable supervisor identifier for the controlled loopback NTCP2 owner.
+const NTCP2_SERVICE_NAME: &str = "ntcp2-router";
 // A signed placeholder is required by the runtime constructor before the
 // socket exists. It is overwritten from the OS-reported endpoint before the
 // service reports readiness or hands the owner to a product consumer.
@@ -1524,6 +1577,312 @@ async fn run_floodfill_evaluation(
             }
         }
     }
+}
+
+fn ntcp2_service_failure(
+    category: i2pr_core::ServiceFailureCategory,
+    reason: &'static str,
+) -> i2pr_runtime::ServiceResult {
+    let detail = i2pr_core::HealthDetail::new(reason).ok();
+    i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(category, detail))
+}
+
+/// Registers the guarded loopback NTCP2 runtime owner.
+fn register_ntcp2_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &crate::config::Ntcp2Config,
+    network_id: u16,
+    data_dir: &std::path::Path,
+    bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+) -> Result<(), DaemonError> {
+    use i2pr_runtime::{
+        IpPrefixPolicy, Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits,
+        Ntcp2RuntimeService,
+    };
+    use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use zeroize::Zeroizing;
+
+    let config = config.clone();
+    let data_dir = data_dir.to_path_buf();
+    let peer_records = bootstrap
+        .and_then(|bootstrap| {
+            bootstrap
+                .lock()
+                .ok()
+                .map(|owner| owner.validated_router_info_snapshot())
+        })
+        .unwrap_or_default();
+    let limits = Ntcp2RuntimeLimits {
+        max_active_links: config.max_active_links,
+        max_replay_entries: config.max_replay_entries,
+        ..Ntcp2RuntimeLimits::default()
+    };
+    let runtime_config = Ntcp2RuntimeConfig {
+        limits,
+        deadlines: Ntcp2RuntimeDeadlines {
+            connect: config.connect_timeout,
+            handshake: config.handshake_timeout,
+            read_idle: config.read_idle_timeout,
+            write: config.write_timeout,
+            queue_wait: config.queue_wait_timeout,
+            drain: config.drain_timeout,
+        },
+        prefixes: IpPrefixPolicy::new(config.ipv4_prefix, config.ipv6_prefix).map_err(|_| {
+            DaemonError::RuntimeSupervisorFailed(
+                "normalized NTCP2 admission prefixes are invalid".to_owned(),
+            )
+        })?,
+    };
+    let spec = service_spec(NTCP2_SERVICE_NAME, ServiceClassification::Optional, move |ctx| {
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let peer_records = peer_records.clone();
+        let bandwidth = bandwidth.clone();
+        let cancellation = ctx.cancellation().clone();
+        let children = ctx.children();
+        let readiness = ctx.readiness();
+        Box::pin(async move {
+            if !config.enabled
+                || config.qualification_profile
+                    != crate::config::Ntcp2QualificationProfile::ControlledLoopback
+                || !config.bind_address.is_loopback()
+                || config.listen_port < 1024
+            {
+                return ntcp2_service_failure(
+                    i2pr_core::ServiceFailureCategory::InvalidState,
+                    "NTCP2 requires the explicit controlled-loopback profile",
+                );
+            }
+            let runtime = match Ntcp2RuntimeService::new_with_bandwidth(
+                runtime_config,
+                bandwidth.clone(),
+            ) {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 runtime or shared bandwidth limits are invalid",
+                    );
+                }
+            };
+            let requested = SocketAddr::new(config.bind_address, config.listen_port);
+            let mut listener = match runtime.listen(requested, &children).await {
+                Ok(listener) if listener.local_addr() == requested => listener,
+                Ok(listener) => {
+                    listener.shutdown();
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 bound endpoint differs from normalized configuration",
+                    );
+                }
+                Err(_) => {
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::Internal,
+                        "NTCP2 loopback listener could not bind",
+                    );
+                }
+            };
+            let bundle = match IdentityStore::in_data_dir(&data_dir).load() {
+                Ok(bundle) => bundle,
+                Err(_) => {
+                    listener.shutdown();
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 requires the existing persistent router identity",
+                    );
+                }
+            };
+            let router_hash = match bundle.identity().hash() {
+                Ok(hash) => *hash.as_bytes(),
+                Err(_) => {
+                    listener.shutdown();
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 router identity hash is unavailable",
+                    );
+                }
+            };
+            let transport = match Ntcp2TransportIdentityStore::in_data_dir(&data_dir)
+                .load_or_generate(router_hash, &mut i2pr_crypto::OsRng)
+            {
+                Ok(material) => material,
+                Err(_) => {
+                    listener.shutdown();
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 identity-bound transport keys are unavailable",
+                    );
+                }
+            };
+            let router_info = match crate::router_i2np::generate_controlled_ntcp2_router_info(
+                &bundle,
+                listener.local_addr().ip(),
+                listener.local_addr().port(),
+                network_id,
+                &transport,
+            ) {
+                Ok(info) => Arc::new(info),
+                Err(_) => {
+                    listener.shutdown();
+                    return ntcp2_service_failure(
+                        i2pr_core::ServiceFailureCategory::InvalidState,
+                        "NTCP2 signed RouterInfo does not match the bound endpoint",
+                    );
+                }
+            };
+            let static_secret = Arc::new(Zeroizing::new(
+                *transport.transport().key().secret_bytes(),
+            ));
+            let obfuscation_iv = *transport.transport().iv();
+            let next_link = Arc::new(AtomicU64::new(1));
+            if let Err(result) = signal_running(NTCP2_SERVICE_NAME, &readiness) {
+                listener.shutdown();
+                return result;
+            }
+            if !peer_records.is_empty() {
+                let outbound_runtime = runtime.clone();
+                let outbound_peers = peer_records.clone();
+                let outbound_local_info = Arc::clone(&router_info);
+                let outbound_static_secret = Arc::clone(&static_secret);
+                let outbound_scope = children.clone();
+                let outbound_next_link = Arc::clone(&next_link);
+                let outbound_cancel = cancellation.clone();
+                let _ = children.spawn(move |task_cancel| async move {
+                    let local_info = outbound_local_info.as_ref().clone();
+                    let mut cursor = 0usize;
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = task_cancel.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(Duration::from_secs(15)) => {}
+                        }
+                        let Some(candidate) = outbound_peers.get(cursor % outbound_peers.len()) else {
+                            return Ok(());
+                        };
+                        cursor = cursor.wrapping_add(1);
+                        if candidate.key().as_bytes() == &router_hash {
+                            continue;
+                        }
+                        let static_key = i2pr_crypto::X25519PrivateKey::from_bytes(
+                            **outbound_static_secret,
+                        );
+                        let raw_id = outbound_next_link.fetch_add(1, Ordering::Relaxed);
+                        let Ok(mut link) = outbound_runtime.dial_authenticated_loopback_peer(
+                            &outbound_scope,
+                            candidate.router_info(),
+                            *candidate.key().as_bytes(),
+                            static_key,
+                            &local_info,
+                            network_id as u8,
+                            raw_id,
+                            &outbound_cancel,
+                        ).await else {
+                            continue;
+                        };
+                        let peer = i2pr_transport::PeerId::from_hash(
+                            i2pr_proto::Hash::from_bytes(*candidate.key().as_bytes()),
+                        );
+                        let Some(link_id) = i2pr_transport::LinkId::new(raw_id).ok() else {
+                            link.close();
+                            continue;
+                        };
+                        loop {
+                            tokio::select! {
+                                biased;
+                                _ = task_cancel.cancelled() => break,
+                                received = link.recv_i2np_messages(&task_cancel) => {
+                                    let Ok(Some(messages)) = received else { break; };
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|value| value.as_millis().min(u128::from(u64::MAX)) as u64)
+                                        .unwrap_or(0);
+                                    for bytes in messages {
+                                        let _ = crate::router_i2np::dispatch_router_i2np_parts(
+                                            peer, link_id, &bytes, now_ms,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        link.close();
+                    }
+                });
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        listener.shutdown();
+                        return i2pr_runtime::ServiceResult::RequestedShutdown;
+                    }
+                    inbound = listener.next() => {
+                        let Some(inbound) = inbound else {
+                            return i2pr_runtime::ServiceResult::RequestedShutdown;
+                        };
+                        let runtime = runtime.clone();
+                        let router_info = Arc::clone(&router_info);
+                        let static_secret = Arc::clone(&static_secret);
+                        let task_scope = children.clone();
+                        let next_link = Arc::clone(&next_link);
+                        let _ = children.spawn(move |task_cancel| async move {
+                            let responder_identity = i2pr_runtime::Ntcp2ResponderIdentity::new(
+                                &static_secret,
+                                router_hash,
+                                obfuscation_iv,
+                                network_id as u8,
+                                &router_info,
+                            );
+                            let result = runtime.authenticate_inbound(
+                                inbound,
+                                responder_identity,
+                                &task_cancel,
+                            ).await;
+                            let Ok((inbound, handshake)) = result else { return Ok(()); };
+                            let peer = i2pr_transport::PeerId::from_hash(
+                                handshake.authenticated.peer().router_hash,
+                            );
+                            let raw_id = next_link.fetch_add(1, Ordering::Relaxed);
+                            let Some(link_id) = i2pr_transport::LinkId::new(raw_id).ok() else {
+                                return Ok(());
+                            };
+                            let Ok(mut link) = runtime.promote_authenticated_inbound(
+                                &task_scope, inbound, handshake, raw_id,
+                            ) else { return Ok(()); };
+                            loop {
+                                tokio::select! {
+                                    biased;
+                                    _ = task_cancel.cancelled() => break,
+                                    received = link.recv_i2np_messages(&task_cancel) => {
+                                        let Ok(Some(messages)) = received else { break; };
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|value| value.as_millis().min(u128::from(u64::MAX)) as u64)
+                                            .unwrap_or(0);
+                                        for bytes in messages {
+                                            let _ = crate::router_i2np::dispatch_router_i2np_parts(
+                                                peer, link_id, &bytes, now_ms,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            link.close();
+                            Ok(())
+                        });
+                    }
+                }
+            }
+        })
+    })
+    .startup_requirement(i2pr_core::StartupRequirement::Optional)
+    .depends_on(ServiceName::new(LIFECYCLE_SERVICE_NAME).expect("static service name"));
+    builder.register(spec).map_err(|error| {
+        DaemonError::RuntimeSupervisorFailed(format!("failed to register NTCP2 service: {error}"))
+    })?;
+    Ok(())
 }
 
 /// Registers the supervised loopback SSU2 router service in the
@@ -2647,7 +3006,7 @@ mod tests {
         assert!(matches!(
             err,
             crate::config::ConfigError::Semantic {
-                field: "transport.ntcp2.enabled",
+                field: "transport.ntcp2.qualification_profile",
                 ..
             }
         ));

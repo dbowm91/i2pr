@@ -191,6 +191,8 @@ pub enum AuthenticatedLinkError {
     Closed,
     /// A frame or block violated the runtime-neutral protocol bounds.
     Frame(FrameError),
+    /// An authenticated plaintext contained a malformed block sequence.
+    Block(i2pr_transport_ntcp2::block::BlockError),
     /// A bounded socket operation failed.
     Io(IoErrorKind),
     /// The child scope could not retain the link owner.
@@ -204,6 +206,7 @@ impl fmt::Display for AuthenticatedLinkError {
             Self::Cancelled => formatter.write_str("authenticated NTCP2 link operation cancelled"),
             Self::Closed => formatter.write_str("authenticated NTCP2 link is closed"),
             Self::Frame(error) => error.fmt(formatter),
+            Self::Block(error) => error.fmt(formatter),
             Self::Io(kind) => write!(formatter, "authenticated NTCP2 link I/O failed: {kind:?}"),
             Self::ChildScope => {
                 formatter.write_str("authenticated NTCP2 link child scope rejected")
@@ -401,6 +404,30 @@ impl AuthenticatedLink {
             _ = self.cancellation.cancelled() => Ok(None),
             frame = self.receiver.recv() => Ok(frame),
         }
+    }
+
+    /// Receives one authenticated frame and extracts its bounded I2NP blocks.
+    /// The frame queue lease is released before the owned messages are returned.
+    pub async fn recv_i2np_messages(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<Vec<u8>>>, AuthenticatedLinkError> {
+        let Some(frame) = self.recv(cancellation).await? else {
+            return Ok(None);
+        };
+        let parsed = frame
+            .frame()
+            .plaintext()
+            .parse()
+            .map_err(AuthenticatedLinkError::Block)?;
+        let mut messages = Vec::new();
+        for block in parsed.into_blocks() {
+            if let i2pr_transport_ntcp2::block::DecodedBlock::I2np(message) = block {
+                messages.push(message.as_bytes().to_vec());
+            }
+        }
+        drop(frame);
+        Ok(Some(messages))
     }
 
     /// Plan 093: bounded correlated receive entry point. This method
@@ -792,7 +819,7 @@ mod tests {
         assert!(!receiver_scope.shutdown().await.failed());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn authenticated_socket_budget_cancellation_releases_queue_across_restart() {
         let governor = BandwidthGovernor::new(crate::BandwidthGovernorConfig {
             inbound_bytes_per_second: 64 * 1024,
@@ -882,6 +909,7 @@ mod tests {
         assert_eq!(sender.snapshot().queued_items, 0);
         assert_eq!(sender.snapshot().queued_bytes, 0);
         receiver.close();
+        tokio::time::advance(Duration::from_secs(2)).await;
 
         // A fresh supervised link uses the same governor after owner restart.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

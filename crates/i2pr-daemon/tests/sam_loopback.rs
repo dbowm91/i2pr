@@ -41,7 +41,7 @@ async fn start_listener(
     ChildScope,
     CancellationToken,
 ) {
-    let state = Arc::new(SamServiceState::new(config.clone()).expect("state"));
+    let state = Arc::new(SamServiceState::new_local_only(config.clone()).expect("state"));
     let bind_address = state.bind_address();
     let (listener, bound_address) = state.bind(bind_address).await.expect("bind");
     let parent = CancellationToken::new();

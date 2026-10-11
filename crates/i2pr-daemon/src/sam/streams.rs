@@ -345,11 +345,11 @@ pub(crate) enum InboundReceiveProjectionError {
 #[allow(dead_code)]
 pub struct SamDestinationBridge {
     identity: Arc<DestinationIdentity>,
-    lease_set2: LeaseSet2,
+    lease_set2: Option<LeaseSet2>,
     streaming: StreamingManager,
     routing: DestinationRouting,
     session_manager: EciesSessionManager,
-    outbound_role: DestinationOutboundRole,
+    outbound_role: Option<DestinationOutboundRole>,
     dispatcher: DestinationDispatcher,
     lease_set2_store: LeaseSet2Store,
     receiver_dispatcher: DestinationDispatcher,
@@ -424,6 +424,35 @@ impl SamDestinationBridge {
         now_seconds: u32,
         streaming_config: StreamingConfig,
     ) -> Self {
+        Self::build(
+            identity,
+            Some(lease_set2),
+            Some(outbound_role),
+            now_seconds,
+            streaming_config,
+        )
+    }
+
+    /// Builds a router-network bridge before its real LeaseSet and tunnel
+    /// pool have been provisioned. This constructor carries no local-fabric
+    /// material; router-network composition must install validated live
+    /// state before the bridge can route traffic.
+    #[allow(dead_code)] // consumed by the bounded SAM/product factory integration
+    pub(crate) fn with_router_identity(
+        identity: Arc<DestinationIdentity>,
+        now_seconds: u32,
+        streaming_config: StreamingConfig,
+    ) -> Self {
+        Self::build(identity, None, None, now_seconds, streaming_config)
+    }
+
+    fn build(
+        identity: Arc<DestinationIdentity>,
+        lease_set2: Option<LeaseSet2>,
+        outbound_role: Option<DestinationOutboundRole>,
+        now_seconds: u32,
+        streaming_config: StreamingConfig,
+    ) -> Self {
         let mut receiver_dispatcher = DestinationDispatcher::new();
         receiver_dispatcher
             .register_destination(identity.id())
@@ -475,12 +504,12 @@ impl SamDestinationBridge {
         self.identity.id()
     }
 
-    pub const fn lease_set2(&self) -> &LeaseSet2 {
-        &self.lease_set2
+    pub fn lease_set2(&self) -> Option<&LeaseSet2> {
+        self.lease_set2.as_ref()
     }
 
-    pub const fn outbound_role(&self) -> &DestinationOutboundRole {
-        &self.outbound_role
+    pub fn outbound_role(&self) -> Option<&DestinationOutboundRole> {
+        self.outbound_role.as_ref()
     }
 
     /// Plan 208 — mutable accessor for the per-destination outbound
@@ -488,8 +517,8 @@ impl SamDestinationBridge {
     /// Plan 208 remote-route helper) own the swap-and-restore cycle
     /// that consumes the role by move; the accessor is only used
     /// inside the daemon, never exposed over the public API.
-    pub fn outbound_role_mut(&mut self) -> &mut DestinationOutboundRole {
-        &mut self.outbound_role
+    pub fn outbound_role_mut(&mut self) -> Option<&mut DestinationOutboundRole> {
+        self.outbound_role.as_mut()
     }
 
     pub fn identity_destination_hash(&self) -> [u8; 32] {
@@ -616,6 +645,17 @@ impl SamDestinationBridge {
         self.identity.id().as_netdb_key()
     }
 
+    /// Whether this bridge carries the explicit localhost-only fabric
+    /// material used by the co-owned delivery seam. Router-network bridges
+    /// stay out of that route and use the shared daemon product owner.
+    fn has_local_product_material(&self) -> bool {
+        // `bridge_to_peer` receives the peer's inbound tunnel from the
+        // caller, so this co-owned delivery seam needs only the sender's
+        // signed LeaseSet2 and outbound role. The runtime driver separately
+        // requires an inbound factory when it provisions repeated deliveries.
+        self.lease_set2.is_some() && self.outbound_role.is_some()
+    }
+
     /// Plan 210 §E — runs the canonical
     /// [`i2pr_client::StreamingDestinationAdapter::send`] against the
     /// bridge's **real** mutable state without swapping in any
@@ -648,12 +688,19 @@ impl SamDestinationBridge {
     ) -> Result<i2pr_client::OutboundDeliveryPlan, String> {
         let local_id = self.identity.id();
         let local_static_secret = *self.identity.static_secret_bytes();
-        let local_lease_set2 = self.lease_set2.clone();
+        let local_lease_set2 = self
+            .lease_set2
+            .as_ref()
+            .ok_or_else(|| "local LeaseSet2 material is not installed".to_owned())?
+            .clone();
         let mut os_rng = OsRng;
         let mut rng = UnwrapMut(&mut os_rng);
         let routing = &self.routing;
         let session = &mut self.session_manager;
-        let outbound = &self.outbound_role;
+        let outbound = self
+            .outbound_role
+            .as_ref()
+            .ok_or_else(|| "local outbound role is not installed".to_owned())?;
         i2pr_client::StreamingDestinationAdapter::send(
             request,
             routing,
@@ -1558,7 +1605,10 @@ impl SamDestinations {
     /// destination hash (the SAM `PUB` value the destination owns).
     pub fn lookup_by_peer_hash(&self, peer_hash: &[u8; 32]) -> Option<SamDestinationHandle> {
         let local_id = self.by_peer.get(peer_hash).copied()?;
-        self.by_id.get(&local_id).cloned()
+        let handle = self.by_id.get(&local_id).cloned()?;
+        handle
+            .with(|bridge| bridge.has_local_product_material())
+            .then_some(handle)
     }
 
     /// Resolves a peer destination hash to the locally-owned bridge's
@@ -1582,8 +1632,14 @@ impl SamDestinations {
         let Some(handle) = self.by_id.get(&local_id).cloned() else {
             return Ok(None);
         };
-        let (lease_set2, identity_key) =
-            handle.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+        let Some((lease_set2, identity_key)) = handle.with(|bridge| {
+            if !bridge.has_local_product_material() {
+                return None;
+            }
+            Some((bridge.lease_set2()?.clone(), bridge.identity_netdb_key()))
+        }) else {
+            return Ok(None);
+        };
         let validated = i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
             lease_set2,
             Some(identity_key),
@@ -1650,6 +1706,7 @@ pub enum BridgeDeliveryError {
     UnknownPeer([u8; 32]),
     Delivery(LocalDeliveryError),
     NotStreaming,
+    MissingLocalFabricMaterial,
 }
 
 impl std::fmt::Display for BridgeDeliveryError {
@@ -1658,6 +1715,9 @@ impl std::fmt::Display for BridgeDeliveryError {
             Self::UnknownPeer(hash) => write!(formatter, "no peer bridge registered for {hash:?}"),
             Self::Delivery(error) => write!(formatter, "local delivery failed: {error}"),
             Self::NotStreaming => formatter.write_str("inbound observation not protocol 6"),
+            Self::MissingLocalFabricMaterial => {
+                formatter.write_str("local fabric material is unavailable for this bridge")
+            }
         }
     }
 }
@@ -1700,7 +1760,12 @@ fn checkout_delivery(
     sender: &SamDestinationHandle,
     peer: &SamDestinationHandle,
     peer_inbound_tunnel: &EstablishedTunnel,
-) -> CheckedOutDelivery {
+) -> Result<CheckedOutDelivery, BridgeDeliveryError> {
+    if !sender.with(|bridge| bridge.has_local_product_material())
+        || !peer.with(|bridge| bridge.has_local_product_material())
+    {
+        return Err(BridgeDeliveryError::MissingLocalFabricMaterial);
+    }
     // Step 1: extract the hop hashes from the inbound tunnel so the
     // delivery can use them without holding the bridge lock.
     let inbound_hop1_hash = peer_inbound_tunnel
@@ -1774,14 +1839,17 @@ fn checkout_delivery(
     };
     let sender_outbound_role = {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
-        std::mem::replace(
-            &mut sender_guard.outbound_role,
-            DestinationOutboundRole::new(dummy_outbound_tunnel(), 0),
-        )
+        sender_guard
+            .outbound_role
+            .take()
+            .ok_or(BridgeDeliveryError::MissingLocalFabricMaterial)?
     };
     let sender_lease_set2 = {
         let sender_guard = sender.inner.lock().expect("sender bridge poisoned");
-        sender_guard.lease_set2.clone()
+        sender_guard
+            .lease_set2
+            .clone()
+            .ok_or(BridgeDeliveryError::MissingLocalFabricMaterial)?
     };
     let sender_routing = {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
@@ -1799,7 +1867,7 @@ fn checkout_delivery(
     };
     // Return every field by value; the caller bundles them into the
     // delivery inputs it needs.
-    CheckedOutDelivery {
+    Ok(CheckedOutDelivery {
         sender_identity_arc,
         sender_outbound_role,
         sender_lease_set2,
@@ -1816,7 +1884,7 @@ fn checkout_delivery(
         identity_arc,
         inbound_hop1_hash,
         inbound_hop2_hash,
-    }
+    })
 }
 
 /// Moves checked-out delivery fields back into their owning bridges.
@@ -1848,7 +1916,7 @@ fn restore_delivery(
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
         sender_guard.routing = sender_routing;
         sender_guard.session_manager = sender_session;
-        sender_guard.outbound_role = sender_outbound_role;
+        sender_guard.outbound_role = Some(sender_outbound_role);
     }
     {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
@@ -1882,7 +1950,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
     peer_inbound_tunnel: EstablishedTunnel,
     rng: &mut R,
 ) -> Result<(), BridgeDeliveryError> {
-    let mut checked = checkout_delivery(sender, peer, &peer_inbound_tunnel);
+    let mut checked = checkout_delivery(sender, peer, &peer_inbound_tunnel)?;
     let mut sender_inputs = LocalDeliverySender {
         identity: &checked.sender_identity_arc,
         routing: &mut checked.sender_routing,
@@ -1979,7 +2047,14 @@ pub fn bridge_to_peer_batched<R: CryptoRng + RngCore>(
     peer_inbound_tunnel: EstablishedTunnel,
     rng: &mut R,
 ) -> BatchedAttempt {
-    let mut checked = checkout_delivery(sender, peer, &peer_inbound_tunnel);
+    let mut checked = match checkout_delivery(sender, peer, &peer_inbound_tunnel) {
+        Ok(checked) => checked,
+        Err(_) => {
+            return BatchedAttempt::Singles {
+                decode_failed: Vec::new(),
+            };
+        }
+    };
     let mut sender_inputs = LocalDeliverySender {
         identity: &checked.sender_identity_arc,
         routing: &mut checked.sender_routing,
@@ -2042,38 +2117,6 @@ pub fn bridge_to_peer_batched<R: CryptoRng + RngCore>(
 
 fn empty_dispatcher() -> DestinationDispatcher {
     DestinationDispatcher::new()
-}
-
-pub(crate) fn dummy_outbound_tunnel() -> EstablishedTunnel {
-    use i2pr_tunnel::{
-        EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection,
-    };
-    let hash = Hash::from_bytes([0xB1; 32]);
-    let hop1 = EstablishedHop::with_next(
-        i2pr_tunnel::TunnelPeer::from_hash(hash),
-        EstablishedRole::Participant,
-        TunnelId::new(0x6000_0000).expect("id"),
-        LayerKeys::new([0; 32], [0; 32], [0; 32]),
-        EstablishedNextHop::new(
-            i2pr_tunnel::TunnelPeer::from_hash(Hash::from_bytes([0xB2; 32])),
-            TunnelId::new(0x6000_0001).expect("id"),
-        ),
-    );
-    let hop2 = EstablishedHop::terminal(
-        i2pr_tunnel::TunnelPeer::from_hash(Hash::from_bytes([0xB2; 32])),
-        EstablishedRole::OutboundEndpoint,
-        TunnelId::new(0x6000_0001).expect("id"),
-        LayerKeys::new([0; 32], [0; 32], [0; 32]),
-    );
-    EstablishedTunnel::new(
-        TunnelDirection::Outbound,
-        TunnelId::new(0x6000_0010).expect("id"),
-        vec![hop1, hop2],
-        0,
-        None,
-        None,
-    )
-    .expect("dummy outbound tunnel")
 }
 
 /// Factory trait that constructs a fresh inbound `EstablishedTunnel`
@@ -2170,4 +2213,36 @@ pub enum SamDestinationTripleError {
     Destination(i2pr_proto::CodecError),
     #[error("destination encryption key length mismatch")]
     StaticPublicKeyLength,
+}
+
+#[cfg(test)]
+mod router_network_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn router_network_bridge_starts_without_local_fabric_material() {
+        let mut rng = OsRng;
+        let identity = Arc::new(DestinationIdentity::generate(&mut rng).expect("identity"));
+        let destination_id = identity.id();
+        let peer_hash = *destination_id.as_hash().as_bytes();
+        let bridge = SamDestinationBridge::with_router_identity(
+            identity,
+            1_700_000_000,
+            StreamingConfig::balanced(),
+        );
+        assert!(bridge.lease_set2().is_none());
+        assert!(bridge.outbound_role().is_none());
+        assert!(bridge.inbound_tunnel_factory().is_none());
+        assert!(!bridge.has_router_network_state(0));
+
+        let mut destinations = SamDestinations::new();
+        destinations.install(destination_id, bridge);
+        assert!(destinations.lookup_by_peer_hash(&peer_hash).is_none());
+        assert!(
+            destinations
+                .resolve_local_lease_set2(&peer_hash, 1_700_000_000)
+                .expect("no local LeaseSet2 validation attempted")
+                .is_none()
+        );
+    }
 }

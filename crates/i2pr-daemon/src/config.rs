@@ -144,6 +144,12 @@ struct RawTransportConfig {
 struct RawNtcp2Config {
     #[serde(default = "default_ntcp2_enabled")]
     enabled: bool,
+    #[serde(default = "default_ntcp2_qualification_profile")]
+    qualification_profile: String,
+    #[serde(default = "default_ntcp2_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_ntcp2_listen_port")]
+    listen_port: u16,
     #[serde(default = "default_ntcp2_connect_timeout_ms")]
     connect_timeout_ms: u64,
     #[serde(default = "default_ntcp2_handshake_timeout_ms")]
@@ -170,6 +176,9 @@ impl Default for RawNtcp2Config {
     fn default() -> Self {
         Self {
             enabled: default_ntcp2_enabled(),
+            qualification_profile: default_ntcp2_qualification_profile(),
+            bind_address: default_ntcp2_bind_address(),
+            listen_port: default_ntcp2_listen_port(),
             connect_timeout_ms: default_ntcp2_connect_timeout_ms(),
             handshake_timeout_ms: default_ntcp2_handshake_timeout_ms(),
             read_idle_timeout_ms: default_ntcp2_read_idle_timeout_ms(),
@@ -493,6 +502,8 @@ impl Default for RawAppRuntimeConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSamConfig {
+    #[serde(default)]
+    product_mode: SamProductMode,
     #[serde(default = "default_sam_enabled")]
     enabled: bool,
     #[serde(default = "default_sam_bind_address")]
@@ -522,6 +533,7 @@ struct RawSamConfig {
 impl Default for RawSamConfig {
     fn default() -> Self {
         Self {
+            product_mode: SamProductMode::RouterNetwork,
             enabled: default_sam_enabled(),
             bind_address: default_sam_bind_address(),
             port: default_sam_port(),
@@ -894,6 +906,18 @@ const fn default_network_id() -> u16 {
 
 const fn default_ntcp2_enabled() -> bool {
     false
+}
+
+fn default_ntcp2_qualification_profile() -> String {
+    String::from("disabled")
+}
+
+fn default_ntcp2_bind_address() -> String {
+    String::from("127.0.0.1")
+}
+
+const fn default_ntcp2_listen_port() -> u16 {
+    0
 }
 
 const fn default_ntcp2_connect_timeout_ms() -> u64 {
@@ -1483,11 +1507,26 @@ impl NetworkConfig {
     }
 }
 
+/// Explicit socket profile for the daemon-owned NTCP2 transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ntcp2QualificationProfile {
+    /// NTCP2 is disabled and opens no socket.
+    Disabled,
+    /// Loopback-only source qualification. This never grants advertisement.
+    ControlledLoopback,
+}
+
 /// Normalized NTCP2 transport configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ntcp2Config {
     /// Whether NTCP2 transport is enabled.
     pub enabled: bool,
+    /// Explicit profile; the only enabled profile is loopback-only.
+    pub qualification_profile: Ntcp2QualificationProfile,
+    /// Local bind address, restricted to loopback while enabled.
+    pub bind_address: IpAddr,
+    /// Explicit, non-privileged port required by the qualification profile.
+    pub listen_port: u16,
     /// TCP connect timeout.
     pub connect_timeout: Duration,
     /// Total handshake timeout.
@@ -1778,6 +1817,10 @@ pub struct Config {
     pub news: NewsConfig,
     /// SAM v3.1 service settings.
     pub sam: SamConfig,
+    /// Session product selected for normal-daemon SAM CREATE. The default
+    /// uses the router-owned network product; synthetic local tunnels require
+    /// an explicit local-only qualification setting.
+    pub sam_product_mode: SamProductMode,
     /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
@@ -1798,6 +1841,18 @@ pub struct Config {
     pub floodfill: FloodfillConfig,
     /// Explicit global transport capacity and bandwidth-class policy.
     pub bandwidth: BandwidthConfig,
+}
+
+/// Product backend used for normal-daemon SAM-created destinations.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SamProductMode {
+    /// Use the shared SSU2/NetDB/destination product; creation fails closed
+    /// until that owner has published an attachment.
+    #[default]
+    RouterNetwork,
+    /// Use synthetic same-process delivery for explicit local qualification.
+    LocalOnly,
 }
 
 /// Normalized Plan 279 normal floodfill opt-in.
@@ -1968,7 +2023,7 @@ impl Config {
             });
         }
 
-        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
+        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, raw.network.network_id)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
@@ -2007,6 +2062,7 @@ impl Config {
             app_runtime,
             news,
             sam,
+            sam_product_mode: raw.sam.product_mode,
             ssu2,
             i2cp,
             i2pcontrol,
@@ -3112,12 +3168,55 @@ fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), C
     Ok(())
 }
 
-fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
-    if raw.enabled {
-        return Err(ConfigError::Semantic {
-            field: "transport.ntcp2.enabled",
-            reason: "normal-daemon NTCP2 activation is unavailable while support is experimental",
-        });
+fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config, ConfigError> {
+    let qualification_profile = match (raw.enabled, raw.qualification_profile.as_str()) {
+        (false, "disabled") => Ntcp2QualificationProfile::Disabled,
+        (true, "controlled_loopback") => Ntcp2QualificationProfile::ControlledLoopback,
+        (false, "controlled_loopback") => {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "controlled_loopback requires enabled = true",
+            });
+        }
+        (true, _) => {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "enabled NTCP2 requires the explicit controlled_loopback profile",
+            });
+        }
+        (false, _) => {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "disabled NTCP2 requires the disabled profile",
+            });
+        }
+    };
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "transport.ntcp2.bind_address",
+            reason: "must be an IP address literal",
+        })?;
+    if qualification_profile == Ntcp2QualificationProfile::ControlledLoopback {
+        if !bind_address.is_loopback() {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.bind_address",
+                reason: "controlled_loopback requires a loopback address",
+            });
+        }
+        if raw.listen_port < 1024 {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.listen_port",
+                reason: "controlled_loopback requires an explicit non-privileged port",
+            });
+        }
+        if network_id > u16::from(u8::MAX) {
+            return Err(ConfigError::Semantic {
+                field: "network.network_id",
+                reason: "controlled NTCP2 requires a network ID representable by the handshake",
+            });
+        }
     }
 
     let connect_timeout = Duration::from_millis(raw.connect_timeout_ms);
@@ -3161,6 +3260,9 @@ fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
 
     Ok(Ntcp2Config {
         enabled: raw.enabled,
+        qualification_profile,
+        bind_address,
+        listen_port: raw.listen_port,
         connect_timeout,
         handshake_timeout,
         read_idle_timeout,
@@ -3862,7 +3964,17 @@ data_dir = "./state"
         let config = Config::parse(&text).expect("valid defaults");
         assert_eq!(config.limits.max_tasks, DEFAULT_MAX_TASKS);
         assert_eq!(config.logging.format, LogFormat::Text);
+        assert_eq!(config.sam_product_mode, SamProductMode::RouterNetwork);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn sam_local_only_product_requires_explicit_profile() {
+        let config = Config::parse(&format!(
+            "{MINIMAL}\n[sam]\nproduct_mode = \"local-only\"\n"
+        ))
+        .expect("explicit local-only qualification profile");
+        assert_eq!(config.sam_product_mode, SamProductMode::LocalOnly);
     }
 
     #[test]
@@ -4334,10 +4446,65 @@ data_dir = "./state"
         assert!(matches!(
             Config::parse(&text),
             Err(ConfigError::Semantic {
-                field: "transport.ntcp2.enabled",
+                field: "transport.ntcp2.qualification_profile",
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ntcp2_controlled_loopback_requires_explicit_loopback_and_port() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let valid = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = 44321\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&valid).expect("explicit loopback profile");
+        assert!(config.transport.ntcp2.enabled);
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::ControlledLoopback
+        );
+        assert_eq!(
+            config.transport.ntcp2.bind_address,
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(config.transport.ntcp2.listen_port, 44321);
+        assert!(
+            !path.exists(),
+            "config parsing must not create the data directory"
+        );
+
+        for invalid in [
+            valid.replace("127.0.0.1", "0.0.0.0"),
+            valid.replace("listen_port = 44321", "listen_port = 0"),
+            valid.replace("listen_port = 44321", "listen_port = 443"),
+            valid.replace("[router]", "[network]\nnetwork_id = 300\n[router]"),
+        ] {
+            assert!(matches!(
+                Config::parse(&invalid),
+                Err(ConfigError::Semantic { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn ntcp2_profile_cannot_activate_without_enabled_flag() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nqualification_profile = \"controlled_loopback\"\nlisten_port = 44321\n",
+            path.to_string_lossy()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                ..
+            })
+        ));
+        assert!(!path.exists());
     }
 
     #[test]

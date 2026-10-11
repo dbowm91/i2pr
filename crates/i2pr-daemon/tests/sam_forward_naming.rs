@@ -30,7 +30,7 @@ async fn start() -> (
     ChildScope,
     CancellationToken,
 ) {
-    let state = Arc::new(SamServiceState::new(config()).unwrap());
+    let state = Arc::new(SamServiceState::new_local_only(config()).unwrap());
     let (listener, address) = state.bind(state.bind_address()).await.unwrap();
     let parent = CancellationToken::new();
     let children = scope(&parent);

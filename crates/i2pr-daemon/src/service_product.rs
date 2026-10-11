@@ -70,6 +70,7 @@ use i2pr_transport::Deadline;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::identity::TunnelId;
+use i2pr_tunnel::pool::TunnelSlot;
 use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -85,18 +86,20 @@ use crate::encrypted_service_resolver::{
 };
 use crate::exploratory_build::{
     BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
-    PeerBuildMaterial,
+    PeerBuildMaterial, SubmitResult,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
-    Ssu2DaemonHandle, Ssu2DaemonService, generate_controlled_identity, verify_reference_router_info,
+    RouterI2npKind, RouterI2npOutcome, Ssu2DaemonHandle, Ssu2DaemonService,
+    generate_controlled_identity, verify_reference_router_info,
 };
 use crate::sam::streams::RouterNetworkSummary;
 use crate::service_delivery::{
     RemoteDeliveryCounters, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
 };
 use crate::service_tunnels::{
-    DeferredActivationRequest, EncryptedTargetStatus, RemoteTargetProjection, ServiceTunnelManager,
+    DeferredActivationRequest, DestinationProductOperation, EncryptedTargetStatus,
+    RemoteTargetProjection, RouterNetworkSamProvisioningFailure, ServiceTunnelManager,
     ServiceTunnelManagerConfig,
 };
 
@@ -398,6 +401,74 @@ mod normal_daemon_owner_tests {
     use crate::router_i2np::Ssu2DaemonService;
 
     #[tokio::test]
+    async fn normal_owner_starts_without_configured_destination_groups() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n",
+            directory.path().to_string_lossy(),
+        );
+        let config = crate::config::Config::parse(&config_text).expect("valid empty-group config");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x458);
+        let bundle = Arc::new(RouterIdentityBundle::generate(&mut rng).expect("router identity"));
+        let identity =
+            crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", 44_001)
+                .expect("controlled identity");
+        let daemon_service =
+            Ssu2DaemonService::new(&config.ssu2, identity).expect("strict controlled SSU2 service");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+        let handle = daemon_service
+            .start(&scope, &config.ssu2)
+            .await
+            .expect("existing SSU2 owner");
+        let endpoint = handle.local_v4().expect("bound loopback endpoint");
+        let spec = ServiceProductSpec {
+            data_dir: directory.path().to_path_buf(),
+            ssu2_bind: endpoint,
+            router_bundle: bundle,
+            service_tunnels: Arc::new(config.service_tunnels.tunnels.clone()),
+            aliases: Arc::new(config.service_tunnels.aliases.clone()),
+            aggregate_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_aggregate,
+            per_service_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_per_service,
+            reference: None,
+            extra_bootstrap_peers: Vec::new(),
+            options: ServiceProductOptions::default(),
+            addressbook: crate::addressbook::AddressBookManager::activate(
+                config.addressbook.clone(),
+            )
+            .shared(),
+            shared_manager: None,
+        };
+        let product = ServiceProduct::start_over_existing_daemon(
+            spec,
+            handle,
+            scope,
+            token,
+            Vec::new(),
+            RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
+        )
+        .await
+        .expect("SSU2 owner is independent of configured Destination groups");
+
+        assert_eq!(
+            product.readiness(),
+            ServiceProductReadiness::RouterReadyWithoutConfiguredGroups
+        );
+        assert!(product.readiness().router_ready());
+        assert!(product.inner.destination_ids.is_empty());
+        assert!(product.inner.deferred_destination_ids.is_empty());
+        assert!(product.manager.runtime_spec_ids().is_empty());
+        product.shutdown().await.expect("clean product shutdown");
+    }
+
+    #[tokio::test]
     async fn normal_owner_fails_closed_on_empty_validated_store_and_releases_listener() {
         let directory = tempfile::tempdir().expect("temporary data directory");
         let port_probe = TcpListener::bind("127.0.0.1:0")
@@ -619,9 +690,27 @@ pub enum ServiceProductError {
     /// The outbound exploratory build never installed.
     #[error("outbound exploratory build never installed")]
     OutboundBuildMissing,
+    /// A terminal failure was returned for a deferred outbound build.
+    #[error("outbound exploratory build was rejected")]
+    OutboundBuildRejected,
+    /// The initial outbound build could not enter the router delivery queue.
+    #[error("outbound exploratory build delivery was rejected")]
+    OutboundBuildDeliveryRejected,
     /// The inbound exploratory build never installed.
     #[error("inbound exploratory build never installed")]
     InboundBuildMissing,
+    /// A terminal failure was returned for a deferred inbound build.
+    #[error("inbound exploratory build was rejected")]
+    InboundBuildRejected,
+    /// The initial inbound build could not enter the router delivery queue.
+    #[error("inbound exploratory build delivery was rejected")]
+    InboundBuildDeliveryRejected,
+    /// The matching inbound build reply failed strict decoding or validation.
+    #[error("inbound exploratory build reply was invalid")]
+    InboundBuildInvalidReply,
+    /// The matching outbound build reply failed strict decoding or validation.
+    #[error("outbound exploratory build reply was invalid")]
+    OutboundBuildInvalidReply,
     /// The reference LeaseSet2 never resolved through the lookup.
     #[error("reference LeaseSet2 never resolved within the bounded wait")]
     LookupTimeout,
@@ -646,6 +735,126 @@ pub enum ServiceProductError {
     /// counted remote path.
     #[error("router network state missing or expired: {0}")]
     RouterState(String),
+}
+
+/// Secret-free failure stage for the normal-process SAM provisioning
+/// boundary. Never emit a provisioning error's formatted detail here: some
+/// callers include destination-scoped context that should stay in memory.
+fn router_network_sam_failure_stage(
+    error: &ServiceProductError,
+) -> RouterNetworkSamProvisioningFailure {
+    match error {
+        ServiceProductError::DestinationSelection(_) => {
+            RouterNetworkSamProvisioningFailure::DestinationPeerSelection
+        }
+        ServiceProductError::InboundBuildMissing => {
+            RouterNetworkSamProvisioningFailure::InboundBuild
+        }
+        ServiceProductError::InboundBuildRejected => {
+            RouterNetworkSamProvisioningFailure::InboundBuildRejected
+        }
+        ServiceProductError::InboundBuildDeliveryRejected => {
+            RouterNetworkSamProvisioningFailure::InboundBuildDeliveryRejected
+        }
+        ServiceProductError::InboundBuildInvalidReply => {
+            RouterNetworkSamProvisioningFailure::InboundBuildInvalidReply
+        }
+        ServiceProductError::OutboundBuildInvalidReply => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildInvalidReply
+        }
+        ServiceProductError::OutboundBuildMissing => {
+            RouterNetworkSamProvisioningFailure::OutboundBuild
+        }
+        ServiceProductError::OutboundBuildRejected => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildRejected
+        }
+        ServiceProductError::OutboundBuildDeliveryRejected => {
+            RouterNetworkSamProvisioningFailure::OutboundBuildDeliveryRejected
+        }
+        ServiceProductError::LookupTimeout => RouterNetworkSamProvisioningFailure::NetDbLookup,
+        ServiceProductError::Dial(_) => RouterNetworkSamProvisioningFailure::PeerDial,
+        ServiceProductError::SessionTimeout => RouterNetworkSamProvisioningFailure::PeerSession,
+        ServiceProductError::NoSsu2Address => RouterNetworkSamProvisioningFailure::PeerAddress,
+        ServiceProductError::NoSocket | ServiceProductError::Bind => {
+            RouterNetworkSamProvisioningFailure::TransportBind
+        }
+        ServiceProductError::Provisioning(detail)
+            if detail.starts_with("SAM destination LS2 publication failed:") =>
+        {
+            RouterNetworkSamProvisioningFailure::LeaseSetPublication
+        }
+        ServiceProductError::Provisioning(_) => {
+            RouterNetworkSamProvisioningFailure::DestinationProvisioning
+        }
+        ServiceProductError::RouterState(_) => RouterNetworkSamProvisioningFailure::RouterState,
+        _ => RouterNetworkSamProvisioningFailure::ProductActivation,
+    }
+}
+
+#[cfg(test)]
+mod router_network_sam_failure_stage_tests {
+    use super::{ServiceProductError, router_network_sam_failure_stage};
+    use crate::service_tunnels::RouterNetworkSamProvisioningFailure as Failure;
+
+    #[test]
+    fn stage_labels_are_bounded_and_do_not_echo_provisioning_details() {
+        assert_eq!(
+            Failure::DestinationRegistration.label(),
+            "destination-registration"
+        );
+        assert_eq!(
+            Failure::DestinationSummaryMissing.label(),
+            "destination-summary-missing"
+        );
+        assert_eq!(
+            Failure::DestinationSummaryIncomplete.label(),
+            "destination-summary-incomplete"
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildMissing),
+            Failure::InboundBuild
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildRejected),
+            Failure::InboundBuildRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildDeliveryRejected),
+            Failure::InboundBuildDeliveryRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::InboundBuildInvalidReply),
+            Failure::InboundBuildInvalidReply
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildInvalidReply),
+            Failure::OutboundBuildInvalidReply
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildMissing),
+            Failure::OutboundBuild
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildRejected),
+            Failure::OutboundBuildRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::OutboundBuildDeliveryRejected),
+            Failure::OutboundBuildDeliveryRejected
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::Provisioning(
+                "SAM destination LS2 publication failed: destination-secret".to_owned()
+            )),
+            Failure::LeaseSetPublication
+        );
+        assert_eq!(
+            router_network_sam_failure_stage(&ServiceProductError::Provisioning(
+                "private destination and internal detail".to_owned()
+            )),
+            Failure::DestinationProvisioning
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -699,6 +908,8 @@ struct ProductInner {
         i2pr_client::DestinationId,
         Arc<crate::service_tunnels::ServiceRuntime>,
     >,
+    sam_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
+    sam_destination_slots: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>>,
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
@@ -877,6 +1088,10 @@ pub struct ServiceProduct {
 pub(crate) enum ServiceProductReadiness {
     /// Local-only qualification product with no router-backed pool request.
     LocalOnly,
+    /// The SSU2/NetDB owner is running with no configured Destination groups.
+    /// This is router readiness only; it does not claim that a SAM session
+    /// can create or use a router-backed Destination.
+    RouterReadyWithoutConfiguredGroups,
     /// Router readiness and every configured Destination group's usable
     /// pool threshold passed before service supervisors were started.
     RouterReadyGroupsUsable { groups: u16 },
@@ -1304,16 +1519,18 @@ impl LeasePublicationFailureStage {
 
 impl ServiceProductReadiness {
     pub(crate) const fn router_ready(self) -> bool {
-        matches!(
-            self,
-            Self::RouterReadyGroupsUsable { groups } if groups > 0
-        ) || matches!(
-            self,
-            Self::RouterReadyWithDeferredGroups {
-                ready_groups,
-                deferred_groups
-            } if ready_groups.saturating_add(deferred_groups) > 0
-        )
+        matches!(self, Self::RouterReadyWithoutConfiguredGroups)
+            || matches!(
+                self,
+                Self::RouterReadyGroupsUsable { groups } if groups > 0
+            )
+            || matches!(
+                self,
+                Self::RouterReadyWithDeferredGroups {
+                    ready_groups,
+                    deferred_groups
+                } if ready_groups.saturating_add(deferred_groups) > 0
+            )
     }
 }
 
@@ -1760,6 +1977,8 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                sam_destination_ids: std::collections::HashSet::new(),
+                sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
@@ -1959,16 +2178,9 @@ impl ServiceProduct {
             return Err(error);
         }
         manager.enable_deferred_activation();
-        if destination_ids.is_empty() && deferred_destination_ids.is_empty() {
-            manager.shutdown().await;
-            token.cancel(i2pr_core::CancellationReason::OperatorRequest);
-            ssu2_handle.shutdown();
-            let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
-            return Err(ServiceProductError::Provisioning(
-                "enabled service configuration produced no Destination groups".to_owned(),
-            ));
-        }
-        let readiness = if deferred_destination_ids.is_empty() {
+        let readiness = if destination_ids.is_empty() && deferred_destination_ids.is_empty() {
+            ServiceProductReadiness::RouterReadyWithoutConfiguredGroups
+        } else if deferred_destination_ids.is_empty() {
             ServiceProductReadiness::RouterReadyGroupsUsable {
                 groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
             }
@@ -1995,6 +2207,8 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                sam_destination_ids: std::collections::HashSet::new(),
+                sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
@@ -2299,14 +2513,134 @@ impl ServiceProduct {
                 return;
             }
         };
+        if request.operation == DestinationProductOperation::Retire {
+            self.retire_sam_destination(request.destination_id);
+            let _ = request.completion.send(Ok(()));
+            return;
+        }
         if request.completion.is_closed() {
             return;
         }
+        if !self
+            .inner
+            .deferred_destination_ids
+            .contains(&request.destination_id)
+            && let Some(runtime) = self
+                .manager
+                .router_network_sam_runtime(request.destination_id)
+        {
+            self.inner
+                .destination_runtimes
+                .insert(request.destination_id, runtime);
+            self.inner
+                .deferred_destination_ids
+                .insert(request.destination_id);
+            self.inner
+                .sam_destination_ids
+                .insert(request.destination_id);
+        }
+        let sam_session = self
+            .manager
+            .router_network_sam_runtime(request.destination_id)
+            .is_some();
         let result = self
             .activate_deferred_destination(request.destination_id)
             .await;
-        let response = result.map_err(|_| "deferred destination provisioning failed".to_owned());
+        let response = match result {
+            Ok(()) if sam_session && request.completion.is_closed() => {
+                self.retire_sam_destination(request.destination_id);
+                Err(RouterNetworkSamProvisioningFailure::ActivationCancelled)
+            }
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if sam_session {
+                    tracing::warn!(
+                        failure_stage = router_network_sam_failure_stage(&error).label(),
+                        "router-network SAM destination provisioning failed"
+                    );
+                    self.cancel_destination_builds(request.destination_id);
+                    for slot in self
+                        .manager
+                        .destination_tunnel_slots(request.destination_id)
+                    {
+                        let _ = self.inner.coordinator.remove_slot(slot);
+                    }
+                    let _ = self
+                        .manager
+                        .unregister_router_network_sam_destination(request.destination_id);
+                    self.inner
+                        .destination_runtimes
+                        .remove(&request.destination_id);
+                    self.inner
+                        .deferred_destination_ids
+                        .remove(&request.destination_id);
+                    self.inner
+                        .sam_destination_ids
+                        .remove(&request.destination_id);
+                    self.inner
+                        .destination_build_progress
+                        .remove(&request.destination_id);
+                    self.inner
+                        .deferred_activation_failures
+                        .remove(&request.destination_id);
+                    self.inner
+                        .destination_ids
+                        .retain(|id| *id != request.destination_id);
+                    self.inner
+                        .server_destination_ids
+                        .retain(|id| *id != request.destination_id);
+                }
+                Err(router_network_sam_failure_stage(&error))
+            }
+        };
         let _ = request.completion.send(response);
+    }
+
+    fn retire_sam_destination(&mut self, destination_id: i2pr_client::DestinationId) {
+        if !self.inner.sam_destination_ids.remove(&destination_id) {
+            let _ = self
+                .manager
+                .unregister_router_network_sam_destination(destination_id);
+            return;
+        }
+        self.cancel_destination_builds(destination_id);
+        if let Some(slots) = self.inner.sam_destination_slots.remove(&destination_id) {
+            for slot in slots {
+                let _ = self.inner.coordinator.remove_slot(slot);
+            }
+        }
+        self.inner.destination_runtimes.remove(&destination_id);
+        self.inner
+            .destination_build_progress
+            .remove(&destination_id);
+        self.inner
+            .destination_ids
+            .retain(|id| *id != destination_id);
+        self.inner
+            .server_destination_ids
+            .retain(|id| *id != destination_id);
+        self.inner.publication_pending.remove(&destination_id);
+        self.inner.publication_retry_after.remove(&destination_id);
+        let _ = self
+            .manager
+            .unregister_router_network_sam_destination(destination_id);
+    }
+
+    fn retire_orphaned_sam_destinations(&mut self) {
+        let orphaned = self
+            .inner
+            .sam_destination_ids
+            .iter()
+            .copied()
+            .filter(|destination_id| {
+                self.manager
+                    .router_network_sam_runtime(*destination_id)
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        for destination_id in orphaned {
+            self.retire_sam_destination(destination_id);
+        }
     }
 
     async fn activate_deferred_destination(
@@ -2362,6 +2696,43 @@ impl ServiceProduct {
         .await;
         match result {
             Ok(()) => {
+                let sam_session = self
+                    .manager
+                    .router_network_sam_runtime(destination_id)
+                    .is_some();
+                if sam_session {
+                    publish_service_ls2_for_service(
+                        &self.manager,
+                        &self.inner.destination_tunnels,
+                        &mut self.inner.ssu2_handle,
+                        destination_id,
+                        self.inner.options,
+                    )
+                    .await
+                    .map_err(|error| {
+                        ServiceProductError::Provisioning(format!(
+                            "SAM destination LS2 publication failed: {error:?}"
+                        ))
+                    })?;
+                    self.manager.spawn_destination_driver(
+                        destination_id,
+                        &self.scope,
+                        self.token.clone(),
+                    );
+                    let driver_live = self.manager.destination_driver_live(destination_id);
+                    if !driver_live {
+                        return Err(ServiceProductError::Provisioning(
+                            "SAM destination delivery driver did not start".to_owned(),
+                        ));
+                    }
+                    self.inner.server_destination_ids.push(destination_id);
+                    self.inner.publication_pending.insert(destination_id);
+                    self.inner.sam_destination_ids.insert(destination_id);
+                    self.inner.sam_destination_slots.insert(
+                        destination_id,
+                        self.manager.destination_tunnel_slots(destination_id),
+                    );
+                }
                 self.inner.deferred_destination_ids.remove(&destination_id);
                 self.inner.destination_ids.push(destination_id);
                 Ok(())
@@ -2498,6 +2869,24 @@ impl ServiceProduct {
                     self.inner.server_destination_ids.push(destination_id);
                 }
             }
+            // SAM sessions live beside the configured service generation;
+            // preserve their router runtimes and pool maintenance across an
+            // I2PControl/service-tunnel reconcile.
+            let sam_destination_ids = self
+                .inner
+                .sam_destination_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            for destination_id in sam_destination_ids {
+                if let Some(runtime) = self.manager.router_network_sam_runtime(destination_id) {
+                    self.inner
+                        .destination_runtimes
+                        .insert(destination_id, runtime);
+                    self.inner.destination_ids.push(destination_id);
+                    self.inner.server_destination_ids.push(destination_id);
+                }
+            }
             if self.inner.local_router_hash.is_some() {
                 for destination_id in self.inner.destination_ids.iter().copied() {
                     let has_router_state = self
@@ -2551,6 +2940,7 @@ impl ServiceProduct {
             self.inner.service_generation_id = current_generation;
         }
         self.process_deferred_activation_request().await;
+        self.retire_orphaned_sam_destinations();
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
             self.record_destination_build_outcome(&outcome);
@@ -4493,6 +4883,10 @@ async fn provision_all_service_router_material(
             let inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?;
+            let outbound_reply_peer = outbound_peers
+                .as_ref()
+                .and_then(|peers| peers.last())
+                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
             let mut outbound = outbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
                 direction: BuildDirection::Outbound,
@@ -4503,8 +4897,17 @@ async fn provision_all_service_router_material(
                 originator_hash: None,
             });
             if let Some(outbound) = outbound.take() {
-                pending_outbound.push((outbound, outbound_bridge, message_base | 0x01));
+                pending_outbound.push((
+                    outbound,
+                    outbound_bridge,
+                    message_base | 0x01,
+                    outbound_reply_peer,
+                ));
             }
+            let inbound_reply_peer = inbound_peers
+                .as_ref()
+                .and_then(|peers| peers.last())
+                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
             let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
                 direction: BuildDirection::Inbound,
@@ -4514,8 +4917,8 @@ async fn provision_all_service_router_material(
                 outbound_reply_router: None,
                 originator_hash: Some(peer.local_hash),
             });
-            if let Some(inbound) = inbound {
-                coordinator
+            let inbound_attempt_id = if let Some(inbound) = inbound {
+                let submission = coordinator
                     .submit_destination(
                         inbound,
                         &delivery,
@@ -4527,7 +4930,15 @@ async fn provision_all_service_router_material(
                         &mut rng,
                     )
                     .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-            }
+                match submission {
+                    SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
+                    SubmitResult::Rejected { .. } => {
+                        return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                    }
+                }
+            } else {
+                None
+            };
             // Wait for both installs.
             let mut installed_inbound = false;
             let mut local_receive_tunnel = None;
@@ -4550,7 +4961,40 @@ async fn provision_all_service_router_material(
                 let Ok(routed) = routed else {
                     continue;
                 };
+                let matching_build_reply = matches!(
+                    &routed.dispatcher,
+                    RouterI2npOutcome::TunnelBuildReserved {
+                        kind: RouterI2npKind::ShortTunnelBuild,
+                        message_id,
+                        peer,
+                        ..
+                    } if *message_id == (message_base | 0x02)
+                        && Some(*peer) == inbound_reply_peer
+                );
+                if matching_build_reply
+                    && routed.coordinator.iter().any(|outcome| {
+                        matches!(
+                            outcome,
+                            BuildCoordinatorOutcome::InvalidReply {
+                                attempt_id,
+                                direction: BuildDirection::Inbound,
+                                ..
+                            } if Some(*attempt_id) == inbound_attempt_id
+                        )
+                    })
+                {
+                    return Err(ServiceProductError::InboundBuildInvalidReply);
+                }
                 for outcome in routed.coordinator {
+                    if matches!(
+                        &outcome,
+                        BuildCoordinatorOutcome::DestinationBuildFailed {
+                            destination_id,
+                            direction: BuildDirection::Inbound,
+                        } if *destination_id == runtime.destination_id
+                    ) {
+                        return Err(ServiceProductError::InboundBuildRejected);
+                    }
                     if let BuildCoordinatorOutcome::DestinationEstablished {
                         attempt_id,
                         destination_id,
@@ -4630,13 +5074,13 @@ async fn provision_all_service_router_material(
                 "startup cancelled before outbound pool start".to_owned(),
             ));
         }
-        for (outbound, bridge, message_id) in pending_outbound {
+        for (outbound, bridge, message_id, outbound_reply_peer) in pending_outbound {
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
                     "operating-system randomness unavailable".to_owned(),
                 )
             })?;
-            coordinator
+            let submission = coordinator
                 .submit_destination(
                     outbound,
                     &delivery,
@@ -4648,6 +5092,12 @@ async fn provision_all_service_router_material(
                     &mut rng,
                 )
                 .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            let outbound_attempt_id = match submission {
+                SubmitResult::Submitted { attempt_id, .. } => attempt_id,
+                SubmitResult::Rejected { .. } => {
+                    return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                }
+            };
             let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
             let mut binding = None;
             while binding.is_none() && tokio::time::Instant::now() < install_deadline {
@@ -4665,7 +5115,38 @@ async fn provision_all_service_router_material(
                 let Ok(routed) = routed else {
                     continue;
                 };
+                let matching_build_reply = matches!(
+                    &routed.dispatcher,
+                    RouterI2npOutcome::Unsupported {
+                        type_byte: 19,
+                        peer,
+                        ..
+                    } if Some(*peer) == outbound_reply_peer
+                );
+                if matching_build_reply
+                    && routed.coordinator.iter().any(|outcome| {
+                        matches!(
+                            outcome,
+                            BuildCoordinatorOutcome::InvalidReply {
+                                attempt_id,
+                                direction: BuildDirection::Outbound,
+                                ..
+                            } if *attempt_id == outbound_attempt_id
+                        )
+                    })
+                {
+                    return Err(ServiceProductError::OutboundBuildInvalidReply);
+                }
                 for outcome in routed.coordinator {
+                    if matches!(
+                        &outcome,
+                        BuildCoordinatorOutcome::DestinationBuildFailed {
+                            destination_id,
+                            direction: BuildDirection::Outbound,
+                        } if *destination_id == runtime.destination_id
+                    ) {
+                        return Err(ServiceProductError::OutboundBuildRejected);
+                    }
                     let BuildCoordinatorOutcome::DestinationEstablished {
                         attempt_id,
                         destination_id,
