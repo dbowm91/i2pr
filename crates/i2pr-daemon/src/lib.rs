@@ -637,8 +637,14 @@ fn build_daemon_graph_inner(
             * crate::router_i2np::MAX_ROUTER_I2NP_BYTES as u64,
     }])
     .expect("static router ingress budget is valid");
+    let ntcp2_delivery = crate::router_i2np::Ntcp2RouterDeliveryRegistry::default();
     let (router_ingress_tx, router_ingress_rx) =
         tokio::sync::mpsc::channel(NORMAL_ROUTER_INGRESS_CAPACITY);
+    let ntcp2_ingress = Ntcp2IngressOwner {
+        sender: router_ingress_tx.clone(),
+        byte_budget: router_ingress_budget,
+        delivery: ntcp2_delivery,
+    };
 
     if config.transport.ntcp2.enabled {
         register_ntcp2_service(
@@ -648,8 +654,7 @@ fn build_daemon_graph_inner(
             &config.router.data_dir,
             bandwidth.clone(),
             bootstrap.clone(),
-            router_ingress_tx.clone(),
-            router_ingress_budget.clone(),
+            ntcp2_ingress.clone(),
         )?;
     }
 
@@ -665,6 +670,7 @@ fn build_daemon_graph_inner(
             bandwidth,
             router_ingress_rx,
             router_ingress_tx.clone(),
+            ntcp2_ingress.delivery.clone(),
         )?;
     }
 
@@ -1443,6 +1449,18 @@ const NORMAL_FLOODFILL_MAX_RECORD_AGE_MS: u64 = 60 * 60 * 1000;
 const NORMAL_FLOODFILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum authenticated router messages waiting for the shared product owner.
 const NORMAL_ROUTER_INGRESS_CAPACITY: usize = 128;
+static NEXT_NTCP2_LINK_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn allocate_ntcp2_link_generation() -> Option<u64> {
+    NEXT_NTCP2_LINK_GENERATION
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
+        .ok()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AuthenticatedRouterTransport {
@@ -1458,6 +1476,13 @@ struct AuthenticatedRouterIngress {
     transport: AuthenticatedRouterTransport,
     inbound: i2pr_runtime::Ssu2InboundI2np,
     _byte_lease: Option<i2pr_core::ResourceLease>,
+}
+
+#[derive(Clone)]
+struct Ntcp2IngressOwner {
+    sender: tokio::sync::mpsc::Sender<AuthenticatedRouterIngress>,
+    byte_budget: i2pr_core::ResourceBudget,
+    delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
 }
 
 /// One inbound queue owner for the normal daemon. The group product wraps
@@ -1666,8 +1691,7 @@ fn register_ntcp2_service(
     data_dir: &std::path::Path,
     bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
     bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
-    router_ingress: tokio::sync::mpsc::Sender<AuthenticatedRouterIngress>,
-    router_ingress_budget: i2pr_core::ResourceBudget,
+    ingress: Ntcp2IngressOwner,
 ) -> Result<(), DaemonError> {
     use i2pr_runtime::{
         IpPrefixPolicy, Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits,
@@ -1675,12 +1699,12 @@ fn register_ntcp2_service(
     };
     use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
     use std::net::SocketAddr;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use zeroize::Zeroizing;
 
     let config = config.clone();
-    let router_ingress = router_ingress.clone();
-    let router_ingress_budget = router_ingress_budget.clone();
+    let router_ingress = ingress.sender.clone();
+    let router_ingress_budget = ingress.byte_budget.clone();
+    let ntcp2_delivery = ingress.delivery.clone();
     let data_dir = data_dir.to_path_buf();
     let peer_records = bootstrap
         .and_then(|bootstrap| {
@@ -1721,6 +1745,8 @@ fn register_ntcp2_service(
             let bandwidth = bandwidth.clone();
             let router_ingress = router_ingress.clone();
             let router_ingress_budget = router_ingress_budget.clone();
+            let ntcp2_delivery = ntcp2_delivery.clone();
+            let ntcp2_send_timeout = config.write_timeout;
             let cancellation = ctx.cancellation().clone();
             let children = ctx.children();
             let readiness = ctx.readiness();
@@ -1816,7 +1842,6 @@ fn register_ntcp2_service(
                 let static_secret =
                     Arc::new(Zeroizing::new(*transport.transport().key().secret_bytes()));
                 let obfuscation_iv = *transport.transport().iv();
-                let next_link = Arc::new(AtomicU64::new(1));
                 if let Err(result) = signal_running(NTCP2_SERVICE_NAME, &readiness) {
                     listener.shutdown();
                     return result;
@@ -1827,10 +1852,11 @@ fn register_ntcp2_service(
                     let outbound_local_info = Arc::clone(&router_info);
                     let outbound_static_secret = Arc::clone(&static_secret);
                     let outbound_scope = children.clone();
-                    let outbound_next_link = Arc::clone(&next_link);
                     let outbound_cancel = cancellation.clone();
                     let outbound_ingress = router_ingress.clone();
                     let outbound_ingress_budget = router_ingress_budget.clone();
+                    let outbound_delivery = ntcp2_delivery.clone();
+                    let outbound_send_timeout = ntcp2_send_timeout;
                     let _ = children.spawn(move |task_cancel| async move {
                         let local_info = outbound_local_info.as_ref().clone();
                         let mut cursor = 0usize;
@@ -1850,7 +1876,9 @@ fn register_ntcp2_service(
                             }
                             let static_key =
                                 i2pr_crypto::X25519PrivateKey::from_bytes(**outbound_static_secret);
-                            let raw_id = outbound_next_link.fetch_add(1, Ordering::Relaxed);
+                            let Some(raw_id) = allocate_ntcp2_link_generation() else {
+                                return Ok(());
+                            };
                             let Ok(mut link) = outbound_runtime
                                 .dial_authenticated_loopback_peer(
                                     &outbound_scope,
@@ -1873,10 +1901,23 @@ fn register_ntcp2_service(
                                 link.close();
                                 continue;
                             };
+                            let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
+                            if !outbound_delivery.register(peer, link_id, send_tx) {
+                                link.close();
+                                continue;
+                            }
                             loop {
                                 tokio::select! {
                                     biased;
                                     _ = task_cancel.cancelled() => break,
+                                message = send_rx.recv() => {
+                                    let Some(message) = message else { break; };
+                                    let _ = link.send_i2np_message(
+                                        message,
+                                        outbound_send_timeout,
+                                        &task_cancel,
+                                    ).await;
+                                }
                                     received = link.recv_i2np_messages(&task_cancel) => {
                                         let Ok(Some(messages)) = received else { break; };
                                         for bytes in messages {
@@ -1889,6 +1930,7 @@ fn register_ntcp2_service(
                                                 &outbound_ingress_budget,
                                             ).await {
                                                 link.close();
+                                            outbound_delivery.remove(peer, link_id);
                                                 return Ok(());
                                             }
                                         }
@@ -1896,6 +1938,7 @@ fn register_ntcp2_service(
                                 }
                             }
                             link.close();
+                            outbound_delivery.remove(peer, link_id);
                         }
                     });
                 }
@@ -1914,9 +1957,10 @@ fn register_ntcp2_service(
                             let router_info = Arc::clone(&router_info);
                             let static_secret = Arc::clone(&static_secret);
                             let task_scope = children.clone();
-                            let next_link = Arc::clone(&next_link);
                             let task_ingress = router_ingress.clone();
                         let task_ingress_budget = router_ingress_budget.clone();
+                        let task_delivery = ntcp2_delivery.clone();
+                        let task_send_timeout = ntcp2_send_timeout;
                             let _ = children.spawn(move |task_cancel| async move {
                                 let responder_identity = i2pr_runtime::Ntcp2ResponderIdentity::new(
                                     &static_secret,
@@ -1934,17 +1978,32 @@ fn register_ntcp2_service(
                                 let peer = i2pr_transport::PeerId::from_hash(
                                     handshake.authenticated.peer().router_hash,
                                 );
-                                let raw_id = next_link.fetch_add(1, Ordering::Relaxed);
+                                let Some(raw_id) = allocate_ntcp2_link_generation() else {
+                                    return Ok(());
+                                };
                                 let Some(link_id) = i2pr_transport::LinkId::new(raw_id).ok() else {
                                     return Ok(());
                                 };
                                 let Ok(mut link) = runtime.promote_authenticated_inbound(
                                     &task_scope, inbound, handshake, raw_id,
                                 ) else { return Ok(()); };
+                            let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
+                            if !task_delivery.register(peer, link_id, send_tx) {
+                                link.close();
+                                return Ok(());
+                            }
                                 loop {
                                     tokio::select! {
                                         biased;
                                         _ = task_cancel.cancelled() => break,
+                                    message = send_rx.recv() => {
+                                        let Some(message) = message else { break; };
+                                        let _ = link.send_i2np_message(
+                                            message,
+                                            task_send_timeout,
+                                            &task_cancel,
+                                        ).await;
+                                    }
                                         received = link.recv_i2np_messages(&task_cancel) => {
                                             let Ok(Some(messages)) = received else { break; };
                                             for bytes in messages {
@@ -1957,6 +2016,7 @@ fn register_ntcp2_service(
                                                     &task_ingress_budget,
                                                 ).await {
                                                     link.close();
+                                                    task_delivery.remove(peer, link_id);
                                                     return Ok(());
                                                 }
                                             }
@@ -1964,6 +2024,7 @@ fn register_ntcp2_service(
                                     }
                                 }
                                 link.close();
+                            task_delivery.remove(peer, link_id);
                                 Ok(())
                             });
                         }
@@ -2002,6 +2063,7 @@ fn register_ssu2_service(
     bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
     router_ingress: tokio::sync::mpsc::Receiver<AuthenticatedRouterIngress>,
     router_ingress_keepalive: tokio::sync::mpsc::Sender<AuthenticatedRouterIngress>,
+    ntcp2_delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity_with_keys,
@@ -2032,6 +2094,7 @@ fn register_ssu2_service(
                 let inspection = Arc::clone(&inspection);
                 let router_ingress = Arc::clone(&router_ingress);
                 let _router_ingress_keepalive = router_ingress_keepalive.clone();
+                let ntcp2_delivery = ntcp2_delivery.clone();
                 let floodfill_config_path = floodfill_config_path.clone();
                 let bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
@@ -2430,6 +2493,23 @@ fn register_ssu2_service(
                     } else {
                         NormalSsu2Owner::Router(handle)
                     };
+                    if !owner
+                        .handle()
+                        .delivery()
+                        .attach_ntcp2_registry(ntcp2_delivery.clone())
+                    {
+                        owner.shutdown().await;
+                        let detail = i2pr_core::HealthDetail::new(
+                            "NTCP2 router-delivery registry could not be attached",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
                     if matches!(
                         &owner,
                         NormalSsu2Owner::Groups(product)
@@ -2486,8 +2566,16 @@ fn register_ssu2_service(
                                     owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 };
-                                let _transport = inbound.transport;
+                                let transport = inbound.transport;
                                 let inbound = inbound.inbound;
+                                if transport == AuthenticatedRouterTransport::Ntcp2
+                                    && !ntcp2_delivery.is_current(inbound.peer, inbound.link_id)
+                                {
+                                    // The link may have closed after queue admission but
+                                    // before this receiver took the event. Never let a
+                                    // stale generation mutate router state.
+                                    continue;
+                                }
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
@@ -2905,6 +2993,23 @@ mod tests {
         assert_eq!(ingress.inbound.peer, peer);
         assert_eq!(ingress.inbound.link_id, link_id);
         assert_eq!(ingress.inbound.bytes, [1, 2, 3]);
+        assert_eq!(
+            byte_budget
+                .usage(i2pr_core::ResourceClass::BufferedBytes)
+                .expect("byte budget usage")
+                .used,
+            3,
+            "the lease must follow the message into the product queue"
+        );
+        drop(ingress);
+        assert_eq!(
+            byte_budget
+                .usage(i2pr_core::ResourceClass::BufferedBytes)
+                .expect("released byte budget usage")
+                .used,
+            0,
+            "dropping a processed message releases its byte lease"
+        );
 
         drop(receiver);
         assert!(

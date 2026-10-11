@@ -48,7 +48,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
@@ -748,23 +750,136 @@ pub enum RouterDeliveryOutcome {
     Cancelled,
 }
 
+/// Bounded registry of currently authenticated NTCP2 link send queues.
+///
+/// The registry stores only queue handles keyed by the authenticated peer;
+/// link tasks remain the sole owners of sockets and remove routes by matching
+/// their generation before exit.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Ntcp2RouterDeliveryRegistry {
+    links: Arc<Mutex<HashMap<PeerId, Ntcp2RouterLinkRoute>>>,
+}
+
+#[derive(Clone, Debug)]
+struct Ntcp2RouterLinkRoute {
+    link_id: LinkId,
+    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+}
+
+impl Ntcp2RouterDeliveryRegistry {
+    /// Registers one bounded outbound queue unless that peer already has a
+    /// live authenticated NTCP2 link.
+    pub(crate) fn register(
+        &self,
+        peer: PeerId,
+        link_id: LinkId,
+        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ) -> bool {
+        let Ok(mut links) = self.links.lock() else {
+            return false;
+        };
+        if links
+            .get(&peer)
+            .is_some_and(|route| !route.sender.is_closed())
+        {
+            return false;
+        }
+        links.insert(peer, Ntcp2RouterLinkRoute { link_id, sender });
+        true
+    }
+
+    /// Removes one route only when its link generation still owns the peer.
+    pub(crate) fn remove(&self, peer: PeerId, link_id: LinkId) {
+        let Ok(mut links) = self.links.lock() else {
+            return;
+        };
+        if links
+            .get(&peer)
+            .is_some_and(|route| route.link_id == link_id)
+        {
+            links.remove(&peer);
+        }
+    }
+
+    /// Checks that an inbound event still belongs to the currently registered
+    /// authenticated connection for its peer.
+    pub(crate) fn is_current(&self, peer: PeerId, link_id: LinkId) -> bool {
+        let Ok(mut links) = self.links.lock() else {
+            return false;
+        };
+        let current = links
+            .get(&peer)
+            .is_some_and(|route| route.link_id == link_id && !route.sender.is_closed());
+        if !current
+            && links
+                .get(&peer)
+                .is_some_and(|route| route.link_id == link_id && route.sender.is_closed())
+        {
+            links.remove(&peer);
+        }
+        current
+    }
+
+    /// Attempts bounded delivery through the authenticated peer link.
+    pub(crate) fn deliver(&self, peer: PeerId, bytes: Vec<u8>) -> RouterDeliveryOutcome {
+        if bytes.is_empty() || bytes.len() > MAX_ROUTER_I2NP_BYTES {
+            return RouterDeliveryOutcome::TooLarge;
+        }
+        let Ok(mut links) = self.links.lock() else {
+            return RouterDeliveryOutcome::NoActiveSession;
+        };
+        let Some(route) = links.get(&peer).cloned() else {
+            return RouterDeliveryOutcome::NoActiveSession;
+        };
+        match route.sender.try_send(bytes) {
+            Ok(()) => RouterDeliveryOutcome::Accepted,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                RouterDeliveryOutcome::QueueFull
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                if links
+                    .get(&peer)
+                    .is_some_and(|active| active.link_id == route.link_id)
+                {
+                    links.remove(&peer);
+                }
+                RouterDeliveryOutcome::NoActiveSession
+            }
+        }
+    }
+}
+
 /// Narrow transport-neutral outbound capability.
 ///
-/// The owner holds one daemon-owned [`Ssu2RuntimeService`] clone and
-/// resolves already-established peer links through the existing
-/// `send_i2np` seam. No task is spawned per delivery; bounded queue
-/// and manager ceilings from the runtime remain authoritative. The
-/// type lives in the daemon so tunnel/NetDB/client crates never
+/// The owner first resolves established SSU2 sessions through the
+/// existing `send_i2np` seam, then uses the bounded authenticated
+/// NTCP2 link registry on a direct miss. No task is spawned per
+/// delivery; per-link and runtime queue limits remain authoritative.
+/// The type lives in the daemon so tunnel/NetDB/client crates never
 /// receive a global router context.
 #[derive(Clone, Debug)]
 pub struct RouterDeliveryService {
     service: Ssu2RuntimeService,
+    ntcp2: Arc<Mutex<Option<Ntcp2RouterDeliveryRegistry>>>,
 }
 
 impl RouterDeliveryService {
     /// Wraps the daemon-owned runtime service.
-    pub const fn new(service: Ssu2RuntimeService) -> Self {
-        Self { service }
+    pub fn new(service: Ssu2RuntimeService) -> Self {
+        Self {
+            service,
+            ntcp2: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Attaches the daemon-owned NTCP2 link registry for bounded fallback
+    /// when the existing SSU2 session owner has no active peer session.
+    pub(crate) fn attach_ntcp2_registry(&self, registry: Ntcp2RouterDeliveryRegistry) -> bool {
+        let Ok(mut ntcp2) = self.ntcp2.lock() else {
+            return false;
+        };
+        *ntcp2 = Some(registry);
+        true
     }
 
     /// Delivers one validated request to its established session.
@@ -785,13 +900,24 @@ impl RouterDeliveryService {
             message,
             timeout,
         } = request;
-        match self.service.send_i2np(peer, message, timeout) {
+        let ntcp2_bytes = message.as_bytes().to_vec();
+        let outcome = match self.service.send_i2np(peer, message, timeout) {
             Ssu2SendOutcome::Accepted => RouterDeliveryOutcome::Accepted,
             Ssu2SendOutcome::QueueFull => RouterDeliveryOutcome::QueueFull,
             Ssu2SendOutcome::ResourceDenied => RouterDeliveryOutcome::ResourceDenied,
             Ssu2SendOutcome::Closed => RouterDeliveryOutcome::NoActiveSession,
             Ssu2SendOutcome::TooLarge => RouterDeliveryOutcome::TooLarge,
             Ssu2SendOutcome::DeadlineElapsed => RouterDeliveryOutcome::DeadlineElapsed,
+        };
+        if outcome != RouterDeliveryOutcome::NoActiveSession {
+            return outcome;
+        }
+        let Ok(registry) = self.ntcp2.lock() else {
+            return outcome;
+        };
+        match registry.as_ref() {
+            Some(registry) => registry.deliver(peer, ntcp2_bytes),
+            None => outcome,
         }
     }
 }
@@ -1420,6 +1546,69 @@ mod tests {
             PeerId::from_hash(Hash::from_bytes([0x11; 32])),
             LinkId::new(7).expect("link"),
         )
+    }
+
+    #[tokio::test]
+    async fn ntcp2_delivery_registry_is_peer_bound_generation_safe_and_bounded() {
+        let registry = Ntcp2RouterDeliveryRegistry::default();
+        let peer = PeerId::from_hash(Hash::from_bytes([0x33; 32]));
+        let active = LinkId::new(11).expect("active link");
+        let stale = LinkId::new(12).expect("stale link");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        assert!(registry.register(peer, active, sender));
+        assert!(registry.is_current(peer, active));
+        assert!(!registry.is_current(peer, stale));
+        let (duplicate_sender, _duplicate_receiver) = tokio::sync::mpsc::channel(1);
+        assert!(!registry.register(peer, stale, duplicate_sender));
+
+        assert_eq!(
+            registry.deliver(peer, vec![1]),
+            RouterDeliveryOutcome::Accepted
+        );
+        assert_eq!(
+            registry.deliver(peer, vec![2]),
+            RouterDeliveryOutcome::QueueFull
+        );
+        assert_eq!(receiver.recv().await, Some(vec![1]));
+
+        registry.remove(peer, stale);
+        assert_eq!(
+            registry.deliver(peer, vec![3]),
+            RouterDeliveryOutcome::Accepted,
+            "a stale close must not remove a newer authenticated generation"
+        );
+        registry.remove(peer, active);
+        assert!(!registry.is_current(peer, active));
+        assert_eq!(
+            registry.deliver(peer, vec![4]),
+            RouterDeliveryOutcome::NoActiveSession
+        );
+    }
+
+    #[tokio::test]
+    async fn router_delivery_falls_back_to_the_authenticated_ntcp2_peer_queue() {
+        let peer = PeerId::from_hash(Hash::from_bytes([0x44; 32]));
+        let link_id = LinkId::new(21).expect("link id");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let registry = Ntcp2RouterDeliveryRegistry::default();
+        assert!(registry.register(peer, link_id, sender));
+        let bundle =
+            i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("router identity");
+        let identity = generate_controlled_identity(&bundle, "127.0.0.1", 44_321)
+            .expect("controlled SSU2 identity");
+        let runtime = Ssu2RuntimeService::new(Ssu2RuntimeConfig::default(), identity)
+            .expect("runtime-neutral SSU2 service");
+        let delivery = RouterDeliveryService::new(runtime);
+        assert!(delivery.attach_ntcp2_registry(registry));
+        let bytes = delivery_status_short(7, (NOW_MS / 1000) as u32 + 60);
+        let request = RouterDeliveryRequest::new(peer, bytes.clone(), Duration::from_secs(2))
+            .expect("bounded router delivery request");
+
+        assert_eq!(
+            delivery.deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted
+        );
+        assert_eq!(receiver.recv().await, Some(bytes));
     }
 
     fn inbound_with(bytes: Vec<u8>) -> i2pr_runtime::Ssu2InboundI2np {
