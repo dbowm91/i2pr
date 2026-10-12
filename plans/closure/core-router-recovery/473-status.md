@@ -53,7 +53,7 @@ GitHub reports the following open chain, oldest to newest:
 | 41 | PR 40 branch | `a3173774b9037266eece08d84ec63dc0edd1f3d8` | Not draft, unstable |
 | 42 | PR 41 branch | `2cc7594273898607d6e25c3b19bca5e6b48fb587` | Not draft, clean |
 | 43 | PR 42 branch | `7b9f05fda11dc5ae990f2059a7a42ecaa9c1313f` | Not draft, unstable |
-| 44 | PR 43 branch | `4005bfa24fcce6f232684a79ab49513130615dd5` | Current remote head; paused-clock test correction pending push |
+| 44 | PR 43 branch | `4005bfa24fcce6f232684a79ab49513130615dd5` | Audited CI head; corrected source now at `fa98c0d0a469e37103e6af256ae553787bddca03` |
 
 None of PRs 37–44 has a GitHub review decision or recorded review. The current
 `main` SHA is `51f7426080906044b2bb99934c0336489b6b6ecd`; its merge base with the
@@ -91,6 +91,6 @@ times and runtime all-targets passed. Final candidate CI, including macOS,
 Ubuntu, and native aarch64, remains required after commit/push.
 
 Disposition: **blocked before final exact-head qualification and approved PR
-integration**. The next bounded action is to push the corrected test and observe
-the full exact-head macOS/Ubuntu/aarch64 result, then proceed through PR 37–44
-only after normal review approval.
+integration**. The corrected source is pushed. Observe the full exact-head
+macOS/Ubuntu/aarch64 result, then proceed through PR 37–44 only after normal
+review approval.
