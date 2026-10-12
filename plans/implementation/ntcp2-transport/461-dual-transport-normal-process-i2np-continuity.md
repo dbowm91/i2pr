@@ -1,6 +1,6 @@
 # Plan 461 — Dual-family NTCP2/SSU2 normal-process I2NP continuity
 
-**State:** registered / **blocked on Plan 459 and Plan 460 actual peer receipt, P1** (2026-10-11). Owner: NTCP2 transport/core-router composition. Corrective to `plans/closure/ntcp2-transport/457-status.md`. Existing Plan 456 normal controlled NTCP2 source/lifecycle and Plan 454 shared governor passed. The Plan 458 SAM product tunnel-build blocker is **not a dependency**; Plan 435's full public/two-family qualification remains separate.
+**State:** passed at controlled loopback scope (2026-10-12). Owner: NTCP2 transport/core-router composition. Corrective to `plans/closure/ntcp2-transport/457-status.md`. Existing Plan 456 normal controlled NTCP2 source/lifecycle and Plan 454 shared governor passed. The Plan 458 SAM product tunnel-build blocker is **not a dependency**; Plan 435's full public/two-family qualification remains separate.
 
 ## Problem
 

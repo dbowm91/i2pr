@@ -65,14 +65,65 @@ because prose says so; it must derive from an executed command. Newest explicit
 - No milestone is complete merely because code landed. Completion requires the closure
   evidence defined by its plan and subsystem roadmap.
 - One milestone = one coherent pass for one implementation agent.
-- Corrective passes are new plans referencing the original, not amendments pretending the
-  original succeeded.
+- A **new architectural scope, owner, durable dependency, or corrective successor to a
+  finalized blocked closure** requires a new plan referencing the authoritative closure.
+  **An unresolved test fixture or source defect discovered during an active implementation
+  pass is fixed and rerun in that same plan**, with regression and sanitized evidence; it
+  does not trigger a new numbered plan merely because a bounded attempt failed.
 - Every subsystem roadmap and implementation plan MUST distinguish **invariant** (must always
   remain true), **capability** (user/operator-visible behavior), **infrastructure** (internal
   machinery — MUST NOT be presented as completed capability without a consumer), and
   **polish** (ergonomics/diagnostics/cleanup/docs).
 - A milestone is dependency-ready only when every hard dependency is closed and every
   interface dependency has a stable written contract.
+
+## Bounded execution and causal corrective policy
+
+This is a **planning/execution rule**, not a relaxation of `GUARDRAILS.md`,
+`specs/CONFORMANCE.md`, `specs/support.toml` or any executed closure.
+
+1. **Identify the smallest independent proof.** Maintain distinct signed-RI admission,
+   peer eligibility, source-owned message trigger, TCP/Noise authentication, I2NP receipt,
+   router product effect, legitimate correlated response, fresh reverse initiation,
+   tunnel build and external SAM/Streaming acceptance. Earlier lower-tier successes
+   remain valid evidence; later failure cannot erase them. Loopback is valid for local
+   transport but is not proof of independent network/public reachability.
+2. **Preflight source-owned prerequisites before process launch.** Inspect pinned reference
+   call graph and selection filters; verify exact identity, RI signature/version/netId,
+   address/family/caps, local bind, reference datadir, authorized address scope,
+   NetDB membership/bootstrap size and chosen operation. Test stock-to-stock *when a
+   stock topology or selection failure is ambiguous*, not as an unconditional gate before
+   an independent successful mixed-router operation.
+3. **One workstream, causal iterations.** Record the first missing event and its owning
+   source/fixture stage. An unchanged topology and source cannot be retried indefinitely.
+   An **identified cause** (including reference fixture/env mistakes, stdout parsing or
+   product wiring) permits a correction, pre/post deterministic regression and rerun
+   **inside the still-active plan**, respecting bounded children/time/memory/traffic.
+   No rule fixes a global attempt count of one; budget reflects realistic bootstrapping
+   and permits progress after a real change. Only new architectural scope, different
+   owner or a finalized blocked closure requiring a successor merits a new plan number.
+4. **Closure only at a stable disposition.** `passed` requires executed plan acceptance;
+   `blocked` requires source-attributed missing prerequisite, failed source-level fix,
+   genuinely unavailable authorized environment, or exhausted bounded *causal* options.
+   Capture stage, topology, exact command/commit/reference pin, expected and observed
+   effect, source owner, corrective delta and next executable step. Do not create a
+   terminal `blocked` closure just because one first-run fixture/observer was wrong.
+   Never rewrite a historical closure: record a new status or explicit successor per
+   existing authority rules; registry projections cannot promote protocol claims.
+5. **Privacy and conformance remain hard.** Exact pinned unmodified references, no
+   root/namespaces/VM/public-I2P routine traffic, no helper directly invoking a private
+   stock transport API, no forged reachability/bandwidth/capabilities, and no log of
+   raw RouterInfos, destinations, secrets or full identities. Deliberately selected
+   environment-gated lanes fail hard when tooling is absent; unsupported support
+   inventory stays unadvertised.
+6. **Handoff stop conditions are actionable.** A failed selector means inspect its
+   admitted set/exclusion reasons before attempting Noise; a verified decoded message
+   without product consumption goes to the product owner; a tunnel-build timeout
+   cannot block a separate valid NTCP2 request/reply proof. Escalate to a new plan
+   only when the current owner cannot repair the established root cause within scope.
+
+For practical NTCP2 applications of this policy, use the exact-pinned source findings
+and successor plans in `subsystems/ntcp2-transport-roadmap.md`.
 
 ## Naming conventions (i2pr divergence from codegg — intentional)
 

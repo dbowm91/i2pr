@@ -1,6 +1,6 @@
-# Plan 459 status: blocked — live ingress landed; initiator-role and correlated-reply proof remain
+# Plan 459 status: passed at controlled loopback scope — initiator lookup and correlated reply proven
 
-Closure token: `blocked-ntcp2-initiator-role-and-correlated-reply-unproven`
+Closure token: `passed-controlled-daemon-initiator-product-lookup-and-correlated-reply`
 
 Plan: [`459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md`](../../implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md)
 
@@ -23,12 +23,10 @@ store application. Wrong-network admission and identity-bound key persistence
 after restart also passed. This proves the responder-role product effect and
 the bounded source handoff.
 
-Plan 459 remains blocked because the required acceptance is broader than this
-source handoff: a normal daemon-initiated NTCP2 link has not yet been shown to
-deliver a product message, and a reply-required DatabaseLookup has not been
-observed end-to-end with its correlation intact. Unit tests cover bounded
-generation-safe delivery and the floodfill reply route; they do not replace
-those live-role proofs. No capability or support claim is promoted.
+At the time of this original status, normal daemon-initiated product receipt
+and a correlated live reply were still open. The 2026-10-12 completion
+addendum below records the causal correction and executed evidence; the earlier
+assessment and its commands remain preserved as history.
 
 ## Requirement-to-evidence matrix
 
@@ -102,6 +100,66 @@ configuration default, external router source, or support inventory changed.
 - Plans 455 and 457 retain their historical blocked outcomes. This record does
   not rewrite their acceptance evidence.
 
-Disposition: **blocked** at authenticated source handoff and responder-side
-RouterInfo effect; normal daemon initiator-role effect and correlated live
-reply remain required.
+Disposition at initial closure: **blocked** pending normal daemon
+initiator-role product receipt and correlated live reply. Superseded by the
+2026-10-12 completion addendum below.
+
+## Completion addendum — 2026-10-12
+
+The normal daemon initiator path authenticated pinned stock NTCP2 peers, but the
+first replay exposed that `Ntcp2RouterDeliveryRegistry` keyed one route only by
+peer. Stock peers already had an inbound link after sending their RouterInfo
+DatabaseStore, so the successfully authenticated daemon-initiated link was
+discarded as a duplicate before product delivery. The registry now retains
+bounded routes by `(peer, link generation)`. Runtime active-link admission
+bounds entries; ingress and reply correlation continue to require the exact
+authenticated generation.
+
+The strict source-owned private fixture passed with pinned i2pd
+`635b013a612ff47278ef02acf8580a28e10e26c5`: one stock owner selected and
+confirmed the candidate; the ordinary daemon accepted four RouterInfo stores,
+submitted and correlated four reply-token probes, established one fresh
+daemon-initiated NTCP2 link, submitted one product DatabaseLookup, and
+correlated its DatabaseSearchReply. The outbound request and reply used the
+same peer and link generation. The fixture also observed four inbound links,
+36 forwarded I2NP messages, and four accepted stores with four product replies.
+No identity, lookup key, reply token, or raw message bytes were emitted.
+
+| Requirement | Result |
+| --- | --- |
+| Normal daemon-initiated authenticated NTCP2 product delivery | Passed: one fresh outbound link submitted a DatabaseLookup. |
+| Real product effect and reply correlation | Passed: one DatabaseSearchReply correlated against the exact pending peer/link/key/deadline tuple. |
+| Concurrent inbound/outbound links for one peer | Passed: registry stores exact-generation routes; focused registry test verifies independent generations and stale removal. |
+| Existing stock-to-daemon product flow | Passed in the same execution: four RouterInfo stores accepted and four product replies submitted; four daemon probes correlated. |
+| Default-off, loopback, non-advertised posture | Unchanged; no `specs/support.toml` promotion. |
+
+Commands run after the correction:
+
+| Command | Outcome |
+| --- | --- |
+| `rtk cargo fmt --all` | Passed. |
+| `rtk cargo test --locked -p i2pr-daemon --lib router_i2np::tests::ntcp2_delivery_registry_is_peer_bound_generation_safe_and_bounded -- --exact --test-threads=1` | Passed, 1 test. |
+| `rtk python3 tests/integration/ntcp2/plan468_private_netdb.py` | Passed; sanitized receipts recorded above, including `plan459_fresh_i2pr_ntcp2_outbound=1`, `plan459_database_lookup_submitted=1`, and `plan459_database_lookup_correlated=1`. |
+| `rtk proxy bash -c 'export I2PR_PLAN467_REPLY_TOKEN=4670105; bash tests/integration/ntcp2/plan455_direct_stock_attempt.sh'` | Passed retained direct stock comparison: one authenticated session, one I2NP message sent, one stock self-RouterInfo receipt, and the Plan467 DeliveryStatus token correlated. |
+
+## Combined-tree verification addendum — 2026-10-12
+
+Implementation commit: `257f1eb`.
+
+The required routine floor has now run against the combined Plan 459/461 tree,
+including the request-driven outbound-owner change and real-link continuity test.
+`cargo check --locked --workspace --all-targets`, the managed-app sibling build,
+and the serialized workspace tests passed. The tests reported 4,849 passed and
+39 ignored across 187 suites (1,100.49s). Clippy initially identified one type-complexity
+warning in the new pending-lookup map; factoring its map type into a named alias
+resolved it. Formatting, clippy, rustdoc with warnings denied, and workspace
+doc tests then passed on the final tree. This change has no runtime or wire
+effect.
+
+Plan 460 remains passed at its controlled scope through Plan 469. Plan 461 is
+active and owns the separate dual-family request-driven chooser and
+failure-continuity acceptance.
+
+Disposition: **passed at controlled loopback scope** for daemon-initiated
+NTCP2 product receipt and correlated reply. Broader public and two-family
+qualification remains outside this plan.

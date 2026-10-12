@@ -82,6 +82,8 @@ use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
+use rand_core::TryRngCore;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -99,6 +101,272 @@ const SERVICE_READINESS_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Bounded graceful stop period for one supervised service.
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+fn revalidate_ntcp2_peer_snapshot(
+    candidates: Vec<i2pr_netdb::ValidatedRouterInfo>,
+    now_ms: u64,
+) -> Vec<i2pr_netdb::ValidatedRouterInfo> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            i2pr_netdb::ValidatedRouterInfo::from_router_info(
+                candidate.router_info().clone(),
+                Some(candidate.key()),
+                ValidationContext::new(Date::from_millis(now_ms)),
+            )
+            .ok()
+        })
+        .collect()
+}
+
+fn spawn_controlled_request_driven_lookup(
+    children: &i2pr_runtime::ChildScope,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+    mut local_router_info: tokio::sync::watch::Receiver<Option<Arc<Vec<u8>>>>,
+    delivery: crate::router_i2np::RouterDeliveryService,
+    registry: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
+    maximum_pending: usize,
+) {
+    if children
+        .spawn(move |cancellation| async move {
+        tracing::info!("controlled request-driven NTCP2 lookup worker started");
+        let Some(bootstrap) = bootstrap else {
+            tracing::warn!("controlled request-driven NTCP2 lookup has no bootstrap owner");
+            return Ok(());
+        };
+        let local_info_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let local_router_info = loop {
+            if let Some(info) = local_router_info.borrow_and_update().as_ref().cloned() {
+                break info;
+            }
+            if cancellation.is_cancelled() || tokio::time::Instant::now() >= local_info_deadline {
+                tracing::warn!("controlled request-driven NTCP2 lookup has no published local RouterInfo");
+                return Ok(());
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                changed = local_router_info.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        // Let the controlled peer fixture finish binding its listener before
+        // the first request-driven attempt. This delay is confined to the
+        // opt-in qualification probe and remains below the dial deadline.
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+        let local_info = i2pr_proto::RouterInfo::decode(
+            local_router_info.as_ref(),
+            i2pr_proto::MAX_COMMON_STRUCTURE_SIZE,
+        );
+        let local_hash = local_info
+            .ok()
+            .and_then(|info| i2pr_crypto::router_identity_hash(info.router_identity()).ok());
+        let peer_deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let candidate = loop {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+            let Some(now_ms) = now_ms else {
+                tracing::warn!("controlled request-driven NTCP2 lookup has no wall clock");
+                return Ok(());
+            };
+            let snapshot = bootstrap
+                .lock()
+                .ok()
+                .map(|owner| owner.validated_router_info_snapshot())
+                .unwrap_or_default();
+            let snapshot_count = snapshot.len();
+            let peers = revalidate_ntcp2_peer_snapshot(snapshot, now_ms);
+            let validated_count = peers.len();
+            if let Some(candidate) = peers.into_iter().find(|candidate| {
+                local_hash.is_none_or(|hash| candidate.key().as_bytes() != hash.as_bytes())
+            }) {
+                break candidate;
+            }
+            if cancellation.is_cancelled() || tokio::time::Instant::now() >= peer_deadline {
+                tracing::warn!(
+                    snapshot_records = snapshot_count,
+                    revalidated_records = validated_count,
+                    local_hash_available = local_hash.is_some(),
+                    "controlled request-driven NTCP2 lookup found no eligible peer"
+                );
+                return Ok(());
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+        };
+        let peer = i2pr_transport::PeerId::from_hash(i2pr_proto::Hash::from_bytes(
+            *candidate.key().as_bytes(),
+        ));
+        let mut lookup_key = [0_u8; 32];
+        if i2pr_crypto::OsRng.try_fill_bytes(&mut lookup_key).is_err() {
+            tracing::warn!("controlled request-driven NTCP2 lookup randomness unavailable");
+            return Ok(());
+        }
+        let lookup_key = i2pr_proto::Hash::from_bytes(lookup_key);
+        let Some(now_ms) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        else {
+            tracing::warn!("controlled request-driven NTCP2 lookup has no wall clock");
+            return Ok(());
+        };
+        let Ok(message) = crate::router_i2np::build_initiator_database_lookup_probe(
+            local_router_info.as_ref(),
+            lookup_key,
+            now_ms,
+        ) else {
+            tracing::warn!("controlled request-driven NTCP2 DatabaseLookup encoding failed");
+            return Ok(());
+        };
+        let timeout = Duration::from_secs(10);
+        if let Some(link_id) = registry.current_peer_link(peer) {
+            let Some(now_ms) = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            else {
+                tracing::warn!("controlled request-driven NTCP2 lookup has no wall clock");
+                return Ok(());
+            };
+            if !registry.register_lookup(
+                peer,
+                link_id,
+                lookup_key,
+                now_ms,
+                now_ms.saturating_add(120_000),
+                maximum_pending,
+            ) {
+                tracing::warn!("controlled request-driven NTCP2 response correlation was not admitted");
+                return Ok(());
+            }
+            let Ok(request) =
+                crate::router_i2np::RouterDeliveryRequest::new(peer, message, timeout)
+            else {
+                registry.cancel_lookup(peer, link_id);
+                return Ok(());
+            };
+            let (outcome, selected) = delivery.deliver_with_transport(request, &cancellation);
+            if outcome == crate::router_i2np::RouterDeliveryOutcome::Accepted
+                && selected == Some(crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id))
+            {
+                tracing::info!(
+                    link_generation = link_id.value(),
+                    "controlled request-driven DatabaseLookup submitted over authenticated NTCP2"
+                );
+            } else {
+                registry.cancel_lookup(peer, link_id);
+                tracing::warn!(
+                    outcome = ?outcome,
+                    "controlled request-driven DatabaseLookup did not use its current authenticated NTCP2 generation"
+                );
+            }
+            return Ok(());
+        }
+        let Ok(first_request) =
+            crate::router_i2np::RouterDeliveryRequest::new(peer, message.clone(), timeout)
+        else {
+            tracing::warn!("controlled request-driven NTCP2 DatabaseLookup request rejected");
+            return Ok(());
+        };
+        let (first_outcome, _) = delivery.deliver_with_transport(first_request, &cancellation);
+        if first_outcome != crate::router_i2np::RouterDeliveryOutcome::NoActiveSession {
+            tracing::warn!(
+                outcome = ?first_outcome,
+                "controlled request-driven NTCP2 lookup did not begin with a route miss"
+            );
+            return Ok(());
+        }
+        tracing::info!(
+            "controlled product DatabaseLookup requested a peer dial after route miss"
+        );
+
+        let dial_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+                        let mut poll = tokio::time::interval(Duration::from_secs(1));
+        poll.tick().await;
+        let mut retries = 0_u8;
+        let link_id = loop {
+            if cancellation.is_cancelled() || tokio::time::Instant::now() >= dial_deadline {
+                tracing::warn!("controlled request-driven NTCP2 peer dial did not complete");
+                return Ok(());
+            }
+            if let Some(link_id) = registry.current_outbound_link(peer) {
+                break link_id;
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                _ = poll.tick() => {
+                    if retries < 20 {
+                        retries += 1;
+                        if registry.request_outbound_dial(peer) {
+                            tracing::info!(
+                                retry = retries,
+                                "controlled request-driven NTCP2 peer dial request retried"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        let expires_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .unwrap_or(0)
+            .saturating_add(120_000);
+        let now_ms = expires_ms.saturating_sub(120_000);
+        if !registry.register_lookup(
+            peer,
+            link_id,
+            lookup_key,
+            now_ms,
+            expires_ms,
+            maximum_pending,
+        ) {
+            tracing::warn!("controlled request-driven NTCP2 response correlation was not admitted");
+            return Ok(());
+        }
+        let Ok(retry) =
+            crate::router_i2np::RouterDeliveryRequest::new(peer, message, timeout)
+        else {
+            registry.cancel_lookup(peer, link_id);
+            return Ok(());
+        };
+        let (outcome, selected) = delivery.deliver_with_transport(retry, &cancellation);
+        if outcome == crate::router_i2np::RouterDeliveryOutcome::Accepted
+            && selected == Some(crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id))
+        {
+            tracing::info!(
+                link_generation = link_id.value(),
+                "controlled request-driven DatabaseLookup submitted over authenticated NTCP2"
+            );
+        } else {
+            registry.cancel_lookup(peer, link_id);
+            tracing::warn!(
+                outcome = ?outcome,
+                "controlled request-driven DatabaseLookup retry did not use its authenticated NTCP2 generation"
+            );
+        }
+        Ok(())
+        })
+        .is_err()
+    {
+        tracing::warn!("controlled request-driven NTCP2 lookup task could not be supervised");
+    }
+}
 
 /// Bounded deadline for one loopback listener bind.
 ///
@@ -656,6 +924,7 @@ fn build_daemon_graph_inner(
                 ssu2_config: &config.ssu2,
                 controlled_dual_transport: config.floodfill.qualification_profile
                     == crate::config::FloodfillQualificationProfile::ControlledLoopback,
+                send_initiator_lookup_probe: config.floodfill.send_initiator_lookup_probe,
                 network_id: config.network.network_id,
                 data_dir: &config.router.data_dir,
                 bandwidth: bandwidth.clone(),
@@ -1664,14 +1933,23 @@ async fn run_floodfill_evaluation(
             match activation {
                 Ok(encoded) => {
                     if controlled_profile {
-                        if let Ok(info_b64) = i2pr_netdb::encode(&encoded)
-                            && inspection
+                        match i2pr_netdb::encode_router_info(&encoded) {
+                            Ok(info_b64) => match inspection
                                 .publish_local_router_info_b64(info_b64.trim_end_matches('='))
-                                .is_err()
-                        {
-                            tracing::warn!(
-                                "controlled floodfill RouterInfo inspection publication rejected"
-                            );
+                            {
+                                Ok(()) => tracing::info!(
+                                    router_info_bytes = encoded.len(),
+                                    "controlled floodfill RouterInfo inspection snapshot published"
+                                ),
+                                Err(error) => tracing::warn!(
+                                    reason = %error,
+                                    "controlled floodfill RouterInfo inspection publication rejected"
+                                ),
+                            },
+                            Err(error) => tracing::warn!(
+                                reason = %error,
+                                "controlled floodfill RouterInfo base64 encoding failed"
+                            ),
                         }
                         let _ = local_router_info.send(Some(Arc::new(encoded)));
                     }
@@ -1708,7 +1986,7 @@ async fn run_floodfill_evaluation(
             {
                 Ok(withdrawn) => {
                     if controlled_profile && dual_transport_available && !withdrawn.is_empty() {
-                        if let Ok(info_b64) = i2pr_netdb::encode(&withdrawn)
+                        if let Ok(info_b64) = i2pr_netdb::encode_router_info(&withdrawn)
                             && inspection
                                 .publish_local_router_info_b64(info_b64.trim_end_matches('='))
                                 .is_err()
@@ -1779,10 +2057,32 @@ async fn forward_authenticated_ntcp2_message(
     }
 }
 
+fn correlate_ntcp2_lookup_reply(
+    peer: i2pr_transport::PeerId,
+    link_id: i2pr_transport::LinkId,
+    message: Option<&i2pr_proto::I2npMessage>,
+    delivery: &crate::router_i2np::Ntcp2RouterDeliveryRegistry,
+    now_ms: u64,
+) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    let key = match message.body() {
+        i2pr_proto::I2npBody::DatabaseSearchReply(reply)
+            if reply.from.as_bytes() == peer.hash().as_bytes() =>
+        {
+            Some(reply.key)
+        }
+        _ => None,
+    };
+    key.is_some_and(|key| delivery.correlate_lookup_response(peer, link_id, key, now_ms))
+}
+
 struct Ntcp2ServiceRegistration<'a> {
     config: &'a crate::config::Ntcp2Config,
     ssu2_config: &'a crate::config::Ssu2Config,
     controlled_dual_transport: bool,
+    send_initiator_lookup_probe: bool,
     network_id: u16,
     data_dir: &'a std::path::Path,
     bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
@@ -1800,6 +2100,7 @@ fn register_ntcp2_service(
         config,
         ssu2_config,
         controlled_dual_transport,
+        send_initiator_lookup_probe,
         network_id,
         data_dir,
         bandwidth,
@@ -1820,15 +2121,15 @@ fn register_ntcp2_service(
     let router_ingress = ingress.sender.clone();
     let router_ingress_budget = ingress.byte_budget.clone();
     let ntcp2_delivery = ingress.delivery.clone();
+    let (outbound_dial_tx, outbound_dial_rx) =
+        tokio::sync::mpsc::channel(config.max_active_links.max(1));
+    let outbound_dial_rx = Arc::new(tokio::sync::Mutex::new(outbound_dial_rx));
+    if bootstrap.is_some() && !ntcp2_delivery.attach_dial_request_sender(outbound_dial_tx) {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "NTCP2 outbound dial request queue could not be attached".to_owned(),
+        ));
+    }
     let data_dir = data_dir.to_path_buf();
-    let peer_records = bootstrap
-        .and_then(|bootstrap| {
-            bootstrap
-                .lock()
-                .ok()
-                .map(|owner| owner.validated_router_info_snapshot())
-        })
-        .unwrap_or_default();
     let limits = Ntcp2RuntimeLimits {
         max_active_links: config.max_active_links,
         max_replay_entries: config.max_replay_entries,
@@ -1857,17 +2158,19 @@ fn register_ntcp2_service(
             let config = config.clone();
             let ssu2_config = ssu2_config.clone();
             let data_dir = data_dir.clone();
-            let peer_records = peer_records.clone();
             let bandwidth = bandwidth.clone();
             let router_ingress = router_ingress.clone();
             let router_ingress_budget = router_ingress_budget.clone();
             let ntcp2_delivery = ntcp2_delivery.clone();
+            let bootstrap = bootstrap.clone();
             let local_router_info = local_router_info.clone();
             let controlled_dual_transport = controlled_dual_transport;
+            let send_initiator_lookup_probe = send_initiator_lookup_probe;
             let ntcp2_send_timeout = config.write_timeout;
             let cancellation = ctx.cancellation().clone();
             let children = ctx.children();
             let readiness = ctx.readiness();
+            let outbound_dial_rx = Arc::clone(&outbound_dial_rx);
             Box::pin(async move {
                 if !config.enabled
                     || config.qualification_profile
@@ -2016,9 +2319,9 @@ fn register_ntcp2_service(
                     listener.shutdown();
                     return result;
                 }
-                if !peer_records.is_empty() {
+                if bootstrap.is_some() || send_initiator_lookup_probe {
                     let outbound_runtime = runtime.clone();
-                    let outbound_peers = peer_records.clone();
+                    let outbound_bootstrap = bootstrap.clone();
                     let outbound_local_info = Arc::clone(&router_info);
                     let mut outbound_local_info_rx = local_router_info_rx.clone();
                     let outbound_static_secret = Arc::clone(&static_secret);
@@ -2030,18 +2333,71 @@ fn register_ntcp2_service(
                     let outbound_send_timeout = ntcp2_send_timeout;
                     let _ = children.spawn(move |task_cancel| async move {
                         let mut cursor = 0usize;
+                        let mut health_tick = tokio::time::interval(Duration::from_secs(15));
+                        health_tick
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        health_tick.tick().await;
                         loop {
-                            tokio::select! {
+                            let requested_peer = tokio::select! {
                                 biased;
                                 _ = task_cancel.cancelled() => return Ok(()),
-                                _ = tokio::time::sleep(Duration::from_secs(15)) => {}
-                            }
-                            let Some(candidate) = outbound_peers.get(cursor % outbound_peers.len())
-                            else {
-                                return Ok(());
+                                peer = async {
+                                    outbound_dial_rx.lock().await.recv().await
+                                } => peer,
+                                _ = health_tick.tick() => None,
                             };
-                            cursor = cursor.wrapping_add(1);
+                            let outbound_peers = outbound_bootstrap
+                                .as_ref()
+                                .and_then(|bootstrap| {
+                                    bootstrap
+                                        .lock()
+                                        .ok()
+                                        .map(|owner| owner.validated_router_info_snapshot())
+                                })
+                                .unwrap_or_default();
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .ok()
+                                .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+                            let Some(now_ms) = now_ms else {
+                                tracing::warn!("controlled NTCP2 dial skipped because wall clock is unavailable");
+                                continue;
+                            };
+                            // Store membership means the record was valid when
+                            // admitted. It does not make an old snapshot
+                            // permanently eligible: re-run the normal NetDB
+                            // signature, identity, and age checks immediately
+                            // before using it for a dial. The snapshot is
+                            // fetched on every wake, so an updated record for
+                            // the same RouterHash supersedes the old one.
+                            let outbound_peers =
+                                revalidate_ntcp2_peer_snapshot(outbound_peers, now_ms);
+                            tracing::info!(
+                                validated_peer_records = outbound_peers.len(),
+                                "controlled NTCP2 outbound peer snapshot refreshed"
+                            );
+                            if outbound_peers.is_empty() {
+                                continue;
+                            }
+                            let candidate = if let Some(peer) = requested_peer {
+                                outbound_peers.iter().find(|candidate| {
+                                    candidate.key().as_bytes() == peer.hash().as_bytes()
+                                })
+                            } else {
+                                let candidate = outbound_peers.get(cursor % outbound_peers.len());
+                                cursor = cursor.wrapping_add(1);
+                                candidate
+                            };
+                            let Some(candidate) = candidate else {
+                                continue;
+                            };
                             if candidate.key().as_bytes() == &router_hash {
+                                continue;
+                            }
+                            let peer = i2pr_transport::PeerId::from_hash(
+                                i2pr_proto::Hash::from_bytes(*candidate.key().as_bytes()),
+                            );
+                            if outbound_delivery.has_outbound_peer_route(peer) {
                                 continue;
                             }
                             let static_key =
@@ -2054,7 +2410,7 @@ fn register_ntcp2_service(
                             let Some(raw_id) = allocate_ntcp2_link_generation() else {
                                 return Ok(());
                             };
-                            let Ok(mut link) = outbound_runtime
+                            let mut link = match outbound_runtime
                                 .dial_authenticated_loopback_peer(
                                     &outbound_scope,
                                     candidate.router_info(),
@@ -2066,54 +2422,81 @@ fn register_ntcp2_service(
                                     &outbound_cancel,
                                 )
                                 .await
-                            else {
-                                continue;
+                            {
+                                Ok(link) => link,
+                                Err(error) => {
+                                    tracing::info!(
+                                        error = ?error,
+                                        "controlled NTCP2 outbound peer dial attempt did not authenticate"
+                                    );
+                                    continue;
+                                }
                             };
-                            let peer = i2pr_transport::PeerId::from_hash(
-                                i2pr_proto::Hash::from_bytes(*candidate.key().as_bytes()),
-                            );
                             let Some(link_id) = i2pr_transport::LinkId::new(raw_id).ok() else {
                                 link.close();
                                 continue;
                             };
                             let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
-                            if !outbound_delivery.register(peer, link_id, send_tx) {
+                            if !outbound_delivery.register_outbound(peer, link_id, send_tx) {
                                 link.close();
                                 continue;
                             }
-                            loop {
-                                tokio::select! {
-                                    biased;
-                                    _ = task_cancel.cancelled() => break,
-                                message = send_rx.recv() => {
-                                    let Some(message) = message else { break; };
-                                    let _ = link.send_i2np_message(
-                                        message,
-                                        outbound_send_timeout,
-                                        &task_cancel,
-                                    ).await;
-                                }
-                                    received = link.recv_i2np_messages(&task_cancel) => {
-                                        let Ok(Some(messages)) = received else { break; };
-                                        for bytes in messages {
-                                            if !forward_authenticated_ntcp2_message(
-                                                &outbound_ingress,
-                                                peer,
-                                                link_id,
-                                                bytes,
-                                                &task_cancel,
-                                                &outbound_ingress_budget,
-                                            ).await {
-                                                link.close();
-                                            outbound_delivery.remove(peer, link_id);
-                                                return Ok(());
+                            tracing::info!(
+                                link_generation = raw_id,
+                                "NTCP2 authenticated outbound link promoted"
+                            );
+                            let link_delivery = outbound_delivery.clone();
+                            let link_ingress = outbound_ingress.clone();
+                            let link_ingress_budget = outbound_ingress_budget.clone();
+                            let link_send_timeout = outbound_send_timeout;
+                            let link_scope = outbound_scope.clone();
+                            if link_scope
+                                .spawn(move |link_cancel| async move {
+                                    loop {
+                                        tokio::select! {
+                                            biased;
+                                            _ = link_cancel.cancelled() => break,
+                                            message = send_rx.recv() => {
+                                                let Some(message) = message else { break; };
+                                                if link.send_i2np_message(
+                                                    message,
+                                                    link_send_timeout,
+                                                    &link_cancel,
+                                                ).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            received = link.recv_i2np_messages(&link_cancel) => {
+                                                let Ok(Some(messages)) = received else { break; };
+                                                let mut accepted = true;
+                                                for bytes in messages {
+                                                    if !forward_authenticated_ntcp2_message(
+                                                        &link_ingress,
+                                                        peer,
+                                                        link_id,
+                                                        bytes,
+                                                        &link_cancel,
+                                                        &link_ingress_budget,
+                                                    ).await {
+                                                        accepted = false;
+                                                        break;
+                                                    }
+                                                }
+                                                if !accepted {
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
-                                }
+                                    link.close();
+                                    link_delivery.remove(peer, link_id);
+                                    Ok(())
+                                })
+                                .is_err()
+                            {
+                                outbound_delivery.remove(peer, link_id);
+                                continue;
                             }
-                            link.close();
-                            outbound_delivery.remove(peer, link_id);
                         }
                     });
                 }
@@ -2168,6 +2551,10 @@ fn register_ntcp2_service(
                                 let Ok(mut link) = runtime.promote_authenticated_inbound(
                                     &task_scope, inbound, handshake, raw_id,
                                 ) else { return Ok(()); };
+                                tracing::info!(
+                                    link_generation = raw_id,
+                                    "NTCP2 authenticated inbound link promoted"
+                                );
                             let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
                             if !task_delivery.register(peer, link_id, send_tx) {
                                 link.close();
@@ -2200,6 +2587,9 @@ fn register_ntcp2_service(
                                                     task_delivery.remove(peer, link_id);
                                                     return Ok(());
                                                 }
+                                                tracing::info!(
+                                                    "authenticated NTCP2 I2NP message forwarded to router ingress"
+                                                );
                                             }
                                         }
                                     }
@@ -2266,6 +2656,9 @@ fn register_ssu2_service(
     let floodfill_enabled = config.floodfill.enabled;
     let controlled_floodfill = config.floodfill.qualification_profile
         == crate::config::FloodfillQualificationProfile::ControlledLoopback;
+    let reply_token_probe_enabled = config.floodfill.send_reply_token_probe;
+    let request_driven_lookup_probe_enabled = config.floodfill.send_initiator_lookup_probe;
+    let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
     let controlled_ntcp2_endpoint = controlled_floodfill.then(|| {
         std::net::SocketAddr::new(
             config.transport.ntcp2.bind_address,
@@ -2291,6 +2684,9 @@ fn register_ssu2_service(
                 let mut local_router_info_rx = local_router_info_rx.clone();
                 let floodfill_config_path = floodfill_config_path.clone();
                 let controlled_floodfill = controlled_floodfill;
+                let reply_token_probe_enabled = reply_token_probe_enabled;
+                let request_driven_lookup_probe_enabled = request_driven_lookup_probe_enabled;
+                let ntcp2_max_active_links = ntcp2_max_active_links;
                 let controlled_ntcp2_endpoint = controlled_ntcp2_endpoint;
                 let bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
@@ -2350,6 +2746,20 @@ fn register_ssu2_service(
                                 );
                                 continue;
                             };
+                            if inbound.transport == AuthenticatedRouterTransport::Ntcp2
+                                && correlate_ntcp2_lookup_reply(
+                                    inbound.inbound.peer,
+                                    inbound.inbound.link_id,
+                                    decoded.message(),
+                                    &ntcp2_delivery,
+                                    now_ms,
+                                )
+                            {
+                                tracing::info!(
+                                    link_generation = inbound.inbound.link_id.value(),
+                                    "controlled NTCP2 initiator DatabaseLookup response correlated"
+                                );
+                            }
                             if let (
                                 Some(bootstrap),
                                 Some(i2pr_proto::I2npBody::DatabaseStore(store)),
@@ -2693,6 +3103,8 @@ fn register_ssu2_service(
                     let mut group_tick = tokio::time::interval(Duration::from_millis(250));
                     group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let pump_started = tokio::time::Instant::now();
+                    let mut reply_token_probe_sent = HashSet::new();
+                    let mut pending_reply_token_probes = HashMap::new();
                     let token = cancellation.clone();
                     // Plan 337: the destination-group product must come
                     // up whenever a service tunnel can exist at all,
@@ -2837,6 +3249,17 @@ fn register_ssu2_service(
                             ),
                         );
                     }
+                    if request_driven_lookup_probe_enabled {
+                        tracing::info!("controlled request-driven NTCP2 lookup worker scheduled");
+                        spawn_controlled_request_driven_lookup(
+                            &children,
+                            bootstrap.clone(),
+                            local_router_info_rx.clone(),
+                            owner.handle().delivery().clone(),
+                            ntcp2_delivery.clone(),
+                            ntcp2_max_active_links,
+                        );
+                    }
                     loop {
                         tokio::select! {
                             biased;
@@ -2885,12 +3308,23 @@ fn register_ssu2_service(
                                         }
                                     }
                                 }
-                                if let Ok(encoded) = i2pr_netdb::encode(info.as_ref())
-                                    && inspection
+                                match i2pr_netdb::encode_router_info(info.as_ref()) {
+                                    Ok(encoded) => match inspection
                                         .publish_local_router_info_b64(encoded.trim_end_matches('='))
-                                        .is_err()
-                                {
-                                    tracing::warn!("updated local RouterInfo inspection publication rejected");
+                                    {
+                                        Ok(()) => tracing::info!(
+                                            router_info_bytes = info.len(),
+                                            "updated local RouterInfo inspection snapshot published"
+                                        ),
+                                        Err(error) => tracing::warn!(
+                                            reason = %error,
+                                            "updated local RouterInfo inspection publication rejected"
+                                        ),
+                                    },
+                                    Err(error) => tracing::warn!(
+                                        reason = %error,
+                                        "updated local RouterInfo base64 encoding failed"
+                                    ),
                                 }
                             }
                             inbound = async {
@@ -2932,6 +3366,81 @@ fn register_ssu2_service(
                                 };
                                 let outcome = decoded.outcome();
                                 let message = decoded.message();
+                                if let (
+                                    Some(bootstrap),
+                                    Some(i2pr_proto::I2npBody::DatabaseStore(store)),
+                                ) = (
+                                    bootstrap.as_ref(),
+                                    message.map(i2pr_proto::I2npMessage::body),
+                                ) {
+                                    match bootstrap.lock() {
+                                        Ok(mut bootstrap) => match bootstrap
+                                            .ingest_authenticated_router_store(store, now_ms)
+                                        {
+                                            Ok(outcome) => tracing::info!(
+                                            transport_family = match transport {
+                                                AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
+                                                AuthenticatedRouterTransport::Ssu2 => "ssu2",
+                                            },
+                                                inserted = matches!(
+                                                    outcome,
+                                                    i2pr_netdb::UnsolicitedStoreOutcome::Inserted(_)
+                                                ),
+                                                "authenticated RouterInfo store applied to bootstrap peer store"
+                                            ),
+                                            Err(error) => tracing::debug!(
+                                                reason = %error,
+                                                "authenticated unsolicited DatabaseStore refused"
+                                            ),
+                                        },
+                                        Err(_) => tracing::warn!(
+                                            "bootstrap NetDB lock poisoned; authenticated RouterInfo store refused"
+                                        ),
+                                    }
+                                }
+                                if transport == AuthenticatedRouterTransport::Ntcp2
+                                    && correlate_ntcp2_lookup_reply(
+                                        inbound.peer,
+                                        inbound.link_id,
+                                        message,
+                                        &ntcp2_delivery,
+                                        now_ms,
+                                    )
+                                {
+                                    tracing::info!(
+                                        link_generation = inbound.link_id.value(),
+                                        "controlled NTCP2 initiator DatabaseLookup response correlated"
+                                    );
+                                }
+                                reply_token_probe_sent.retain(|(peer, link_id)| {
+                                    ntcp2_delivery.is_current(*peer, *link_id)
+                                });
+                                pending_reply_token_probes.retain(|(peer, link_id), (_, expires_ms)| {
+                                    now_ms < *expires_ms
+                                        && ntcp2_delivery.is_current(*peer, *link_id)
+                                });
+                                if transport == AuthenticatedRouterTransport::Ntcp2
+                                    && let Some(i2pr_proto::I2npBody::DeliveryStatus(status)) =
+                                        message.map(i2pr_proto::I2npMessage::body)
+                                    && pending_reply_token_probes
+                                        .get(&(inbound.peer, inbound.link_id))
+                                        .is_some_and(|(token, expires_ms)| {
+                                            crate::router_i2np::reply_token_status_matches(
+                                                *token,
+                                                status.message_id,
+                                                status.timestamp.as_millis(),
+                                                now_ms,
+                                            )
+                                                && now_ms < *expires_ms
+                                        })
+                                {
+                                    pending_reply_token_probes
+                                        .remove(&(inbound.peer, inbound.link_id));
+                                    tracing::info!(
+                                        link_generation = inbound.link_id.value(),
+                                        "controlled NTCP2 RouterInfo DeliveryStatus correlation completed"
+                                    );
+                                }
                                 let mut served = false;
                                 if let Some(state) = floodfill.as_mut() {
                                     let time = i2pr_netdb::FloodfillTime {
@@ -2963,6 +3472,93 @@ fn register_ssu2_service(
                                                 )
                                                 .await;
                                             served = true;
+                                        }
+                                        Ok(crate::floodfill::FloodfillDispatchOutcome::Store(
+                                            i2pr_netdb::FloodfillStoreEffect::Stored {
+                                                acknowledgement: Some(_),
+                                                ..
+                                            },
+                                        )) => {
+                                            tracing::info!(
+                                                transport_family = match transport {
+                                                    AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
+                                                    AuthenticatedRouterTransport::Ssu2 => "ssu2",
+                                                },
+                                                "authenticated floodfill DatabaseStore accepted with response owed"
+                                            );
+                                            state
+                                                .drain_effects(
+                                                    owner.handle(),
+                                                    now_ms,
+                                                    NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
+                                                    &token,
+                                                )
+                                                .await;
+                                            served = true;
+                                            if reply_token_probe_enabled
+                                                && transport == AuthenticatedRouterTransport::Ntcp2
+                                                && !reply_token_probe_sent
+                                                    .contains(&(inbound.peer, inbound.link_id))
+                                                && reply_token_probe_sent.len()
+                                                    < ntcp2_max_active_links
+                                                && let Some(local_info) =
+                                                    local_router_info_rx.borrow().as_ref().cloned()
+                                            {
+                                                let mut rng = OsRng;
+                                                let mut token_bytes = [0_u8; 4];
+                                                let mut reply_token = 0;
+                                                for _ in 0..4 {
+                                                    if rng.try_fill_bytes(&mut token_bytes).is_err() {
+                                                        reply_token = 0;
+                                                        break;
+                                                    }
+                                                    reply_token = u32::from_be_bytes(token_bytes);
+                                                    if reply_token != 0
+                                                        && reply_token != u32::MAX
+                                                        && !pending_reply_token_probes.values().any(
+                                                            |(pending, _)| *pending == reply_token,
+                                                        )
+                                                    {
+                                                        break;
+                                                    }
+                                                    reply_token = 0;
+                                                }
+                                                if reply_token != 0
+                                                    && let Ok((_local_peer, bytes)) =
+                                                        crate::router_i2np::build_reply_token_router_info_probe(
+                                                            local_info.as_ref(),
+                                                            reply_token,
+                                                            now_ms,
+                                                        )
+                                                    && let Ok(request) =
+                                                        crate::router_i2np::RouterDeliveryRequest::new(
+                                                            inbound.peer,
+                                                            bytes,
+                                                            Duration::from_secs(10),
+                                                        )
+                                                {
+                                                    let delivery = owner
+                                                        .handle()
+                                                        .delivery()
+                                                        .deliver(request, &token);
+                                                    if delivery
+                                                        == crate::router_i2np::RouterDeliveryOutcome::Accepted
+                                                    {
+                                                        reply_token_probe_sent.insert((
+                                                            inbound.peer,
+                                                            inbound.link_id,
+                                                        ));
+                                                        pending_reply_token_probes.insert(
+                                                            (inbound.peer, inbound.link_id),
+                                                            (reply_token, now_ms.saturating_add(120_000)),
+                                                        );
+                                                        tracing::info!(
+                                                            link_generation = inbound.link_id.value(),
+                                                            "controlled NTCP2 RouterInfo reply-token probe submitted"
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
                                         Ok(_) => {
                                             state
@@ -3247,7 +3843,7 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         && let Some(local) = bootstrap.local()
     {
         match local.encoded(crate::i2pcontrol_inspection::MAX_LOCAL_ROUTER_INFO_BYTES) {
-            Ok(encoded) => match i2pr_netdb::encode(&encoded) {
+            Ok(encoded) => match i2pr_netdb::encode_router_info(&encoded) {
                 Ok(info_b64) => {
                     if inspection
                         .publish_local_router_info_b64(info_b64.trim_end_matches('='))
@@ -3367,6 +3963,85 @@ mod tests {
     use super::*;
     use crate::cli::{CheckConfigArgs, Command, IdentityArgs, IdentityCommand, RunArgs};
     use crate::error::ExitCode;
+
+    #[test]
+    fn ntcp2_peer_snapshot_revalidation_drops_stale_records() {
+        let now_ms = 3 * 24 * 60 * 60 * 1000;
+        let make_candidate = |seed: u8, published_ms: u64| {
+            let bundle = i2pr_crypto::RouterIdentityBundle::from_private_bytes(
+                [seed; 32],
+                [seed.wrapping_add(1); 32],
+                &mut OsRng,
+            )
+            .expect("router identity");
+            let info = bundle
+                .sign_router_info(
+                    Date::from_millis(published_ms),
+                    Vec::new(),
+                    Vec::new(),
+                    i2pr_proto::Mapping::empty(),
+                )
+                .expect("signed RouterInfo");
+            i2pr_netdb::ValidatedRouterInfo::from_router_info(
+                info,
+                None,
+                ValidationContext::new(Date::from_millis(published_ms)),
+            )
+            .expect("freshly admitted RouterInfo")
+        };
+        let stale = make_candidate(0x31, now_ms - 25 * 60 * 60 * 1000);
+        let current = make_candidate(0x41, now_ms - 60 * 1000);
+
+        let eligible = revalidate_ntcp2_peer_snapshot(vec![stale, current.clone()], now_ms);
+
+        assert_eq!(eligible, [current]);
+    }
+
+    #[test]
+    fn ntcp2_lookup_response_requires_authenticated_source_and_pending_key() {
+        let registry = crate::router_i2np::Ntcp2RouterDeliveryRegistry::default();
+        let peer = i2pr_transport::PeerId::from_hash(i2pr_proto::Hash::from_bytes([0x72; 32]));
+        let other = i2pr_transport::PeerId::from_hash(i2pr_proto::Hash::from_bytes([0x73; 32]));
+        let link_id = i2pr_transport::LinkId::new(72).expect("link id");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        assert!(registry.register(peer, link_id, sender));
+        let key = i2pr_proto::Hash::from_bytes([0x74; 32]);
+        let now_ms = 1_800_000_000_000;
+        assert!(registry.register_lookup(peer, link_id, key, now_ms, now_ms + 10_000, 1,));
+        let make_reply = |from| {
+            i2pr_proto::I2npMessage::new_short_transport(
+                19,
+                (now_ms / 1000 + 60) as u32,
+                i2pr_proto::I2npBody::DatabaseSearchReply(i2pr_proto::DatabaseSearchReplyMessage {
+                    key,
+                    peer_hashes: Vec::new(),
+                    from,
+                }),
+            )
+            .expect("DatabaseSearchReply")
+        };
+        assert!(!correlate_ntcp2_lookup_reply(
+            peer,
+            link_id,
+            Some(&make_reply(other.hash())),
+            &registry,
+            now_ms + 1,
+        ));
+        assert!(!correlate_ntcp2_lookup_reply(
+            peer,
+            link_id,
+            Some(&make_reply(i2pr_proto::Hash::from_bytes([0x75; 32]))),
+            &registry,
+            now_ms + 2,
+        ));
+        assert!(correlate_ntcp2_lookup_reply(
+            peer,
+            link_id,
+            Some(&make_reply(peer.hash())),
+            &registry,
+            now_ms + 3,
+        ));
+    }
 
     #[tokio::test]
     async fn ntcp2_ingress_preserves_authenticated_peer_link_and_fails_closed() {

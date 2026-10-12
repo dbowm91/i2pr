@@ -941,63 +941,52 @@ fn controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart(
     let router = Router::new(|data_dir| controlled_ntcp2_config(address.port(), data_dir));
     router.generate_identity();
     let key_path = router.data_dir.join("ntcp2.transport.identity");
+    let mut expected_keys = None;
 
-    let mut first = router.spawn();
-    let mut first_socket = None;
-    let deadline = Instant::now() + READY_DEADLINE;
-    while Instant::now() < deadline {
-        if key_path.exists()
-            && let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200))
-        {
-            first_socket = Some(socket);
-            break;
+    for generation in 0..3 {
+        let mut child = router.spawn();
+        let mut socket = None;
+        let deadline = Instant::now() + READY_DEADLINE;
+        while Instant::now() < deadline {
+            if key_path.exists()
+                && let Ok(connected) =
+                    TcpStream::connect_timeout(&address, Duration::from_millis(200))
+            {
+                socket = Some(connected);
+                break;
+            }
+            if let Some(status) = child.child.try_wait().expect("check daemon") {
+                let (_, output) = child.finish();
+                panic!("NTCP2 daemon exited before bind ({status}):\n{output}");
+            }
+            std::thread::sleep(POLL_INTERVAL);
         }
-        if let Some(status) = first.child.try_wait().expect("check daemon") {
-            let (_, output) = first.finish();
-            panic!("NTCP2 daemon exited before bind ({status}):\n{output}");
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-    drop(first_socket.expect("controlled NTCP2 listener did not bind"));
-    assert!(
-        controlled_ntcp2_client_session(&router, address, 3).is_err(),
-        "the daemon must reject a wrong-network authenticated session"
-    );
-    controlled_ntcp2_client_session(&router, address, 2)
-        .expect("matching-network client must authenticate to the real daemon process");
-    let first_keys = std::fs::read(&key_path).expect("persist NTCP2 identity-bound keys");
-    assert!(!first_keys.is_empty());
-    first.interrupt();
-    let (status, output) = first.finish();
-    assert!(status.success(), "shutdown failed: {status}\n{output}");
-    assert!(
-        output.contains("authenticated RouterInfo store applied"),
-        "controlled authenticated DatabaseStore did not reach the daemon NetDB owner:\n{output}"
-    );
+        drop(socket.expect("controlled NTCP2 listener did not bind"));
 
-    let mut second = router.spawn();
-    let mut second_socket = None;
-    let deadline = Instant::now() + READY_DEADLINE;
-    while Instant::now() < deadline {
-        if let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
-            second_socket = Some(socket);
-            break;
+        if generation == 0 {
+            assert!(
+                controlled_ntcp2_client_session(&router, address, 3).is_err(),
+                "the daemon must reject a wrong-network authenticated session"
+            );
         }
-        if let Some(status) = second.child.try_wait().expect("check restarted daemon") {
-            let (_, output) = second.finish();
-            panic!("restarted NTCP2 daemon exited before bind ({status}):\n{output}");
+        controlled_ntcp2_client_session(&router, address, 2)
+            .expect("matching-network client must authenticate to the real daemon process");
+        let keys = std::fs::read(&key_path).expect("persist NTCP2 identity-bound keys");
+        assert!(!keys.is_empty());
+        if let Some(expected) = &expected_keys {
+            assert_eq!(keys, *expected, "restart must preserve key and IV");
+        } else {
+            expected_keys = Some(keys);
         }
-        std::thread::sleep(POLL_INTERVAL);
+
+        child.interrupt();
+        let (status, output) = child.finish();
+        assert!(status.success(), "shutdown failed: {status}\n{output}");
+        assert!(
+            output.contains("authenticated RouterInfo store applied"),
+            "controlled authenticated DatabaseStore did not reach the daemon NetDB owner:\n{output}"
+        );
     }
-    drop(second_socket.expect("restarted NTCP2 listener did not bind"));
-    let second_keys = std::fs::read(&key_path).expect("read restarted NTCP2 keys");
-    assert_eq!(second_keys, first_keys, "restart must preserve key and IV");
-    second.interrupt();
-    let (status, output) = second.finish();
-    assert!(
-        status.success(),
-        "restarted shutdown failed: {status}\n{output}"
-    );
 }
 
 #[test]

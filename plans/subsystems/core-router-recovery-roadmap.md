@@ -186,14 +186,14 @@ No baseline status becomes `passed` on plan registration. The partial failures o
 
 ### Plans 459–462: decouple NTCP2 transport I2NP from SAM tunnel provisioning (2026-10-11)
 
-Plan 459 replaced both authenticated NTCP2 parse-and-drop sinks with a bounded shared product owner; its normal daemon-initiator receipt and correlated live reply remain unproven. Plans 460/463 tested a source-owned floodfill trigger, but stock Explore did not select the seeded controlled record. This is independent of Plan 458's SAM build failure.
+Plan 459 replaced both authenticated NTCP2 parse-and-drop sinks with a bounded shared product owner; its normal daemon-initiator receipt and correlated live reply remain unproven. Plan 463's stock Explore attempt did not select the seeded controlled record. Plan 460 has since passed at controlled loopback scope through the source-owned publish and fresh stock dial in Plan 469 (see its status amendment). This is independent of Plan 458's SAM build failure.
 
 ```text
 Known: 455 i2pr→i2pd NTCP2+I2NP passed; stock-only NTCP2 SAM control passed
 Known: 456 controlled normal i2pr NTCP2 identity/listener/authentication passed
 Critical P0: 459 authenticated NTCP2 ingress → one live NetDB/tunnel product + replies
-     then P0: 460 stock router → normal i2pr NTCP2; independent fresh stock dial evidence
-     then P1: 461 request-driven dual-family selection/failure-continuity
+     then P0: 460 stock router → normal i2pr NTCP2; passed at controlled scope by Plan 469
+     then P1: 461 request-driven dual-family selection/failure-continuity, blocked on 459
                     → 457 and 434/435 remain explicit controlled/full external gates
 Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build timeouts
                     → Plan 451/433 client application qualification, no fake zero-hop
@@ -209,7 +209,23 @@ Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build tim
 | 465 | blocked P2 | `plans/implementation/core-router-recovery/465-sam-diagnostic-receipt-stream-correction.md` | `plans/closure/core-router-recovery/465-status.md`: four build attempts reached emission, reply match, and commit; SAM then failed destination-summary-incomplete |
 | 466 | blocked P2 | `plans/implementation/core-router-recovery/466-sam-summary-postbuild-cause-and-correction.md` | `plans/closure/core-router-recovery/466-status.md`: third outbound attempt was emitted, but no authenticated reply matched before timeout; stock acceptance is unobserved |
 
-**Authority:** Plan 455's already-executed one-way stock decoded DatabaseStore and stock-to-stock NTCP2-only application control are retained. Plan 456's local NTCP2 source/lifecycle pass is not a real stock-to-i2pr NetDB capability claim. Neither Plan 459 source work nor Plan 460 same-link reply alone qualifies a **fresh stock initiator**. No public `R`/`f`, external profile, support inventory or conformance promotion without independently executed downstream gates.
+**Authority:** Plan 455's already-executed one-way stock decoded DatabaseStore and stock-to-stock NTCP2-only application control are retained. Plan 456's local NTCP2 source/lifecycle pass is not a real stock-to-i2pr NetDB capability claim. Plan 469 independently qualifies a fresh stock initiator and normal floodfill product response for Plan 460's controlled scope. Plan 459 still lacks the reverse normal-daemon initiator-role product receipt and correlated reply. No public `R`/`f`, external profile, support inventory or conformance promotion without independently executed downstream gates.
+
+### NTCP2 recovery from reference-router behavior — Plans 467–469 (2026-10-11)
+
+**Execution lanes:** Plan 467 real `i2pr run` initiated DatabaseStore with nonzero reply token → genuine pinned stock i2pd DeliveryStatus; in parallel Plan 468 validates controlled i2pr RouterInfo admission and stock healthy NetDB (>=5 actual floodfills, `floodfils` startup count, source-valid peer eligibility); Plan 469 uses legitimate pinned stock `RouterContext::Publish` to trigger a **fresh** stock-initiated NTCP2 connection and router-I2NP delivery after signed target selection. This is separate from Plan 462/464–466 normal SAM tunnel-installation failure and does not pretend a stock response on an existing session qualifies fresh initiation.
+
+```text
+455 i2pr->stock decoded I2NP; 456 normal owner; 459 shared ingress
+         -> 467 real owner initiated tokened store + stock DeliveryStatus (P0)
+463 signed active controlled caps=f floodfill -> 468 honest >=5 FF stock NetDB + admission (P0)
+                                                         -> 469 stock Publish -> i2pr NTCP2 (P0 next)
+467/469 proof -> 460 passed; reassess 459/463 -> existing 461 dual-family continuity
+                                                        -> 457 / 435 later external + Java
+SAM 462/464–466 stays P2 separate: nonzero-hop application product, not NTCP2 precondition
+```
+
+The [execution-loop procedure](../README.md#bounded-execution-and-causal-corrective-policy) requires source-visible preflight, a legitimate router-generated message, the first missing owner transition, and an in-plan fix/regression/retry after a **causally distinct correction**; identical no-progress retries are bounded. Historical closures are not retroactively modified. Public `R`/`f`, support inventory and anonymity claims remain hard-gated by GUARDRAILS/conformance/role-readiness.
 
 ## 8. Cross-cutting invariants
 

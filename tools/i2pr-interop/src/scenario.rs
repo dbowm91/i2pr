@@ -76,6 +76,8 @@ pub enum SmokeMessageProfile {
     DeliveryStatus,
     Fixed12BytePayload,
     RouterInfoDatabaseStore,
+    /// Plan 467: signed self-RouterInfo DatabaseStore with a nonzero reply token.
+    RouterInfoDatabaseStoreWithReplyToken,
 }
 
 /// Plan 045 directional data-phase selector. The four allowlisted values map
@@ -390,6 +392,9 @@ impl Scenario {
             "delivery-status" => SmokeMessageProfile::DeliveryStatus,
             "fixed-12-byte-payload" => SmokeMessageProfile::Fixed12BytePayload,
             "router-info-database-store" => SmokeMessageProfile::RouterInfoDatabaseStore,
+            "router-info-database-store-with-reply-token" => {
+                SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken
+            }
             _ => return Err(ScenarioError::InvalidSmokeMessageProfile),
         };
         let expected_result_class = match raw.expected_result_class.as_str() {
@@ -423,8 +428,15 @@ impl Scenario {
         };
         if (smoke_message_profile == SmokeMessageProfile::RouterInfoDatabaseStore
             && (role != Role::Initiator || data_phase_mode != DataPhaseMode::InitiatorDataOnly))
+            || (smoke_message_profile == SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken
+                && (role != Role::Initiator
+                    || data_phase_mode != DataPhaseMode::RoundTripDeliveryStatus))
             || (data_phase_mode == DataPhaseMode::RoundTripDeliveryStatus
-                && smoke_message_profile != SmokeMessageProfile::DeliveryStatus)
+                && !matches!(
+                    smoke_message_profile,
+                    SmokeMessageProfile::DeliveryStatus
+                        | SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken
+                ))
         {
             return Err(ScenarioError::InvalidSmokeMessageProfile);
         }
@@ -450,6 +462,11 @@ impl Scenario {
             "no-data-phase-required" => ExpectedObservation::NoDataPhaseRequired,
             _ => return Err(ScenarioError::InvalidExpectedObservation),
         };
+        if smoke_message_profile == SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken
+            && expected_observation != ExpectedObservation::I2prSentAndAcknowledged
+        {
+            return Err(ScenarioError::InvalidExpectedObservation);
+        }
         let data_phase_timeout_ms = match raw.data_phase_timeout_ms {
             Some(value) if value == 0 || value > MAX_DEADLINE_MILLIS => {
                 return Err(ScenarioError::InvalidDataPhaseTimeout);
@@ -883,6 +900,47 @@ run_identity_sha256 = "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacef
         assert_eq!(
             Scenario::parse_str(&invalid, &std::env::temp_dir()),
             Err(ScenarioError::InvalidSmokeMessageProfile)
+        );
+    }
+
+    #[test]
+    fn plan467_tokened_database_store_requires_correlated_round_trip() {
+        let input = VALID
+            .replace(
+                "smoke_message_profile = \"delivery-status\"",
+                "smoke_message_profile = \"router-info-database-store-with-reply-token\"",
+            )
+            .replace(
+                "deterministic_seed = 1",
+                "data_phase_mode = \"round-trip-delivery-status\"\nexpected_observation = \"i2pr-sent-and-acknowledged\"\ndeterministic_seed = 1",
+            );
+        let scenario = Scenario::parse_str(&input, &std::env::temp_dir())
+            .expect("bounded tokened DatabaseStore round-trip");
+        assert_eq!(
+            scenario.smoke_message_profile,
+            SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken
+        );
+        assert_eq!(
+            scenario.data_phase_mode,
+            DataPhaseMode::RoundTripDeliveryStatus
+        );
+
+        let one_way = input.replace(
+            "data_phase_mode = \"round-trip-delivery-status\"",
+            "data_phase_mode = \"initiator-data-only\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&one_way, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidSmokeMessageProfile)
+        );
+
+        let wrong_observation = input.replace(
+            "expected_observation = \"i2pr-sent-and-acknowledged\"",
+            "expected_observation = \"i2pr-sent-only\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&wrong_observation, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidExpectedObservation)
         );
     }
 

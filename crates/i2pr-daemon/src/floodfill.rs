@@ -157,10 +157,27 @@ pub async fn deliver_floodfill_effect_with_dial(
     let make_request = || {
         crate::router_i2np::RouterDeliveryRequest::new(peer, bytes.clone(), FLOODFILL_REPLY_TIMEOUT)
     };
-    let first = match make_request() {
-        Ok(request) => service.delivery().deliver(request, cancellation),
+    let (first, first_transport) = match make_request() {
+        Ok(request) => service
+            .delivery()
+            .deliver_with_transport(request, cancellation),
         Err(_) => return FloodfillDeliveryOutcome::EncodingFailure,
     };
+    if first == crate::router_i2np::RouterDeliveryOutcome::Accepted
+        && let Some(transport) = first_transport
+    {
+        match transport {
+            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+                transport_family = transport.as_str(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+            crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id) => tracing::info!(
+                transport_family = transport.as_str(),
+                link_generation = link_id.value(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+        }
+    }
     if first != crate::router_i2np::RouterDeliveryOutcome::NoActiveSession {
         return FloodfillDeliveryOutcome::Delivered(first);
     }
@@ -179,7 +196,25 @@ pub async fn deliver_floodfill_effect_with_dial(
         Ok(request) => request,
         Err(_) => return FloodfillDeliveryOutcome::EncodingFailure,
     };
-    FloodfillDeliveryOutcome::Delivered(service.delivery().deliver(request, cancellation))
+    let (outcome, transport) = service
+        .delivery()
+        .deliver_with_transport(request, cancellation);
+    if outcome == crate::router_i2np::RouterDeliveryOutcome::Accepted
+        && let Some(transport) = transport
+    {
+        match transport {
+            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+                transport_family = transport.as_str(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+            crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id) => tracing::info!(
+                transport_family = transport.as_str(),
+                link_generation = link_id.value(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+        }
+    }
+    FloodfillDeliveryOutcome::Delivered(outcome)
 }
 
 fn validated_dial_target(
@@ -1983,6 +2018,10 @@ impl FloodfillServiceState {
         cancellation: &i2pr_runtime::CancellationToken,
     ) {
         while let Some(effect) = self.coordinator.pop_effect() {
+            let is_store_ack = matches!(
+                effect.effect.as_ref(),
+                Some(FloodfillDaemonEffect::StoreAck { .. })
+            );
             let outcome = deliver_floodfill_effect_with_dial(
                 handle,
                 self.coordinator.netdb(),
@@ -1992,6 +2031,17 @@ impl FloodfillServiceState {
                 cancellation,
             )
             .await;
+            if is_store_ack {
+                tracing::info!(
+                    delivered = matches!(
+                        outcome,
+                        FloodfillDeliveryOutcome::Delivered(
+                            crate::router_i2np::RouterDeliveryOutcome::Accepted
+                        )
+                    ),
+                    "authenticated floodfill DatabaseStore response submitted"
+                );
+            }
             self.coordinator.record_delivery(outcome);
         }
     }

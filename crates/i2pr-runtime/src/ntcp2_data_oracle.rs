@@ -32,6 +32,9 @@
 
 use std::time::{Duration, Instant};
 
+use i2pr_proto::{I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_transport_ntcp2::block::DecodedBlock;
+
 use crate::{AuthenticatedLink, CancellationToken, ReceivedFrameLease};
 
 /// Schema marker for the Plan 093 bounded receive oracle.
@@ -244,19 +247,223 @@ pub async fn receive_correlated_delivery_status(
     cancellation: &CancellationToken,
     config: OracleConfig,
 ) -> OracleAccept<MatchedTarget> {
-    let counters = OracleCounters::default();
-    // Plan 093: the oracle is exercised by the canonical
-    // `correlated_receive_oracle` runtime API. The Rust-level
-    // wrapper here is a thin facade that the Plan 093 tests use
-    // to enforce the schema and the typed failure allowlist. The
-    // canonical implementation runs in the i2pr-runtime
-    // `correlated_receive_oracle` symbol, which Plan 093 wires
-    // through `AuthenticatedLink::recv`.
-    let _ = (link, cancellation, config, &counters);
-    OracleAccept::Error {
-        reason: DataOracleError::Closed,
-        counters,
+    let mut counters = OracleCounters::default();
+    if config.expected_message_id == 0 {
+        return OracleAccept::Error {
+            reason: DataOracleError::DeliveryStatusIdMismatch,
+            counters,
+        };
     }
+    if config.max_frames == 0 {
+        return OracleAccept::Error {
+            reason: DataOracleError::FrameLimitReached,
+            counters,
+        };
+    }
+    if config.max_plaintext_bytes == 0 {
+        return OracleAccept::Error {
+            reason: DataOracleError::ByteLimitReached,
+            counters,
+        };
+    }
+    if config.max_blocks == 0 {
+        return OracleAccept::Error {
+            reason: DataOracleError::BlockLimitReached,
+            counters,
+        };
+    }
+
+    loop {
+        if Instant::now() >= config.deadline {
+            return OracleAccept::Error {
+                reason: DataOracleError::DeadlineElapsed,
+                counters,
+            };
+        }
+        let frame = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => None,
+            _ = tokio::time::sleep_until(config.deadline.into()) => {
+                return OracleAccept::Error {
+                    reason: DataOracleError::DeadlineElapsed,
+                    counters,
+                };
+            }
+            result = link.correlated_receive_oracle(cancellation) => match result {
+                Ok(Some(frame)) => Some(frame),
+                Ok(None) => return OracleAccept::Error {
+                    reason: DataOracleError::TerminationBeforeTarget,
+                    counters,
+                },
+                Err(_) => None,
+            },
+        };
+        let Some(frame) = frame else {
+            return OracleAccept::Error {
+                reason: DataOracleError::Closed,
+                counters,
+            };
+        };
+        counters.frames_received = match counters.frames_received.checked_add(1) {
+            Some(value) if value <= config.max_frames => value,
+            _ => {
+                return OracleAccept::Error {
+                    reason: DataOracleError::FrameLimitReached,
+                    counters,
+                };
+            }
+        };
+        let plaintext = frame.frame().plaintext();
+        counters.plaintext_bytes =
+            match counters.plaintext_bytes.checked_add(plaintext.len() as u64) {
+                Some(value) if value <= config.max_plaintext_bytes => value,
+                _ => {
+                    return OracleAccept::Error {
+                        reason: DataOracleError::ByteLimitReached,
+                        counters,
+                    };
+                }
+            };
+        let parsed = match plaintext.parse() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                return OracleAccept::Error {
+                    reason: DataOracleError::FrameParseFailed,
+                    counters,
+                };
+            }
+        };
+        let mut matched: Option<MatchedTarget> = None;
+        for block in parsed.into_blocks() {
+            counters.decoded_blocks = match counters.decoded_blocks.checked_add(1) {
+                Some(value) if value <= config.max_blocks => value,
+                _ => {
+                    return OracleAccept::Error {
+                        reason: DataOracleError::BlockLimitReached,
+                        counters,
+                    };
+                }
+            };
+            match block {
+                DecodedBlock::Termination(_) => {
+                    return OracleAccept::Error {
+                        reason: DataOracleError::TerminationBeforeTarget,
+                        counters,
+                    };
+                }
+                DecodedBlock::RouterInfo(info) => {
+                    if matches!(config.peer_router_hash, PeerRouterHashBinding::Expected(hash)
+                        if info.router_hash().as_bytes() != &hash)
+                    {
+                        return OracleAccept::Error {
+                            reason: DataOracleError::PeerRouterInfoInvalid,
+                            counters,
+                        };
+                    }
+                    counters.router_info_blocks_received =
+                        counters.router_info_blocks_received.saturating_add(1);
+                }
+                DecodedBlock::I2np(message) => {
+                    let bytes = message.as_bytes();
+                    let decoded =
+                        match I2npMessage::decode_short_transport(bytes, MAX_I2NP_PAYLOAD_SIZE) {
+                            Ok(decoded) => decoded,
+                            Err(_) => {
+                                return OracleAccept::Error {
+                                    reason: DataOracleError::I2npDecodeFailed,
+                                    counters,
+                                };
+                            }
+                        };
+                    if matches!(decoded.body(), I2npBody::DeliveryStatus(_)) {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+                            .unwrap_or_default();
+                        let matched_status = match match_delivery_status(
+                            bytes,
+                            config.expected_message_id,
+                            now_ms,
+                        ) {
+                            Ok(Some(target)) => target,
+                            Ok(None) => unreachable!("decoded DeliveryStatus must match body type"),
+                            Err(reason) => {
+                                return OracleAccept::Error { reason, counters };
+                            }
+                        };
+                        if matched.is_some() {
+                            return OracleAccept::Error {
+                                reason: DataOracleError::DeliveryStatusDuplicate,
+                                counters,
+                            };
+                        }
+                        matched = Some(matched_status);
+                    } else {
+                        counters.non_target_i2np_received =
+                            match counters.non_target_i2np_received.checked_add(1) {
+                                Some(value) if value <= config.max_non_target_i2np => value,
+                                _ => {
+                                    return OracleAccept::Error {
+                                        reason: DataOracleError::NonTargetI2npLimitReached,
+                                        counters,
+                                    };
+                                }
+                            };
+                    }
+                }
+                DecodedBlock::Timestamp(_)
+                | DecodedBlock::Options(_)
+                | DecodedBlock::Padding { .. }
+                | DecodedBlock::Unknown { .. } => {}
+            }
+        }
+        if let Some(target) = matched {
+            if config.expect_pre_target_router_info && counters.router_info_blocks_received == 0 {
+                return OracleAccept::Error {
+                    reason: DataOracleError::PeerRouterInfoInvalid,
+                    counters,
+                };
+            }
+            counters.matched_target_message_id = config.expected_message_id;
+            return OracleAccept::Accepted { target, counters };
+        }
+        counters.non_target_frames_received = counters.non_target_frames_received.saturating_add(1);
+        drop(frame);
+    }
+}
+
+fn match_delivery_status(
+    bytes: &[u8],
+    expected_message_id: u32,
+    now_ms: u64,
+) -> Result<Option<MatchedTarget>, DataOracleError> {
+    let decoded = I2npMessage::decode_short_transport(bytes, MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| DataOracleError::I2npDecodeFailed)?;
+    let I2npBody::DeliveryStatus(status) = decoded.body() else {
+        return Ok(None);
+    };
+    if expected_message_id == 0 || status.message_id != expected_message_id {
+        return Err(DataOracleError::DeliveryStatusIdMismatch);
+    }
+    let now_seconds = now_ms / 1_000;
+    let expiration = match decoded.header() {
+        i2pr_proto::I2npHeader::ShortTransport {
+            expiration_seconds, ..
+        } => expiration_seconds,
+        _ => return Err(DataOracleError::I2npDecodeFailed),
+    };
+    const MAX_STATUS_AGE_MS: u64 = 5 * 60 * 1_000;
+    let status_time = status.timestamp.as_millis();
+    if expiration as u64 <= now_seconds
+        || status_time.saturating_add(MAX_STATUS_AGE_MS) < now_ms
+        || status_time > now_ms.saturating_add(MAX_STATUS_AGE_MS)
+    {
+        return Err(DataOracleError::DeliveryStatusIdMismatch);
+    }
+    Ok(Some(MatchedTarget {
+        envelope_message_id: decoded.header().message_id().unwrap_or_default(),
+        body: bytes.to_vec(),
+    }))
 }
 
 /// Public helper that exposes the bounded loop guard. The helper
@@ -304,6 +511,7 @@ pub const BOUNDED_STEP_BUDGET: Duration = Duration::from_millis(5);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i2pr_proto::{Date, DeliveryStatusMessage};
 
     #[test]
     fn oracle_schema_marker_is_locked() {
@@ -355,5 +563,47 @@ mod tests {
             let label = format!("{}", error);
             assert!(label.starts_with("receiver-"));
         }
+    }
+
+    fn status_bytes(envelope_id: u32, body_id: u32, expiration: u32, timestamp: u64) -> Vec<u8> {
+        I2npMessage::new_short_transport(
+            envelope_id,
+            expiration,
+            I2npBody::DeliveryStatus(DeliveryStatusMessage::new(
+                body_id,
+                Date::from_millis(timestamp),
+            )),
+        )
+        .expect("status message")
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .expect("status encoding")
+    }
+
+    #[test]
+    fn correlation_uses_delivery_status_body_token_not_random_envelope_id() {
+        let now_ms = 2_000_000_000_000;
+        let bytes = status_bytes(0x1122_3344, 4670101, 2_000_000_060, now_ms);
+        let matched = match_delivery_status(&bytes, 4670101, now_ms)
+            .expect("valid correlation")
+            .expect("target status");
+        assert_eq!(matched.envelope_message_id, 0x1122_3344);
+        assert_ne!(matched.envelope_message_id, 4670101);
+        assert_eq!(matched.body, bytes);
+    }
+
+    #[test]
+    fn correlation_rejects_wrong_token_and_expired_status() {
+        let now_ms = 2_000_000_000_000;
+        let wrong_token = status_bytes(10, 4670102, 2_000_000_060, now_ms);
+        assert_eq!(
+            match_delivery_status(&wrong_token, 4670101, now_ms),
+            Err(DataOracleError::DeliveryStatusIdMismatch)
+        );
+
+        let expired = status_bytes(11, 4670101, 1_999_999_999, now_ms);
+        assert_eq!(
+            match_delivery_status(&expired, 4670101, now_ms),
+            Err(DataOracleError::DeliveryStatusIdMismatch)
+        );
     }
 }

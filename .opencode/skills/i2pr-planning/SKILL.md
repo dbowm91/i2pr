@@ -139,10 +139,24 @@ same subsystem immediately. Never silently unblock.
 
 ## Corrective passes
 
-A corrective pass is a NEW plan in the same subsystem referencing the original plan and
-closure record, listing each unclosed requirement or discovered defect, explaining why
-original verification missed it, and adding regression tests or guards. Repeated
-correctives mean the roadmap or milestone sizing must be revised.
+A **genuinely new scope or owner, new durable dependency, or corrective successor to an
+already finalized blocked closure** is a NEW plan in the same subsystem referencing the
+original and its authoritative closure, plus unclosed requirements and regressions.
+An **active workstream's identified source/fixture/test defect** is repaired and the
+affected lane rerun *within that plan*, not promoted into another new numbered plan.
+A finite attempt budget stops identical reruns without new information; after a
+confirmed correction, allow controlled replay and record the causal delta. Do not
+issue plans whose entire deliverable is one log-regex change, a retry on unchanged
+inputs or a duplicate of an already-executed mixed-router positive control.
+
+Before source-pinned external testing: identify the legitimate stock-owned I2NP send,
+RouterInfo admission, peer eligibility, NetDB/bootstrap and transport compatibility
+preconditions; perform cheap offline/static checks first. Maintain independent
+claim tiers (handshake, message in one direction, two-way reply, new stock dial,
+actual product side effect, tunnels, application) and never substitute a larger
+SAM product test for a specific NTCP2 transport oracle. See the canonical
+[bounded execution and causal corrective policy](../../../plans/README.md#bounded-execution-and-causal-corrective-policy).
+Repeated correctives signal that the roadmap or milestone sizing must be revised.
 
 ## Registry maintenance
 

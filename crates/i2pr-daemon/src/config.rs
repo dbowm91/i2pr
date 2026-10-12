@@ -811,6 +811,12 @@ struct RawFloodfillConfig {
     enabled: bool,
     #[serde(default = "default_floodfill_qualification_profile")]
     qualification_profile: String,
+    /// One-shot controlled-loopback DatabaseStore/DeliveryStatus probe.
+    #[serde(default)]
+    send_reply_token_probe: bool,
+    /// One-shot controlled-loopback NTCP2-initiated DatabaseLookup probe.
+    #[serde(default)]
+    send_initiator_lookup_probe: bool,
 }
 
 /// Explicit process-wide transport byte-rate policy.
@@ -855,6 +861,8 @@ impl Default for RawFloodfillConfig {
         Self {
             enabled: default_floodfill_enabled(),
             qualification_profile: default_floodfill_qualification_profile(),
+            send_reply_token_probe: false,
+            send_initiator_lookup_probe: false,
         }
     }
 }
@@ -1878,6 +1886,14 @@ pub struct FloodfillConfig {
     pub enabled: bool,
     /// Scope for evaluating the operator's explicit floodfill intent.
     pub qualification_profile: FloodfillQualificationProfile,
+    /// Send one signed local RouterInfo DatabaseStore with a nonzero reply
+    /// token to a peer after accepting its first RouterInfo store. This is
+    /// available only in the controlled-loopback qualification profile.
+    pub send_reply_token_probe: bool,
+    /// On a daemon-initiated authenticated NTCP2 link, submit one bounded
+    /// DatabaseLookup and correlate its direct stock response. Qualification
+    /// only; accepted only by the controlled-loopback floodfill profile.
+    pub send_initiator_lookup_probe: bool,
 }
 
 /// Explicit qualification scope for floodfill activation.
@@ -3392,6 +3408,24 @@ fn normalize_floodfill(
             });
         }
     }
+    if raw.send_reply_token_probe
+        && (!raw.enabled
+            || qualification_profile != FloodfillQualificationProfile::ControlledLoopback)
+    {
+        return Err(ConfigError::Semantic {
+            field: "floodfill.send_reply_token_probe",
+            reason: "reply-token probe requires enabled controlled_loopback floodfill",
+        });
+    }
+    if raw.send_initiator_lookup_probe
+        && (!raw.enabled
+            || qualification_profile != FloodfillQualificationProfile::ControlledLoopback)
+    {
+        return Err(ConfigError::Semantic {
+            field: "floodfill.send_initiator_lookup_probe",
+            reason: "initiator lookup probe requires enabled controlled_loopback floodfill",
+        });
+    }
     // Intent without the serving substrate is a configuration error,
     // not a silent no-op: the operator must enable the SSU2 socket the
     // floodfill role serves on and the NetDB it serves. Eligibility
@@ -3413,6 +3447,8 @@ fn normalize_floodfill(
     Ok(FloodfillConfig {
         enabled: raw.enabled,
         qualification_profile,
+        send_reply_token_probe: raw.send_reply_token_probe,
+        send_initiator_lookup_probe: raw.send_initiator_lookup_probe,
     })
 }
 
@@ -4982,6 +5018,29 @@ data_dir = "./state"
             Config::parse(&no_ntcp2),
             Err(ConfigError::Semantic {
                 field: "floodfill.qualification_profile",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn floodfill_reply_token_probe_is_explicit_and_controlled_only() {
+        let valid = format!(
+            "{}\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = 40124\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 40123\n[floodfill]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nsend_reply_token_probe = true\nsend_initiator_lookup_probe = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&valid).expect("explicit controlled reply-token probe");
+        assert!(config.floodfill.send_reply_token_probe);
+        assert!(config.floodfill.send_initiator_lookup_probe);
+
+        let normal = format!(
+            "{}\n[ssu2]\nenabled = true\n[floodfill]\nenabled = true\nsend_reply_token_probe = true\nsend_initiator_lookup_probe = true\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&normal),
+            Err(ConfigError::Semantic {
+                field: "floodfill.send_reply_token_probe",
                 ..
             })
         ));
