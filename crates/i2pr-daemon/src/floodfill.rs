@@ -157,10 +157,27 @@ pub async fn deliver_floodfill_effect_with_dial(
     let make_request = || {
         crate::router_i2np::RouterDeliveryRequest::new(peer, bytes.clone(), FLOODFILL_REPLY_TIMEOUT)
     };
-    let first = match make_request() {
-        Ok(request) => service.delivery().deliver(request, cancellation),
+    let (first, first_transport) = match make_request() {
+        Ok(request) => service
+            .delivery()
+            .deliver_with_transport(request, cancellation),
         Err(_) => return FloodfillDeliveryOutcome::EncodingFailure,
     };
+    if first == crate::router_i2np::RouterDeliveryOutcome::Accepted
+        && let Some(transport) = first_transport
+    {
+        match transport {
+            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+                transport_family = transport.as_str(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+            crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id) => tracing::info!(
+                transport_family = transport.as_str(),
+                link_generation = link_id.value(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+        }
+    }
     if first != crate::router_i2np::RouterDeliveryOutcome::NoActiveSession {
         return FloodfillDeliveryOutcome::Delivered(first);
     }
@@ -179,7 +196,25 @@ pub async fn deliver_floodfill_effect_with_dial(
         Ok(request) => request,
         Err(_) => return FloodfillDeliveryOutcome::EncodingFailure,
     };
-    FloodfillDeliveryOutcome::Delivered(service.delivery().deliver(request, cancellation))
+    let (outcome, transport) = service
+        .delivery()
+        .deliver_with_transport(request, cancellation);
+    if outcome == crate::router_i2np::RouterDeliveryOutcome::Accepted
+        && let Some(transport) = transport
+    {
+        match transport {
+            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+                transport_family = transport.as_str(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+            crate::router_i2np::RouterDeliveryTransport::Ntcp2(link_id) => tracing::info!(
+                transport_family = transport.as_str(),
+                link_generation = link_id.value(),
+                "authenticated floodfill I2NP reply delivered"
+            ),
+        }
+    }
+    FloodfillDeliveryOutcome::Delivered(outcome)
 }
 
 fn validated_dial_target(

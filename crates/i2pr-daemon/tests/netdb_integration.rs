@@ -188,6 +188,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             enabled: false,
             qualification_profile: i2pr_daemon::config::FloodfillQualificationProfile::Normal,
             send_reply_token_probe: false,
+            send_initiator_lookup_probe: false,
         },
         bandwidth: i2pr_daemon::config::BandwidthConfig {
             enabled: false,

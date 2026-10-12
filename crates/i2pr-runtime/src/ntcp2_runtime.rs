@@ -28,7 +28,7 @@ use crate::ntcp2_driver::{
 use crate::ntcp2_link::{AuthenticatedLink, AuthenticatedLinkStartError};
 use crate::{
     BandwidthGovernor, BandwidthPeerKey, CancellationToken, ChildScope, ChildScopeError,
-    ChildTaskFailure,
+    ChildTaskFailure, HandshakeProgressObserver, HandshakeStageObservation,
 };
 use i2pr_proto::{Hash as RouterHash, RouterInfo};
 use i2pr_transport_ntcp2::address::Ntcp2RouterAddress;
@@ -1354,6 +1354,52 @@ impl DialAttempt {
             }
         }
     }
+
+    /// Drives an initiator handshake and emits bounded stage metadata for a
+    /// controlled qualification path. No handshake bytes or peer text enter
+    /// the observer.
+    async fn drive_initiator_handshake_observed(
+        mut self,
+        state: i2pr_transport_ntcp2::state_machine::InitiatorState,
+        local_router_info: &[u8],
+        replay: &ReplayCache,
+        config: HandshakeDriverConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, HandshakeRun), HandshakeDriverError> {
+        let observer = TracingHandshakeObserver;
+        let outcome = crate::drive_initiator_handshake_observed(
+            state,
+            &mut self.stream,
+            local_router_info,
+            replay,
+            config,
+            cancellation,
+            &observer,
+        )
+        .await;
+        match outcome.result {
+            Ok(handshake) => Ok((self, handshake)),
+            Err(error) => {
+                let _ = self.backoff.record_failure(self.key);
+                Err(error)
+            }
+        }
+    }
+}
+
+struct TracingHandshakeObserver;
+
+impl HandshakeProgressObserver for TracingHandshakeObserver {
+    fn observe(&self, observation: HandshakeStageObservation) {
+        tracing::info!(
+            stage = observation.stage,
+            io_result = observation.io_result.as_str(),
+            expected_octets = observation.expected_octets,
+            completed_octets = observation.completed_octets,
+            elapsed_millis = observation.elapsed_millis,
+            "controlled NTCP2 outbound handshake stage"
+        );
+    }
 }
 
 /// A bounded outcome for link writes.
@@ -2107,14 +2153,35 @@ impl Ntcp2RuntimeService {
         id: u64,
         cancellation: &CancellationToken,
     ) -> Result<AuthenticatedLink, DialOutcome> {
-        if verify_router_info(peer_info).is_err()
-            || peer_info.options().get("netId") != Some(network_id.to_string().as_str())
-        {
+        if verify_router_info(peer_info).is_err() {
+            tracing::info!(
+                stage = "router_info_signature",
+                "controlled NTCP2 outbound dial rejected"
+            );
             return Err(DialOutcome::Failed);
         }
-        let peer_hash =
-            router_identity_hash(peer_info.router_identity()).map_err(|_| DialOutcome::Failed)?;
+        if peer_info.options().get("netId") != Some(network_id.to_string().as_str()) {
+            tracing::info!(
+                stage = "network_id",
+                "controlled NTCP2 outbound dial rejected"
+            );
+            return Err(DialOutcome::Failed);
+        }
+        let peer_hash = match router_identity_hash(peer_info.router_identity()) {
+            Ok(hash) => hash,
+            Err(_) => {
+                tracing::info!(
+                    stage = "router_hash",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
         if peer_hash.as_bytes() != &expected_peer_hash {
+            tracing::info!(
+                stage = "router_hash_mismatch",
+                "controlled NTCP2 outbound dial rejected"
+            );
             return Err(DialOutcome::Failed);
         }
         let mut target = None;
@@ -2134,11 +2201,38 @@ impl Ntcp2RuntimeService {
             target = Some(target_value);
             break;
         }
-        let target = target.ok_or(DialOutcome::Failed)?;
-        let attempt = self.dial(target.socket_addr(), cancellation).await?;
-        let ephemeral =
-            X25519PrivateKey::generate(&mut i2pr_crypto::OsRng).map_err(|_| DialOutcome::Failed)?;
-        let state = InitiatorState::new(
+        let target = match target {
+            Some(target) => target,
+            None => {
+                tracing::info!(
+                    stage = "no_loopback_ntcp2_address",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
+        let attempt = match self.dial(target.socket_addr(), cancellation).await {
+            Ok(attempt) => attempt,
+            Err(outcome) => {
+                tracing::info!(
+                    stage = "tcp_connect",
+                    ?outcome,
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(outcome);
+            }
+        };
+        let ephemeral = match X25519PrivateKey::generate(&mut i2pr_crypto::OsRng) {
+            Ok(key) => key,
+            Err(_) => {
+                tracing::info!(
+                    stage = "ephemeral_key",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
+        let state = match InitiatorState::new(
             local_static,
             ephemeral,
             target.expected_static_public_key(),
@@ -2147,14 +2241,23 @@ impl Ntcp2RuntimeService {
             *target.obfuscation_iv().as_bytes(),
             network_id,
             ClockSkewPolicy::default_compatibility(),
-        )
-        .map_err(|_| DialOutcome::Failed)?;
+        ) {
+            Ok(state) => state,
+            Err(_) => {
+                tracing::info!(
+                    stage = "initiator_state",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
         let handshake_config = HandshakeDriverConfig {
             deadlines: self.config.deadlines,
+            padding: crate::PaddingProfile::Representative,
             ..HandshakeDriverConfig::default()
         };
-        let (attempt, handshake) = attempt
-            .drive_initiator_handshake(
+        let (attempt, handshake) = match attempt
+            .drive_initiator_handshake_observed(
                 state,
                 local_router_info,
                 &self.replay,
@@ -2162,12 +2265,31 @@ impl Ntcp2RuntimeService {
                 cancellation,
             )
             .await
-            .map_err(|_| DialOutcome::Failed)?;
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::info!(
+                    stage = "noise_handshake",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
         if handshake.authenticated.peer().router_hash.as_bytes() != &expected_peer_hash {
+            tracing::info!(
+                stage = "authenticated_peer_mismatch",
+                "controlled NTCP2 outbound dial rejected"
+            );
             return Err(DialOutcome::Failed);
         }
         self.promote_authenticated_dial(scope, attempt, handshake, id)
-            .map_err(|_| DialOutcome::ResourceDenied)
+            .map_err(|_| {
+                tracing::info!(
+                    stage = "link_promotion",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                DialOutcome::ResourceDenied
+            })
     }
 
     /// Dials one resolved literal target under the configured deadline.

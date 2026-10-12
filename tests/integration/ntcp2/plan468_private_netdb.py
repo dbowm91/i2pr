@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
+import argparse
 import hashlib
 import http.client
 import json
@@ -136,7 +137,14 @@ def stock_publish_target(
     )
 
 
-def stock_config(path: Path, tcp_port: int, udp_port: int, *, ssu2_enabled: bool = True) -> None:
+def stock_config(
+    path: Path,
+    tcp_port: int,
+    udp_port: int,
+    *,
+    ssu2_enabled: bool = True,
+    ntcp2_enabled: bool = True,
+) -> None:
     path.write_text(f'''daemon = false
 loglevel = debug
 netid = 2
@@ -155,7 +163,7 @@ enabled = {str(ssu2_enabled).lower()}
 published = true
 port = {udp_port}
 [ntcp2]
-enabled = true
+enabled = {str(ntcp2_enabled).lower()}
 published = true
 port = {tcp_port}
 [http]
@@ -180,15 +188,21 @@ threshold = 0
     path.chmod(0o600)
 
 
-def wait_stock_ready(child: subprocess.Popen[bytes], log: Path, port: int,
-                     deadline: float) -> tuple[int, int, str]:
+def wait_stock_ready(
+    child: subprocess.Popen[bytes],
+    log: Path,
+    port: int,
+    deadline: float,
+    *,
+    require_ntcp2: bool = True,
+) -> tuple[int, int, str]:
     listener = f"NTCP2: Start listening v4 TCP port {port}"
     while time.monotonic() < deadline:
         if child.poll() is not None:
             raise RuntimeError("stock floodfill exited before startup inventory")
         text = log.read_text(errors="replace") if log.exists() else ""
         inventory = parse_netdb_inventory(text)
-        if inventory is not None and listener in text:
+        if inventory is not None and (listener in text or not require_ntcp2):
             routers, floodfills = inventory
             return routers, floodfills, text
         time.sleep(0.1)
@@ -196,6 +210,13 @@ def wait_stock_ready(child: subprocess.Popen[bytes], log: Path, port: int,
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--stock-ssu2-only",
+        action="store_true",
+        help="disable stock NTCP2 while keeping SSU2 active for the Plan 461 family row",
+    )
+    arguments = parser.parse_args()
     root = Path(__file__).resolve().parents[3]
     i2pd = Path(os.environ.get(
         "I2PR_PLAN468_I2PD_BIN",
@@ -243,6 +264,7 @@ port = {udp}
 enabled = true
 qualification_profile = "controlled_loopback"
 send_reply_token_probe = true
+send_initiator_lookup_probe = true
 [i2pcontrol]
 enabled = true
 bind_address = "127.0.0.1"
@@ -414,7 +436,13 @@ password = {json.dumps(PASSWORD)}
                     # the publisher's actual new connection unambiguously
                     # NTCP2 for Plan 469. This is an ordinary stock config
                     # choice, not a RouterInfo mutation or source patch.
-                    stock_config(config, own_port, own_udp_port, ssu2_enabled=False)
+                    stock_config(
+                        config,
+                        own_port,
+                        own_udp_port,
+                        ssu2_enabled=arguments.stock_ssu2_only,
+                        ntcp2_enabled=not arguments.stock_ssu2_only,
+                    )
                     log = work / f"healthy-{index}.log"
                     child = subprocess.Popen([str(i2pd), f"--conf={config}", f"--datadir={data}",
                                               "--log=file", f"--logfile={log}"], cwd=work,
@@ -422,7 +450,11 @@ password = {json.dumps(PASSWORD)}
                     stock_children.append(child)
                     healthy_owners.append((child, log, index))
                     routers, floodfills, startup_log = wait_stock_ready(
-                        child, log, own_port, time.monotonic() + STARTUP_TIMEOUT
+                        child,
+                        log,
+                        own_port,
+                        time.monotonic() + STARTUP_TIMEOUT,
+                        require_ntcp2=not arguments.stock_ssu2_only,
                     )
                     if routers != 5 or floodfills != 5:
                         rejected_candidate = f"routerInfo-{candidate_ident}" in startup_log and "invalid or too old" in startup_log
@@ -470,8 +502,9 @@ password = {json.dumps(PASSWORD)}
                         )
                     if not storage_path(data, candidate_ident).is_file():
                         raise RuntimeError("candidate RouterInfo missing from exact stock storage path")
-                    with socket.create_connection(("127.0.0.1", own_port), timeout=2):
-                        pass
+                    if not arguments.stock_ssu2_only:
+                        with socket.create_connection(("127.0.0.1", own_port), timeout=2):
+                            pass
 
                 # Stock's normal initial RouterContext::Publish fires after
                 # ten seconds. Observe exactly this bounded first operation;
@@ -523,7 +556,57 @@ password = {json.dumps(PASSWORD)}
                     target == "stock" and owner_confirmations.get(index, False)
                     for index, (target, _) in publish_observations.items()
                 )
+                lookup_deadline = time.monotonic() + 35
+                daemon_text = ""
+                while not arguments.stock_ssu2_only and time.monotonic() < lookup_deadline:
+                    daemon_text = daemon_log.read_text(errors="replace")
+                    if (
+                        "controlled NTCP2 initiator DatabaseLookup response correlated"
+                        in daemon_text
+                    ) or observed_candidate_publish == 0:
+                        break
+                    time.sleep(0.2)
                 daemon_text = daemon_log.read_text(errors="replace")
+                outbound_links = daemon_text.count("NTCP2 authenticated outbound link promoted")
+                bootstrap_stores_applied = daemon_text.count(
+                    "authenticated RouterInfo store applied to bootstrap peer store"
+                )
+                ssu2_stores_applied = sum(
+                    re.search(r'transport_family="?ssu2"?', line) is not None
+                    and (
+                        "authenticated RouterInfo store applied to bootstrap peer store" in line
+                        or "authenticated floodfill DatabaseStore accepted with response owed" in line
+                    )
+                    for line in daemon_text.splitlines()
+                )
+                selected_ssu2_deliveries = sum(
+                    re.search(r'transport_family="?ssu2"?', line) is not None
+                    and "authenticated floodfill I2NP reply delivered" in line
+                    for line in daemon_text.splitlines()
+                )
+                selected_ntcp2_deliveries = sum(
+                    re.search(r'transport_family="?ntcp2"?', line) is not None
+                    and "authenticated floodfill I2NP reply delivered" in line
+                    for line in daemon_text.splitlines()
+                )
+                outbound_snapshots = [
+                    int(value) for value in re.findall(
+                        r"validated_peer_records=(\d+)", daemon_text
+                    )
+                ]
+                outbound_dial_failures = daemon_text.count(
+                    "controlled NTCP2 outbound peer dial attempt did not authenticate"
+                )
+                outbound_failure_stages = re.findall(
+                    r"stage=\"([a-z_]+)\"",
+                    daemon_text,
+                )
+                initiator_lookup_submitted = daemon_text.count(
+                    "controlled NTCP2 initiator DatabaseLookup probe submitted"
+                )
+                initiator_lookup_correlated = daemon_text.count(
+                    "controlled NTCP2 initiator DatabaseLookup response correlated"
+                )
                 inbound_links = daemon_text.count("NTCP2 authenticated inbound link promoted")
                 forwarded_messages = daemon_text.count(
                     "authenticated NTCP2 I2NP message forwarded to router ingress"
@@ -549,14 +632,36 @@ password = {json.dumps(PASSWORD)}
                     owner_receipt_categories.append(
                         target + ("-confirmed" if owner_confirmations.get(index, False) else "-unconfirmed")
                     )
-                chain_complete = not observed_candidate_publish or not (
-                    candidate_confirmed != observed_candidate_publish
-                    or inbound_links < observed_candidate_publish
-                    or forwarded_messages < observed_candidate_publish
-                    or accepted_stores < observed_candidate_publish
-                    or submitted_responses < observed_candidate_publish
-                    or daemon_probe_submitted < observed_candidate_publish
-                    or daemon_probe_correlated < observed_candidate_publish
+                minimum_receipts = 1 if arguments.stock_ssu2_only else observed_candidate_publish
+                chain_complete = observed_candidate_publish > 0 and not (
+                    (
+                        candidate_confirmed == 0
+                        if arguments.stock_ssu2_only
+                        else candidate_confirmed != observed_candidate_publish
+                    )
+                    or (
+                        ssu2_stores_applied < minimum_receipts
+                        if arguments.stock_ssu2_only
+                        else inbound_links < minimum_receipts
+                    )
+                    or (
+                        ssu2_stores_applied
+                        if arguments.stock_ssu2_only
+                        else forwarded_messages
+                    ) < minimum_receipts
+                    or accepted_stores < minimum_receipts
+                    or submitted_responses < minimum_receipts
+                    or (
+                        selected_ssu2_deliveries < minimum_receipts
+                        if arguments.stock_ssu2_only
+                        else (
+                            daemon_probe_submitted < minimum_receipts
+                            or daemon_probe_correlated < minimum_receipts
+                            or outbound_links == 0
+                            or initiator_lookup_submitted == 0
+                            or initiator_lookup_correlated == 0
+                        )
+                    )
                 )
                 print("plan468_reference_pin=635b013a612ff47278ef02acf8580a28e10e26c5")
                 print("plan468_candidate_ri_present=1")
@@ -564,7 +669,7 @@ password = {json.dumps(PASSWORD)}
                 print("plan468_candidate_static_preflight=1")
                 print("plan468_candidate_role_admitted=1")
                 print("plan468_stock_owners_active=4")
-                print("plan468_stock_ssu2_owners_active=0")
+                print("plan468_stock_ssu2_owners_active=" + str(4 if arguments.stock_ssu2_only else 0))
                 print("plan468_stock_ssu2_eligible_inventory_records=4")
                 print("plan468_loaded_routers_per_stock_owner=5")
                 print("plan468_loaded_floodfils_per_stock_owner=5")
@@ -580,21 +685,35 @@ password = {json.dumps(PASSWORD)}
                 print("plan469_candidate_publish_confirmed=" + str(candidate_confirmed))
                 print("plan469_other_publish_confirmed=" + str(other_confirmed))
                 print("plan469_fresh_i2pr_ntcp2_inbound=" + str(inbound_links))
+                print("plan459_fresh_i2pr_ntcp2_outbound=" + str(outbound_links))
+                print("plan459_bootstrap_peer_records_applied=" + str(bootstrap_stores_applied))
+                print("plan461_ssu2_bootstrap_records_applied=" + str(ssu2_stores_applied))
+                print("plan461_ssu2_product_deliveries=" + str(selected_ssu2_deliveries))
+                print("plan461_ntcp2_product_deliveries=" + str(selected_ntcp2_deliveries))
+                print("plan459_max_outbound_peer_snapshot=" + str(max(outbound_snapshots, default=0)))
+                print("plan459_outbound_dial_failures=" + str(outbound_dial_failures))
+                print("plan459_outbound_failure_stages=" + ",".join(outbound_failure_stages))
+                print("plan459_database_lookup_submitted=" + str(initiator_lookup_submitted))
+                print("plan459_database_lookup_correlated=" + str(initiator_lookup_correlated))
                 print("plan469_i2np_forwarded_to_product=" + str(forwarded_messages))
                 print("plan469_product_store_accepted=" + str(accepted_stores))
                 print("plan469_product_response_submitted=" + str(submitted_responses))
                 print("plan467_daemon_probe_submitted=" + str(daemon_probe_submitted))
                 print("plan467_daemon_probe_correlated=" + str(daemon_probe_correlated))
                 print("plan468_private_netdb_ready=1")
+                print("plan461_stock_ssu2_only=" + str(int(arguments.stock_ssu2_only)))
                 print("plan469_owner_publish_receipts=" + ",".join(owner_receipt_categories))
                 if not chain_complete:
                     print(
-                        "plan469_product_reply_chain=blocked; "
+                        ("plan461_ssu2_product_chain=" if arguments.stock_ssu2_only else "plan469_product_reply_chain=")
+                        + "blocked; "
                         f"candidate_targeted={observed_candidate_publish},"
                         f"candidate_confirmed={candidate_confirmed},inbound={inbound_links},"
                         f"forwarded={forwarded_messages},stores={accepted_stores},"
                         f"responses={submitted_responses},daemon_probe="
-                        f"{daemon_probe_submitted}/{daemon_probe_correlated}",
+                        f"{daemon_probe_submitted}/{daemon_probe_correlated},"
+                        f"initiator_lookup={initiator_lookup_submitted}/"
+                        f"{initiator_lookup_correlated}",
                         file=sys.stderr,
                     )
                     return 3
