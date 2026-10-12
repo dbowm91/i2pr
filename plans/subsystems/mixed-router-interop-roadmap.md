@@ -190,6 +190,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 248 | closed | passed-interop-evidence-policy-reconciliation-and-m11-handoff | `plans/implementation/mixed-router-interop/248-interop-evidence-policy-reconciliation-and-m11-handoff.md` | `plans/closure/mixed-router-interop/248-status.md` |
 | 251 | closed (post-closure maintenance) | passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md` | `plans/closure/mixed-router-interop/251-status.md` |
 
+### Java NTCP2 second-family qualification boundary — Plan 470 (2026-10-12)
+
+Normal Java I2P 2.13.0 **router transport** interoperability is newly scoped as [Plan 470](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md). The existing M6 `ControlledRouter` stock launcher explicitly disables NTCP2 and its M6 client protocol acceptance is **not** the correct prerequisite for NTCP2 router I2NP. This new test uses a separate normal-router Java transport profile, signed RouterInfo and actual stock-owned NetDB message triggers in both initiated roles. A successful Plan 470 controlled NTCP2 result **does not** close the historical M6 Java Streaming full-application qualification, Plan 444 floodfill ranking, Plan 435 public transport activation or Plan 439 end-to-end core; all remain independently gated.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;

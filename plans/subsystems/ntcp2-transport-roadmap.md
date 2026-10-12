@@ -171,6 +171,8 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 468 | passed | `passed-stock-ri-admission-healthy-private-netdb-and-publish-selection` | `plans/implementation/ntcp2-transport/468-stock-routerinfo-admission-and-private-netdb-topology.md` | `plans/closure/ntcp2-transport/468-status.md`: exact-pin candidate admitted to four healthy private inventories; source selection matched live receipts (2 candidate, 2 other). |
 | 469 | passed | `passed-stock-publish-fresh-ntcp2-product-and-correlated-reply` | `plans/implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md` | `plans/closure/ntcp2-transport/469-status.md`: source-selected fresh NTCP2, product effect/reply, and reverse token correlation passed |
 
+| 470 | ready P0 | `registered-normal-java-i2p-ntcp2-router-product-qualification` | `plans/implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md` | `plans/closure/ntcp2-transport/470-status.md` (on execution): normal pinned Java 2.13.0 NTCP2 both-way router I2NP, correlated replies and negative/lifecycle matrix; independent of i2pr SAM |
+
 ### Plans 459–461: actual daemon NTCP2 product dispatch first (updated 2026-10-12)
 
 **Critical source discovery:** `crates/i2pr-daemon/src/lib.rs::register_ntcp2_service` has **two** authenticated link receive loops that call `dispatch_router_i2np_parts(...)` and discard the returned typed outcome. `router_i2np.rs` only decodes/classifies; the live `ServiceProduct::poll_inbound` consumes SSU2 events. Successful Plan 456 NTCP2 handshake and Plan 455 **i2pr→stock** stock-decoded DatabaseStore do not close normal **stock→i2pr** NetDB/tunnel consumption.
@@ -192,6 +194,12 @@ Source-backed continuation of Plan 459 and the historical Plan 463 trigger resul
 - Resume **existing Plan 461** only after meaningful normal NTCP2 peer receipts; no duplicate dual-transport plan. Pinned Java second-family/public Plan 435 and Plan 101 default-disabled/nonadvertised behavior unchanged. i2pr SAM tunnel Plan 462 remains P2.
 
 **Procedure:** follow [the bounded causal correction policy](../README.md#bounded-execution-and-causal-corrective-policy): source preflight → one legitimate send → classify first missing owned event → fix + regression + replay in same active plan. Do not force a new plan for a log parser, reference bootstrap precondition or source-grounded rerun. Keep independent tiers and immutable closure authority.
+
+### Plan 470 — second-family normal Java NTCP2 (2026-10-12)
+
+[Plan 470](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md) is **ready P0** after the completed controlled i2pd and dual-family Plans 459/461/467–469. The existing M6 `tests/integration/m6-interop/java/ControlledRouter.java` **explicitly disables NTCP2**; Java's older stripped-router direct NTCP2 driver is 2.12.0/network ID 99 and cannot substitute for a normal pinned Java 2.13.0 router. Establish a separate minimal stock Java **normal-router** NTCP2-only controlled topology and signed-RI admission/selection preflight; use real Java-owned NetDB store/lookup, not a dummy facade or arbitrary helper as primary qualification.
+
+**Required evidence:** i2pr→Java authenticated I2NP and real correlated reply, **fresh Java-initiated** NTCP2→i2pr authenticated I2NP and product response, restart/safety-negative matrix and per-role link generation. **No dependency** on client SAM/tunnel products, Plan 444 Java floodfill preference, or an authorized physical LAN. A controlled second-family result can inform existing Plan 435's router protocol matrix, but cannot authorize broad public transport activation or `specs/support.toml`. Historic 455/457/434 outcomes stay preserved.
 
 ## 8. Cross-cutting requirements
 

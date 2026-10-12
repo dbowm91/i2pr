@@ -74,6 +74,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 161 | closed | passed-m8-ssu2-independent-ipv4-interop-and-final-closure | — | `plans/closure/ssu2/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`; `plans/closure/ssu2/161-status.md` |
 | 162 | closed | passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration | `plans/implementation/ssu2/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md` | `plans/closure/ssu2/162-status.md` |
 
+### Operator-authorized independently addressed SSU2 qualification — Plan 472 (2026-10-12)
+
+**Plan 472** is registered under [core router recovery](../implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md) as the **live runner** for Plan 449's passed no-packet preflight and Plan 453's guarded private LAN SSU2 owner. Owner-authored private manifest, separately invoked per-host zero-root commands and explicit live consent are mandatory. Plan 449's infrastructure pass and Plan 442's durable-key local work cannot substitute for two independent physical/private-LAN endpoint sessions with authentic I2NP. If the hosts are unavailable, the runner can pass locally **but live qualification is environment-blocked**. Do not promote broad RouterInfo reachability, NAT/introducers, IPv6, Java-family interop or public availability from a private-LAN result.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;

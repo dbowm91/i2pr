@@ -117,6 +117,10 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 448 | blocked | `plans/implementation/floodfill/448-global-bandwidth-governor-and-eligible-capability-class.md` | `plans/closure/floodfill/448-status.md`: bounded governor/config, SSU2 accounting adapter, and data-only class mapping passed; NTCP2/common owner, priority, socket evidence, and health-gated publication open |
 | 449 | passed (infrastructure only) | `plans/implementation/core-router-recovery/449-portable-ssu2-independent-lan-qualification-lane.md` | `plans/closure/core-router-recovery/449-status.md`: offline preflight and operator procedure passed; live two-host SSU2 qualification not run; Plan 431 remains stopped |
 
+| 471 | ready P0 | `plans/implementation/core-router-recovery/471-normal-sam-stock-short-build-acceptance-and-multihop-recovery.md` | Stock short-build acceptance/forward/return cause and postbuild summary corrected; real normal-process nonzero-hop signed LS2 and external bidirectional SAM STREAM; successor to blocked 462/464–466 |
+| 472 | runner ready, live LAN environment-blocked | `plans/implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md` | Portable owner-authorized *per-host* live SSU2 proof following Plan 449 preflight, independently addressed and signed, without public qualification |
+| 473 | ready P0 CI, merge gated | `plans/implementation/core-router-recovery/473-macos-ntcp2-governor-and-recovery-stack-integration.md` | Correct real macOS paused-clock governor restart test failure; all exact-head CI green, then approved stacked #37–#43 integration/rebase with tree equivalence audit |
+
 Plans 446, 447, and 448 have blocked closure records; Plan 449 has passed only its preflight infrastructure scope. Corrective Plans 440–444 now each have closure records; Plan 444's latest resume status is blocked at stock Java selection and store/lookup evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
@@ -226,6 +230,17 @@ SAM 462/464–466 stays P2 separate: nonzero-hop application product, not NTCP2 
 ```
 
 The [execution-loop procedure](../README.md#bounded-execution-and-causal-corrective-policy) requires source-visible preflight, a legitimate router-generated message, the first missing owner transition, and an in-plan fix/regression/retry after a **causally distinct correction**; identical no-progress retries are bounded. Historical closures are not retroactively modified. Public `R`/`f`, support inventory and anonymity claims remain hard-gated by GUARDRAILS/conformance/role-readiness.
+
+### Plans 470–473 — new qualification/integration phase (2026-10-12)
+
+The completed controlled NTCP2 work means these are **separate acceptance owners**, not one more transport recovery loop:
+
+- [470 normal Java NTCP2](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md), P0 parallel: pinned stock normal Java I2P 2.13.0 J1–J5 and real both-role I2NP. Existing Java M6 launcher explicitly disables NTCP2; use a separate truthful profile. Java floodfill Plan 444 remains a distinct peer-selection/store criterion.
+- [471 SAM/tunnels](../implementation/core-router-recovery/471-normal-sam-stock-short-build-acceptance-and-multihop-recovery.md), P0 parallel: close first source-owned stock acceptance/reply transition after Plan 466's transmitted third short build, **separately** debug Plan 465's four installs followed by incomplete summary. A controlled one-hop **diagnostic** can isolate owners; only normal real multihop/LS2/STREAM closes full Plan 433/439 app path.
+- [472 authorized LAN SSU2](../implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md): port Plan 449 strict offline preflight into explicit zero-root per-host live steps. Environment-gated authorization remains a hard prerequisite; CI only tests self/negative contracts, and private LAN evidence is not public support.
+- [473 CI/merge](../implementation/core-router-recovery/473-macos-ntcp2-governor-and-recovery-stack-integration.md), P0 parallel: both macOS jobs fail at `ntcp2_link.rs:1058` restart frame timeout under Tokio paused clock; diagnose rate-governor cancellation/refill/wakeup vs deterministic-test scheduling. No relaxation/skip. Restore green full exact-head CI then independently review sequential stacked #37–#43 merge/reconciliation (do **not** autonomously merge without owner approval).
+
+No new plans for a changed log spelling, a rooted fixture correction or a retry after source fix; use [causal iteration policy](../README.md#bounded-execution-and-causal-corrective-policy). Historical blocked 431/435/439/444/462/466 statuses and recent controlled passes remain distinct; no public `R`/`f`, NTCP2, SSU2, transit, support inventory or anonymity claim from plan registration.
 
 ## 8. Cross-cutting invariants
 
