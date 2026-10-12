@@ -30,19 +30,26 @@ to wait for both existing owner-tracked counters (`written_frames` and
 changes no governor or runtime semantics, and retains the receive timeout.
 After this correction, the exact test passed 20/20 consecutive Linux runs and
 the complete `i2pr-runtime --all-targets` suite passed (135 passed, 1 ignored).
-On final SHA `6fcaca5ead8f36e3ff45908dbc4ddef9af79d987`, full macOS and Ubuntu
-quality jobs passed, including the corrected test on macOS.
+On final SHA `2dd16c3e3f954132f2d7c626bb58b4ee34f42f57`, full macOS and Ubuntu
+quality jobs passed, including the corrected test on macOS. The exact
+PR-triggered run's first attempt had one unrelated aarch64 managed-app
+qualification failure: the persistent-catalog test recorded a SAM fixture
+`managed-app I/O failed` transcript. The same-SHA push-triggered aarch64 job
+passed, and rerunning only the failed PR job passed; the failure did not
+reproduce.
 
 On exact SHA `4005bfa`, both aarch64 secured-apphost jobs passed. MSRV and
 dependency policy passed in both workflows. Ubuntu quality failed once in an
 unrelated I2PControl tunnel manager test, then passed in the duplicate PR run;
 the failure was `manager configuration rejected` and the focused test passed
 six local attempts. The PR-triggered macOS quality job failed the NTCP2 restart
-test while the push-triggered macOS job passed. All exact-head checks must run
-The final PR-triggered workflow run `38314989336` on `6fcaca5` passed Ubuntu
-quality, macOS quality, MSRV, dependency policy, and native aarch64 secured
-apphost. GitGuardian security checks passed as well. The duplicate push-triggered
-run remained in progress at closure update time.
+test while the push-triggered macOS job passed.
+
+On final SHA `2dd16c3`, push-triggered CI run `38317798130` passed all jobs.
+PR-triggered run `38317801177` attempt 1 passed Ubuntu/macOS quality, MSRV, and
+dependency policy but failed the aarch64 secured-apphost qualification at the
+persistent-catalog SAM fixture transport step. Attempt 2 reran the failed job
+and passed; the PR check rollup is green, and GitGuardian security checks passed.
 
 ## Stacked pull-request audit
 
@@ -57,7 +64,7 @@ GitHub reports the following open chain, oldest to newest:
 | 41 | PR 40 branch | `a3173774b9037266eece08d84ec63dc0edd1f3d8` | Not draft, unstable |
 | 42 | PR 41 branch | `2cc7594273898607d6e25c3b19bca5e6b48fb587` | Not draft, clean |
 | 43 | PR 42 branch | `7b9f05fda11dc5ae990f2059a7a42ecaa9c1313f` | Not draft, unstable |
-| 44 | PR 43 branch | `6fcaca5ead8f36e3ff45908dbc4ddef9af79d987` | Current branch head; exact-head CI run `38314989336` green |
+| 44 | PR 43 branch | `2dd16c3e3f954132f2d7c626bb58b4ee34f42f57` | Current branch head; exact-head CI green after failed-job rerun |
 
 None of PRs 37–44 has a GitHub review decision or recorded review. The current
 `main` SHA is `51f7426080906044b2bb99934c0336489b6b6ecd`; its merge base with the
@@ -74,8 +81,8 @@ branch was retargeted, force-updated, or merged.
 | Requirement | Result |
 | --- | --- |
 | Linux regression for the exact governor restart test | Passed 20/20 consecutive exact runs after adding the writer/reader event barrier; full runtime all-targets passed, 135 passed and 1 ignored. |
-| macOS regression and root cause | CI reproduced the exact failure on `4005bfa`; localized to missing writer/reader progress synchronization in the paused-clock test and corrected with owner-counter event waits. The corrected test passed on macOS at final SHA `6fcaca5`. |
-| Exact-head full CI | Run `38314989336` on final SHA `6fcaca5` passed Ubuntu/macOS quality, MSRV, dependency policy, and native aarch64 secured-apphost. The duplicate push run was completing Clippy at closure update. |
+| macOS regression and root cause | CI reproduced the exact failure on `4005bfa`; localized to missing writer/reader progress synchronization in the paused-clock test and corrected with owner-counter event waits. The corrected test passed on macOS at final SHA `2dd16c3`. |
+| Exact-head full CI | On `2dd16c3`, push run `38317798130` passed all jobs. PR run `38317801177` attempt 1 had one non-reproducible aarch64 persistent-catalog SAM fixture transport failure; failed-job attempt 2 passed. Ubuntu/macOS quality, MSRV, dependency policy, native aarch64, and GitGuardian are green. |
 | PR stack audit | Current refs, bases, draft/merge states, main-only commit, and review absence recorded. |
 | Stack integration | Pending normal owner review and approval. No PR merged. |
 | Public NTCP2/SSU2, default role, or support promotion | None. |
@@ -91,10 +98,12 @@ ignored across 187 suites, and formatting, workspace check/build, Clippy,
 rustdoc/doc tests, planning tests, all listed boundary/evidence guards, and
 dependency policy passed. The Plan 472 runner and Plan 449 preflight self-tests
 also passed. After the synchronization change, the exact Linux test passed 20
-times, runtime all-targets passed, and exact-head CI run `38314989336` passed on
-Ubuntu/macOS/aarch64 with MSRV and dependency policy green.
+times and runtime all-targets passed. On exact SHA `2dd16c3`, full push CI
+passed; PR CI passed after rerunning the sole failed aarch64 job, and
+GitGuardian passed. The one-run SAM fixture transport failure is recorded above
+and was not reproduced by the same-SHA rerun.
 
 Disposition: **blocked only before approved stacked-PR integration**. Code,
-local regressions, and one full exact-head CI run are complete. PRs 37–44 have no
+local regressions and exact-head CI are complete. PRs 37–44 have no
 recorded reviews; do not merge or retarget the unreviewed stack. Continue the
 audited PR 37-to-44 order only after normal owner review and approval.
