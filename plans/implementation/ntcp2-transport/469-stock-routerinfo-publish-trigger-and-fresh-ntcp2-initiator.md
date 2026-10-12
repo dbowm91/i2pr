@@ -1,6 +1,6 @@
 # Plan 469 — Use normal stock RouterInfo publication to initiate NTCP2 toward i2pr
 
-**State:** registered / **blocked on Plan 468 stock admission, P0-next** (2026-10-11). Owner: NTCP2 stock-to-i2pr qualification. Consumes Plan 463's genuine controlled `caps=f` dual-address floodfill role and Plan 459's already-landed normal NTCP2 shared ingress. Plan 468 must establish that i2pr's signed RI is actually admitted into the pinned stock floodfill set; Plan 467's router-level acknowledgement contract is useful but **not a hard dependency** on triggering a fresh stock dial. **No** i2pr SAM destination tunnel, random Explore-selection gamble, transit or Java prerequisite.
+**State:** **passed**, 2026-10-12; see [`closure/ntcp2-transport/469-status.md`](../../closure/ntcp2-transport/469-status.md). Owner: NTCP2 stock-to-i2pr qualification. Consumes Plan 463's genuine controlled `caps=f` dual-address floodfill role and Plan 459's already-landed normal NTCP2 shared ingress. Plan 468 established that i2pr's signed RI is admitted into the pinned stock floodfill set; Plan 467's router-level acknowledgement contract is now also passed. **No** i2pr SAM destination tunnel, random Explore-selection gamble, transit or Java prerequisite.
 
 ## Production i2pd send path
 

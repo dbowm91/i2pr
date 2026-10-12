@@ -77,10 +77,23 @@ pub enum I2pBase64Error {
 /// - 1-byte tail   → 2 chars + 2 `=`.
 #[allow(dead_code)]
 pub fn encode(bytes: &[u8]) -> Result<String, I2pBase64Error> {
-    if bytes.len() > MAX_DECODED_LEN {
+    encode_bounded(bytes, MAX_DECODED_LEN)
+}
+
+/// Encodes one bounded serialized RouterInfo using the I2P Base64 alphabet.
+///
+/// General values remain capped at [`MAX_DECODED_LEN`]; this separate entry
+/// point is reserved for already-bounded RouterInfo bytes, whose signed
+/// address records can exceed that small hash-oriented ceiling.
+pub fn encode_router_info(bytes: &[u8]) -> Result<String, I2pBase64Error> {
+    encode_bounded(bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+}
+
+fn encode_bounded(bytes: &[u8], maximum: usize) -> Result<String, I2pBase64Error> {
+    if bytes.len() > maximum {
         return Err(I2pBase64Error::DecodedTooLarge {
             actual: bytes.len(),
-            maximum: MAX_DECODED_LEN,
+            maximum,
         });
     }
     let total = bytes.len();
@@ -233,6 +246,27 @@ mod tests {
             let decoded = decode(&encoded).expect("decode");
             assert_eq!(decoded, *value);
         }
+    }
+
+    #[test]
+    fn router_info_encoding_uses_structure_bound_without_raising_small_value_ceiling() {
+        let bytes = vec![0xFB; MAX_DECODED_LEN + 1];
+        assert!(matches!(
+            encode(&bytes),
+            Err(I2pBase64Error::DecodedTooLarge { .. })
+        ));
+        let encoded = encode_router_info(&bytes).expect("bounded RouterInfo encoding");
+        assert_eq!(encoded.len(), bytes.len().div_ceil(3) * 4);
+        assert!(
+            encoded
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'~' | b'=') })
+        );
+        let too_large = vec![0; i2pr_proto::MAX_COMMON_STRUCTURE_SIZE + 1];
+        assert!(matches!(
+            encode_router_info(&too_large),
+            Err(I2pBase64Error::DecodedTooLarge { .. })
+        ));
     }
 
     #[test]

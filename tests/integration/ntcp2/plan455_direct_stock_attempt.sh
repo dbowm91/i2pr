@@ -4,6 +4,22 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 pin="635b013a612ff47278ef02acf8580a28e10e26c5"
 i2pd_bin="${I2PR_PLAN455_I2PD_BIN:-${repo_root}/target/interop/cache/ssu2/i2pd/${pin}/bin/i2pd}"
+plan467_reply_token="${I2PR_PLAN467_REPLY_TOKEN:-0}"
+smoke_profile="router-info-database-store"
+data_phase_mode="initiator-data-only"
+expected_observation="i2pr-sent-only"
+message_id=4550101
+if [[ "${plan467_reply_token}" != "0" ]]; then
+  if [[ ! "${plan467_reply_token}" =~ ^[1-9][0-9]{0,9}$ ]] ||
+    (( plan467_reply_token > 4294967294 )); then
+    printf '%s\n' 'plan467: blocked; reply token must be nonzero and nonreserved' >&2
+    exit 2
+  fi
+  smoke_profile="router-info-database-store-with-reply-token"
+  data_phase_mode="round-trip-delivery-status"
+  expected_observation="i2pr-sent-and-acknowledged"
+  message_id="${plan467_reply_token}"
+fi
 
 if [[ ! -x "${i2pd_bin}" ]]; then
   printf '%s\n' 'plan455: blocked; exact-pinned i2pd binary is unavailable' >&2
@@ -127,16 +143,16 @@ write_deadline_ms = 30000
 queue_deadline_ms = 5000
 drain_deadline_ms = 5000
 padding_profile = "representative"
-smoke_message_profile = "router-info-database-store"
+smoke_message_profile = "${smoke_profile}"
 expected_result_class = "authenticated-handshake-and-directional-data-phase"
 status_path = "status.jsonl"
-delivery_status_message_id = 4550101
+delivery_status_message_id = ${message_id}
 expected_sender_router_hash_sha256 = "${local_hash}"
 expected_receiver_router_hash_sha256 = "${peer_hash}"
 reference_driver_mode = "i2pd-direct-driver"
 run_identity_sha256 = "4554554554554554554554554554554554554554554554554554554554554554"
-data_phase_mode = "initiator-data-only"
-expected_observation = "i2pr-sent-only"
+data_phase_mode = "${data_phase_mode}"
+expected_observation = "${expected_observation}"
 topology_kind = "current-network-loopback"
 EOF
 
@@ -192,4 +208,20 @@ if (
     raise SystemExit(2)
 if database_store_markers == 0:
     raise SystemExit(3)
+
+reply_token = int(__import__("os").environ.get("I2PR_PLAN467_REPLY_TOKEN", "0"))
+if reply_token:
+    terminal = next((row for row in reversed(records) if row.get("phase") == "terminal"), {})
+    terminal_counters = terminal.get("counters", {})
+    if (
+        int(exit_code) != 0
+        or terminal.get("result") != "passed"
+        or int(terminal_counters.get("authenticated", 0)) != 1
+        or int(terminal_counters.get("i2np_sent", 0)) != 1
+        or int(terminal_counters.get("i2np_received", 0)) < 1
+        or int(terminal_counters.get("delivery_status_message_id", 0)) != reply_token
+    ):
+        raise SystemExit(4)
+    print(f"plan467_authenticated_stock_delivery_status={reply_token}")
+    print("plan467_authenticated_link_generation=1")
 PY

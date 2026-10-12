@@ -1,6 +1,6 @@
 # Plan 468 — Stock i2pd RouterInfo admission and healthy isolated NetDB topology
 
-**State:** registered / **ready P0, parallel with Plan 467**, 2026-10-11. Owner: pinned i2pd **test-fixture** and interop acceptance (no new production protocol owner). Source baseline `2cc7594273898607d6e25c3b19bca5e6b48fb587`, corrective to `plans/closure/ntcp2-transport/463-status.md` whose exact-pinned Explore did not select the controlled `caps=f` i2pr RI. This is a **source-prerequisite corrective, not another generic observer**. No hard dependency on Plan 467 or on i2pr SAM tunnel builds. Plan 463's controlled dual signed RI/real floodfill owner and normal daemon startup already landed.
+**State:** **passed**, 2026-10-12; see [`closure/ntcp2-transport/468-status.md`](../../closure/ntcp2-transport/468-status.md). Owner: pinned i2pd **test-fixture** and interop acceptance (no new production protocol owner). Source baseline `2cc7594273898607d6e25c3b19bca5e6b48fb587`, corrective to `plans/closure/ntcp2-transport/463-status.md` whose exact-pinned Explore did not select the controlled `caps=f` i2pr RI. This is a **source-prerequisite corrective, not another generic observer**. No hard dependency on Plan 467 or on i2pr SAM tunnel builds. Plan 463's controlled dual signed RI/real floodfill owner and normal daemon startup already landed.
 
 ## Pinned source facts; do not substitute conjecture
 

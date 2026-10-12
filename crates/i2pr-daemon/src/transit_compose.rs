@@ -1484,7 +1484,8 @@ impl TransitBuildService {
                 TransitServiceError::DeliveryFailed
             }
             crate::router_i2np::RouterDeliveryError::ZeroTimeout
-            | crate::router_i2np::RouterDeliveryError::TimeoutTooLong => {
+            | crate::router_i2np::RouterDeliveryError::TimeoutTooLong
+            | crate::router_i2np::RouterDeliveryError::InvalidReplyTokenProbe => {
                 TransitServiceError::DeliveryFailed
             }
         })?;
@@ -1511,7 +1512,8 @@ impl TransitBuildService {
                 TransitServiceError::DeliveryFailed
             }
             crate::router_i2np::RouterDeliveryError::ZeroTimeout
-            | crate::router_i2np::RouterDeliveryError::TimeoutTooLong => {
+            | crate::router_i2np::RouterDeliveryError::TimeoutTooLong
+            | crate::router_i2np::RouterDeliveryError::InvalidReplyTokenProbe => {
                 TransitServiceError::DeliveryFailed
             }
         })?;

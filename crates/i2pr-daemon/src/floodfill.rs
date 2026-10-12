@@ -1983,6 +1983,10 @@ impl FloodfillServiceState {
         cancellation: &i2pr_runtime::CancellationToken,
     ) {
         while let Some(effect) = self.coordinator.pop_effect() {
+            let is_store_ack = matches!(
+                effect.effect.as_ref(),
+                Some(FloodfillDaemonEffect::StoreAck { .. })
+            );
             let outcome = deliver_floodfill_effect_with_dial(
                 handle,
                 self.coordinator.netdb(),
@@ -1992,6 +1996,17 @@ impl FloodfillServiceState {
                 cancellation,
             )
             .await;
+            if is_store_ack {
+                tracing::info!(
+                    delivered = matches!(
+                        outcome,
+                        FloodfillDeliveryOutcome::Delivered(
+                            crate::router_i2np::RouterDeliveryOutcome::Accepted
+                        )
+                    ),
+                    "authenticated floodfill DatabaseStore response submitted"
+                );
+            }
             self.coordinator.record_delivery(outcome);
         }
     }

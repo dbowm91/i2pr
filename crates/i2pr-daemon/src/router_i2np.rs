@@ -53,7 +53,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use i2pr_crypto::{OsRng, RouterIdentityBundle};
+use i2pr_crypto::{OsRng, RouterIdentityBundle, router_identity_hash};
 use i2pr_netdb::{CONTROLLED_ROUTER_VERSION, controlled_router_options};
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
@@ -755,7 +755,77 @@ impl RouterDeliveryRequest {
     }
 }
 
-/// Validation failures for an outbound router-delivery request.
+/// Builds a controlled qualification DatabaseStore for the exact signed local
+/// RouterInfo. Its response route is the authenticated router hash and tunnel
+/// zero, matching the ordinary direct DeliveryStatus form.
+pub(crate) fn build_reply_token_router_info_probe(
+    router_info_bytes: &[u8],
+    reply_token: u32,
+    now_ms: u64,
+) -> Result<(PeerId, Vec<u8>), RouterDeliveryError> {
+    if reply_token == 0 || reply_token == u32::MAX || router_info_bytes.is_empty() {
+        return Err(RouterDeliveryError::InvalidReplyTokenProbe);
+    }
+    let router_info =
+        i2pr_proto::RouterInfo::decode(router_info_bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    i2pr_crypto::verify_router_info(&router_info)
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let router_hash = router_identity_hash(router_info.router_identity())
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    use std::io::Write as _;
+    encoder
+        .write_all(router_info_bytes)
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let compressed = encoder
+        .finish()
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let payload = i2pr_proto::DeferredPayload::new(compressed, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let store = i2pr_proto::DatabaseStoreMessage {
+        key: router_hash,
+        reply_token,
+        reply_tunnel_id: Some(0),
+        reply_gateway: Some(router_hash),
+        data: i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload),
+    };
+    let expiration_seconds = now_ms
+        .checked_div(1_000)
+        .and_then(|seconds| seconds.checked_add(90))
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .ok_or(RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let envelope_id = reply_token.rotate_left(7) ^ 0xA51C_3E29;
+    let envelope_id = if envelope_id == 0 { 1 } else { envelope_id };
+    let message = I2npMessage::new_short_transport(
+        envelope_id,
+        expiration_seconds,
+        I2npBody::DatabaseStore(Box::new(store)),
+    )
+    .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    let bytes = message
+        .encode_short_transport_to_vec(MAX_ROUTER_I2NP_BYTES)
+        .map_err(|_| RouterDeliveryError::InvalidReplyTokenProbe)?;
+    Ok((PeerId::from_hash(router_hash), bytes))
+}
+
+/// Applies the body-token and timestamp checks used by the live one-shot
+/// qualification consumer. The caller separately binds the peer, link
+/// generation, and pending-request expiry.
+pub(crate) fn reply_token_status_matches(
+    expected_token: u32,
+    received_token: u32,
+    status_timestamp_ms: u64,
+    now_ms: u64,
+) -> bool {
+    expected_token != 0
+        && expected_token != u32::MAX
+        && received_token == expected_token
+        && status_timestamp_ms.saturating_add(300_000) >= now_ms
+        && status_timestamp_ms <= now_ms.saturating_add(300_000)
+}
+
+/// Validation failures constructing or starting an outbound router-delivery request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum RouterDeliveryError {
     /// The encoded message was empty or exceeds the transport boundary.
@@ -767,6 +837,9 @@ pub enum RouterDeliveryError {
     /// The timeout exceeds the bounded delivery horizon.
     #[error("router delivery timeout exceeds its horizon")]
     TimeoutTooLong,
+    /// The controlled reply-token RouterInfo probe was invalid.
+    #[error("controlled reply-token RouterInfo probe is invalid")]
+    InvalidReplyTokenProbe,
 }
 
 /// Typed outcome of one outbound router delivery.
@@ -1735,6 +1808,101 @@ mod tests {
             PeerId::from_hash(Hash::from_bytes([0x11; 32])),
             LinkId::new(7).expect("link"),
         )
+    }
+
+    #[test]
+    fn reply_token_probe_binds_signed_store_and_zero_tunnel_to_local_hash() {
+        let mut rng = OsRng;
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(NOW_MS),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("signed RouterInfo");
+        let info_bytes = info
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("RouterInfo bytes");
+        let (peer, bytes) = build_reply_token_router_info_probe(&info_bytes, 0x467_0101, NOW_MS)
+            .expect("tokened store probe");
+        let message = I2npMessage::decode_short_transport(&bytes, MAX_ROUTER_I2NP_BYTES)
+            .expect("short-transport store");
+        let I2npBody::DatabaseStore(store) = message.body() else {
+            panic!("expected DatabaseStore");
+        };
+        assert_eq!(peer.hash(), store.key);
+        assert_eq!(store.reply_token, 0x467_0101);
+        assert_eq!(store.reply_tunnel_id, Some(0));
+        assert_eq!(store.reply_gateway, Some(store.key));
+        let i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload) = &store.data else {
+            panic!("expected signed RouterInfo payload");
+        };
+        use std::io::Read as _;
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(payload.as_bytes())
+            .read_to_end(&mut decoded)
+            .expect("gzip RouterInfo");
+        assert_eq!(decoded, info_bytes);
+    }
+
+    #[test]
+    fn reply_token_probe_rejects_reserved_tokens_and_invalid_router_info() {
+        let mut rng = OsRng;
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(NOW_MS),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("signed RouterInfo");
+        let info_bytes = info
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("RouterInfo bytes");
+        for token in [0, u32::MAX] {
+            assert_eq!(
+                build_reply_token_router_info_probe(&info_bytes, token, NOW_MS),
+                Err(RouterDeliveryError::InvalidReplyTokenProbe)
+            );
+        }
+        let mut invalid = info_bytes;
+        *invalid.last_mut().expect("signature byte") ^= 1;
+        assert_eq!(
+            build_reply_token_router_info_probe(&invalid, 0x467_0102, NOW_MS),
+            Err(RouterDeliveryError::InvalidReplyTokenProbe)
+        );
+    }
+
+    #[test]
+    fn reply_token_status_rejects_wrong_reserved_and_stale_correlation() {
+        assert!(reply_token_status_matches(
+            0x467_0103, 0x467_0103, NOW_MS, NOW_MS
+        ));
+        assert!(!reply_token_status_matches(
+            0x467_0103, 0x467_0104, NOW_MS, NOW_MS
+        ));
+        assert!(!reply_token_status_matches(0, 0, NOW_MS, NOW_MS));
+        assert!(!reply_token_status_matches(
+            u32::MAX,
+            u32::MAX,
+            NOW_MS,
+            NOW_MS
+        ));
+        assert!(!reply_token_status_matches(
+            0x467_0103,
+            0x467_0103,
+            NOW_MS - 300_001,
+            NOW_MS
+        ));
+        assert!(!reply_token_status_matches(
+            0x467_0103,
+            0x467_0103,
+            NOW_MS + 300_001,
+            NOW_MS
+        ));
     }
 
     #[tokio::test]

@@ -50,7 +50,9 @@ mod server_store;
 mod store;
 mod store_message;
 
-pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
+pub use base64::{
+    I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix, encode_router_info,
+};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
 pub use els2::{
     BlindedStorageKey, BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DailyBlinding,

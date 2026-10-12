@@ -82,6 +82,8 @@ use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
+use rand_core::TryRngCore;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1664,14 +1666,23 @@ async fn run_floodfill_evaluation(
             match activation {
                 Ok(encoded) => {
                     if controlled_profile {
-                        if let Ok(info_b64) = i2pr_netdb::encode(&encoded)
-                            && inspection
+                        match i2pr_netdb::encode_router_info(&encoded) {
+                            Ok(info_b64) => match inspection
                                 .publish_local_router_info_b64(info_b64.trim_end_matches('='))
-                                .is_err()
-                        {
-                            tracing::warn!(
-                                "controlled floodfill RouterInfo inspection publication rejected"
-                            );
+                            {
+                                Ok(()) => tracing::info!(
+                                    router_info_bytes = encoded.len(),
+                                    "controlled floodfill RouterInfo inspection snapshot published"
+                                ),
+                                Err(error) => tracing::warn!(
+                                    reason = %error,
+                                    "controlled floodfill RouterInfo inspection publication rejected"
+                                ),
+                            },
+                            Err(error) => tracing::warn!(
+                                reason = %error,
+                                "controlled floodfill RouterInfo base64 encoding failed"
+                            ),
                         }
                         let _ = local_router_info.send(Some(Arc::new(encoded)));
                     }
@@ -1708,7 +1719,7 @@ async fn run_floodfill_evaluation(
             {
                 Ok(withdrawn) => {
                     if controlled_profile && dual_transport_available && !withdrawn.is_empty() {
-                        if let Ok(info_b64) = i2pr_netdb::encode(&withdrawn)
+                        if let Ok(info_b64) = i2pr_netdb::encode_router_info(&withdrawn)
                             && inspection
                                 .publish_local_router_info_b64(info_b64.trim_end_matches('='))
                                 .is_err()
@@ -2168,6 +2179,10 @@ fn register_ntcp2_service(
                                 let Ok(mut link) = runtime.promote_authenticated_inbound(
                                     &task_scope, inbound, handshake, raw_id,
                                 ) else { return Ok(()); };
+                                tracing::info!(
+                                    link_generation = raw_id,
+                                    "NTCP2 authenticated inbound link promoted"
+                                );
                             let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
                             if !task_delivery.register(peer, link_id, send_tx) {
                                 link.close();
@@ -2200,6 +2215,9 @@ fn register_ntcp2_service(
                                                     task_delivery.remove(peer, link_id);
                                                     return Ok(());
                                                 }
+                                                tracing::info!(
+                                                    "authenticated NTCP2 I2NP message forwarded to router ingress"
+                                                );
                                             }
                                         }
                                     }
@@ -2266,6 +2284,8 @@ fn register_ssu2_service(
     let floodfill_enabled = config.floodfill.enabled;
     let controlled_floodfill = config.floodfill.qualification_profile
         == crate::config::FloodfillQualificationProfile::ControlledLoopback;
+    let reply_token_probe_enabled = config.floodfill.send_reply_token_probe;
+    let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
     let controlled_ntcp2_endpoint = controlled_floodfill.then(|| {
         std::net::SocketAddr::new(
             config.transport.ntcp2.bind_address,
@@ -2291,6 +2311,8 @@ fn register_ssu2_service(
                 let mut local_router_info_rx = local_router_info_rx.clone();
                 let floodfill_config_path = floodfill_config_path.clone();
                 let controlled_floodfill = controlled_floodfill;
+                let reply_token_probe_enabled = reply_token_probe_enabled;
+                let ntcp2_max_active_links = ntcp2_max_active_links;
                 let controlled_ntcp2_endpoint = controlled_ntcp2_endpoint;
                 let bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
@@ -2693,6 +2715,8 @@ fn register_ssu2_service(
                     let mut group_tick = tokio::time::interval(Duration::from_millis(250));
                     group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let pump_started = tokio::time::Instant::now();
+                    let mut reply_token_probe_sent = HashSet::new();
+                    let mut pending_reply_token_probes = HashMap::new();
                     let token = cancellation.clone();
                     // Plan 337: the destination-group product must come
                     // up whenever a service tunnel can exist at all,
@@ -2885,12 +2909,23 @@ fn register_ssu2_service(
                                         }
                                     }
                                 }
-                                if let Ok(encoded) = i2pr_netdb::encode(info.as_ref())
-                                    && inspection
+                                match i2pr_netdb::encode_router_info(info.as_ref()) {
+                                    Ok(encoded) => match inspection
                                         .publish_local_router_info_b64(encoded.trim_end_matches('='))
-                                        .is_err()
-                                {
-                                    tracing::warn!("updated local RouterInfo inspection publication rejected");
+                                    {
+                                        Ok(()) => tracing::info!(
+                                            router_info_bytes = info.len(),
+                                            "updated local RouterInfo inspection snapshot published"
+                                        ),
+                                        Err(error) => tracing::warn!(
+                                            reason = %error,
+                                            "updated local RouterInfo inspection publication rejected"
+                                        ),
+                                    },
+                                    Err(error) => tracing::warn!(
+                                        reason = %error,
+                                        "updated local RouterInfo base64 encoding failed"
+                                    ),
                                 }
                             }
                             inbound = async {
@@ -2932,6 +2967,35 @@ fn register_ssu2_service(
                                 };
                                 let outcome = decoded.outcome();
                                 let message = decoded.message();
+                                reply_token_probe_sent.retain(|(peer, link_id)| {
+                                    ntcp2_delivery.is_current(*peer, *link_id)
+                                });
+                                pending_reply_token_probes.retain(|(peer, link_id), (_, expires_ms)| {
+                                    now_ms < *expires_ms
+                                        && ntcp2_delivery.is_current(*peer, *link_id)
+                                });
+                                if transport == AuthenticatedRouterTransport::Ntcp2
+                                    && let Some(i2pr_proto::I2npBody::DeliveryStatus(status)) =
+                                        message.map(i2pr_proto::I2npMessage::body)
+                                    && pending_reply_token_probes
+                                        .get(&(inbound.peer, inbound.link_id))
+                                        .is_some_and(|(token, expires_ms)| {
+                                            crate::router_i2np::reply_token_status_matches(
+                                                *token,
+                                                status.message_id,
+                                                status.timestamp.as_millis(),
+                                                now_ms,
+                                            )
+                                                && now_ms < *expires_ms
+                                        })
+                                {
+                                    pending_reply_token_probes
+                                        .remove(&(inbound.peer, inbound.link_id));
+                                    tracing::info!(
+                                        link_generation = inbound.link_id.value(),
+                                        "controlled NTCP2 RouterInfo DeliveryStatus correlation completed"
+                                    );
+                                }
                                 let mut served = false;
                                 if let Some(state) = floodfill.as_mut() {
                                     let time = i2pr_netdb::FloodfillTime {
@@ -2963,6 +3027,89 @@ fn register_ssu2_service(
                                                 )
                                                 .await;
                                             served = true;
+                                        }
+                                        Ok(crate::floodfill::FloodfillDispatchOutcome::Store(
+                                            i2pr_netdb::FloodfillStoreEffect::Stored {
+                                                acknowledgement: Some(_),
+                                                ..
+                                            },
+                                        )) => {
+                                            tracing::info!(
+                                                "authenticated floodfill DatabaseStore accepted with response owed"
+                                            );
+                                            state
+                                                .drain_effects(
+                                                    owner.handle(),
+                                                    now_ms,
+                                                    NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
+                                                    &token,
+                                                )
+                                                .await;
+                                            served = true;
+                                            if reply_token_probe_enabled
+                                                && transport == AuthenticatedRouterTransport::Ntcp2
+                                                && !reply_token_probe_sent
+                                                    .contains(&(inbound.peer, inbound.link_id))
+                                                && reply_token_probe_sent.len()
+                                                    < ntcp2_max_active_links
+                                                && let Some(local_info) =
+                                                    local_router_info_rx.borrow().as_ref().cloned()
+                                            {
+                                                let mut rng = OsRng;
+                                                let mut token_bytes = [0_u8; 4];
+                                                let mut reply_token = 0;
+                                                for _ in 0..4 {
+                                                    if rng.try_fill_bytes(&mut token_bytes).is_err() {
+                                                        reply_token = 0;
+                                                        break;
+                                                    }
+                                                    reply_token = u32::from_be_bytes(token_bytes);
+                                                    if reply_token != 0
+                                                        && reply_token != u32::MAX
+                                                        && !pending_reply_token_probes.values().any(
+                                                            |(pending, _)| *pending == reply_token,
+                                                        )
+                                                    {
+                                                        break;
+                                                    }
+                                                    reply_token = 0;
+                                                }
+                                                if reply_token != 0
+                                                    && let Ok((_local_peer, bytes)) =
+                                                        crate::router_i2np::build_reply_token_router_info_probe(
+                                                            local_info.as_ref(),
+                                                            reply_token,
+                                                            now_ms,
+                                                        )
+                                                    && let Ok(request) =
+                                                        crate::router_i2np::RouterDeliveryRequest::new(
+                                                            inbound.peer,
+                                                            bytes,
+                                                            Duration::from_secs(10),
+                                                        )
+                                                {
+                                                    let delivery = owner
+                                                        .handle()
+                                                        .delivery()
+                                                        .deliver(request, &token);
+                                                    if delivery
+                                                        == crate::router_i2np::RouterDeliveryOutcome::Accepted
+                                                    {
+                                                        reply_token_probe_sent.insert((
+                                                            inbound.peer,
+                                                            inbound.link_id,
+                                                        ));
+                                                        pending_reply_token_probes.insert(
+                                                            (inbound.peer, inbound.link_id),
+                                                            (reply_token, now_ms.saturating_add(120_000)),
+                                                        );
+                                                        tracing::info!(
+                                                            link_generation = inbound.link_id.value(),
+                                                            "controlled NTCP2 RouterInfo reply-token probe submitted"
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
                                         Ok(_) => {
                                             state
@@ -3247,7 +3394,7 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         && let Some(local) = bootstrap.local()
     {
         match local.encoded(crate::i2pcontrol_inspection::MAX_LOCAL_ROUTER_INFO_BYTES) {
-            Ok(encoded) => match i2pr_netdb::encode(&encoded) {
+            Ok(encoded) => match i2pr_netdb::encode_router_info(&encoded) {
                 Ok(info_b64) => {
                     if inspection
                         .publish_local_router_info_b64(info_b64.trim_end_matches('='))

@@ -116,6 +116,11 @@ enum Ntcp2Command {
         #[arg(long = "router-info")]
         router_info: PathBuf,
     },
+    /// Emit only the bounded public fields needed by the Plan-468 RI preflight.
+    RouterInfoSummary {
+        #[arg(long = "router-info")]
+        router_info: PathBuf,
+    },
 }
 
 #[allow(dead_code)]
@@ -308,6 +313,67 @@ fn router_hash_command(path: &Path) -> ExitCode {
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush());
     if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
+}
+
+fn router_info_summary_command(path: &Path) -> ExitCode {
+    let Ok(metadata) = fs::metadata(path) else {
+        return emit_inspection("rejected", "router_info_unavailable");
+    };
+    if !metadata.is_file() || metadata.len() > MAX_LOCAL_ROUTER_INFO_BYTES as u64 {
+        return emit_inspection("rejected", "router_info_size_invalid");
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return emit_inspection("rejected", "router_info_unavailable");
+    };
+    let Ok(info) = RouterInfo::decode(&bytes, MAX_LOCAL_ROUTER_INFO_BYTES) else {
+        return emit_inspection("rejected", "router_info_structural_validation_failed");
+    };
+    if i2pr_crypto::verify_router_info(&info).is_err() {
+        return emit_inspection("rejected", "router_info_signature_validation_failed");
+    }
+    let version = info.options().get("router.version").unwrap_or("");
+    let network_id = info.options().get("netId").unwrap_or("");
+    let floodfill = info
+        .options()
+        .get("caps")
+        .is_some_and(|capabilities| capabilities.contains('f'));
+    let mut addresses = Vec::new();
+    for address in info.addresses() {
+        let options = address.options();
+        let host = options.get("host").unwrap_or("");
+        let port = options
+            .get("port")
+            .and_then(|value| value.parse::<u16>().ok());
+        let has_static_key = options.get("s").is_some_and(|value| !value.is_empty());
+        let has_iv_or_intro_key = options.get("i").is_some_and(|value| !value.is_empty());
+        addresses.push(format!(
+            "{{\"style\":\"{}\",\"loopback\":{},\"port_valid\":{},\"static_key\":{},\"i_key\":{}}}",
+            address.transport_style(),
+            host.parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()),
+            port.is_some_and(|port| port >= 1024),
+            has_static_key,
+            has_iv_or_intro_key
+        ));
+    }
+    let result = format!(
+        "{{\"schema\":1,\"type\":\"i2pr-interop-router-info-summary\",\"result\":\"validated\",\"network_id\":\"{}\",\"version\":\"{}\",\"floodfill\":{},\"address_count\":{},\"addresses\":[{}]}}",
+        network_id,
+        version,
+        floodfill,
+        addresses.len(),
+        addresses.join(",")
+    );
+    let mut stdout = io::stdout().lock();
+    if stdout
+        .write_all(result.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .is_ok()
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
@@ -780,6 +846,7 @@ async fn execute_responder(
         scenario.data_phase_mode,
         scenario.smoke_message_profile,
         scenario.delivery_status_message_id,
+        router_hash,
         &[],
         Hash::from_bytes([0; 32]),
         &scenario.expected_sender_router_hash_sha256,
@@ -1118,6 +1185,7 @@ async fn execute_initiator(
         scenario.data_phase_mode,
         scenario.smoke_message_profile,
         scenario.delivery_status_message_id,
+        router_hash,
         &peer.router_info,
         peer.router_hash,
         &scenario.expected_sender_router_hash_sha256,
@@ -1142,6 +1210,7 @@ async fn exchange_directional(
     mode: DataPhaseMode,
     profile: SmokeMessageProfile,
     delivery_status_message_id: u32,
+    sender_router_hash: Hash,
     peer_router_info: &[u8],
     peer_router_hash: Hash,
     expected_sender_router_hash_sha256: &str,
@@ -1157,6 +1226,7 @@ async fn exchange_directional(
                 counters,
                 delivery_status_message_id,
                 profile,
+                sender_router_hash,
                 peer_router_info,
                 peer_router_hash,
                 expected_sender_router_hash_sha256,
@@ -1201,6 +1271,7 @@ async fn send_i2np_block(
     counters: &mut StatusCounters,
     message_id: u32,
     profile: SmokeMessageProfile,
+    sender_router_hash: Hash,
     peer_router_info: &[u8],
     peer_router_hash: Hash,
     _expected_sender_router_hash_sha256: &str,
@@ -1220,6 +1291,7 @@ async fn send_i2np_block(
         unix_millis(),
         peer_router_info,
         peer_router_hash,
+        sender_router_hash,
     )
     .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
     // Plan 065: re-decode the constructed message and verify the
@@ -1237,6 +1309,15 @@ async fn send_i2np_block(
     let body_matches = match (profile, decoded.body()) {
         (SmokeMessageProfile::RouterInfoDatabaseStore, I2npBody::DatabaseStore(store)) => {
             store.key == peer_router_hash && store.reply_token == 0
+        }
+        (
+            SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken,
+            I2npBody::DatabaseStore(store),
+        ) => {
+            store.key == peer_router_hash
+                && store.reply_token == message_id
+                && store.reply_tunnel_id == Some(0)
+                && store.reply_gateway == Some(sender_router_hash)
         }
         (_, I2npBody::DeliveryStatus(inner)) => inner.message_id == message_id,
         _ => false,
@@ -1299,6 +1380,7 @@ fn build_smoke_message(
     timestamp_ms: u64,
     peer_router_info: &[u8],
     peer_router_hash: Hash,
+    sender_router_hash: Hash,
 ) -> Result<I2npMessage, i2pr_proto::CodecError> {
     let body = match profile {
         SmokeMessageProfile::RouterInfoDatabaseStore => {
@@ -1321,6 +1403,32 @@ fn build_smoke_message(
                 reply_token: 0,
                 reply_tunnel_id: None,
                 reply_gateway: None,
+                data: DatabaseStoreData::RouterInfoCompressed(DeferredPayload::new(
+                    compressed,
+                    MAX_I2NP_PAYLOAD_SIZE,
+                )?),
+            }))
+        }
+        SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken => {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(peer_router_info).map_err(|_| {
+                i2pr_proto::CodecError::InvalidFieldValue {
+                    offset: 0,
+                    context: "DatabaseStore RouterInfo compression",
+                }
+            })?;
+            let compressed =
+                encoder
+                    .finish()
+                    .map_err(|_| i2pr_proto::CodecError::InvalidFieldValue {
+                        offset: 0,
+                        context: "DatabaseStore RouterInfo compression",
+                    })?;
+            I2npBody::DatabaseStore(Box::new(DatabaseStoreMessage {
+                key: peer_router_hash,
+                reply_token: message_id,
+                reply_tunnel_id: Some(0),
+                reply_gateway: Some(sender_router_hash),
                 data: DatabaseStoreData::RouterInfoCompressed(DeferredPayload::new(
                     compressed,
                     MAX_I2NP_PAYLOAD_SIZE,
@@ -1359,6 +1467,7 @@ pub(crate) async fn correlated_send_block(
         counters,
         delivery_status_message_id,
         SmokeMessageProfile::DeliveryStatus,
+        Hash::from_bytes([0; 32]),
         &[],
         Hash::from_bytes([0; 32]),
         expected_sender_router_hash_sha256,
@@ -1408,7 +1517,7 @@ async fn receive_delivery_status(
         } => {
             counters.frames_received = oracle_counters.frames_received;
             counters.i2np_received = oracle_counters.matched_target_message_id;
-            counters.delivery_status_message_id = target.envelope_message_id;
+            counters.delivery_status_message_id = expected_message_id;
             counters.expected_peer_router_hash_sha256 =
                 expected_receiver_router_hash_sha256.to_owned();
             // Plan 093: decode the bounded I2NP body so the launcher
@@ -1420,7 +1529,12 @@ async fn receive_delivery_status(
             // success counters.
             match i2pr_proto::I2npMessage::decode_short_transport(&target.body, target.body.len()) {
                 Ok(decoded) => {
-                    if let I2npBody::DeliveryStatus(_status) = decoded.body() {
+                    if let I2npBody::DeliveryStatus(status) = decoded.body() {
+                        if status.message_id != expected_message_id
+                            || target.envelope_message_id == 0
+                        {
+                            return Err(LauncherError::ReceiverDeliveryStatusIdMismatch);
+                        }
                         counters.i2np_received = counters.i2np_received.saturating_add(1);
                     } else {
                         return Err(LauncherError::ReceiverDeliveryStatusIdMismatch);
@@ -2083,6 +2197,9 @@ fn main() -> ExitCode {
                 }
             }
             Ntcp2Command::RouterHash { router_info } => router_hash_command(&router_info),
+            Ntcp2Command::RouterInfoSummary { router_info } => {
+                router_info_summary_command(&router_info)
+            }
         },
     }
 }
@@ -2104,6 +2221,7 @@ mod tests {
             2_000_000_000_000,
             router_info,
             router_hash,
+            Hash::from_bytes([0x11; 32]),
         )
         .expect("DatabaseStore probe message");
         let bytes = message
@@ -2124,6 +2242,39 @@ mod tests {
         let mut restored = Vec::new();
         decoder.read_to_end(&mut restored).expect("gzip decode");
         assert_eq!(restored, router_info);
+    }
+
+    #[test]
+    fn plan467_tokened_database_store_round_trips_exact_reply_route() {
+        let router_info = b"bounded signed router info fixture";
+        let target_hash = Hash::from_bytes([0x5a; 32]);
+        let sender_hash = Hash::from_bytes([0x11; 32]);
+        let message = build_smoke_message(
+            SmokeMessageProfile::RouterInfoDatabaseStoreWithReplyToken,
+            4670101,
+            2_000_000_000,
+            2_000_000_000_000,
+            router_info,
+            target_hash,
+            sender_hash,
+        )
+        .expect("tokened DatabaseStore probe message");
+        let bytes = message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .expect("short transport encoding");
+        let decoded = I2npMessage::decode_short_transport(&bytes, MAX_I2NP_MESSAGE_BYTES)
+            .expect("strict short transport decode");
+        let I2npBody::DatabaseStore(store) = decoded.body() else {
+            panic!("expected DatabaseStore body");
+        };
+        assert_eq!(store.key, target_hash);
+        assert_eq!(store.reply_token, 4670101);
+        assert_eq!(store.reply_tunnel_id, Some(0));
+        assert_eq!(store.reply_gateway, Some(sender_hash));
+        assert!(matches!(
+            &store.data,
+            DatabaseStoreData::RouterInfoCompressed(_)
+        ));
     }
 
     fn test_scenario(root: &Path) -> Scenario {
