@@ -1,6 +1,6 @@
-# Plan 473 status: blocked — final exact-head checks and PR integration pending
+# Plan 473 status: blocked — stacked PR review and integration pending
 
-Closure token: `blocked-final-exact-head-ci-and-stack-approval-pending`
+Closure token: `blocked-stack-review-and-owner-approval-pending`
 
 Plan: [`473-macos-ntcp2-governor-and-recovery-stack-integration.md`](../../implementation/core-router-recovery/473-macos-ntcp2-governor-and-recovery-stack-integration.md)
 
@@ -30,7 +30,8 @@ to wait for both existing owner-tracked counters (`written_frames` and
 changes no governor or runtime semantics, and retains the receive timeout.
 After this correction, the exact test passed 20/20 consecutive Linux runs and
 the complete `i2pr-runtime --all-targets` suite passed (135 passed, 1 ignored).
-The corrected source still needs macOS CI confirmation.
+On final SHA `6fcaca5ead8f36e3ff45908dbc4ddef9af79d987`, full macOS and Ubuntu
+quality jobs passed, including the corrected test on macOS.
 
 On exact SHA `4005bfa`, both aarch64 secured-apphost jobs passed. MSRV and
 dependency policy passed in both workflows. Ubuntu quality failed once in an
@@ -38,7 +39,10 @@ unrelated I2PControl tunnel manager test, then passed in the duplicate PR run;
 the failure was `manager configuration rejected` and the focused test passed
 six local attempts. The PR-triggered macOS quality job failed the NTCP2 restart
 test while the push-triggered macOS job passed. All exact-head checks must run
-again on the corrected SHA.
+The final PR-triggered workflow run `38314989336` on `6fcaca5` passed Ubuntu
+quality, macOS quality, MSRV, dependency policy, and native aarch64 secured
+apphost. GitGuardian security checks passed as well. The duplicate push-triggered
+run remained in progress at closure update time.
 
 ## Stacked pull-request audit
 
@@ -53,7 +57,7 @@ GitHub reports the following open chain, oldest to newest:
 | 41 | PR 40 branch | `a3173774b9037266eece08d84ec63dc0edd1f3d8` | Not draft, unstable |
 | 42 | PR 41 branch | `2cc7594273898607d6e25c3b19bca5e6b48fb587` | Not draft, clean |
 | 43 | PR 42 branch | `7b9f05fda11dc5ae990f2059a7a42ecaa9c1313f` | Not draft, unstable |
-| 44 | PR 43 branch | `4005bfa24fcce6f232684a79ab49513130615dd5` | Audited CI head; corrected source now at `fa98c0d0a469e37103e6af256ae553787bddca03` |
+| 44 | PR 43 branch | `6fcaca5ead8f36e3ff45908dbc4ddef9af79d987` | Current branch head; exact-head CI run `38314989336` green |
 
 None of PRs 37–44 has a GitHub review decision or recorded review. The current
 `main` SHA is `51f7426080906044b2bb99934c0336489b6b6ecd`; its merge base with the
@@ -70,8 +74,8 @@ branch was retargeted, force-updated, or merged.
 | Requirement | Result |
 | --- | --- |
 | Linux regression for the exact governor restart test | Passed 20/20 consecutive exact runs after adding the writer/reader event barrier; full runtime all-targets passed, 135 passed and 1 ignored. |
-| macOS regression and root cause | CI reproduced the exact failure on `4005bfa`; localized to missing writer/reader progress synchronization in the paused-clock test and corrected with owner-counter event waits. Final macOS confirmation is pending. |
-| Exact-head full CI | On `4005bfa`, aarch64, MSRV and dependency policy passed; Ubuntu quality failed once then passed on its duplicate run; macOS passed once and failed once at the target test. CI for the corrected SHA remains pending. |
+| macOS regression and root cause | CI reproduced the exact failure on `4005bfa`; localized to missing writer/reader progress synchronization in the paused-clock test and corrected with owner-counter event waits. The corrected test passed on macOS at final SHA `6fcaca5`. |
+| Exact-head full CI | Run `38314989336` on final SHA `6fcaca5` passed Ubuntu/macOS quality, MSRV, dependency policy, and native aarch64 secured-apphost. The duplicate push run was completing Clippy at closure update. |
 | PR stack audit | Current refs, bases, draft/merge states, main-only commit, and review absence recorded. |
 | Stack integration | Pending normal owner review and approval. No PR merged. |
 | Public NTCP2/SSU2, default role, or support promotion | None. |
@@ -87,10 +91,10 @@ ignored across 187 suites, and formatting, workspace check/build, Clippy,
 rustdoc/doc tests, planning tests, all listed boundary/evidence guards, and
 dependency policy passed. The Plan 472 runner and Plan 449 preflight self-tests
 also passed. After the synchronization change, the exact Linux test passed 20
-times and runtime all-targets passed. Final candidate CI, including macOS,
-Ubuntu, and native aarch64, remains required after commit/push.
+times, runtime all-targets passed, and exact-head CI run `38314989336` passed on
+Ubuntu/macOS/aarch64 with MSRV and dependency policy green.
 
-Disposition: **blocked before final exact-head qualification and approved PR
-integration**. The corrected source is pushed. Observe the full exact-head
-macOS/Ubuntu/aarch64 result, then proceed through PR 37–44 only after normal
-review approval.
+Disposition: **blocked only before approved stacked-PR integration**. Code,
+local regressions, and one full exact-head CI run are complete. PRs 37–44 have no
+recorded reviews; do not merge or retarget the unreviewed stack. Continue the
+audited PR 37-to-44 order only after normal owner review and approval.
