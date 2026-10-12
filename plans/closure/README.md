@@ -28,6 +28,24 @@ security and contention evidence where applicable, documentation/operational evi
 limitations, unresolved findings by severity (critical/high/medium/low), and the roadmap
 disposition (closed, conditionally closed, corrective pass required, or blocked).
 
+## Causal attempts, partial evidence, and when to close
+
+Do not finalize a `blocked` closure merely because the *first* fixture attempt
+used a wrong datadir, filtered the stock's actual log spelling, lacked known
+floodfills, failed to induce a stock-owned send, or selected a different eligible
+peer. Correct the exact defect and rerun the affected gate **within the active
+plan** using finite timeouts and regression. Record one run receipt per material
+source/config change with the first missing transition and owner. An unchanged
+failure may be stopped without pretending it is a protocol defect.
+
+When a coherent plan really exhausts its authorized causal corrective scope,
+write an authoritative `NNN-status.md` specifying its **scoped** pass/blocked
+evidence, prerequisite, source-level cause (or precise unresolved causal gap),
+and downstream unblock audit. Only a new, separately scoped successor gets a
+new plan number. Past status records remain untouched, and lower-tier successes
+cannot be silently promoted or erased. See
+[the execution policy](../README.md#bounded-execution-and-causal-corrective-policy).
+
 A milestone MUST NOT be marked closed when only compilation/formatting was verified, required
 tests were not run, a user-visible capability has only internal infrastructure, or a known
 high-severity defect remains. Historical records MUST NOT be rewritten to conceal

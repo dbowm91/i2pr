@@ -211,6 +211,22 @@ Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build tim
 
 **Authority:** Plan 455's already-executed one-way stock decoded DatabaseStore and stock-to-stock NTCP2-only application control are retained. Plan 456's local NTCP2 source/lifecycle pass is not a real stock-to-i2pr NetDB capability claim. Neither Plan 459 source work nor Plan 460 same-link reply alone qualifies a **fresh stock initiator**. No public `R`/`f`, external profile, support inventory or conformance promotion without independently executed downstream gates.
 
+### NTCP2 recovery from reference-router behavior — Plans 467–469 (2026-10-11)
+
+**Execution lanes:** Plan 467 real `i2pr run` initiated DatabaseStore with nonzero reply token → genuine pinned stock i2pd DeliveryStatus; in parallel Plan 468 validates controlled i2pr RouterInfo admission and stock healthy NetDB (>=5 actual floodfills, `floodfils` startup count, source-valid peer eligibility); Plan 469 uses legitimate pinned stock `RouterContext::Publish` to trigger a **fresh** stock-initiated NTCP2 connection and router-I2NP delivery after signed target selection. This is separate from Plan 462/464–466 normal SAM tunnel-installation failure and does not pretend a stock response on an existing session qualifies fresh initiation.
+
+```text
+455 i2pr->stock decoded I2NP; 456 normal owner; 459 shared ingress
+         -> 467 real owner initiated tokened store + stock DeliveryStatus (P0)
+463 signed active controlled caps=f floodfill -> 468 honest >=5 FF stock NetDB + admission (P0)
+                                                         -> 469 stock Publish -> i2pr NTCP2 (P0 next)
+467/469 proof -> reassess blocked 459/460/463 -> existing 461 dual-family continuity
+                                                        -> 457 / 435 later external + Java
+SAM 462/464–466 stays P2 separate: nonzero-hop application product, not NTCP2 precondition
+```
+
+The [execution-loop procedure](../README.md#bounded-execution-and-causal-corrective-policy) requires source-visible preflight, a legitimate router-generated message, the first missing owner transition, and an in-plan fix/regression/retry after a **causally distinct correction**; identical no-progress retries are bounded. Historical closures are not retroactively modified. Public `R`/`f`, support inventory and anonymity claims remain hard-gated by GUARDRAILS/conformance/role-readiness.
+
 ## 8. Cross-cutting invariants
 
 No network-supplied raw router identity becomes trusted without validation. Do not couple transport public key to destination/client identity or allow correlation between multiple client destinations via service metadata. Preserve non-advertised defaults and explicit operator authorization for changes in public exposure. Enforce per-address and global pending-handshake, verified-link, byte, fragment, NetDB, tunnel, and floodfill budgets. All network activity is cancellable and recoverable; snapshots and logs exclude secret/identity-bearing full values. Retain protocol specifications and clean-room provenance; Emissary is an **architectural reference only** outside the Proposal 170 ADR 0028 exception.

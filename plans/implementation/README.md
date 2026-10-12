@@ -26,5 +26,19 @@ Before assigning a plan to an agent: confirm the repository baseline, confirm ha
 dependencies are closed, confirm unresolved decisions have ADRs or are out of scope, ensure
 one-coherent-pass sizing, and register the plan in `plans/registry.md`.
 
-Corrective work receives a new plan in the same subsystem directory referencing the
-original plan and closure record, enumerating unclosed findings with regression evidence.
+A **new corrective scope after an authoritative finalized blocked closure** receives a
+new globally unique plan in the same subsystem, referencing that closure and enumerating
+unclosed findings plus required regressions. **Routine defect remediation within an
+active coherent pass** (wrong datadir, admission parser, retry after a verified source
+fix, missing test evidence, incorrect log selector, etc.) stays **inside the same plan**:
+fix, add a deterministic regression, and rerun its affected acceptance gate. An attempt
+budget prevents identical no-progress retries, not rooted corrective development.
+
+Every external-router handoff MUST identify a legitimate reference-owned trigger,
+source-derived selection prerequisites, deterministic offline fixture checks, the
+first failure-owner boundary, the narrow success oracle and which evidence is only
+local/control versus true independent interop. A socket-only or idle-listener fixture
+cannot by itself establish a triggered transport test; a randomized peer selector
+cannot guarantee one named candidate unless its actual admission and selection are
+verified. Separate cryptography, I2NP transport, NetDB, tunnel and application gates.
+See [planning execution-loop policy](../README.md#bounded-execution-and-causal-corrective-policy).

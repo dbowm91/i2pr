@@ -167,6 +167,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 461 | blocked | `blocked-plan459-460-live-peer-receipt-unproven` | `plans/implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md` | `plans/closure/ntcp2-transport/461-status.md`: downstream of 459 and 460 |
 | 463 | blocked | `blocked-plan463-stock-explore-candidate-not-selected` | `plans/implementation/ntcp2-transport/463-controlled-floodfill-stock-trigger-and-live-reply.md` | `plans/closure/ntcp2-transport/463-status.md`: controlled `caps=f` role is implemented; pinned stock entered Explore four times but selected no i2pr target |
 
+| 467 | ready P0 | `registered-normal-daemon-databasestore-deliverystatus-roundtrip` | `plans/implementation/ntcp2-transport/467-normal-daemon-ntcp2-databasestore-deliverystatus-roundtrip.md` | `plans/closure/ntcp2-transport/467-status.md` (on execution) |
+| 468 | ready P0 | `registered-stock-routerinfo-admission-and-healthy-private-netdb` | `plans/implementation/ntcp2-transport/468-stock-routerinfo-admission-and-private-netdb-topology.md` | `plans/closure/ntcp2-transport/468-status.md` (on execution) |
+| 469 | blocked on 468 | `registered-stock-publish-ntcp2-fresh-initiator` | `plans/implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md` | `plans/closure/ntcp2-transport/469-status.md` (on execution) |
+
 ### Plans 459–461: actual daemon NTCP2 product dispatch first (2026-10-11)
 
 **Critical source discovery:** `crates/i2pr-daemon/src/lib.rs::register_ntcp2_service` has **two** authenticated link receive loops that call `dispatch_router_i2np_parts(...)` and discard the returned typed outcome. `router_i2np.rs` only decodes/classifies; the live `ServiceProduct::poll_inbound` consumes SSU2 events. Successful Plan 456 NTCP2 handshake and Plan 455 **i2pr→stock** stock-decoded DatabaseStore do not close normal **stock→i2pr** NetDB/tunnel consumption.
@@ -177,6 +181,17 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 4. **[462](../implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md), independent P2, blocked:** M6 preflight, tunnel, and NetDB controls pass, but the normal-process SAM build's first missing transition remains unlocalized. Plan 464 authorizes one causal attempt. See [462 status](../closure/core-router-recovery/462-status.md).
 
 **Do not** claim a generic `dispatch_router_i2np_parts` classification is a live NetDB operation, or that an NTCP2 socket bound implies the normal router can route over it. No protocol or peer-support claim changes merely because these plans are registered. Preserve historical 455/456/457 closures and Plan 101 default-off/advertisement guard.
+
+### Plans 467–469 — real request/reply before stock candidate roulette (2026-10-11)
+
+Source-backed corrections to the existing Plan 459/460/463 blockers, **not** superseding their immutable closures:
+
+- [Plan 467](../implementation/ntcp2-transport/467-normal-daemon-ntcp2-databasestore-deliverystatus-roundtrip.md) **ready P0**: pinned `libi2pd/NetDb.cpp::HandleDatabaseStoreMsg` sends a genuine `DeliveryStatus` for nonzero/nonreserved reply token with **reply tunnel ID 0**, before discarding a self-RouterInfo store. Use exact-matched ACK as a lower-tier **two-way NTCP2 / NetDB handler** result, then execute the *normal daemon initiated* owner round-trip. Plan 455's token-zero self-store correctly expected no ACK; ACK is not proof of third-party NetDB acceptance.
+- [Plan 468](../implementation/ntcp2-transport/468-stock-routerinfo-admission-and-private-netdb-topology.md) **ready P0 parallel**: source-prove signed candidate RI admission to stock `m_Floodfills`, with **at least five genuinely eligible floodfill RIs**, because `NetDb::Start` requires `NETDB_MIN_FLOODFILLS=5` even at `reseed.threshold=0`. Capture stock startup `floodfils` count (exact misspelling) and check selection semantics without fake `R`, bandwidth, version, public reseed or identity grinding.
+- [Plan 469](../implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md) **blocked on 468**: prefer stock `RouterContext::Publish` (chosen live floodfill, actual signed own-RI DatabaseStore and nonzero token) over unconstrained randomized `Explore`. Require confirmed **i2pr target selection** under frozen topology, fresh normal-stock NTCP2 SessionConfirmed, real i2pr product consumption and owed semantic reply. A valid selection of a different eligible floodfill is **not** protocol failure.
+- Resume **existing Plan 461** only after meaningful normal NTCP2 peer receipts; no duplicate dual-transport plan. Pinned Java second-family/public Plan 435 and Plan 101 default-disabled/nonadvertised behavior unchanged. i2pr SAM tunnel Plan 462 remains P2.
+
+**Procedure:** follow [the bounded causal correction policy](../README.md#bounded-execution-and-causal-corrective-policy): source preflight → one legitimate send → classify first missing owned event → fix + regression + replay in same active plan. Do not force a new plan for a log parser, reference bootstrap precondition or source-grounded rerun. Keep independent tiers and immutable closure authority.
 
 ## 8. Cross-cutting requirements
 
