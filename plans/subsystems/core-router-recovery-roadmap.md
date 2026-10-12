@@ -184,6 +184,33 @@ This work supersedes **only the execution priority/order**, not any historical c
 
 No baseline status becomes `passed` on plan registration. The partial failures of 451/452 remain authoritative; 455 may retain valid i2pr-initiated evidence if a stock test topology cannot make a valid reference outbound send. A final public capability still requires the unrelated external address and two-family gates in Plans 431/433/435/439.
 
+### Plans 459–462: decouple NTCP2 transport I2NP from SAM tunnel provisioning (2026-10-11)
+
+Plan 459 replaced both authenticated NTCP2 parse-and-drop sinks with a bounded shared product owner; its normal daemon-initiator receipt and correlated live reply remain unproven. Plans 460/463 tested a source-owned floodfill trigger, but stock Explore did not select the seeded controlled record. This is independent of Plan 458's SAM build failure.
+
+```text
+Known: 455 i2pr→i2pd NTCP2+I2NP passed; stock-only NTCP2 SAM control passed
+Known: 456 controlled normal i2pr NTCP2 identity/listener/authentication passed
+Critical P0: 459 authenticated NTCP2 ingress → one live NetDB/tunnel product + replies
+     then P0: 460 stock router → normal i2pr NTCP2; independent fresh stock dial evidence
+     then P1: 461 request-driven dual-family selection/failure-continuity
+                    → 457 and 434/435 remain explicit controlled/full external gates
+Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build timeouts
+                    → Plan 451/433 client application qualification, no fake zero-hop
+```
+
+| Plan | State at registration | Handoff | Pass gate |
+| --- | --- | --- | --- |
+| 459 | blocked P0 | `plans/implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md` | Shared bounded ingress and responder-side RouterInfo effect landed; daemon initiator-role receipt and correlated live reply remain open |
+| 460 | blocked P0-next | `plans/implementation/ntcp2-transport/460-stock-to-i2pr-ntcp2-without-sam-destination.md` | Pinned source lacks an eligible direct target for the controlled non-floodfill/non-transit i2pr role; useful tunnel-build trigger needs a live transit consumer |
+| 461 | blocked on 459/460 P1 | `plans/implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md` | `plans/closure/ntcp2-transport/461-status.md`: live peer receipts and downstream continuity cannot start until 459/460 acceptance gates close |
+| 462 | blocked P2 | `plans/implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md` | `plans/closure/core-router-recovery/462-status.md`: M6 controls pass; SAM build first missing transition remains open |
+| 464 | blocked P2 | `plans/implementation/core-router-recovery/464-normal-sam-attempt-cause-and-corrective-run.md` | `plans/closure/core-router-recovery/464-status.md`: attempt receipts landed, but its one run did not retain stdout tracing |
+| 465 | blocked P2 | `plans/implementation/core-router-recovery/465-sam-diagnostic-receipt-stream-correction.md` | `plans/closure/core-router-recovery/465-status.md`: four build attempts reached emission, reply match, and commit; SAM then failed destination-summary-incomplete |
+| 466 | blocked P2 | `plans/implementation/core-router-recovery/466-sam-summary-postbuild-cause-and-correction.md` | `plans/closure/core-router-recovery/466-status.md`: third outbound attempt was emitted, but no authenticated reply matched before timeout; stock acceptance is unobserved |
+
+**Authority:** Plan 455's already-executed one-way stock decoded DatabaseStore and stock-to-stock NTCP2-only application control are retained. Plan 456's local NTCP2 source/lifecycle pass is not a real stock-to-i2pr NetDB capability claim. Neither Plan 459 source work nor Plan 460 same-link reply alone qualifies a **fresh stock initiator**. No public `R`/`f`, external profile, support inventory or conformance promotion without independently executed downstream gates.
+
 ## 8. Cross-cutting invariants
 
 No network-supplied raw router identity becomes trusted without validation. Do not couple transport public key to destination/client identity or allow correlation between multiple client destinations via service metadata. Preserve non-advertised defaults and explicit operator authorization for changes in public exposure. Enforce per-address and global pending-handshake, verified-link, byte, fragment, NetDB, tunnel, and floodfill budgets. All network activity is cancellable and recoverable; snapshots and logs exclude secret/identity-bearing full values. Retain protocol specifications and clean-room provenance; Emissary is an **architectural reference only** outside the Proposal 170 ADR 0028 exception.

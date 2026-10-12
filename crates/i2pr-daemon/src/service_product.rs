@@ -2494,7 +2494,12 @@ impl ServiceProduct {
             Some(inbound) => inbound,
             None => return Ok(InboundPollOutcome::Shutdown),
         };
-        self.process_inbound(&inbound).await;
+        let now_ms = wall_ms();
+        if let Ok(decoded) = crate::router_i2np::decode_authenticated_router_i2np(&inbound, now_ms)
+        {
+            self.process_inbound(&inbound, decoded.outcome(), decoded.message())
+                .await;
+        }
         self.advance_destination_pools().await?;
         Ok(InboundPollOutcome::Processed)
     }
@@ -3301,13 +3306,17 @@ impl ServiceProduct {
     /// runtime guarantees short transport here, that guarantee is
     /// documented by the fallback still succeeding; both forms are
     /// accepted without a third decoder implementation.
-    pub(crate) async fn process_inbound(&mut self, inbound: &Ssu2InboundI2np) {
-        if self.inner.retirement.is_none()
-            && let Ok(routed) = self
+    pub(crate) async fn process_inbound(
+        &mut self,
+        inbound: &Ssu2InboundI2np,
+        outcome: crate::router_i2np::RouterI2npOutcome,
+        message: Option<&I2npMessage>,
+    ) {
+        if self.inner.retirement.is_none() {
+            let routed = self
                 .inner
                 .coordinator
-                .route_inbound_i2np(inbound, wall_ms())
-        {
+                .route_inbound_i2np_classified(inbound, outcome);
             for outcome in routed.coordinator {
                 self.record_destination_build_outcome(&outcome);
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
@@ -3476,7 +3485,7 @@ impl ServiceProduct {
             }
         }
         let bytes = &inbound.bytes;
-        let Ok(message) = decode_inbound_ssu2_i2np(bytes) else {
+        let Some(message) = message else {
             return;
         };
         let cell = match message.body() {
@@ -3489,7 +3498,7 @@ impl ServiceProduct {
                 cell.clone()
             }
             I2npBody::Garlic(_) => {
-                self.handle_direct_garlic(&message, bytes).await;
+                self.handle_direct_garlic(message, bytes).await;
                 return;
             }
             _ => return,
@@ -5021,6 +5030,12 @@ async fn provision_all_service_router_material(
                             direction,
                             wall_secs(),
                         )?;
+                        tracing::info!(
+                            build_attempt_id = attempt_id.get(),
+                            direction = ?direction,
+                            transition = "install_committed",
+                            "destination build attempt"
+                        );
                         local_receive_tunnel = binding.local_receive_tunnel;
                         installed_inbound = true;
                     }
@@ -5171,6 +5186,12 @@ async fn provision_all_service_router_material(
                         direction,
                         wall_secs(),
                     )?);
+                    tracing::info!(
+                        build_attempt_id = attempt_id.get(),
+                        direction = ?direction,
+                        transition = "install_committed",
+                        "destination build attempt"
+                    );
                 }
             }
             let binding = binding.ok_or(ServiceProductError::OutboundBuildMissing)?;

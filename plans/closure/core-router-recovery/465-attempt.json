@@ -1,0 +1,17 @@
+{
+  "attempts_observed": 4,
+  "install_committed_attempts": 4,
+  "response_matched_attempts": 4,
+  "schema": "plan465-attempt-receipt-v1",
+  "stage_counts": {
+    "authenticated_reply_matched": 4,
+    "delivery_admitted": 4,
+    "install_committed": 4,
+    "selected": 4
+  },
+  "terminal_failure_stage": null,
+  "transport_stage_counts": {
+    "udp_emitted": 8
+  },
+  "udp_emission_correlated_attempts": 4
+}

@@ -48,7 +48,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
@@ -341,6 +343,50 @@ pub struct RouterI2npTransitBuild<'a> {
     pub link_id: LinkId,
 }
 
+/// One canonical bounded decode of an authenticated router message. The
+/// normal daemon owner shares this value with NetDB, tunnel, and service
+/// consumers so each one observes the same peer/link attribution.
+pub struct DecodedRouterI2np {
+    message: Option<I2npMessage>,
+    outcome: RouterI2npOutcome,
+}
+
+impl DecodedRouterI2np {
+    /// Returns the decoded standard or short-transport message, if its type
+    /// is recognized and supported by the codec.
+    pub fn message(&self) -> Option<&I2npMessage> {
+        self.message.as_ref()
+    }
+
+    /// Returns the typed admission and dispatch classification.
+    pub const fn outcome(&self) -> RouterI2npOutcome {
+        self.outcome
+    }
+}
+
+/// Decodes one authenticated message once for all normal router consumers.
+pub fn decode_authenticated_router_i2np(
+    inbound: &i2pr_runtime::Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<DecodedRouterI2np, RouterI2npError> {
+    let (message, outcome) =
+        dispatch_inner_parts(inbound.peer, inbound.link_id, &inbound.bytes, now_ms)?;
+    Ok(DecodedRouterI2np { message, outcome })
+}
+
+/// Projects the NetDB control bodies from the canonical decoded message.
+pub fn floodfill_body_from_message(message: Option<&I2npMessage>) -> Option<FloodfillControlBody> {
+    match message.map(I2npMessage::body) {
+        Some(I2npBody::DatabaseStore(message)) => {
+            Some(FloodfillControlBody::DatabaseStore((**message).clone()))
+        }
+        Some(I2npBody::DatabaseLookup(message)) => {
+            Some(FloodfillControlBody::DatabaseLookup((**message).clone()))
+        }
+        _ => None,
+    }
+}
+
 /// Dispatches one authenticated inbound I2NP message.
 ///
 /// The caller passes the live [`i2pr_runtime::Ssu2InboundI2np`]
@@ -460,17 +506,11 @@ pub fn dispatch_router_i2np_with_floodfill_body(
     inbound: &i2pr_runtime::Ssu2InboundI2np,
     now_ms: u64,
 ) -> Result<(RouterI2npOutcome, Option<FloodfillControlBody>), RouterI2npError> {
-    let (message, outcome) = dispatch_inner(inbound, now_ms)?;
-    let body = match message.map(I2npMessage::into_body) {
-        Some(I2npBody::DatabaseStore(message)) => {
-            Some(FloodfillControlBody::DatabaseStore(*message))
-        }
-        Some(I2npBody::DatabaseLookup(message)) => {
-            Some(FloodfillControlBody::DatabaseLookup(*message))
-        }
-        _ => None,
-    };
-    Ok((outcome, body))
+    let decoded = decode_authenticated_router_i2np(inbound, now_ms)?;
+    Ok((
+        decoded.outcome(),
+        floodfill_body_from_message(decoded.message()),
+    ))
 }
 
 fn dispatch_inner(
@@ -748,23 +788,136 @@ pub enum RouterDeliveryOutcome {
     Cancelled,
 }
 
+/// Bounded registry of currently authenticated NTCP2 link send queues.
+///
+/// The registry stores only queue handles keyed by the authenticated peer;
+/// link tasks remain the sole owners of sockets and remove routes by matching
+/// their generation before exit.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Ntcp2RouterDeliveryRegistry {
+    links: Arc<Mutex<HashMap<PeerId, Ntcp2RouterLinkRoute>>>,
+}
+
+#[derive(Clone, Debug)]
+struct Ntcp2RouterLinkRoute {
+    link_id: LinkId,
+    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+}
+
+impl Ntcp2RouterDeliveryRegistry {
+    /// Registers one bounded outbound queue unless that peer already has a
+    /// live authenticated NTCP2 link.
+    pub(crate) fn register(
+        &self,
+        peer: PeerId,
+        link_id: LinkId,
+        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ) -> bool {
+        let Ok(mut links) = self.links.lock() else {
+            return false;
+        };
+        if links
+            .get(&peer)
+            .is_some_and(|route| !route.sender.is_closed())
+        {
+            return false;
+        }
+        links.insert(peer, Ntcp2RouterLinkRoute { link_id, sender });
+        true
+    }
+
+    /// Removes one route only when its link generation still owns the peer.
+    pub(crate) fn remove(&self, peer: PeerId, link_id: LinkId) {
+        let Ok(mut links) = self.links.lock() else {
+            return;
+        };
+        if links
+            .get(&peer)
+            .is_some_and(|route| route.link_id == link_id)
+        {
+            links.remove(&peer);
+        }
+    }
+
+    /// Checks that an inbound event still belongs to the currently registered
+    /// authenticated connection for its peer.
+    pub(crate) fn is_current(&self, peer: PeerId, link_id: LinkId) -> bool {
+        let Ok(mut links) = self.links.lock() else {
+            return false;
+        };
+        let current = links
+            .get(&peer)
+            .is_some_and(|route| route.link_id == link_id && !route.sender.is_closed());
+        if !current
+            && links
+                .get(&peer)
+                .is_some_and(|route| route.link_id == link_id && route.sender.is_closed())
+        {
+            links.remove(&peer);
+        }
+        current
+    }
+
+    /// Attempts bounded delivery through the authenticated peer link.
+    pub(crate) fn deliver(&self, peer: PeerId, bytes: Vec<u8>) -> RouterDeliveryOutcome {
+        if bytes.is_empty() || bytes.len() > MAX_ROUTER_I2NP_BYTES {
+            return RouterDeliveryOutcome::TooLarge;
+        }
+        let Ok(mut links) = self.links.lock() else {
+            return RouterDeliveryOutcome::NoActiveSession;
+        };
+        let Some(route) = links.get(&peer).cloned() else {
+            return RouterDeliveryOutcome::NoActiveSession;
+        };
+        match route.sender.try_send(bytes) {
+            Ok(()) => RouterDeliveryOutcome::Accepted,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                RouterDeliveryOutcome::QueueFull
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                if links
+                    .get(&peer)
+                    .is_some_and(|active| active.link_id == route.link_id)
+                {
+                    links.remove(&peer);
+                }
+                RouterDeliveryOutcome::NoActiveSession
+            }
+        }
+    }
+}
+
 /// Narrow transport-neutral outbound capability.
 ///
-/// The owner holds one daemon-owned [`Ssu2RuntimeService`] clone and
-/// resolves already-established peer links through the existing
-/// `send_i2np` seam. No task is spawned per delivery; bounded queue
-/// and manager ceilings from the runtime remain authoritative. The
-/// type lives in the daemon so tunnel/NetDB/client crates never
+/// The owner first resolves established SSU2 sessions through the
+/// existing `send_i2np` seam, then uses the bounded authenticated
+/// NTCP2 link registry on a direct miss. No task is spawned per
+/// delivery; per-link and runtime queue limits remain authoritative.
+/// The type lives in the daemon so tunnel/NetDB/client crates never
 /// receive a global router context.
 #[derive(Clone, Debug)]
 pub struct RouterDeliveryService {
     service: Ssu2RuntimeService,
+    ntcp2: Arc<Mutex<Option<Ntcp2RouterDeliveryRegistry>>>,
 }
 
 impl RouterDeliveryService {
     /// Wraps the daemon-owned runtime service.
-    pub const fn new(service: Ssu2RuntimeService) -> Self {
-        Self { service }
+    pub fn new(service: Ssu2RuntimeService) -> Self {
+        Self {
+            service,
+            ntcp2: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Attaches the daemon-owned NTCP2 link registry for bounded fallback
+    /// when the existing SSU2 session owner has no active peer session.
+    pub(crate) fn attach_ntcp2_registry(&self, registry: Ntcp2RouterDeliveryRegistry) -> bool {
+        let Ok(mut ntcp2) = self.ntcp2.lock() else {
+            return false;
+        };
+        *ntcp2 = Some(registry);
+        true
     }
 
     /// Delivers one validated request to its established session.
@@ -785,13 +938,24 @@ impl RouterDeliveryService {
             message,
             timeout,
         } = request;
-        match self.service.send_i2np(peer, message, timeout) {
+        let ntcp2_bytes = message.as_bytes().to_vec();
+        let outcome = match self.service.send_i2np(peer, message, timeout) {
             Ssu2SendOutcome::Accepted => RouterDeliveryOutcome::Accepted,
             Ssu2SendOutcome::QueueFull => RouterDeliveryOutcome::QueueFull,
             Ssu2SendOutcome::ResourceDenied => RouterDeliveryOutcome::ResourceDenied,
             Ssu2SendOutcome::Closed => RouterDeliveryOutcome::NoActiveSession,
             Ssu2SendOutcome::TooLarge => RouterDeliveryOutcome::TooLarge,
             Ssu2SendOutcome::DeadlineElapsed => RouterDeliveryOutcome::DeadlineElapsed,
+        };
+        if outcome != RouterDeliveryOutcome::NoActiveSession {
+            return outcome;
+        }
+        let Ok(registry) = self.ntcp2.lock() else {
+            return outcome;
+        };
+        match registry.as_ref() {
+            Some(registry) => registry.deliver(peer, ntcp2_bytes),
+            None => outcome,
         }
     }
 }
@@ -1102,6 +1266,133 @@ pub fn generate_controlled_ntcp2_router_info(
     Ok(encoded)
 }
 
+/// Builds one signed RouterInfo for the explicit dual-transport loopback
+/// qualification profile. Both endpoint/key tuples are copied from the live
+/// owners' validated configuration and identity-bound stores. No capability
+/// letters are added here; the controlled floodfill permit path may later
+/// publish a separate `caps=f` snapshot after the live role is active.
+pub fn generate_controlled_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    if !ssu2_endpoint.ip().is_loopback()
+        || !ntcp2_endpoint.ip().is_loopback()
+        || ssu2_endpoint.port() < 1024
+        || ntcp2_endpoint.port() < 1024
+        || ssu2_endpoint.is_ipv4() != ntcp2_endpoint.is_ipv4()
+    {
+        return Err(Ssu2ServiceError::ControlledProfile(
+            "dual-transport qualification requires matching fixed loopback address families"
+                .to_owned(),
+        ));
+    }
+    let network_id = u8::try_from(network_id).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if ssu2_transport.router_hash() != hash.as_bytes()
+        || ntcp2_transport.router_hash() != hash.as_bytes()
+    {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    let ssu2_options = Mapping::from_entries(vec![
+        ("host".to_owned(), ssu2_endpoint.ip().to_string()),
+        ("port".to_owned(), ssu2_endpoint.port().to_string()),
+        (
+            "caps".to_owned(),
+            if ssu2_endpoint.is_ipv4() { "4" } else { "6" }.to_owned(),
+        ),
+        ("mtu".to_owned(), i2pr_runtime::SSU2_DEFAULT_MTU.to_string()),
+        ("v".to_owned(), "2".to_owned()),
+        (
+            "s".to_owned(),
+            i2p_b64_encode(&ssu2_transport.static_key().public_bytes()),
+        ),
+        (
+            "i".to_owned(),
+            i2p_b64_encode(ssu2_transport.intro_key_bytes()),
+        ),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let ntcp2_options = Mapping::from_entries(vec![
+        ("host".to_owned(), ntcp2_endpoint.ip().to_string()),
+        ("port".to_owned(), ntcp2_endpoint.port().to_string()),
+        ("v".to_owned(), "2".to_owned()),
+        (
+            "s".to_owned(),
+            i2p_b64_encode(&ntcp2_transport.transport().key().public_bytes()),
+        ),
+        (
+            "i".to_owned(),
+            i2p_b64_encode(ntcp2_transport.transport().iv()),
+        ),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let expires = Date::from_millis(wall_secs().saturating_add(86_400).saturating_mul(1000));
+    let ssu2_address = RouterAddress::new(10, expires, "SSU2".to_owned(), ssu2_options)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let ntcp2_address = RouterAddress::new(10, expires, "NTCP2".to_owned(), ntcp2_options)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let router_options = Mapping::from_entries(vec![
+        (
+            "router.version".to_owned(),
+            CONTROLLED_ROUTER_VERSION.to_owned(),
+        ),
+        ("netId".to_owned(), network_id.to_string()),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let published = Date::from_millis(wall_secs().saturating_mul(1000));
+    let info = bundle
+        .sign_router_info(
+            published,
+            vec![ssu2_address, ntcp2_address],
+            Vec::new(),
+            router_options,
+        )
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let encoded = info
+        .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let decoded =
+        i2pr_proto::RouterInfo::decode(&encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    i2pr_crypto::verify_router_info(&decoded).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if decoded.addresses().len() != 2
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .and_then(|address| address.options().get("host"))
+            != Some(ssu2_endpoint.ip().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .and_then(|address| address.options().get("port"))
+            != Some(ssu2_endpoint.port().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "NTCP2")
+            .and_then(|address| address.options().get("host"))
+            != Some(ntcp2_endpoint.ip().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "NTCP2")
+            .and_then(|address| address.options().get("port"))
+            != Some(ntcp2_endpoint.port().to_string().as_str())
+    {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    Ok(encoded)
+}
+
 pub(crate) fn generate_private_lan_identity_with_keys(
     bundle: &RouterIdentityBundle,
     host: &str,
@@ -1282,6 +1573,18 @@ impl Ssu2DaemonService {
         &self.service
     }
 
+    /// Installs one controlled dual-family record only when its NTCP2
+    /// endpoint matches the separately configured live loopback listener.
+    pub fn install_controlled_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
+    }
+
     /// Returns the narrow outbound delivery capability.
     pub fn delivery(&self) -> RouterDeliveryService {
         RouterDeliveryService::new(self.service.clone())
@@ -1321,6 +1624,18 @@ impl Ssu2DaemonHandle {
     /// Returns the owning runtime service.
     pub const fn service(&self) -> &Ssu2RuntimeService {
         &self.service
+    }
+
+    /// Installs one controlled dual-family record only when its NTCP2
+    /// endpoint matches the separately configured live loopback listener.
+    pub fn install_controlled_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
     }
 
     /// Returns publication material derived by the runtime from its live bind and reachability
@@ -1420,6 +1735,69 @@ mod tests {
             PeerId::from_hash(Hash::from_bytes([0x11; 32])),
             LinkId::new(7).expect("link"),
         )
+    }
+
+    #[tokio::test]
+    async fn ntcp2_delivery_registry_is_peer_bound_generation_safe_and_bounded() {
+        let registry = Ntcp2RouterDeliveryRegistry::default();
+        let peer = PeerId::from_hash(Hash::from_bytes([0x33; 32]));
+        let active = LinkId::new(11).expect("active link");
+        let stale = LinkId::new(12).expect("stale link");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        assert!(registry.register(peer, active, sender));
+        assert!(registry.is_current(peer, active));
+        assert!(!registry.is_current(peer, stale));
+        let (duplicate_sender, _duplicate_receiver) = tokio::sync::mpsc::channel(1);
+        assert!(!registry.register(peer, stale, duplicate_sender));
+
+        assert_eq!(
+            registry.deliver(peer, vec![1]),
+            RouterDeliveryOutcome::Accepted
+        );
+        assert_eq!(
+            registry.deliver(peer, vec![2]),
+            RouterDeliveryOutcome::QueueFull
+        );
+        assert_eq!(receiver.recv().await, Some(vec![1]));
+
+        registry.remove(peer, stale);
+        assert_eq!(
+            registry.deliver(peer, vec![3]),
+            RouterDeliveryOutcome::Accepted,
+            "a stale close must not remove a newer authenticated generation"
+        );
+        registry.remove(peer, active);
+        assert!(!registry.is_current(peer, active));
+        assert_eq!(
+            registry.deliver(peer, vec![4]),
+            RouterDeliveryOutcome::NoActiveSession
+        );
+    }
+
+    #[tokio::test]
+    async fn router_delivery_falls_back_to_the_authenticated_ntcp2_peer_queue() {
+        let peer = PeerId::from_hash(Hash::from_bytes([0x44; 32]));
+        let link_id = LinkId::new(21).expect("link id");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let registry = Ntcp2RouterDeliveryRegistry::default();
+        assert!(registry.register(peer, link_id, sender));
+        let bundle =
+            i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("router identity");
+        let identity = generate_controlled_identity(&bundle, "127.0.0.1", 44_321)
+            .expect("controlled SSU2 identity");
+        let runtime = Ssu2RuntimeService::new(Ssu2RuntimeConfig::default(), identity)
+            .expect("runtime-neutral SSU2 service");
+        let delivery = RouterDeliveryService::new(runtime);
+        assert!(delivery.attach_ntcp2_registry(registry));
+        let bytes = delivery_status_short(7, (NOW_MS / 1000) as u32 + 60);
+        let request = RouterDeliveryRequest::new(peer, bytes.clone(), Duration::from_secs(2))
+            .expect("bounded router delivery request");
+
+        assert_eq!(
+            delivery.deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted
+        );
+        assert_eq!(receiver.recv().await, Some(bytes));
     }
 
     fn inbound_with(bytes: Vec<u8>) -> i2pr_runtime::Ssu2InboundI2np {
@@ -1784,6 +2162,66 @@ mod tests {
                 44_321,
                 2,
                 &transport,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn controlled_dual_transport_router_info_binds_both_live_loopback_keys() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_storage::{
+            IdentityStore, Ntcp2TransportIdentityStore, Ssu2TransportIdentityStore,
+        };
+        use rand_core::OsRng;
+        use tempfile::tempdir;
+
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let directory = tempdir().expect("temporary data directory");
+        let data_dir = directory.path().join("router-data");
+        IdentityStore::prepare_directory(&data_dir).expect("private directory");
+        let ssu2 = Ssu2TransportIdentityStore::in_data_dir(&data_dir)
+            .load_or_generate(hash, &mut OsRng)
+            .expect("SSU2 material");
+        let ntcp2 = Ntcp2TransportIdentityStore::in_data_dir(&data_dir)
+            .load_or_generate(hash, &mut OsRng)
+            .expect("NTCP2 material");
+        let encoded = generate_controlled_dual_transport_router_info(
+            &bundle,
+            "127.0.0.1:40123".parse().expect("SSU2 endpoint"),
+            &ssu2,
+            "127.0.0.1:40124".parse().expect("NTCP2 endpoint"),
+            &ntcp2,
+            2,
+        )
+        .expect("dual loopback RouterInfo");
+        let info = i2pr_proto::RouterInfo::decode(
+            &encoded,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .expect("RouterInfo decodes");
+        i2pr_crypto::verify_router_info(&info).expect("signature verifies");
+        assert_eq!(info.addresses().len(), 2);
+        assert_eq!(info.options().get("caps"), None);
+        for (style, expected_port) in [("SSU2", "40123"), ("NTCP2", "40124")] {
+            let address = info
+                .addresses()
+                .iter()
+                .find(|address| address.transport_style() == style)
+                .unwrap_or_else(|| panic!("missing {style} address"));
+            assert_eq!(address.options().get("host"), Some("127.0.0.1"));
+            assert_eq!(address.options().get("port"), Some(expected_port));
+            assert_eq!(address.options().get("v"), Some("2"));
+        }
+        assert!(
+            generate_controlled_dual_transport_router_info(
+                &bundle,
+                "127.0.0.1:40123".parse().unwrap(),
+                &ssu2,
+                "0.0.0.0:40124".parse().unwrap(),
+                &ntcp2,
+                2,
             )
             .is_err()
         );

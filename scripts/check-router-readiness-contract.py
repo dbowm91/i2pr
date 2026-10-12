@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -48,12 +49,11 @@ def violations(sources: dict[str, str]) -> list[str]:
         "NTCP2 service failure must degrade independently": ("daemon", ".startup_requirement(i2pr_core::StartupRequirement::Optional)"),
         "NTCP2 service must reuse the existing router identity": ("daemon", "IdentityStore::in_data_dir(&data_dir).load()"),
         "NTCP2 must share the process bandwidth governor": ("daemon", "Ntcp2RuntimeService::new_with_bandwidth("),
-        "NTCP2 must use the shared authenticated I2NP dispatcher": ("daemon", "dispatch_router_i2np_parts("),
+        "NTCP2 must use the shared authenticated I2NP dispatcher": ("daemon", "decode_authenticated_router_i2np("),
         "NTCP2 inbound sockets must use the runtime responder handshake": ("daemon", "runtime.authenticate_inbound("),
         "NTCP2 responder must apply the runtime replay and clock policy": ("ntcp2_runtime", "ClockSkewPolicy::default_compatibility()"),
         "NTCP2 frame parsing must use authenticated plaintext": ("ntcp2_link", ".plaintext()\n            .parse()"),
         "NTCP2 receive queue lease must be released before dispatch": ("ntcp2_link", "drop(frame);\n        Ok(Some(messages))"),
-        "NTCP2 RouterInfo must use the live bound endpoint": ("daemon", "listener.local_addr().ip(),\n                listener.local_addr().port(),"),
         "NTCP2 outbound peers must come from the validated bootstrap snapshot": ("daemon", "owner.validated_router_info_snapshot()"),
         "NTCP2 outbound dialing must reject non-loopback peers": ("ntcp2_runtime", "if !endpoint.ip().is_loopback()"),
         "NTCP2 outbound dialing must verify the signed peer RouterInfo and network": ("ntcp2_runtime", "if verify_router_info(peer_info).is_err()"),
@@ -75,6 +75,14 @@ def violations(sources: dict[str, str]) -> list[str]:
         "normal floodfill negative reachability regression must remain": ("floodfill", "fn normal_unconfirmed_reachability_stays_disabled()"),
     }
     errors.extend(message for message, (name, needle) in source_controls.items() if needle not in sources[name])
+    live_ntcp2_endpoint = re.search(
+        r"generate_controlled_ntcp2_router_info\(\s*&bundle,\s*"
+        r"listener\.local_addr\(\)\.ip\(\),\s*"
+        r"listener\.local_addr\(\)\.port\(\),",
+        sources["daemon"],
+    )
+    if live_ntcp2_endpoint is None:
+        errors.append("NTCP2 RouterInfo must use the live bound endpoint")
     return errors
 
 
@@ -112,12 +120,12 @@ def self_test(sources: dict[str, str]) -> None:
             "NTCP2 service failure must degrade independently": ("daemon", ".startup_requirement(i2pr_core::StartupRequirement::Optional)"),
             "NTCP2 service must reuse the existing router identity": ("daemon", "IdentityStore::in_data_dir(&data_dir).load()"),
             "NTCP2 must share the process bandwidth governor": ("daemon", "Ntcp2RuntimeService::new_with_bandwidth("),
-            "NTCP2 must use the shared authenticated I2NP dispatcher": ("daemon", "dispatch_router_i2np_parts("),
+            "NTCP2 must use the shared authenticated I2NP dispatcher": ("daemon", "decode_authenticated_router_i2np("),
             "NTCP2 inbound sockets must use the runtime responder handshake": ("daemon", "runtime.authenticate_inbound("),
             "NTCP2 responder must apply the runtime replay and clock policy": ("ntcp2_runtime", "ClockSkewPolicy::default_compatibility()"),
             "NTCP2 frame parsing must use authenticated plaintext": ("ntcp2_link", ".plaintext()\n            .parse()"),
             "NTCP2 receive queue lease must be released before dispatch": ("ntcp2_link", "drop(frame);\n        Ok(Some(messages))"),
-            "NTCP2 RouterInfo must use the live bound endpoint": ("daemon", "listener.local_addr().ip(),\n                listener.local_addr().port(),"),
+            "NTCP2 RouterInfo must use the live bound endpoint": ("daemon", "listener.local_addr().ip(),"),
             "NTCP2 outbound peers must come from the validated bootstrap snapshot": ("daemon", "owner.validated_router_info_snapshot()"),
             "NTCP2 outbound dialing must reject non-loopback peers": ("ntcp2_runtime", "if !endpoint.ip().is_loopback()"),
             "NTCP2 outbound dialing must verify the signed peer RouterInfo and network": ("ntcp2_runtime", "if verify_router_info(peer_info).is_err()"),

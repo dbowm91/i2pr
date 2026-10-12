@@ -982,10 +982,13 @@ impl SamServiceState {
                 stage: crate::service_tunnels::RouterNetworkSamProvisioningFailure::DestinationSummaryMissing.label(),
             });
         };
-        if summary.inbound_receive_count == 0
-            || summary.lease_count == 0
-            || !summary.inbound_owner_registered
-        {
+        if !summary.is_complete() {
+            tracing::warn!(
+                inbound_receive_count = summary.inbound_receive_count,
+                lease_count = summary.lease_count,
+                inbound_owner_registered = summary.inbound_owner_registered,
+                "router-network SAM destination summary incomplete"
+            );
             let _ = manager.unregister_router_network_sam_destination(destination_id);
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::RouterNetworkDestinationProvisioningFailed {
@@ -4200,6 +4203,29 @@ mod private_connection_tests {
 mod tests {
     use super::*;
     use i2pr_api::sam::session_create::DestinationSource;
+
+    #[test]
+    fn router_network_summary_requires_each_postbuild_predicate() {
+        for inbound_receive_count in [0, 1] {
+            for lease_count in [0, 1] {
+                for inbound_owner_registered in [false, true] {
+                    let summary = crate::sam::streams::RouterNetworkSummary {
+                        destination_hash: [0; 32],
+                        inbound_receive_count,
+                        outbound_expires_at_ms: 1,
+                        inbound_expires_at_ms: 1,
+                        lease_count,
+                        inbound_owner_registered,
+                    };
+                    assert_eq!(
+                        summary.is_complete(),
+                        inbound_receive_count > 0 && lease_count > 0 && inbound_owner_registered,
+                        "summary predicate combination must be classified exactly"
+                    );
+                }
+            }
+        }
+    }
 
     async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {
         use tokio::io::AsyncReadExt;

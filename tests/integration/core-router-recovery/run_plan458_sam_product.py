@@ -12,6 +12,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from collections import Counter
 
 
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
@@ -23,6 +24,53 @@ DRIVER = ROOT / "tests/integration/core-router-recovery/plan458_sam_driver.py"
 EVIDENCE = Path(os.environ.get("I2PR_PLAN458_EVIDENCE_DIR", ROOT / "target/interop/plan458-sam-product-evidence"))
 ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-~"
 USED_PORTS = set()
+
+
+def parse_attempt_receipt_lines(lines):
+    attempt_messages = {}
+    stage_counts = Counter()
+    transport_stage_counts = Counter()
+    emitted_message_ids = set()
+    postbuild_summary = None
+    for line in lines:
+        attempt = re.search(r"build_attempt_id\s*=\s*(\d+)", line)
+        message = re.search(r"i2np_message_id\s*=\s*(\d+)", line)
+        transition = re.search(r'transition\s*=\s*"?([a-z_]+)', line)
+        if attempt and message and transition:
+            attempt_messages[int(attempt.group(1))] = int(message.group(1))
+            stage_counts[transition.group(1)] += 1
+        elif attempt and transition:
+            stage_counts[transition.group(1)] += 1
+        if transition and "SSU2 message send receipt" in line:
+            transport_stage_counts[transition.group(1)] += 1
+        if transition and transition.group(1) == "udp_emitted":
+            ids = re.search(r"i2np_message_ids\s*=\s*\[([0-9, ]*)\]", line)
+            if ids:
+                emitted_message_ids.update(
+                    int(value) for value in ids.group(1).split(",") if value.strip()
+                )
+        summary = re.search(
+            r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
+            r"inbound_owner_registered\s*=\s*(true|false)",
+            line,
+        )
+        if summary:
+            postbuild_summary = {
+                "inbound_receive_count": int(summary.group(1)),
+                "lease_count": int(summary.group(2)),
+                "inbound_owner_registered": summary.group(3) == "true",
+            }
+    return {
+        "attempts_observed": len(attempt_messages),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "transport_stage_counts": dict(sorted(transport_stage_counts.items())),
+        "udp_emission_correlated_attempts": sum(
+            message_id in emitted_message_ids for message_id in attempt_messages.values()
+        ),
+        "response_matched_attempts": stage_counts["authenticated_reply_matched"],
+        "install_committed_attempts": stage_counts["install_committed"],
+        "postbuild_summary": postbuild_summary,
+    }
 
 
 def free_port():
@@ -215,16 +263,30 @@ threshold = 0
         os.chmod(target, 0o600)
 
     def router_network_sam_failure_stage(self):
-        log = self.scratch / "i2pr.stderr"
-        if not log.is_file():
-            return None
-        for line in log.read_text(errors="replace").splitlines():
-            if "router-network SAM destination provisioning failed" not in line:
+        log_paths = (self.scratch / "i2pr.stdout", self.scratch / "i2pr.stderr")
+        for log in log_paths:
+            if not log.is_file():
                 continue
-            match = re.search(r'failure_stage=["\']?([a-z0-9-]+)', line)
-            if match:
-                return match.group(1)
+            for line in log.read_text(errors="replace").splitlines():
+                if "router-network SAM destination provisioning failed" not in line:
+                    continue
+                match = re.search(r'failure_stage=["\']?([a-z0-9-]+)', line)
+                if match:
+                    return match.group(1)
         return None
+
+    def router_network_sam_attempt_receipt(self):
+        log_paths = (self.scratch / "i2pr.stdout", self.scratch / "i2pr.stderr")
+        if not any(log.is_file() for log in log_paths):
+            return {"attempts_observed": 0, "stage_counts": {}}
+        lines = []
+        for log in log_paths:
+            if log.is_file():
+                lines.extend(log.read_text(errors="replace").splitlines())
+        return {
+            **parse_attempt_receipt_lines(lines),
+            "terminal_failure_stage": self.router_network_sam_failure_stage(),
+        }
 
     def run(self):
         if not I2PD.is_file() or not os.access(I2PD, os.X_OK):
@@ -384,7 +446,7 @@ introducer_service = false
 
 def main():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    for name in ("result.json", "manifest.json"):
+    for name in ("result.json", "manifest.json", "attempt-diagnostic.json"):
         (EVIDENCE / name).unlink(missing_ok=True)
     lane = Lane()
     try:
@@ -406,6 +468,19 @@ def main():
         )
         print("Plan 458 normal-process SAM exchanges passed in both directions.")
     except Exception as exc:
+        receipt = lane.router_network_sam_attempt_receipt()
+        (EVIDENCE / "attempt-diagnostic.json").write_text(
+            json.dumps(
+                {"schema": "plan466-attempt-receipt-v1", **receipt},
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        print(
+            "Plan 466 sanitized attempt receipt: "
+            + json.dumps(receipt, sort_keys=True),
+            file=__import__("sys").stderr,
+        )
         print(f"Plan 458 qualification failed: {exc}", file=__import__("sys").stderr)
         raise SystemExit(1)
     finally:

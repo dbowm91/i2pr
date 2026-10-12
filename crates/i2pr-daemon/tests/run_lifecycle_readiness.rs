@@ -44,7 +44,10 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
-use i2pr_proto::{Date, Mapping, RouterAddress};
+use i2pr_proto::{
+    DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody, I2npMessage,
+    Mapping, RouterAddress,
+};
 use i2pr_runtime::{CancellationToken, Ntcp2RuntimeConfig, Ntcp2RuntimeService};
 use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore};
 use tempfile::TempDir;
@@ -182,7 +185,7 @@ fn sam_config(address: SocketAddr, data_dir: &Path) -> String {
 
 fn controlled_ntcp2_config(port: u16, data_dir: &Path) -> String {
     format!(
-        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = {}\n",
+        "schema_version = 1\n\n[router]\ndata_dir = {:?}\n\n[logging]\nfilter = \"debug\"\n\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = {}\n",
         data_dir.to_string_lossy(),
         port,
     )
@@ -285,7 +288,12 @@ fn controlled_ntcp2_client_session(
     .map_err(|_| "client address invalid".to_owned())?;
     let client_info = client_bundle
         .sign_router_info(
-            Date::from_millis(1_000),
+            Date::from_millis(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock after epoch")
+                    .as_millis() as u64,
+            ),
             vec![client_address],
             Vec::new(),
             Mapping::from_entries(vec![("netId".to_owned(), network_id.to_string())])
@@ -303,7 +311,7 @@ fn controlled_ntcp2_client_session(
         .build()
         .map_err(|_| "client runtime creation failed".to_owned())?;
     tokio_runtime.block_on(async {
-        let link = runtime
+        let mut link = runtime
             .dial_authenticated_loopback_peer(
                 &scope,
                 &peer_info,
@@ -316,6 +324,49 @@ fn controlled_ntcp2_client_session(
             )
             .await
             .map_err(|_| "daemon rejected NTCP2 authentication".to_owned())?;
+        let encoded_router_info = client_info.clone();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(&encoded_router_info)
+            .map_err(|_| "controlled client RouterInfo compression failed".to_owned())?;
+        let compressed = encoder
+            .finish()
+            .map_err(|_| "controlled client RouterInfo compression failed".to_owned())?;
+        let compressed_len = compressed.len();
+        let client_hash = client_bundle
+            .identity()
+            .hash()
+            .map_err(|_| "client identity hash unavailable".to_owned())?;
+        let store = DatabaseStoreMessage {
+            key: Hash::from_bytes(*client_hash.as_bytes()),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::RouterInfoCompressed(
+                DeferredPayload::new(compressed, compressed_len)
+                    .map_err(|_| "controlled client RouterInfo store invalid".to_owned())?,
+            ),
+        };
+        let expiration = Date::from_millis(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_millis() as u64
+                + 60_000,
+        );
+        let message =
+            I2npMessage::new_standard(0x459, expiration, I2npBody::DatabaseStore(Box::new(store)))
+                .map_err(|_| "controlled DatabaseStore message invalid".to_owned())?
+                .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .map_err(|_| "controlled DatabaseStore message encoding failed".to_owned())?;
+        link.send_i2np_message(message, Duration::from_secs(2), &cancellation)
+            .await
+            .map_err(|_| "controlled NTCP2 DatabaseStore was not queued".to_owned())?;
+        // Keep the authenticated session alive long enough for the queued
+        // data-phase write to leave the test client. DatabaseStore has no
+        // required immediate response, so the bounded receive timeout is the
+        // transport flush window for this black-box product-effect check.
+        let _ = tokio::time::timeout(Duration::from_secs(1), link.recv(&cancellation)).await;
         link.close();
         Ok(())
     })
@@ -919,6 +970,10 @@ fn controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart(
     first.interrupt();
     let (status, output) = first.finish();
     assert!(status.success(), "shutdown failed: {status}\n{output}");
+    assert!(
+        output.contains("authenticated RouterInfo store applied"),
+        "controlled authenticated DatabaseStore did not reach the daemon NetDB owner:\n{output}"
+    );
 
     let mut second = router.spawn();
     let mut second_socket = None;

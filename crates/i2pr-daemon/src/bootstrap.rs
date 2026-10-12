@@ -29,7 +29,8 @@ use std::path::Path;
 use i2pr_netdb::{
     LocalRouterInfo, LocalRouterInfoBuilder, ReseedSignatureType, ReseedSignerId,
     ReseedSignerTrustSet, RouterHash, RouterInfoStore, RouterInfoStoreConfig, TrustedSigner,
-    ValidationContext, trust_signer_from_certificate,
+    UnsolicitedStoreOutcome, UnsolicitedStorePolicy, ValidationContext,
+    handle_unsolicited_databasestore, trust_signer_from_certificate,
 };
 use i2pr_netdb_persist::{
     CacheLoader, CacheLoaderReport, ReseedBundleReport, ReseedIngestLimits, ReseedIngestor,
@@ -259,6 +260,24 @@ impl Bootstrap {
     /// Returns the populated store after the bootstrap run.
     pub fn store(&self) -> &RouterInfoStore {
         &self.store
+    }
+
+    /// Validates and applies an authenticated unsolicited RouterInfo store to
+    /// the same bounded NetDB used by bootstrap. LeaseSet payloads are refused
+    /// by the existing unsolicited-store policy.
+    pub fn ingest_authenticated_router_store(
+        &mut self,
+        message: &i2pr_proto::DatabaseStoreMessage,
+        now_ms: u64,
+    ) -> Result<UnsolicitedStoreOutcome, i2pr_netdb::UnsolicitedStoreError> {
+        let outcome = handle_unsolicited_databasestore(
+            &mut self.store,
+            message,
+            UnsolicitedStorePolicy::Accept,
+            ValidationContext::new(Date::from_millis(now_ms)),
+        )?;
+        self.refresh_snapshot();
+        Ok(outcome)
     }
 
     /// Returns a bounded snapshot of validated RouterInfos for a daemon
@@ -630,6 +649,46 @@ pub fn store_summary(store: &RouterInfoStore) -> BootstrapSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_proto::{DatabaseStoreData, DatabaseStoreMessage, DeferredPayload, Hash, Mapping};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    fn router_store(seed: u64) -> DatabaseStoreMessage {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(1),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("signed RouterInfo");
+        let validated = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(Date::from_millis(1)),
+        )
+        .expect("validated RouterInfo");
+        let encoded = validated
+            .encoded(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("encoded RouterInfo");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write as _;
+        encoder.write_all(&encoded).expect("compress RouterInfo");
+        let compressed = encoder.finish().expect("finish compression");
+        let length = compressed.len();
+        DatabaseStoreMessage {
+            key: Hash::from_bytes(*validated.key().as_bytes()),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::RouterInfoCompressed(
+                DeferredPayload::new(compressed, length).expect("bounded payload"),
+            ),
+        }
+    }
 
     #[test]
     fn empty_store_reports_empty_state() {
@@ -642,6 +701,24 @@ mod tests {
         let bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
         assert_eq!(bootstrap.snapshot().state, BootstrapState::Empty);
         assert_eq!(bootstrap.snapshot().record_count, 0);
+    }
+
+    #[test]
+    fn authenticated_router_store_updates_the_bootstrap_netdb_snapshot() {
+        let config = ReseedConfig {
+            enabled: false,
+            max_sources: 4,
+            max_su3_bytes: 1024,
+            sources: Vec::new(),
+        };
+        let mut bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
+        let message = router_store(0x459);
+        let outcome = bootstrap
+            .ingest_authenticated_router_store(&message, 1)
+            .expect("valid authenticated store");
+        assert!(matches!(outcome, UnsolicitedStoreOutcome::Inserted(_)));
+        assert_eq!(bootstrap.snapshot().record_count, 1);
+        assert_eq!(bootstrap.validated_router_info_snapshot().len(), 1);
     }
 
     #[test]

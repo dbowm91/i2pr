@@ -9,8 +9,9 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use i2pr_transport_ntcp2::block::Block;
+use i2pr_transport_ntcp2::block::{Block, I2npMessageBlock};
 use i2pr_transport_ntcp2::constants::MAX_WIRE_FRAME_LENGTH;
 use i2pr_transport_ntcp2::frame::{
     FrameAssemblyPolicy, FrameError, ReceiveState, ReceivedFrame, TransmitState,
@@ -195,6 +196,8 @@ pub enum AuthenticatedLinkError {
     Block(i2pr_transport_ntcp2::block::BlockError),
     /// A bounded socket operation failed.
     Io(IoErrorKind),
+    /// The requested send deadline is outside the runtime's accepted range.
+    InvalidDeadline,
     /// The child scope could not retain the link owner.
     ChildScope,
 }
@@ -208,6 +211,9 @@ impl fmt::Display for AuthenticatedLinkError {
             Self::Frame(error) => error.fmt(formatter),
             Self::Block(error) => error.fmt(formatter),
             Self::Io(kind) => write!(formatter, "authenticated NTCP2 link I/O failed: {kind:?}"),
+            Self::InvalidDeadline => {
+                formatter.write_str("authenticated NTCP2 send deadline is invalid")
+            }
             Self::ChildScope => {
                 formatter.write_str("authenticated NTCP2 link child scope rejected")
             }
@@ -391,6 +397,28 @@ impl AuthenticatedLink {
             }
         };
         result
+    }
+
+    /// Queues one already encoded I2NP message as an authenticated data-phase block.
+    pub async fn send_i2np_message(
+        &self,
+        bytes: Vec<u8>,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<WriteOutcome, AuthenticatedLinkError> {
+        let block = I2npMessageBlock::from_bytes(bytes).map_err(AuthenticatedLinkError::Block)?;
+        let policy = FrameAssemblyPolicy::new(
+            i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH,
+            0,
+            0,
+            0,
+            false,
+        )
+        .map_err(AuthenticatedLinkError::Frame)?;
+        let deadline =
+            Ntcp2Deadline::after(timeout).map_err(|_| AuthenticatedLinkError::InvalidDeadline)?;
+        self.send_blocks(vec![Block::I2np(block)], policy, deadline, cancellation)
+            .await
     }
 
     /// Receives the next authenticated frame, retaining its bounded queue lease.
@@ -702,6 +730,70 @@ mod tests {
         assert_eq!(state.queue_snapshot(), (0, 0));
         state.release_outbound(1);
         assert_eq!(state.queue_release_underflows.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn authenticated_link_queues_one_i2np_message_as_a_data_block() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let client = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("loopback connect");
+        let (server, _) = listener.accept().await.expect("loopback accept");
+        let config = crate::Ntcp2RuntimeConfig::default();
+        let sender_service = crate::Ntcp2RuntimeService::new(config).expect("sender service");
+        let receiver_service = crate::Ntcp2RuntimeService::new(config).expect("receiver service");
+        let parent = CancellationToken::new();
+        let sender_scope = sender_service.child_scope(&parent);
+        let receiver_scope = receiver_service.child_scope(&parent);
+        let (sender_tx, sender_rx) = into_directional_states(SplitKeys::from_material_for_test(
+            [0x11; 32], [0x33; 32], [0x22; 32], [0x44; 32],
+        ));
+        let (receiver_tx, receiver_rx) = into_directional_states(
+            SplitKeys::from_material_for_test([0x33; 32], [0x11; 32], [0x44; 32], [0x22; 32]),
+        );
+        let peer = BandwidthPeerKey::from_hash([7; 32]);
+        let sender = sender_service
+            .start_authenticated_link(
+                &sender_scope,
+                client,
+                AddressFamily::Ipv4,
+                1,
+                sender_tx,
+                sender_rx,
+                peer,
+            )
+            .expect("sender link");
+        let mut receiver = receiver_service
+            .start_authenticated_link(
+                &receiver_scope,
+                server,
+                AddressFamily::Ipv4,
+                2,
+                receiver_tx,
+                receiver_rx,
+                peer,
+            )
+            .expect("receiver link");
+        let cancellation = CancellationToken::new();
+        sender
+            .send_i2np_message(vec![0; 9], Duration::from_secs(2), &cancellation)
+            .await
+            .expect("bounded I2NP queue");
+        let messages = tokio::time::timeout(
+            Duration::from_secs(2),
+            receiver.recv_i2np_messages(&cancellation),
+        )
+        .await
+        .expect("bounded receive")
+        .expect("receive operation")
+        .expect("received frame");
+        assert_eq!(messages, vec![vec![0; 9]]);
+        sender.close();
+        receiver.close();
+        parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     }
 
     #[tokio::test]
