@@ -167,7 +167,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 461 | blocked | `blocked-plan459-460-live-peer-receipt-unproven` | `plans/implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md` | `plans/closure/ntcp2-transport/461-status.md`: downstream of 459 and 460 |
 | 463 | blocked | `blocked-plan463-stock-explore-candidate-not-selected` | `plans/implementation/ntcp2-transport/463-controlled-floodfill-stock-trigger-and-live-reply.md` | `plans/closure/ntcp2-transport/463-status.md`: controlled `caps=f` role is implemented; pinned stock entered Explore four times but selected no i2pr target |
 
-| 467 | ready P0 | `registered-normal-daemon-databasestore-deliverystatus-roundtrip` | `plans/implementation/ntcp2-transport/467-normal-daemon-ntcp2-databasestore-deliverystatus-roundtrip.md` | `plans/closure/ntcp2-transport/467-status.md` (on execution) |
+| 467 | active P0 | `in-progress-normal-daemon-databasestore-deliverystatus-roundtrip` | `plans/implementation/ntcp2-transport/467-normal-daemon-ntcp2-databasestore-deliverystatus-roundtrip.md` | `plans/closure/ntcp2-transport/467-status.md` (on execution) |
 | 468 | ready P0 | `registered-stock-routerinfo-admission-and-healthy-private-netdb` | `plans/implementation/ntcp2-transport/468-stock-routerinfo-admission-and-private-netdb-topology.md` | `plans/closure/ntcp2-transport/468-status.md` (on execution) |
 | 469 | blocked on 468 | `registered-stock-publish-ntcp2-fresh-initiator` | `plans/implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md` | `plans/closure/ntcp2-transport/469-status.md` (on execution) |
 
