@@ -1,6 +1,6 @@
-# Plan 461 status: blocked — Plans 459 and 460 acceptance gates remain open
+# Plan 461 status: passed at controlled loopback scope
 
-Closure token: `blocked-plan459-460-live-peer-receipt-unproven`
+Closure token: `passed-dual-family-request-driven-product-and-failure-continuity`
 
 Plan: [`461-dual-transport-normal-process-i2np-continuity.md`](../../implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md)
 
@@ -87,6 +87,7 @@ non-advertised, and Plan 435's external/public qualification remains separate.
 Disposition: **active; dependency audit passed; implementation and dual-family
 acceptance remain open**.
 
+
 ## Execution progress — 2026-10-12
 
 The common `RouterDeliveryService` now exposes the selected family and, for
@@ -171,3 +172,88 @@ request that wakes this selector. Malformed/stale address, changed-key,
 half-open, cancellation, saturation, disabled-transport, and repeated
 normal-process restart cases also remain to be reconciled as one acceptance
 matrix. The controlled proof changes no public or broad support claim.
+
+## Controlled dual-family completion — 2026-10-12
+
+The request-triggered normal-daemon gate and remaining Plan 461 continuity and
+fault controls now pass at controlled loopback scope. The request-driven pinned
+fixture uses one source-built i2pd 2.61.0 floodfill. Its signed dual-address
+RouterInfo is seeded into i2pr's actual `netdb/routers/<64-hex-hash>` cache;
+the stock peer is deliberately started without i2pr's RouterInfo so it cannot
+create an inbound route first. The daemon observed one `NoActiveSession`
+route miss, queued bounded peer-only NTCP2 dial requests, established an
+authenticated outbound generation, submitted one product DatabaseLookup, and
+correlated the DatabaseSearchReply on that same generation. The sanitized
+receipt was `route_misses=1`, `submitted=1`, `correlated=1`, generation `23`
+for both send and reply, `outbound_links=1`, and `inbound_links=0`. This is the
+request-driven proof; a separate strict four-stock-owner replay remains
+nondeterministic and is not substituted for it.
+
+Actual family and route-loss receipts are complementary and remain scoped:
+
+- The pinned `--stock-ssu2-only` run received three confirmed candidate
+  publication requests, accepted three product stores, submitted three
+  product replies, and recorded six SSU2 product deliveries with zero NTCP2
+  product deliveries or links.
+- `router_delivery_survives_each_single_family_route_loss` passed with real
+  daemon-owned SSU2 delivery and the competing NTCP2 route removed, then the
+  SSU2 owner stopped while the surviving NTCP2 route continued.
+- `router_delivery_uses_real_ntcp2_link_after_ssu2_owner_stops` passed using
+  two authenticated real NTCP2 sessions and two authenticated SSU2 sessions.
+  It decoded I2NP over SSU2 after NTCP2 loss, then decoded I2NP over a
+  reauthenticated NTCP2 generation after SSU2 owner shutdown.
+
+The fault and lifecycle rows were reconciled to executable controls. The
+validated snapshot test drops stale RouterInfo; the runtime test refuses an
+expired NTCP2 address before connect; the runtime and NTCP2 handshake suites
+cover wrong network, identity/static-key mismatch, half-open handshakes, and
+bounded backoff; the generation registry rejects wrong peer/link correlation,
+stale generation responses, duplicate and expired tokens, and queue overflow.
+The runtime bandwidth and NTCP2 link suites cover shared-governor capacity,
+cancellation, queue return, and repeated teardown. Config tests preserve
+NTCP2-disabled defaults and reject tuning as activation. The real-process
+lifecycle test now performs three starts and stops with a matching-network
+authenticated DatabaseStore each cycle, stable identity-bound keys, and a
+wrong-network rejection on the first cycle. No support inventory or public
+capability was promoted.
+
+Focused commands and results:
+
+| Command | Outcome |
+| --- | --- |
+| `rtk python3 tests/integration/ntcp2/plan468_private_netdb.py --request-driven` | Passed; one route miss, fresh outbound NTCP2 generation 23, one DatabaseLookup and same-generation correlated reply, no inbound route. |
+| `rtk python3 tests/integration/ntcp2/plan468_private_netdb.py --stock-ssu2-only` | Passed; 6 SSU2 product deliveries, 3 accepted stores and replies, 0 NTCP2 links/deliveries. |
+| `rtk cargo test --locked -p i2pr-runtime --all-targets -- --test-threads=1` | Passed, 135 tests, 1 ignored. |
+| `rtk cargo test --locked -p i2pr-daemon --lib router_i2np -- --test-threads=1` | Passed, 28 tests, 1 ignored. |
+| `rtk cargo test --locked -p i2pr-daemon --test netdb_tunnel_unit -- --test-threads=1` | Passed, 22 tests. |
+| `rtk cargo test --locked -p i2pr-transport-ntcp2 --all-targets` | Passed, 35 tests. |
+| `rtk cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight daemon_unknown_peer_delivery_and_cancellation_are_explicit -- --exact --test-threads=1` | Passed, 1 test. |
+| `rtk cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness controlled_ntcp2_binds_loopback_and_reuses_identity_bound_keys_after_restart -- --exact --test-threads=1` | Passed; 3 daemon start/stop cycles, stable key/IV, authenticated store each cycle. |
+| `rtk cargo test --locked -p i2pr-daemon --lib omitted_ntcp2_section_means_disabled` and `... ntcp2_tuning_fields_do_not_activate_when_disabled` | Passed, 1 test each. |
+| `bash scripts/check-runtime-boundaries.sh`, `bash scripts/check-ntcp2-vectors.sh`, `bash scripts/check-ssu2-vectors.sh` | Passed. |
+
+Final repository floor on the completed tree:
+
+- `cargo fmt --all --check`, `cargo check --locked --workspace --all-targets`,
+  managed-app sibling build, and `cargo build` passed.
+- `cargo test --locked --workspace --all-targets -- --test-threads=1` passed
+  4,851 tests; 39 ignored across 187 suites.
+- Workspace Clippy with warnings denied, rustdoc with warnings denied, and
+  workspace doc tests passed.
+- Planning tests passed (51); plan and ADR number ownership, dependency
+  direction, runtime/console/service-tunnel boundaries, workflow validity,
+  fixture and NTCP2/SSU2/I2CP vectors, acceptance-evidence guards, managed-app
+  self-tests, M11/M12 checks, 18 NTCP2 harness tests, and `cargo deny check
+  advisories bans sources` passed.
+
+The strict four-owner `plan468_private_netdb.py` replay was also attempted. It
+reached one same-generation DatabaseLookup reply over an existing inbound
+NTCP2 route, but recorded no fresh outbound link in that execution and one of
+three candidate-targeted publishes was unconfirmed. Its strict Plan 469 chain
+therefore reported blocked. The dedicated request-driven run above is the
+authoritative Plan 461 outbound receipt; this supplemental variability is
+retained as a finding, not called a pass.
+
+Disposition: **passed at controlled loopback scope**. Plan 435's separate
+external/two-family public qualification, default-off posture, and no-support
+promotion remain unchanged.

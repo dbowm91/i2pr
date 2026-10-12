@@ -968,13 +968,14 @@ impl Ntcp2RouterDeliveryRegistry {
     /// existing-family route owners reported a miss. The queue is bounded and
     /// may coalesce by rejecting overflow; callers still receive the original
     /// `NoActiveSession` result and can retry after link establishment.
-    fn request_outbound_dial(&self, peer: PeerId) {
+    pub(crate) fn request_outbound_dial(&self, peer: PeerId) -> bool {
         let Ok(requests) = self.dial_requests.lock() else {
-            return;
+            return false;
         };
         if let Some(sender) = requests.as_ref() {
-            let _ = sender.try_send(peer);
+            return sender.try_send(peer).is_ok();
         }
+        false
     }
 
     /// Returns whether a live outbound authenticated generation routes to the
@@ -988,6 +989,33 @@ impl Ntcp2RouterDeliveryRegistry {
         links
             .iter()
             .any(|((route_peer, _), route)| *route_peer == peer && route.outbound)
+    }
+
+    /// Returns the newest live outbound authenticated generation for a peer.
+    pub(crate) fn current_outbound_link(&self, peer: PeerId) -> Option<LinkId> {
+        let Ok(mut links) = self.links.lock() else {
+            return None;
+        };
+        links.retain(|_, route| !route.sender.is_closed());
+        links
+            .iter()
+            .filter(|((route_peer, _), route)| *route_peer == peer && route.outbound)
+            .map(|((_, link_id), _)| *link_id)
+            .max_by_key(|link_id| link_id.value())
+    }
+
+    /// Returns the newest live authenticated generation for one peer,
+    /// regardless of who initiated the link.
+    pub(crate) fn current_peer_link(&self, peer: PeerId) -> Option<LinkId> {
+        let Ok(mut links) = self.links.lock() else {
+            return None;
+        };
+        links.retain(|_, route| !route.sender.is_closed());
+        links
+            .keys()
+            .filter(|(route_peer, _)| *route_peer == peer)
+            .map(|(_, link_id)| *link_id)
+            .max_by_key(|link_id| link_id.value())
     }
 
     /// Registers one bounded queue for this authenticated peer generation.
@@ -1095,6 +1123,14 @@ impl Ntcp2RouterDeliveryRegistry {
         }
         pending.remove(&(peer, link_id));
         true
+    }
+
+    /// Removes one pending response expectation after the matching send was
+    /// rejected before it entered an authenticated link queue.
+    pub(crate) fn cancel_lookup(&self, peer: PeerId, link_id: LinkId) {
+        if let Ok(mut pending) = self.pending_lookups.lock() {
+            pending.remove(&(peer, link_id));
+        }
     }
 
     /// Checks that an inbound event still belongs to its registered

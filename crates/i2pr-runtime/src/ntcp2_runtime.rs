@@ -2184,11 +2184,29 @@ impl Ntcp2RuntimeService {
             );
             return Err(DialOutcome::Failed);
         }
+        let now_ms = match std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        {
+            Some(now_ms) => now_ms,
+            None => {
+                tracing::info!(
+                    stage = "clock_unavailable",
+                    "controlled NTCP2 outbound dial rejected"
+                );
+                return Err(DialOutcome::Failed);
+            }
+        };
         let mut target = None;
         for address in peer_info.addresses() {
             let Ok(address) = Ntcp2RouterAddress::parse(address) else {
                 continue;
             };
+            let expiration_ms = address.expiration().as_millis();
+            if expiration_ms != 0 && expiration_ms <= now_ms {
+                continue;
+            }
             let Some(endpoint) = address.endpoint() else {
                 continue;
             };
@@ -2506,9 +2524,27 @@ mod tests {
         endpoint: SocketAddr,
         network_id: u8,
     ) -> RouterInfo {
+        signed_peer_info_with_expiration(
+            bundle,
+            static_key,
+            iv,
+            endpoint,
+            network_id,
+            i2pr_proto::Date::from_millis(0),
+        )
+    }
+
+    fn signed_peer_info_with_expiration(
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        static_key: [u8; 32],
+        iv: [u8; 16],
+        endpoint: SocketAddr,
+        network_id: u8,
+        address_expiration: i2pr_proto::Date,
+    ) -> RouterInfo {
         let address = i2pr_proto::RouterAddress::new(
             1,
-            i2pr_proto::Date::from_millis(86_400_000),
+            address_expiration,
             "NTCP2".to_owned(),
             i2pr_proto::Mapping::from_entries(vec![
                 ("host".to_owned(), endpoint.ip().to_string()),
@@ -2532,6 +2568,62 @@ mod tests {
                 .expect("router options"),
             )
             .expect("signed RouterInfo")
+    }
+
+    #[tokio::test]
+    async fn outbound_selection_rejects_expired_router_address_before_connect() {
+        use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+
+        let bundle = RouterIdentityBundle::from_private_bytes([0x31; 32], [0x32; 32], &mut OsRng)
+            .expect("peer identity");
+        let static_key = X25519PrivateKey::from_bytes([0x51; 32]);
+        let endpoint = "127.0.0.1:1".parse().expect("loopback endpoint");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("wall clock")
+            .as_millis() as u64;
+        let peer_info = signed_peer_info_with_expiration(
+            &bundle,
+            static_key.public_bytes(),
+            [0x71; 16],
+            endpoint,
+            2,
+            i2pr_proto::Date::from_millis(now_ms.saturating_sub(1)),
+        );
+        let peer_hash = bundle.identity().hash().expect("peer hash");
+        let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let cancellation = CancellationToken::new();
+        let scope = runtime.child_scope(&cancellation);
+        let local_bundle =
+            RouterIdentityBundle::from_private_bytes([0x41; 32], [0x42; 32], &mut OsRng)
+                .expect("local identity");
+        let local_info = signed_peer_info(
+            &local_bundle,
+            X25519PrivateKey::from_bytes([0x61; 32]).public_bytes(),
+            [0x72; 16],
+            endpoint,
+            2,
+        )
+        .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+        .expect("local RouterInfo");
+
+        assert!(matches!(
+            runtime
+                .dial_authenticated_loopback_peer(
+                    &scope,
+                    &peer_info,
+                    *peer_hash.as_bytes(),
+                    X25519PrivateKey::from_bytes([0x62; 32]),
+                    &local_info,
+                    2,
+                    1,
+                    &cancellation,
+                )
+                .await,
+            Err(DialOutcome::Failed)
+        ));
+        assert_eq!(runtime.snapshot().admission.pending, 0);
+        let _ = scope.shutdown().await;
     }
 
     #[test]
