@@ -3286,10 +3286,12 @@ impl ServiceTunnelManager {
                 bridge.router_inbound_receive_ids()
             })
             .unwrap_or_default();
-        summary.inbound_owner_registered = !receive_ids.is_empty()
-            && receive_ids
-                .iter()
-                .all(|id| self.inbound_tunnel_owner(*id).is_some());
+        summary.inbound_owner_count = receive_ids
+            .iter()
+            .filter(|id| self.inbound_tunnel_owner(**id).is_some())
+            .count();
+        summary.inbound_owner_registered =
+            !receive_ids.is_empty() && summary.inbound_owner_count == receive_ids.len();
         Some(summary)
     }
 

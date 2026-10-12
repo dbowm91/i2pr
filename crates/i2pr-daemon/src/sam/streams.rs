@@ -284,6 +284,10 @@ pub struct RouterNetworkSummary {
     /// leaves the default `false`; see
     /// `ServiceTunnelManager::service_router_network_summary`.
     pub inbound_owner_registered: bool,
+    /// Number of installed receive ids with a live owner registration.
+    /// This count is diagnostic only; `is_complete` continues to require
+    /// the all-receives predicate above.
+    pub inbound_owner_count: usize,
 }
 
 impl RouterNetworkSummary {
@@ -917,6 +921,7 @@ impl SamDestinationBridge {
             // The manager fills owner registration (it owns the
             // inbound-owner registry); the bridge cannot observe it.
             inbound_owner_registered: false,
+            inbound_owner_count: 0,
         })
     }
 

@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
+from urllib.request import urlopen
 
 
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
@@ -26,12 +27,21 @@ ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-~"
 USED_PORTS = set()
 
 
+def parse_stock_transit_rows(body):
+    """Return only the row count from i2pd's pinned transit page HTML."""
+    return body.count('<tr class="tcell_center">')
+
+
 def parse_attempt_receipt_lines(lines):
     attempt_messages = {}
     stage_counts = Counter()
     transport_stage_counts = Counter()
     emitted_message_ids = set()
     postbuild_summary = None
+    owner_install_receipts = []
+    owner_eviction_events = 0
+    owner_eviction_removed_owner = 0
+    owner_eviction_removed_receive = 0
     for line in lines:
         attempt = re.search(r"build_attempt_id\s*=\s*(\d+)", line)
         message = re.search(r"i2np_message_id\s*=\s*(\d+)", line)
@@ -49,9 +59,24 @@ def parse_attempt_receipt_lines(lines):
                 emitted_message_ids.update(
                     int(value) for value in ids.group(1).split(",") if value.strip()
                 )
+        if "destination inbound owners installed" in line:
+            installed = re.search(
+                r"inbound_receive_count\s*=\s*(\d+).*?inbound_owner_count\s*=\s*(\d+)",
+                line,
+            )
+            if installed:
+                owner_install_receipts.append(
+                    {"receive_count": int(installed.group(1)),
+                     "owner_count": int(installed.group(2))}
+                )
+        if "destination inbound owner removed on pool eviction" in line:
+            owner_eviction_events += 1
+            owner_eviction_removed_owner += int("removed_owner=true" in line)
+            owner_eviction_removed_receive += int("removed_receive=true" in line)
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
-            r"inbound_owner_registered\s*=\s*(true|false)",
+            r"inbound_owner_registered\s*=\s*(true|false).*?"
+            r"inbound_owner_count\s*=\s*(\d+)",
             line,
         )
         if summary:
@@ -59,6 +84,7 @@ def parse_attempt_receipt_lines(lines):
                 "inbound_receive_count": int(summary.group(1)),
                 "lease_count": int(summary.group(2)),
                 "inbound_owner_registered": summary.group(3) == "true",
+                "inbound_owner_count": int(summary.group(4)),
             }
     return {
         "attempts_observed": len(attempt_messages),
@@ -70,6 +96,10 @@ def parse_attempt_receipt_lines(lines):
         "response_matched_attempts": stage_counts["authenticated_reply_matched"],
         "install_committed_attempts": stage_counts["install_committed"],
         "postbuild_summary": postbuild_summary,
+        "owner_install_receipts": owner_install_receipts,
+        "owner_eviction_events": owner_eviction_events,
+        "owner_eviction_removed_owner": owner_eviction_removed_owner,
+        "owner_eviction_removed_receive": owner_eviction_removed_receive,
     }
 
 
@@ -129,6 +159,10 @@ class Lane:
             "d": free_port(),
             "f_sam": free_port(),
         }
+        for name in ("f", "c", "n", "d"):
+            self.ports[f"{name}_http"] = free_port()
+        self.stock_transit_before = {}
+        self.stock_log_offsets = {}
         self.logs = self.scratch / "logs"
         self.logs.mkdir()
 
@@ -166,7 +200,9 @@ port = {port}
 enabled = false
 published = false
 [http]
-enabled = false
+enabled = true
+address = 127.0.0.1
+port = {self.ports[f"{name}_http"]}
 [httpproxy]
 enabled = false
 [socksproxy]
@@ -188,6 +224,62 @@ threshold = 0
 """
         (home / "i2pd.conf").write_text(text)
         (home / "tunnels.conf").write_text("")
+
+    def stock_transit_count(self, name):
+        """Read only the count of stock-owned transit rows over loopback HTTP."""
+        endpoint = f"http://127.0.0.1:{self.ports[f'{name}_http']}/?page=transit_tunnels"
+        try:
+            with urlopen(endpoint, timeout=1) as response:
+                body = response.read(1_000_000).decode("utf-8", errors="strict")
+        except (OSError, UnicodeError, TimeoutError):
+            return None
+        return parse_stock_transit_rows(body)
+
+    def stock_build_receipt(self):
+        """Aggregate pinned stock logs and read-only inventory; never retain text."""
+        counts = Counter()
+        deltas = []
+        for name in ("f", "c", "n", "d"):
+            path = self.logs / f"{name}.log"
+            if path.is_file():
+                with path.open("rb") as log:
+                    start = self.stock_log_offsets.get(name, 0)
+                    size = path.stat().st_size
+                    if size < start:
+                        start = 0
+                    start = max(start, size - 2_000_000)
+                    log.seek(start)
+                    text = log.read(2_000_000).decode("utf-8", errors="replace")
+            else:
+                text = ""
+            counts["short_build_records_observed"] += text.count(
+                "TransitTunnel: ShortTunnelBuild "
+            )
+            counts["short_request_decrypt_failures"] += text.count(
+                "TransitTunnel: Can't decrypt short request record"
+            )
+            counts["short_request_local_next_hop_rejections"] += text.count(
+                "TransitTunnel: Next ident is ours in short request record"
+            )
+            counts["transit_tunnel_create_events"] += sum(
+                text.count(token)
+                for token in (
+                    "TransitTunnel: endpoint ",
+                    "TransitTunnel: gateway ",
+                )
+            )
+            counts["transit_reply_send_failures"] += text.count(
+                "TransitTunnel: Failed to send reply for transit tunnel"
+            )
+            before = self.stock_transit_before.get(name)
+            after = self.stock_transit_count(name)
+            if before is not None and after is not None:
+                deltas.append(after - before)
+        return {
+            **dict(sorted(counts.items())),
+            "transit_inventory_delta_total": sum(deltas) if len(deltas) == 4 else None,
+            "transit_inventory_peers_observed": len(deltas),
+        }
 
     def start_reference(self, name):
         home = self.scratch / name
@@ -346,6 +438,12 @@ threshold = 0
         for name in peers:
             self.seed_i2pr(final_ri[name])
 
+        # Establish the stock-owned baseline through i2pd's existing
+        # loopback-only, read-only transit-tunnel page before i2pr can build.
+        self.stock_transit_before = {
+            name: self.stock_transit_count(name) for name in peers
+        }
+
         # Select daemon listener ports only after the multi-minute reference
         # preparation, so another local test cannot claim a stale reservation.
         self.ports["i2pr_sam"] = free_port()
@@ -397,6 +495,9 @@ introducer_service = false
         )
         for name in peers:
             self.seed_i2pd(name, local_router_info)
+        self.stock_log_offsets = {
+            name: (self.logs / f"{name}.log").stat().st_size for name in peers
+        }
         router = subprocess.Popen(
             [str(ROOT / "target/debug/i2pr"), "run", "--config", str(config)],
             cwd=ROOT,
@@ -452,6 +553,8 @@ def main():
     try:
         lane.run()
         result = json.loads((EVIDENCE / "result.json").read_text())
+        result["stock_build_receipt"] = lane.stock_build_receipt()
+        (EVIDENCE / "result.json").write_text(json.dumps(result, sort_keys=True) + "\n")
         (EVIDENCE / "manifest.json").write_text(
             json.dumps(
                 {
@@ -459,6 +562,7 @@ def main():
                     "i2pd_version": VERSION,
                     "i2pd_revision": PIN,
                     "peer_count": 4,
+                    "stock_build_receipt": result["stock_build_receipt"],
                     "transports_advertised_by_i2pr": 0,
                     "directions": result["directions"],
                 },
@@ -469,16 +573,18 @@ def main():
         print("Plan 458 normal-process SAM exchanges passed in both directions.")
     except Exception as exc:
         receipt = lane.router_network_sam_attempt_receipt()
+        stock_receipt = lane.stock_build_receipt()
         (EVIDENCE / "attempt-diagnostic.json").write_text(
             json.dumps(
-                {"schema": "plan466-attempt-receipt-v1", **receipt},
+                {"schema": "plan471-stock-build-receipt-v1", **receipt,
+                 "stock": stock_receipt},
                 sort_keys=True,
             )
             + "\n"
         )
         print(
-            "Plan 466 sanitized attempt receipt: "
-            + json.dumps(receipt, sort_keys=True),
+            "Plan 471 sanitized stock/build receipt: "
+            + json.dumps({**receipt, "stock": stock_receipt}, sort_keys=True),
             file=__import__("sys").stderr,
         )
         print(f"Plan 458 qualification failed: {exc}", file=__import__("sys").stderr)
