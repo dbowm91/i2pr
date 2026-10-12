@@ -1,6 +1,6 @@
 # Plan 464 — Normal SAM build attempt cause and corrective run
 
-**State:** ready P2 corrective to blocked Plan 462 (2026-10-11). Owner: core-router-recovery / destination-product. The exact-pinned four-router fixture, family-aware signed RouterInfos, shared provisioning owner, Plan 458 attempt correlation and M6 preflight/tunnel/NetDB controls are already available. Plan 462's latest ordinary-process attempt times out at `outbound-build`, but its source-owned receipts do not expose the first missing transition. This plan authorizes one bounded causal diagnostic plus one post-correction acceptance attempt; it does not authorize repeated unchanged four-peer runs.
+**State:** blocked P2 (2026-10-11). Closure: [`464-status.md`](../../closure/core-router-recovery/464-status.md). Owner: core-router-recovery / destination-product. The one authorized causal run returned `inbound-build`, but the runner read only `i2pr.stderr` while the formatted tracing layer writes to `i2pr.stdout`, then deleted the temporary logs. No attempt-scoped receipt was retained, so the first missing transport transition remains unknown. Plan 465 authorizes one corrected evidence-capture run; no unchanged retry is authorized here.
 
 ## Objective
 

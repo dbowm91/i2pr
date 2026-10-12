@@ -949,6 +949,13 @@ impl ExploratoryBuildCoordinator {
         let direction = request.direction;
         let now_ms = self.now_ms;
         let attempt_id = self.next_attempt_id();
+        tracing::info!(
+            build_attempt_id = attempt_id.get(),
+            i2np_message_id = request.message_id,
+            direction = ?direction,
+            transition = "selected",
+            "destination build attempt"
+        );
         let path = short_build_path(&request, BuildAttemptId::new(attempt_id.get()), now_ms);
         path.validate().map_err(map_construction_error)?;
         let deadline_ms = now_ms.saturating_add(BUILD_DEADLINE_MS);
@@ -1004,6 +1011,13 @@ impl ExploratoryBuildCoordinator {
         let delivery_outcome =
             delivery.deliver(delivery_request, &i2pr_runtime::CancellationToken::new());
         let accepted = matches!(delivery_outcome, RouterDeliveryOutcome::Accepted);
+        tracing::info!(
+            build_attempt_id = attempt_id.get(),
+            i2np_message_id = request.message_id,
+            direction = ?direction,
+            transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
+            "destination build attempt"
+        );
         self.counters.outbound_builds = self.counters.outbound_builds.saturating_add(1);
         if !accepted {
             self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
@@ -1155,6 +1169,12 @@ impl ExploratoryBuildCoordinator {
             self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
             return Vec::new();
         };
+        tracing::info!(
+            build_attempt_id = attempt_id.get(),
+            direction = "outbound",
+            transition = "authenticated_reply_matched",
+            "destination build attempt"
+        );
         let reply_payload = match extract_reply_payload(raw_bytes) {
             Ok(payload) => payload,
             Err(reason) => {
@@ -1204,6 +1224,12 @@ impl ExploratoryBuildCoordinator {
             self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
             return Vec::new();
         };
+        tracing::info!(
+            build_attempt_id = attempt_id.get(),
+            direction = "inbound",
+            transition = "authenticated_reply_matched",
+            "destination build attempt"
+        );
         let reply_payload = match extract_forwarded_build_payload(raw_bytes) {
             Ok(payload) => payload,
             Err(reason) => {
@@ -1259,6 +1285,12 @@ impl ExploratoryBuildCoordinator {
             self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
             return Vec::new();
         };
+        tracing::info!(
+            build_attempt_id = attempt_id.get(),
+            direction = "outbound",
+            transition = "authenticated_reply_matched",
+            "destination build attempt"
+        );
         let (key, tag) = match self
             .pending
             .get(&attempt_id)

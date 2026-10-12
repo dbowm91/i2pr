@@ -367,6 +367,14 @@ pub enum DropReason {
 pub enum SessionAction {
     /// Emit one bounded datagram.
     Transmit(Vec<u8>),
+    /// Emit one bounded datagram and retain the I2NP message IDs carried in
+    /// its encrypted blocks for the owning runtime's scoped send receipt.
+    TransmitTracked {
+        /// Sealed SSU2 datagram.
+        datagram: Vec<u8>,
+        /// Bounded IDs of I2NP messages represented by this packet.
+        message_ids: Vec<u32>,
+    },
     /// Termination is recommended (idle/RTO ceiling/local request).
     Terminate {
         /// Wire reason code to send, when a final packet is desired.
@@ -1049,6 +1057,14 @@ impl Ssu2Session {
     /// (ACK-only packets are never congestion-blocked per the
     /// specification exception).
     pub fn poll_transmit(&mut self, now_ms: u64) -> Option<Vec<u8>> {
+        self.poll_transmit_traced(now_ms)
+            .map(|(datagram, _)| datagram)
+    }
+
+    /// Builds one datagram and returns the bounded I2NP IDs represented in
+    /// its encrypted blocks alongside the bytes. Runtimes can retain these
+    /// IDs through their owned socket queue without decoding payloads.
+    pub fn poll_transmit_traced(&mut self, now_ms: u64) -> Option<(Vec<u8>, Vec<u32>)> {
         if self.send_exhausted {
             return None;
         }
@@ -1074,7 +1090,7 @@ impl Ssu2Session {
                 if datagram.is_some() {
                     self.clear_ack_state();
                 }
-                return datagram;
+                return datagram.map(|datagram| (datagram, Vec::new()));
             }
             return None;
         }
@@ -1235,6 +1251,12 @@ impl Ssu2Session {
         let carries_ack = blocks
             .iter()
             .any(|block| block.kind() == constants::BLOCK_ACK);
+        let mut message_ids = carried
+            .iter()
+            .map(|fragment| fragment.message_id)
+            .collect::<Vec<_>>();
+        message_ids.sort_unstable();
+        message_ids.dedup();
         self.seal_packet(now_ms, blocks, ack_only)
             .inspect(|datagram| {
                 if carries_ack {
@@ -1248,6 +1270,7 @@ impl Ssu2Session {
                     self.record_sent(now_ms, datagram.len(), ack_bytes, ack_only, carried);
                 }
             })
+            .map(|datagram| (datagram, message_ids))
     }
 
     fn pending_ack_eliciting_controls(&self) -> bool {
@@ -2475,9 +2498,16 @@ impl Ssu2Session {
             // was ack-eliciting (loop avoidance); otherwise the ACK
             // piggybacks on the next eliciting transmit.
             if self.last_received_eliciting
-                && let Some(datagram) = self.poll_transmit(now_ms)
+                && let Some((datagram, message_ids)) = self.poll_transmit_traced(now_ms)
             {
-                actions.push(SessionAction::Transmit(datagram));
+                actions.push(if message_ids.is_empty() {
+                    SessionAction::Transmit(datagram)
+                } else {
+                    SessionAction::TransmitTracked {
+                        datagram,
+                        message_ids,
+                    }
+                });
             }
         }
         let _ = now_secs;

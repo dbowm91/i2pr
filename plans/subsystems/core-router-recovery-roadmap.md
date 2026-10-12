@@ -186,7 +186,7 @@ No baseline status becomes `passed` on plan registration. The partial failures o
 
 ### Plans 459–462: decouple NTCP2 transport I2NP from SAM tunnel provisioning (2026-10-11)
 
-Source-checked `lib.rs::register_ntcp2_service` runs an authenticated receiver in both initiated and accepted link tasks, but **only** calls `router_i2np::dispatch_router_i2np_parts(...)` and discards its `RouterI2npOutcome`. The helper does not itself deliver to normal NetDB/tunnel consumers; `ServiceProduct::poll_inbound` is still SSU2-event-bound. This explains an unqualified production ownership seam independently of any stock-i2pd crypto failure. Plan 458's latest `outbound-build` status is likewise **not** evidence about a stock-initiated NTCP2 handshake.
+Plan 459 replaced both authenticated NTCP2 parse-and-drop sinks with a bounded shared product owner; its normal daemon-initiator receipt and correlated live reply remain unproven. Plans 460/463 tested a source-owned floodfill trigger, but stock Explore did not select the seeded controlled record. This is independent of Plan 458's SAM build failure.
 
 ```text
 Known: 455 i2pr→i2pd NTCP2+I2NP passed; stock-only NTCP2 SAM control passed
@@ -204,8 +204,10 @@ Independent P2: 462 diagnose Plan 458 alternating SAM inbound/outbound build tim
 | 459 | blocked P0 | `plans/implementation/ntcp2-transport/459-live-ntcp2-router-i2np-dispatch-and-reply-owner.md` | Shared bounded ingress and responder-side RouterInfo effect landed; daemon initiator-role receipt and correlated live reply remain open |
 | 460 | blocked P0-next | `plans/implementation/ntcp2-transport/460-stock-to-i2pr-ntcp2-without-sam-destination.md` | Pinned source lacks an eligible direct target for the controlled non-floodfill/non-transit i2pr role; useful tunnel-build trigger needs a live transit consumer |
 | 461 | blocked on 459/460 P1 | `plans/implementation/ntcp2-transport/461-dual-transport-normal-process-i2np-continuity.md` | `plans/closure/ntcp2-transport/461-status.md`: live peer receipts and downstream continuity cannot start until 459/460 acceptance gates close |
-| 462 | blocked P2 | `plans/implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md` | `plans/closure/core-router-recovery/462-status.md`: M6 controls pass; first missing normal-process build transition remains unlocalized, so no correction or repeat attempt was made |
-| 464 | ready P2 corrective | `plans/implementation/core-router-recovery/464-normal-sam-attempt-cause-and-corrective-run.md` | Adds the missing attempt-scoped causal receipt and authorizes one diagnostic plus one post-correction pinned run; no unchanged retries or synthetic peer acceptance |
+| 462 | blocked P2 | `plans/implementation/core-router-recovery/462-normal-sam-tunnel-build-first-divergence-corrective.md` | `plans/closure/core-router-recovery/462-status.md`: M6 controls pass; SAM build first missing transition remains open |
+| 464 | blocked P2 | `plans/implementation/core-router-recovery/464-normal-sam-attempt-cause-and-corrective-run.md` | `plans/closure/core-router-recovery/464-status.md`: attempt receipts landed, but its one run did not retain stdout tracing |
+| 465 | blocked P2 | `plans/implementation/core-router-recovery/465-sam-diagnostic-receipt-stream-correction.md` | `plans/closure/core-router-recovery/465-status.md`: four build attempts reached emission, reply match, and commit; SAM then failed destination-summary-incomplete |
+| 466 | blocked P2 | `plans/implementation/core-router-recovery/466-sam-summary-postbuild-cause-and-correction.md` | `plans/closure/core-router-recovery/466-status.md`: third outbound attempt was emitted, but no authenticated reply matched before timeout; stock acceptance is unobserved |
 
 **Authority:** Plan 455's already-executed one-way stock decoded DatabaseStore and stock-to-stock NTCP2-only application control are retained. Plan 456's local NTCP2 source/lifecycle pass is not a real stock-to-i2pr NetDB capability claim. Neither Plan 459 source work nor Plan 460 same-link reply alone qualifies a **fresh stock initiator**. No public `R`/`f`, external profile, support inventory or conformance promotion without independently executed downstream gates.
 

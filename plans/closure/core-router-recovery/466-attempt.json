@@ -1,0 +1,18 @@
+{
+  "attempts_observed": 3,
+  "install_committed_attempts": 2,
+  "postbuild_summary": null,
+  "response_matched_attempts": 2,
+  "schema": "plan466-attempt-receipt-v1",
+  "stage_counts": {
+    "authenticated_reply_matched": 2,
+    "delivery_admitted": 3,
+    "install_committed": 2,
+    "selected": 3
+  },
+  "terminal_failure_stage": "outbound-build",
+  "transport_stage_counts": {
+    "udp_emitted": 3
+  },
+  "udp_emission_correlated_attempts": 3
+}

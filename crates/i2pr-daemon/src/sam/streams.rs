@@ -286,6 +286,14 @@ pub struct RouterNetworkSummary {
     pub inbound_owner_registered: bool,
 }
 
+impl RouterNetworkSummary {
+    /// Returns whether the normal SAM owner can safely publish this
+    /// router-backed destination as active.
+    pub const fn is_complete(&self) -> bool {
+        self.inbound_receive_count > 0 && self.lease_count > 0 && self.inbound_owner_registered
+    }
+}
+
 /// Plan 212 §14 — outcome of draining authenticated destination
 /// payloads into canonical Streaming.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

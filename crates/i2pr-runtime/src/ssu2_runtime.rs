@@ -959,6 +959,7 @@ struct StagedDatagram {
     bytes: Vec<u8>,
     addr: SocketAddr,
     class: BandwidthTrafficClass,
+    message_ids: Vec<u32>,
 }
 
 fn bandwidth_peer_key(addr: SocketAddr) -> BandwidthPeerKey {
@@ -2538,6 +2539,29 @@ impl Ssu2RuntimeService {
         encoded: Vec<u8>,
         wall_now_ms: u64,
     ) -> Result<(), Ssu2PublicationUnavailable> {
+        self.install_local_router_info_inner(encoded, wall_now_ms, None)
+    }
+
+    /// Installs the controlled dual-transport RouterInfo form after verifying
+    /// its NTCP2 address names the separately bound loopback endpoint.
+    pub fn install_controlled_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+    ) -> Result<(), Ssu2PublicationUnavailable> {
+        if !ntcp2_endpoint.ip().is_loopback() || ntcp2_endpoint.port() < 1024 {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        self.install_local_router_info_inner(encoded, wall_now_ms, Some(ntcp2_endpoint))
+    }
+
+    fn install_local_router_info_inner(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        controlled_ntcp2_endpoint: Option<SocketAddr>,
+    ) -> Result<(), Ssu2PublicationUnavailable> {
         if self.shared.shutdown.is_cancelled() {
             return Err(Ssu2PublicationUnavailable::Closed);
         }
@@ -2569,11 +2593,46 @@ impl Ssu2RuntimeService {
             constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
         )
         .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let ssu2_count = info
+            .addresses()
+            .iter()
+            .filter(|address| address.transport_style() == "SSU2")
+            .count();
+        let ntcp2_addresses: Vec<_> = info
+            .addresses()
+            .iter()
+            .filter(|address| address.transport_style() == "NTCP2")
+            .collect();
+        let ntcp2_matches = match controlled_ntcp2_endpoint {
+            Some(endpoint) => {
+                ntcp2_addresses.len() == 1
+                    && ntcp2_addresses.first().is_some_and(|address| {
+                        address
+                            .options()
+                            .get("host")
+                            .and_then(|host| host.parse::<IpAddr>().ok())
+                            == Some(endpoint.ip())
+                            && address
+                                .options()
+                                .get("port")
+                                .and_then(|port| port.parse::<u16>().ok())
+                                == Some(endpoint.port())
+                            && address.options().get("v") == Some("2")
+                            && address
+                                .options()
+                                .get("s")
+                                .is_some_and(|value| !value.is_empty())
+                            && address
+                                .options()
+                                .get("i")
+                                .is_some_and(|value| !value.is_empty())
+                    })
+            }
+            None => ntcp2_addresses.is_empty(),
+        };
         if info.options().get("netId") != current.options().get("netId")
-            || info
-                .addresses()
-                .iter()
-                .any(|address| address.transport_style() != "SSU2")
+            || ssu2_count != 1
+            || !ntcp2_matches
         {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);
         }
@@ -3121,7 +3180,36 @@ fn stage_one_locked(
         bytes,
         addr,
         BandwidthTrafficClass::Client,
+        Vec::new(),
     )
+}
+
+fn stage_traced_locked(
+    state: &mut ServiceState,
+    limits: &Ssu2RuntimeLimits,
+    counters: &ServiceCounters,
+    bytes: Vec<u8>,
+    addr: SocketAddr,
+    message_ids: Vec<u32>,
+) -> bool {
+    let receipt_ids = message_ids.clone();
+    let accepted = stage_class_locked(
+        state,
+        limits,
+        counters,
+        bytes,
+        addr,
+        BandwidthTrafficClass::Client,
+        message_ids,
+    );
+    if !accepted && !receipt_ids.is_empty() {
+        tracing::warn!(
+            i2np_message_ids = ?receipt_ids,
+            transition = "datagram_staging_rejected",
+            "SSU2 message send receipt"
+        );
+    }
+    accepted
 }
 
 fn stage_class_locked(
@@ -3131,6 +3219,7 @@ fn stage_class_locked(
     bytes: Vec<u8>,
     addr: SocketAddr,
     class: BandwidthTrafficClass,
+    message_ids: Vec<u32>,
 ) -> bool {
     if bytes.is_empty() || bytes.len() > constants::MAX_DATAGRAM_IPV4_LENGTH {
         counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
@@ -3144,7 +3233,12 @@ fn stage_class_locked(
         return false;
     }
     state.staged_bytes = state.staged_bytes.saturating_add(bytes.len());
-    let staged = StagedDatagram { bytes, addr, class };
+    let staged = StagedDatagram {
+        bytes,
+        addr,
+        class,
+        message_ids,
+    };
     match addr.ip() {
         IpAddr::V4(_) => state.staged_v4.push_back(staged),
         IpAddr::V6(_) => state.staged_v6.push_back(staged),
@@ -3167,6 +3261,7 @@ fn stage_finals_locked(
             bytes,
             *addr,
             BandwidthTrafficClass::Control,
+            Vec::new(),
         );
     }
 }
@@ -5013,21 +5108,22 @@ impl Ssu2RuntimeService {
         if remove.is_none() {
             for _ in 0..SSU2_MAX_DRAIN_PER_SESSION {
                 let datagram = match state.active.get_mut(&link_id) {
-                    Some(record) => record.session.poll_transmit(now_ms),
+                    Some(record) => record.session.poll_transmit_traced(now_ms),
                     None => None,
                 };
                 match datagram {
-                    Some(datagram) => {
+                    Some((datagram, message_ids)) => {
                         let addr = match state.active.get(&link_id) {
                             Some(record) => record.peer_addr,
                             None => break,
                         };
-                        stage_one_locked(
+                        stage_traced_locked(
                             state,
                             &self.shared.config.limits,
                             &self.shared.counters,
                             datagram,
                             addr,
+                            message_ids,
                         );
                     }
                     None => break,
@@ -5050,6 +5146,23 @@ impl Ssu2RuntimeService {
                             &self.shared.counters,
                             datagram,
                             addr,
+                        );
+                    }
+                    Some(SessionAction::TransmitTracked {
+                        datagram,
+                        message_ids,
+                    }) => {
+                        let addr = match state.active.get(&link_id) {
+                            Some(record) => record.peer_addr,
+                            None => break,
+                        };
+                        stage_traced_locked(
+                            state,
+                            &self.shared.config.limits,
+                            &self.shared.counters,
+                            datagram,
+                            addr,
+                            message_ids,
                         );
                     }
                     Some(SessionAction::Terminate { .. }) => {
@@ -5541,6 +5654,23 @@ impl Ssu2RuntimeService {
                             addr,
                         );
                     }
+                    Some(SessionAction::TransmitTracked {
+                        datagram,
+                        message_ids,
+                    }) => {
+                        let addr = match state.active.get(&link_id) {
+                            Some(record) => record.peer_addr,
+                            None => break,
+                        };
+                        stage_traced_locked(
+                            state,
+                            &self.shared.config.limits,
+                            &self.shared.counters,
+                            datagram,
+                            addr,
+                            message_ids,
+                        );
+                    }
                     Some(SessionAction::Terminate { .. }) => {
                         remove = Some(TerminationCategory::Timeout);
                         break;
@@ -5553,21 +5683,22 @@ impl Ssu2RuntimeService {
             if remove.is_none() {
                 for _ in 0..SSU2_MAX_DRAIN_PER_SESSION {
                     let datagram = match state.active.get_mut(&link_id) {
-                        Some(record) => record.session.poll_transmit(now_ms),
+                        Some(record) => record.session.poll_transmit_traced(now_ms),
                         None => None,
                     };
                     match datagram {
-                        Some(datagram) => {
+                        Some((datagram, message_ids)) => {
                             let addr = match state.active.get(&link_id) {
                                 Some(record) => record.peer_addr,
                                 None => break,
                             };
-                            stage_one_locked(
+                            stage_traced_locked(
                                 state,
                                 &self.shared.config.limits,
                                 &self.shared.counters,
                                 datagram,
                                 addr,
+                                message_ids,
                             );
                         }
                         None => break,
@@ -5659,6 +5790,7 @@ impl Ssu2RuntimeService {
             addr: SocketAddr,
             class: BandwidthTrafficClass,
             duplicates: bool,
+            message_ids: Vec<u32>,
         }
         let policy = self
             .shared
@@ -5704,6 +5836,7 @@ impl Ssu2RuntimeService {
                     addr: datagram.addr,
                     class: datagram.class,
                     duplicates,
+                    message_ids: datagram.message_ids,
                 });
             }
             let previous_held = state.fault_held.take();
@@ -5717,6 +5850,7 @@ impl Ssu2RuntimeService {
                         bytes: first.bytes,
                         addr: first.addr,
                         class: first.class,
+                        message_ids: first.message_ids,
                     });
                 } else {
                     // Batched datagrams: the first joins at the tail.
@@ -5725,6 +5859,7 @@ impl Ssu2RuntimeService {
                         addr: first.addr,
                         class: first.class,
                         duplicates: false,
+                        message_ids: first.message_ids,
                     });
                     if let Ok(mut guard) = self.shared.faults.lock()
                         && let Some(policy) = guard.as_mut()
@@ -5750,13 +5885,33 @@ impl Ssu2RuntimeService {
                         .await
                         .is_err()
                 {
+                    if !send.message_ids.is_empty() {
+                        tracing::warn!(
+                            i2np_message_ids = ?send.message_ids,
+                            transition = "udp_admission_rejected",
+                            "SSU2 message send receipt"
+                        );
+                    }
                     continue;
                 }
                 if socket.send_to(&send.bytes, send.addr).await.is_ok() {
+                    if !send.message_ids.is_empty() {
+                        tracing::info!(
+                            i2np_message_ids = ?send.message_ids,
+                            transition = "udp_emitted",
+                            "SSU2 message send receipt"
+                        );
+                    }
                     self.shared
                         .counters
                         .datagrams_sent
                         .fetch_add(1, Ordering::Relaxed);
+                } else if !send.message_ids.is_empty() {
+                    tracing::warn!(
+                        i2np_message_ids = ?send.message_ids,
+                        transition = "udp_send_failed",
+                        "SSU2 message send receipt"
+                    );
                 }
             }
         }
@@ -5777,11 +5932,31 @@ impl Ssu2RuntimeService {
             } else {
                 true
             };
+            if !admitted && !previous.message_ids.is_empty() {
+                tracing::warn!(
+                    i2np_message_ids = ?previous.message_ids,
+                    transition = "udp_admission_rejected",
+                    "SSU2 message send receipt"
+                );
+            }
             if admitted && socket.send_to(&previous.bytes, previous.addr).await.is_ok() {
+                if !previous.message_ids.is_empty() {
+                    tracing::info!(
+                        i2np_message_ids = ?previous.message_ids,
+                        transition = "udp_emitted",
+                        "SSU2 message send receipt"
+                    );
+                }
                 self.shared
                     .counters
                     .datagrams_sent
                     .fetch_add(1, Ordering::Relaxed);
+            } else if admitted && !previous.message_ids.is_empty() {
+                tracing::warn!(
+                    i2np_message_ids = ?previous.message_ids,
+                    transition = "udp_send_failed",
+                    "SSU2 message send receipt"
+                );
             }
             if let Ok(mut guard) = self.shared.faults.lock()
                 && let Some(policy) = guard.as_mut()

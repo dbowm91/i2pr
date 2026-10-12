@@ -335,6 +335,23 @@ fn bidirectional_no_loss_multi_message_exchange() {
 }
 
 #[test]
+fn transmit_receipt_preserves_bounded_i2np_message_ids() {
+    let (mut alice, _bob) = paired_sessions();
+    let message_id = 0x51A7_1235;
+    let message = i2np_bytes(11, message_id, 200, 0x4a);
+    alice
+        .queue_i2np_message(message)
+        .expect("queue valid message");
+
+    let (datagram, message_ids) = alice
+        .poll_transmit_traced(NOW_MS)
+        .expect("queued I2NP message produces a datagram");
+
+    assert!(!datagram.is_empty());
+    assert_eq!(message_ids, vec![message_id]);
+}
+
+#[test]
 fn data_loss_produces_fresh_retransmission_exact_once() {
     let (mut alice, mut bob) = paired_sessions();
     let mut now_ms = NOW_MS;

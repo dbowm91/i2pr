@@ -5030,6 +5030,12 @@ async fn provision_all_service_router_material(
                             direction,
                             wall_secs(),
                         )?;
+                        tracing::info!(
+                            build_attempt_id = attempt_id.get(),
+                            direction = ?direction,
+                            transition = "install_committed",
+                            "destination build attempt"
+                        );
                         local_receive_tunnel = binding.local_receive_tunnel;
                         installed_inbound = true;
                     }
@@ -5180,6 +5186,12 @@ async fn provision_all_service_router_material(
                         direction,
                         wall_secs(),
                     )?);
+                    tracing::info!(
+                        build_attempt_id = attempt_id.get(),
+                        direction = ?direction,
+                        transition = "install_committed",
+                        "destination build attempt"
+                    );
                 }
             }
             let binding = binding.ok_or(ServiceProductError::OutboundBuildMissing)?;
