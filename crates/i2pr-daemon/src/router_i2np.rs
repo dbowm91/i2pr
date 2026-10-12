@@ -1266,6 +1266,133 @@ pub fn generate_controlled_ntcp2_router_info(
     Ok(encoded)
 }
 
+/// Builds one signed RouterInfo for the explicit dual-transport loopback
+/// qualification profile. Both endpoint/key tuples are copied from the live
+/// owners' validated configuration and identity-bound stores. No capability
+/// letters are added here; the controlled floodfill permit path may later
+/// publish a separate `caps=f` snapshot after the live role is active.
+pub fn generate_controlled_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    if !ssu2_endpoint.ip().is_loopback()
+        || !ntcp2_endpoint.ip().is_loopback()
+        || ssu2_endpoint.port() < 1024
+        || ntcp2_endpoint.port() < 1024
+        || ssu2_endpoint.is_ipv4() != ntcp2_endpoint.is_ipv4()
+    {
+        return Err(Ssu2ServiceError::ControlledProfile(
+            "dual-transport qualification requires matching fixed loopback address families"
+                .to_owned(),
+        ));
+    }
+    let network_id = u8::try_from(network_id).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let hash = bundle
+        .identity()
+        .hash()
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if ssu2_transport.router_hash() != hash.as_bytes()
+        || ntcp2_transport.router_hash() != hash.as_bytes()
+    {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    let ssu2_options = Mapping::from_entries(vec![
+        ("host".to_owned(), ssu2_endpoint.ip().to_string()),
+        ("port".to_owned(), ssu2_endpoint.port().to_string()),
+        (
+            "caps".to_owned(),
+            if ssu2_endpoint.is_ipv4() { "4" } else { "6" }.to_owned(),
+        ),
+        ("mtu".to_owned(), i2pr_runtime::SSU2_DEFAULT_MTU.to_string()),
+        ("v".to_owned(), "2".to_owned()),
+        (
+            "s".to_owned(),
+            i2p_b64_encode(&ssu2_transport.static_key().public_bytes()),
+        ),
+        (
+            "i".to_owned(),
+            i2p_b64_encode(ssu2_transport.intro_key_bytes()),
+        ),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let ntcp2_options = Mapping::from_entries(vec![
+        ("host".to_owned(), ntcp2_endpoint.ip().to_string()),
+        ("port".to_owned(), ntcp2_endpoint.port().to_string()),
+        ("v".to_owned(), "2".to_owned()),
+        (
+            "s".to_owned(),
+            i2p_b64_encode(&ntcp2_transport.transport().key().public_bytes()),
+        ),
+        (
+            "i".to_owned(),
+            i2p_b64_encode(ntcp2_transport.transport().iv()),
+        ),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let expires = Date::from_millis(wall_secs().saturating_add(86_400).saturating_mul(1000));
+    let ssu2_address = RouterAddress::new(10, expires, "SSU2".to_owned(), ssu2_options)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let ntcp2_address = RouterAddress::new(10, expires, "NTCP2".to_owned(), ntcp2_options)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let router_options = Mapping::from_entries(vec![
+        (
+            "router.version".to_owned(),
+            CONTROLLED_ROUTER_VERSION.to_owned(),
+        ),
+        ("netId".to_owned(), network_id.to_string()),
+    ])
+    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let published = Date::from_millis(wall_secs().saturating_mul(1000));
+    let info = bundle
+        .sign_router_info(
+            published,
+            vec![ssu2_address, ntcp2_address],
+            Vec::new(),
+            router_options,
+        )
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let encoded = info
+        .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let decoded =
+        i2pr_proto::RouterInfo::decode(&encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    i2pr_crypto::verify_router_info(&decoded).map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    if decoded.addresses().len() != 2
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .and_then(|address| address.options().get("host"))
+            != Some(ssu2_endpoint.ip().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .and_then(|address| address.options().get("port"))
+            != Some(ssu2_endpoint.port().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "NTCP2")
+            .and_then(|address| address.options().get("host"))
+            != Some(ntcp2_endpoint.ip().to_string().as_str())
+        || decoded
+            .addresses()
+            .iter()
+            .find(|address| address.transport_style() == "NTCP2")
+            .and_then(|address| address.options().get("port"))
+            != Some(ntcp2_endpoint.port().to_string().as_str())
+    {
+        return Err(Ssu2ServiceError::InvalidIdentity);
+    }
+    Ok(encoded)
+}
+
 pub(crate) fn generate_private_lan_identity_with_keys(
     bundle: &RouterIdentityBundle,
     host: &str,
@@ -1446,6 +1573,18 @@ impl Ssu2DaemonService {
         &self.service
     }
 
+    /// Installs one controlled dual-family record only when its NTCP2
+    /// endpoint matches the separately configured live loopback listener.
+    pub fn install_controlled_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
+    }
+
     /// Returns the narrow outbound delivery capability.
     pub fn delivery(&self) -> RouterDeliveryService {
         RouterDeliveryService::new(self.service.clone())
@@ -1485,6 +1624,18 @@ impl Ssu2DaemonHandle {
     /// Returns the owning runtime service.
     pub const fn service(&self) -> &Ssu2RuntimeService {
         &self.service
+    }
+
+    /// Installs one controlled dual-family record only when its NTCP2
+    /// endpoint matches the separately configured live loopback listener.
+    pub fn install_controlled_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
     }
 
     /// Returns publication material derived by the runtime from its live bind and reachability
@@ -2011,6 +2162,66 @@ mod tests {
                 44_321,
                 2,
                 &transport,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn controlled_dual_transport_router_info_binds_both_live_loopback_keys() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_storage::{
+            IdentityStore, Ntcp2TransportIdentityStore, Ssu2TransportIdentityStore,
+        };
+        use rand_core::OsRng;
+        use tempfile::tempdir;
+
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = *bundle.identity().hash().expect("router hash").as_bytes();
+        let directory = tempdir().expect("temporary data directory");
+        let data_dir = directory.path().join("router-data");
+        IdentityStore::prepare_directory(&data_dir).expect("private directory");
+        let ssu2 = Ssu2TransportIdentityStore::in_data_dir(&data_dir)
+            .load_or_generate(hash, &mut OsRng)
+            .expect("SSU2 material");
+        let ntcp2 = Ntcp2TransportIdentityStore::in_data_dir(&data_dir)
+            .load_or_generate(hash, &mut OsRng)
+            .expect("NTCP2 material");
+        let encoded = generate_controlled_dual_transport_router_info(
+            &bundle,
+            "127.0.0.1:40123".parse().expect("SSU2 endpoint"),
+            &ssu2,
+            "127.0.0.1:40124".parse().expect("NTCP2 endpoint"),
+            &ntcp2,
+            2,
+        )
+        .expect("dual loopback RouterInfo");
+        let info = i2pr_proto::RouterInfo::decode(
+            &encoded,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .expect("RouterInfo decodes");
+        i2pr_crypto::verify_router_info(&info).expect("signature verifies");
+        assert_eq!(info.addresses().len(), 2);
+        assert_eq!(info.options().get("caps"), None);
+        for (style, expected_port) in [("SSU2", "40123"), ("NTCP2", "40124")] {
+            let address = info
+                .addresses()
+                .iter()
+                .find(|address| address.transport_style() == style)
+                .unwrap_or_else(|| panic!("missing {style} address"));
+            assert_eq!(address.options().get("host"), Some("127.0.0.1"));
+            assert_eq!(address.options().get("port"), Some(expected_port));
+            assert_eq!(address.options().get("v"), Some("2"));
+        }
+        assert!(
+            generate_controlled_dual_transport_router_info(
+                &bundle,
+                "127.0.0.1:40123".parse().unwrap(),
+                &ssu2,
+                "0.0.0.0:40124".parse().unwrap(),
+                &ntcp2,
+                2,
             )
             .is_err()
         );

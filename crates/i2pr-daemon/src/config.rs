@@ -809,6 +809,8 @@ impl Default for RawNewsConfig {
 struct RawFloodfillConfig {
     #[serde(default = "default_floodfill_enabled")]
     enabled: bool,
+    #[serde(default = "default_floodfill_qualification_profile")]
+    qualification_profile: String,
 }
 
 /// Explicit process-wide transport byte-rate policy.
@@ -852,6 +854,7 @@ impl Default for RawFloodfillConfig {
     fn default() -> Self {
         Self {
             enabled: default_floodfill_enabled(),
+            qualification_profile: default_floodfill_qualification_profile(),
         }
     }
 }
@@ -1306,6 +1309,10 @@ const fn default_addressbook_enabled() -> bool {
 /// evaluates eligibility — it never forces the Active role.
 const fn default_floodfill_enabled() -> bool {
     false
+}
+
+fn default_floodfill_qualification_profile() -> String {
+    String::from("normal")
 }
 
 const fn default_service_tunnels_max_active_connections() -> usize {
@@ -1869,6 +1876,17 @@ pub enum SamProductMode {
 pub struct FloodfillConfig {
     /// Whether the operator requests floodfill eligibility evaluation.
     pub enabled: bool,
+    /// Scope for evaluating the operator's explicit floodfill intent.
+    pub qualification_profile: FloodfillQualificationProfile,
+}
+
+/// Explicit qualification scope for floodfill activation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloodfillQualificationProfile {
+    /// Ordinary floodfill eligibility, including public-address gates.
+    Normal,
+    /// Local controlled stock-interop profile; never grants `R` or bandwidth.
+    ControlledLoopback,
 }
 
 /// Immutable global bandwidth policy. Disabled remains the default for
@@ -2035,7 +2053,7 @@ impl Config {
         let i2pcontrol = normalize_i2pcontrol(&raw.i2pcontrol, &raw.limits)?;
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
         let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
-        let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &netdb)?;
+        let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &ntcp2, &netdb)?;
         let bandwidth = normalize_bandwidth(&raw.bandwidth, &ssu2)?;
 
         Ok(Self {
@@ -3341,8 +3359,39 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
 fn normalize_floodfill(
     raw: &RawFloodfillConfig,
     ssu2: &Ssu2Config,
+    ntcp2: &Ntcp2Config,
     netdb: &NetDbConfig,
 ) -> Result<FloodfillConfig, ConfigError> {
+    let qualification_profile = match raw.qualification_profile.as_str() {
+        "normal" => FloodfillQualificationProfile::Normal,
+        "controlled_loopback" => FloodfillQualificationProfile::ControlledLoopback,
+        _ => {
+            return Err(ConfigError::Semantic {
+                field: "floodfill.qualification_profile",
+                reason: "must be normal or controlled_loopback",
+            });
+        }
+    };
+    if qualification_profile == FloodfillQualificationProfile::ControlledLoopback {
+        let ssu_endpoint = ssu2.bind_ipv4.or(ssu2.bind_ipv6);
+        if !raw.enabled
+            || !ssu2.enabled
+            || ssu2.qualification_profile != Ssu2QualificationProfile::ControlledLoopback
+            || ssu2.bind_ipv4.is_some() == ssu2.bind_ipv6.is_some()
+            || ssu_endpoint.is_none_or(|ip| !ip.is_loopback())
+            || ssu2.port < MIN_SSU2_SERVICE_PORT
+            || !ntcp2.enabled
+            || ntcp2.qualification_profile != Ntcp2QualificationProfile::ControlledLoopback
+            || !ntcp2.bind_address.is_loopback()
+            || ntcp2.listen_port < 1024
+            || ssu_endpoint.is_some_and(|ip| ip.is_ipv4() != ntcp2.bind_address.is_ipv4())
+        {
+            return Err(ConfigError::Semantic {
+                field: "floodfill.qualification_profile",
+                reason: "controlled_loopback requires enabled floodfill, one fixed loopback SSU2 endpoint, and a fixed same-family controlled-loopback NTCP2 endpoint",
+            });
+        }
+    }
     // Intent without the serving substrate is a configuration error,
     // not a silent no-op: the operator must enable the SSU2 socket the
     // floodfill role serves on and the NetDB it serves. Eligibility
@@ -3363,6 +3412,7 @@ fn normalize_floodfill(
     }
     Ok(FloodfillConfig {
         enabled: raw.enabled,
+        qualification_profile,
     })
 }
 
@@ -4899,6 +4949,39 @@ data_dir = "./state"
             Config::parse(&no_netdb),
             Err(ConfigError::Semantic {
                 field: "floodfill.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn controlled_loopback_floodfill_requires_both_fixed_transport_endpoints() {
+        let valid = format!(
+            "{}\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = 40124\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 40123\n[floodfill]\nenabled = true\nqualification_profile = \"controlled_loopback\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&valid).expect("explicit dual loopback profile");
+        assert_eq!(
+            config.floodfill.qualification_profile,
+            FloodfillQualificationProfile::ControlledLoopback
+        );
+
+        let ephemeral_ssu2 = valid.replace("port = 40123", "port = 0");
+        assert!(matches!(
+            Config::parse(&ephemeral_ssu2),
+            Err(ConfigError::Semantic {
+                field: "floodfill.qualification_profile",
+                ..
+            })
+        ));
+        let no_ntcp2 = valid.replace(
+            "enabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address",
+            "enabled = false\nqualification_profile = \"disabled\"\nbind_address",
+        );
+        assert!(matches!(
+            Config::parse(&no_ntcp2),
+            Err(ConfigError::Semantic {
+                field: "floodfill.qualification_profile",
                 ..
             })
         ));

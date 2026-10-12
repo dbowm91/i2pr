@@ -1342,12 +1342,23 @@ pub struct FloodfillServiceStatus {
 pub struct FloodfillServiceState {
     coordinator: FloodfillCoordinator,
     intent: bool,
+    controlled_loopback: bool,
     config_invalid: bool,
     active_address: Option<i2pr_proto::RouterAddress>,
+    active_addresses: Option<Vec<i2pr_proto::RouterAddress>>,
     active_permit: Option<i2pr_netdb::FloodfillAdvertisementPermit>,
     reasons: Vec<NormalIneligibility>,
     pending_snapshot: Option<FloodfillEligibilitySnapshot>,
     last_queue_full_drops: u64,
+}
+
+/// Bounded inputs for applying one floodfill withdrawal transition.
+pub struct FloodfillWithdrawalContext {
+    pub wall_now_ms: u64,
+    pub drain_timeout: Duration,
+    pub max_record_age_ms: u64,
+    pub preserve_dual_transport: bool,
+    pub controlled_ntcp2_endpoint: Option<std::net::SocketAddr>,
 }
 
 impl FloodfillServiceState {
@@ -1355,6 +1366,15 @@ impl FloodfillServiceState {
     /// and empty serving NetDB: no stale records are served after a
     /// restart, and activation requires fresh eligibility.
     pub fn new(local_router: Hash, intent: bool) -> Result<Self, i2pr_netdb::ReplicationError> {
+        Self::new_with_profile(local_router, intent, false)
+    }
+
+    /// Creates the floodfill owner in an explicit qualification scope.
+    pub fn new_with_profile(
+        local_router: Hash,
+        intent: bool,
+        controlled_loopback: bool,
+    ) -> Result<Self, i2pr_netdb::ReplicationError> {
         Ok(Self {
             coordinator: FloodfillCoordinator::new(
                 local_router,
@@ -1365,8 +1385,10 @@ impl FloodfillServiceState {
                 ReplicationPolicy::default(),
             )?,
             intent,
+            controlled_loopback,
             config_invalid: false,
             active_address: None,
+            active_addresses: None,
             active_permit: None,
             reasons: Vec::new(),
             pending_snapshot: None,
@@ -1394,6 +1416,16 @@ impl FloodfillServiceState {
     ) -> Result<bool, crate::config::ConfigError> {
         match crate::config::Config::parse(config_text) {
             Ok(config) => {
+                if (config.floodfill.qualification_profile
+                    == crate::config::FloodfillQualificationProfile::ControlledLoopback)
+                    != self.controlled_loopback
+                {
+                    self.config_invalid = true;
+                    return Err(crate::config::ConfigError::Semantic {
+                        field: "floodfill.qualification_profile",
+                        reason: "qualification profile changes require daemon restart",
+                    });
+                }
                 self.config_invalid = false;
                 let changed = self.intent != config.floodfill.enabled;
                 self.intent = config.floodfill.enabled;
@@ -1431,8 +1463,69 @@ impl FloodfillServiceState {
     /// matching apply call; a second evaluation overwrites it, so the
     /// owner must act on each tick before evaluating again.
     pub fn evaluate(&mut self, readiness: &NormalReadiness<'_>) -> FloodfillServiceStep {
+        if self.controlled_loopback {
+            return self.evaluate_controlled_loopback(readiness, false);
+        }
         let (snapshot, reasons) = evaluate_normal_eligibility(self.intent, readiness);
         self.reasons = reasons;
+        self.coordinator.update_eligibility(snapshot);
+        self.pending_snapshot = Some(snapshot);
+        match self.coordinator.role_state() {
+            FloodfillRoleState::Eligible => FloodfillServiceStep::Activate,
+            FloodfillRoleState::Draining => FloodfillServiceStep::Withdraw,
+            _ => FloodfillServiceStep::Idle,
+        }
+    }
+
+    /// Evaluates the explicitly controlled dual-loopback profile. The
+    /// qualification flag represents the operator-selected local test scope;
+    /// it does not authorize an `R` or bandwidth claim.
+    pub fn evaluate_controlled_loopback(
+        &mut self,
+        readiness: &NormalReadiness<'_>,
+        dual_router_info_ready: bool,
+    ) -> FloodfillServiceStep {
+        if !self.controlled_loopback {
+            return self.evaluate(readiness);
+        }
+        self.reasons.clear();
+        if !self.intent {
+            self.reasons.push(NormalIneligibility::NotRequested);
+        }
+        if !dual_router_info_ready {
+            self.reasons.push(NormalIneligibility::AddressUnqualified);
+        }
+        if !readiness.netdb_ready {
+            self.reasons.push(NormalIneligibility::NetdbNotReady);
+        }
+        if !readiness.storage_ready {
+            self.reasons.push(NormalIneligibility::StorageNotReady);
+        }
+        if !readiness.maintenance_ready {
+            self.reasons.push(NormalIneligibility::MaintenanceNotReady);
+        }
+        if !readiness.resource_headroom {
+            self.reasons.push(NormalIneligibility::ResourceExhausted);
+        }
+        if !readiness.clock_sane {
+            self.reasons.push(NormalIneligibility::ClockUnsane);
+        }
+        if !readiness.supervision_healthy {
+            self.reasons.push(NormalIneligibility::SupervisionUnhealthy);
+        }
+        let snapshot = FloodfillEligibilitySnapshot {
+            controlled_qualification_permit: self.intent && dual_router_info_ready,
+            qualified_ssu2_address: dual_router_info_ready,
+            // This bit is the role controller's activation gate. The
+            // controlled qualification builder still emits only `f`.
+            direct_reachability: true,
+            netdb_ready: readiness.netdb_ready,
+            storage_ready: readiness.storage_ready,
+            maintenance_ready: readiness.maintenance_ready,
+            resource_headroom: readiness.resource_headroom,
+            clock_sane: readiness.clock_sane,
+            supervision_healthy: readiness.supervision_healthy,
+        };
         self.coordinator.update_eligibility(snapshot);
         self.pending_snapshot = Some(snapshot);
         match self.coordinator.role_state() {
@@ -1502,8 +1595,144 @@ impl FloodfillServiceState {
             return Err(NormalActivationError::PublishFailed);
         }
         self.active_address = Some(prepared.address);
+        self.active_addresses = None;
         self.active_permit = Some(prepared.permit);
         Ok(prepared.router_info)
+    }
+
+    /// Activates the controlled loopback role over the already signed dual
+    /// transport record. It adds only `caps=f` after the role controller
+    /// grants its opaque permit.
+    pub async fn apply_controlled_dual_activation(
+        &mut self,
+        handle: &crate::router_i2np::Ssu2DaemonHandle,
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        dual_router_info: &[u8],
+        ntcp2_endpoint: std::net::SocketAddr,
+        readiness: &NormalReadiness<'_>,
+        cancellation: &i2pr_runtime::CancellationToken,
+    ) -> Result<Vec<u8>, NormalActivationError> {
+        if cancellation.is_cancelled() || !self.controlled_loopback {
+            return Err(NormalActivationError::Cancelled);
+        }
+        let snapshot = self
+            .pending_snapshot
+            .take()
+            .ok_or(NormalActivationError::InvalidConfig)?;
+        if !snapshot.eligible() || self.coordinator.role_state() != FloodfillRoleState::Eligible {
+            return Err(NormalActivationError::InvalidConfig);
+        }
+        let decoded = RouterInfo::decode(dual_router_info, MAX_CONTROLLED_ROUTER_INFO_BYTES)
+            .map_err(|_| NormalActivationError::InvalidConfig)?;
+        i2pr_crypto::verify_router_info(&decoded)
+            .map_err(|_| NormalActivationError::InvalidConfig)?;
+        let addresses = decoded.addresses().to_vec();
+        if addresses.len() != 2
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                != 1
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                != 1
+            || addresses.iter().any(|address| {
+                address
+                    .options()
+                    .get("host")
+                    .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                    .is_none_or(|host| !host.is_loopback())
+                    || address
+                        .options()
+                        .get("port")
+                        .and_then(|port| port.parse::<u16>().ok())
+                        .is_none_or(|port| port < 1024)
+            })
+        {
+            return Err(NormalActivationError::InvalidConfig);
+        }
+        if !self.coordinator.begin_activation() {
+            self.coordinator.fail_activation();
+            return Err(NormalActivationError::ActivationFailed);
+        }
+        if !self.coordinator.complete_activation() {
+            self.coordinator.fail_activation();
+            return Err(NormalActivationError::ActivationFailed);
+        }
+        let Some(permit) = self.coordinator.advertisement_permit() else {
+            self.coordinator.fail_activation();
+            return Err(NormalActivationError::ActivationFailed);
+        };
+        let local = match i2pr_netdb::LocalRouterInfoBuilder::new(bundle)
+            .build_controlled_floodfill_with_dual_loopback_addresses(
+                Date::from_millis(readiness.wall_now_ms),
+                controlled_router_options().map_err(|_| NormalActivationError::InvalidConfig)?,
+                addresses.clone(),
+                &permit,
+            ) {
+            Ok(local) => local,
+            Err(error) => {
+                self.coordinator.fail_activation();
+                return Err(NormalActivationError::BuildFailed(error));
+            }
+        };
+        let encoded = match local.encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                self.coordinator.fail_activation();
+                return Err(NormalActivationError::InvalidConfig);
+            }
+        };
+        if handle
+            .install_controlled_dual_router_info(
+                encoded.clone(),
+                readiness.wall_now_ms,
+                ntcp2_endpoint,
+            )
+            .is_err()
+        {
+            self.coordinator.fail_activation();
+            self.reasons = vec![NormalIneligibility::ActivationFailed];
+            return Err(NormalActivationError::InstallFailed);
+        }
+        let time = FloodfillTime {
+            wall_ms: readiness.wall_now_ms,
+            monotonic_ms: readiness.wall_now_ms,
+        };
+        if publish_local_router_info(&mut self.coordinator, &encoded, &permit, time).is_err() {
+            if let Ok(withdrawn) = controlled_router_options().and_then(|options| {
+                i2pr_netdb::LocalRouterInfoBuilder::new(bundle)
+                    .build_controlled_dual_loopback_floodfill_withdrawal(
+                        Date::from_millis(readiness.wall_now_ms),
+                        options,
+                        addresses.clone(),
+                        &permit,
+                    )
+                    .and_then(|local| {
+                        local
+                            .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+                            .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                                context: "encode",
+                            })
+                    })
+            }) {
+                let _ = handle
+                    .service()
+                    .install_local_router_info(withdrawn, readiness.wall_now_ms);
+            }
+            self.coordinator.fail_activation();
+            self.reasons = vec![NormalIneligibility::ActivationFailed];
+            return Err(NormalActivationError::PublishFailed);
+        }
+        self.active_address = addresses
+            .iter()
+            .find(|address| address.transport_style() == "SSU2")
+            .cloned();
+        self.active_addresses = Some(addresses);
+        self.active_permit = Some(permit);
+        Ok(encoded)
     }
 
     /// Builds the withdrawal record for the active address without
@@ -1536,11 +1765,16 @@ impl FloodfillServiceState {
         &mut self,
         handle: &crate::router_i2np::Ssu2DaemonHandle,
         bundle: &i2pr_crypto::RouterIdentityBundle,
-        wall_now_ms: u64,
-        drain_timeout: Duration,
-        max_record_age_ms: u64,
+        withdrawal: FloodfillWithdrawalContext,
         cancellation: &i2pr_runtime::CancellationToken,
-    ) -> Result<(), NormalActivationError> {
+    ) -> Result<Vec<u8>, NormalActivationError> {
+        let FloodfillWithdrawalContext {
+            wall_now_ms,
+            drain_timeout,
+            max_record_age_ms,
+            preserve_dual_transport,
+            controlled_ntcp2_endpoint,
+        } = withdrawal;
         if cancellation.is_cancelled() {
             return Err(NormalActivationError::Cancelled);
         }
@@ -1564,18 +1798,73 @@ impl FloodfillServiceState {
         // admission): re-applying it would move Draining to Disabled
         // and break `complete_drain`, so the reinstall below works
         // directly against the Draining role.
+        let active_addresses = self.active_addresses.clone();
         let (address, permit) = match (self.active_address.clone(), self.active_permit.clone()) {
             (Some(address), Some(permit)) => (Some(address), Some(permit)),
-            (None, None) => (None, None),
+            (None, None) if active_addresses.is_none() => (None, None),
             _ => return Err(NormalActivationError::InvalidConfig),
         };
-        if let (Some(address), Some(permit)) = (address, permit) {
-            let encoded = Self::build_withdrawal_record(bundle, &permit, &address, wall_now_ms)?;
-            if handle
-                .service()
-                .install_local_router_info(encoded.clone(), wall_now_ms)
-                .is_err()
-            {
+        let mut withdrawn_router_info = None;
+        if let Some(permit) = permit {
+            let encoded = if let Some(addresses) = active_addresses {
+                let addresses = if preserve_dual_transport {
+                    addresses
+                } else {
+                    vec![
+                        address
+                            .clone()
+                            .ok_or(NormalActivationError::InvalidConfig)?,
+                    ]
+                };
+                if addresses.len() == 1 {
+                    Self::build_withdrawal_record(
+                        bundle,
+                        &permit,
+                        addresses
+                            .first()
+                            .ok_or(NormalActivationError::InvalidConfig)?,
+                        wall_now_ms,
+                    )?
+                } else {
+                    i2pr_netdb::LocalRouterInfoBuilder::new(bundle)
+                        .build_controlled_dual_loopback_floodfill_withdrawal(
+                            Date::from_millis(wall_now_ms),
+                            controlled_router_options()
+                                .map_err(|_| NormalActivationError::WithdrawalFailed)?,
+                            addresses,
+                            &permit,
+                        )
+                        .and_then(|local| {
+                            local
+                                .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+                                .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                                    context: "encode",
+                                })
+                        })
+                        .map_err(|_| NormalActivationError::WithdrawalFailed)?
+                }
+            } else {
+                let address = address.ok_or(NormalActivationError::InvalidConfig)?;
+                Self::build_withdrawal_record(bundle, &permit, &address, wall_now_ms)?
+            };
+            withdrawn_router_info = Some(encoded.clone());
+            let install_result = if self.controlled_loopback && preserve_dual_transport {
+                controlled_ntcp2_endpoint.map_or_else(
+                    || Err(i2pr_runtime::Ssu2PublicationUnavailable::InvalidPublication),
+                    |endpoint| {
+                        handle.install_controlled_dual_router_info(
+                            encoded.clone(),
+                            wall_now_ms,
+                            endpoint,
+                        )
+                    },
+                )
+            } else {
+                handle
+                    .service()
+                    .install_local_router_info(encoded.clone(), wall_now_ms)
+            };
+            if install_result.is_err() {
                 self.reasons = vec![NormalIneligibility::WithdrawalFailed];
                 return Err(NormalActivationError::WithdrawalFailed);
             }
@@ -1613,8 +1902,9 @@ impl FloodfillServiceState {
             return Err(NormalActivationError::WithdrawalFailed);
         }
         self.active_address = None;
+        self.active_addresses = None;
         self.active_permit = None;
-        Ok(())
+        Ok(withdrawn_router_info.unwrap_or_default())
     }
 
     /// Routes one authenticated inbound I2NP handoff through the
@@ -3030,6 +3320,38 @@ mod tests {
             Err(NormalActivationError::EligibilityFailed(_))
         ));
         assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+    }
+
+    #[test]
+    fn controlled_loopback_floodfill_requires_dual_record_and_never_claims_r() {
+        let material = test_material("127.0.0.1", true);
+        let readiness = ready(Some(&material));
+        let mut state =
+            FloodfillServiceState::new_with_profile(Hash::from_bytes([3; 32]), true, true)
+                .expect("controlled service state");
+        assert_eq!(
+            state.evaluate_controlled_loopback(&readiness, false),
+            FloodfillServiceStep::Idle
+        );
+        assert_eq!(state.role_state(), FloodfillRoleState::Disabled);
+        assert_eq!(
+            state.evaluate_controlled_loopback(&readiness, true),
+            FloodfillServiceStep::Activate
+        );
+        assert_eq!(state.role_state(), FloodfillRoleState::Eligible);
+        assert!(
+            !state
+                .reasons
+                .contains(&NormalIneligibility::ReachabilityUnconfirmed)
+        );
+
+        // A failed/withdrawn shared dual RouterInfo closes eligibility before
+        // the role can mint or preserve an advertisement permit.
+        assert_eq!(
+            state.evaluate_controlled_loopback(&readiness, false),
+            FloodfillServiceStep::Withdraw
+        );
+        assert_eq!(state.role_state(), FloodfillRoleState::Draining);
     }
 
     #[test]

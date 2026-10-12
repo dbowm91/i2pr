@@ -125,6 +125,10 @@ pub enum LocalRouterInfoError {
     /// Controlled floodfill construction requires a qualified SSU2 address.
     #[error("floodfill RouterInfo requires one qualified SSU2 address")]
     UnqualifiedFloodfillAddress,
+    /// The dual controlled-loopback profile requires exactly one live SSU2
+    /// address and one live NTCP2 address, both with fixed loopback endpoints.
+    #[error("controlled dual-transport floodfill addresses are invalid")]
+    InvalidControlledTransportAddresses,
     /// The constructed record did not pass the standard validator.
     #[error("local router info failed validation: {0}")]
     Validation(#[from] RouterInfoValidationError),
@@ -242,6 +246,40 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         self.build_floodfill_with_caps(published, options, address, permit, "f")
     }
 
+    /// Builds a controlled-loopback floodfill RouterInfo with one SSU2 and
+    /// one NTCP2 address. This publishes only `caps=f`; reachability and
+    /// bandwidth claims require their separate evidence-gated builders.
+    /// Both addresses must name fixed loopback endpoints and carry the
+    /// address options required by their transport.
+    pub fn build_controlled_floodfill_with_dual_loopback_addresses(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        permit: &FloodfillAdvertisementPermit,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if addresses.len() != 2
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                != 1
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                != 1
+            || !addresses.iter().any(is_qualified_ssu2_address)
+            || !addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .all(is_controlled_loopback_ntcp2_address)
+        {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        self.build_floodfill_with_addresses(published, options, addresses, permit, "f")
+    }
+
     /// Builds a floodfill RouterInfo with a capacity tier supplied by the
     /// daemon's current enforcement-eligibility gate. The class is appended
     /// only beside the existing opaque role permit and qualified address gate.
@@ -303,10 +341,27 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         published: Date,
         options: Mapping,
         address: RouterAddress,
+        permit: &FloodfillAdvertisementPermit,
+        caps_suffix: &str,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        self.build_floodfill_with_addresses(published, options, vec![address], permit, caps_suffix)
+    }
+
+    fn build_floodfill_with_addresses(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
         _permit: &FloodfillAdvertisementPermit,
         caps_suffix: &str,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
-        if !is_qualified_ssu2_address(&address) {
+        if addresses
+            .iter()
+            .filter(|address| address.transport_style() == "SSU2")
+            .count()
+            != 1
+            || !addresses.iter().any(is_qualified_ssu2_address)
+        {
             return Err(LocalRouterInfoError::UnqualifiedFloodfillAddress);
         }
         Self::validate_options(&options)?;
@@ -324,7 +379,7 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         entries.push(("caps".to_owned(), floodfill_caps));
         let options = Mapping::from_entries(entries)
             .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
-        self.sign_addressed(published, options, address)
+        self.sign_addressed_many(published, options, addresses)
     }
 
     /// Builds the withdrawal RouterInfo for the same qualified SSU2 address without `caps=f`.
@@ -358,15 +413,64 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         self.sign_addressed(published, options, address)
     }
 
+    /// Builds the no-floodfill withdrawal form for a controlled dual-loopback
+    /// RouterInfo while preserving both live transport addresses.
+    pub fn build_controlled_dual_loopback_floodfill_withdrawal(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        _permit: &FloodfillAdvertisementPermit,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if addresses.len() != 2
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                != 1
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                != 1
+            || !addresses.iter().any(is_qualified_ssu2_address)
+            || !addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .all(is_controlled_loopback_ntcp2_address)
+        {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        Self::validate_options(&options)?;
+        let entries = options
+            .entries()
+            .iter()
+            .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+            .filter(|(key, _)| key != "caps")
+            .collect();
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        self.sign_addressed_many(published, options, addresses)
+    }
+
     fn sign_addressed(
         &self,
         published: Date,
         options: Mapping,
         address: RouterAddress,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
+    fn sign_addressed_many(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         let info = self
             .bundle
-            .sign_router_info(published, vec![address], Vec::new(), options)
+            .sign_router_info(published, addresses, Vec::new(), options)
             .map_err(|_| LocalRouterInfoError::SigningFailed)?;
         let validated = ValidatedRouterInfo::from_router_info(
             info,
@@ -397,6 +501,37 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         }
         Ok(())
     }
+}
+
+fn is_controlled_loopback_ntcp2_address(address: &RouterAddress) -> bool {
+    if address.transport_style() != "NTCP2" || address.options().get("v") != Some("2") {
+        return false;
+    }
+    let Some(host) = address.options().get("host") else {
+        return false;
+    };
+    // Keep this runtime-neutral crate free of `std::net`; the controlled
+    // profile uses canonical loopback literals, and non-canonical spellings
+    // are not needed for the fixed endpoints it signs.
+    if !matches!(host, "127.0.0.1" | "::1") {
+        return false;
+    }
+    let Some(port) = address
+        .options()
+        .get("port")
+        .and_then(|value| value.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    port >= 1024
+        && address
+            .options()
+            .get("s")
+            .is_some_and(|value| !value.is_empty())
+        && address
+            .options()
+            .get("i")
+            .is_some_and(|value| !value.is_empty())
 }
 
 /// A locally signed, validated RouterInfo snapshot.
@@ -674,6 +809,114 @@ mod tests {
             .unwrap();
         assert_eq!(local.router_info().options().get("caps"), Some("f"));
         assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    fn qualified_ntcp2_test_address() -> RouterAddress {
+        let options = Mapping::from_entries(vec![
+            ("host".into(), "127.0.0.1".into()),
+            ("i".into(), crate::base64::encode(&[3; 16]).unwrap()),
+            ("port".into(), "23456".into()),
+            ("s".into(), crate::base64::encode(&[4; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
+        RouterAddress::new(10, Date::from_millis(100), "NTCP2".into(), options).unwrap()
+    }
+
+    #[test]
+    fn controlled_dual_loopback_floodfill_builder_emits_only_f_with_both_addresses() {
+        let signer = bundle(0x415);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let permit = active_role_permit();
+        let local = builder
+            .build_controlled_floodfill_with_dual_loopback_addresses(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                vec![
+                    qualified_ssu2_test_address(),
+                    qualified_ntcp2_test_address(),
+                ],
+                &permit,
+            )
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("f"));
+        assert_eq!(local.router_info().addresses().len(), 2);
+        assert!(
+            local
+                .router_info()
+                .addresses()
+                .iter()
+                .any(|address| address.transport_style() == "SSU2")
+        );
+        assert!(
+            local
+                .router_info()
+                .addresses()
+                .iter()
+                .any(|address| address.transport_style() == "NTCP2")
+        );
+        i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+    }
+
+    #[test]
+    fn controlled_dual_loopback_floodfill_builder_rejects_unbound_ntcp2_shapes() {
+        let signer = bundle(0x416);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let permit = active_role_permit();
+        let options = controlled_router_options().unwrap();
+        let invalid_host = Mapping::from_entries(vec![
+            ("host".into(), "192.0.2.1".into()),
+            ("i".into(), crate::base64::encode(&[3; 16]).unwrap()),
+            ("port".into(), "23456".into()),
+            ("s".into(), crate::base64::encode(&[4; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
+        let bad_host =
+            RouterAddress::new(10, Date::from_millis(100), "NTCP2".into(), invalid_host).unwrap();
+        assert_eq!(
+            builder
+                .build_controlled_floodfill_with_dual_loopback_addresses(
+                    Date::from_millis(101),
+                    options.clone(),
+                    vec![qualified_ssu2_test_address(), bad_host],
+                    &permit,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidControlledTransportAddresses
+        );
+        assert_eq!(
+            builder
+                .build_controlled_floodfill_with_dual_loopback_addresses(
+                    Date::from_millis(101),
+                    options.clone(),
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address(),
+                        qualified_ntcp2_test_address()
+                    ],
+                    &permit,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidControlledTransportAddresses
+        );
+        assert_eq!(
+            builder
+                .build_controlled_floodfill_with_dual_loopback_addresses(
+                    Date::from_millis(101),
+                    options,
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address()
+                    ],
+                    &permit,
+                )
+                .unwrap()
+                .router_info()
+                .options()
+                .get("caps"),
+            Some("f")
+        );
     }
 
     fn qualified_ssu2_test_address() -> RouterAddress {

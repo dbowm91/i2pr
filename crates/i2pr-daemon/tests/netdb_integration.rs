@@ -184,7 +184,10 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             max_su3_bytes: 8 * 1024 * 1024,
             refresh_interval: std::time::Duration::from_secs(6 * 60 * 60),
         },
-        floodfill: i2pr_daemon::config::FloodfillConfig { enabled: false },
+        floodfill: i2pr_daemon::config::FloodfillConfig {
+            enabled: false,
+            qualification_profile: i2pr_daemon::config::FloodfillQualificationProfile::Normal,
+        },
         bandwidth: i2pr_daemon::config::BandwidthConfig {
             enabled: false,
             inbound_bytes_per_second: 0,
