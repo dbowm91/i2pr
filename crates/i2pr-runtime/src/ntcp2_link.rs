@@ -1052,6 +1052,22 @@ mod tests {
             )
             .await
             .expect("restart frame queues");
+        // `send_blocks` confirms bounded queue admission, not that the
+        // supervised writer and reader have crossed the loopback socket.
+        // With Tokio's paused clock, starting the receive timeout before
+        // those tasks make progress can advance virtual time to the deadline
+        // while the queued frame is still waiting to be polled. Observe both
+        // owner-tracked events using scheduler yields; this stays deterministic
+        // and does not weaken the bandwidth or socket deadlines.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while restarted_sender.snapshot().written_frames == 0
+                || restarted_receiver.snapshot().received_frames == 0
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restart frame crossed both supervised socket owners");
         let received =
             tokio::time::timeout(Duration::from_secs(2), restarted_receiver.recv(&no_cancel))
                 .await

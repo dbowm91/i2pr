@@ -117,6 +117,10 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 | 448 | blocked | `plans/implementation/floodfill/448-global-bandwidth-governor-and-eligible-capability-class.md` | `plans/closure/floodfill/448-status.md`: bounded governor/config, SSU2 accounting adapter, and data-only class mapping passed; NTCP2/common owner, priority, socket evidence, and health-gated publication open |
 | 449 | passed (infrastructure only) | `plans/implementation/core-router-recovery/449-portable-ssu2-independent-lan-qualification-lane.md` | `plans/closure/core-router-recovery/449-status.md`: offline preflight and operator procedure passed; live two-host SSU2 qualification not run; Plan 431 remains stopped |
 
+| 471 | blocked | `blocked-sam-owner-registration-empty-after-inbound-builds` | `plans/implementation/core-router-recovery/471-normal-sam-stock-short-build-acceptance-and-multihop-recovery.md` | `plans/closure/core-router-recovery/471-status.md`: one replay installed two inbound leases/receive IDs but observed zero owner registrations; source cause and full SAM path remain open |
+| 472 | active: runner implementation; live LAN environment-blocked | `plans/implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md` | Portable owner-authorized *per-host* live SSU2 proof following Plan 449 preflight, independently addressed and signed, without public qualification |
+| 473 | ready P0 CI, merge gated | `plans/implementation/core-router-recovery/473-macos-ntcp2-governor-and-recovery-stack-integration.md` | Correct real macOS paused-clock governor restart test failure; all exact-head CI green, then approved stacked #37–#43 integration/rebase with tree equivalence audit |
+
 Plans 446, 447, and 448 have blocked closure records; Plan 449 has passed only its preflight infrastructure scope. Corrective Plans 440–444 now each have closure records; Plan 444's latest resume status is blocked at stock Java selection and store/lookup evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
@@ -226,6 +230,17 @@ SAM 462/464–466 stays P2 separate: nonzero-hop application product, not NTCP2 
 ```
 
 The [execution-loop procedure](../README.md#bounded-execution-and-causal-corrective-policy) requires source-visible preflight, a legitimate router-generated message, the first missing owner transition, and an in-plan fix/regression/retry after a **causally distinct correction**; identical no-progress retries are bounded. Historical closures are not retroactively modified. Public `R`/`f`, support inventory and anonymity claims remain hard-gated by GUARDRAILS/conformance/role-readiness.
+
+### Plans 470–473 — new qualification/integration phase (2026-10-12)
+
+The completed controlled NTCP2 work means these are **separate acceptance owners**, not one more transport recovery loop:
+
+- [470 normal Java NTCP2](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md), blocked after its controlled stock NetDB flood passed selector/store/NTCP2-bid preflight but produced no Java-owned dial; see [470 status](../closure/ntcp2-transport/470-status.md). Do not inspect Noise until the stock CommSystem send owner initiates a dial. Java floodfill Plan 444 remains a distinct peer-selection/store criterion.
+- [471 SAM/tunnels](../implementation/core-router-recovery/471-normal-sam-stock-short-build-acceptance-and-multihop-recovery.md) is blocked at the postbuild owner predicate; [471 status](../closure/core-router-recovery/471-status.md) records one 4/4 install result with two real leases but zero of two owner-map entries, plus variable earlier build stops. Do not repeat without a source-level owner-lifecycle correction.
+- [472 authorized LAN SSU2](../implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md) has offline per-host preparation and signed RouterInfo validation with deterministic negative controls. `run --live` fails closed because an attributable two-host product executor and owner-approved host pair are not available; see [472 status](../closure/core-router-recovery/472-status.md). No live or public-support claim follows from offline checks.
+- [473 CI/merge](../implementation/core-router-recovery/473-macos-ntcp2-governor-and-recovery-stack-integration.md): CI reproduced the NTCP2 paused-clock restart failure on candidate `4005bfa`. Source review found the test started its timeout after queue admission but before observing supervised writer/reader progress; the test now waits on those owner counters before the receive deadline. The corrected test passed 20 Linux repetitions and runtime all-targets locally. On exact final SHA `2dd16c3`, push CI passed; PR CI passed after its sole aarch64 managed-app SAM fixture transport failure passed on same-SHA rerun. Full macOS/Ubuntu, MSRV, dependency, aarch64 and GitGuardian checks are green. The open sequential PR #37–#44 stack has no recorded reviews, so integration is pending normal owner approval. No governor relaxation, test skip, or unapproved merge.
+
+No new plans for a changed log spelling, a rooted fixture correction or a retry after source fix; use [causal iteration policy](../README.md#bounded-execution-and-causal-corrective-policy). Historical blocked 431/435/439/444/462/466 statuses and recent controlled passes remain distinct; no public `R`/`f`, NTCP2, SSU2, transit, support inventory or anonymity claim from plan registration.
 
 ## 8. Cross-cutting invariants
 

@@ -454,6 +454,21 @@ fn signal_running(
     })
 }
 
+/// Maps an inbound NTCP2 handshake failure to a closed, non-secret stage
+/// label. The responder phase label originates in the protocol driver; no
+/// peer bytes, identity, socket address, or error detail is logged.
+fn ntcp2_inbound_failure_stage(error: &i2pr_runtime::HandshakeDriverError) -> &'static str {
+    use i2pr_runtime::HandshakeDriverError;
+    match error {
+        HandshakeDriverError::ResponderStage { phase_label, .. } => phase_label,
+        HandshakeDriverError::Io(_) => "io",
+        HandshakeDriverError::Protocol(_) => "protocol",
+        HandshakeDriverError::InvalidAction => "invalid_action",
+        HandshakeDriverError::PaddingOutOfRange => "padding_out_of_range",
+        HandshakeDriverError::RouterInfoTooLarge => "router_info_too_large",
+    }
+}
+
 /// Binds one supervised loopback listener, reports readiness, then serves.
 ///
 /// Readiness is signalled **after** the bind succeeds, so a supervisor that
@@ -2538,7 +2553,16 @@ fn register_ntcp2_service(
                                     responder_identity,
                                     &task_cancel,
                                 ).await;
-                                let Ok((inbound, handshake)) = result else { return Ok(()); };
+                                let (inbound, handshake) = match result {
+                                    Ok(authenticated) => authenticated,
+                                    Err(error) => {
+                                        tracing::info!(
+                                            failure_stage = ntcp2_inbound_failure_stage(&error),
+                                            "controlled NTCP2 inbound handshake rejected"
+                                        );
+                                        return Ok(());
+                                    }
+                                };
                                 let peer = i2pr_transport::PeerId::from_hash(
                                     handshake.authenticated.peer().router_hash,
                                 );

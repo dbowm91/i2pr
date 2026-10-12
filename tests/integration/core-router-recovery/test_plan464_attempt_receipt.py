@@ -67,11 +67,11 @@ class AttemptReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["attempts_observed"], 0)
         self.assertEqual(receipt["udp_emission_correlated_attempts"], 0)
 
-    def test_postbuild_summary_retains_only_the_three_public_predicates(self):
+    def test_postbuild_summary_retains_only_bounded_owner_and_lease_counts(self):
         receipt = parse_attempt_receipt_lines(
             [
                 'WARN inbound_receive_count=2 lease_count=3 '
-                'inbound_owner_registered=false '
+                'inbound_owner_registered=false inbound_owner_count=1 '
                 'router-network SAM destination summary incomplete'
             ]
         )
@@ -81,8 +81,25 @@ class AttemptReceiptTests(unittest.TestCase):
                 "inbound_receive_count": 2,
                 "lease_count": 3,
                 "inbound_owner_registered": False,
+                "inbound_owner_count": 1,
             },
         )
+
+    def test_owner_handoff_and_eviction_receipts_are_identity_free(self):
+        receipt = parse_attempt_receipt_lines(
+            [
+                'INFO inbound_receive_count=2 inbound_owner_count=2 '
+                'message="destination inbound owners installed"',
+                'INFO removed_owner=true removed_receive=true '
+                'message="destination inbound owner removed on pool eviction"',
+            ]
+        )
+        self.assertEqual(receipt["owner_install_receipts"], [
+            {"receive_count": 2, "owner_count": 2}
+        ])
+        self.assertEqual(receipt["owner_eviction_events"], 1)
+        self.assertEqual(receipt["owner_eviction_removed_owner"], 1)
+        self.assertEqual(receipt["owner_eviction_removed_receive"], 1)
 
 
 if __name__ == "__main__":

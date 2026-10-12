@@ -56,6 +56,9 @@
 //     `P220-CAPABILITIES <hex-hash>`, `P220-PEERS-FLOODFILL`,
 //     `P220-MAIN-ROUTER-COUNT`, `P220-SELECTOR <target-hex> <b-hex>`,
 //     `QUIT`);
+// Plan 470 also permits the bounded `P470-TRANSPORT <candidate-hash-hex>`
+// command, which asks the stock floodfill selector and NTCP transport bid
+// API about the local RouterInfo publication target without sending I2NP.
 // Plan 222 diagnostic contract (authoritative for client-NetDB):
 //   - the same port additionally accepts
 //     `P222-CLIENT-LOOKUP-PREFLIGHT <client-dbid-hex> <target-hex> <b-hex>`
@@ -278,10 +281,13 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Properties;
@@ -297,6 +303,7 @@ import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
 import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
 import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
+import net.i2p.router.networkdb.kademlia.P470TransportPreflight;
 import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 import net.i2p.router.networkdb.kademlia.P224LsProbe;
@@ -318,9 +325,9 @@ public final class ControlledRouter {
     };
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 5 && args.length != 6 && args.length != 7) {
+        if (args.length != 5 && args.length != 6 && args.length != 7 && args.length != 8) {
             System.err.println(
-                "usage: ControlledRouter <java-data-dir> <ssu2-host> <ssu2-port> <sam-port> <i2cp-port> [j219-control-port] [role]");
+                "usage: ControlledRouter <java-data-dir> <transport-host> <transport-port> <sam-port> <i2cp-port> [j219-control-port] [role]");
             System.exit(64);
         }
 
@@ -336,17 +343,19 @@ public final class ControlledRouter {
         // the legacy invocation (floodfill enabled, stock exploratory
         // settings). Unknown values fail closed.
         final String roleArg = args.length >= 7 ? args[6] : "";
+        final String plan470PublishPort = args.length >= 8 ? args[7] : "0";
         final String role;
         if (roleArg == null || roleArg.isEmpty()) {
             role = "legacy";
         } else if ("service".equals(roleArg)
                 || "publication".equals(roleArg)
-                || "transit".equals(roleArg)) {
+                || "transit".equals(roleArg)
+                || "ntcp2".equals(roleArg)) {
             role = roleArg;
         } else {
             System.err.println(
-                "ControlledRouter: unknown role '" + roleArg
-                    + "' (expected service|publication|transit)");
+                    "ControlledRouter: unknown role '" + roleArg
+                    + "' (expected service|publication|transit|ntcp2)");
             System.exit(64);
             return;
         }
@@ -474,9 +483,10 @@ public final class ControlledRouter {
         // peers, so this is fail-closed at the daemon boundary.
         props.setProperty("router.blocklist.enable", "false");
 
-        // Loopback-only UDP transport. NTCP/SSU are disabled because
-        // the lane only counts SSU2; disabling the legacy transports
-        // keeps the controlled profile self-consistent.
+        // Loopback-only SSU2 transport. NTCP/SSU are disabled because
+        // the M6 lane only counts SSU2. The explicit `ntcp2` role below
+        // is a separate normal-router profile for Plan 470; do not change
+        // this frozen M6 default.
         props.setProperty("logger.defaultLevel", "DEBUG");
         // Plan 231 WP B/C/D — stock observability correction. The
         // exact-pinned `StatManager.createRateStat` creates a rate
@@ -509,7 +519,9 @@ public final class ControlledRouter {
         // stock bandwidth above the pinned `L` boundary (128 KiB/s
         // outbound, normal default share); the lying forced-class
         // override is never used.
-        props.setProperty("i2np.udp.status", "ok");
+        if (!"ntcp2".equals(role)) {
+            props.setProperty("i2np.udp.status", "ok");
+        }
         if ("transit".equals(role)) {
             props.setProperty("i2np.bandwidth.outboundKBytesPerSecond", "128");
             props.setProperty("i2np.bandwidth.outboundBurstKBytesPerSecond", "128");
@@ -518,11 +530,20 @@ public final class ControlledRouter {
         props.setProperty("i2np.udp.port", ssu2Port);
         props.setProperty("i2np.udp.internalPort", ssu2Port);
         props.setProperty("i2np.udp.addressSources", "local");
-        props.setProperty("i2np.udp.enable", "true");
-        props.setProperty("i2np.ntcp.enable", "false");
-        props.setProperty("i2np.ntcp2.enable", "false");
+        props.setProperty("i2np.udp.enable", "ntcp2".equals(role) ? "false" : "true");
+        props.setProperty("i2np.ntcp.enable", "ntcp2".equals(role) ? "true" : "false");
+        props.setProperty("i2np.ntcp2.enable", "ntcp2".equals(role) ? "true" : "false");
         props.setProperty("i2np.ntcp.hostname", ssu2Host);
-        props.setProperty("i2np.ntcp.port", "0");
+        props.setProperty("i2np.ntcp.port", "ntcp2".equals(role) ? ssu2Port : "0");
+        if ("ntcp2".equals(role)) {
+            // Plan 470 only: an isolated normal Java Router(Properties)
+            // with one genuine signed NTCP2 IPv4 address on loopback.
+            // No UDP listener, external discovery, or default-profile change.
+            props.setProperty("router.networkID", "2");
+            props.setProperty("i2np.ntcp.autoip", "false");
+            props.setProperty("i2np.ntcp.autoport", "false");
+            props.setProperty("i2np.ntcp.ipv6", "false");
+        }
         props.setProperty("i2np.allowLocal", "true");
         props.setProperty("i2np.upnp.enable", "false");
 
@@ -609,6 +630,14 @@ public final class ControlledRouter {
             }
         }
 
+        if ("ntcp2".equals(role)) {
+            if ("0".equals(plan470PublishPort)) {
+                System.err.println("ControlledRouter: ntcp2 role requires Plan 470 trigger port");
+                System.exit(64);
+            }
+            new Plan470PublicationTrigger(router, plan470PublishPort).start();
+        }
+
         System.out.println("ControlledRouter: starting router with ssu2="
             + ssu2Host + ":" + ssu2Port
             + " i2cp=127.0.0.1:" + i2cpPort
@@ -649,6 +678,78 @@ public final class ControlledRouter {
                 w.write("clientApp.0.args=sam.keys 127.0.0.1 " + samPort
                     + " i2cp.tcp.host=127.0.0.1 i2cp.tcp.port=" + i2cpPort + "\n");
                 w.write("clientApp.0.startOnLoad=true\n");
+            }
+        }
+    }
+
+    /**
+     * Plan 470's one-command, loopback-only source-owned trigger. It invokes
+     * the stock public FloodfillNetworkDatabaseFacade.flood() operation only
+     * after the Java NetDB and communication-system owners are initialized.
+     * This server
+     * accepts no payload beyond the fixed command and never constructs I2NP.
+     */
+    private static final class Plan470PublicationTrigger {
+        private final Router router;
+        private final int port;
+        private ServerSocket listener;
+
+        Plan470PublicationTrigger(Router router, String portText) {
+            this.router = router;
+            this.port = Integer.parseInt(portText);
+        }
+
+        void start() throws IOException {
+            listener = new ServerSocket();
+            listener.bind(new InetSocketAddress("127.0.0.1", port), 2);
+            listener.setSoTimeout(1000);
+            Thread worker = new Thread(this::serve, "Plan470-Publication-Trigger");
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        private void serve() {
+            long deadline = System.nanoTime() + 90_000_000_000L;
+            while (System.nanoTime() < deadline) {
+                try (Socket client = listener.accept();
+                     BufferedReader input = new BufferedReader(
+                         new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII));
+                     PrintWriter output = new PrintWriter(
+                         new OutputStreamWriter(client.getOutputStream(), StandardCharsets.US_ASCII), true)) {
+                    String command = input.readLine();
+                    if (!"P470-PUBLISH".equals(command)) {
+                        output.println("P470-REJECTED");
+                        return;
+                    }
+                    if (!router.getContext().netDb().isInitialized()
+                            || !router.getContext().commSystem().isRunning()) {
+                        output.println("P470-NOT-READY");
+                        continue;
+                    }
+                    if (!(router.getContext().netDb()
+                            instanceof net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade floodfill)) {
+                        output.println("P470-NETDB-FLOOD-REJECTED");
+                        listener.close();
+                        return;
+                    }
+                    // Use the exact stock facade operation called by the
+                    // normal floodfill publication path. It selects the
+                    // live peers, applies stock store eligibility and lets
+                    // CommSystem bid/send the signed RouterInfo normally.
+                    floodfill.flood(router.getRouterInfo());
+                    output.println("P470-NETDB-FLOOD-SUBMITTED");
+                    listener.close();
+                    return;
+                } catch (SocketTimeoutException timeout) {
+                    // The fixed deadline owns cancellation.
+                } catch (IOException failure) {
+                    return;
+                }
+            }
+            try {
+                listener.close();
+            } catch (IOException ignored) {
+                // bounded best-effort teardown
             }
         }
     }
@@ -799,6 +900,11 @@ public final class ControlledRouter {
                             return p220Error("missing-hash-arguments");
                         }
                         return p220Selector(parts[1], parts[2]);
+                    case "P470-TRANSPORT":
+                        if (parts.length < 2) {
+                            return "P470-EV observable=false reason=missing-candidate-hash";
+                        }
+                        return p470Transport(parts[1]);
                     case "P222-CLIENT-LOOKUP-PREFLIGHT":
                         if (parts.length < 4) {
                             return p222Error("missing-hash-arguments");
@@ -1206,6 +1312,28 @@ public final class ControlledRouter {
                 + " selector_count=" + result.selected.size()
                 + " selector_contains_b=" + result.selected.contains(bHash)
                 + " probe_inputs=key-target,N-3,exclude-empty,live-kbuckets";
+        }
+
+        private String p470Transport(String candidateHex) {
+            Hash candidate = p220ParseHexHash(candidateHex);
+            if (candidate == null) {
+                return "P470-EV observable=false reason=invalid-candidate-hash";
+            }
+            P470TransportPreflight.Result result =
+                P470TransportPreflight.inspect(context(), candidate);
+            return "P470-EV observable=" + (result.error == null)
+                + " candidate_present=" + result.candidatePresent
+                + " router_hidden=" + result.routerHidden
+                + " floodfill_enabled=" + result.floodfillEnabled
+                + " accepts_routerinfo_store=" + result.acceptsRouterInfoStore
+                + " selected_for_local_router_info=" + result.selectedForLocalRouterInfo
+                + " candidate_banlisted=" + result.candidateBanlisted
+                + " ntcp_transport_unreachable=" + result.ntcpTransportUnreachable
+                + " ntcp_transport_available=" + result.ntcp2TransportAvailable
+                + " ntcp2_bid_available=" + result.ntcp2BidAvailable
+                + " bid_uses_ntcp_transport=" + result.bidUsesNtcpTransport
+                + " bid_latency_ms=" + result.bidLatencyMs
+                + " reason=" + (result.error == null ? "none" : result.error);
         }
 
         private String p222Error(String reason) {

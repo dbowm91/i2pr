@@ -120,6 +120,11 @@ enum Ntcp2Command {
     RouterInfoSummary {
         #[arg(long = "router-info")]
         router_info: PathBuf,
+        #[arg(long = "expected-loopback-port")]
+        expected_loopback_port: Option<u16>,
+        /// Compare an advertised transport host and port without emitting either.
+        #[arg(long = "expected-endpoint")]
+        expected_endpoint: Option<SocketAddr>,
     },
 }
 
@@ -319,7 +324,11 @@ fn router_hash_command(path: &Path) -> ExitCode {
     }
 }
 
-fn router_info_summary_command(path: &Path) -> ExitCode {
+fn router_info_summary_command(
+    path: &Path,
+    expected_loopback_port: Option<u16>,
+    expected_endpoint: Option<SocketAddr>,
+) -> ExitCode {
     let Ok(metadata) = fs::metadata(path) else {
         return emit_inspection("rejected", "router_info_unavailable");
     };
@@ -341,6 +350,7 @@ fn router_info_summary_command(path: &Path) -> ExitCode {
         .options()
         .get("caps")
         .is_some_and(|capabilities| capabilities.contains('f'));
+    let published_ms = info.published().as_millis();
     let mut addresses = Vec::new();
     for address in info.addresses() {
         let options = address.options();
@@ -350,20 +360,34 @@ fn router_info_summary_command(path: &Path) -> ExitCode {
             .and_then(|value| value.parse::<u16>().ok());
         let has_static_key = options.get("s").is_some_and(|value| !value.is_empty());
         let has_iv_or_intro_key = options.get("i").is_some_and(|value| !value.is_empty());
+        let listener_port_matches = expected_loopback_port.map(|expected_port| {
+            host.parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+                && port == Some(expected_port)
+        });
+        let listener_port_matches = listener_port_matches
+            .map(|matches| matches.to_string())
+            .unwrap_or_else(|| "null".to_owned());
+        let expected_endpoint_matches = expected_endpoint.is_some_and(|expected| {
+            host.parse::<IpAddr>().ok() == Some(expected.ip()) && port == Some(expected.port())
+        });
         addresses.push(format!(
-            "{{\"style\":\"{}\",\"loopback\":{},\"port_valid\":{},\"static_key\":{},\"i_key\":{}}}",
+            "{{\"style\":\"{}\",\"loopback\":{},\"port_valid\":{},\"listener_port_matches\":{},\"expected_endpoint_matches\":{},\"static_key\":{},\"i_key\":{}}}",
             address.transport_style(),
             host.parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback()),
             port.is_some_and(|port| port >= 1024),
+            listener_port_matches,
+            expected_endpoint_matches,
             has_static_key,
             has_iv_or_intro_key
         ));
     }
     let result = format!(
-        "{{\"schema\":1,\"type\":\"i2pr-interop-router-info-summary\",\"result\":\"validated\",\"network_id\":\"{}\",\"version\":\"{}\",\"floodfill\":{},\"address_count\":{},\"addresses\":[{}]}}",
+        "{{\"schema\":1,\"type\":\"i2pr-interop-router-info-summary\",\"result\":\"validated\",\"network_id\":\"{}\",\"version\":\"{}\",\"published_ms\":{},\"floodfill\":{},\"address_count\":{},\"addresses\":[{}]}}",
         network_id,
         version,
+        published_ms,
         floodfill,
         addresses.len(),
         addresses.join(",")
@@ -2197,8 +2221,12 @@ fn main() -> ExitCode {
                 }
             }
             Ntcp2Command::RouterHash { router_info } => router_hash_command(&router_info),
-            Ntcp2Command::RouterInfoSummary { router_info } => {
-                router_info_summary_command(&router_info)
+            Ntcp2Command::RouterInfoSummary {
+                router_info,
+                expected_loopback_port,
+                expected_endpoint,
+            } => {
+                router_info_summary_command(&router_info, expected_loopback_port, expected_endpoint)
             }
         },
     }

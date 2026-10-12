@@ -987,6 +987,7 @@ impl SamServiceState {
                 inbound_receive_count = summary.inbound_receive_count,
                 lease_count = summary.lease_count,
                 inbound_owner_registered = summary.inbound_owner_registered,
+                inbound_owner_count = summary.inbound_owner_count,
                 "router-network SAM destination summary incomplete"
             );
             let _ = manager.unregister_router_network_sam_destination(destination_id);
@@ -4216,6 +4217,7 @@ mod tests {
                         inbound_expires_at_ms: 1,
                         lease_count,
                         inbound_owner_registered,
+                        inbound_owner_count: usize::from(inbound_owner_registered),
                     };
                     assert_eq!(
                         summary.is_complete(),

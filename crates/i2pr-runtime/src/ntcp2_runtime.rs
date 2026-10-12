@@ -36,6 +36,52 @@ use i2pr_transport_ntcp2::frame::{ReceiveState, TransmitState};
 use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
 use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 
+/// Maps a handshake failure to a closed, non-secret diagnostic stage.
+/// Protocol details, peer-controlled bytes, keys, and socket addresses stay
+/// out of logs.
+fn ntcp2_handshake_failure_stage(error: &HandshakeDriverError) -> &'static str {
+    use i2pr_transport_ntcp2::handshake::HandshakeError;
+    match error {
+        HandshakeDriverError::Io(error) => match error.kind {
+            IoErrorKind::Closed => "io_closed",
+            IoErrorKind::Deadline => "io_deadline",
+            IoErrorKind::Cancelled => "io_cancelled",
+            IoErrorKind::Failed => "io_failed",
+        },
+        HandshakeDriverError::Protocol(error) => match error {
+            HandshakeError::Truncated => "truncated",
+            HandshakeError::InvalidFixedLength => "invalid_length",
+            HandshakeError::ExcessivePadding => "excessive_padding",
+            HandshakeError::MalformedOptions => "malformed_options",
+            HandshakeError::DeobfuscationFailure => "deobfuscation",
+            HandshakeError::AuthenticationFailure => "authentication",
+            HandshakeError::TranscriptMismatch => "transcript",
+            HandshakeError::InvalidKeyAgreement => "key_agreement",
+            HandshakeError::WrongNetwork => "network_id",
+            HandshakeError::StaleTimestamp => "stale_timestamp",
+            HandshakeError::FutureTimestamp => "future_timestamp",
+            HandshakeError::ReplayDetected => "replay",
+            HandshakeError::ReplayCacheUnavailable => "replay_capacity",
+            HandshakeError::PeerIdentityMismatch => "peer_identity",
+            HandshakeError::TransportStaticKeyMismatch => "static_key",
+            HandshakeError::RouterInfoMalformed => "router_info_malformed",
+            HandshakeError::RouterInfoSignatureInvalid => "router_info_signature",
+            HandshakeError::UnsupportedPeerKey => "unsupported_key",
+            HandshakeError::StateViolation => "state_violation",
+            HandshakeError::Cancelled => "cancelled",
+            HandshakeError::DeadlineExpired => "deadline",
+            HandshakeError::Disconnected => "disconnected",
+            HandshakeError::LocalPolicyDenied => "local_policy",
+            HandshakeError::Codec(_) => "codec",
+            HandshakeError::Crypto(_) => "crypto",
+        },
+        HandshakeDriverError::InvalidAction => "invalid_action",
+        HandshakeDriverError::PaddingOutOfRange => "padding_out_of_range",
+        HandshakeDriverError::RouterInfoTooLarge => "router_info_too_large",
+        HandshakeDriverError::ResponderStage { phase_label, .. } => phase_label,
+    }
+}
+
 /// Hard maximum for one Plan 035 runtime duration.
 pub const MAX_NTCP2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
 /// Maximum accepted inbound-stream queue retained by one listener.
@@ -2285,9 +2331,10 @@ impl Ntcp2RuntimeService {
             .await
         {
             Ok(result) => result,
-            Err(_) => {
+            Err(error) => {
                 tracing::info!(
                     stage = "noise_handshake",
+                    failure_stage = ntcp2_handshake_failure_stage(&error),
                     "controlled NTCP2 outbound dial rejected"
                 );
                 return Err(DialOutcome::Failed);

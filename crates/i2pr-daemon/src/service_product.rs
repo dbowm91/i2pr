@@ -3014,14 +3014,21 @@ impl ServiceProduct {
                         .coordinator
                         .registry_mut()
                         .remove_inbound(receive_id);
-                    let _ = self
+                    let removed_owner = self
                         .manager
-                        .unregister_inbound_tunnel_owner(receive_id.get());
-                    let _ = self
+                        .unregister_inbound_tunnel_owner(receive_id.get())
+                        .is_some();
+                    let removed_receive = self
                         .manager
                         .with_destination_bridge(destination_id, |bridge| {
                             bridge.remove_router_inbound_receive(receive_id.get())
-                        });
+                        })
+                        .unwrap_or(false);
+                    tracing::info!(
+                        removed_owner,
+                        removed_receive,
+                        "destination inbound owner removed on pool eviction"
+                    );
                 } else if outbound_registrations
                     .iter()
                     .any(|registration| registration.slot() == slot)
@@ -5263,6 +5270,15 @@ async fn provision_all_service_router_material(
                 .register_inbound_tunnel_owner(*receive_id, Arc::clone(runtime))
                 .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         }
+        let inbound_owner_count = inbound_receive_ids
+            .iter()
+            .filter(|receive_id| manager.inbound_tunnel_owner(**receive_id).is_some())
+            .count();
+        tracing::info!(
+            inbound_receive_count = inbound_receive_ids.len(),
+            inbound_owner_count,
+            "destination inbound owners installed"
+        );
         let destination_hash_bytes = *service_identity.id().as_hash().as_bytes();
         manager
             .register_inbound_destination_owner(destination_hash_bytes, Arc::clone(runtime))
