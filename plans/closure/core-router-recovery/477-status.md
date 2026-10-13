@@ -59,3 +59,55 @@ No identity, endpoint, raw message ID, raw RouterInfo, packet, or raw stock log 
 Connect the Plan 480 source-owned write events to each pending build's peer/link generation and terminal outcome, so one finite exact-pinned attempt can tie candidate mismatches to a specific emitted request. The immediate failure transition is now bounded and count-attributed; the request-to-return attribution remains open. Plan 478 has an outbound TunnelData source route but its full SAM product path remains unqualified.
 
 **Roadmap disposition:** active; no dependent capability is unblocked.
+
+## 2026-10-14 exact-pin short-build source trace and writer-receipt correlation
+
+The unmodified i2pd 2.61.0 source at
+`635b013a612ff47278ef02acf8580a28e10e26c5` was checked out read-only and
+traced from tunnel delivery through transit forwarding and both reply forms.
+The source path is consistent with the current Plan 477 wire contract:
+
+1. When a build is routed through an existing outbound tunnel, i2pd's outbound
+   `TunnelEndpoint::HandleNextMessage` sends a router-delivery I2NP message to
+   the selected first peer after the tunnel endpoint reconstructs it. That
+   first peer's `Tunnels::HandleShortTunnelBuildMsg` hands a short build that
+   does not match its own pending-build table to
+   `TransitTunnels::PostTransitTunnelBuildMsg`.
+2. `TransitTunnels::HandleShortTransitTunnelBuildMsg` finds the record addressed
+   to its own truncated router hash, decrypts its request, applies its normal
+   transit-acceptance checks, and installs the transit role when accepted. It
+   seals its response record in place and re-encrypts the other records.
+3. A non-endpoint hop forwards a `ShortTunnelBuild` to the decrypted
+   `next_ident`, with the I2NP header ID copied from that hop's decrypted
+   `SEND_MSG_ID`. For an inbound build whose creator is the final next router,
+   the final real participant forwards the updated `ShortTunnelBuild` to the
+   creator. For an outbound build, the endpoint instead creates a
+   `ShortTunnelBuildReply` using its `SEND_MSG_ID`, wraps it with
+   `RGarlicKeyAndTag`, and sends it in a `TunnelGateway` to the recorded next
+   router/tunnel.
+4. The i2pr inbound-build path accepts only the authenticated terminal peer
+   and expected terminal `SEND_MSG_ID`. The outbound response path checks the
+   authenticated terminal peer and recorded reply tunnel, unwraps Garlic, and
+   checks the inner reply ID. The outer `TunnelGateway` ID is not used as the
+   build reply ID.
+
+Plan 481's source-owned receipt now distinguishes local writer completion from
+queue admission. In the bounded exact-pin run recorded by Plan 481, the
+originator disposition was `outbound:all-emitted` and the UDP writer emitted
+the frame; the stock aggregate showed 86 ShortTunnelBuild records, 36
+transit-create events, and four peers, but could not attribute a particular
+record, acceptance, or reply to that build. The later Plan 482 attempt also
+ended at `outbound-build` after its source-owned delivery disposition was
+`outbound:all-emitted`. A local socket write establishes that the frame was
+submitted to the local UDP socket. It does not establish remote receipt,
+transit acceptance, terminal forwarding, or reply delivery.
+
+**Disposition:** this source trace found no specific protocol or return-routing
+defect to correct. The next Plan 458 run is therefore not justified on the
+unchanged topology: no correlated stock terminal response or source-attributed
+first divergence is available from the aggregate receipts. Plan 477 remains
+active. A future causal replay must correlate the test-host's private attempt
+metadata to a specific stock-owned first-hop/terminal event while persisting
+only sanitized counts and categories; it must not patch i2pd or relax strict
+peer/message-ID matching. No raw IDs, identities, endpoints, or stock logs
+were retained by this source audit.
