@@ -374,12 +374,26 @@ pub enum SessionAction {
         datagram: Vec<u8>,
         /// Bounded IDs of I2NP messages represented by this packet.
         message_ids: Vec<u32>,
+        /// Exact semantic fragment ordinals carried by this datagram.
+        fragments: Vec<I2npFragmentReceipt>,
     },
     /// Termination is recommended (idle/RTO ceiling/local request).
     Terminate {
         /// Wire reason code to send, when a final packet is desired.
         reason: u8,
     },
+}
+
+/// Source metadata for one sealed I2NP fragment. This is runtime-local
+/// provenance and is never serialized into the SSU2 packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct I2npFragmentReceipt {
+    /// Short-transport I2NP message identifier.
+    pub message_id: u32,
+    /// Zero-based fragment ordinal.
+    pub fragment_number: u8,
+    /// Total fragment count for the parent I2NP message.
+    pub total_fragments: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +437,7 @@ struct OutboundMessage {
     message_type: u8,
     expiration_secs: u32,
     fragments: VecDeque<QueuedFragment>,
+    total_fragments: u8,
     /// Fragments already handed to the transmit path but unacked.
     in_flight: usize,
 }
@@ -885,9 +900,19 @@ impl Ssu2Session {
             message_type,
             expiration_secs,
             fragments,
+            total_fragments: total_byte,
             in_flight: 0,
         });
         Ok(message_id)
+    }
+
+    /// Returns the original fragment count for one message still owned by
+    /// this session, for bounded runtime write-ticket aggregation.
+    pub fn outbound_fragment_count(&self, message_id: u32) -> Option<u8> {
+        self.outbound
+            .iter()
+            .find(|message| message.message_id == message_id)
+            .map(|message| message.total_fragments)
     }
 
     /// Queues a path challenge for transmission.
@@ -1065,6 +1090,16 @@ impl Ssu2Session {
     /// its encrypted blocks alongside the bytes. Runtimes can retain these
     /// IDs through their owned socket queue without decoding payloads.
     pub fn poll_transmit_traced(&mut self, now_ms: u64) -> Option<(Vec<u8>, Vec<u32>)> {
+        self.poll_transmit_fragments_traced(now_ms)
+            .map(|(datagram, ids, _)| (datagram, ids))
+    }
+
+    /// Builds one datagram with exact per-fragment provenance for the runtime
+    /// socket writer's source-owned completion contract.
+    pub fn poll_transmit_fragments_traced(
+        &mut self,
+        now_ms: u64,
+    ) -> Option<(Vec<u8>, Vec<u32>, Vec<I2npFragmentReceipt>)> {
         if self.send_exhausted {
             return None;
         }
@@ -1090,7 +1125,7 @@ impl Ssu2Session {
                 if datagram.is_some() {
                     self.clear_ack_state();
                 }
-                return datagram.map(|datagram| (datagram, Vec::new()));
+                return datagram.map(|datagram| (datagram, Vec::new(), Vec::new()));
             }
             return None;
         }
@@ -1257,6 +1292,14 @@ impl Ssu2Session {
             .collect::<Vec<_>>();
         message_ids.sort_unstable();
         message_ids.dedup();
+        let fragments = carried
+            .iter()
+            .map(|fragment| I2npFragmentReceipt {
+                message_id: fragment.message_id,
+                fragment_number: fragment.frag_number,
+                total_fragments: fragment.total_fragments,
+            })
+            .collect::<Vec<_>>();
         self.seal_packet(now_ms, blocks, ack_only)
             .inspect(|datagram| {
                 if carries_ack {
@@ -1270,7 +1313,7 @@ impl Ssu2Session {
                     self.record_sent(now_ms, datagram.len(), ack_bytes, ack_only, carried);
                 }
             })
-            .map(|datagram| (datagram, message_ids))
+            .map(|datagram| (datagram, message_ids, fragments))
     }
 
     fn pending_ack_eliciting_controls(&self) -> bool {
@@ -2498,7 +2541,8 @@ impl Ssu2Session {
             // was ack-eliciting (loop avoidance); otherwise the ACK
             // piggybacks on the next eliciting transmit.
             if self.last_received_eliciting
-                && let Some((datagram, message_ids)) = self.poll_transmit_traced(now_ms)
+                && let Some((datagram, message_ids, fragments)) =
+                    self.poll_transmit_fragments_traced(now_ms)
             {
                 actions.push(if message_ids.is_empty() {
                     SessionAction::Transmit(datagram)
@@ -2506,6 +2550,7 @@ impl Ssu2Session {
                     SessionAction::TransmitTracked {
                         datagram,
                         message_ids,
+                        fragments,
                     }
                 });
             }

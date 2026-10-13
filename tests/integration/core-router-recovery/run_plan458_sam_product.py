@@ -36,6 +36,7 @@ def parse_attempt_receipt_lines(lines):
     attempt_messages = {}
     stage_counts = Counter()
     transport_stage_counts = Counter()
+    source_owned_delivery_dispositions = Counter()
     emitted_message_ids = set()
     postbuild_summary = None
     owner_install_receipts = []
@@ -54,6 +55,33 @@ def parse_attempt_receipt_lines(lines):
             stage_counts[transition.group(1)] += 1
         if transition and "SSU2 message send receipt" in line:
             transport_stage_counts[transition.group(1)] += 1
+        if (
+            "destination build source-owned delivery result" in line
+            or "destination inbound build attempt" in line
+        ):
+            direction = re.search(r'direction\s*=\s*["\']?([A-Za-z]+)', line)
+            disposition = re.search(
+                r'originator_write_disposition\s*=\s*["\']?([A-Za-z]+)', line
+            )
+            safe_directions = {"Inbound": "inbound", "Outbound": "outbound"}
+            safe_dispositions = {
+                "Pending": "pending",
+                "AllOriginatorDeliveriesEmitted": "all-emitted",
+                "PartialEmission": "partial-emission",
+                "NotEmitted": "not-emitted",
+                "UnobservedTransport": "unobserved-transport",
+            }
+            if (
+                direction
+                and disposition
+                and direction.group(1) in safe_directions
+                and disposition.group(1) in safe_dispositions
+            ):
+                label = (
+                    f"{safe_directions[direction.group(1)]}:"
+                    f"{safe_dispositions[disposition.group(1)]}"
+                )
+                source_owned_delivery_dispositions[label] += 1
         if transition and transition.group(1) == "udp_emitted":
             ids = re.search(r"i2np_message_ids\s*=\s*\[([0-9, ]*)\]", line)
             if ids:
@@ -111,6 +139,9 @@ def parse_attempt_receipt_lines(lines):
         "attempts_observed": len(attempt_messages),
         "stage_counts": dict(sorted(stage_counts.items())),
         "transport_stage_counts": dict(sorted(transport_stage_counts.items())),
+        "source_owned_delivery_dispositions": dict(
+            sorted(source_owned_delivery_dispositions.items())
+        ),
         "udp_emission_correlated_attempts": sum(
             message_id in emitted_message_ids for message_id in attempt_messages.values()
         ),

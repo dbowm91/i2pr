@@ -167,7 +167,7 @@ pub async fn deliver_floodfill_effect_with_dial(
         && let Some(transport) = first_transport
     {
         match transport {
-            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+            crate::router_i2np::RouterDeliveryTransport::Ssu2(_) => tracing::info!(
                 transport_family = transport.as_str(),
                 "authenticated floodfill I2NP reply delivered"
             ),
@@ -203,7 +203,7 @@ pub async fn deliver_floodfill_effect_with_dial(
         && let Some(transport) = transport
     {
         match transport {
-            crate::router_i2np::RouterDeliveryTransport::Ssu2 => tracing::info!(
+            crate::router_i2np::RouterDeliveryTransport::Ssu2(_) => tracing::info!(
                 transport_family = transport.as_str(),
                 "authenticated floodfill I2NP reply delivered"
             ),

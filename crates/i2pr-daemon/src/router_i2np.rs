@@ -927,11 +927,42 @@ pub enum RouterDeliveryOutcome {
     Cancelled,
 }
 
+/// Process-local completion for one admitted router delivery. A positive
+/// value means the selected socket writer accepted the whole delivery; it
+/// does not assert remote receipt or protocol acceptance.
+pub(crate) struct RouterDeliveryTicket {
+    _peer: PeerId,
+    _transport: RouterDeliveryTransport,
+    receiver: tokio::sync::oneshot::Receiver<bool>,
+}
+
+impl RouterDeliveryTicket {
+    pub(crate) fn from_receiver(
+        peer: PeerId,
+        transport: RouterDeliveryTransport,
+        receiver: tokio::sync::oneshot::Receiver<bool>,
+    ) -> Self {
+        Self {
+            _peer: peer,
+            _transport: transport,
+            receiver,
+        }
+    }
+
+    pub(crate) fn try_result(&mut self) -> Option<bool> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(false),
+        }
+    }
+}
+
 /// The authenticated transport path selected for one product delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RouterDeliveryTransport {
     /// An established SSU2 session accepted the message.
-    Ssu2,
+    Ssu2(LinkId),
     /// The exact authenticated NTCP2 link generation accepted the message.
     Ntcp2(LinkId),
 }
@@ -939,7 +970,7 @@ pub(crate) enum RouterDeliveryTransport {
 impl RouterDeliveryTransport {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::Ssu2 => "ssu2",
+            Self::Ssu2(_) => "ssu2",
             Self::Ntcp2(_) => "ntcp2",
         }
     }
@@ -959,9 +990,17 @@ pub(crate) struct Ntcp2RouterDeliveryRegistry {
 
 type PendingLookupMap = HashMap<(PeerId, LinkId), (Hash, u64)>;
 
+/// One bounded message plus a source-owned completion edge for a queued
+/// NTCP2 delivery. The completion is resolved by the authenticated link owner
+/// only after its socket writer accepts the full frame.
+pub(crate) struct Ntcp2RouterDeliveryMessage {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) completion: Option<tokio::sync::oneshot::Sender<bool>>,
+}
+
 #[derive(Clone, Debug)]
 struct Ntcp2RouterLinkRoute {
-    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     outbound: bool,
 }
 
@@ -1039,7 +1078,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     ) -> bool {
         self.register_link(peer, link_id, sender, false)
     }
@@ -1049,7 +1088,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     ) -> bool {
         self.register_link(peer, link_id, sender, true)
     }
@@ -1058,7 +1097,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
         outbound: bool,
     ) -> bool {
         let Ok(mut links) = self.links.lock() else {
@@ -1168,16 +1207,31 @@ impl Ntcp2RouterDeliveryRegistry {
     }
 
     /// Attempts bounded delivery and returns the exact selected generation.
+    #[cfg(test)]
     fn deliver_with_link(
         &self,
         peer: PeerId,
         bytes: Vec<u8>,
     ) -> (RouterDeliveryOutcome, Option<LinkId>) {
+        let (outcome, link, _) = self.deliver_with_link_and_receipt(peer, bytes, false);
+        (outcome, link)
+    }
+
+    fn deliver_with_link_and_receipt(
+        &self,
+        peer: PeerId,
+        bytes: Vec<u8>,
+        completion: bool,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<LinkId>,
+        Option<tokio::sync::oneshot::Receiver<bool>>,
+    ) {
         if bytes.is_empty() || bytes.len() > MAX_ROUTER_I2NP_BYTES {
-            return (RouterDeliveryOutcome::TooLarge, None);
+            return (RouterDeliveryOutcome::TooLarge, None, None);
         }
         let Ok(mut links) = self.links.lock() else {
-            return (RouterDeliveryOutcome::NoActiveSession, None);
+            return (RouterDeliveryOutcome::NoActiveSession, None, None);
         };
         let Some((key, route)) = links
             .iter()
@@ -1185,16 +1239,29 @@ impl Ntcp2RouterDeliveryRegistry {
             .max_by_key(|((_, link_id), _)| link_id.value())
             .map(|(key, route)| (*key, route.clone()))
         else {
-            return (RouterDeliveryOutcome::NoActiveSession, None);
+            return (RouterDeliveryOutcome::NoActiveSession, None, None);
         };
-        match route.sender.try_send(bytes) {
-            Ok(()) => (RouterDeliveryOutcome::Accepted, Some(key.1)),
+        let (completion_sender, completion_receiver) = if completion {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        match route.sender.try_send(Ntcp2RouterDeliveryMessage {
+            bytes,
+            completion: completion_sender,
+        }) {
+            Ok(()) => (
+                RouterDeliveryOutcome::Accepted,
+                Some(key.1),
+                completion_receiver,
+            ),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                (RouterDeliveryOutcome::QueueFull, Some(key.1))
+                (RouterDeliveryOutcome::QueueFull, Some(key.1), None)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 links.remove(&key);
-                (RouterDeliveryOutcome::NoActiveSession, None)
+                (RouterDeliveryOutcome::NoActiveSession, None, None)
             }
         }
     }
@@ -1253,8 +1320,44 @@ impl RouterDeliveryService {
         request: RouterDeliveryRequest,
         cancellation: &CancellationToken,
     ) -> (RouterDeliveryOutcome, Option<RouterDeliveryTransport>) {
+        let (outcome, transport, _) = self.deliver_inner(request, cancellation, false);
+        (outcome, transport)
+    }
+
+    /// Delivers one message and returns a private source-owned completion
+    /// ticket where the selected writer supports it.
+    pub(crate) fn deliver_with_ticket(
+        &self,
+        request: RouterDeliveryRequest,
+        cancellation: &CancellationToken,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<RouterDeliveryTransport>,
+        Option<RouterDeliveryTicket>,
+    ) {
+        let peer = request.peer;
+        let (outcome, transport, ticket) = self.deliver_inner(request, cancellation, true);
+        (
+            outcome,
+            transport,
+            ticket.zip(transport).map(|(receiver, transport)| {
+                RouterDeliveryTicket::from_receiver(peer, transport, receiver)
+            }),
+        )
+    }
+
+    fn deliver_inner(
+        &self,
+        request: RouterDeliveryRequest,
+        cancellation: &CancellationToken,
+        with_ticket: bool,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<RouterDeliveryTransport>,
+        Option<tokio::sync::oneshot::Receiver<bool>>,
+    ) {
         if cancellation.is_cancelled() {
-            return (RouterDeliveryOutcome::Cancelled, None);
+            return (RouterDeliveryOutcome::Cancelled, None, None);
         }
         let RouterDeliveryRequest {
             peer,
@@ -1262,7 +1365,15 @@ impl RouterDeliveryService {
             timeout,
         } = request;
         let ntcp2_bytes = message.as_bytes().to_vec();
-        let outcome = match self.service.send_i2np(peer, message, timeout) {
+        let (ssu2_outcome, ssu2_link, ssu2_ticket) = if with_ticket {
+            let (outcome, link_id, ticket) =
+                self.service.send_i2np_with_receipt(peer, message, timeout);
+            (outcome, link_id, ticket)
+        } else {
+            let (outcome, link_id) = self.service.send_i2np_with_link(peer, message, timeout);
+            (outcome, link_id, None)
+        };
+        let outcome = match ssu2_outcome {
             Ssu2SendOutcome::Accepted => RouterDeliveryOutcome::Accepted,
             Ssu2SendOutcome::QueueFull => RouterDeliveryOutcome::QueueFull,
             Ssu2SendOutcome::ResourceDenied => RouterDeliveryOutcome::ResourceDenied,
@@ -1271,22 +1382,26 @@ impl RouterDeliveryService {
             Ssu2SendOutcome::DeadlineElapsed => RouterDeliveryOutcome::DeadlineElapsed,
         };
         if outcome != RouterDeliveryOutcome::NoActiveSession {
-            let transport = (outcome != RouterDeliveryOutcome::NoActiveSession)
-                .then_some(RouterDeliveryTransport::Ssu2);
-            return (outcome, transport);
+            let transport = ssu2_link.map(RouterDeliveryTransport::Ssu2);
+            return (outcome, transport, ssu2_ticket);
         }
         let Ok(registry) = self.ntcp2.lock() else {
-            return (outcome, None);
+            return (outcome, None, None);
         };
         match registry.as_ref() {
             Some(registry) => {
-                let (outcome, link_id) = registry.deliver_with_link(peer, ntcp2_bytes);
+                let (outcome, link_id, completion) =
+                    registry.deliver_with_link_and_receipt(peer, ntcp2_bytes, with_ticket);
                 if outcome == RouterDeliveryOutcome::NoActiveSession {
                     registry.request_outbound_dial(peer);
                 }
-                (outcome, link_id.map(RouterDeliveryTransport::Ntcp2))
+                (
+                    outcome,
+                    link_id.map(RouterDeliveryTransport::Ntcp2),
+                    completion,
+                )
             }
-            None => (outcome, None),
+            None => (outcome, None, None),
         }
     }
 }
@@ -2307,7 +2422,7 @@ mod tests {
             (RouterDeliveryOutcome::Accepted, Some(stale)),
             "the newest authenticated generation is selected deterministically"
         );
-        assert_eq!(duplicate_receiver.recv().await, Some(vec![0]));
+        assert_eq!(duplicate_receiver.recv().await.unwrap().bytes, vec![0]);
         registry.remove(peer, stale);
         assert!(registry.is_current(peer, active));
 
@@ -2319,7 +2434,7 @@ mod tests {
             registry.deliver_with_link(peer, vec![2]).0,
             RouterDeliveryOutcome::QueueFull
         );
-        assert_eq!(receiver.recv().await, Some(vec![1]));
+        assert_eq!(receiver.recv().await.unwrap().bytes, vec![1]);
 
         assert_eq!(
             registry.deliver_with_link(peer, vec![3]).0,
@@ -2361,7 +2476,7 @@ mod tests {
                 Some(RouterDeliveryTransport::Ntcp2(link_id)),
             )
         );
-        assert_eq!(receiver.recv().await, Some(bytes));
+        assert_eq!(receiver.recv().await.unwrap().bytes, bytes);
     }
 
     #[tokio::test]
@@ -2481,14 +2596,10 @@ mod tests {
                 .expect("bounded request")
         };
         for message_id in [0x461_0001, 0x461_0002] {
-            assert_eq!(
-                delivery.deliver_with_transport(send(message_id), &cancellation),
-                (
-                    RouterDeliveryOutcome::Accepted,
-                    Some(RouterDeliveryTransport::Ssu2),
-                ),
-                "SSU2 remains selected when NTCP2 is present or removed"
-            );
+            let (outcome, selected) =
+                delivery.deliver_with_transport(send(message_id), &cancellation);
+            assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+            assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
             let inbound = tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
                 .await
                 .expect("SSU2 inbound deadline")
@@ -2689,14 +2800,9 @@ mod tests {
             .expect("bounded delivery")
         };
 
-        assert_eq!(
-            delivery.deliver_with_transport(send(0x461_1001), &cancellation),
-            (
-                RouterDeliveryOutcome::Accepted,
-                Some(RouterDeliveryTransport::Ssu2)
-            ),
-            "the live SSU2 session is preferred while both authenticated families exist"
-        );
+        let (outcome, selected) = delivery.deliver_with_transport(send(0x461_1001), &cancellation);
+        assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+        assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
         let ssu_inbound = tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
             .await
             .expect("SSU2 receive deadline")
@@ -2706,14 +2812,9 @@ mod tests {
         registry.remove(peer_b, link_id);
         outbound.close();
         inbound.close();
-        assert_eq!(
-            delivery.deliver_with_transport(send(0x461_1002), &cancellation),
-            (
-                RouterDeliveryOutcome::Accepted,
-                Some(RouterDeliveryTransport::Ssu2)
-            ),
-            "the live SSU2 session carries product I2NP after NTCP2 link loss"
-        );
+        let (outcome, selected) = delivery.deliver_with_transport(send(0x461_1002), &cancellation);
+        assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+        assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
         let ssu_inbound_after_ntcp2_loss =
             tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
                 .await
@@ -2775,7 +2876,8 @@ mod tests {
         let bytes = replacement_receiver
             .recv()
             .await
-            .expect("replacement NTCP2 route queue");
+            .expect("replacement NTCP2 route queue")
+            .bytes;
         outbound_replacement
             .send_i2np_message(bytes, Duration::from_secs(2), &cancellation)
             .await

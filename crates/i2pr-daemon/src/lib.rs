@@ -2487,14 +2487,27 @@ fn register_ntcp2_service(
                                             biased;
                                             _ = link_cancel.cancelled() => break,
                                             message = send_rx.recv() => {
-                                                let Some(message) = message else { break; };
-                                                if link.send_i2np_message(
-                                                    message,
-                                                    link_send_timeout,
-                                                    &link_cancel,
-                                                ).await.is_err() {
-                                                    break;
+                                                let Some(mut message) = message else { break; };
+                                                let sent = if message.completion.is_some() {
+                                                    match link.send_i2np_message_with_receipt(
+                                                        message.bytes,
+                                                        link_send_timeout,
+                                                        &link_cancel,
+                                                    ).await {
+                                                        Ok(receipt) => receipt.await.is_ok(),
+                                                        Err(_) => false,
+                                                    }
+                                                } else {
+                                                    link.send_i2np_message(
+                                                        message.bytes,
+                                                        link_send_timeout,
+                                                        &link_cancel,
+                                                    ).await.is_ok()
+                                                };
+                                                if let Some(completion) = message.completion.take() {
+                                                    let _ = completion.send(sent);
                                                 }
+                                                if !sent { break; }
                                             }
                                             received = link.recv_i2np_messages(&link_cancel) => {
                                                 let Ok(Some(messages)) = received else { break; };
@@ -2604,12 +2617,27 @@ fn register_ntcp2_service(
                                         biased;
                                         _ = task_cancel.cancelled() => break,
                                     message = send_rx.recv() => {
-                                        let Some(message) = message else { break; };
-                                        let _ = link.send_i2np_message(
-                                            message,
-                                            task_send_timeout,
-                                            &task_cancel,
-                                        ).await;
+                                        let Some(mut message) = message else { break; };
+                                        let sent = if message.completion.is_some() {
+                                            match link.send_i2np_message_with_receipt(
+                                                message.bytes,
+                                                task_send_timeout,
+                                                &task_cancel,
+                                            ).await {
+                                                Ok(receipt) => receipt.await.is_ok(),
+                                                Err(_) => false,
+                                            }
+                                        } else {
+                                            link.send_i2np_message(
+                                                message.bytes,
+                                                task_send_timeout,
+                                                &task_cancel,
+                                            ).await.is_ok()
+                                        };
+                                        if let Some(completion) = message.completion.take() {
+                                            let _ = completion.send(sent);
+                                        }
+                                        if !sent { break; }
                                     }
                                         received = link.recv_i2np_messages(&task_cancel) => {
                                             let Ok(Some(messages)) = received else { break; };

@@ -1005,12 +1005,26 @@ struct StagedDatagram {
 #[derive(Default)]
 struct TracedI2np {
     message_ids: Vec<u32>,
+    fragments: Vec<i2pr_transport_ssu2::session::I2npFragmentReceipt>,
     source: Option<(PeerId, LinkId)>,
+}
+
+struct PendingSsu2WriteReceipt {
+    expected_fragments: u8,
+    written_fragments: HashSet<u8>,
+    expires_ms: u64,
+    completion: tokio::sync::oneshot::Sender<bool>,
 }
 
 struct TraceContext<'a> {
     source_link: LinkId,
     observer: Option<&'a crate::ssu2_qualification_observer::Ssu2QualificationObserver>,
+}
+
+struct TracedStage<'a> {
+    message_ids: Vec<u32>,
+    fragments: Vec<i2pr_transport_ssu2::session::I2npFragmentReceipt>,
+    context: TraceContext<'a>,
 }
 
 fn bandwidth_peer_key(addr: SocketAddr) -> BandwidthPeerKey {
@@ -1050,6 +1064,7 @@ struct ServiceState {
     replay: HandshakeReplayCache,
     token_cache: BTreeMap<PeerId, Vec<CachedToken>>,
     token_request_rates: HashMap<SocketAddr, (u64, u32)>,
+    pending_write_receipts: HashMap<(LinkId, u32), PendingSsu2WriteReceipt>,
     staged_v4: VecDeque<StagedDatagram>,
     staged_v6: VecDeque<StagedDatagram>,
     staged_bytes: usize,
@@ -1478,6 +1493,7 @@ impl Ssu2RuntimeService {
                     replay,
                     token_cache: BTreeMap::new(),
                     token_request_rates: HashMap::new(),
+                    pending_write_receipts: HashMap::new(),
                     staged_v4: VecDeque::new(),
                     staged_v6: VecDeque::new(),
                     staged_bytes: 0,
@@ -3065,6 +3081,55 @@ impl Ssu2RuntimeService {
         message: EncodedI2npMessage,
         timeout: Duration,
     ) -> Ssu2SendOutcome {
+        self.send_i2np_with_link(peer, message, timeout).0
+    }
+
+    /// Queues one message and returns the exact authenticated session
+    /// generation selected before admission, without installing a write
+    /// receipt ticket.
+    pub fn send_i2np_with_link(
+        &self,
+        peer: PeerId,
+        message: EncodedI2npMessage,
+        timeout: Duration,
+    ) -> (Ssu2SendOutcome, Option<LinkId>) {
+        let mut selected_link = None;
+        let outcome = self.send_i2np_inner(peer, message, timeout, None, &mut selected_link);
+        (outcome, selected_link)
+    }
+
+    /// Queues one message and returns a receiver whose result is produced by
+    /// the authenticated session and UDP writer after every original SSU2
+    /// fragment has been accepted by the socket.
+    pub fn send_i2np_with_receipt(
+        &self,
+        peer: PeerId,
+        message: EncodedI2npMessage,
+        timeout: Duration,
+    ) -> (
+        Ssu2SendOutcome,
+        Option<LinkId>,
+        Option<tokio::sync::oneshot::Receiver<bool>>,
+    ) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut selected_link = None;
+        let outcome =
+            self.send_i2np_inner(peer, message, timeout, Some(sender), &mut selected_link);
+        if outcome == Ssu2SendOutcome::Accepted {
+            (outcome, selected_link, Some(receiver))
+        } else {
+            (outcome, selected_link, None)
+        }
+    }
+
+    fn send_i2np_inner(
+        &self,
+        peer: PeerId,
+        message: EncodedI2npMessage,
+        timeout: Duration,
+        completion: Option<tokio::sync::oneshot::Sender<bool>>,
+        selected_link: &mut Option<LinkId>,
+    ) -> Ssu2SendOutcome {
         let now = self.service_now();
         let absolute = now.saturating_add(timeout);
         let deadline = match i2pr_transport::Deadline::new(absolute) {
@@ -3081,6 +3146,7 @@ impl Ssu2RuntimeService {
                 return Ssu2SendOutcome::Closed;
             }
         };
+        *selected_link = Some(capability_link_id(&capability));
         let request = match DeliveryRequest::new(peer, message, deadline) {
             Ok(request) => request,
             Err(_) => return Ssu2SendOutcome::ResourceDenied,
@@ -3108,38 +3174,72 @@ impl Ssu2RuntimeService {
                 };
             }
         };
-        let outcome = self.queue_to_session(capability_link_id(&capability), &bytes);
+        let outcome = self.queue_to_session(
+            capability_link_id(&capability),
+            &bytes,
+            u64::try_from(absolute.as_millis()).unwrap_or(u64::MAX),
+            completion,
+        );
         drop(queued);
         outcome
     }
 
-    fn queue_to_session(&self, link_id: LinkId, bytes: &[u8]) -> Ssu2SendOutcome {
+    fn queue_to_session(
+        &self,
+        link_id: LinkId,
+        bytes: &[u8],
+        expires_ms: u64,
+        completion: Option<tokio::sync::oneshot::Sender<bool>>,
+    ) -> Ssu2SendOutcome {
         let Ok(mut state) = self.shared.state.lock() else {
             return Ssu2SendOutcome::Closed;
         };
-        let Some(record) = state.active.get_mut(&link_id) else {
-            return Ssu2SendOutcome::Closed;
+        let (queued, peer, expected_fragments) = {
+            let Some(record) = state.active.get_mut(&link_id) else {
+                return Ssu2SendOutcome::Closed;
+            };
+            if record.session.is_terminated() {
+                return Ssu2SendOutcome::Closed;
+            }
+            let (messages, queued_bytes) = record.session.outbound_pending();
+            if messages >= SSU2_SEND_QUEUE_MESSAGES
+                || queued_bytes.saturating_add(bytes.len()).saturating_add(64)
+                    > SSU2_SEND_QUEUE_BYTES
+            {
+                return Ssu2SendOutcome::QueueFull;
+            }
+            let queued = record.session.queue_i2np_message(bytes.to_vec());
+            let expected_fragments = queued
+                .as_ref()
+                .ok()
+                .and_then(|message_id| record.session.outbound_fragment_count(*message_id));
+            (queued, record.peer, expected_fragments)
         };
-        if record.session.is_terminated() {
-            return Ssu2SendOutcome::Closed;
-        }
-        let (messages, queued_bytes) = record.session.outbound_pending();
-        if messages >= SSU2_SEND_QUEUE_MESSAGES
-            || queued_bytes.saturating_add(bytes.len()).saturating_add(64) > SSU2_SEND_QUEUE_BYTES
-        {
-            return Ssu2SendOutcome::QueueFull;
-        }
-        match record.session.queue_i2np_message(bytes.to_vec()) {
-            Ok(_) => {
-                if let Some(observer) = &self.shared.qualification_observer
-                    && let Some(message_id) = bytes
-                        .get(1..5)
-                        .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
-                        .map(u32::from_be_bytes)
-                {
+        match queued {
+            Ok(message_id) => {
+                if let Some(completion) = completion {
+                    let key = (link_id, message_id);
+                    if let Some(expected_fragments) = expected_fragments
+                        && state.pending_write_receipts.len() < SSU2_MAX_PENDING_WRITE_RECEIPTS
+                        && !state.pending_write_receipts.contains_key(&key)
+                    {
+                        state.pending_write_receipts.insert(
+                            key,
+                            PendingSsu2WriteReceipt {
+                                expected_fragments,
+                                written_fragments: HashSet::new(),
+                                expires_ms,
+                                completion,
+                            },
+                        );
+                    } else {
+                        let _ = completion.send(false);
+                    }
+                }
+                if let Some(observer) = &self.shared.qualification_observer {
                     observer.record(
-                        record.peer,
-                        record.link_id,
+                        peer,
+                        link_id,
                         crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npQueueAccepted,
                         &[message_id],
                     );
@@ -3207,6 +3307,9 @@ impl Ssu2RuntimeService {
 pub const SSU2_SEND_QUEUE_MESSAGES: usize = 64;
 /// Maximum estimated outbound I2NP bytes staged per session.
 pub const SSU2_SEND_QUEUE_BYTES: usize = 256 * 1024;
+/// Maximum number of process-local delivery receipts retained while socket
+/// writers settle fragments. This is global to one runtime and fail-closed.
+pub const SSU2_MAX_PENDING_WRITE_RECEIPTS: usize = 512;
 
 /// Maps a close reason to a wire termination code.
 fn termination_code(reason: TerminationCategory) -> u8 {
@@ -3240,6 +3343,52 @@ fn remove_peer_link_locked(state: &mut ServiceState, peer: &PeerId, link_id: &Li
             state.peer_links.remove(peer);
         }
     }
+    let stale_receipts = state
+        .pending_write_receipts
+        .keys()
+        .filter(|(receipt_link, _)| receipt_link == link_id)
+        .copied()
+        .collect::<Vec<_>>();
+    for key in stale_receipts {
+        if let Some(receipt) = state.pending_write_receipts.remove(&key) {
+            let _ = receipt.completion.send(false);
+        }
+    }
+}
+
+fn settle_ssu2_write_receipts(
+    state: &mut ServiceState,
+    link_id: LinkId,
+    fragments: &[i2pr_transport_ssu2::session::I2npFragmentReceipt],
+    written: bool,
+) {
+    for fragment in fragments {
+        let key = (link_id, fragment.message_id);
+        let result = state
+            .pending_write_receipts
+            .get_mut(&key)
+            .and_then(|receipt| settle_ssu2_write_fragment(receipt, *fragment, written));
+        if let Some(result) = result
+            && let Some(receipt) = state.pending_write_receipts.remove(&key)
+        {
+            let _ = receipt.completion.send(result);
+        }
+    }
+}
+
+fn settle_ssu2_write_fragment(
+    receipt: &mut PendingSsu2WriteReceipt,
+    fragment: i2pr_transport_ssu2::session::I2npFragmentReceipt,
+    written: bool,
+) -> Option<bool> {
+    if !written
+        || fragment.total_fragments != receipt.expected_fragments
+        || fragment.fragment_number >= receipt.expected_fragments
+    {
+        return Some(false);
+    }
+    receipt.written_fragments.insert(fragment.fragment_number);
+    (receipt.written_fragments.len() == usize::from(receipt.expected_fragments)).then_some(true)
 }
 
 /// Stages handshake datagrams from machine actions into the
@@ -3290,10 +3439,22 @@ fn stage_traced_locked(
     counters: &ServiceCounters,
     bytes: Vec<u8>,
     addr: SocketAddr,
-    message_ids: Vec<u32>,
-    context: TraceContext<'_>,
+    trace: TracedStage<'_>,
 ) -> bool {
+    let TracedStage {
+        message_ids,
+        fragments,
+        context,
+    } = trace;
     let receipt_ids = message_ids.clone();
+    let fragments = fragments
+        .into_iter()
+        .filter(|fragment| {
+            state
+                .pending_write_receipts
+                .contains_key(&(context.source_link, fragment.message_id))
+        })
+        .collect::<Vec<_>>();
     let source = state
         .active
         .get(&context.source_link)
@@ -3307,6 +3468,7 @@ fn stage_traced_locked(
         BandwidthTrafficClass::Client,
         TracedI2np {
             message_ids,
+            fragments: fragments.clone(),
             source,
         },
     );
@@ -3324,6 +3486,14 @@ fn stage_traced_locked(
             transition = "datagram_staging_rejected",
             "SSU2 message send receipt"
         );
+        for fragment in fragments {
+            if let Some(receipt) = state
+                .pending_write_receipts
+                .remove(&(context.source_link, fragment.message_id))
+            {
+                let _ = receipt.completion.send(false);
+            }
+        }
     }
     accepted
 }
@@ -5253,11 +5423,11 @@ impl Ssu2RuntimeService {
         if remove.is_none() {
             for _ in 0..SSU2_MAX_DRAIN_PER_SESSION {
                 let datagram = match state.active.get_mut(&link_id) {
-                    Some(record) => record.session.poll_transmit_traced(now_ms),
+                    Some(record) => record.session.poll_transmit_fragments_traced(now_ms),
                     None => None,
                 };
                 match datagram {
-                    Some((datagram, message_ids)) => {
+                    Some((datagram, message_ids, fragments)) => {
                         let addr = match state.active.get(&link_id) {
                             Some(record) => record.peer_addr,
                             None => break,
@@ -5268,10 +5438,13 @@ impl Ssu2RuntimeService {
                             &self.shared.counters,
                             datagram,
                             addr,
-                            message_ids,
-                            TraceContext {
-                                source_link: link_id,
-                                observer: self.shared.qualification_observer.as_ref(),
+                            TracedStage {
+                                message_ids,
+                                fragments,
+                                context: TraceContext {
+                                    source_link: link_id,
+                                    observer: self.shared.qualification_observer.as_ref(),
+                                },
                             },
                         );
                     }
@@ -5300,6 +5473,7 @@ impl Ssu2RuntimeService {
                     Some(SessionAction::TransmitTracked {
                         datagram,
                         message_ids,
+                        fragments,
                     }) => {
                         let addr = match state.active.get(&link_id) {
                             Some(record) => record.peer_addr,
@@ -5311,10 +5485,13 @@ impl Ssu2RuntimeService {
                             &self.shared.counters,
                             datagram,
                             addr,
-                            message_ids,
-                            TraceContext {
-                                source_link: link_id,
-                                observer: self.shared.qualification_observer.as_ref(),
+                            TracedStage {
+                                message_ids,
+                                fragments,
+                                context: TraceContext {
+                                    source_link: link_id,
+                                    observer: self.shared.qualification_observer.as_ref(),
+                                },
                             },
                         );
                     }
@@ -5642,6 +5819,17 @@ impl Ssu2RuntimeService {
         let inbound = Vec::new();
         let now_ms = monotonic_ms(&self.shared.started_at);
         let now_secs = wall_secs();
+        let expired_receipts = state
+            .pending_write_receipts
+            .iter()
+            .filter(|(_, receipt)| now_ms >= receipt.expires_ms)
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        for key in expired_receipts {
+            if let Some(receipt) = state.pending_write_receipts.remove(&key) {
+                let _ = receipt.completion.send(false);
+            }
+        }
         // Pending outbound: backstop, cached-token grace, resends.
         let outbound_keys: Vec<u64> = state.pending_outbound.keys().copied().collect();
         for key in outbound_keys {
@@ -5810,6 +5998,7 @@ impl Ssu2RuntimeService {
                     Some(SessionAction::TransmitTracked {
                         datagram,
                         message_ids,
+                        fragments,
                     }) => {
                         let addr = match state.active.get(&link_id) {
                             Some(record) => record.peer_addr,
@@ -5821,10 +6010,13 @@ impl Ssu2RuntimeService {
                             &self.shared.counters,
                             datagram,
                             addr,
-                            message_ids,
-                            TraceContext {
-                                source_link: link_id,
-                                observer: self.shared.qualification_observer.as_ref(),
+                            TracedStage {
+                                message_ids,
+                                fragments,
+                                context: TraceContext {
+                                    source_link: link_id,
+                                    observer: self.shared.qualification_observer.as_ref(),
+                                },
                             },
                         );
                     }
@@ -5840,11 +6032,11 @@ impl Ssu2RuntimeService {
             if remove.is_none() {
                 for _ in 0..SSU2_MAX_DRAIN_PER_SESSION {
                     let datagram = match state.active.get_mut(&link_id) {
-                        Some(record) => record.session.poll_transmit_traced(now_ms),
+                        Some(record) => record.session.poll_transmit_fragments_traced(now_ms),
                         None => None,
                     };
                     match datagram {
-                        Some((datagram, message_ids)) => {
+                        Some((datagram, message_ids, fragments)) => {
                             let addr = match state.active.get(&link_id) {
                                 Some(record) => record.peer_addr,
                                 None => break,
@@ -5855,10 +6047,13 @@ impl Ssu2RuntimeService {
                                 &self.shared.counters,
                                 datagram,
                                 addr,
-                                message_ids,
-                                TraceContext {
-                                    source_link: link_id,
-                                    observer: self.shared.qualification_observer.as_ref(),
+                                TracedStage {
+                                    message_ids,
+                                    fragments,
+                                    context: TraceContext {
+                                        source_link: link_id,
+                                        observer: self.shared.qualification_observer.as_ref(),
+                                    },
                                 },
                             );
                         }
@@ -5952,6 +6147,7 @@ impl Ssu2RuntimeService {
             class: BandwidthTrafficClass,
             duplicates: bool,
             message_ids: Vec<u32>,
+            fragments: Vec<i2pr_transport_ssu2::session::I2npFragmentReceipt>,
             source: Option<(PeerId, LinkId)>,
         }
         let policy = self
@@ -5999,6 +6195,14 @@ impl Ssu2RuntimeService {
                             &datagram.trace.message_ids,
                         );
                     }
+                    if let Some((_, link_id)) = datagram.trace.source {
+                        settle_ssu2_write_receipts(
+                            &mut state,
+                            link_id,
+                            &datagram.trace.fragments,
+                            false,
+                        );
+                    }
                     continue;
                 }
                 let duplicates = policy
@@ -6010,6 +6214,7 @@ impl Ssu2RuntimeService {
                     class: datagram.class,
                     duplicates,
                     message_ids: datagram.trace.message_ids,
+                    fragments: datagram.trace.fragments,
                     source: datagram.trace.source,
                 });
             }
@@ -6026,6 +6231,7 @@ impl Ssu2RuntimeService {
                         class: first.class,
                         trace: TracedI2np {
                             message_ids: first.message_ids,
+                            fragments: first.fragments,
                             source: first.source,
                         },
                     });
@@ -6037,6 +6243,7 @@ impl Ssu2RuntimeService {
                         class: first.class,
                         duplicates: false,
                         message_ids: first.message_ids,
+                        fragments: first.fragments,
                         source: first.source,
                     });
                     if let Ok(mut guard) = self.shared.faults.lock()
@@ -6080,9 +6287,19 @@ impl Ssu2RuntimeService {
                             "SSU2 message send receipt"
                         );
                     }
+                    if let Some((_, link_id)) = send.source
+                        && let Ok(mut state) = self.shared.state.lock()
+                    {
+                        settle_ssu2_write_receipts(&mut state, link_id, &send.fragments, false);
+                    }
                     continue;
                 }
                 if socket.send_to(&send.bytes, send.addr).await.is_ok() {
+                    if let Some((_, link_id)) = send.source
+                        && let Ok(mut state) = self.shared.state.lock()
+                    {
+                        settle_ssu2_write_receipts(&mut state, link_id, &send.fragments, true);
+                    }
                     if !send.message_ids.is_empty()
                         && let (Some(observer), Some((peer, link_id))) =
                             (&self.shared.qualification_observer, send.source)
@@ -6106,6 +6323,11 @@ impl Ssu2RuntimeService {
                         .datagrams_sent
                         .fetch_add(1, Ordering::Relaxed);
                 } else {
+                    if let Some((_, link_id)) = send.source
+                        && let Ok(mut state) = self.shared.state.lock()
+                    {
+                        settle_ssu2_write_receipts(&mut state, link_id, &send.fragments, false);
+                    }
                     if !send.message_ids.is_empty()
                         && let (Some(observer), Some((peer, link_id))) =
                             (&self.shared.qualification_observer, send.source)
@@ -6161,7 +6383,23 @@ impl Ssu2RuntimeService {
                     "SSU2 message send receipt"
                 );
             }
+            if !admitted
+                && let Some((_, link_id)) = previous.trace.source
+                && let Ok(mut state) = self.shared.state.lock()
+            {
+                settle_ssu2_write_receipts(&mut state, link_id, &previous.trace.fragments, false);
+            }
             if admitted && socket.send_to(&previous.bytes, previous.addr).await.is_ok() {
+                if let Some((_, link_id)) = previous.trace.source
+                    && let Ok(mut state) = self.shared.state.lock()
+                {
+                    settle_ssu2_write_receipts(
+                        &mut state,
+                        link_id,
+                        &previous.trace.fragments,
+                        true,
+                    );
+                }
                 if !previous.trace.message_ids.is_empty()
                     && let (Some(observer), Some((peer, link_id))) =
                         (&self.shared.qualification_observer, previous.trace.source)
@@ -6185,6 +6423,16 @@ impl Ssu2RuntimeService {
                     .datagrams_sent
                     .fetch_add(1, Ordering::Relaxed);
             } else if admitted && !previous.trace.message_ids.is_empty() {
+                if let Some((_, link_id)) = previous.trace.source
+                    && let Ok(mut state) = self.shared.state.lock()
+                {
+                    settle_ssu2_write_receipts(
+                        &mut state,
+                        link_id,
+                        &previous.trace.fragments,
+                        false,
+                    );
+                }
                 if let (Some(observer), Some((peer, link_id))) =
                     (&self.shared.qualification_observer, previous.trace.source)
                 {
@@ -6353,6 +6601,60 @@ impl Ssu2LinkHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_write_receipt_requires_distinct_fragments_and_fails_partial_writes() {
+        let (completion, mut result) = tokio::sync::oneshot::channel();
+        let mut receipt = PendingSsu2WriteReceipt {
+            expected_fragments: 3,
+            written_fragments: HashSet::new(),
+            expires_ms: 10,
+            completion,
+        };
+        let fragment = |fragment_number| i2pr_transport_ssu2::session::I2npFragmentReceipt {
+            message_id: 77,
+            fragment_number,
+            total_fragments: 3,
+        };
+        assert_eq!(
+            settle_ssu2_write_fragment(&mut receipt, fragment(0), true),
+            None
+        );
+        assert_eq!(
+            settle_ssu2_write_fragment(&mut receipt, fragment(0), true),
+            None
+        );
+        assert_eq!(
+            settle_ssu2_write_fragment(&mut receipt, fragment(2), true),
+            None
+        );
+        assert_eq!(receipt.written_fragments.len(), 2);
+        assert_eq!(
+            settle_ssu2_write_fragment(&mut receipt, fragment(1), true),
+            Some(true)
+        );
+        let _ = receipt.completion.send(true);
+        assert_eq!(result.try_recv(), Ok(true));
+
+        let (completion, mut result) = tokio::sync::oneshot::channel();
+        let mut partial = PendingSsu2WriteReceipt {
+            expected_fragments: 2,
+            written_fragments: HashSet::from([0]),
+            expires_ms: 10,
+            completion,
+        };
+        let failed = i2pr_transport_ssu2::session::I2npFragmentReceipt {
+            message_id: 78,
+            fragment_number: 1,
+            total_fragments: 2,
+        };
+        assert_eq!(
+            settle_ssu2_write_fragment(&mut partial, failed, false),
+            Some(false)
+        );
+        let _ = partial.completion.send(false);
+        assert_eq!(result.try_recv(), Ok(false));
+    }
 
     fn identity_with_router_info(router_info: Vec<u8>) -> Ssu2IdentityMaterial {
         Ssu2IdentityMaterial {

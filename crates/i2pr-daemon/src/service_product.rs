@@ -85,8 +85,8 @@ use crate::encrypted_service_resolver::{
     EncryptedServiceConsumerError, EncryptedServiceResolver, bind_inner_to_address,
 };
 use crate::exploratory_build::{
-    BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
-    PeerBuildMaterial, SubmitResult,
+    BuildCoordinatorOutcome, BuildDirection, BuildEmissionDisposition, DestinationBuildRequest,
+    ExploratoryBuildCoordinator, PeerBuildMaterial, SubmitResult,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
@@ -4857,6 +4857,7 @@ async fn await_destination_build_install(
 ) -> Result<ActivatedDestinationBinding, ServiceProductError> {
     let deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
     while tokio::time::Instant::now() < deadline {
+        coordinator.advance_time(wall_ms());
         let Some(inbound) = wait_for_startup_inbound(
             options.poll_interval,
             cancellation,
@@ -4919,6 +4920,15 @@ async fn await_destination_build_install(
             }
         }
     }
+    let emission = coordinator
+        .emission_disposition(attempt_id)
+        .unwrap_or(BuildEmissionDisposition::NotEmitted);
+    tracing::info!(
+        direction = ?direction,
+        originator_write_disposition = ?emission,
+        transition = "build_wait_expired",
+        "destination build source-owned delivery result"
+    );
     Err(match direction {
         BuildDirection::Inbound => ServiceProductError::InboundBuildMissing,
         BuildDirection::Outbound => ServiceProductError::OutboundBuildMissing,
@@ -5217,6 +5227,7 @@ async fn provision_all_service_router_material(
                 && !installed_inbound
                 && tokio::time::Instant::now() < install_deadline
             {
+                coordinator.advance_time(wall_ms());
                 let Some(inbound_msg) = wait_for_startup_inbound(
                     options.poll_interval,
                     cancellation,
@@ -5303,12 +5314,17 @@ async fn provision_all_service_router_material(
                 }
             }
             if need_inbound && !installed_inbound {
+                coordinator.advance_time(wall_ms());
                 let counters = coordinator.counters();
                 let attempt_observation = inbound_attempt_id
                     .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
                     .unwrap_or_default();
                 tracing::warn!(
                     build_attempt_id = inbound_attempt_id.map_or(0, |id| id.get()),
+                    direction = ?BuildDirection::Inbound,
+                    originator_write_disposition = ?inbound_attempt_id
+                        .and_then(|attempt_id| coordinator.emission_disposition(attempt_id))
+                        .unwrap_or(BuildEmissionDisposition::NotEmitted),
                     inbound_routed = counters.inbound_routed,
                     inbound_orphans = counters.inbound_orphans,
                     inbound_orphans_peer_match = counters.inbound_orphans_peer_match,

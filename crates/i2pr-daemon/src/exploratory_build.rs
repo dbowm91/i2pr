@@ -92,8 +92,8 @@ use i2pr_tunnel::short::{
 use i2pr_tunnel::short_record::HopRole;
 
 use crate::router_i2np::{
-    RouterDeliveryOutcome, RouterDeliveryRequest, RouterDeliveryService, RouterI2npError,
-    RouterI2npKind, RouterI2npOutcome, dispatch_router_i2np,
+    RouterDeliveryOutcome, RouterDeliveryRequest, RouterDeliveryService, RouterDeliveryTicket,
+    RouterI2npError, RouterI2npKind, RouterI2npOutcome, dispatch_router_i2np,
 };
 
 /// Maximum number of simultaneous pending exploratory build
@@ -730,9 +730,84 @@ struct PendingBuild {
     /// Bounded by this pending attempt's lifetime and the existing pending
     /// attempt ceiling. Raw peer and message identifiers are not retained.
     inbound_observation: InboundBuildObservation,
+    /// Source-owned writer receipts for the one direct request or each
+    /// TunnelData transport cell. SSU2 queue admission remains explicitly
+    /// unobserved until its writer-ticket producer is available.
+    delivery_set: BuildDeliverySet,
     /// Live state machine. The coordinator never spawns a task
     /// per attempt; the daemon-owned pump drives every attempt.
     state: ShortBuildStateMachine,
+}
+
+#[derive(Default)]
+struct BuildDeliverySet {
+    required: usize,
+    tickets: Vec<Option<RouterDeliveryTicket>>,
+    observed: usize,
+    emitted: usize,
+    failed: bool,
+    unobserved: bool,
+}
+
+/// Local disposition for one pending build's originator-side transport
+/// writes. This does not imply remote receipt or stock-router acceptance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildEmissionDisposition {
+    /// The selected transport owner has not completed the write yet.
+    Pending,
+    /// Every required originator delivery completed at its socket writer.
+    AllOriginatorDeliveriesEmitted,
+    /// At least one required delivery failed after some write activity.
+    PartialEmission,
+    /// No write completed and delivery was rejected or its owner closed.
+    NotEmitted,
+    /// One or more selected transports have no source-owned write ticket.
+    UnobservedTransport,
+}
+
+impl BuildDeliverySet {
+    fn disposition(&self) -> BuildEmissionDisposition {
+        if self.failed {
+            if self.observed < self.tickets.len() {
+                return BuildEmissionDisposition::Pending;
+            }
+            return if self.emitted == 0 {
+                BuildEmissionDisposition::NotEmitted
+            } else {
+                BuildEmissionDisposition::PartialEmission
+            };
+        }
+        if self.unobserved || self.tickets.len() != self.required {
+            return BuildEmissionDisposition::UnobservedTransport;
+        }
+        if self.observed == self.required && self.emitted == self.required {
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+        } else {
+            BuildEmissionDisposition::Pending
+        }
+    }
+
+    fn poll(&mut self) {
+        for slot in &mut self.tickets {
+            let Some(ticket) = slot.as_mut() else {
+                continue;
+            };
+            if let Some(result) = ticket.try_result() {
+                if result {
+                    self.emitted = self.emitted.saturating_add(1);
+                } else {
+                    self.failed = true;
+                }
+                self.observed = self.observed.saturating_add(1);
+                *slot = None;
+            }
+        }
+    }
+}
+
+struct RetainedBuildDeliverySet {
+    set: BuildDeliverySet,
+    expires_at_ms: u64,
 }
 
 /// Daemon-owned exploratory build coordinator.
@@ -740,6 +815,7 @@ pub struct ExploratoryBuildCoordinator {
     pool: ExploratoryPool,
     registry: DataPlaneRegistry,
     pending: BTreeMap<BuildAttemptId, PendingBuild>,
+    settling_delivery_sets: BTreeMap<BuildAttemptId, RetainedBuildDeliverySet>,
     pending_tunnel_ids: HashSet<u32>,
     retired_tunnel_ids: BTreeMap<u32, u64>,
     retired_message_ids: BTreeMap<u32, u64>,
@@ -768,6 +844,7 @@ impl ExploratoryBuildCoordinator {
             pool: ExploratoryPool::new(pool_config),
             registry: DataPlaneRegistry::new(registry_capacity),
             pending: BTreeMap::new(),
+            settling_delivery_sets: BTreeMap::new(),
             pending_tunnel_ids: HashSet::new(),
             retired_tunnel_ids: BTreeMap::new(),
             retired_message_ids: BTreeMap::new(),
@@ -1089,10 +1166,35 @@ impl ExploratoryBuildCoordinator {
     /// must call this before any operation that depends on time.
     pub fn advance_time(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+        for pending in self.pending.values_mut() {
+            pending.delivery_set.poll();
+        }
+        for retained in self.settling_delivery_sets.values_mut() {
+            retained.set.poll();
+        }
+        self.settling_delivery_sets
+            .retain(|_, retained| retained.expires_at_ms > now_ms);
         self.retired_tunnel_ids
             .retain(|_, expires_at| *expires_at > now_ms);
         self.retired_message_ids
             .retain(|_, expires_at| *expires_at > now_ms);
+    }
+
+    /// Returns the local originator-writer disposition for a live attempt.
+    /// This reports only source-owned socket writes; reply correlation and
+    /// remote protocol acceptance remain separate outcomes.
+    pub fn emission_disposition(
+        &self,
+        attempt_id: BuildAttemptId,
+    ) -> Option<BuildEmissionDisposition> {
+        self.pending
+            .get(&attempt_id)
+            .map(|pending| pending.delivery_set.disposition())
+            .or_else(|| {
+                self.settling_delivery_sets
+                    .get(&attempt_id)
+                    .map(|retained| retained.set.disposition())
+            })
     }
 
     /// Allocates a fresh attempt id. The id is monotonic and never
@@ -1258,7 +1360,12 @@ impl ExploratoryBuildCoordinator {
                 "coordinator is paused after consecutive failures",
             ));
         }
-        if self.pending.len() >= MAX_PENDING_BUILDS {
+        if self
+            .pending
+            .len()
+            .saturating_add(self.settling_delivery_sets.len())
+            >= MAX_PENDING_BUILDS
+        {
             return Err(BuildCoordinatorError::Coordinator(
                 "too many pending builds",
             ));
@@ -1384,6 +1491,7 @@ impl ExploratoryBuildCoordinator {
             BuildCoordinatorError::Coordinator("build path has no first hop"),
         )?;
         let peer = PeerId::from_hash(first_peer_hash);
+        let mut delivery_set = BuildDeliverySet::default();
         let delivery_outcome = if let Some(slot) = outbound_slot {
             let expiration_ms = match bridge_header {
                 BridgeHeader::Standard { expiration_ms, .. } => expiration_ms,
@@ -1406,6 +1514,7 @@ impl ExploratoryBuildCoordinator {
                 now_ms,
                 rng,
             )?;
+            delivery_set.required = cells.len();
             let mut result = RouterDeliveryOutcome::Accepted;
             for (target_peer, transport_wire) in cells {
                 let delivery_request =
@@ -1413,9 +1522,13 @@ impl ExploratoryBuildCoordinator {
                         .map_err(|_| {
                             BuildCoordinatorError::Coordinator("delivery request validation failed")
                         })?;
-                result =
-                    delivery.deliver(delivery_request, &i2pr_runtime::CancellationToken::new());
+                let (cell_result, _selected, ticket) = delivery
+                    .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+                delivery_set.unobserved |= ticket.is_none();
+                delivery_set.tickets.push(ticket);
+                result = cell_result;
                 if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                    delivery_set.failed = true;
                     break;
                 }
             }
@@ -1425,7 +1538,15 @@ impl ExploratoryBuildCoordinator {
                 .map_err(|_| {
                 BuildCoordinatorError::Coordinator("delivery request validation failed")
             })?;
-            delivery.deliver(delivery_request, &i2pr_runtime::CancellationToken::new())
+            delivery_set.required = 1;
+            let (result, _selected, ticket) = delivery
+                .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+            delivery_set.unobserved = ticket.is_none();
+            delivery_set.tickets.push(ticket);
+            if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                delivery_set.failed = true;
+            }
+            result
         };
         let accepted = matches!(delivery_outcome, RouterDeliveryOutcome::Accepted);
         tracing::info!(
@@ -1435,6 +1556,17 @@ impl ExploratoryBuildCoordinator {
         );
         self.counters.outbound_builds = self.counters.outbound_builds.saturating_add(1);
         if !accepted {
+            if !delivery_set.tickets.is_empty()
+                && self.settling_delivery_sets.len() < MAX_PENDING_BUILDS
+            {
+                self.settling_delivery_sets.insert(
+                    attempt_id,
+                    RetainedBuildDeliverySet {
+                        set: delivery_set,
+                        expires_at_ms: now_ms.saturating_add(BUILD_DEADLINE_MS),
+                    },
+                );
+            }
             self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
             if request.destination_id.is_none() {
                 self.record_failure();
@@ -1485,6 +1617,7 @@ impl ExploratoryBuildCoordinator {
             garlic_key,
             garlic_tag,
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set,
             state,
         };
         self.pending_tunnel_ids
@@ -2463,6 +2596,78 @@ mod tests {
     use rand_core::SeedableRng;
 
     #[test]
+    fn build_delivery_set_waits_for_every_source_owned_writer_ticket() {
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        let mut set = BuildDeliverySet {
+            required: 2,
+            tickets: vec![
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x11; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(1).expect("link generation"),
+                    ),
+                    first_rx,
+                )),
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x12; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(2).expect("link generation"),
+                    ),
+                    second_rx,
+                )),
+            ],
+            observed: 0,
+            emitted: 0,
+            failed: false,
+            unobserved: false,
+        };
+        assert_eq!(set.disposition(), BuildEmissionDisposition::Pending);
+        first_tx.send(true).expect("first write receipt");
+        set.poll();
+        assert_eq!(set.disposition(), BuildEmissionDisposition::Pending);
+        second_tx.send(true).expect("second write receipt");
+        set.poll();
+        assert_eq!(
+            set.disposition(),
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+        );
+
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        let mut partial = BuildDeliverySet {
+            required: 2,
+            tickets: vec![
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x13; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(3).expect("link generation"),
+                    ),
+                    first_rx,
+                )),
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x14; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(4).expect("link generation"),
+                    ),
+                    second_rx,
+                )),
+            ],
+            observed: 0,
+            emitted: 0,
+            failed: false,
+            unobserved: false,
+        };
+        first_tx.send(true).expect("first write receipt");
+        second_tx.send(false).expect("failed second write");
+        partial.poll();
+        assert_eq!(
+            partial.disposition(),
+            BuildEmissionDisposition::PartialEmission
+        );
+    }
+
+    #[test]
     fn path_id_reservations_allow_only_adjacent_tunnel_chain_aliases() {
         let make_peer = |index: u8, receive: u32, next: u32| PeerBuildMaterial {
             router_hash: Hash::from_bytes([index; 32]),
@@ -2592,6 +2797,7 @@ mod tests {
             garlic_key: Some(Zeroizing::new([0xA1; 32])),
             garlic_tag: Some([0xB1; GARLIC_REPLY_TAG_LEN]),
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet::default(),
             state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
@@ -2703,6 +2909,7 @@ mod tests {
             garlic_key: None,
             garlic_tag: None,
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet::default(),
             state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
@@ -2867,6 +3074,7 @@ mod tests {
                 garlic_key: None,
                 garlic_tag: None,
                 inbound_observation: InboundBuildObservation::default(),
+                delivery_set: BuildDeliverySet::default(),
                 state: ShortBuildStateMachine::new(path, 60_000),
             }
         }
