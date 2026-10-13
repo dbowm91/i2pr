@@ -42,6 +42,7 @@ def parse_attempt_receipt_lines(lines):
     owner_eviction_events = 0
     owner_eviction_removed_owner = 0
     owner_eviction_removed_receive = 0
+    inbound_build_wait_receipts = []
     for line in lines:
         attempt = re.search(r"build_attempt_id\s*=\s*(\d+)", line)
         message = re.search(r"i2np_message_id\s*=\s*(\d+)", line)
@@ -73,6 +74,19 @@ def parse_attempt_receipt_lines(lines):
             owner_eviction_events += 1
             owner_eviction_removed_owner += int("removed_owner=true" in line)
             owner_eviction_removed_receive += int("removed_receive=true" in line)
+        if re.search(r'transition\s*=\s*"?inbound_build_wait_expired', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "inbound_routed", "inbound_orphans",
+                    "inbound_orphans_peer_match", "inbound_orphans_message_match",
+                    "pending_builds",
+                )
+            }
+            if all(match for match in values.values()):
+                inbound_build_wait_receipts.append(
+                    {key: int(match.group(1)) for key, match in values.items()}
+                )
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
             r"inbound_owner_registered\s*=\s*(true|false).*?"
@@ -100,6 +114,7 @@ def parse_attempt_receipt_lines(lines):
         "owner_eviction_events": owner_eviction_events,
         "owner_eviction_removed_owner": owner_eviction_removed_owner,
         "owner_eviction_removed_receive": owner_eviction_removed_receive,
+        "inbound_build_wait_receipts": inbound_build_wait_receipts,
     }
 
 

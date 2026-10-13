@@ -5049,6 +5049,17 @@ async fn provision_all_service_router_material(
                 }
             }
             if need_inbound && !installed_inbound {
+                let counters = coordinator.counters();
+                tracing::warn!(
+                    build_attempt_id = inbound_attempt_id.map_or(0, |id| id.get()),
+                    inbound_routed = counters.inbound_routed,
+                    inbound_orphans = counters.inbound_orphans,
+                    inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
+                    inbound_orphans_message_match = counters.inbound_orphans_message_match,
+                    pending_builds = counters.pending,
+                    transition = "inbound_build_wait_expired",
+                    "destination inbound build attempt"
+                );
                 return Err(ServiceProductError::InboundBuildMissing);
             }
             // The local endpoint receive id is distinct from the pool's

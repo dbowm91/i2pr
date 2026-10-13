@@ -159,6 +159,12 @@ impl std::fmt::Debug for RouterDestinationNetworkState {
 }
 
 impl RouterDestinationNetworkState {
+    /// Returns the real receive ids bundled with this generation so its
+    /// manager owner projection can be checked before replacing bridge state.
+    pub(crate) fn inbound_receive_ids(&self) -> &[u32] {
+        &self.inbound_receive_ids
+    }
+
     /// Builds router-backed state from already-installed real
     /// material. The caller owns tunnel installation; this
     /// constructor only bundles the state and checks identity

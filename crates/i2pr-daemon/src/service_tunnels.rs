@@ -3248,6 +3248,7 @@ impl ServiceTunnelManager {
         if runtime.destination_id != service_destination
             || inbound_receive_ids.is_empty()
             || inbound_receive_ids.contains(&0)
+            || material.inbound_receive_ids() != inbound_receive_ids
         {
             return Err(ServiceTunnelError::InvalidConfig(
                 "router-backed owner generation is incomplete".to_owned(),
@@ -3271,13 +3272,6 @@ impl ServiceTunnelManager {
             bridge
                 .install_router_network_state(material, now_ms)
                 .map_err(ServiceTunnelError::InvalidConfig)?;
-            let installed_ids = bridge.router_inbound_receive_ids();
-            if installed_ids != inbound_receive_ids {
-                let _ = bridge.clear_router_network_state();
-                return Err(ServiceTunnelError::InvalidConfig(
-                    "router-backed material receive ids do not match owner generation".to_owned(),
-                ));
-            }
             for receive_id in inbound_receive_ids {
                 owners.insert(*receive_id, Arc::clone(&runtime));
             }
@@ -9440,6 +9434,54 @@ mod plan212_router_backed_service_destination_tests {
         )
     }
 
+    fn test_router_material_with_inbound_ids(
+        manager: &ServiceTunnelManager,
+        destination_id: DestinationId,
+        creator_id: u32,
+        receive_ids: &[u32],
+        now_ms: u64,
+    ) -> RouterDestinationNetworkState {
+        let (identity, now_seconds) = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                (bridge.identity(), 1_700_000_000_u32)
+            })
+            .expect("bridge must exist");
+        let tunnel_expires = u64::from(now_seconds) + 600;
+        let advertised_expires = u64::from(now_seconds) + 540;
+        let leases: Vec<_> = receive_ids
+            .iter()
+            .enumerate()
+            .map(|(index, receive_id)| {
+                InboundLeaseSource::from_parts(
+                    i2pr_tunnel::pool::TunnelSlot::from_raw(7 + index as u32),
+                    i2pr_proto::Hash::from_bytes([0xD1 + index as u8; 32]),
+                    *receive_id,
+                    tunnel_expires,
+                    advertised_expires,
+                )
+            })
+            .collect();
+        let lease_set2 = build_signed_lease_set2(&identity, &leases, now_seconds)
+            .expect("test LS2 builds from real lease sources");
+        let validated = ValidatedLeaseSet2::from_lease_set2(
+            lease_set2.clone(),
+            Some(identity.id().as_netdb_key()),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .expect("test LS2 validates");
+        RouterDestinationNetworkState::new(
+            destination_id,
+            DestinationRouting::new(DestinationRoutingConfig::balanced()),
+            EciesSessionManager::new(EciesSessionConfig::balanced()),
+            test_outbound_role(creator_id, now_ms.saturating_add(600_000)),
+            lease_set2,
+            validated,
+            receive_ids.to_vec(),
+            now_ms.saturating_add(600_000),
+            tunnel_expires.saturating_mul(1000),
+        )
+    }
+
     fn test_router_material_with_group_roles(
         manager: &ServiceTunnelManager,
         destination_id: DestinationId,
@@ -9520,13 +9562,20 @@ mod plan212_router_backed_service_destination_tests {
         let runtime = Arc::clone(&runtimes[0]);
         let now_ms = test_now_ms();
 
-        let material = test_router_material(&manager, destination_id, 0x6101, 0x9611, now_ms);
+        let inbound_receive_ids = [0x9611, 0x9612];
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6101,
+            &inbound_receive_ids,
+            now_ms,
+        );
         manager
             .install_service_router_material_with_inbound_owners(
                 destination_id,
                 material,
                 Arc::clone(&runtime),
-                &[0x9611],
+                &inbound_receive_ids,
                 now_ms,
             )
             .expect("material and owner generation installs");
@@ -9534,13 +9583,18 @@ mod plan212_router_backed_service_destination_tests {
         let summary = manager
             .service_router_network_summary(destination_id)
             .expect("summary exists");
-        assert_eq!(summary.inbound_receive_count, 1);
-        assert_eq!(summary.inbound_owner_count, 1);
+        assert_eq!(summary.inbound_receive_count, 2);
+        assert_eq!(summary.inbound_owner_count, 2);
         assert!(summary.inbound_owner_registered);
         assert!(summary.is_complete());
         assert!(
             manager
                 .inbound_tunnel_owner(0x9611)
+                .is_some_and(|owner| owner.destination_id == destination_id)
+        );
+        assert!(
+            manager
+                .inbound_tunnel_owner(0x9612)
                 .is_some_and(|owner| owner.destination_id == destination_id)
         );
     }
@@ -9571,6 +9625,48 @@ mod plan212_router_backed_service_destination_tests {
                 .service_router_network_summary(destination_id)
                 .is_none()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan474_mismatched_replacement_preserves_previous_generation() {
+        let directory = temp_data_dir("plan474-owner-generation-preserved");
+        let manager =
+            make_manager_with_one_server(directory.path(), "plan474-owner-generation-preserved");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let runtime = Arc::clone(&runtimes[0]);
+        let now_ms = test_now_ms();
+        let original = test_router_material(&manager, destination_id, 0x6101, 0x9611, now_ms);
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                original,
+                Arc::clone(&runtime),
+                &[0x9611],
+                now_ms,
+            )
+            .expect("original generation installs");
+
+        let replacement =
+            test_router_material(&manager, destination_id, 0x6201, 0x9612, now_ms + 1);
+        let result = manager.install_service_router_material_with_inbound_owners(
+            destination_id,
+            replacement,
+            runtime,
+            &[0x9613],
+            now_ms + 1,
+        );
+
+        assert!(result.is_err());
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("prior generation remains published");
+        assert_eq!(summary.inbound_receive_count, 1);
+        assert_eq!(summary.inbound_owner_count, 1);
+        assert!(summary.is_complete());
+        assert!(manager.inbound_tunnel_owner(0x9611).is_some());
+        assert!(manager.inbound_tunnel_owner(0x9612).is_none());
+        assert!(manager.inbound_tunnel_owner(0x9613).is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

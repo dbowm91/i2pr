@@ -517,6 +517,12 @@ pub struct BuildCoordinatorCounters {
     /// Inbound dispatched tunnel-build outcomes the coordinator
     /// dropped because no pending attempt matched.
     pub inbound_orphans: u64,
+    /// Unmatched forwarded inbound build replies whose authenticated
+    /// peer matched a pending inbound attempt but whose message id did not.
+    pub inbound_orphans_peer_match: u64,
+    /// Unmatched forwarded inbound build replies whose message id matched
+    /// a pending inbound attempt but whose authenticated peer did not.
+    pub inbound_orphans_message_match: u64,
     /// Duplicate inbound replies the coordinator rejected.
     pub duplicate_replies: u64,
     /// Outbound tunnel-build requests the coordinator emitted.
@@ -1222,6 +1228,26 @@ impl ExploratoryBuildCoordinator {
         });
         let Some(attempt_id) = attempt_id else {
             self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+            let inbound_attempts = self
+                .pending
+                .values()
+                .filter(|attempt| matches!(attempt.direction, BuildDirection::Inbound));
+            let mut peer_match = false;
+            let mut message_match = false;
+            for attempt in inbound_attempts {
+                peer_match |= attempt.target_peer == peer;
+                message_match |= attempt.message_id == message_id;
+            }
+            if peer_match {
+                self.counters.inbound_orphans_peer_match =
+                    self.counters.inbound_orphans_peer_match.saturating_add(1);
+            }
+            if message_match {
+                self.counters.inbound_orphans_message_match = self
+                    .counters
+                    .inbound_orphans_message_match
+                    .saturating_add(1);
+            }
             return Vec::new();
         };
         tracing::info!(
