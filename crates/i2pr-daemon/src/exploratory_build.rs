@@ -221,8 +221,8 @@ pub struct BuildRequest {
     /// established material. The coordinator owns the monotonic
     /// pool of creator tunnel ids.
     pub creator_tunnel_id: TunnelId,
-    /// Per-attempt message id the I2NP header carries. The same
-    /// value also seeds the build request `next_message_id` field.
+    /// Terminal build reply-correlation ID. The outer I2NP header
+    /// ID is supplied independently through `BridgeHeader`.
     pub message_id: u32,
     /// Outbound reply-router identity hash the OBEP records as
     /// its terminal `next_router_hash`. Required for outbound
@@ -263,7 +263,8 @@ pub struct DestinationBuildRequest {
     pub peers: Vec<PeerBuildMaterial>,
     /// Creator tunnel id reserved for established material.
     pub creator_tunnel_id: TunnelId,
-    /// Per-attempt I2NP message id.
+    /// Terminal build reply-correlation ID. The outer I2NP header
+    /// ID is supplied independently through `BridgeHeader`.
     pub message_id: u32,
     /// Local router hash used by the outbound terminal hop.
     pub outbound_reply_router: Option<Hash>,

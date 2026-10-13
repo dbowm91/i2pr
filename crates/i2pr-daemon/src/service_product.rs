@@ -73,7 +73,7 @@ use i2pr_tunnel::identity::TunnelId;
 use i2pr_tunnel::pool::TunnelSlot;
 use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
-use rand_core::SeedableRng;
+use rand_core::{RngCore, SeedableRng};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
@@ -113,10 +113,23 @@ use crate::service_tunnels::{
 ///   disjointness across every build request);
 /// - allocate a disjoint set for every build request;
 /// - bounded/wrapping collision search;
-/// - deterministic unit tests allowed with an injected seed/start.
+/// - production receives its process-local starting point from the OS CSPRNG;
+///   deterministic unit tests may inject a seed/start.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Plan212TunnelIdAllocator {
     next: u32,
+}
+
+fn fresh_message_id<R: RngCore>(rng: &mut R, excluded: &[u32]) -> Result<u32, ServiceProductError> {
+    for _ in 0..32 {
+        let candidate = rng.next_u32();
+        if candidate != 0 && !excluded.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(ServiceProductError::Provisioning(
+        "bounded message-id allocation exhausted".to_owned(),
+    ))
 }
 
 impl Plan212TunnelIdAllocator {
@@ -1916,7 +1929,10 @@ impl ServiceProduct {
         // traffic. When no reference peer is configured (local
         // product) this is a no-op and supervisors start
         // immediately.
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
+        let mut allocator_seed_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+        })?;
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(allocator_seed_rng.next_u32());
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let readiness = if router_bootstrap.is_some() && !deferred_destination_ids.is_empty() {
@@ -2148,7 +2164,10 @@ impl ServiceProduct {
                 destination_ids.push(runtime.destination_id);
             }
         }
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
+        let mut allocator_seed_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+        })?;
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(allocator_seed_rng.next_u32());
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let peer = RouterBootstrapMaterial {
@@ -4588,13 +4607,17 @@ async fn submit_destination_replacement(
         cancellation,
     )
     .await?;
+    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+        ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+    })?;
     let ids = allocator.allocate_set(10);
     if ids.contains(&0) {
         return Err(ServiceProductError::Provisioning(format!(
             "{spec_id}: allocator emitted zero tunnel id"
         )));
     }
-    let message_base = (ids[0] ^ 0x51A7_0000) & !0x03;
+    let message_id = rng.next_u32().max(1);
+    let outer_message_id = fresh_message_id(&mut rng, &[message_id])?;
     let (roles, receives, nexts, creator, message_id, outbound_reply_router, originator_hash) =
         match direction {
             BuildDirection::Outbound => (
@@ -4606,7 +4629,7 @@ async fn submit_destination_replacement(
                 [ids[1], ids[2], ids[3]],
                 [ids[2], ids[3], ids[4]],
                 ids[0],
-                message_base | 0x01,
+                message_id,
                 Some(local_router_hash),
                 None,
             ),
@@ -4619,7 +4642,7 @@ async fn submit_destination_replacement(
                 [ids[6], ids[7], ids[8]],
                 [ids[7], ids[8], ids[9]],
                 ids[5],
-                message_base | 0x02,
+                message_id,
                 None,
                 Some(local_router_hash),
             ),
@@ -4637,9 +4660,6 @@ async fn submit_destination_replacement(
         outbound_reply_router,
         originator_hash,
     };
-    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-        ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
-    })?;
     let now_ms = wall_ms();
     coordinator.advance_time(now_ms);
     match coordinator
@@ -4648,7 +4668,7 @@ async fn submit_destination_replacement(
             &ssu2_handle.delivery().clone(),
             &ShortBuildI2npBridge::new(),
             BridgeHeader::ShortTransport {
-                message_id,
+                message_id: outer_message_id,
                 expiration_seconds: wall_secs().saturating_add(60) as u32,
             },
             &mut rng,
@@ -4850,11 +4870,17 @@ async fn provision_all_service_router_material(
                 )
             })?;
             let delivery = ssu2_handle.delivery().clone();
-            // Plan 213 — mask the low two bits before OR-ing the
-            // direction bit so outbound (`| 0x01`) and inbound
-            // (`| 0x02`) message ids stay distinct for every service
-            // (later allocator ids already carry low bits).
-            let message_base: u32 = (ob_creator ^ 0x51A7_0000) & !0x03;
+            // Draw a per-generation random base and reserve the low
+            // bits so paired outbound/inbound request IDs stay distinct.
+            let message_base: u32 = rng.next_u32() & !0x03;
+            let outbound_reply_id = message_base | 0x01;
+            let inbound_reply_id = message_base | 0x02;
+            let outbound_outer_id =
+                fresh_message_id(&mut rng, &[outbound_reply_id, inbound_reply_id])?;
+            let inbound_outer_id = fresh_message_id(
+                &mut rng,
+                &[outbound_reply_id, inbound_reply_id, outbound_outer_id],
+            )?;
             let outbound_peers = outbound_candidates
                 .map(|selected| {
                     selected_peer_material(
@@ -4923,7 +4949,7 @@ async fn provision_all_service_router_material(
                 direction: BuildDirection::Outbound,
                 peers,
                 creator_tunnel_id: outbound_creator,
-                message_id: message_base | 0x01,
+                message_id: outbound_reply_id,
                 outbound_reply_router: Some(peer.local_hash),
                 originator_hash: None,
             });
@@ -4931,7 +4957,7 @@ async fn provision_all_service_router_material(
                 pending_outbound.push((
                     outbound,
                     outbound_bridge,
-                    message_base | 0x01,
+                    outbound_outer_id,
                     outbound_reply_peer,
                 ));
             }
@@ -4944,7 +4970,7 @@ async fn provision_all_service_router_material(
                 direction: BuildDirection::Inbound,
                 peers,
                 creator_tunnel_id: inbound_creator,
-                message_id: message_base | 0x02,
+                message_id: inbound_reply_id,
                 outbound_reply_router: None,
                 originator_hash: Some(peer.local_hash),
             });
@@ -4955,7 +4981,7 @@ async fn provision_all_service_router_material(
                         &delivery,
                         &inbound_bridge,
                         BridgeHeader::ShortTransport {
-                            message_id: message_base | 0x02,
+                            message_id: inbound_outer_id,
                             expiration_seconds: wall_secs().saturating_add(60) as u32,
                         },
                         &mut rng,
@@ -4999,7 +5025,7 @@ async fn provision_all_service_router_material(
                         message_id,
                         peer,
                         ..
-                    } if *message_id == (message_base | 0x02)
+                    } if *message_id == inbound_reply_id
                         && Some(*peer) == inbound_reply_peer
                 );
                 if matching_build_reply
@@ -5137,7 +5163,7 @@ async fn provision_all_service_router_material(
                 "startup cancelled before outbound pool start".to_owned(),
             ));
         }
-        for (outbound, bridge, message_id, outbound_reply_peer) in pending_outbound {
+        for (outbound, bridge, outer_message_id, outbound_reply_peer) in pending_outbound {
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
                     "operating-system randomness unavailable".to_owned(),
@@ -5149,7 +5175,7 @@ async fn provision_all_service_router_material(
                     &delivery,
                     &bridge,
                     BridgeHeader::ShortTransport {
-                        message_id,
+                        message_id: outer_message_id,
                         expiration_seconds: wall_secs().saturating_add(60) as u32,
                     },
                     &mut rng,
