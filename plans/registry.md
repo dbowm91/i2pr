@@ -176,6 +176,17 @@ Current authority: NTCP2 Plans 459/461 and 467–469 **passed at controlled scop
 
 Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute source fixes inside each active plan after concrete causal divergence, not new per-timeout numbered micro-plans. Plans 433, 435–439, 431 and specs/support.toml remain unchanged until their own external/public acceptance closes.
 
+### Next recovery ownership — Plans 481–482 (registered 2026-10-13)
+
+**These are new cross-owner contracts, not numbered retries of unfinished Plans 477/478.** At PR #46 head `9ac340af`, Plan 477 has corrected per-hop/outer/reply IDs and bounded collision scopes, but its build emitter only knows queue admission. Plan 480's private SSU2 observer can identify actual UDP writes, yet no source-owned association with a multi-cell inbound build exists. Plan 478 routes inbound builds through outbound TunnelData, but `service_product.rs` still calls `ensure_selected_peer_session` on the **selected inbound gateway** during startup; replacement can do so as well. Routing the build through an outbound tunnel does not automatically prevent the service Destination from inducing a direct router session to its gateway. Neither issue has been proven to explain the unmatched reply IDs; both need deterministic causal repairs before any product/anonymity claim.
+
+| Plan | State | Bounded implementation handoff | Independent owner and acceptance |
+| --- | --- | --- | --- |
+| **481** | **ready P0 — cross-transport source interface** | [Originating build delivery completion and nested fanout receipts](implementation/core-router-recovery/481-source-owned-build-egress-completion-bridge.md) | Transport writer/RouterDeliveryService owner: exact SSU2 and NTCP2 link-generation completion, partial multi-cell TunnelData writes and cancellation; Plan 477 consumes receipt to distinguish accepted vs emitted. A socket write is **not** stock acceptance or SAM completion. |
+| **482** | **ready P0 — Destination dial privacy policy** | [Prevent Destination-driven direct inbound-gateway sessions](implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md) | Service provisioning/dial-authority owner: suppress eager or indirect direct IBGW dials on startup/replenishment/fallback while preserving legitimate outbound first-hop transport and replies; Plan 478 consumes as a privacy prerequisite, not as an external anonymity claim. |
+
+**Continuation, no duplicate plan numbers:** 477 still owns strict terminal reply attribution (not 481); 478 still owns genuine signed LS2, atomic owner generation and bidirectional external SAM STREAM (not 482); 479 owns separate Java floodfill comparator and NetDB response, and 480 retains independent SSU2 observer/Plan 476 consumer work. Do not create a Plan 483 for the next failed stock timeout or repeat Plan 475/461 lower-tier proofs. Pinned i2pd/Java unchanged, routine CI never sends public traffic, and `specs/support.toml` plus older closure records are immutable until conformance closure.
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |

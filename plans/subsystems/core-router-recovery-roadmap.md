@@ -144,6 +144,25 @@ Bounded causal corrections must remain inside their owning plan, with determinis
 | 479 | active: comparator/profile lane open | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: local floodfill tests and guards pass; real Java candidate preference and operation-correlated store/lookup remain open. |
 | 480 | active: observer/event source owner open | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: authenticated source inputs verified; observer, product/write receipt ownership and Plan 476 collector remain open. |
 
+### Plans 481–482 — cross-owner repair contracts following active 477–480 (2026-10-13)
+
+**Status:** registered/ready, not implemented, no protocol or product capability promoted.
+
+- **481 / P0 transport and daemon router-delivery owner**: [source-owned nested-build egress completion](../implementation/core-router-recovery/481-source-owned-build-egress-completion-bridge.md). Existing `RouterDeliveryOutcome::Accepted` records queue admission; `compose_outbound_build_deliveries` produces 1–8 individually identified TunnelData transport messages for one nested short build. Bind each first-hop writer's authenticated peer/family/link generation to a private per-build ticket and distinguish complete/partial/failing egress; never mistake any of the nested I2NP message identifiers for the terminal reply ID. Both SSU2 and NTCP2 writer boundaries required; the 480 observer is existing input, not stock remote receipt. Consumer and stock-attempt attribution remain in *active Plan 477*. Close only at `plans/closure/core-router-recovery/481-status.md` after implementation and executed regressions.
+- **482 / P0 Destination dial-policy owner**: [direct inbound-gateway dial privacy guard](../implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md). Even after the Plan 478 outbound TunnelData route landed, `service_product.rs` still eagerly ensures a direct SSU2 session to `inbound_peers[0]` before provision, and the replacement path eagerly ensures the selected first hop. Enforce explicit intent for direct first-hop/bootstrap dial versus a router-delivered inbound gateway target, including NTCP2 route-miss fallback; do not reject unrelated router background sessions or legitimate authenticated inbound replies. Consumer and real SAM product remain in *active Plan 478*. Close only at `plans/closure/core-router-recovery/482-status.md`.
+
+Dependency flow:
+
+```text
+477 active short-build state/correlation -----+-- consumes 481 writer completion --+ 
+480 active SSU2 provenance/source ----------+                                +--> 477 exact-build disposition
+478 active outbound-backed service routing --+-- consumes 482 dial policy -----+--> 478 true LS2 + 2-way SAM STREAM
+479 separate Java floodfill comparator ------------------------------------------------> 437/438 gated
+476 separate SSU2 per-host executor, no authorized physical pair --------------------> 431 gated
+```
+
+Two distinct implementation owners may proceed in parallel; source ownership of 477/478 is **not transferred**. Repair identified deterministic defects inside their existing active plans after these contracts land, rather than creating new observer plans each time the pinned stock topology times out. Security acceptance is prerequisite to normal service product closure but is not a shortcut around Plan 433 public/external reachability. Neither a socket write nor lack of a Destination-caused dial proves external delivery or anonymity. Retain exact-pinned reference sources, default-off advertisement, strict authenticated reply identity/message IDs and the routine floor.
+
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
 
 Four independent **bounded corrective owners** are dependency-ready after Plan 440's closed evidence contract and previous Plan 432's HTTPS bootstrap:
