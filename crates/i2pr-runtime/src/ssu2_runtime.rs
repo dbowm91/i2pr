@@ -577,8 +577,9 @@ impl fmt::Debug for Ssu2IdentityMaterial {
 ///
 /// Construction validates the address before any socket activity: the
 /// port must be nonzero, the IP must not be unspecified, the address
-/// must be loopback while non-loopback operation is unsupported, and
-/// the peer reference must match the expected router hash.
+/// must be loopback for the ordinary constructor, or RFC1918 IPv4 for the
+/// explicitly scoped private-LAN constructor, and the peer reference must
+/// match the expected router hash.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ssu2DialTarget {
     peer: PeerId,
@@ -597,6 +598,8 @@ pub enum Ssu2DialTargetError {
     UnspecifiedIp,
     /// Non-loopback dials are unsupported in this milestone.
     NotLoopback,
+    /// The private-LAN qualification constructor accepts RFC1918 IPv4 only.
+    NotPrivateLanIpv4,
     /// The peer reference does not match the expected router hash.
     PeerHashMismatch,
 }
@@ -607,6 +610,7 @@ impl fmt::Display for Ssu2DialTargetError {
             Self::ZeroPort => "SSU2 dial port must be nonzero",
             Self::UnspecifiedIp => "SSU2 dial address must not be unspecified",
             Self::NotLoopback => "SSU2 dial address must be loopback in this milestone",
+            Self::NotPrivateLanIpv4 => "SSU2 private-LAN dial address must be RFC1918 IPv4",
             Self::PeerHashMismatch => "SSU2 dial peer does not match its expected router hash",
         })
     }
@@ -631,6 +635,38 @@ impl Ssu2DialTarget {
         }
         if !address.ip().is_loopback() {
             return Err(Ssu2DialTargetError::NotLoopback);
+        }
+        if peer.hash() != expected_router_hash {
+            return Err(Ssu2DialTargetError::PeerHashMismatch);
+        }
+        Ok(Self {
+            peer,
+            expected_router_hash,
+            address,
+            responder_static,
+            responder_intro,
+        })
+    }
+
+    /// Validates a direct dial target for an explicitly configured private-LAN
+    /// qualification run. This constructor accepts only RFC1918 IPv4 literals;
+    /// the ordinary [`Self::new`] path remains loopback-only. It does not grant
+    /// address publication or make public/IPv6 endpoints dialable.
+    pub fn new_private_lan(
+        peer: PeerId,
+        expected_router_hash: Hash,
+        address: SocketAddr,
+        responder_static: Ssu2PublicKey,
+        responder_intro: IntroKey,
+    ) -> Result<Self, Ssu2DialTargetError> {
+        if address.port() == 0 {
+            return Err(Ssu2DialTargetError::ZeroPort);
+        }
+        if address.ip().is_unspecified() {
+            return Err(Ssu2DialTargetError::UnspecifiedIp);
+        }
+        if !matches!(address.ip(), std::net::IpAddr::V4(ip) if ip.is_private()) {
+            return Err(Ssu2DialTargetError::NotPrivateLanIpv4);
         }
         if peer.hash() != expected_router_hash {
             return Err(Ssu2DialTargetError::PeerHashMismatch);
@@ -6224,6 +6260,42 @@ mod tests {
         let other = Hash::from_bytes([0x77_u8; 32]);
         assert_eq!(
             Ssu2DialTarget::new(peer, other, good, public, intro),
+            Err(Ssu2DialTargetError::PeerHashMismatch)
+        );
+    }
+
+    #[test]
+    fn private_lan_dial_targets_are_rfc1918_ipv4_only() {
+        let hash = Hash::from_bytes([0x44_u8; 32]);
+        let peer = PeerId::from_hash(hash);
+        let public = Ssu2PublicKey::new([0x55_u8; 32]).expect("public");
+        let intro = IntroKey::new([0x66_u8; 32]);
+        let private: SocketAddr = "192.168.44.11:19002".parse().expect("addr");
+        assert!(Ssu2DialTarget::new_private_lan(peer, hash, private, public, intro).is_ok());
+
+        for (address, expected) in [
+            ("127.0.0.1:19002", Ssu2DialTargetError::NotPrivateLanIpv4),
+            ("192.0.2.1:19002", Ssu2DialTargetError::NotPrivateLanIpv4),
+            ("8.8.8.8:19002", Ssu2DialTargetError::NotPrivateLanIpv4),
+            ("[fd00::1]:19002", Ssu2DialTargetError::NotPrivateLanIpv4),
+            ("192.168.44.11:0", Ssu2DialTargetError::ZeroPort),
+            ("0.0.0.0:19002", Ssu2DialTargetError::UnspecifiedIp),
+        ] {
+            let address = address.parse().expect("addr");
+            assert_eq!(
+                Ssu2DialTarget::new_private_lan(peer, hash, address, public, intro),
+                Err(expected),
+                "{address}"
+            );
+        }
+        assert_eq!(
+            Ssu2DialTarget::new_private_lan(
+                peer,
+                Hash::from_bytes([0x77; 32]),
+                private,
+                public,
+                intro,
+            ),
             Err(Ssu2DialTargetError::PeerHashMismatch)
         );
     }

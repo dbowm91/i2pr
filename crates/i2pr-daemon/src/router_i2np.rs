@@ -69,7 +69,7 @@ use i2pr_storage::{Ntcp2TransportIdentityMaterial, Ssu2TransportIdentityMaterial
 use i2pr_transport::{EncodedI2npMessage, LinkId, MAX_I2NP_MESSAGE_BYTES, PeerId};
 use thiserror::Error;
 
-use crate::config::Ssu2Config;
+use crate::config::{Ssu2Config, Ssu2QualificationProfile};
 
 /// Largest encoded router-I2NP message accepted by the dispatcher.
 ///
@@ -2039,6 +2039,33 @@ pub fn daemon_dial_target(
         .map_err(|_| Ssu2ServiceError::ControlledProfile("invalid dial target".to_owned()))
 }
 
+/// Constructs a direct SSU2 dial target under the daemon's explicit socket
+/// qualification profile. Private-LAN dials remain RFC1918 IPv4-only and are
+/// reachable only when the operator selected `private_lan_qualification` in
+/// configuration; the default loopback path keeps its existing clamp.
+pub fn daemon_dial_target_for_profile(
+    peer_hash: Hash,
+    address: SocketAddr,
+    responder_static: Ssu2PublicKey,
+    responder_intro: IntroKey,
+    profile: Ssu2QualificationProfile,
+) -> Result<Ssu2DialTarget, Ssu2ServiceError> {
+    let peer = PeerId::from_hash(peer_hash);
+    let target = match profile {
+        Ssu2QualificationProfile::ControlledLoopback => {
+            Ssu2DialTarget::new(peer, peer_hash, address, responder_static, responder_intro)
+        }
+        Ssu2QualificationProfile::PrivateLan => Ssu2DialTarget::new_private_lan(
+            peer,
+            peer_hash,
+            address,
+            responder_static,
+            responder_intro,
+        ),
+    };
+    target.map_err(|_| Ssu2ServiceError::ControlledProfile("invalid dial target".to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2049,6 +2076,46 @@ mod tests {
     use i2pr_transport::PeerId;
 
     const NOW_MS: u64 = 1_700_000_000_000;
+
+    #[test]
+    fn daemon_dial_target_requires_explicit_private_lan_profile() {
+        let hash = Hash::from_bytes([0x44; 32]);
+        let static_key = Ssu2PublicKey::new([0x55; 32]).expect("static key");
+        let intro = IntroKey::new([0x66; 32]);
+        let private: SocketAddr = "192.168.44.11:19002".parse().expect("address");
+        assert!(daemon_dial_target(hash, private, static_key, intro).is_err());
+        assert!(
+            daemon_dial_target_for_profile(
+                hash,
+                private,
+                static_key,
+                intro,
+                Ssu2QualificationProfile::ControlledLoopback,
+            )
+            .is_err()
+        );
+        assert!(
+            daemon_dial_target_for_profile(
+                hash,
+                private,
+                static_key,
+                intro,
+                Ssu2QualificationProfile::PrivateLan,
+            )
+            .is_ok()
+        );
+        let public: SocketAddr = "8.8.8.8:19002".parse().expect("address");
+        assert!(
+            daemon_dial_target_for_profile(
+                hash,
+                public,
+                static_key,
+                intro,
+                Ssu2QualificationProfile::PrivateLan,
+            )
+            .is_err()
+        );
+    }
 
     fn test_peer() -> (PeerId, LinkId) {
         (

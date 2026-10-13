@@ -3179,7 +3179,7 @@ fn register_ssu2_service(
                         let Some(ssu2_bind) = handle.local_v4().or_else(|| handle.local_v6()) else {
                             handle.shutdown();
                             let detail = i2pr_core::HealthDetail::new(
-                                "Destination groups require a bound loopback SSU2 endpoint",
+                                    "Destination groups require a bound SSU2 endpoint permitted by the selected qualification profile",
                             )
                             .ok();
                             return i2pr_runtime::ServiceResult::Failed(
@@ -3203,7 +3203,10 @@ fn register_ssu2_service(
                                 .max_active_connections_per_service,
                             reference: None,
  extra_bootstrap_peers: Vec::new(),
-                            options: crate::service_product::ServiceProductOptions::default(),
+                            options: crate::service_product::ServiceProductOptions {
+                                ssu2_qualification_profile: ssu2_config.qualification_profile,
+                                ..Default::default()
+                            },
                             addressbook: addressbook.shared(),
                             // Plan 337: the one shared manager, also held
                             // by the I2PControl control state.
