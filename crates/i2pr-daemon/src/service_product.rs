@@ -4640,10 +4640,37 @@ async fn submit_destination_replacement(
         guard.destination_peer_candidates()
     };
     let selected = select_destination_path_os(&candidates)?;
+    let outbound_slot = coordinator
+        .usable_outbound_role_slots()
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "Destination replacement has no usable outbound tunnel route".to_owned(),
+            )
+        })?;
+    let outbound_first_hop = coordinator
+        .registry_outbound_first_hop(outbound_slot)
+        .map(|(router_hash, _)| router_hash)
+        .ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "Destination replacement outbound route has no first hop".to_owned(),
+            )
+        })?;
+    let dial_authority = destination_build_dial_authority(
+        direction,
+        selected[0].router_hash(),
+        Some(outbound_first_hop),
+    )
+    .ok_or_else(|| {
+        ServiceProductError::Provisioning(
+            "Destination build has no authorized outbound first-hop route".to_owned(),
+        )
+    })?;
     ensure_selected_peer_session(
         destination_tunnels,
         ssu2_handle,
-        selected[0].router_hash(),
+        dial_authority,
         dial_timeout,
         qualification_profile,
         cancellation,
@@ -4707,15 +4734,6 @@ async fn submit_destination_replacement(
     };
     let now_ms = wall_ms();
     coordinator.advance_time(now_ms);
-    let outbound_slot = coordinator
-        .usable_outbound_role_slots()
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            ServiceProductError::Provisioning(
-                "Destination replacement has no usable outbound tunnel route".to_owned(),
-            )
-        })?;
     match coordinator
         .submit_destination_via_outbound_tunnel(
             request,
@@ -4739,18 +4757,141 @@ async fn submit_destination_replacement(
     }
 }
 
-/// Ensures the normal SSU2 owner has an authenticated direct session to a
-/// selected first hop. Endpoint and key material are read from the same
-/// validated RouterInfo that produced the candidate; only loopback targets
-/// can pass the current controlled-profile dial constructor.
+/// Selects the only direct-dial target allowed by a Destination build
+/// operation. Inbound gateway identity is an encrypted target behind the
+/// outbound tunnel; it never grants direct-dial authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestinationDialPurpose {
+    RouterBootstrapFirstHop,
+    OutboundTunnelFirstHop,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DestinationDialAuthority {
+    router_hash: Hash,
+    purpose: DestinationDialPurpose,
+}
+
+fn destination_build_dial_authority(
+    direction: BuildDirection,
+    selected_first_hop: Hash,
+    outbound_first_hop: Option<Hash>,
+) -> Option<DestinationDialAuthority> {
+    match direction {
+        BuildDirection::Outbound => Some(match outbound_first_hop {
+            Some(router_hash) => DestinationDialAuthority {
+                router_hash,
+                purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+            },
+            None => DestinationDialAuthority {
+                router_hash: selected_first_hop,
+                purpose: DestinationDialPurpose::RouterBootstrapFirstHop,
+            },
+        }),
+        BuildDirection::Inbound => Some(DestinationDialAuthority {
+            router_hash: outbound_first_hop?,
+            purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod plan482_destination_dial_authority_tests {
+    use super::{DestinationDialPurpose, destination_build_dial_authority};
+    use crate::exploratory_build::BuildDirection;
+    use i2pr_proto::Hash;
+
+    fn hash(byte: u8) -> Hash {
+        Hash::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn inbound_gateway_never_authorizes_destination_direct_dial() {
+        let gateway = hash(0x47);
+        let outbound_first_hop = hash(0x21);
+
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            gateway,
+            Some(outbound_first_hop),
+        )
+        .expect("inbound route must authorize its existing outbound first hop");
+
+        assert_eq!(authority.router_hash, outbound_first_hop);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+        assert_ne!(authority.router_hash, gateway);
+    }
+
+    #[test]
+    fn inbound_route_miss_fails_closed_and_bootstrap_remains_explicit() {
+        let gateway = hash(0x47);
+        assert!(destination_build_dial_authority(BuildDirection::Inbound, gateway, None).is_none());
+
+        let bootstrap = destination_build_dial_authority(BuildDirection::Outbound, gateway, None)
+            .expect("outbound bootstrap retains direct first-hop authority");
+        assert_eq!(bootstrap.router_hash, gateway);
+        assert_eq!(
+            bootstrap.purpose,
+            DestinationDialPurpose::RouterBootstrapFirstHop
+        );
+    }
+
+    #[test]
+    fn peer_overlap_is_attributed_only_to_the_independent_outbound_route() {
+        let overlapping_peer = hash(0x61);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            overlapping_peer,
+            Some(overlapping_peer),
+        )
+        .expect("outbound route authorizes its first hop");
+
+        assert_eq!(authority.router_hash, overlapping_peer);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+    }
+
+    #[test]
+    fn replacement_builds_use_the_existing_outbound_route_first_hop() {
+        let replacement_target = hash(0x38);
+        let outbound_first_hop = hash(0x21);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Outbound,
+            replacement_target,
+            Some(outbound_first_hop),
+        )
+        .expect("existing route authorizes only its own first hop");
+
+        assert_eq!(authority.router_hash, outbound_first_hop);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+        assert_ne!(authority.router_hash, replacement_target);
+    }
+}
+
+/// Ensures the normal SSU2 owner has an authenticated direct session to the
+/// first hop authorized by the current build route. Endpoint and key material
+/// come from that peer's validated RouterInfo; only loopback targets can pass
+/// the current controlled-profile dial constructor.
 async fn ensure_selected_peer_session(
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &Ssu2DaemonHandle,
-    router_hash: Hash,
+    authority: DestinationDialAuthority,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
     cancellation: &CancellationToken,
 ) -> Result<(), ServiceProductError> {
+    let DestinationDialAuthority {
+        router_hash,
+        purpose,
+    } = authority;
     let peer_id = i2pr_transport::PeerId::from_hash(router_hash);
     if !ssu2_handle.service().session_peer_links(peer_id).is_empty() {
         return Ok(());
@@ -4796,6 +4937,10 @@ async fn ensure_selected_peer_session(
         intro_key,
         qualification_profile,
     )?;
+    tracing::debug!(
+        dial_purpose = ?purpose,
+        "Destination authorized a direct outbound first-hop session"
+    );
     ssu2_handle
         .dial(target, dial_timeout, cancellation)
         .await
@@ -5082,21 +5227,23 @@ async fn provision_all_service_router_material(
                 })
                 .transpose()?;
             if let Some(peers) = outbound_peers.as_ref() {
-                ensure_selected_peer_session(
-                    destination_tunnels,
-                    ssu2_handle,
+                let active_outbound_first_hop = bootstrap_outbound_role_slot
+                    .and_then(|slot| coordinator.registry_outbound_first_hop(slot))
+                    .map(|(router_hash, _)| router_hash);
+                let authority = destination_build_dial_authority(
+                    BuildDirection::Outbound,
                     peers[0].router_hash,
-                    options.dial_timeout,
-                    options.ssu2_qualification_profile,
-                    cancellation,
+                    active_outbound_first_hop,
                 )
-                .await?;
-            }
-            if let Some(peers) = inbound_peers.as_ref() {
+                .ok_or_else(|| {
+                    ServiceProductError::Provisioning(
+                        "outbound Destination build has no authorized first hop".to_owned(),
+                    )
+                })?;
                 ensure_selected_peer_session(
                     destination_tunnels,
                     ssu2_handle,
-                    peers[0].router_hash,
+                    authority,
                     options.dial_timeout,
                     options.ssu2_qualification_profile,
                     cancellation,
@@ -5187,12 +5334,48 @@ async fn provision_all_service_router_material(
                 originator_hash: Some(peer.local_hash),
             });
             let inbound_attempt_id = if let Some(inbound) = inbound {
+                let outbound_slot = bootstrap_outbound_role_slot.ok_or_else(|| {
+                    ServiceProductError::Provisioning(
+                        "inbound Destination build has no usable outbound tunnel route".to_owned(),
+                    )
+                })?;
+                let outbound_first_hop = coordinator
+                    .registry_outbound_first_hop(outbound_slot)
+                    .map(|(router_hash, _)| router_hash)
+                    .ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination route has no first hop".to_owned(),
+                        )
+                    })?;
+                let authority = destination_build_dial_authority(
+                    BuildDirection::Inbound,
+                    inbound_gateway_hash.ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination build has no selected gateway".to_owned(),
+                        )
+                    })?,
+                    Some(outbound_first_hop),
+                )
+                .ok_or_else(|| {
+                    ServiceProductError::Provisioning(
+                        "inbound Destination build has no authorized outbound first hop".to_owned(),
+                    )
+                })?;
+                ensure_selected_peer_session(
+                    destination_tunnels,
+                    ssu2_handle,
+                    authority,
+                    options.dial_timeout,
+                    options.ssu2_qualification_profile,
+                    cancellation,
+                )
+                .await?;
                 let bridge_header = BridgeHeader::ShortTransport {
                     message_id: inbound_outer_id,
                     expiration_seconds: wall_secs().saturating_add(60) as u32,
                 };
-                let submission = if let Some(outbound_slot) = bootstrap_outbound_role_slot {
-                    coordinator.submit_destination_via_outbound_tunnel(
+                let submission = coordinator
+                    .submit_destination_via_outbound_tunnel(
                         inbound,
                         &delivery,
                         &inbound_bridge,
@@ -5200,16 +5383,7 @@ async fn provision_all_service_router_material(
                         outbound_slot,
                         &mut rng,
                     )
-                } else {
-                    coordinator.submit_destination(
-                        inbound,
-                        &delivery,
-                        &inbound_bridge,
-                        bridge_header,
-                        &mut rng,
-                    )
-                }
-                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
                 match submission {
                     SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
                     SubmitResult::Rejected { .. } => {
