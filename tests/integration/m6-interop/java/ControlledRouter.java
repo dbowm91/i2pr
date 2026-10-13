@@ -743,7 +743,7 @@ public final class ControlledRouter {
                      PrintWriter output = new PrintWriter(
                          new OutputStreamWriter(client.getOutputStream(), StandardCharsets.US_ASCII), true)) {
                     String command = input.readLine();
-                    if (!"P470-PUBLISH".equals(command)) {
+                    if (!"P470-STORE".equals(command)) {
                         output.println("P470-REJECTED");
                         return;
                     }
@@ -758,12 +758,14 @@ public final class ControlledRouter {
                         listener.close();
                         return;
                     }
-                    // Use the exact stock facade operation called by the
-                    // normal floodfill publication path. It selects the
-                    // live peers, applies stock store eligibility and lets
-                    // CommSystem bid/send the signed RouterInfo normally.
-                    floodfill.flood(router.getRouterInfo());
-                    output.println("P470-NETDB-FLOOD-SUBMITTED");
+                    // A token-zero RouterInfo flood is deliberately skipped
+                    // by a fresh NTCP2 recipient that already has the RI in
+                    // the handshake. Submit the same real, NetDB-owned RI
+                    // through stock FloodfillStoreJob so it requests the
+                    // ordinary correlated DeliveryStatus reply.
+                    String receipt = P470TransportPreflight
+                        .submitReplyRequestedRouterInfoStore(router.getContext());
+                    output.println(receipt);
                     listener.close();
                     return;
                 } catch (SocketTimeoutException timeout) {
@@ -933,6 +935,12 @@ public final class ControlledRouter {
                         return p470Transport(parts[1]);
                     case "P470-COUNTERS":
                         return P470TransportPreflight.counters(context());
+                    case "P470-STORE-STATUS":
+                        return P470TransportPreflight.storeStatus();
+                    case "P470-LISTENER":
+                        return P470TransportPreflight.listenerStatus(context());
+                    case "P470-LOOKUP-THROTTLE":
+                        return P470TransportPreflight.lookupThrottleStatus(context());
                     case "P222-CLIENT-LOOKUP-PREFLIGHT":
                         if (parts.length < 4) {
                             return p222Error("missing-hash-arguments");

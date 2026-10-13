@@ -172,7 +172,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 469 | passed | `passed-stock-publish-fresh-ntcp2-product-and-correlated-reply` | `plans/implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md` | `plans/closure/ntcp2-transport/469-status.md`: source-selected fresh NTCP2, product effect/reply, and reverse token correlation passed |
 
 | 470 | blocked | `blocked-java-stock-flood-did-not-produce-owned-ntcp2-dial` | `plans/implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md` | `plans/closure/ntcp2-transport/470-status.md`: exact Java selector/store/NTCP2 bid preconditions pass; stock flood dispatched, but no Java-owned dial or i2pr product effect |
-| 475 | blocked | `blocked-java-send-correlation-and-two-way-product-unproven` | `plans/implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md` | `plans/closure/ntcp2-transport/475-status.md`: stock send/TCP and responder phase observations pass; message-to-product correlation, i2pr-initiated completion, and two-way I2NP remain unproven |
+| 475 | closed | `closed-java-two-role-authenticated-product-and-reply` | `plans/implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md` | `plans/closure/ntcp2-transport/475-status.md`: pinned Java stock StoreJob → authenticated i2pr Store/DeliveryStatus and independent fresh i2pr lookup → Java handling/correlated reply passed; complete floor passed |
 
 ### Plans 459–461: actual daemon NTCP2 product dispatch first (updated 2026-10-12)
 
@@ -201,6 +201,23 @@ Source-backed continuation of Plan 459 and the historical Plan 463 trigger resul
 [Plan 470](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md) is **blocked after bounded source-owned publication**; see [470 status](../closure/ntcp2-transport/470-status.md). The separate normal Java 2.13.0 NTCP2-only profile, signed-RI admission, live selector, store policy and NTCP2 bid all passed. A real stock `FloodfillNetworkDatabaseFacade.flood` was invoked, but no Java-owned dial, authenticated inbound link, I2NP effect or correlated reply followed. Stop before Noise diagnosis until the Java CommSystem/transport send transition is observed. J2/J3/J4 and the J5 product safety/lifecycle matrix remain open. Plan 444's selector/store criterion and Plan 435's public/two-family gate are unchanged.
 
 **Required evidence:** i2pr→Java authenticated I2NP and real correlated reply, **fresh Java-initiated** NTCP2→i2pr authenticated I2NP and product response, restart/safety-negative matrix and per-role link generation. **No dependency** on client SAM/tunnel products, Plan 444 Java floodfill preference, or an authorized physical LAN. A controlled second-family result can inform existing Plan 435's router protocol matrix, but cannot authorize broad public transport activation or `specs/support.toml`. Historic 455/457/434 outcomes stay preserved.
+
+### Plan 475 — normal Java two-role product qualification (closed 2026-10-13)
+
+[Plan 475](../implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md)
+closed at the pinned Java 2.13.0 controlled-loopback scope; see
+[475 status](../closure/ntcp2-transport/475-status.md). The normal stock
+`FloodfillStoreJob` sent Java's NetDB-owned RouterInfo through NTCP2, the daemon
+accepted it through the shared product owner and returned the owed
+DeliveryStatus. A separate daemon generation then initiated fresh NTCP2 and
+correlated Java's stock DatabaseSearchReply. The read-only diagnostic waits for
+Java's source-defined two-minute lookup-throttle initialization; the router
+source and pinned artifacts remain unchanged. The fixture's old empty-TCP
+listener probe was removed after pinned `EventPumper` source showed that
+inbound EOF-before-data blocks the peer IP. This result does not close Plan
+444's Java floodfill role matrix, Plan 435's broad/public qualification, or
+change Plan 101's default-off/nonadvertised policy. Plan 470's historical
+blocked record remains immutable.
 
 ## 8. Cross-cutting requirements
 

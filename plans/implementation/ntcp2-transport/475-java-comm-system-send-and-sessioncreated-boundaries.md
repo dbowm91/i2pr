@@ -1,6 +1,6 @@
 # Plan 475 — Java I2P normal NTCP2 send decision and SessionCreated EOF correction
 
-**Status:** registered / **ready, P0 second-family interop** (2026-10-12). **Owner:** normal Java-2.13.0 interoperability runner, i2pr NTCP2 handshake owner when a production defect is actually proven. **Baseline:** `work/plans-470-473-router-qualification-and-integration@e6f6e8ea66a897a900acf86af8c15f62e495eed2`. **Authoritative predecessor:** `plans/closure/ntcp2-transport/470-status.md` (`blocked-java-stock-flood-did-not-produce-owned-ntcp2-dial`). No dependency on SAM/LS2 Plan 474, live LAN Plan 476, Java floodfill role qualification Plan 444 or a public router.
+**Status:** **closed** (2026-10-13). The exact pinned Java 2.13.0 lane passed both fresh initiating roles and product replies; the J5 negative/lifecycle audit and repository floor passed. See `plans/closure/ntcp2-transport/475-status.md`. **Owner:** normal Java-2.13.0 interoperability runner, i2pr NTCP2 handshake owner when a production defect is actually proven. **Baseline:** `work/plans-470-473-router-qualification-and-integration@e6f6e8ea66a897a900acf86af8c15f62e495eed2`. **Authoritative predecessor:** `plans/closure/ntcp2-transport/470-status.md` (`blocked-java-stock-flood-did-not-produce-owned-ntcp2-dial`). No dependency on SAM/LS2 Plan 474, live LAN Plan 476, Java floodfill role qualification Plan 444 or a public router.
 
 ## Two independently missing events
 

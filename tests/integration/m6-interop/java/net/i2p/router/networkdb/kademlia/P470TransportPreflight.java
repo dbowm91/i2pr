@@ -4,9 +4,14 @@
 package net.i2p.router.networkdb.kademlia;
 
 import java.util.SortedMap;
+import java.lang.reflect.Field;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.i2p.data.Hash;
+import net.i2p.data.DatabaseEntry;
 import net.i2p.data.i2np.DatabaseStoreMessage;
 import net.i2p.data.router.RouterInfo;
+import net.i2p.router.Job;
+import net.i2p.router.JobImpl;
 import net.i2p.router.RouterContext;
 import net.i2p.stat.RateStat;
 import net.i2p.router.transport.Transport;
@@ -14,6 +19,9 @@ import net.i2p.router.transport.TransportBid;
 import net.i2p.router.transport.ntcp.NTCPTransport;
 
 public final class P470TransportPreflight {
+    private static final AtomicInteger STORE_SUBMITTED = new AtomicInteger();
+    private static final AtomicInteger STORE_SUCCEEDED = new AtomicInteger();
+    private static final AtomicInteger STORE_FAILED = new AtomicInteger();
 
     public static final class Result {
         public final boolean candidatePresent;
@@ -136,7 +144,10 @@ public final class P470TransportPreflight {
             "ntcp.outboundFailedIOEImmediate", "ntcp.outboundEstablishFailed",
             "ntcp.connectFailedIOE", "ntcp.connectFailedTimeout",
             "ntcp.connectFailedTimeoutIOE",
-            "ntcp.zeroReadDrop", "ntcp.readError"
+            "ntcp.zeroReadDrop", "ntcp.readError",
+            "netDb.lookupsReceived", "netDb.lookupsDropped",
+            "netDb.lookupsHandled", "netDb.lookupsMatched",
+            "netDb.nonFFLookupsDropped", "netDb.DLMAllZeros"
         };
         StringBuilder result = new StringBuilder("P470-EV observable=true");
         for (String name : names) {
@@ -145,5 +156,79 @@ public final class P470TransportPreflight {
                   .append(stat == null ? -1 : stat.getLifetimeEventCount());
         }
         return result.toString();
+    }
+
+    /**
+     * Submit the local, NetDB-owned RouterInfo through the stock StoreJob
+     * algorithm. This is needed when a floodfill's token-zero RI flood is
+     * intentionally suppressed by a fresh NTCP2 recipient. The stock job
+     * selects its floodfill target, creates the reply token and selector,
+     * and enters CommSystem through its ordinary OutNetMessage path.
+     */
+    public static synchronized String submitReplyRequestedRouterInfoStore(RouterContext context) {
+        if (context == null || !(context.netDb() instanceof FloodfillNetworkDatabaseFacade facade))
+            return "P470-STORE unavailable=false reason=netdb-floodfill-unavailable";
+        RouterInfo local = context.router().getRouterInfo();
+        if (local == null || local.getType() != DatabaseEntry.KEY_TYPE_ROUTERINFO)
+            return "P470-STORE unavailable=false reason=local-router-info-unavailable";
+        if (STORE_SUBMITTED.get() != 0)
+            return storeStatus();
+        Job success = new JobImpl(context) {
+            public String getName() { return "Plan 470 stock StoreJob success receipt"; }
+            public void runJob() { STORE_SUCCEEDED.incrementAndGet(); }
+        };
+        Job failure = new JobImpl(context) {
+            public String getName() { return "Plan 470 stock StoreJob failure receipt"; }
+            public void runJob() { STORE_FAILED.incrementAndGet(); }
+        };
+        FloodfillStoreJob job = new FloodfillStoreJob(
+            context, facade, local.getIdentity().calculateHash(), local,
+            success, failure, 30_000L);
+        STORE_SUBMITTED.incrementAndGet();
+        context.jobQueue().addJob(job);
+        return storeStatus();
+    }
+
+    public static String storeStatus() {
+        return "P470-STORE submitted=" + STORE_SUBMITTED.get()
+            + " succeeded=" + STORE_SUCCEEDED.get()
+            + " failed=" + STORE_FAILED.get();
+    }
+
+    /** Read-only listener readiness; does not create an unframed TCP probe. */
+    public static String listenerStatus(RouterContext context) {
+        if (context == null)
+            return "P470-LISTENER listening=false";
+        SortedMap<String, Transport> transports = context.commSystem().getTransports();
+        Transport transport = transports.get(NTCPTransport.STYLE);
+        boolean listening = transport instanceof NTCPTransport
+            && ((NTCPTransport) transport).isAlive()
+            && transport.hasCurrentAddress();
+        return "P470-LISTENER listening=" + listening;
+    }
+
+    /**
+     * Read the pinned stock LookupThrottler's admission limit without calling
+     * shouldThrottleLookup(), which increments its per-peer counter. Java
+     * 2.13.0 sets this limit on the first two-minute Cleaner tick, so it is
+     * zero during early startup and the first valid lookup is dropped.
+     */
+    public static String lookupThrottleStatus(RouterContext context) {
+        if (context == null || !(context.netDb() instanceof FloodfillNetworkDatabaseFacade))
+            return "P470-LOOKUP ready=false";
+        try {
+            Field ownerField = FloodfillNetworkDatabaseFacade.class
+                .getDeclaredField("_lookupThrottler");
+            ownerField.setAccessible(true);
+            Object throttler = ownerField.get(context.netDb());
+            if (throttler == null)
+                return "P470-LOOKUP ready=false";
+            Field limitField = throttler.getClass().getDeclaredField("_max");
+            limitField.setAccessible(true);
+            int limit = limitField.getInt(throttler);
+            return "P470-LOOKUP ready=" + (limit > 0);
+        } catch (ReflectiveOperationException | SecurityException error) {
+            return "P470-LOOKUP ready=false";
+        }
     }
 }

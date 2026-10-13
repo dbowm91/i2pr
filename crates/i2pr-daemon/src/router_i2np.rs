@@ -792,7 +792,10 @@ pub(crate) fn build_initiator_database_lookup_probe(
         from: local_hash,
         delivery_flag: false,
         reply_tunnel_id: None,
-        lookup_type: 2,
+        // LeaseSet lookup is accepted directly from floodfill peers by the
+        // pinned Java handler. ANY/EXPL requests have a separate anti-floodfill
+        // drop branch and are not needed for this response-correlation probe.
+        lookup_type: 1,
         excluded_peers: Vec::new(),
         reply_encryption: i2pr_proto::ReplyEncryption::None,
     };
@@ -2150,7 +2153,7 @@ mod tests {
         );
         assert!(!lookup.delivery_flag);
         assert_eq!(lookup.reply_tunnel_id, None);
-        assert_eq!(lookup.lookup_type, 2);
+        assert_eq!(lookup.lookup_type, 1);
         assert!(lookup.excluded_peers.is_empty());
         assert_eq!(lookup.reply_encryption, i2pr_proto::ReplyEncryption::None);
     }
