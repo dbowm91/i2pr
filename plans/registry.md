@@ -163,6 +163,19 @@ Current authority: NTCP2 Plans 459/461 and 467–469 **passed at controlled scop
 
 **Priority/parallelism:** 474 remains P0 independently; 475 is closed; 476 implementation is P1 with no automatic remote packet. Merge review is **existing Plan 473**, oldest PR #37→#44 under normal owner approval. No newly registered PR merge plan or unrequested merge action. The separate M11 manual external workflow is not the ordinary required CI lane; investigate its launch failure on its own source/owner rather than treating green core CI as evidence that it passed. Avoid a numbered corrective for an isolated YAML/parser change absent a larger source-owned scope. **Immutable predecessor closures:** 470, 471, 472, 473 remain as executed, no `specs/support.toml` or public `R`/`f` claims, no patched Java/i2pd and no public-network tests. Follow [causal in-plan iteration](README.md#bounded-execution-and-causal-corrective-policy).
 
+### Causal core-router continuation — Plans 477–480 (registered 2026-10-13)
+
+**Planning-only, no capability promotion.** Research from PR #45 identifies a shared next-message ID across short-build hop records, production fixed-seed tunnel/build IDs, a delivery-admitted-versus-written distinction, and a normal service-destination construction path that sends directly to inbound gateway before an outbound pool. These are source-visible contracts requiring bounded regression; **none is independently proven to cause Plan 474's unmatched stock reply**. Older closure records remain authoritative. Plan 475 Java two-role NTCP2 is closed and Plan 461 controlled dual-family is passed; do not restart their lower-tier handshake loops.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **477** | **ready P0** | [Per-hop IDs, CSPRNG IDs and attributable short-build return](implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md) | Plan 474 first-missing-stage source ownership; deterministic per-hop and no-replay/collision proof, typed submitted-versus-emitted transitions, bounded pinned i2pd attributable return attempt. No automatic SAM claim. |
+| **478** | **ready after 477 interface P0** | [Normal exploratory-backed SAM destination product](implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md) | Existing 474 transactional owner fix plus corrected 477 contract → real outbound-backed inbound tunnel construction, signed nonzero-hop LS2, external bidirectional SAM STREAM and recovery. Controlled client router only; Plan 433 external gate remains. |
+| **479** | **ready parallel P1** | [Java floodfill candidate and NetDB product](implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md) | Blocked Plan 444 Java candidate controls; reuse closed Plan 475 transport and passed Plan 454 governor. Honest class, stock Java selection and real store/lookup; full 437/438 normal/public gate unchanged. |
+| **480** | **ready parallel P1, infrastructure only** | [Source-authenticated SSU2 receipt observer](implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md) | Supply authentic daemon peer/session/I2NP event contract that Plan 476 runner lacks; Plan 476 continues to own per-host local process owner and separately authorized live two-host qualification. No host pair supplied. |
+
+Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute source fixes inside each active plan after concrete causal divergence, not new per-timeout numbered micro-plans. Plans 433, 435–439, 431 and specs/support.toml remain unchanged until their own external/public acceptance closes.
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |

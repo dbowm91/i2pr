@@ -125,6 +125,25 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 
 Plans 446, 447, and 448 have blocked closure records; Plan 449 has passed only its preflight infrastructure scope. Corrective Plans 440–444 now each have closure records; Plan 444's latest resume status is blocked at stock Java selection and store/lookup evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
+### Plans 477–480 — source-owned router recovery after PR #45 (2026-10-13)
+
+These are **registered plans**, not successful product evidence. Plan 477 corrects source-visible per-hop message-ID and predictable-ID contracts and resolves the first build-reply or transport-write divergence without relaxing authenticated correlation; no cause has yet been proven for Plan 474's stock timeout. Plan 478 follows its interface to construct normal inbound service tunnels through established outbound paths and close external controlled SAM STREAM product. Plan 479 is the separate Java floodfill candidate/NetDB gate described in the floodfill roadmap. Plan 480 supplies a trustworthy daemon SSU2 observation interface only; **existing Plan 476** still owns the per-host operator executor and live two-host evidence. Prior Plan 475 Java NTCP2 and Plan 461 controlled dual-family are retained as passing lower-layer evidence.
+
+Dependency graph (implementation readiness, not protocol promotion):
+
+- Plan 474 blocked return path → **477** per-hop/request/delivery contract → **478** normal outbound-backed exploratory/destination and SAM app product → Plan 433 public/external client-router gate.
+- Plan 454 passed bandwidth governor + Plan 475 passed Java NTCP2 + Plan 444 blocked candidate qualification → **479** real stock Java preference/store/lookup → existing 437/438 normal floodfill gates.
+- Plan 449 preflight + 453 private-LAN source owner + Plan 476 simulated pair receipts → **480** authenticated session/product observer → resume existing **476** per-host executable → authorized two-host private LAN when available → separate Plan 431 external gate.
+
+Bounded causal corrections must remain inside their owning plan, with deterministic failure-before/pass-after tests and finite real-process attempts after actual source/fixture changes. Never count a test-only direct socket short build as proof of privacy-preserving service tunnel construction, a scheduled enqueue as a write, or an offline receipt simulator as independent host traffic. Unmodified exact-pinned references only, no ordinary CI root/VM/container/namespace/public I2P; all default-off, private/public advertisement and privacy constraints are unchanged.
+
+| Plan | Registered state | Implementation | Proof / closure |
+| --- | --- | --- | --- |
+| 477 | ready P0 | `plans/implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md` | `plans/closure/core-router-recovery/477-status.md`: OS-CSPRNG live IDs, independently per-hop forwarding IDs, strict terminal reply, attributable bounded first-divergence source proof. |
+| 478 | ready after 477 P0 | `plans/implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md` | `plans/closure/core-router-recovery/478-status.md`: normal router-owned exploratory-backed real tunnel/LS2/owner and bidirectional independent SAM STREAM with lifecycle. |
+| 479 | ready parallel P1 | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: honest capacity class, normal Java candidate selection, accepted stock NetDB request/reply without public caps. |
+| 480 | ready parallel P1 | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: actual daemon authenticated-source SSU2 event contract, handoff to still-open Plan 476 process and host-pair gates. |
+
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
 
 Four independent **bounded corrective owners** are dependency-ready after Plan 440's closed evidence contract and previous Plan 432's HTTPS bootstrap:

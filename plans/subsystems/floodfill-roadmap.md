@@ -10,6 +10,10 @@ Status: Plans 270–276 passed; Plans 277–282 and 278 stopped with retained br
 
 **Governor-completion handoff (Plan 454, 2026-10-10):** [Plan 454](../implementation/floodfill/454-shared-bandwidth-enforcement-and-capability-permit.md) **passed** the shared governor and permit scope: one daemon-composed owner shares rate enforcement with enabled transports (the dormant NTCP2 adapter remains Plan-101-safe), uses bounded control/handshake reservations and fair traffic classes, and issues a current capacity permit. It is infrastructure, independent of an available LAN or Java router. Plan 444's owner-side N-class floor is implemented, but the normal stock Java healthy-bootstrap/candidate-preference/store/lookup controls remain blocked. Plan 437/438 still own normal floodfill admission, opt-in, health withdrawal, reachability and two-family qualification. No forced `O`/`fR` letter or public capability promotion.
 
+### Plan 479 — finish controlled Java candidate preference after Plan 475 NTCP2 (2026-10-13)
+
+[Plan 479](../implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md) is registered/ready, not passed. It succeeds the **final blocked** Plan 444 resume at Java preference and genuine stock NetDB store/lookup, reusing Plan 454's enforceable current rate/share permit and Plan 475's successful unmodified Java 2.13.0 two-role NTCP2 runner. The stock Java selector distinguishes local N/O/P/X floodfill role admission from lower-tier remote candidate last-resort ranking; tests must compare preference against healthy candidates and **never invent** a bandwidth letter. Healthy stock floodfills prevent startup/SAM bootstrap deadlock. Pass requires Java-selected normal NetDB request/response effects with truthful class, identity/session/peer attribution and failed negative controls. Passing cannot by itself lift Plan 437 normal reachability/transit prerequisites or Plan 438 two-family role; normal public f/R advertisement stays disabled. Closure authority: plans/closure/floodfill/479-status.md after executed evidence only.
+
 Long-term references:
 - GUARDRAILS.md
 - specs/CONFORMANCE.md

@@ -84,6 +84,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 
 Report two independent closure tiers: an offline runner implementation may pass, but live bidirectional independently addressed SSU2/I2NP/DeliveryStatus, restart/withdrawal require a separately owner-approved private pair and remain environment-blocked until executed. This does not reopen passed local one-family Plans 161/162, or qualify public/private-introducers, Java, IPv6 or NAT.
 
+### Plan 480 — source-authenticated SSU2 product receipts for continuing Plan 476 (2026-10-13)
+
+[Plan 480](../implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md) is registered/ready as the *distinct daemon/runtime observation owner* needed by the existing Plan 476 per-host local process runner. Session promotion, current authenticated peer/link generation, actual router-I2NP/NetDB product effect and correlated reply submission need source-originated bounded event receipts; aggregate Ssu2Snapshot counters and an offline fake adapter cannot establish those claims. Plan 480 is local infrastructure only, never executes two-host traffic in routine CI, and must not mark Plan 476 passed. On 480 completion, the **same Plan 476** implements process spawning, host-specific receipt collection, revocation/cancellation, and—only with separately authorized private physical host pair—the live two-way I2NP/restart/withdrawal evidence. Plan 431 external/public capability remains separately gated.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;
