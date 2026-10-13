@@ -32,6 +32,18 @@ independent host pair is available.
 | `cargo test --locked -p i2pr-daemon --lib daemon_dial_target_requires_explicit_private_lan_profile -- --test-threads=1` | Passed (1 test) |
 | `python3 tests/integration/ssu2/plan472_live.py --self-test` | Passed (2 positive / 8 negative cases) |
 | `python3 tests/integration/ssu2/test_plan476_executor.py` | Passed (4 tests) |
+| Full AGENTS.md routine floor | Passed: 4,856 workspace tests, 39 ignored (187 suites); Clippy, rustdoc/doc-tests, planning and boundary/evidence scripts, and `cargo deny check advisories bans sources` passed |
+
+## Remaining executor interface
+
+Source inspection confirms the process boundary is still absent: `i2pr run`
+accepts a config path and has no qualification observer option or status
+command. The SSU2 runtime snapshot exposes aggregate counters but no peer or
+session-generation identity, while authenticated peer/link metadata exists only
+inside the daemon's inbound I2NP dispatch path. The runner therefore cannot yet
+attribute an external process's authenticated session or I2NP effect from an
+independent receipt. Adding a live runner around stdout, aggregate counters, or
+operator-authored phase labels would not establish those facts.
 
 ## Disposition
 
