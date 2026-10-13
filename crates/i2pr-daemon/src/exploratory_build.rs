@@ -517,10 +517,68 @@ pub struct BuildCoordinatorCounters {
     /// Inbound dispatched tunnel-build outcomes the coordinator
     /// dropped because no pending attempt matched.
     pub inbound_orphans: u64,
+    /// Unmatched forwarded inbound build replies whose authenticated
+    /// peer matched a pending inbound attempt but whose message id did not.
+    pub inbound_orphans_peer_match: u64,
+    /// Unmatched forwarded inbound build replies whose message id matched
+    /// a pending inbound attempt but whose authenticated peer did not.
+    pub inbound_orphans_message_match: u64,
+    /// Same-terminal-peer orphan forwarded builds whose ID is expected ID + 1 modulo u32.
+    pub inbound_orphans_peer_id_plus_one: u64,
+    /// Same-terminal-peer orphan forwarded builds whose ID is expected ID - 1 modulo u32.
+    pub inbound_orphans_peer_id_minus_one: u64,
+    /// Same-terminal-peer orphan forwarded builds with another nonmatching ID.
+    pub inbound_orphans_peer_id_other: u64,
+    /// Inbound-build TunnelGateway replies observed on the authenticated path.
+    pub inbound_gateway_messages: u64,
+    /// Unmatched inbound-build gateways from the selected terminal peer.
+    pub inbound_gateway_peer_match: u64,
+    /// Unmatched inbound-build gateways matching both terminal peer and local reply tunnel.
+    pub inbound_gateway_route_match: u64,
     /// Duplicate inbound replies the coordinator rejected.
     pub duplicate_replies: u64,
     /// Outbound tunnel-build requests the coordinator emitted.
     pub outbound_builds: u64,
+}
+
+/// Attempt-scoped, count-only relationship between an authenticated inbound
+/// short-build message and one pending inbound build. This stays in memory
+/// with the pending attempt and is emitted only if that attempt expires.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InboundBuildObservation {
+    pub authenticated_candidates: u64,
+    pub peer_matches: u64,
+    pub message_id_matches: u64,
+    pub peer_match_id_plus_one: u64,
+    pub peer_match_id_minus_one: u64,
+    pub peer_match_id_other: u64,
+}
+
+impl InboundBuildObservation {
+    fn record(&mut self, peer_match: bool, message_id: u32, expected_message_id: u32) {
+        self.authenticated_candidates = self.authenticated_candidates.saturating_add(1);
+        if peer_match {
+            if message_id == expected_message_id {
+                self.message_id_matches = self.message_id_matches.saturating_add(1);
+            } else {
+                match message_id.wrapping_sub(expected_message_id) {
+                    1 => {
+                        self.peer_match_id_plus_one = self.peer_match_id_plus_one.saturating_add(1);
+                    }
+                    u32::MAX => {
+                        self.peer_match_id_minus_one =
+                            self.peer_match_id_minus_one.saturating_add(1);
+                    }
+                    _ => {
+                        self.peer_match_id_other = self.peer_match_id_other.saturating_add(1);
+                    }
+                }
+            }
+            self.peer_matches = self.peer_matches.saturating_add(1);
+        } else if message_id == expected_message_id {
+            self.message_id_matches = self.message_id_matches.saturating_add(1);
+        }
+    }
 }
 
 /// One pending build attempt tracked by the coordinator. The
@@ -550,6 +608,9 @@ struct PendingBuild {
     garlic_key: Option<Zeroizing<[u8; 32]>>,
     /// OBEP garlic reply tag (8 bytes) paired with `garlic_key`.
     garlic_tag: Option<[u8; GARLIC_REPLY_TAG_LEN]>,
+    /// Bounded by this pending attempt's lifetime and the existing pending
+    /// attempt ceiling. Raw peer and message identifiers are not retained.
+    inbound_observation: InboundBuildObservation,
     /// Live state machine. The coordinator never spawns a task
     /// per attempt; the daemon-owned pump drives every attempt.
     state: ShortBuildStateMachine,
@@ -656,6 +717,17 @@ impl ExploratoryBuildCoordinator {
         snapshot.pending = self.pending.len();
         snapshot.consecutive_failures = self.pool.consecutive_failures();
         snapshot
+    }
+
+    /// Returns the count-only inbound correlation observations for one live
+    /// attempt. The caller must already own the attempt identifier.
+    pub fn inbound_build_observation(
+        &self,
+        attempt_id: BuildAttemptId,
+    ) -> Option<InboundBuildObservation> {
+        self.pending
+            .get(&attempt_id)
+            .map(|attempt| attempt.inbound_observation)
     }
 
     /// Returns whether the coordinator has paused new submissions
@@ -1067,6 +1139,7 @@ impl ExploratoryBuildCoordinator {
             )?,
             garlic_key,
             garlic_tag,
+            inbound_observation: InboundBuildObservation::default(),
             state,
         };
         let _ = self.pending.insert(attempt_id, pending);
@@ -1222,6 +1295,54 @@ impl ExploratoryBuildCoordinator {
         });
         let Some(attempt_id) = attempt_id else {
             self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+            let inbound_attempts = self
+                .pending
+                .values_mut()
+                .filter(|attempt| matches!(attempt.direction, BuildDirection::Inbound));
+            let mut peer_match = false;
+            let mut message_match = false;
+            for attempt in inbound_attempts {
+                let attempt_peer_match = attempt.target_peer == peer;
+                attempt.inbound_observation.record(
+                    attempt_peer_match,
+                    message_id,
+                    attempt.message_id,
+                );
+                peer_match |= attempt_peer_match;
+                message_match |= attempt.message_id == message_id;
+                if attempt.target_peer == peer && attempt.message_id != message_id {
+                    match message_id.wrapping_sub(attempt.message_id) {
+                        1 => {
+                            self.counters.inbound_orphans_peer_id_plus_one = self
+                                .counters
+                                .inbound_orphans_peer_id_plus_one
+                                .saturating_add(1);
+                        }
+                        u32::MAX => {
+                            self.counters.inbound_orphans_peer_id_minus_one = self
+                                .counters
+                                .inbound_orphans_peer_id_minus_one
+                                .saturating_add(1);
+                        }
+                        _ => {
+                            self.counters.inbound_orphans_peer_id_other = self
+                                .counters
+                                .inbound_orphans_peer_id_other
+                                .saturating_add(1);
+                        }
+                    }
+                }
+            }
+            if peer_match {
+                self.counters.inbound_orphans_peer_match =
+                    self.counters.inbound_orphans_peer_match.saturating_add(1);
+            }
+            if message_match {
+                self.counters.inbound_orphans_message_match = self
+                    .counters
+                    .inbound_orphans_message_match
+                    .saturating_add(1);
+            }
             return Vec::new();
         };
         tracing::info!(
@@ -1259,6 +1380,8 @@ impl ExploratoryBuildCoordinator {
         peer: PeerId,
         raw_bytes: &[u8],
     ) -> Vec<BuildCoordinatorOutcome> {
+        self.counters.inbound_gateway_messages =
+            self.counters.inbound_gateway_messages.saturating_add(1);
         let (tunnel_id, garlic_opaque) = match extract_tunnel_gateway_garlic(raw_bytes) {
             Some(value) => value,
             None => {
@@ -1266,6 +1389,22 @@ impl ExploratoryBuildCoordinator {
                 return Vec::new();
             }
         };
+        let inbound_peer_match = self.pending.values().any(|attempt| {
+            matches!(attempt.direction, BuildDirection::Inbound) && attempt.target_peer == peer
+        });
+        let inbound_route_match = self.pending.values().any(|attempt| {
+            matches!(attempt.direction, BuildDirection::Inbound)
+                && attempt.target_peer == peer
+                && attempt.next_tunnel.get() == tunnel_id
+        });
+        if inbound_peer_match {
+            self.counters.inbound_gateway_peer_match =
+                self.counters.inbound_gateway_peer_match.saturating_add(1);
+        }
+        if inbound_route_match {
+            self.counters.inbound_gateway_route_match =
+                self.counters.inbound_gateway_route_match.saturating_add(1);
+        }
         // Find the pending outbound attempt bound to this tunnel.
         // At most `MAX_PENDING_BUILDS` entries; linear scan is
         // bounded and avoids a second index.
@@ -2013,6 +2152,7 @@ mod tests {
             next_tunnel,
             garlic_key: Some(Zeroizing::new([0xA1; 32])),
             garlic_tag: Some([0xB1; GARLIC_REPLY_TAG_LEN]),
+            inbound_observation: InboundBuildObservation::default(),
             state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
@@ -2063,6 +2203,85 @@ mod tests {
                 ..
             }] if *correlated_attempt == attempt_id
         ));
+    }
+
+    #[test]
+    fn inbound_orphan_observations_are_attempt_scoped_and_identifier_free() {
+        let attempt_id = BuildAttemptId::new(27);
+        let peers = (0..3)
+            .map(|index| PeerBuildMaterial {
+                router_hash: Hash::from_bytes([0x60 + index; 32]),
+                static_encryption_key: [0x70 + index; 32],
+                receive_tunnel: TunnelId::new(0x7400 + u32::from(index)).expect("receive"),
+                next_tunnel: TunnelId::new(0x7500 + u32::from(index)).expect("next"),
+                role: if index == 0 {
+                    HopRole::InboundGateway
+                } else {
+                    HopRole::Participant
+                },
+            })
+            .collect::<Vec<_>>();
+        let request = BuildPathRequest {
+            direction: BuildDirection::Inbound,
+            peers,
+            creator_tunnel_id: TunnelId::new(0x7601).expect("creator tunnel"),
+            message_id: 0x7701,
+            outbound_reply_router: None,
+            originator_hash: Some(Hash::from_bytes([0x78; 32])),
+            destination_id: None,
+        };
+        let path = short_build_path(&request, attempt_id, 1_700_000_000_000);
+        let terminal = path.hops.last().expect("terminal hop");
+        let target_peer = PeerId::from_hash(terminal.router_hash());
+        let expected_message_id = path.next_message_id;
+        let pending = PendingBuild {
+            attempt_id,
+            direction: BuildDirection::Inbound,
+            destination_id: None,
+            target_peer,
+            deadline_ms: 1_700_000_060_000,
+            message_id: expected_message_id,
+            next_tunnel: terminal.next_tunnel(),
+            garlic_key: None,
+            garlic_tag: None,
+            inbound_observation: InboundBuildObservation::default(),
+            state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
+        };
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.pending.insert(attempt_id, pending);
+
+        coordinator.route_forwarded_inbound_build(
+            PeerId::from_hash(Hash::from_bytes([0x79; 32])),
+            expected_message_id,
+            &[],
+        );
+        coordinator.route_forwarded_inbound_build(
+            target_peer,
+            expected_message_id.wrapping_add(1),
+            &[],
+        );
+        coordinator.route_forwarded_inbound_build(
+            target_peer,
+            expected_message_id.wrapping_sub(1),
+            &[],
+        );
+        coordinator.route_forwarded_inbound_build(
+            PeerId::from_hash(Hash::from_bytes([0x7A; 32])),
+            expected_message_id.wrapping_add(2),
+            &[],
+        );
+
+        assert_eq!(
+            coordinator.inbound_build_observation(attempt_id),
+            Some(InboundBuildObservation {
+                authenticated_candidates: 4,
+                peer_matches: 2,
+                message_id_matches: 1,
+                peer_match_id_plus_one: 1,
+                peer_match_id_minus_one: 1,
+                peer_match_id_other: 0,
+            })
+        );
     }
 
     #[test]
@@ -2182,6 +2401,7 @@ mod tests {
                 next_tunnel: TunnelId::new(0x7A00 + attempt_raw as u32).expect("next tunnel"),
                 garlic_key: None,
                 garlic_tag: None,
+                inbound_observation: InboundBuildObservation::default(),
                 state: ShortBuildStateMachine::new(path, 60_000),
             }
         }

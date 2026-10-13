@@ -415,6 +415,29 @@ public final class ControlledRouter {
 
         Properties props = new Properties();
 
+        if ("ntcp2".equals(role)) {
+            // Log only the pinned stock owners needed to locate the normal
+            // flood -> message dispatch transition. Raw records stay in the
+            // private temporary router profile; the runner exports counts.
+            Properties logProperties = new Properties();
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade",
+                "INFO");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.CommSystemFacadeImpl", "INFO");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.GetBidsJob", "INFO");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.ntcp.NTCPTransport", "DEBUG");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.ntcp.EventPumper", "DEBUG");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.ntcp.NTCPConnection", "DEBUG");
+            logProperties.setProperty(
+                "logger.record.net.i2p.router.transport.ntcp.InboundEstablishState", "DEBUG");
+            DataHelper.storeProps(logProperties, new File(dataDir, "logger.config"));
+        }
+
         // Required directory properties the exact-pinned Router reads
         // before any thread starts.
         props.setProperty("i2p.dir.base", System.getProperty("i2p.dir.base", dataDir.getAbsolutePath()));
@@ -540,6 +563,9 @@ public final class ControlledRouter {
             // with one genuine signed NTCP2 IPv4 address on loopback.
             // No UDP listener, external discovery, or default-profile change.
             props.setProperty("router.networkID", "2");
+            // Keep the stock facade's source-owned flood/send summaries in
+            // the private scratch logs for bounded count-only inspection.
+            props.setProperty("logger.defaultLevel", "INFO");
             props.setProperty("i2np.ntcp.autoip", "false");
             props.setProperty("i2np.ntcp.autoport", "false");
             props.setProperty("i2np.ntcp.ipv6", "false");
@@ -717,7 +743,7 @@ public final class ControlledRouter {
                      PrintWriter output = new PrintWriter(
                          new OutputStreamWriter(client.getOutputStream(), StandardCharsets.US_ASCII), true)) {
                     String command = input.readLine();
-                    if (!"P470-PUBLISH".equals(command)) {
+                    if (!"P470-STORE".equals(command)) {
                         output.println("P470-REJECTED");
                         return;
                     }
@@ -732,12 +758,14 @@ public final class ControlledRouter {
                         listener.close();
                         return;
                     }
-                    // Use the exact stock facade operation called by the
-                    // normal floodfill publication path. It selects the
-                    // live peers, applies stock store eligibility and lets
-                    // CommSystem bid/send the signed RouterInfo normally.
-                    floodfill.flood(router.getRouterInfo());
-                    output.println("P470-NETDB-FLOOD-SUBMITTED");
+                    // A token-zero RouterInfo flood is deliberately skipped
+                    // by a fresh NTCP2 recipient that already has the RI in
+                    // the handshake. Submit the same real, NetDB-owned RI
+                    // through stock FloodfillStoreJob so it requests the
+                    // ordinary correlated DeliveryStatus reply.
+                    String receipt = P470TransportPreflight
+                        .submitReplyRequestedRouterInfoStore(router.getContext());
+                    output.println(receipt);
                     listener.close();
                     return;
                 } catch (SocketTimeoutException timeout) {
@@ -905,6 +933,14 @@ public final class ControlledRouter {
                             return "P470-EV observable=false reason=missing-candidate-hash";
                         }
                         return p470Transport(parts[1]);
+                    case "P470-COUNTERS":
+                        return P470TransportPreflight.counters(context());
+                    case "P470-STORE-STATUS":
+                        return P470TransportPreflight.storeStatus();
+                    case "P470-LISTENER":
+                        return P470TransportPreflight.listenerStatus(context());
+                    case "P470-LOOKUP-THROTTLE":
+                        return P470TransportPreflight.lookupThrottleStatus(context());
                     case "P222-CLIENT-LOOKUP-PREFLIGHT":
                         if (parts.length < 4) {
                             return p222Error("missing-hash-arguments");
@@ -1323,6 +1359,7 @@ public final class ControlledRouter {
                 P470TransportPreflight.inspect(context(), candidate);
             return "P470-EV observable=" + (result.error == null)
                 + " candidate_present=" + result.candidatePresent
+                + " comm_system_dummy=" + context().commSystem().isDummy()
                 + " router_hidden=" + result.routerHidden
                 + " floodfill_enabled=" + result.floodfillEnabled
                 + " accepts_routerinfo_store=" + result.acceptsRouterInfoStore
@@ -1333,6 +1370,9 @@ public final class ControlledRouter {
                 + " ntcp2_bid_available=" + result.ntcp2BidAvailable
                 + " bid_uses_ntcp_transport=" + result.bidUsesNtcpTransport
                 + " bid_latency_ms=" + result.bidLatencyMs
+                + " actual_store_message_size=" + result.actualStoreMessageSize
+                + " actual_flood_selector_includes_candidate="
+                + result.actualFloodSelectorIncludesCandidate
                 + " reason=" + (result.error == null ? "none" : result.error);
         }
 

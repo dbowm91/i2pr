@@ -194,6 +194,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 
 Normal Java I2P 2.13.0 **router transport** interoperability is newly scoped as [Plan 470](../implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md). The existing M6 `ControlledRouter` stock launcher explicitly disables NTCP2 and its M6 client protocol acceptance is **not** the correct prerequisite for NTCP2 router I2NP. This new test uses a separate normal-router Java transport profile, signed RouterInfo and actual stock-owned NetDB message triggers in both initiated roles. A successful Plan 470 controlled NTCP2 result **does not** close the historical M6 Java Streaming full-application qualification, Plan 444 floodfill ranking, Plan 435 public transport activation or Plan 439 end-to-end core; all remain independently gated.
 
+### Plan 475 — independent normal Java NTCP2 send/handshake correction (2026-10-12)
+
+[Plan 475](../implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md) is a corrective to the **normal Java 2.13.0 router** controlled NTCP2 gate, not a reopening of historical M6 application/Streaming qualification. Plan 470 established normal Java's signed listener, peer admission/selection and a usable preflight NTCP2 bid, but stock `flood` produced no dial while separate i2pr-initiated SessionRequests closed before Java SessionCreated. Preserve both causal boundaries and use actual stock `OutNetMessage→GetBidsJob→NTCPTransport` / incoming accept evidence before protocol changes. Requires genuine Java-owned and i2pr-owned I2NP with normal product replies to count as second router family. No Java full SAM/tunnels claim and no Plan 444 floodfill-role promotion.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;

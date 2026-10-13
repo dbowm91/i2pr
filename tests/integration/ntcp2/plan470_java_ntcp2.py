@@ -161,18 +161,6 @@ def java_runtime_log(java_data: Path, stdout_log: Path) -> str:
     return "\n".join(chunks)
 
 
-def wait_tcp(child: subprocess.Popen[bytes], host: str, port: int, deadline: float) -> None:
-    while time.monotonic() < deadline:
-        if child.poll() is not None:
-            raise RuntimeError("java-router-exited-before-listener")
-        try:
-            with socket.create_connection((host, port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.1)
-    raise TimeoutError("java-ntcp2-listener-timeout")
-
-
 def java_seed(seed_root: Path, raw: bytes, digest: bytes) -> None:
     path = java_store_path(seed_root, digest)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -194,11 +182,56 @@ def java_diagnostic(port: int, request: str, deadline: float) -> str:
                 conn.settimeout(1)
                 conn.sendall((request + "\n").encode("ascii"))
                 response = conn.makefile("rb").readline(4096).decode("ascii", errors="strict")
-            if response.startswith(("P220-EV ", "P470-EV ")):
+            if response.startswith(("P220-EV ", "P470-EV ", "P470-STORE ", "P470-LISTENER ", "P470-LOOKUP ")):
                 return response.strip()
         except (OSError, UnicodeError):
             time.sleep(0.1)
     return "unavailable"
+
+
+def wait_java_listener(child: subprocess.Popen[bytes], port: int, deadline: float) -> None:
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise RuntimeError("java-router-exited-before-listener")
+        if "P470-LISTENER listening=true" in java_diagnostic(
+            port, "P470-LISTENER", min(deadline, time.monotonic() + 1)
+        ):
+            return
+        time.sleep(0.1)
+    raise TimeoutError("java-ntcp2-listener-timeout")
+
+
+def wait_java_lookup_admission(port: int, child: subprocess.Popen[bytes], deadline: float) -> bool:
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise RuntimeError("java-router-exited-before-lookup-admission")
+        if java_diagnostic(port, "P470-LOOKUP-THROTTLE", min(deadline, time.monotonic() + 1)) == "P470-LOOKUP ready=true":
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def java_send_counters(port: int, deadline: float) -> dict[str, int]:
+    response = java_diagnostic(port, "P470-COUNTERS", deadline)
+    if not response.startswith("P470-EV observable=true"):
+        return {}
+    allowed = {
+        "transport_bidFailNoTransports", "transport_bidFailBanlisted",
+        "transport_bidFailSelf", "transport_expiredOnQueueLifetime",
+        "transport_sendMessageFailureLifetime", "ntcp_accept",
+        "ntcp_registerConnect", "ntcp_connectSuccessful", "ntcp_inboundEstablished",
+        "ntcp_outboundFailedIOEImmediate", "ntcp_outboundEstablishFailed",
+        "ntcp_connectFailedIOE", "ntcp_connectFailedTimeout",
+        "ntcp_connectFailedTimeoutIOE",
+        "ntcp_zeroReadDrop", "ntcp_readError", "netDb_lookupsReceived",
+        "netDb_lookupsDropped", "netDb_lookupsHandled", "netDb_lookupsMatched",
+        "netDb_nonFFLookupsDropped", "netDb_DLMAllZeros",
+    }
+    counts: dict[str, int] = {}
+    for name, value in re.findall(r"([a-zA-Z0-9_]+)=(-?\d+)", response):
+        if name in allowed:
+            counts[name] = int(value)
+    return counts if set(counts) == allowed else {}
 
 
 def wait_java_candidate(
@@ -231,14 +264,14 @@ def wait_java_candidate(
     return stored_present, stored_f, peer_admitted, selector_available, False, stock_transport_preflight
 
 
-def trigger_java_flood(port: int, deadline: float) -> bool:
+def trigger_java_store_job(port: int, deadline: float) -> bool:
     while time.monotonic() < deadline:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=1) as conn:
                 conn.settimeout(1)
-                conn.sendall(b"P470-PUBLISH\n")
+                conn.sendall(b"P470-STORE\n")
                 response = conn.makefile("rb").readline(128).decode("ascii", errors="strict").strip()
-            if response == "P470-NETDB-FLOOD-SUBMITTED":
+            if response.startswith("P470-STORE submitted=1"):
                 return True
             if response != "P470-NOT-READY":
                 return False
@@ -328,7 +361,7 @@ port = {ssu_port}
 enabled = true
 qualification_profile = "controlled_loopback"
 send_reply_token_probe = true
-send_initiator_lookup_probe = true
+send_initiator_lookup_probe = false
 [i2pcontrol]
 enabled = true
 bind_address = "127.0.0.1"
@@ -360,13 +393,18 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                   "java_routerinfo_store_eligible": 0,
                   "java_candidate_not_banlisted": 0,
                   "java_ntcp_not_marked_unreachable": 0,
-                  "java_netdb_flood_submitted": 0,
+                  "java_store_job_submitted": 0,
+                  "java_store_job_succeeded": 0,
+                  "java_stock_transport_send": 0,
+                  "java_outbound_tcp_connected": 0,
+                  "java_lookup_admission_ready": 0,
                   "daemon_lookup_worker_scheduled": 0,
                   "daemon_lookup_submitted": 0, "daemon_lookup_correlated": 0,
                   "daemon_outbound_link_promoted": 0,
                   "daemon_probe_submitted": 0, "daemon_probe_correlated": 0,
-                  "daemon_inbound_product_effect": 0, "daemon_store_persisted": 0,
-                  "java_i2pr_store_persisted": 0}
+                  "daemon_inbound_product_effect": 0}
+        java_counters_before: dict[str, int] = {}
+        java_counters_after: dict[str, int] = {}
         try:
             # Bootstrap only the real i2pr-signed RouterInfo. No peer or
             # product traffic is enabled during this preparation process.
@@ -402,7 +440,9 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     "-cp", classpath, "ControlledRouter", str(java_data), "127.0.0.1",
                     str(ntcp_port), "0", "0", str(java_diag_port), "ntcp2", str(java_publish_port),
                 ], cwd=root, stdout=output, stderr=subprocess.STDOUT)
-                wait_tcp(java_child, "127.0.0.1", ntcp_port, time.monotonic() + START_TIMEOUT)
+                # Do not open an empty connection to the NTCP listener:
+                # stock Java blocks the source address after pre-data EOF.
+                wait_java_listener(java_child, java_diag_port, time.monotonic() + START_TIMEOUT)
                 # Java's RouterInfo/key material is written under
                 # i2p.dir.router, which ControlledRouter sets to
                 # <data-dir>/router. NetDB itself remains <data-dir>/netDb.
@@ -527,11 +567,14 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     daemon_live_summary, label="i2pr-live", ntcp2_only=False,
                     expected_loopback_port=daemon_ntcp_port, require_floodfill=True,
                 )
-                stages["java_netdb_flood_submitted"] = int(trigger_java_flood(
+                java_counters_before = java_send_counters(
+                    java_diag_port, time.monotonic() + 3
+                )
+                stages["java_store_job_submitted"] = int(trigger_java_store_job(
                     java_publish_port, time.monotonic() + 15
                 ))
-                if not stages["java_netdb_flood_submitted"]:
-                    print("plan470: first-missing-stage=java-stock-netdb-flood-operation", file=sys.stderr)
+                if not stages["java_store_job_submitted"]:
+                    print("plan470: first-missing-stage=java-stock-reply-requested-store-job", file=sys.stderr)
                     return 1
                 deadline = time.monotonic() + RUN_TIMEOUT
                 while time.monotonic() < deadline:
@@ -539,20 +582,20 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                         raise RuntimeError("qualification-router-exited")
                     daemon_text = daemon_log.read_text(errors="replace")
                     java_text = java_runtime_log(java_data, java_log)
+                    stages["java_stock_transport_send"] = int(
+                        "Attempting to send on transport NTCP" in java_text
+                    )
+                    java_store_status = java_diagnostic(
+                        java_diag_port, "P470-STORE-STATUS", min(deadline, time.monotonic() + 1)
+                    )
+                    stages["java_store_job_succeeded"] = int(
+                        "P470-STORE submitted=1 succeeded=1 failed=0" in java_store_status
+                    )
+                    stages["java_outbound_tcp_connected"] = int(
+                        "connected? true" in java_text
+                    )
                     stages["daemon_probe_submitted"] = int(
                         "controlled NTCP2 RouterInfo reply-token probe submitted" in daemon_text
-                    )
-                    stages["daemon_lookup_worker_scheduled"] = int(
-                        "controlled request-driven NTCP2 lookup worker scheduled" in daemon_text
-                    )
-                    stages["daemon_lookup_submitted"] = int(
-                        "controlled request-driven DatabaseLookup submitted over authenticated NTCP2" in daemon_text
-                    )
-                    stages["daemon_lookup_correlated"] = int(
-                        "controlled NTCP2 initiator DatabaseLookup response correlated" in daemon_text
-                    )
-                    stages["daemon_outbound_link_promoted"] = int(
-                        "NTCP2 authenticated outbound link promoted" in daemon_text
                     )
                     stages["daemon_probe_correlated"] = int(
                         "controlled NTCP2 RouterInfo DeliveryStatus correlation completed" in daemon_text
@@ -560,26 +603,107 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     stages["daemon_inbound_product_effect"] = int(
                         "authenticated floodfill DatabaseStore accepted with response owed" in daemon_text
                     )
-                    if daemon_store.is_file():
-                        stages["daemon_store_persisted"] = int(
-                            hashlib.sha256(daemon_store.read_bytes()).hexdigest() != seeded_daemon_hash
-                        )
-                    if java_store.is_file():
-                        stages["java_i2pr_store_persisted"] = int(
-                            hashlib.sha256(java_store.read_bytes()).hexdigest() != seeded_java_hash
-                        )
-                    if all(stages.values()):
+                    if (stages["java_store_job_succeeded"]
+                            and stages["daemon_probe_correlated"]
+                            and stages["daemon_inbound_product_effect"]):
                         break
                     time.sleep(0.2)
+            daemon_text_phase1 = daemon_log.read_text(errors="replace")
+            java_counters_after_phase1 = java_send_counters(
+                java_diag_port, time.monotonic() + 3
+            )
+            stop(daemon_child)
+            daemon_child = None
+
+            # Java 2.13.0's normal LookupThrottler leaves max=0 until its
+            # first 120-second cleaner tick. Poll the read-only stock-state
+            # observer so phase 2 begins only after normal admission is live.
+            stages["java_lookup_admission_ready"] = int(wait_java_lookup_admission(
+                java_diag_port, java_child, time.monotonic() + 160
+            ))
+            if not stages["java_lookup_admission_ready"]:
+                print("plan470: first-missing-stage=java-stock-lookup-throttle-initialization", file=sys.stderr)
+                return 1
+
+            # Start a separate process generation with the same signed router
+            # identity and NetDB. The first process has been closed, so this
+            # phase must create a fresh i2pr-initiated TCP/NTCP2 session.
+            config_text = config.read_text(encoding="utf-8")
+            if "send_initiator_lookup_probe = false" not in config_text:
+                raise RuntimeError("controlled-lookup-phase-config-mismatch")
+            config.write_text(
+                config_text.replace(
+                    "send_initiator_lookup_probe = false",
+                    "send_initiator_lookup_probe = true",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            config.chmod(0o600)
+            with daemon_log.open("wb") as output:
+                daemon_child = subprocess.Popen([str(daemon), "run", "--config", str(config)], cwd=root,
+                                                stdout=output, stderr=subprocess.STDOUT)
+                restart_deadline = time.monotonic() + START_TIMEOUT
+                while True:
+                    if daemon_child.poll() is not None:
+                        raise RuntimeError("daemon-exited-before-fresh-initiator-phase")
+                    fetch_daemon_router_info(
+                        control_port, work / "i2pr-phase2.routerInfo", restart_deadline
+                    )
+                    if time.monotonic() >= restart_deadline:
+                        raise TimeoutError("daemon-fresh-initiator-phase-startup")
+                    break
+                deadline = time.monotonic() + RUN_TIMEOUT
+                while time.monotonic() < deadline:
+                    if daemon_child.poll() is not None or java_child.poll() is not None:
+                        raise RuntimeError("qualification-router-exited")
+                    phase2_text = daemon_log.read_text(errors="replace")
+                    stages["daemon_lookup_worker_scheduled"] = int(
+                        "controlled request-driven NTCP2 lookup worker scheduled" in phase2_text
+                    )
+                    stages["daemon_lookup_submitted"] = int(
+                        "controlled request-driven DatabaseLookup submitted over authenticated NTCP2" in phase2_text
+                    )
+                    stages["daemon_lookup_correlated"] = int(
+                        "controlled NTCP2 initiator DatabaseLookup response correlated" in phase2_text
+                    )
+                    stages["daemon_outbound_link_promoted"] = int(
+                        "NTCP2 authenticated outbound link promoted" in phase2_text
+                    )
+                    if (stages["daemon_lookup_worker_scheduled"]
+                            and stages["daemon_lookup_submitted"]
+                            and stages["daemon_outbound_link_promoted"]
+                            and stages["daemon_lookup_correlated"]):
+                        break
+                    time.sleep(0.2)
+            java_counters_after = java_send_counters(
+                java_diag_port, time.monotonic() + 3
+            )
+            java_counter_deltas = {
+                key: max(0, java_counters_after[key] - java_counters_before[key])
+                for key in java_counters_before.keys() & java_counters_after.keys()
+                if java_counters_before[key] >= 0 and java_counters_after[key] >= 0
+            }
+            java_phase2_counter_deltas = {
+                key: max(0, java_counters_after[key] - java_counters_after_phase1[key])
+                for key in java_counters_after_phase1.keys() & java_counters_after.keys()
+                if java_counters_after_phase1[key] >= 0 and java_counters_after[key] >= 0
+            }
             java_text = java_runtime_log(java_data, java_log)
-            daemon_text = daemon_log.read_text(errors="replace")
+            daemon_text = daemon_text_phase1 + "\n" + daemon_log.read_text(errors="replace")
+            java_store_status = java_diagnostic(
+                java_diag_port, "P470-STORE-STATUS", time.monotonic() + 2
+            )
             # Do not persist or print raw router logs. Counts are stage-specific
             # and the identity/hash itself is omitted from the receipt.
-            stages["java_i2pr_store_persisted"] = int(
-                java_store.is_file()
-                and hashlib.sha256(java_store.read_bytes()).hexdigest() != seeded_java_hash
-            )
             print("plan470_java_ntcp2_stages=" + json.dumps(stages, sort_keys=True, separators=(",", ":")))
+            print("plan470_java_stock_send_counter_deltas=" + json.dumps(
+                java_counter_deltas, sort_keys=True, separators=(",", ":")
+            ))
+            print("plan470_java_phase2_counter_deltas=" + json.dumps(
+                java_phase2_counter_deltas, sort_keys=True, separators=(",", ":")
+            ))
+            print("plan470_java_store_job_status=" + java_store_status)
             print("plan470_reference_pin=" + JAVA_VERSION + "@" + JAVA_PIN)
             if not all(stages.values()):
                 print("plan470: first-missing-stage=" + next(k for k, v in stages.items() if not v), file=sys.stderr)
@@ -591,11 +715,54 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     r'io_result=["\']?([a-z-]+)',
                     daemon_text,
                 )
+                inbound_handshake_stage_io = re.findall(
+                    r'controlled NTCP2 inbound handshake stage.*?stage=["\']?([a-z_]+).*?'
+                    r'io_result=["\']?([a-z-]+)',
+                    daemon_text,
+                )
                 token_counts = {
                     # Counts only: the stock flood lines contain RouterHashes,
                     # which must never leave the private scratch log.
                     "java_stock_flood_dispatch_candidates": java_text.count("Flooding the entry for "),
                     "java_stock_flood_dispatch_summary": java_text.count("Flooded the data to "),
+                    "java_stock_transport_send_attempts": java_text.count("Attempting to send on transport "),
+                    "java_stock_ntcp_send_attempts": java_text.count("Attempting to send on transport NTCP"),
+                    "java_ntcp_bad_address_constructor_failures": java_text.count("bad address? "),
+                    "java_ntcp_address_changed_before_connect": java_text.count(
+                        "we bid on a peer with a bad address?"
+                    ),
+                    "java_ntcp_channel_open_failures": java_text.count("Error opening a channel"),
+                    "java_ntcp_channel_registration_events": java_text.count("Registering "),
+                    "java_ntcp_connect_stage_counts": {
+                        token: java_text.count(token)
+                        for token in (
+                            "processing connect for", "connected? true", "connected? false",
+                            "error connecting on", "error connecting to",
+                            "unresolved address connecting", "Possible early disconnect",
+                            "Closing connection", "Receive session request but near connection limit",
+                        )
+                    },
+                    "java_inbound_handshake_gate_counts": {
+                        token: java_text.count(token)
+                        for token in (
+                            "Receive session request from blocklisted IP",
+                            "Blocking accept of IP with count",
+                            "Probabalistic drop incoming",
+                            "EOF on inbound before receiving any",
+                            "Short buffer got",
+                            "Bad PK msg 1",
+                            "Bad msg 1",
+                            "Bad network id",
+                            "Bad version",
+                            "Bad msg 3 payload",
+                            "Failed msg3p2",
+                            "Dropping inbound connection from wrong network",
+                            "Clocks too skewed",
+                            "verification successful for",
+                            "Multiple connections on remove",
+                            "Old connection closed",
+                        )
+                    },
                     "java_stock_flood_candidate_rejected": java_text.count("Too old, not flooding "),
                     "java_publish_logs": sum(java_text.count(token) for token in (
                         "Publishing our RI", "Delay publishing our RI", "Publishing our RI after delay"
@@ -605,6 +772,16 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                                           if path.is_file()),
                     "java_ntcp2_logs": java_text.lower().count("ntcp2"),
                     "java_store_logs": java_text.lower().count("store"),
+                    "java_lookup_drop_reasons": {
+                        "direct_lookup_from_local_hash_without_transport_peer": java_text.count(
+                            "direct lookup request from us"
+                        ),
+                        "direct_lookup_from_floodfill": java_text.count(
+                            "direct lookup request from floodfill"
+                        ),
+                        "lookup_throttled": java_text.count("(throttled), reply was to:"),
+                        "received_but_no_drop_warning": java_text.count("netDb.lookupsDropped"),
+                    },
                     "java_router_logs": java_text.lower().count("routerinfo"),
                     "java_error_logs": java_text.lower().count("error") + java_text.lower().count("exception"),
                     "daemon_ntcp2_logs": daemon_text.lower().count("ntcp2"),
@@ -615,6 +792,9 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     ),
                     "daemon_ntcp2_store_accept_logs": daemon_text.count(
                         "authenticated floodfill DatabaseStore accepted with response owed"
+                    ),
+                    "daemon_store_response_submitted": daemon_text.count(
+                        "authenticated floodfill DatabaseStore response submitted"
                     ),
                     "daemon_probe_submitted_logs": daemon_text.count(
                         "controlled NTCP2 RouterInfo reply-token probe submitted"
@@ -647,6 +827,10 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     "daemon_outbound_handshake_stage_io": dict(sorted(
                         (f"{stage}:{io_result}", handshake_stage_io.count((stage, io_result)))
                         for stage, io_result in set(handshake_stage_io)
+                    )),
+                    "daemon_inbound_handshake_stage_io": dict(sorted(
+                        (f"{stage}:{io_result}", inbound_handshake_stage_io.count((stage, io_result)))
+                        for stage, io_result in set(inbound_handshake_stage_io)
                     )),
                     "java_ntcp2_log_tokens": {
                         token: java_text.lower().count(token)

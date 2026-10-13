@@ -78,6 +78,12 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 
 **Plan 472** is registered under [core router recovery](../implementation/core-router-recovery/472-authorized-two-host-ssu2-live-qualification-runner.md) to extend Plan 449's no-packet preflight and Plan 453's guarded private-LAN SSU2 owner. The current runner provides offline per-host preparation and signed RouterInfo endpoint, network, freshness, and distinct-identity checks. The traffic executor is not yet implemented; `run --live` fails closed. Owner-authored private manifests, separately invoked per-host commands, explicit consent, and two independently addressed hosts remain mandatory before any live qualification. Plan 449's infrastructure pass and Plan 442's durable-key local work cannot substitute for two physical/private-LAN endpoint sessions with authentic I2NP. Do not promote broad RouterInfo reachability, NAT/introducers, IPv6, Java-family interop or public availability from a private-LAN result; see [Plan 472 status](../closure/core-router-recovery/472-status.md).
 
+### Plan 476 — live SSU2 per-host executor after Plan 472 offline-only pass (2026-10-12)
+
+[Plan 476](../implementation/core-router-recovery/476-authorized-ssu2-lan-live-executor-not-environment-shortcut.md) explicitly owns the missing *implementation* behind `tests/integration/ssu2/plan472_live.py run --live`: Plan 472's `prepare`/`verify` cryptographic/preflight contracts passed but **no executor exists**, no authorized host pair has been supplied, and **no live packets were sent**. Build a local per-host, operator-consented bounded source-owned executor with offline positive/negative simulator tests and fail-closed topology/identity/route revalidation **before network I/O**. No SSH, root, namespace/VM, shared hosts or public network.
+
+Report two independent closure tiers: an offline runner implementation may pass, but live bidirectional independently addressed SSU2/I2NP/DeliveryStatus, restart/withdrawal require a separately owner-approved private pair and remain environment-blocked until executed. This does not reopen passed local one-family Plans 161/162, or qualify public/private-introducers, Java, IPv6 or NAT.
+
 ## 8. Cross-cutting requirements
 
 Storage, protocol, security, concurrency, observability, and docs constraints per `GUARDRAILS.md`;

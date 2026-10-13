@@ -2,10 +2,17 @@
 
 This is an owner-run private-LAN qualification lane. It does not use SSH,
 provision another host, or start a router during `prepare` or `verify`. The
-actual traffic phase is currently unavailable: the repository does not yet
-have a pair-specific executor that proves attributable bidirectional I2NP
-product receipts. `run --live` therefore fails closed until that executor is
-implemented. An offline pass is not a live result.
+Plan 476 offline receipt simulator checks pair authorization, independent role
+receipts, run-epoch agreement, phase order, and replay rejection without
+opening sockets or starting processes:
+
+```sh
+python3 tests/integration/ssu2/test_plan476_executor.py
+```
+
+This simulator is infrastructure evidence only. The local router-process
+launcher and attributable live receipt collector are not available yet;
+`run --live` continues to fail closed. An offline pass is not a live result.
 
 ## Per-host preparation
 
@@ -50,10 +57,11 @@ print endpoint values, keys, identities, or artifact paths.
 
 ## Live gate
 
-Do not run a live command until a reviewed executor exists and both operators
-have explicitly authorized the bounded attempt. At present the following
-command is expected to fail closed after artifact verification, with
-`live-executor-unavailable` and `packet_attempt: none`:
+Do not run a live command until the per-host process/session executor is
+implemented and reviewed, both operators have explicitly authorized the
+bounded attempt, and the exact signed peer RouterInfo has been exchanged.
+Until then, the following command must fail closed after artifact
+verification with `live-executor-unavailable` and `packet_attempt: none`:
 
 ```sh
 python3 tests/integration/ssu2/plan472_live.py run --live \

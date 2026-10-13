@@ -153,13 +153,14 @@ fn spawn_controlled_request_driven_lookup(
                 }
             }
         };
-        // Let the controlled peer fixture finish binding its listener before
-        // the first request-driven attempt. This delay is confined to the
-        // opt-in qualification probe and remains below the dial deadline.
+        // Let the controlled peer finish its stock-initiated StoreJob exchange
+        // before this independent outbound-initiator phase. This delay is
+        // confined to the opt-in qualification probe; it prevents simultaneous
+        // duplicate-link races from making either role's evidence ambiguous.
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(15)) => {}
         }
         let local_info = i2pr_proto::RouterInfo::decode(
             local_router_info.as_ref(),
@@ -2346,6 +2347,8 @@ fn register_ntcp2_service(
                     let outbound_ingress_budget = router_ingress_budget.clone();
                     let outbound_delivery = ntcp2_delivery.clone();
                     let outbound_send_timeout = ntcp2_send_timeout;
+                    let outbound_controlled_floodfill = config.qualification_profile
+                        == crate::config::Ntcp2QualificationProfile::ControlledLoopback;
                     let _ = children.spawn(move |task_cancel| async move {
                         let mut cursor = 0usize;
                         let mut health_tick = tokio::time::interval(Duration::from_secs(15));
@@ -2361,6 +2364,14 @@ fn register_ntcp2_service(
                                 } => peer,
                                 _ = health_tick.tick() => None,
                             };
+                            // The controlled qualification owns outbound dial
+                            // timing through its explicit request channel.
+                            // Suppress periodic bootstrap dials in this profile
+                            // so its independent initiating-role phases do not
+                            // collide with the stock Java StoreJob.
+                            if outbound_controlled_floodfill && requested_peer.is_none() {
+                                continue;
+                            }
                             let outbound_peers = outbound_bootstrap
                                 .as_ref()
                                 .and_then(|bootstrap| {
@@ -3168,7 +3179,7 @@ fn register_ssu2_service(
                         let Some(ssu2_bind) = handle.local_v4().or_else(|| handle.local_v6()) else {
                             handle.shutdown();
                             let detail = i2pr_core::HealthDetail::new(
-                                "Destination groups require a bound loopback SSU2 endpoint",
+                                    "Destination groups require a bound SSU2 endpoint permitted by the selected qualification profile",
                             )
                             .ok();
                             return i2pr_runtime::ServiceResult::Failed(
@@ -3192,7 +3203,10 @@ fn register_ssu2_service(
                                 .max_active_connections_per_service,
                             reference: None,
  extra_bootstrap_peers: Vec::new(),
-                            options: crate::service_product::ServiceProductOptions::default(),
+                            options: crate::service_product::ServiceProductOptions {
+                                ssu2_qualification_profile: ssu2_config.qualification_profile,
+                                ..Default::default()
+                            },
                             addressbook: addressbook.shared(),
                             // Plan 337: the one shared manager, also held
                             // by the I2PControl control state.
