@@ -3232,6 +3232,62 @@ impl ServiceTunnelManager {
         .map_err(ServiceTunnelError::InvalidConfig)
     }
 
+    /// Installs one complete router-backed generation while holding the
+    /// inbound-owner registry across both bridge publication and owner
+    /// registration. Readers that take the same registry lock therefore see
+    /// either the previous generation or the complete new owner projection,
+    /// never a bridge snapshot whose inbound ids are not yet registered.
+    pub(crate) fn install_service_router_material_with_inbound_owners(
+        &self,
+        service_destination: DestinationId,
+        material: RouterDestinationNetworkState,
+        runtime: Arc<ServiceRuntime>,
+        inbound_receive_ids: &[u32],
+        now_ms: u64,
+    ) -> Result<(), ServiceTunnelError> {
+        if runtime.destination_id != service_destination
+            || inbound_receive_ids.is_empty()
+            || inbound_receive_ids.contains(&0)
+        {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed owner generation is incomplete".to_owned(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::with_capacity(inbound_receive_ids.len());
+        if inbound_receive_ids.iter().any(|id| !unique.insert(*id)) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed owner generation contains duplicate receive ids".to_owned(),
+            ));
+        }
+        let mut owners = self.inbound_tunnel_owners.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("inbound tunnel owners poisoned".to_owned())
+        })?;
+        if inbound_receive_ids.iter().any(|id| owners.contains_key(id)) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed owner generation conflicts with a live receive id".to_owned(),
+            ));
+        }
+        self.with_destination_bridge(service_destination, |bridge| {
+            bridge
+                .install_router_network_state(material, now_ms)
+                .map_err(ServiceTunnelError::InvalidConfig)?;
+            let installed_ids = bridge.router_inbound_receive_ids();
+            if installed_ids != inbound_receive_ids {
+                let _ = bridge.clear_router_network_state();
+                return Err(ServiceTunnelError::InvalidConfig(
+                    "router-backed material receive ids do not match owner generation".to_owned(),
+                ));
+            }
+            for receive_id in inbound_receive_ids {
+                owners.insert(*receive_id, Arc::clone(&runtime));
+            }
+            Ok(())
+        })
+        .ok_or_else(|| {
+            ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
+        })?
+    }
+
     /// Plan 212 §6 — removes router-backed state from the service
     /// runtime that owns `service_destination`. Local/co-owned
     /// material is untouched. The caller must also remove the
@@ -3276,19 +3332,26 @@ impl ServiceTunnelManager {
         &self,
         service_destination: DestinationId,
     ) -> Option<RouterNetworkSummary> {
-        let mut summary = self
-            .with_destination_bridge(service_destination, |bridge| {
-                bridge.router_network_summary()
-            })
-            .flatten()?;
-        let receive_ids = self
-            .with_destination_bridge(service_destination, |bridge| {
-                bridge.router_inbound_receive_ids()
-            })
-            .unwrap_or_default();
+        // Match the writer's owner-registry -> bridge lock order. A completed
+        // generation is published under this registry lock, so this snapshot
+        // cannot combine its newly installed bridge ids with an older owner
+        // map (or vice versa).
+        let owners = self.inbound_tunnel_owners.lock().ok()?;
+        let (mut summary, receive_ids) =
+            self.with_destination_bridge(service_destination, |bridge| {
+                (
+                    bridge.router_network_summary(),
+                    bridge.router_inbound_receive_ids(),
+                )
+            })?;
+        let mut summary = summary.take()?;
         summary.inbound_owner_count = receive_ids
             .iter()
-            .filter(|id| self.inbound_tunnel_owner(**id).is_some())
+            .filter(|id| {
+                owners
+                    .get(id)
+                    .is_some_and(|owner| owner.destination_id == service_destination)
+            })
             .count();
         summary.inbound_owner_registered =
             !receive_ids.is_empty() && summary.inbound_owner_count == receive_ids.len();
@@ -9446,6 +9509,68 @@ mod plan212_router_backed_service_destination_tests {
             .service_router_network_summary(destination_id)
             .expect("summary exists");
         assert_eq!(summary.inbound_receive_count, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan474_router_material_and_inbound_owner_publish_as_one_generation() {
+        let directory = temp_data_dir("plan474-owner-generation");
+        let manager = make_manager_with_one_server(directory.path(), "plan474-owner-generation");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let runtime = Arc::clone(&runtimes[0]);
+        let now_ms = test_now_ms();
+
+        let material = test_router_material(&manager, destination_id, 0x6101, 0x9611, now_ms);
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtime),
+                &[0x9611],
+                now_ms,
+            )
+            .expect("material and owner generation installs");
+
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("summary exists");
+        assert_eq!(summary.inbound_receive_count, 1);
+        assert_eq!(summary.inbound_owner_count, 1);
+        assert!(summary.inbound_owner_registered);
+        assert!(summary.is_complete());
+        assert!(
+            manager
+                .inbound_tunnel_owner(0x9611)
+                .is_some_and(|owner| owner.destination_id == destination_id)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan474_mismatched_owner_generation_leaves_no_partial_bridge_or_owner() {
+        let directory = temp_data_dir("plan474-owner-generation-mismatch");
+        let manager =
+            make_manager_with_one_server(directory.path(), "plan474-owner-generation-mismatch");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let material =
+            test_router_material(&manager, destination_id, 0x6101, 0x9611, test_now_ms());
+
+        let result = manager.install_service_router_material_with_inbound_owners(
+            destination_id,
+            material,
+            Arc::clone(&runtimes[0]),
+            &[0x9612],
+            test_now_ms(),
+        );
+
+        assert!(result.is_err());
+        assert!(manager.inbound_tunnel_owner(0x9611).is_none());
+        assert!(manager.inbound_tunnel_owner(0x9612).is_none());
+        assert!(
+            manager
+                .service_router_network_summary(destination_id)
+                .is_none()
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

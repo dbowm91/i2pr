@@ -5258,18 +5258,17 @@ async fn provision_all_service_router_material(
             inbound_expires_at_ms,
         );
         manager
-            .install_service_router_material(service_destination_id, material, now_ms)
+            .install_service_router_material_with_inbound_owners(
+                service_destination_id,
+                material,
+                Arc::clone(runtime),
+                &inbound_receive_ids,
+                now_ms,
+            )
             .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-        // Production inbound owner registration lifecycle: every
-        // live receive id + the destination owner map to this
-        // runtime. Drain/replacement/shutdown remove them (the
-        // manager's reconcile/shutdown paths call the matching
-        // unregister helpers).
-        for receive_id in &inbound_receive_ids {
-            manager
-                .register_inbound_tunnel_owner(*receive_id, Arc::clone(runtime))
-                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-        }
+        // The bridge material and each live receive owner are now one
+        // manager-visible generation. Destination-hash ownership is
+        // registered below before the provisioning callback returns.
         let inbound_owner_count = inbound_receive_ids
             .iter()
             .filter(|receive_id| manager.inbound_tunnel_owner(**receive_id).is_some())
