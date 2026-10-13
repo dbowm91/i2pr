@@ -720,6 +720,22 @@ impl ExploratoryBuildCoordinator {
         snapshot
     }
 
+    /// Returns the message identifiers held by live pending attempts.
+    /// Callers that allocate another terminal reply identifier must exclude
+    /// this bounded set so two live builds cannot claim the same reply key.
+    pub(crate) fn pending_message_ids(&self) -> Vec<u32> {
+        self.pending
+            .values()
+            .map(|attempt| attempt.message_id)
+            .collect()
+    }
+
+    fn has_pending_message_id(&self, message_id: u32) -> bool {
+        self.pending
+            .values()
+            .any(|attempt| attempt.message_id == message_id)
+    }
+
     /// Returns the count-only inbound correlation observations for one live
     /// attempt. The caller must already own the attempt identifier.
     pub fn inbound_build_observation(
@@ -1014,6 +1030,11 @@ impl ExploratoryBuildCoordinator {
         if request.message_id == 0 {
             return Err(BuildCoordinatorError::Coordinator("message id is zero"));
         }
+        if self.has_pending_message_id(request.message_id) {
+            return Err(BuildCoordinatorError::Coordinator(
+                "message id is already held by a pending build",
+            ));
+        }
         if self.now_ms == 0 {
             return Err(BuildCoordinatorError::Coordinator(
                 "advance_time not called",
@@ -1023,8 +1044,6 @@ impl ExploratoryBuildCoordinator {
         let now_ms = self.now_ms;
         let attempt_id = self.next_attempt_id();
         tracing::info!(
-            build_attempt_id = attempt_id.get(),
-            i2np_message_id = request.message_id,
             direction = ?direction,
             transition = "selected",
             "destination build attempt"
@@ -1085,8 +1104,6 @@ impl ExploratoryBuildCoordinator {
             delivery.deliver(delivery_request, &i2pr_runtime::CancellationToken::new());
         let accepted = matches!(delivery_outcome, RouterDeliveryOutcome::Accepted);
         tracing::info!(
-            build_attempt_id = attempt_id.get(),
-            i2np_message_id = request.message_id,
             direction = ?direction,
             transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
             "destination build attempt"
@@ -2158,6 +2175,9 @@ mod tests {
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
         coordinator.pending.insert(attempt_id, pending);
+        assert_eq!(coordinator.pending_message_ids(), vec![0x7701]);
+        assert!(coordinator.has_pending_message_id(0x7701));
+        assert!(!coordinator.has_pending_message_id(0x7702));
 
         let garlic = I2npMessage::new_standard(
             0x7701,

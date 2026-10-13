@@ -132,6 +132,25 @@ fn fresh_message_id<R: RngCore>(rng: &mut R, excluded: &[u32]) -> Result<u32, Se
     ))
 }
 
+#[cfg(test)]
+mod plan477_message_id_tests {
+    use super::fresh_message_id;
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    #[test]
+    fn allocation_excludes_live_pending_and_sibling_ids() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x477);
+        let mut excluded = vec![0, 0x1020_3040, 0x5060_7080];
+        for _ in 0..32 {
+            let id = fresh_message_id(&mut rng, &excluded).expect("bounded fresh id");
+            assert_ne!(id, 0);
+            assert!(!excluded.contains(&id));
+            excluded.push(id);
+        }
+    }
+}
+
 impl Plan212TunnelIdAllocator {
     /// Creates an allocator starting at `start` (non-zero start
     /// preferred; zero start wraps to 1 on first allocation).
@@ -4616,8 +4635,10 @@ async fn submit_destination_replacement(
             "{spec_id}: allocator emitted zero tunnel id"
         )));
     }
-    let message_id = rng.next_u32().max(1);
-    let outer_message_id = fresh_message_id(&mut rng, &[message_id])?;
+    let mut excluded_message_ids = coordinator.pending_message_ids();
+    let message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+    excluded_message_ids.push(message_id);
+    let outer_message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
     let (roles, receives, nexts, creator, message_id, outbound_reply_router, originator_hash) =
         match direction {
             BuildDirection::Outbound => (
@@ -4870,17 +4891,16 @@ async fn provision_all_service_router_material(
                 )
             })?;
             let delivery = ssu2_handle.delivery().clone();
-            // Draw a per-generation random base and reserve the low
-            // bits so paired outbound/inbound request IDs stay distinct.
-            let message_base: u32 = rng.next_u32() & !0x03;
-            let outbound_reply_id = message_base | 0x01;
-            let inbound_reply_id = message_base | 0x02;
-            let outbound_outer_id =
-                fresh_message_id(&mut rng, &[outbound_reply_id, inbound_reply_id])?;
-            let inbound_outer_id = fresh_message_id(
-                &mut rng,
-                &[outbound_reply_id, inbound_reply_id, outbound_outer_id],
-            )?;
+            // Keep both terminal reply IDs distinct from currently pending
+            // attempts, then keep each outer I2NP header ID independent.
+            let mut excluded_message_ids = coordinator.pending_message_ids();
+            let outbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(outbound_reply_id);
+            let inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(inbound_reply_id);
+            let outbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(outbound_outer_id);
+            let inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             let outbound_peers = outbound_candidates
                 .map(|selected| {
                     selected_peer_material(
