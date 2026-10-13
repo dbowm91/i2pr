@@ -60,7 +60,7 @@ Connect the Plan 480 source-owned write events to each pending build's peer/link
 
 **Roadmap disposition:** active; no dependent capability is unblocked.
 
-## 2026-10-14 exact-pin short-build source trace and writer-receipt correlation
+## 2026-10-13 exact-pin short-build source trace and writer-receipt correlation
 
 The unmodified i2pd 2.61.0 source at
 `635b013a612ff47278ef02acf8580a28e10e26c5` was checked out read-only and
