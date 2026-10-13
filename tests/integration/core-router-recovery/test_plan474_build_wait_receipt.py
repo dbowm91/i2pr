@@ -16,7 +16,11 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
             'inbound_orphans_message_match=0 inbound_orphans_peer_id_plus_one=0 '
             'inbound_orphans_peer_id_minus_one=0 inbound_orphans_peer_id_other=1 '
             'inbound_gateway_messages=3 '
-            'inbound_gateway_peer_match=1 inbound_gateway_route_match=0 pending_builds=1 '
+            'inbound_gateway_peer_match=1 inbound_gateway_route_match=0 '
+            'authenticated_candidates=2 candidate_peer_matches=1 '
+            'candidate_message_id_matches=1 candidate_peer_match_id_plus_one=1 '
+            'candidate_peer_match_id_minus_one=0 candidate_peer_match_id_other=0 '
+            'pending_builds=1 '
             'transition="inbound_build_wait_expired"',
         ])
         self.assertEqual(parsed["attempts_observed"], 0)
@@ -32,6 +36,12 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
               "inbound_gateway_messages": 3,
               "inbound_gateway_peer_match": 1,
               "inbound_gateway_route_match": 0,
+              "authenticated_candidates": 2,
+              "candidate_peer_matches": 1,
+              "candidate_message_id_matches": 1,
+              "candidate_peer_match_id_plus_one": 1,
+              "candidate_peer_match_id_minus_one": 0,
+              "candidate_peer_match_id_other": 0,
               "pending_builds": 1}],
         )
         self.assertNotIn("build_attempt_id", str(parsed))

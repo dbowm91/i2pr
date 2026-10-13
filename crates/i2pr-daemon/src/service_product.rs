@@ -5065,6 +5065,9 @@ async fn provision_all_service_router_material(
             }
             if need_inbound && !installed_inbound {
                 let counters = coordinator.counters();
+                let attempt_observation = inbound_attempt_id
+                    .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
+                    .unwrap_or_default();
                 tracing::warn!(
                     build_attempt_id = inbound_attempt_id.map_or(0, |id| id.get()),
                     inbound_routed = counters.inbound_routed,
@@ -5077,6 +5080,12 @@ async fn provision_all_service_router_material(
                     inbound_gateway_messages = counters.inbound_gateway_messages,
                     inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
                     inbound_gateway_route_match = counters.inbound_gateway_route_match,
+                    authenticated_candidates = attempt_observation.authenticated_candidates,
+                    candidate_peer_matches = attempt_observation.peer_matches,
+                    candidate_message_id_matches = attempt_observation.message_id_matches,
+                    candidate_peer_match_id_plus_one = attempt_observation.peer_match_id_plus_one,
+                    candidate_peer_match_id_minus_one = attempt_observation.peer_match_id_minus_one,
+                    candidate_peer_match_id_other = attempt_observation.peer_match_id_other,
                     pending_builds = counters.pending,
                     transition = "inbound_build_wait_expired",
                     "destination inbound build attempt"

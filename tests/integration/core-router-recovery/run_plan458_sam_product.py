@@ -83,7 +83,11 @@ def parse_attempt_receipt_lines(lines):
                     "inbound_orphans_peer_id_plus_one", "inbound_orphans_peer_id_minus_one",
                     "inbound_orphans_peer_id_other",
                     "inbound_gateway_messages", "inbound_gateway_peer_match",
-                    "inbound_gateway_route_match", "pending_builds",
+                    "inbound_gateway_route_match", "authenticated_candidates",
+                    "candidate_peer_matches", "candidate_message_id_matches",
+                    "candidate_peer_match_id_plus_one",
+                    "candidate_peer_match_id_minus_one",
+                    "candidate_peer_match_id_other", "pending_builds",
                 )
             }
             if all(match for match in values.values()):
