@@ -523,6 +523,18 @@ pub struct BuildCoordinatorCounters {
     /// Unmatched forwarded inbound build replies whose message id matched
     /// a pending inbound attempt but whose authenticated peer did not.
     pub inbound_orphans_message_match: u64,
+    /// Same-terminal-peer orphan forwarded builds whose ID is expected ID + 1 modulo u32.
+    pub inbound_orphans_peer_id_plus_one: u64,
+    /// Same-terminal-peer orphan forwarded builds whose ID is expected ID - 1 modulo u32.
+    pub inbound_orphans_peer_id_minus_one: u64,
+    /// Same-terminal-peer orphan forwarded builds with another nonmatching ID.
+    pub inbound_orphans_peer_id_other: u64,
+    /// Inbound-build TunnelGateway replies observed on the authenticated path.
+    pub inbound_gateway_messages: u64,
+    /// Unmatched inbound-build gateways from the selected terminal peer.
+    pub inbound_gateway_peer_match: u64,
+    /// Unmatched inbound-build gateways matching both terminal peer and local reply tunnel.
+    pub inbound_gateway_route_match: u64,
     /// Duplicate inbound replies the coordinator rejected.
     pub duplicate_replies: u64,
     /// Outbound tunnel-build requests the coordinator emitted.
@@ -1237,6 +1249,28 @@ impl ExploratoryBuildCoordinator {
             for attempt in inbound_attempts {
                 peer_match |= attempt.target_peer == peer;
                 message_match |= attempt.message_id == message_id;
+                if attempt.target_peer == peer && attempt.message_id != message_id {
+                    match message_id.wrapping_sub(attempt.message_id) {
+                        1 => {
+                            self.counters.inbound_orphans_peer_id_plus_one = self
+                                .counters
+                                .inbound_orphans_peer_id_plus_one
+                                .saturating_add(1);
+                        }
+                        u32::MAX => {
+                            self.counters.inbound_orphans_peer_id_minus_one = self
+                                .counters
+                                .inbound_orphans_peer_id_minus_one
+                                .saturating_add(1);
+                        }
+                        _ => {
+                            self.counters.inbound_orphans_peer_id_other = self
+                                .counters
+                                .inbound_orphans_peer_id_other
+                                .saturating_add(1);
+                        }
+                    }
+                }
             }
             if peer_match {
                 self.counters.inbound_orphans_peer_match =
@@ -1285,6 +1319,8 @@ impl ExploratoryBuildCoordinator {
         peer: PeerId,
         raw_bytes: &[u8],
     ) -> Vec<BuildCoordinatorOutcome> {
+        self.counters.inbound_gateway_messages =
+            self.counters.inbound_gateway_messages.saturating_add(1);
         let (tunnel_id, garlic_opaque) = match extract_tunnel_gateway_garlic(raw_bytes) {
             Some(value) => value,
             None => {
@@ -1292,6 +1328,22 @@ impl ExploratoryBuildCoordinator {
                 return Vec::new();
             }
         };
+        let inbound_peer_match = self.pending.values().any(|attempt| {
+            matches!(attempt.direction, BuildDirection::Inbound) && attempt.target_peer == peer
+        });
+        let inbound_route_match = self.pending.values().any(|attempt| {
+            matches!(attempt.direction, BuildDirection::Inbound)
+                && attempt.target_peer == peer
+                && attempt.next_tunnel.get() == tunnel_id
+        });
+        if inbound_peer_match {
+            self.counters.inbound_gateway_peer_match =
+                self.counters.inbound_gateway_peer_match.saturating_add(1);
+        }
+        if inbound_route_match {
+            self.counters.inbound_gateway_route_match =
+                self.counters.inbound_gateway_route_match.saturating_add(1);
+        }
         // Find the pending outbound attempt bound to this tunnel.
         // At most `MAX_PENDING_BUILDS` entries; linear scan is
         // bounded and avoids a second index.

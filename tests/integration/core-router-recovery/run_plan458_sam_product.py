@@ -80,7 +80,10 @@ def parse_attempt_receipt_lines(lines):
                 for key in (
                     "inbound_routed", "inbound_orphans",
                     "inbound_orphans_peer_match", "inbound_orphans_message_match",
-                    "pending_builds",
+                    "inbound_orphans_peer_id_plus_one", "inbound_orphans_peer_id_minus_one",
+                    "inbound_orphans_peer_id_other",
+                    "inbound_gateway_messages", "inbound_gateway_peer_match",
+                    "inbound_gateway_route_match", "pending_builds",
                 )
             }
             if all(match for match in values.values()):

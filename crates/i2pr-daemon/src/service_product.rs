@@ -5056,6 +5056,12 @@ async fn provision_all_service_router_material(
                     inbound_orphans = counters.inbound_orphans,
                     inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
                     inbound_orphans_message_match = counters.inbound_orphans_message_match,
+                    inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
+                    inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
+                    inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
+                    inbound_gateway_messages = counters.inbound_gateway_messages,
+                    inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
+                    inbound_gateway_route_match = counters.inbound_gateway_route_match,
                     pending_builds = counters.pending,
                     transition = "inbound_build_wait_expired",
                     "destination inbound build attempt"

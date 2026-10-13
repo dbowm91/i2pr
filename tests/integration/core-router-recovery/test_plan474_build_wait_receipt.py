@@ -13,7 +13,10 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
         parsed = parse_attempt_receipt_lines([
             'WARN destination inbound build attempt build_attempt_id=4 '
             'inbound_routed=0 inbound_orphans=0 inbound_orphans_peer_match=0 '
-            'inbound_orphans_message_match=0 pending_builds=1 '
+            'inbound_orphans_message_match=0 inbound_orphans_peer_id_plus_one=0 '
+            'inbound_orphans_peer_id_minus_one=0 inbound_orphans_peer_id_other=1 '
+            'inbound_gateway_messages=3 '
+            'inbound_gateway_peer_match=1 inbound_gateway_route_match=0 pending_builds=1 '
             'transition="inbound_build_wait_expired"',
         ])
         self.assertEqual(parsed["attempts_observed"], 0)
@@ -22,7 +25,14 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
             parsed["inbound_build_wait_receipts"],
             [{"inbound_routed": 0, "inbound_orphans": 0,
               "inbound_orphans_peer_match": 0,
-              "inbound_orphans_message_match": 0, "pending_builds": 1}],
+              "inbound_orphans_message_match": 0,
+              "inbound_orphans_peer_id_plus_one": 0,
+              "inbound_orphans_peer_id_minus_one": 0,
+              "inbound_orphans_peer_id_other": 1,
+              "inbound_gateway_messages": 3,
+              "inbound_gateway_peer_match": 1,
+              "inbound_gateway_route_match": 0,
+              "pending_builds": 1}],
         )
         self.assertNotIn("build_attempt_id", str(parsed))
 
@@ -30,7 +40,10 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
         parsed = parse_attempt_receipt_lines([
             'WARN destination inbound build attempt inbound_routed=0 '
             'inbound_orphans=0 inbound_orphans_peer_match=0 '
-            'inbound_orphans_message_match=0 '
+            'inbound_orphans_message_match=0 inbound_orphans_peer_id_plus_one=0 '
+            'inbound_orphans_peer_id_minus_one=0 inbound_orphans_peer_id_other=1 '
+            'inbound_gateway_messages=3 '
+            'inbound_gateway_peer_match=1 inbound_gateway_route_match=0 '
             'transition="inbound_build_wait_expired"',
             'INFO transition="install_committed" inbound_routed=1 '
             'inbound_orphans=0 pending_builds=0',
