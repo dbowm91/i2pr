@@ -172,7 +172,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 469 | passed | `passed-stock-publish-fresh-ntcp2-product-and-correlated-reply` | `plans/implementation/ntcp2-transport/469-stock-routerinfo-publish-trigger-and-fresh-ntcp2-initiator.md` | `plans/closure/ntcp2-transport/469-status.md`: source-selected fresh NTCP2, product effect/reply, and reverse token correlation passed |
 
 | 470 | blocked | `blocked-java-stock-flood-did-not-produce-owned-ntcp2-dial` | `plans/implementation/ntcp2-transport/470-normal-java-i2p-ntcp2-two-way-product-qualification.md` | `plans/closure/ntcp2-transport/470-status.md`: exact Java selector/store/NTCP2 bid preconditions pass; stock flood dispatched, but no Java-owned dial or i2pr product effect |
-| 475 | ready | `registered-java-normal-ntcp2-comm-system-send-and-sessioncreated-corrective` | `plans/implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md` | `plans/closure/ntcp2-transport/475-status.md` (on execution; pinned Java-owned send decision + separately handled incoming EOF + real two-way I2NP) |
+| 475 | blocked | `blocked-java-send-correlation-and-two-way-product-unproven` | `plans/implementation/ntcp2-transport/475-java-comm-system-send-and-sessioncreated-boundaries.md` | `plans/closure/ntcp2-transport/475-status.md`: stock send/TCP and responder phase observations pass; message-to-product correlation, i2pr-initiated completion, and two-way I2NP remain unproven |
 
 ### Plans 459–461: actual daemon NTCP2 product dispatch first (updated 2026-10-12)
 
