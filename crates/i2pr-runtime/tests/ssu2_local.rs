@@ -435,6 +435,69 @@ async fn bidirectional_i2np_exchange_with_fragmentation() {
     b.shutdown_scope().await;
 }
 
+/// Plan 480 source-owner receipt contract: an explicitly enabled offline
+/// observer sees the real UDP session, exact authenticated ingress, and only
+/// the I2NP ID whose encrypted datagram was accepted by the socket writer.
+#[tokio::test]
+async fn qualification_observer_tracks_real_authenticated_ssu2_events() {
+    let config = Ssu2RuntimeConfig {
+        qualification_observer: true,
+        ..Ssu2RuntimeConfig::default()
+    };
+    let a = start_fixture_with_config(config, make_router_keys()).await;
+    let mut b = start_fixture_with_config(config, make_router_keys()).await;
+    let observer_a = a.service.qualification_observer().expect("observer A");
+    let observer_b = b.service.qualification_observer().expect("observer B");
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+    let expected_id = 0xA480;
+    send(&a, b.keys.peer, expected_id, 128, 0x48);
+    let received = recv_exact(&mut b.handle, 1).await;
+    assert_eq!(received[0][1..5], expected_id.to_be_bytes());
+
+    let (events_a, overflow_a) = observer_a.drain();
+    let (events_b, overflow_b) = observer_b.drain();
+    assert!(!overflow_a && !overflow_b);
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::LocalIdentityAttested
+            && event.link_generation() == 0
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::SocketsBound
+            && event.link_generation() == 0
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::OutboundSessionAuthenticated
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::I2npQueueAccepted
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::I2npDatagramWritten
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_b.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::AuthenticatedI2npReceived
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_b.peer_commitment(a.keys.peer).expect("peer")
+    }));
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+    let (shutdown_events, overflowed) = observer_a.drain();
+    assert!(!overflowed);
+    assert!(shutdown_events.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::RouterShutdown
+            && event.link_generation() == 0
+    }));
+}
+
 #[tokio::test]
 async fn data_loss_recovers_with_exact_once_delivery() {
     let a = start_fixture(make_router_keys()).await;

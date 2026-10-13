@@ -24,6 +24,7 @@ mod ntcp2_runtime;
 mod observability;
 mod ssu2_controlled_peer_test;
 mod ssu2_peer_relay;
+mod ssu2_qualification_observer;
 mod ssu2_runtime;
 mod supervisor;
 
@@ -95,6 +96,9 @@ pub use ssu2_peer_relay::{
     PEER_RELAY_DATAGRAMS_PER_SECOND, PEER_RELAY_MAX_SIGNERS, PEER_RELAY_RATE_SOURCES,
     PEER_RELAY_RESPONSE_BUDGET_NUMERATOR, PeerRelayAdmission, Ssu2PeerRelayConfig,
     Ssu2PeerRelayService, Ssu2PeerRelaySnapshot,
+};
+pub use ssu2_qualification_observer::{
+    Ssu2QualificationEvent, Ssu2QualificationEventKind, Ssu2QualificationObserver,
 };
 pub use ssu2_runtime::{
     ControlledPeerTestError, MAX_SSU2_ACTIVE_CEILING, MAX_SSU2_INBOUND_QUEUE_CEILING,

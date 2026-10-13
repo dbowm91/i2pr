@@ -173,12 +173,31 @@ impl Plan212TunnelIdAllocator {
     }
 
     /// Allocates `count` disjoint non-zero ids.
-    pub(crate) fn allocate_set(&mut self, count: usize) -> Vec<u32> {
+    pub(crate) fn allocate_set(
+        &mut self,
+        count: usize,
+        excluded: &[u32],
+    ) -> Result<Vec<u32>, ServiceProductError> {
         let mut out = Vec::with_capacity(count);
+        let mut reserved = excluded.to_vec();
         for _ in 0..count {
-            out.push(self.allocate());
+            let mut allocated = None;
+            for _ in 0..=excluded.len().saturating_add(count).saturating_add(32) {
+                let candidate = self.allocate();
+                if candidate != 0 && !reserved.contains(&candidate) {
+                    allocated = Some(candidate);
+                    break;
+                }
+            }
+            let Some(id) = allocated else {
+                return Err(ServiceProductError::Provisioning(
+                    "bounded tunnel-id collision search exhausted".to_owned(),
+                ));
+            };
+            reserved.push(id);
+            out.push(id);
         }
-        out
+        Ok(out)
     }
 }
 
@@ -1829,9 +1848,11 @@ impl ServiceProduct {
             LookupPolicy::default(),
             RouterInfoStoreConfig::default(),
         )));
-        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
-            ExploratoryPoolConfig::balanced(),
-        );
+        let mut coordinator =
+            ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
+                ExploratoryPoolConfig::balanced(),
+            )
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
 
         // Plan 212 §8 — router bootstrap only (no application
@@ -2116,9 +2137,11 @@ impl ServiceProduct {
                 "validated bootstrap snapshot could not seed the bounded group store".to_owned(),
             ));
         }
-        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
-            ExploratoryPoolConfig::balanced(),
-        );
+        let mut coordinator =
+            ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
+                ExploratoryPoolConfig::balanced(),
+            )
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
         let backend = Arc::new(RemoteDestinationBackend::new(
             Arc::clone(&destination_tunnels),
@@ -4629,13 +4652,14 @@ async fn submit_destination_replacement(
     let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
         ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
     })?;
-    let ids = allocator.allocate_set(10);
+    let reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+    let ids = allocator.allocate_set(10, &reserved_tunnel_ids)?;
     if ids.contains(&0) {
         return Err(ServiceProductError::Provisioning(format!(
             "{spec_id}: allocator emitted zero tunnel id"
         )));
     }
-    let mut excluded_message_ids = coordinator.pending_message_ids();
+    let mut excluded_message_ids = coordinator.reserved_message_ids();
     let message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
     excluded_message_ids.push(message_id);
     let outer_message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
@@ -4683,8 +4707,17 @@ async fn submit_destination_replacement(
     };
     let now_ms = wall_ms();
     coordinator.advance_time(now_ms);
+    let outbound_slot = coordinator
+        .usable_outbound_role_slots()
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "Destination replacement has no usable outbound tunnel route".to_owned(),
+            )
+        })?;
     match coordinator
-        .submit_destination(
+        .submit_destination_via_outbound_tunnel(
             request,
             &ssu2_handle.delivery().clone(),
             &ShortBuildI2npBridge::new(),
@@ -4692,6 +4725,7 @@ async fn submit_destination_replacement(
                 message_id: outer_message_id,
                 expiration_seconds: wall_secs().saturating_add(60) as u32,
             },
+            outbound_slot,
             &mut rng,
         )
         .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
@@ -4809,6 +4843,89 @@ fn selected_peer_material(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn await_destination_build_install(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    ssu2_handle: &mut Ssu2DaemonHandle,
+    attempt_id: i2pr_tunnel::short::BuildAttemptId,
+    destination_id: i2pr_client::DestinationId,
+    direction: BuildDirection,
+    options: ServiceProductOptions,
+    cancellation: &CancellationToken,
+    startup_inbound: &mut VecDeque<Ssu2InboundI2np>,
+    startup_inbound_bytes: &mut usize,
+) -> Result<ActivatedDestinationBinding, ServiceProductError> {
+    let deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
+    while tokio::time::Instant::now() < deadline {
+        let Some(inbound) = wait_for_startup_inbound(
+            options.poll_interval,
+            cancellation,
+            ssu2_handle.next_inbound(),
+        )
+        .await?
+        else {
+            continue;
+        };
+        let routed = coordinator.route_inbound_i2np(&inbound, wall_ms());
+        queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound)?;
+        let Ok(routed) = routed else {
+            continue;
+        };
+        if routed.coordinator.iter().any(|outcome| {
+            matches!(
+                outcome,
+                BuildCoordinatorOutcome::InvalidReply {
+                    attempt_id: returned,
+                    direction: returned_direction,
+                    ..
+                } if *returned == attempt_id && *returned_direction == direction
+            )
+        }) {
+            return Err(match direction {
+                BuildDirection::Inbound => ServiceProductError::InboundBuildInvalidReply,
+                BuildDirection::Outbound => ServiceProductError::OutboundBuildInvalidReply,
+            });
+        }
+        for outcome in routed.coordinator {
+            match outcome {
+                BuildCoordinatorOutcome::DestinationBuildFailed {
+                    destination_id: failed_destination,
+                    direction: failed_direction,
+                } if failed_destination == destination_id && failed_direction == direction => {
+                    return Err(match direction {
+                        BuildDirection::Inbound => ServiceProductError::InboundBuildRejected,
+                        BuildDirection::Outbound => ServiceProductError::OutboundBuildRejected,
+                    });
+                }
+                BuildCoordinatorOutcome::DestinationEstablished {
+                    attempt_id: returned_attempt,
+                    destination_id: returned_destination,
+                    direction: returned_direction,
+                    ..
+                } if returned_attempt == attempt_id
+                    && returned_destination == destination_id
+                    && returned_direction == direction =>
+                {
+                    return register_destination_material(
+                        manager,
+                        coordinator,
+                        destination_id,
+                        attempt_id,
+                        direction,
+                        wall_secs(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    Err(match direction {
+        BuildDirection::Inbound => ServiceProductError::InboundBuildMissing,
+        BuildDirection::Outbound => ServiceProductError::OutboundBuildMissing,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
@@ -4832,11 +4949,14 @@ async fn provision_all_service_router_material(
     // (client profiles). Server profiles skip lookup but still
     // require real outbound/inbound + LS2 + owner registration.
     let mut provisioned_destinations = std::collections::HashSet::new();
+    let mut allocated_startup_tunnel_ids = Vec::new();
+    let mut allocated_startup_message_ids = Vec::new();
     for runtime in runtimes {
         let spec_id = runtime.spec_id.clone();
         if !provisioned_destinations.insert(runtime.destination_id) {
             continue;
         }
+        coordinator.advance_time(wall_ms());
         // Project from the authoritative validated RouterInfo store and
         // select independently randomized, exact-three paths. A sparse or
         // metadata-incomplete store fails closed before any build submission.
@@ -4854,9 +4974,19 @@ async fn provision_all_service_router_material(
             .ok_or_else(|| {
                 ServiceProductError::Provisioning(format!("{spec_id}: group runtime missing"))
             })?;
+        if inbound_target > 0
+            && outbound_target == 0
+            && coordinator.usable_outbound_role_slots().is_empty()
+        {
+            return Err(ServiceProductError::Provisioning(format!(
+                "{spec_id}: inbound construction requires an established outbound route"
+            )));
+        }
         let mut outbound_roles = Vec::with_capacity(usize::from(outbound_target));
         let mut inbound_receive_ids = Vec::with_capacity(usize::from(inbound_target));
         let mut pending_outbound = Vec::with_capacity(usize::from(outbound_target));
+        let mut bootstrap_outbound_role_slot =
+            coordinator.usable_outbound_role_slots().into_iter().next();
         for build_index in 0..inbound_target.max(outbound_target) {
             let need_inbound = build_index < inbound_target;
             let outbound_candidates = if build_index < outbound_target {
@@ -4872,7 +5002,10 @@ async fn provision_all_service_router_material(
 
             // Ten disjoint IDs cover each local creator, three remote receives,
             // the outbound terminal return tunnel, and the local inbound endpoint.
-            let ids = allocator.allocate_set(10);
+            let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+            reserved_tunnel_ids.extend(allocated_startup_tunnel_ids.iter().copied());
+            let ids = allocator.allocate_set(10, &reserved_tunnel_ids)?;
+            allocated_startup_tunnel_ids.extend(ids.iter().copied());
             let (ob_creator, ib_creator) = (ids[0], ids[5]);
             // Skip zero (allocator never emits it) and skip ids still
             // present in the registry (bounded retry).
@@ -4893,7 +5026,8 @@ async fn provision_all_service_router_material(
             let delivery = ssu2_handle.delivery().clone();
             // Keep both terminal reply IDs distinct from currently pending
             // attempts, then keep each outer I2NP header ID independent.
-            let mut excluded_message_ids = coordinator.pending_message_ids();
+            let mut excluded_message_ids = coordinator.reserved_message_ids();
+            excluded_message_ids.extend(allocated_startup_message_ids.iter().copied());
             let outbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             excluded_message_ids.push(outbound_reply_id);
             let inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
@@ -4901,6 +5035,12 @@ async fn provision_all_service_router_material(
             let outbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             excluded_message_ids.push(outbound_outer_id);
             let inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            allocated_startup_message_ids.extend([
+                outbound_reply_id,
+                inbound_reply_id,
+                outbound_outer_id,
+                inbound_outer_id,
+            ]);
             let outbound_peers = outbound_candidates
                 .map(|selected| {
                     selected_peer_material(
@@ -4981,6 +5121,48 @@ async fn provision_all_service_router_material(
                     outbound_reply_peer,
                 ));
             }
+            if build_index == 0
+                && bootstrap_outbound_role_slot.is_none()
+                && let Some((outbound, bridge, outer_id, _expected_peer)) = pending_outbound.pop()
+            {
+                let mut bootstrap_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                    ServiceProductError::Provisioning(
+                        "operating-system randomness unavailable".to_owned(),
+                    )
+                })?;
+                let attempt_id = match coordinator
+                    .submit_destination(
+                        outbound,
+                        &delivery,
+                        &bridge,
+                        BridgeHeader::ShortTransport {
+                            message_id: outer_id,
+                            expiration_seconds: wall_secs().saturating_add(60) as u32,
+                        },
+                        &mut bootstrap_rng,
+                    )
+                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
+                {
+                    SubmitResult::Submitted { attempt_id, .. } => attempt_id,
+                    SubmitResult::Rejected { .. } => {
+                        return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                    }
+                };
+                let binding = await_destination_build_install(
+                    manager,
+                    coordinator,
+                    ssu2_handle,
+                    attempt_id,
+                    runtime.destination_id,
+                    BuildDirection::Outbound,
+                    options,
+                    cancellation,
+                    startup_inbound,
+                    startup_inbound_bytes,
+                )
+                .await?;
+                bootstrap_outbound_role_slot = Some(binding.role_slot);
+            }
             let inbound_reply_peer = inbound_peers
                 .as_ref()
                 .and_then(|peers| peers.last())
@@ -4995,18 +5177,29 @@ async fn provision_all_service_router_material(
                 originator_hash: Some(peer.local_hash),
             });
             let inbound_attempt_id = if let Some(inbound) = inbound {
-                let submission = coordinator
-                    .submit_destination(
+                let bridge_header = BridgeHeader::ShortTransport {
+                    message_id: inbound_outer_id,
+                    expiration_seconds: wall_secs().saturating_add(60) as u32,
+                };
+                let submission = if let Some(outbound_slot) = bootstrap_outbound_role_slot {
+                    coordinator.submit_destination_via_outbound_tunnel(
                         inbound,
                         &delivery,
                         &inbound_bridge,
-                        BridgeHeader::ShortTransport {
-                            message_id: inbound_outer_id,
-                            expiration_seconds: wall_secs().saturating_add(60) as u32,
-                        },
+                        bridge_header,
+                        outbound_slot,
                         &mut rng,
                     )
-                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+                } else {
+                    coordinator.submit_destination(
+                        inbound,
+                        &delivery,
+                        &inbound_bridge,
+                        bridge_header,
+                        &mut rng,
+                    )
+                }
+                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
                 match submission {
                     SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
                     SubmitResult::Rejected { .. } => {
@@ -5189,18 +5382,29 @@ async fn provision_all_service_router_material(
                     "operating-system randomness unavailable".to_owned(),
                 )
             })?;
-            let submission = coordinator
-                .submit_destination(
+            let bridge_header = BridgeHeader::ShortTransport {
+                message_id: outer_message_id,
+                expiration_seconds: wall_secs().saturating_add(60) as u32,
+            };
+            let submission = if let Some(outbound_slot) = bootstrap_outbound_role_slot {
+                coordinator.submit_destination_via_outbound_tunnel(
                     outbound,
                     &delivery,
                     &bridge,
-                    BridgeHeader::ShortTransport {
-                        message_id: outer_message_id,
-                        expiration_seconds: wall_secs().saturating_add(60) as u32,
-                    },
+                    bridge_header,
+                    outbound_slot,
                     &mut rng,
                 )
-                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            } else {
+                coordinator.submit_destination(
+                    outbound,
+                    &delivery,
+                    &bridge,
+                    bridge_header,
+                    &mut rng,
+                )
+            }
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
             let outbound_attempt_id = match submission {
                 SubmitResult::Submitted { attempt_id, .. } => attempt_id,
                 SubmitResult::Rejected { .. } => {

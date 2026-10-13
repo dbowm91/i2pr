@@ -1,16 +1,16 @@
-# Plan 480 status — existing source seam verified; observer not implemented
+# Plan 480 status — bounded runtime observer landed; process consumer open
 
-**Status token:** `in-progress-authenticated-session-and-product-receipt-owner-missing`  
-**Disposition:** the existing SSU2 runtime hands the daemon an authenticated `Ssu2InboundI2np { peer, link_id, bytes }`, and router dispatch preserves peer/link on typed outcomes. Those are usable source inputs, not a bounded qualification observer. Plan 480's actual observer and producer-owned event contract have not been implemented; Plan 480 is not closed.
+**Status token:** `in-progress-bounded-runtime-observer-landed-process-consumer-open`
+**Disposition:** the SSU2 runtime now has an explicitly enabled, bounded in-memory observer. It records signed local identity attestation, successful bind, inbound/outbound authenticated session promotion and loss, queued I2NP, authenticated ingress, successful/failed UDP write, staging rejection, and shutdown. The normal daemon marks a product effect only after an inserted bootstrap RouterInfo or a successful floodfill owner effect, and only for the exact preceding SSU2 peer/link/message receipt. The process-facing Plan 476 collector and a full product-effect integration lane remain open; Plan 480 is not closed.
 
 ## Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
 | --- | --- | --- |
-| Authenticated session lifecycle events with exact active link generation | Runtime owns promotion/removal and exposes aggregate counters plus point-in-time session lookup | No observer event contract |
-| Product receipt after actual router/NetDB effect | Daemon dispatcher exposes typed outcomes; downstream owners remain separate | No immutable observer receipt tied to owner effect |
-| Reply receipt only after actual socket write and matching request | SSU2 send result is queue acceptance; socket send loop increments datagram counters without a build-scoped receipt | Not implemented |
-| Bounded private readout and Plan 476 consumer interface | No qualification observer profile/readout or Plan 476 local process collector exists | Not implemented |
+| Authenticated session lifecycle events with exact active link generation | `Ssu2RuntimeService::insert_active_locked` / `remove_active_locked` emit peer-epoch commitment + exact local link generation; real UDP test observes outbound and inbound promotion | Implemented and exercised |
+| Product receipt after actual router/NetDB effect | Normal daemon records only successful bootstrap insertion or floodfill `served`, matched against a preceding authenticated peer/link/message receipt | Source hook implemented; product-effect lane still needs direct integration coverage |
+| Reply receipt only after actual socket write and matching request | Bounded session queue, staged datagram, successful `UdpSocket::send_to`, and failed write paths produce distinct events with the transient message ID | Implemented; real UDP test distinguishes queue admission from actual write |
+| Bounded private readout and Plan 476 consumer interface | Observer has a 512-event cap, salted per-epoch peer commitment, sequence, sticky overflow, no serialization or endpoint/payload storage; exposed only through the explicitly enabled SSU2 qualification runtime | In-process API exists; Plan 476 process collector and file/pipe readout are still open |
 | Pair-bound Tier B qualification | User confirmed no private-LAN host pair is available; no live attempt was run | Environment unavailable |
 
 ## Verification
@@ -26,11 +26,19 @@
 | `python3 scripts/plan449-ssu2-preflight.py --self-test` | Passed (8 positive/negative cases) |
 | `bash scripts/check-ssu2-acceptance-evidence.sh` | Passed integrity check (15 command-derived rows) |
 | `bash scripts/check-runtime-boundaries.sh` | Passed |
+| `cargo check --locked -p i2pr-runtime -p i2pr-daemon --all-targets` | Passed after observer changes |
+| `cargo test --locked -p i2pr-runtime --lib ssu2_qualification_observer -- --test-threads=1` | Passed (3 observer contract tests) |
+| `cargo test --locked -p i2pr-runtime --test ssu2_local qualification_observer_tracks_real_authenticated_ssu2_events -- --exact --test-threads=1` | Passed (real UDP session and I2NP receipt) |
+| `cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd` | Passed before focused daemon qualification |
+| `cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight daemon_controlled_exchange_reaches_central_dispatcher -- --exact --test-threads=1` | Passed (daemon-owned session, dispatcher, write and ingress receipts) |
+| `cargo test --locked --workspace --all-targets -- --test-threads=1` | Passed after the observer integration: 4,864 passed, 39 ignored across 187 suites |
 
-The tests validate existing runtime/product behavior and offline authorization checks. They do not supply Plan 480's source-owned observer.
+The existing Plan 476/472 checks remain offline-only and have not been connected to a process receipt collector. The new runtime tests exercise the actual producer hooks over localhost UDP, while the daemon preflight verifies the observer is reachable through the daemon-owned handle. The product-effect hook is source-integrated but has not yet been driven by a qualifying NetDB/floodfill product fixture.
 
 ## Invariants and handoff
 
-No general network API, public bind, capability advertisement, packet logging, or live peer attempt was added. Plan 476 remains incomplete independently: its local process/session executor is missing, and the two-host live gate is unavailable until an authorized pair is supplied. Plan 480 must first provide bounded producer-origin session, authenticated I2NP, product-effect, write-confirmation, withdrawal, and shutdown events; then the existing Plan 476 process owner must consume those receipts without treating script-authored phases as evidence.
+No general network API, public bind, capability advertisement, raw packet logging, or live peer attempt was added. Default-off startup does not construct an SSU2 runtime or observer. Runtime events are in-memory only; raw message IDs are transient correlation values and are not serialized by the observer. Plan 476 remains incomplete independently: its local process/session executor is missing, and the two-host live gate is unavailable until an authorized pair is supplied.
+
+**Next executable step:** connect the in-process producer stream to a strictly local, permission-gated Plan 476 receipt collector and add a product-effect fixture that exercises the daemon success hook; then run the negative provenance matrix, including link loss/replay, cancellation, overflow, wrong network identity and changed restart identity.
 
 **Roadmap disposition:** active; no live SSU2 capability is unblocked.

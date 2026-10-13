@@ -389,6 +389,9 @@ pub struct Ssu2RuntimeConfig {
     /// controlled M12 qualification path; normal operation is
     /// unchanged.
     pub controlled_peer_test: bool,
+    /// Enables bounded, in-memory source receipts for an explicitly selected
+    /// private qualification profile. Disabled for ordinary router operation.
+    pub qualification_observer: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -975,6 +978,7 @@ struct ConfirmedResend {
 struct ActiveSession {
     link_id: LinkId,
     peer: PeerId,
+    direction: Direction,
     peer_addr: SocketAddr,
     subnet: SubnetKey,
     session: i2pr_transport_ssu2::Ssu2Session,
@@ -995,7 +999,18 @@ struct StagedDatagram {
     bytes: Vec<u8>,
     addr: SocketAddr,
     class: BandwidthTrafficClass,
+    trace: TracedI2np,
+}
+
+#[derive(Default)]
+struct TracedI2np {
     message_ids: Vec<u32>,
+    source: Option<(PeerId, LinkId)>,
+}
+
+struct TraceContext<'a> {
+    source_link: LinkId,
+    observer: Option<&'a crate::ssu2_qualification_observer::Ssu2QualificationObserver>,
 }
 
 fn bandwidth_peer_key(addr: SocketAddr) -> BandwidthPeerKey {
@@ -1103,6 +1118,7 @@ struct Shared {
     faults: Mutex<Option<Ssu2TestFaults>>,
     sockets: Mutex<ServiceSockets>,
     counters: ServiceCounters,
+    qualification_observer: Option<crate::ssu2_qualification_observer::Ssu2QualificationObserver>,
 }
 
 impl fmt::Debug for Shared {
@@ -1421,6 +1437,20 @@ impl Ssu2RuntimeService {
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         let peer_relay = Ssu2PeerRelayService::new(Ssu2PeerRelayConfig::default())
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
+        let qualification_observer = if config.qualification_observer {
+            Some(
+                crate::ssu2_qualification_observer::Ssu2QualificationObserver::new()
+                    .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?,
+            )
+        } else {
+            None
+        };
+        if let Some(observer) = &qualification_observer {
+            observer.record_process(
+                PeerId::from_hash(identity.router_hash),
+                crate::ssu2_qualification_observer::Ssu2QualificationEventKind::LocalIdentityAttested,
+            );
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 config,
@@ -1463,6 +1493,7 @@ impl Ssu2RuntimeService {
                 faults: Mutex::new(None),
                 sockets: Mutex::new(ServiceSockets::default()),
                 counters: ServiceCounters::default(),
+                qualification_observer,
             }),
         })
     }
@@ -1478,6 +1509,14 @@ impl Ssu2RuntimeService {
     /// Returns the transport manager for teardown assertions in tests.
     pub fn manager(&self) -> &TransportManager {
         &self.shared.manager
+    }
+
+    /// Returns the bounded, in-memory observer only when explicitly enabled
+    /// by the caller's qualification profile.
+    pub fn qualification_observer(
+        &self,
+    ) -> Option<crate::ssu2_qualification_observer::Ssu2QualificationObserver> {
+        self.shared.qualification_observer.clone()
     }
 
     /// Returns the peer RouterInfo bytes observed in the
@@ -1629,6 +1668,12 @@ impl Ssu2RuntimeService {
         }
         // The original senders are held by the loop tasks; dropping the
         // local clone here would close the channel only after loops exit.
+        if let Some(observer) = &self.shared.qualification_observer {
+            observer.record_process(
+                self.shared.local_peer,
+                crate::ssu2_qualification_observer::Ssu2QualificationEventKind::SocketsBound,
+            );
+        }
         Ok(Ssu2ServiceHandle {
             service: self.clone(),
             inbound: inbound_rx,
@@ -1640,6 +1685,12 @@ impl Ssu2RuntimeService {
     /// Requests service shutdown. Loop tasks drain, release all
     /// handshakes/sessions/manager links, then exit for the scope join.
     pub fn shutdown(&self) {
+        if let Some(observer) = &self.shared.qualification_observer {
+            observer.record_process(
+                self.shared.local_peer,
+                crate::ssu2_qualification_observer::Ssu2QualificationEventKind::RouterShutdown,
+            );
+        }
         let _ = self
             .shared
             .shutdown
@@ -3080,6 +3131,19 @@ impl Ssu2RuntimeService {
         }
         match record.session.queue_i2np_message(bytes.to_vec()) {
             Ok(_) => {
+                if let Some(observer) = &self.shared.qualification_observer
+                    && let Some(message_id) = bytes
+                        .get(1..5)
+                        .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
+                        .map(u32::from_be_bytes)
+                {
+                    observer.record(
+                        record.peer,
+                        record.link_id,
+                        crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npQueueAccepted,
+                        &[message_id],
+                    );
+                }
                 self.shared
                     .counters
                     .i2np_sent
@@ -3216,7 +3280,7 @@ fn stage_one_locked(
         bytes,
         addr,
         BandwidthTrafficClass::Client,
-        Vec::new(),
+        TracedI2np::default(),
     )
 }
 
@@ -3227,8 +3291,13 @@ fn stage_traced_locked(
     bytes: Vec<u8>,
     addr: SocketAddr,
     message_ids: Vec<u32>,
+    context: TraceContext<'_>,
 ) -> bool {
     let receipt_ids = message_ids.clone();
+    let source = state
+        .active
+        .get(&context.source_link)
+        .map(|record| (record.peer, record.link_id));
     let accepted = stage_class_locked(
         state,
         limits,
@@ -3236,11 +3305,22 @@ fn stage_traced_locked(
         bytes,
         addr,
         BandwidthTrafficClass::Client,
-        message_ids,
+        TracedI2np {
+            message_ids,
+            source,
+        },
     );
     if !accepted && !receipt_ids.is_empty() {
+        if let (Some(observer), Some((peer, link_id))) = (context.observer, source) {
+            observer.record(
+                peer,
+                link_id,
+                crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramStageRejected,
+                &receipt_ids,
+            );
+        }
         tracing::warn!(
-            i2np_message_ids = ?receipt_ids,
+            i2np_message_count = receipt_ids.len(),
             transition = "datagram_staging_rejected",
             "SSU2 message send receipt"
         );
@@ -3255,7 +3335,7 @@ fn stage_class_locked(
     bytes: Vec<u8>,
     addr: SocketAddr,
     class: BandwidthTrafficClass,
-    message_ids: Vec<u32>,
+    trace: TracedI2np,
 ) -> bool {
     if bytes.is_empty() || bytes.len() > constants::MAX_DATAGRAM_IPV4_LENGTH {
         counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
@@ -3273,7 +3353,7 @@ fn stage_class_locked(
         bytes,
         addr,
         class,
-        message_ids,
+        trace,
     };
     match addr.ip() {
         IpAddr::V4(_) => state.staged_v4.push_back(staged),
@@ -3297,7 +3377,7 @@ fn stage_finals_locked(
             bytes,
             *addr,
             BandwidthTrafficClass::Control,
-            Vec::new(),
+            TracedI2np::default(),
         );
     }
 }
@@ -3430,6 +3510,14 @@ impl Ssu2RuntimeService {
 
     fn remove_active_locked(&self, state: &mut ServiceState, link_id: &LinkId) {
         if let Some(record) = state.active.remove(link_id) {
+            if let Some(observer) = &self.shared.qualification_observer {
+                observer.record(
+                    record.peer,
+                    record.link_id,
+                    crate::ssu2_qualification_observer::Ssu2QualificationEventKind::SessionClosed,
+                    &[],
+                );
+            }
             release_active_locked(state, &record);
             remove_peer_link_locked(state, &record.peer, link_id);
             self.shared
@@ -3440,6 +3528,17 @@ impl Ssu2RuntimeService {
     }
 
     fn insert_active_locked(&self, state: &mut ServiceState, record: ActiveSession) {
+        if let Some(observer) = &self.shared.qualification_observer {
+            observer.record(
+                record.peer,
+                record.link_id,
+                match record.direction {
+                    Direction::Inbound => crate::ssu2_qualification_observer::Ssu2QualificationEventKind::InboundSessionAuthenticated,
+                    Direction::Outbound => crate::ssu2_qualification_observer::Ssu2QualificationEventKind::OutboundSessionAuthenticated,
+                },
+                &[],
+            );
+        }
         let ip = record.peer_addr.ip();
         let subnet = record.subnet;
         count_up(&mut state.active_ip, ip);
@@ -3608,6 +3707,7 @@ impl Ssu2RuntimeService {
             ActiveSession {
                 link_id,
                 peer: target.peer(),
+                direction: Direction::Outbound,
                 peer_addr: target.address(),
                 subnet: subnet_key(self.shared.config.prefixes, target.address().ip()),
                 session,
@@ -3778,6 +3878,7 @@ impl Ssu2RuntimeService {
             ActiveSession {
                 link_id,
                 peer,
+                direction: Direction::Inbound,
                 peer_addr: source,
                 subnet: subnet_key(self.shared.config.prefixes, source.ip()),
                 session,
@@ -5097,6 +5198,14 @@ impl Ssu2RuntimeService {
                         .counters
                         .i2np_received
                         .fetch_add(1, Ordering::Relaxed);
+                    if let Some(observer) = &self.shared.qualification_observer
+                        && let Some(message_id) = message
+                            .get(1..5)
+                            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                            .map(u32::from_be_bytes)
+                    {
+                        observer.record_authenticated_ingress(peer, link_id, message_id);
+                    }
                     inbound.push(Ssu2InboundI2np {
                         link_id,
                         peer,
@@ -5160,6 +5269,10 @@ impl Ssu2RuntimeService {
                             datagram,
                             addr,
                             message_ids,
+                            TraceContext {
+                                source_link: link_id,
+                                observer: self.shared.qualification_observer.as_ref(),
+                            },
                         );
                     }
                     None => break,
@@ -5199,6 +5312,10 @@ impl Ssu2RuntimeService {
                             datagram,
                             addr,
                             message_ids,
+                            TraceContext {
+                                source_link: link_id,
+                                observer: self.shared.qualification_observer.as_ref(),
+                            },
                         );
                     }
                     Some(SessionAction::Terminate { .. }) => {
@@ -5705,6 +5822,10 @@ impl Ssu2RuntimeService {
                             datagram,
                             addr,
                             message_ids,
+                            TraceContext {
+                                source_link: link_id,
+                                observer: self.shared.qualification_observer.as_ref(),
+                            },
                         );
                     }
                     Some(SessionAction::Terminate { .. }) => {
@@ -5735,6 +5856,10 @@ impl Ssu2RuntimeService {
                                 datagram,
                                 addr,
                                 message_ids,
+                                TraceContext {
+                                    source_link: link_id,
+                                    observer: self.shared.qualification_observer.as_ref(),
+                                },
                             );
                         }
                         None => break,
@@ -5827,6 +5952,7 @@ impl Ssu2RuntimeService {
             class: BandwidthTrafficClass,
             duplicates: bool,
             message_ids: Vec<u32>,
+            source: Option<(PeerId, LinkId)>,
         }
         let policy = self
             .shared
@@ -5862,6 +5988,17 @@ impl Ssu2RuntimeService {
                         .counters
                         .fault_drops
                         .fetch_add(1, Ordering::Relaxed);
+                    if !datagram.trace.message_ids.is_empty()
+                        && let (Some(observer), Some((peer, link_id))) =
+                            (&self.shared.qualification_observer, datagram.trace.source)
+                    {
+                        observer.record(
+                            peer,
+                            link_id,
+                            crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWriteFailed,
+                            &datagram.trace.message_ids,
+                        );
+                    }
                     continue;
                 }
                 let duplicates = policy
@@ -5872,7 +6009,8 @@ impl Ssu2RuntimeService {
                     addr: datagram.addr,
                     class: datagram.class,
                     duplicates,
-                    message_ids: datagram.message_ids,
+                    message_ids: datagram.trace.message_ids,
+                    source: datagram.trace.source,
                 });
             }
             let previous_held = state.fault_held.take();
@@ -5886,7 +6024,10 @@ impl Ssu2RuntimeService {
                         bytes: first.bytes,
                         addr: first.addr,
                         class: first.class,
-                        message_ids: first.message_ids,
+                        trace: TracedI2np {
+                            message_ids: first.message_ids,
+                            source: first.source,
+                        },
                     });
                 } else {
                     // Batched datagrams: the first joins at the tail.
@@ -5896,6 +6037,7 @@ impl Ssu2RuntimeService {
                         class: first.class,
                         duplicates: false,
                         message_ids: first.message_ids,
+                        source: first.source,
                     });
                     if let Ok(mut guard) = self.shared.faults.lock()
                         && let Some(policy) = guard.as_mut()
@@ -5922,8 +6064,18 @@ impl Ssu2RuntimeService {
                         .is_err()
                 {
                     if !send.message_ids.is_empty() {
+                        if let (Some(observer), Some((peer, link_id))) =
+                            (&self.shared.qualification_observer, send.source)
+                        {
+                            observer.record(
+                                peer,
+                                link_id,
+                                crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWriteFailed,
+                                &send.message_ids,
+                            );
+                        }
                         tracing::warn!(
-                            i2np_message_ids = ?send.message_ids,
+                            i2np_message_count = send.message_ids.len(),
                             transition = "udp_admission_rejected",
                             "SSU2 message send receipt"
                         );
@@ -5931,9 +6083,20 @@ impl Ssu2RuntimeService {
                     continue;
                 }
                 if socket.send_to(&send.bytes, send.addr).await.is_ok() {
+                    if !send.message_ids.is_empty()
+                        && let (Some(observer), Some((peer, link_id))) =
+                            (&self.shared.qualification_observer, send.source)
+                    {
+                        observer.record(
+                            peer,
+                            link_id,
+                            crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWritten,
+                            &send.message_ids,
+                        );
+                    }
                     if !send.message_ids.is_empty() {
                         tracing::info!(
-                            i2np_message_ids = ?send.message_ids,
+                            i2np_message_count = send.message_ids.len(),
                             transition = "udp_emitted",
                             "SSU2 message send receipt"
                         );
@@ -5942,12 +6105,25 @@ impl Ssu2RuntimeService {
                         .counters
                         .datagrams_sent
                         .fetch_add(1, Ordering::Relaxed);
-                } else if !send.message_ids.is_empty() {
-                    tracing::warn!(
-                        i2np_message_ids = ?send.message_ids,
-                        transition = "udp_send_failed",
-                        "SSU2 message send receipt"
-                    );
+                } else {
+                    if !send.message_ids.is_empty()
+                        && let (Some(observer), Some((peer, link_id))) =
+                            (&self.shared.qualification_observer, send.source)
+                    {
+                        observer.record(
+                            peer,
+                            link_id,
+                            crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWriteFailed,
+                            &send.message_ids,
+                        );
+                    }
+                    if !send.message_ids.is_empty() {
+                        tracing::warn!(
+                            i2np_message_count = send.message_ids.len(),
+                            transition = "udp_send_failed",
+                            "SSU2 message send receipt"
+                        );
+                    }
                 }
             }
         }
@@ -5968,17 +6144,38 @@ impl Ssu2RuntimeService {
             } else {
                 true
             };
-            if !admitted && !previous.message_ids.is_empty() {
+            if !admitted && !previous.trace.message_ids.is_empty() {
+                if let (Some(observer), Some((peer, link_id))) =
+                    (&self.shared.qualification_observer, previous.trace.source)
+                {
+                    observer.record(
+                        peer,
+                        link_id,
+                        crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWriteFailed,
+                        &previous.trace.message_ids,
+                    );
+                }
                 tracing::warn!(
-                    i2np_message_ids = ?previous.message_ids,
+                    i2np_message_count = previous.trace.message_ids.len(),
                     transition = "udp_admission_rejected",
                     "SSU2 message send receipt"
                 );
             }
             if admitted && socket.send_to(&previous.bytes, previous.addr).await.is_ok() {
-                if !previous.message_ids.is_empty() {
+                if !previous.trace.message_ids.is_empty()
+                    && let (Some(observer), Some((peer, link_id))) =
+                        (&self.shared.qualification_observer, previous.trace.source)
+                {
+                    observer.record(
+                        peer,
+                        link_id,
+                        crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWritten,
+                        &previous.trace.message_ids,
+                    );
+                }
+                if !previous.trace.message_ids.is_empty() {
                     tracing::info!(
-                        i2np_message_ids = ?previous.message_ids,
+                        i2np_message_count = previous.trace.message_ids.len(),
                         transition = "udp_emitted",
                         "SSU2 message send receipt"
                     );
@@ -5987,9 +6184,19 @@ impl Ssu2RuntimeService {
                     .counters
                     .datagrams_sent
                     .fetch_add(1, Ordering::Relaxed);
-            } else if admitted && !previous.message_ids.is_empty() {
+            } else if admitted && !previous.trace.message_ids.is_empty() {
+                if let (Some(observer), Some((peer, link_id))) =
+                    (&self.shared.qualification_observer, previous.trace.source)
+                {
+                    observer.record(
+                        peer,
+                        link_id,
+                        crate::ssu2_qualification_observer::Ssu2QualificationEventKind::I2npDatagramWriteFailed,
+                        &previous.trace.message_ids,
+                    );
+                }
                 tracing::warn!(
-                    i2np_message_ids = ?previous.message_ids,
+                    i2np_message_count = previous.trace.message_ids.len(),
                     transition = "udp_send_failed",
                     "SSU2 message send receipt"
                 );

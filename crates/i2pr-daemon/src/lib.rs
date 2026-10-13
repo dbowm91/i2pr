@@ -1803,6 +1803,10 @@ impl NormalSsu2Owner {
         }
     }
 
+    fn qualification_observer(&self) -> Option<i2pr_runtime::Ssu2QualificationObserver> {
+        self.handle().qualification_observer()
+    }
+
     async fn next_inbound(&mut self) -> Option<i2pr_runtime::Ssu2InboundI2np> {
         match self {
             Self::Router(handle) => handle.next_inbound().await,
@@ -3404,6 +3408,7 @@ fn register_ssu2_service(
                                 };
                                 let outcome = decoded.outcome();
                                 let message = decoded.message();
+                                let mut product_effect = false;
                                 if let (
                                     Some(bootstrap),
                                     Some(i2pr_proto::I2npBody::DatabaseStore(store)),
@@ -3415,17 +3420,23 @@ fn register_ssu2_service(
                                         Ok(mut bootstrap) => match bootstrap
                                             .ingest_authenticated_router_store(store, now_ms)
                                         {
-                                            Ok(outcome) => tracing::info!(
-                                            transport_family = match transport {
-                                                AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
-                                                AuthenticatedRouterTransport::Ssu2 => "ssu2",
-                                            },
-                                                inserted = matches!(
-                                                    outcome,
+                                            Ok(store_outcome) => {
+                                                product_effect |= matches!(
+                                                    store_outcome,
                                                     i2pr_netdb::UnsolicitedStoreOutcome::Inserted(_)
-                                                ),
-                                                "authenticated RouterInfo store applied to bootstrap peer store"
-                                            ),
+                                                );
+                                                tracing::info!(
+                                                    transport_family = match transport {
+                                                        AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
+                                                        AuthenticatedRouterTransport::Ssu2 => "ssu2",
+                                                    },
+                                                    inserted = matches!(
+                                                        store_outcome,
+                                                        i2pr_netdb::UnsolicitedStoreOutcome::Inserted(_)
+                                                    ),
+                                                    "authenticated RouterInfo store applied to bootstrap peer store"
+                                                );
+                                            }
                                             Err(error) => tracing::debug!(
                                                 reason = %error,
                                                 "authenticated unsolicited DatabaseStore refused"
@@ -3612,6 +3623,7 @@ fn register_ssu2_service(
                                         Err(_) => {}
                                     }
                                 }
+                                product_effect |= served;
                                 if !served
                                     && let Some(i2pr_proto::I2npBody::DatabaseStore(store)) =
                                         message.map(i2pr_proto::I2npMessage::body)
@@ -3646,6 +3658,19 @@ fn register_ssu2_service(
                                             i2pr_core::ServiceFailureCategory::Internal,
                                             detail,
                                         ),
+                                    );
+                                }
+                                if product_effect
+                                    && transport == AuthenticatedRouterTransport::Ssu2
+                                    && let (Some(observer), Some(message_id)) = (
+                                        owner.qualification_observer(),
+                                        outcome.message_id(),
+                                    )
+                                {
+                                    let _ = observer.record_product_effect(
+                                        inbound.peer,
+                                        inbound.link_id,
+                                        message_id,
                                     );
                                 }
                                 if !served {

@@ -233,6 +233,17 @@ impl RouterI2npOutcome {
         }
     }
 
+    /// Returns the decoded transport message ID where the outcome carries one.
+    pub const fn message_id(self) -> Option<u32> {
+        match self {
+            Self::TunnelBuildReserved { message_id, .. }
+            | Self::PeerTest { message_id, .. }
+            | Self::TunnelData { message_id, .. }
+            | Self::RouterControl { message_id, .. } => Some(message_id),
+            Self::Unsupported { .. } => None,
+        }
+    }
+
     /// Returns the encoded length carried by this outcome.
     pub const fn encoded_len(self) -> usize {
         match self {
@@ -1367,6 +1378,11 @@ pub fn ssu2_runtime_config_from(
         // own, records nothing without a live started test, and starts tests only
         // through the narrow controlled APIs the M12 activation composition calls.
         controlled_peer_test: true,
+        // Ssu2DaemonService rejects every non-qualified bind above. The
+        // private-LAN and controlled-loopback profiles are explicit local
+        // qualification modes; ordinary/default-off startup never constructs
+        // this runtime observer.
+        qualification_observer: true,
     };
     runtime
         .validate()
@@ -1944,6 +1960,11 @@ impl Ssu2DaemonHandle {
     /// Returns the owning runtime service.
     pub const fn service(&self) -> &Ssu2RuntimeService {
         &self.service
+    }
+
+    /// Returns the opt-in private qualification observer, if configured.
+    pub fn qualification_observer(&self) -> Option<i2pr_runtime::Ssu2QualificationObserver> {
+        self.service.qualification_observer()
     }
 
     /// Installs one controlled dual-family record only when its NTCP2

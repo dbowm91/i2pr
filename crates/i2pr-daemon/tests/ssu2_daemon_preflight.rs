@@ -348,6 +348,27 @@ async fn daemon_controlled_exchange_reaches_central_dispatcher() {
     // B receives from A, so the preserved authenticated peer is A.
     assert_eq!(dispatched.peer(), peer_a);
     assert_eq!(dispatched.encoded_len(), wire.len());
+    let observer_a = handle_a
+        .qualification_observer()
+        .expect("explicit controlled profile observer");
+    let observer_b = handle_b
+        .qualification_observer()
+        .expect("explicit controlled profile observer");
+    let (events_a, overflow_a) = observer_a.drain();
+    let (events_b, overflow_b) = observer_b.drain();
+    assert!(!overflow_a && !overflow_b);
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::I2npDatagramWritten
+            && event.message_id() == Some(0xD15C_0001)
+            && event.peer_commitment() == observer_a.peer_commitment(peer_b).expect("peer")
+    }));
+    assert!(events_b.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::AuthenticatedI2npReceived
+            && event.message_id() == Some(0xD15C_0001)
+            && event.peer_commitment() == observer_b.peer_commitment(peer_a).expect("peer")
+    }));
+    assert!(!observer_b.record_product_effect(peer_b, dispatched.link_id(), 0xD15C_0001));
+    assert!(!observer_b.record_product_effect(peer_a, dispatched.link_id(), 0xD15C_0002));
 
     // Shutdown returns session/queue resources to baseline.
     established
