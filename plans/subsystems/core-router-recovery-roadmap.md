@@ -141,8 +141,8 @@ Bounded causal corrections must remain inside their owning plan, with determinis
 | --- | --- | --- | --- |
 | 477 | active: return divergence unresolved | `plans/implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md` | `plans/closure/core-router-recovery/477-status.md`: hop IDs and outer/reply ID separation implemented; exact-pin run improved to 1/2 installs. Requires lifecycle collision ownership, write confirmation and source attribution for the remaining return. |
 | 478 | active: 477 interface available; product route open | `plans/implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md` | `plans/closure/core-router-recovery/478-status.md`: normal outbound-backed service inbound build, genuine LS2 owner generation, and external bidirectional SAM STREAM/recovery remain required. |
-| 479 | ready parallel P1 | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: honest capacity class, normal Java candidate selection, accepted stock NetDB request/reply without public caps. |
-| 480 | ready parallel P1 | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: actual daemon authenticated-source SSU2 event contract, handoff to still-open Plan 476 process and host-pair gates. |
+| 479 | active: comparator/profile lane open | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: local floodfill tests and guards pass; real Java candidate preference and operation-correlated store/lookup remain open. |
+| 480 | active: observer/event source owner open | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: authenticated source inputs verified; observer, product/write receipt ownership and Plan 476 collector remain open. |
 
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
 
