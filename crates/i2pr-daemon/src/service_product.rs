@@ -4797,9 +4797,12 @@ fn destination_build_dial_authority(
 
 #[cfg(test)]
 mod plan482_destination_dial_authority_tests {
-    use super::{DestinationDialPurpose, destination_build_dial_authority};
+    use super::{DestinationDialPurpose, destination_build_dial_authority, dial_destination_peer};
     use crate::exploratory_build::BuildDirection;
     use i2pr_proto::Hash;
+    use i2pr_runtime::CancellationToken;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     fn hash(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])
@@ -4874,6 +4877,90 @@ mod plan482_destination_dial_authority_tests {
         );
         assert_ne!(authority.router_hash, replacement_target);
     }
+
+    #[tokio::test]
+    async fn dial_boundary_records_the_actual_authorized_route_cause() {
+        let gateway = hash(0x47);
+        let outbound_first_hop = hash(0x21);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            gateway,
+            Some(outbound_first_hop),
+        )
+        .expect("inbound build uses the existing outbound route");
+        let target = i2pr_runtime::Ssu2DialTarget::new(
+            i2pr_transport::PeerId::from_hash(outbound_first_hop),
+            outbound_first_hop,
+            "127.0.0.1:19002".parse().expect("loopback target"),
+            i2pr_runtime::Ssu2PublicKey::new([0x31; 32]).expect("static key"),
+            i2pr_runtime::IntroKey::new([0x42; 32]),
+        )
+        .expect("authorized first-hop target");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&observed);
+
+        dial_destination_peer(
+            authority,
+            target,
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+            move |cause, target, _, _| async move {
+                recorded.lock().expect("dial-cause fixture").push((
+                    cause.router_hash,
+                    cause.purpose,
+                    target.expected_router_hash(),
+                ));
+                Ok::<(), ()>(())
+            },
+        )
+        .await
+        .expect("authorized dial dispatch");
+
+        assert_eq!(
+            *observed.lock().expect("dial-cause fixture"),
+            vec![(
+                outbound_first_hop,
+                DestinationDialPurpose::OutboundTunnelFirstHop,
+                outbound_first_hop,
+            )]
+        );
+        assert_ne!(gateway, outbound_first_hop);
+    }
+
+    #[tokio::test]
+    async fn dial_boundary_rejects_a_target_outside_its_route_authority() {
+        let gateway = hash(0x47);
+        let authorized = hash(0x21);
+        let wrong_target = hash(0x38);
+        let authority =
+            destination_build_dial_authority(BuildDirection::Inbound, gateway, Some(authorized))
+                .expect("inbound route authority");
+        let target = i2pr_runtime::Ssu2DialTarget::new(
+            i2pr_transport::PeerId::from_hash(wrong_target),
+            wrong_target,
+            "127.0.0.1:19003".parse().expect("loopback target"),
+            i2pr_runtime::Ssu2PublicKey::new([0x51; 32]).expect("static key"),
+            i2pr_runtime::IntroKey::new([0x62; 32]),
+        )
+        .expect("valid peer target outside this route");
+        let dial_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called = Arc::clone(&dial_called);
+
+        let result = dial_destination_peer(
+            authority,
+            target,
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+            move |_, _, _, _| async move {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<(), ()>(())
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!dial_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }
 
 /// Ensures the normal SSU2 owner has an authenticated direct session to the
@@ -4937,19 +5024,56 @@ async fn ensure_selected_peer_session(
         intro_key,
         qualification_profile,
     )?;
+    dial_destination_peer(
+        DestinationDialAuthority {
+            router_hash,
+            purpose,
+        },
+        target,
+        dial_timeout,
+        cancellation,
+        |_, target, timeout, cancellation| async move {
+            ssu2_handle
+                .dial(target, timeout, &cancellation)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+}
+
+async fn dial_destination_peer<F, Fut, E>(
+    authority: DestinationDialAuthority,
+    target: i2pr_runtime::Ssu2DialTarget,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+    dial: F,
+) -> Result<(), ServiceProductError>
+where
+    F: FnOnce(
+        DestinationDialAuthority,
+        i2pr_runtime::Ssu2DialTarget,
+        Duration,
+        CancellationToken,
+    ) -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+{
+    if target.expected_router_hash() != authority.router_hash {
+        return Err(ServiceProductError::Provisioning(
+            "authorized Destination dial target does not match its route".to_owned(),
+        ));
+    }
     tracing::debug!(
-        dial_purpose = ?purpose,
+        dial_purpose = ?authority.purpose,
         "Destination authorized a direct outbound first-hop session"
     );
-    ssu2_handle
-        .dial(target, dial_timeout, cancellation)
+    dial(authority, target, timeout, cancellation.clone())
         .await
         .map_err(|_| {
             ServiceProductError::Provisioning(
                 "selected first-hop SSU2 session could not be established".to_owned(),
             )
-        })?;
-    Ok(())
+        })
 }
 
 fn selected_peer_material(
