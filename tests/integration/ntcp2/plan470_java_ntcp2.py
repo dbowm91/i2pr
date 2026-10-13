@@ -201,6 +201,27 @@ def java_diagnostic(port: int, request: str, deadline: float) -> str:
     return "unavailable"
 
 
+def java_send_counters(port: int, deadline: float) -> dict[str, int]:
+    response = java_diagnostic(port, "P470-COUNTERS", deadline)
+    if not response.startswith("P470-EV observable=true"):
+        return {}
+    allowed = {
+        "transport_bidFailNoTransports", "transport_bidFailBanlisted",
+        "transport_bidFailSelf", "transport_expiredOnQueueLifetime",
+        "transport_sendMessageFailureLifetime", "ntcp_accept",
+        "ntcp_registerConnect", "ntcp_connectSuccessful", "ntcp_inboundEstablished",
+        "ntcp_outboundFailedIOEImmediate", "ntcp_outboundEstablishFailed",
+        "ntcp_connectFailedIOE", "ntcp_connectFailedTimeout",
+        "ntcp_connectFailedTimeoutIOE",
+        "ntcp_zeroReadDrop", "ntcp_readError",
+    }
+    counts: dict[str, int] = {}
+    for name, value in re.findall(r"([a-zA-Z0-9_]+)=(-?\d+)", response):
+        if name in allowed:
+            counts[name] = int(value)
+    return counts if set(counts) == allowed else {}
+
+
 def wait_java_candidate(
     port: int, digest: bytes, deadline: float
 ) -> tuple[bool, bool, bool, bool, bool, str]:
@@ -361,12 +382,16 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                   "java_candidate_not_banlisted": 0,
                   "java_ntcp_not_marked_unreachable": 0,
                   "java_netdb_flood_submitted": 0,
+                  "java_stock_transport_send": 0,
+                  "java_outbound_tcp_connected": 0,
                   "daemon_lookup_worker_scheduled": 0,
                   "daemon_lookup_submitted": 0, "daemon_lookup_correlated": 0,
                   "daemon_outbound_link_promoted": 0,
                   "daemon_probe_submitted": 0, "daemon_probe_correlated": 0,
                   "daemon_inbound_product_effect": 0, "daemon_store_persisted": 0,
                   "java_i2pr_store_persisted": 0}
+        java_counters_before: dict[str, int] = {}
+        java_counters_after: dict[str, int] = {}
         try:
             # Bootstrap only the real i2pr-signed RouterInfo. No peer or
             # product traffic is enabled during this preparation process.
@@ -527,6 +552,9 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     daemon_live_summary, label="i2pr-live", ntcp2_only=False,
                     expected_loopback_port=daemon_ntcp_port, require_floodfill=True,
                 )
+                java_counters_before = java_send_counters(
+                    java_diag_port, time.monotonic() + 3
+                )
                 stages["java_netdb_flood_submitted"] = int(trigger_java_flood(
                     java_publish_port, time.monotonic() + 15
                 ))
@@ -539,6 +567,12 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                         raise RuntimeError("qualification-router-exited")
                     daemon_text = daemon_log.read_text(errors="replace")
                     java_text = java_runtime_log(java_data, java_log)
+                    stages["java_stock_transport_send"] = int(
+                        "Attempting to send on transport NTCP" in java_text
+                    )
+                    stages["java_outbound_tcp_connected"] = int(
+                        "connected? true" in java_text
+                    )
                     stages["daemon_probe_submitted"] = int(
                         "controlled NTCP2 RouterInfo reply-token probe submitted" in daemon_text
                     )
@@ -571,6 +605,14 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     if all(stages.values()):
                         break
                     time.sleep(0.2)
+            java_counters_after = java_send_counters(
+                java_diag_port, time.monotonic() + 3
+            )
+            java_counter_deltas = {
+                key: max(0, java_counters_after[key] - java_counters_before[key])
+                for key in java_counters_before.keys() & java_counters_after.keys()
+                if java_counters_before[key] >= 0 and java_counters_after[key] >= 0
+            }
             java_text = java_runtime_log(java_data, java_log)
             daemon_text = daemon_log.read_text(errors="replace")
             # Do not persist or print raw router logs. Counts are stage-specific
@@ -580,6 +622,9 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                 and hashlib.sha256(java_store.read_bytes()).hexdigest() != seeded_java_hash
             )
             print("plan470_java_ntcp2_stages=" + json.dumps(stages, sort_keys=True, separators=(",", ":")))
+            print("plan470_java_stock_send_counter_deltas=" + json.dumps(
+                java_counter_deltas, sort_keys=True, separators=(",", ":")
+            ))
             print("plan470_reference_pin=" + JAVA_VERSION + "@" + JAVA_PIN)
             if not all(stages.values()):
                 print("plan470: first-missing-stage=" + next(k for k, v in stages.items() if not v), file=sys.stderr)
@@ -591,11 +636,33 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     r'io_result=["\']?([a-z-]+)',
                     daemon_text,
                 )
+                inbound_handshake_stage_io = re.findall(
+                    r'controlled NTCP2 inbound handshake stage.*?stage=["\']?([a-z_]+).*?'
+                    r'io_result=["\']?([a-z-]+)',
+                    daemon_text,
+                )
                 token_counts = {
                     # Counts only: the stock flood lines contain RouterHashes,
                     # which must never leave the private scratch log.
                     "java_stock_flood_dispatch_candidates": java_text.count("Flooding the entry for "),
                     "java_stock_flood_dispatch_summary": java_text.count("Flooded the data to "),
+                    "java_stock_transport_send_attempts": java_text.count("Attempting to send on transport "),
+                    "java_stock_ntcp_send_attempts": java_text.count("Attempting to send on transport NTCP"),
+                    "java_ntcp_bad_address_constructor_failures": java_text.count("bad address? "),
+                    "java_ntcp_address_changed_before_connect": java_text.count(
+                        "we bid on a peer with a bad address?"
+                    ),
+                    "java_ntcp_channel_open_failures": java_text.count("Error opening a channel"),
+                    "java_ntcp_channel_registration_events": java_text.count("Registering "),
+                    "java_ntcp_connect_stage_counts": {
+                        token: java_text.count(token)
+                        for token in (
+                            "processing connect for", "connected? true", "connected? false",
+                            "error connecting on", "error connecting to",
+                            "unresolved address connecting", "Possible early disconnect",
+                            "Closing connection", "Receive session request but near connection limit",
+                        )
+                    },
                     "java_stock_flood_candidate_rejected": java_text.count("Too old, not flooding "),
                     "java_publish_logs": sum(java_text.count(token) for token in (
                         "Publishing our RI", "Delay publishing our RI", "Publishing our RI after delay"
@@ -647,6 +714,10 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
                     "daemon_outbound_handshake_stage_io": dict(sorted(
                         (f"{stage}:{io_result}", handshake_stage_io.count((stage, io_result)))
                         for stage, io_result in set(handshake_stage_io)
+                    )),
+                    "daemon_inbound_handshake_stage_io": dict(sorted(
+                        (f"{stage}:{io_result}", inbound_handshake_stage_io.count((stage, io_result)))
+                        for stage, io_result in set(inbound_handshake_stage_io)
                     )),
                     "java_ntcp2_log_tokens": {
                         token: java_text.lower().count(token)

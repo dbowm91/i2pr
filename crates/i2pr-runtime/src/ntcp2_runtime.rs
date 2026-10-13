@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::ntcp2_driver::{
     HandshakeDriverConfig, HandshakeDriverError, HandshakeRun, drive_initiator_handshake,
-    drive_responder_handshake,
+    drive_responder_handshake_observed,
 };
 use crate::ntcp2_link::{AuthenticatedLink, AuthenticatedLinkStartError};
 use crate::{
@@ -824,23 +824,47 @@ impl AdmittedInboundStream {
         config: HandshakeDriverConfig,
         cancellation: &CancellationToken,
     ) -> Result<(AuthenticatedInboundStream, HandshakeRun), HandshakeDriverError> {
+        self.drive_responder_handshake_observed(
+            state,
+            local_router_info,
+            replay,
+            config,
+            cancellation,
+            &crate::NoopHandshakeObserver,
+        )
+        .await
+    }
+
+    /// Drives a responder handshake while reporting only bounded phase and
+    /// byte-count observations to a caller-owned observer.
+    pub async fn drive_responder_handshake_observed(
+        self,
+        state: i2pr_transport_ntcp2::state_machine::ResponderState,
+        local_router_info: &[u8],
+        replay: &ReplayCache,
+        config: HandshakeDriverConfig,
+        cancellation: &CancellationToken,
+        observer: &dyn HandshakeProgressObserver,
+    ) -> Result<(AuthenticatedInboundStream, HandshakeRun), HandshakeDriverError> {
         let (mut stream, permit, family) = self.into_parts();
-        let result = drive_responder_handshake(
+        let outcome = drive_responder_handshake_observed(
             state,
             &mut stream,
             local_router_info,
             replay,
             config,
             cancellation,
+            observer,
         )
-        .await?;
+        .await;
+        let run = outcome.result?;
         Ok((
             AuthenticatedInboundStream {
                 stream,
                 permit,
                 family,
             },
-            result,
+            run,
         ))
     }
 }
@@ -1444,6 +1468,21 @@ impl HandshakeProgressObserver for TracingHandshakeObserver {
             completed_octets = observation.completed_octets,
             elapsed_millis = observation.elapsed_millis,
             "controlled NTCP2 outbound handshake stage"
+        );
+    }
+}
+
+struct TracingResponderHandshakeObserver;
+
+impl HandshakeProgressObserver for TracingResponderHandshakeObserver {
+    fn observe(&self, observation: HandshakeStageObservation) {
+        tracing::info!(
+            stage = observation.stage,
+            io_result = observation.io_result.as_str(),
+            expected_octets = observation.expected_octets,
+            completed_octets = observation.completed_octets,
+            elapsed_millis = observation.elapsed_millis,
+            "controlled NTCP2 inbound handshake stage"
         );
     }
 }
@@ -2170,12 +2209,13 @@ impl Ntcp2RuntimeService {
         };
         inbound
             .into_stream()
-            .drive_responder_handshake(
+            .drive_responder_handshake_observed(
                 responder,
                 identity.router_info,
                 &self.replay,
                 config,
                 cancellation,
+                &TracingResponderHandshakeObserver,
             )
             .await
     }

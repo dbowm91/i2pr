@@ -5,8 +5,10 @@ package net.i2p.router.networkdb.kademlia;
 
 import java.util.SortedMap;
 import net.i2p.data.Hash;
+import net.i2p.data.i2np.DatabaseStoreMessage;
 import net.i2p.data.router.RouterInfo;
 import net.i2p.router.RouterContext;
+import net.i2p.stat.RateStat;
 import net.i2p.router.transport.Transport;
 import net.i2p.router.transport.TransportBid;
 import net.i2p.router.transport.ntcp.NTCPTransport;
@@ -25,6 +27,8 @@ public final class P470TransportPreflight {
         public final boolean ntcp2BidAvailable;
         public final boolean bidUsesNtcpTransport;
         public final int bidLatencyMs;
+        public final int actualStoreMessageSize;
+        public final boolean actualFloodSelectorIncludesCandidate;
         public final String error;
 
         private Result(boolean candidatePresent, boolean routerHidden,
@@ -33,7 +37,9 @@ public final class P470TransportPreflight {
                        boolean selectedForLocalRouterInfo,
                        boolean candidateBanlisted, boolean ntcpTransportUnreachable,
                        boolean ntcp2TransportAvailable, boolean ntcp2BidAvailable,
-                       boolean bidUsesNtcpTransport, int bidLatencyMs, String error) {
+                       boolean bidUsesNtcpTransport, int bidLatencyMs,
+                       int actualStoreMessageSize,
+                       boolean actualFloodSelectorIncludesCandidate, String error) {
             this.candidatePresent = candidatePresent;
             this.routerHidden = routerHidden;
             this.floodfillEnabled = floodfillEnabled;
@@ -45,6 +51,8 @@ public final class P470TransportPreflight {
             this.ntcp2BidAvailable = ntcp2BidAvailable;
             this.bidUsesNtcpTransport = bidUsesNtcpTransport;
             this.bidLatencyMs = bidLatencyMs;
+            this.actualStoreMessageSize = actualStoreMessageSize;
+            this.actualFloodSelectorIncludesCandidate = actualFloodSelectorIncludesCandidate;
             this.error = error;
         }
     }
@@ -64,8 +72,8 @@ public final class P470TransportPreflight {
             boolean acceptsRouterInfoStore = candidate != null && StoreJob.shouldStoreTo(candidate);
             if (local == null || candidate == null)
                 return new Result(candidate != null, routerHidden, floodfillEnabled,
-                                  acceptsRouterInfoStore, false, false, false, false, false, false, -1,
-                                  "router-info-unavailable");
+                                  acceptsRouterInfoStore, false, false, false, false,
+                                  false, false, -1, -1, false, "router-info-unavailable");
 
             Hash routingKey = context.routingKeyGenerator()
                 .getRoutingKey(local.getIdentity().calculateHash());
@@ -73,8 +81,8 @@ public final class P470TransportPreflight {
                 context, routingKey, candidateHash);
             if (selection.error != null)
                 return new Result(true, routerHidden, floodfillEnabled,
-                                  acceptsRouterInfoStore, false, false, false, false, false, false, -1,
-                                  "selector-unavailable");
+                                  acceptsRouterInfoStore, false, false, false, false,
+                                  false, false, -1, -1, false, "selector-unavailable");
 
             SortedMap<String, Transport> transports = context.commSystem().getTransports();
             Transport ntcp = transports.get(NTCPTransport.STYLE);
@@ -84,16 +92,20 @@ public final class P470TransportPreflight {
                 return new Result(true, routerHidden, floodfillEnabled,
                                   acceptsRouterInfoStore, selection.selected.contains(candidateHash),
                                   candidateBanlisted, false, false, false, false, -1,
+                                  -1, selection.selected.contains(candidateHash),
                                   "ntcp-transport-unavailable");
 
-            // The pinned normal flood path submits a RouterInfo Store. This
-            // bounded size exercises the same NTCP bid eligibility without
-            // submitting a message or opening a socket.
-            TransportBid bid = ntcp.bid(candidate, 1024);
+            // Match the real normal flood Store's encoded message size. This
+            // diagnostic remains read-only: it does not submit the message.
+            DatabaseStoreMessage store = new DatabaseStoreMessage(context);
+            store.setEntry(local);
+            int storeSize = store.getMessageSize();
+            TransportBid bid = ntcp.bid(candidate, storeSize);
             if (bid == null)
                 return new Result(true, routerHidden, floodfillEnabled, acceptsRouterInfoStore,
                                   selection.selected.contains(candidateHash), candidateBanlisted,
-                                  ntcpUnreachable, true, false, false, -1, null);
+                                  ntcpUnreachable, true, false, false, -1, storeSize,
+                                  selection.selected.contains(candidateHash), null);
             boolean usesNtcp = bid.getTransport() != null
                 && NTCPTransport.STYLE.equals(bid.getTransport().getStyle());
             boolean available = bid.getLatencyMs() >= 0
@@ -101,7 +113,8 @@ public final class P470TransportPreflight {
             return new Result(true, routerHidden, floodfillEnabled, acceptsRouterInfoStore,
                               selection.selected.contains(candidateHash), candidateBanlisted,
                               ntcpUnreachable, true, available,
-                              usesNtcp, bid.getLatencyMs(), null);
+                              usesNtcp, bid.getLatencyMs(), storeSize,
+                              selection.selected.contains(candidateHash), null);
         } catch (RuntimeException error) {
             return unavailable("stock-preflight-threw");
         }
@@ -109,6 +122,28 @@ public final class P470TransportPreflight {
 
     private static Result unavailable(String reason) {
         return new Result(false, false, false, false, false, false, false, false,
-                          false, false, -1, reason);
+                          false, false, -1, -1, false, reason);
+    }
+
+    /** Read-only lifetime event counters owned by the pinned stock router. */
+    public static String counters(RouterContext context) {
+        String[] names = {
+            "transport.bidFailNoTransports", "transport.bidFailBanlisted",
+            "transport.bidFailSelf", "transport.expiredOnQueueLifetime",
+            "transport.sendMessageFailureLifetime", "ntcp.accept",
+            "ntcp.registerConnect",
+            "ntcp.connectSuccessful", "ntcp.inboundEstablished",
+            "ntcp.outboundFailedIOEImmediate", "ntcp.outboundEstablishFailed",
+            "ntcp.connectFailedIOE", "ntcp.connectFailedTimeout",
+            "ntcp.connectFailedTimeoutIOE",
+            "ntcp.zeroReadDrop", "ntcp.readError"
+        };
+        StringBuilder result = new StringBuilder("P470-EV observable=true");
+        for (String name : names) {
+            RateStat stat = context.statManager().getRate(name);
+            result.append(' ').append(name.replace('.', '_')).append('=')
+                  .append(stat == null ? -1 : stat.getLifetimeEventCount());
+        }
+        return result.toString();
     }
 }
