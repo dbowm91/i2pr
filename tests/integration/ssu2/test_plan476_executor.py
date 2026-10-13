@@ -19,6 +19,10 @@ def auth(role: str, marker: str) -> object:
     return plan476.HostAuthorization(
         role=role,
         host_digest=plan476.digest_label(f"host-{marker}"),
+        interface_digest=plan476.digest_label(f"interface-{marker}"),
+        address="192.168.44.11" if role == "i2pr" else "192.168.44.12",
+        prefix=24,
+        udp_port=19001 if role == "i2pr" else 19002,
         router_info_digest=plan476.digest_label(f"ri-{marker}"),
         binary_digest=plan476.digest_label("pinned-i2pd" if role == "i2pd" else "i2pr"),
         endpoint_digest=plan476.digest_label(f"endpoint-{marker}"),
@@ -55,8 +59,13 @@ class Plan476ExecutorTests(unittest.TestCase):
             ((self.hosts[0], replace(self.hosts[1], host_digest=self.hosts[0].host_digest)), "host-identities-not-distinct"),
             ((self.hosts[0], replace(self.hosts[1], router_info_digest=self.hosts[0].router_info_digest)), "router-identities-not-distinct"),
             ((self.hosts[0], replace(self.hosts[1], endpoint_digest=self.hosts[0].endpoint_digest)), "host-endpoints-collide"),
+            ((self.hosts[0], replace(self.hosts[1], address=self.hosts[0].address)), "host-addresses-collide"),
             ((self.hosts[0], replace(self.hosts[1], run_epoch=plan476.digest_label("epoch-2"))), "run-epoch-mismatch"),
             ((self.hosts[0], replace(self.hosts[1], host_digest="bad")), "authorization-digest-invalid"),
+            ((self.hosts[0], replace(self.hosts[1], address="192.0.2.12")), "address-not-private-ipv4"),
+            ((self.hosts[0], replace(self.hosts[1], address="192.168.45.12")), "hosts-not-on-same-subnet"),
+            ((self.hosts[0], replace(self.hosts[1], udp_port=19001)), "host-ports-collide"),
+            ((self.hosts[0], replace(self.hosts[1], prefix=7)), "prefix-invalid"),
         )
         for hosts, expected in cases:
             with self.subTest(expected=expected):
@@ -68,15 +77,27 @@ class Plan476ExecutorTests(unittest.TestCase):
         cases = (
             (tuple(replace(row, run_epoch=plan476.digest_label("stale")) if row.role == "i2pd" else row for row in receipts), "run-epoch-mismatch"),
             (tuple(replace(row, endpoint_digest=self.hosts[0].endpoint_digest) if row.role == "i2pd" else row for row in receipts), "receipt-authorization-mismatch"),
+            (tuple(replace(row, peer_router_info_digest=self.hosts[1].router_info_digest) if row.role == "i2pd" else row for row in receipts), "receipt-peer-identity-mismatch"),
+            (receipts + (replace(receipts[0], role="unknown", sequence=9),), "receipt-role-invalid"),
             (tuple(replace(row, sequence=0) if row.role == "i2pd" and row.sequence == 1 else row for row in receipts), "receipt-replay"),
             (tuple(replace(row, phase="unknown") if row.role == "i2pd" and row.sequence == 2 else row for row in receipts), "receipt-phase-invalid"),
             (tuple(replace(row, packet_count=-1) if row.role == "i2pd" and row.sequence == 2 else row for row in receipts), "receipt-count-invalid"),
             (tuple(replace(row, packet_count=0) if row.role == "i2pd" and row.sequence == 2 else row for row in receipts), "authenticated-session-unobserved"),
-            (tuple(replace(row, phase="router_started") if row.role == "i2pd" and row.sequence == 3 else row for row in receipts), "receipt-phase-regression"),
+            (tuple(replace(row, phase="router_started") if row.role == "i2pd" and row.sequence == 3 else row for row in receipts), "receipt-phase-order-invalid"),
+            (tuple(row for row in receipts if not (row.role == "i2pd" and row.sequence == 6)), "receipt-sequence-incomplete"),
         )
         for candidate, expected in cases:
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex(plan476.ExecutorError, expected):
+                    plan476.reconcile_receipts(self.hosts, candidate)
+        for phase_index in (3, 4):
+            candidate = tuple(
+                replace(row, packet_count=0)
+                if row.role == "i2pd" and row.sequence == phase_index else row
+                for row in receipts
+            )
+            with self.subTest(phase_index=phase_index):
+                with self.assertRaisesRegex(plan476.ExecutorError, "product-message-unobserved"):
                     plan476.reconcile_receipts(self.hosts, candidate)
 
 

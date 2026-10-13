@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import re
 
 
@@ -33,6 +34,10 @@ class ExecutorError(ValueError):
 class HostAuthorization:
     role: str
     host_digest: str
+    interface_digest: str
+    address: str
+    prefix: int
+    udp_port: int
     router_info_digest: str
     binary_digest: str
     endpoint_digest: str
@@ -46,6 +51,7 @@ class Receipt:
     role: str
     host_digest: str
     router_info_digest: str
+    peer_router_info_digest: str
     binary_digest: str
     endpoint_digest: str
     network_id: str
@@ -68,16 +74,41 @@ def validate_authorizations(hosts: tuple[HostAuthorization, ...]) -> None:
         if host.network_id != "2":
             raise ExecutorError("network-id-mismatch")
         if not all(_digest(value) for value in (
-            host.host_digest, host.router_info_digest, host.binary_digest,
+            host.host_digest, host.interface_digest, host.router_info_digest, host.binary_digest,
             host.endpoint_digest, host.run_epoch,
         )):
             raise ExecutorError("authorization-digest-invalid")
+        try:
+            address = ipaddress.ip_address(host.address)
+        except (TypeError, ValueError):
+            raise ExecutorError("address-invalid") from None
+        rfc1918 = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        )
+        if not isinstance(address, ipaddress.IPv4Address) or not any(address in network for network in rfc1918):
+            raise ExecutorError("address-not-private-ipv4")
+        if not isinstance(host.prefix, int) or isinstance(host.prefix, bool) or not 8 <= host.prefix <= 30:
+            raise ExecutorError("prefix-invalid")
+        if not isinstance(host.udp_port, int) or isinstance(host.udp_port, bool) or not 1024 <= host.udp_port <= 65535:
+            raise ExecutorError("port-invalid")
     if len({host.host_digest for host in hosts}) != 2:
         raise ExecutorError("host-identities-not-distinct")
     if len({host.router_info_digest for host in hosts}) != 2:
         raise ExecutorError("router-identities-not-distinct")
     if len({host.endpoint_digest for host in hosts}) != 2:
         raise ExecutorError("host-endpoints-collide")
+    if len({host.address for host in hosts}) != 2:
+        raise ExecutorError("host-addresses-collide")
+    if len({host.udp_port for host in hosts}) != 2:
+        raise ExecutorError("host-ports-collide")
+    networks = {
+        ipaddress.ip_network(f"{host.address}/{host.prefix}", strict=False)
+        for host in hosts
+    }
+    if len(networks) != 1:
+        raise ExecutorError("hosts-not-on-same-subnet")
     if len({host.run_epoch for host in hosts}) != 1:
         raise ExecutorError("run-epoch-mismatch")
     if len({host.binary_digest for host in hosts if host.role == "i2pd"}) != 1:
@@ -89,12 +120,16 @@ def reconcile_receipts(
 ) -> dict[str, object]:
     """Validate two independently captured receipts; return counts only."""
     validate_authorizations(hosts)
+    if any(row.role not in ROLES for row in receipts):
+        raise ExecutorError("receipt-role-invalid")
     if len(receipts) < 2 or {row.role for row in receipts} != ROLES:
         raise ExecutorError("independent-peer-receipt-required")
     by_role = {host.role: host for host in hosts}
     last_sequence = {role: -1 for role in ROLES}
-    seen_phase = {role: -1 for role in ROLES}
+    next_phase = {role: 0 for role in ROLES}
     for receipt in receipts:
+        if receipt.role not in ROLES:
+            raise ExecutorError("receipt-role-invalid")
         auth = by_role[receipt.role]
         if not auth.consent:
             raise ExecutorError("authorization-revoked")
@@ -105,21 +140,30 @@ def reconcile_receipts(
             "endpoint_digest", "network_id",
         )):
             raise ExecutorError("receipt-authorization-mismatch")
+        peer_auth = by_role["i2pd" if receipt.role == "i2pr" else "i2pr"]
+        if receipt.peer_router_info_digest != peer_auth.router_info_digest:
+            raise ExecutorError("receipt-peer-identity-mismatch")
         if receipt.phase not in PHASES:
             raise ExecutorError("receipt-phase-invalid")
         if not isinstance(receipt.sequence, int) or isinstance(receipt.sequence, bool) or receipt.sequence < 0:
             raise ExecutorError("receipt-sequence-invalid")
         if receipt.sequence <= last_sequence[receipt.role]:
             raise ExecutorError("receipt-replay")
+        if receipt.sequence != next_phase[receipt.role]:
+            raise ExecutorError("receipt-phase-gap")
         if not isinstance(receipt.packet_count, int) or isinstance(receipt.packet_count, bool) or receipt.packet_count < 0:
             raise ExecutorError("receipt-count-invalid")
         index = PHASES.index(receipt.phase)
-        if index < seen_phase[receipt.role]:
-            raise ExecutorError("receipt-phase-regression")
-        if receipt.phase == "peer_authenticated" and receipt.packet_count == 0:
-            raise ExecutorError("authenticated-session-unobserved")
+        if index != next_phase[receipt.role]:
+            raise ExecutorError("receipt-phase-order-invalid")
+        if receipt.phase in {"peer_authenticated", "request_received", "reply_received"}:
+            if receipt.packet_count == 0:
+                code = "authenticated-session-unobserved" if receipt.phase == "peer_authenticated" else "product-message-unobserved"
+                raise ExecutorError(code)
         last_sequence[receipt.role] = receipt.sequence
-        seen_phase[receipt.role] = index
+        next_phase[receipt.role] = index + 1
+    if any(index != len(PHASES) for index in next_phase.values()):
+        raise ExecutorError("receipt-sequence-incomplete")
     phase_counts = {
         phase: sum(row.phase == phase for row in receipts)
         for phase in PHASES
@@ -149,6 +193,7 @@ class FakeReceiptAdapter:
 
     def run(self) -> tuple[Receipt, ...]:
         output = []
+        by_role = self.hosts
         for role in ("i2pr", "i2pd"):
             host = self.hosts[role]
             for sequence, phase, packet_count in (
@@ -160,6 +205,7 @@ class FakeReceiptAdapter:
                 output.append(Receipt(
                     role=role, host_digest=host.host_digest,
                     router_info_digest=host.router_info_digest,
+                    peer_router_info_digest=by_role["i2pd" if role == "i2pr" else "i2pr"].router_info_digest,
                     binary_digest=host.binary_digest,
                     endpoint_digest=host.endpoint_digest,
                     network_id=host.network_id, run_epoch=host.run_epoch,
