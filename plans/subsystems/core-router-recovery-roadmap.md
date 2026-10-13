@@ -144,12 +144,12 @@ Bounded causal corrections must remain inside their owning plan, with determinis
 | 479 | active: comparator/profile lane open | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: local floodfill tests and guards pass; real Java candidate preference and operation-correlated store/lookup remain open. |
 | 480 | active: observer/event source owner open | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: authenticated source inputs verified; observer, product/write receipt ownership and Plan 476 collector remain open. |
 
-### Plans 481–482 — cross-owner repair contracts following active 477–480 (2026-10-13)
+### Plans 481–482 — completed cross-owner repair contracts following active 477–480 (2026-10-13)
 
-**Status:** Plan 481 passed for infrastructure only; Plan 482 active. No protocol or product capability is promoted.
+**Status:** both plans passed within their infrastructure/policy scope. No protocol or product capability is promoted.
 
 - **481 / P0 transport and daemon router-delivery owner — passed, infrastructure only**: [source-owned nested-build egress completion](../implementation/core-router-recovery/481-source-owned-build-egress-completion-bridge.md), closed at [`481-status.md`](../closure/core-router-recovery/481-status.md). The build owner consumes bounded per-build receipts from SSU2 and NTCP2 socket writers and aggregates nested TunnelData fanout. One exact-pinned stock run classified the originator cells as emitted but still had no correlated terminal reply; Plans 477/478 retain those product gates.
-- **482 / P0 Destination dial-policy owner — active**: [direct inbound-gateway dial privacy guard](../implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md). Startup, replenishment, and fallback distinguish the outbound route's actual first hop from the selected inbound gateway. Inbound builds require a live outbound tunnel and fail closed without one. Preserve unrelated router background sessions and legitimate authenticated inbound replies. Consumer and real SAM product remain in *active Plan 478*; close only at `plans/closure/core-router-recovery/482-status.md`.
+- **482 / P0 Destination dial-policy owner — passed, policy infrastructure only**: [direct inbound-gateway dial privacy guard](../implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md), closed at [`482-status.md`](../closure/core-router-recovery/482-status.md). Startup and replacement distinguish the outbound route's actual first hop from the selected inbound gateway; inbound builds fail closed without a usable outbound role. One pinned stock attempt stopped at outbound build and did not exercise inbound construction. Plan 478 retains the real SAM product gate; no anonymity or stock acceptance is claimed.
 
 Dependency flow:
 

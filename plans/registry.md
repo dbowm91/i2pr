@@ -176,13 +176,13 @@ Current authority: NTCP2 Plans 459/461 and 467–469 **passed at controlled scop
 
 Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute source fixes inside each active plan after concrete causal divergence, not new per-timeout numbered micro-plans. Plans 433, 435–439, 431 and specs/support.toml remain unchanged until their own external/public acceptance closes.
 
-### Recovery ownership — Plan 482 active; Plan 481 closed (2026-10-13)
+### Recovery ownership — Plans 481–482 closed (2026-10-13)
 
-**These cross-owner contracts are not numbered retries of unfinished Plans 477/478.** Plan 481 is closed for source-owned writer-completion infrastructure; its socket receipts do not prove remote acceptance or satisfy Plan 477's terminal-reply gate. Plan 482 remains active to prevent Destination provisioning and replenishment from initiating unnecessary direct sessions to an inbound gateway. Neither issue is asserted as the cause of unmatched reply IDs.
+**These cross-owner contracts are not numbered retries of unfinished Plans 477/478.** Plan 481 is closed for source-owned writer-completion infrastructure; its socket receipts do not prove remote acceptance or satisfy Plan 477's terminal-reply gate. Plan 482 is closed for Destination dial-authority policy; it does not prove anonymity or stock acceptance. Neither issue is asserted as the cause of unmatched reply IDs.
 
 | Plan | State | Bounded implementation handoff | Independent owner and acceptance |
 | --- | --- | --- | --- |
-| **482** | **active P0 — Destination dial privacy policy** | [Prevent Destination-driven direct inbound-gateway sessions](implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md) | Service provisioning/dial-authority owner: suppress eager or indirect direct IBGW dials on startup/replenishment/fallback while preserving legitimate outbound first-hop transport and replies; Plan 478 consumes as a privacy prerequisite, not as an external anonymity claim. |
+| **482** | **passed: dial-authority guard only** | [Prevent Destination-driven direct inbound-gateway sessions](implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md) | [Closure](closure/core-router-recovery/482-status.md): inbound build and replacement authority is tied to a live outbound route's actual first hop; bootstrap remains explicit. One pinned product attempt stopped before inbound construction; no product or anonymity claim. |
 
 **Continuation, no duplicate plan numbers:** 477 still owns strict terminal reply attribution and consumes Plan 481's source interface; 478 still owns genuine signed LS2, atomic owner generation, and bidirectional external SAM STREAM, and consumes Plan 482's dial policy. Plan 479 owns the separate Java floodfill comparator and NetDB response; Plan 480 retains independent SSU2 observer/Plan 476 consumer work. Do not create a Plan 483 for the next failed stock timeout or repeat Plan 475/461 lower-tier proofs. Pinned i2pd/Java unchanged, routine CI never sends public traffic, and `specs/support.toml` plus older closure records are immutable until conformance closure.
 
@@ -424,6 +424,7 @@ Parallel anonymity work is beside, not beneath, M12. Plans 297–305 remain stop
 ## Recently closed work
 
 | Subsystem | Plan | State | Closure record |
+| Core-router operational recovery | 482 Destination dial-authority and linkability guard | passed (policy infrastructure only) | `plans/closure/core-router-recovery/482-status.md` (`passed-destination-dial-authority-guard-with-stock-outbound-build-boundary`; implementation `3bb3dd8`, dial-cause fixture `3e4a75f`; Plan 478 product acceptance remains open) |
 | Core-router operational recovery | 481 source-owned build writer-completion bridge | passed (infrastructure only) | `plans/closure/core-router-recovery/481-status.md` (`passed-source-owned-build-egress-completion-infrastructure`; implementation `7416a61`; terminal stock reply remains unproven in active Plans 477/478) |
 | Core-router operational recovery | 453 guarded private-LAN SSU2 owner (local implementation) | passed (infrastructure only) | `plans/closure/core-router-recovery/453-status.md` (`passed-guarded-private-lan-ssu2-owner-local-scope`; implementation `69af55c`, docs/guard `c757fe5`; independent Plan 431 two-host evidence remains open) |
 | Core-router operational recovery | 430 executable baseline and public-role safety gates | passed (infrastructure only) | `plans/closure/core-router-recovery/430-status.md` (`passed-core-router-baseline-and-public-role-safety-gates`) |
