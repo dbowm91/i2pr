@@ -111,3 +111,74 @@ metadata to a specific stock-owned first-hop/terminal event while persisting
 only sanitized counts and categories; it must not patch i2pd or relax strict
 peer/message-ID matching. No raw IDs, identities, endpoints, or stock logs
 were retained by this source audit.
+
+## 2026-10-14 narrow harness attribution and creator-RI propagation divergence
+
+Narrowly controlled investigation using the existing Plan 458 harness only;
+no general verification loop was run for this attribution.
+
+Fixture correction: `run_plan458_sam_product.py` did not strip ANSI color
+escapes the daemon emits even when piped, so `parse_attempt_receipt_lines`
+and `router_network_sam_failure_stage` missed every `direction`,
+`originator_write_disposition`, `transition`, `failure_stage`, and
+`inbound_build_wait_expired` field. Sanitized receipts collapsed to
+`attempts_observed=0`, empty dispositions, and `terminal_failure_stage=null`
+despite stock showing ShortTunnelBuild traffic. The parser now strips
+`\x1b\[[0-9;]*m` before every regex, with a failing-before/passing-after
+regression (`test_ansi_colored_daemon_lines_still_parse`). Existing
+`test_plan474_build_wait_receipt` (3 tests) and `test_plan464_attempt_receipt`
+(6 tests) still pass.
+
+Product seam: `await_destination_build_install` now logs
+`inbound_gateway_messages`, `inbound_gateway_peer_match`,
+`inbound_gateway_route_match`, `inbound_orphans`, `invalid_replies`, and
+`pending_builds` alongside `originator_write_disposition` on
+`build_wait_expired`, so outbound bootstrap timeouts carry the same
+gateway-orphan attribution previously available only for inbound waits. No
+wire format, matching rule, or advertisement changed.
+
+One bounded exact-pin run after those two material changes (pinned i2pd
+2.61.0 at `635b013a612ff47278ef02acf8580a28e10e26c5`, four loopback
+floodfills, ordinary `i2pr run`):
+
+- Outbound destination bootstrap (direct): `selected`, `delivery_admitted`,
+  `udp_emitted`, then `authenticated_reply_matched` for attempt 1 and install.
+  Direct short-build crypto, per-hop IDs, outer/reply separation, and garlic
+  TunnelGateway correlation are proven for the direct path.
+- Inbound destination via outbound TunnelData: `selected`,
+  `delivery_admitted`, two `udp_emitted` (two TunnelData cells to the
+  outbound first hop), disposition `inbound:all-emitted`, then
+  `inbound_build_wait_expired` with `inbound_routed=1` (from the outbound
+  success), `inbound_orphans=24`, `authenticated_candidates=24`,
+  `candidate_peer_matches=5`, all five in `peer_id_other`, zero message-ID
+  matches, `inbound_gateway_messages=1` with zero peer/route matches. Stock
+  aggregate: 82 ShortTunnelBuild records, 38 transit-create events, zero
+  decrypt failures, zero next-hop rejections, zero reply-send failures.
+  Terminal stage `inbound-build`. No LS2 owner summary or STREAM was reached.
+
+Stock-source correlation on the test host (ephemeral, not retained beyond
+counts): the retained stock logs show peer `f` adding our creator RI at
+`03:12:04.343` with immediate SSU2 session, peer `d` adding at `04.148` with
+session at `04.461` (both before our inbound send at `04.568`), while peers
+`c`/`n` log `RouterInfo for <our-hash> not found, requested` at `14.5xx`,
+then `Store request`, `added`, `found, trying to connect`, and session
+established 10s after our send. The five peer-matching orphans with `other`
+IDs are therefore unattributed stock-owned builds through us, not our
+terminal return; our terminal forward (P2=`c`/`n`) was dropped at
+`Transports::SendMessage` for lack of our RI. The first unobservable
+transition is stock P2->creator SendMessage requiring creator-RI resolution,
+not per-hop IDs, outer/reply separation, collision retention, or writer
+receipts (all proven emitted). No raw IDs, hashes, endpoints, or stock logs
+are retained in this record beyond the categorical counts above.
+
+**Disposition:** 477's ID, collision, and writer-receipt contracts remain as
+implemented; this run supplies the missing source-owned first divergence with
+explicit bounded stop. Do not retry unchanged topology for per-ID matching:
+the next replay must ensure creator-RI resolvability by all transit
+candidates before inbound (for example, wait for `RouterInfo added` on all
+four stock logs before `i2pr run`, or constrain the inbound terminal to peers
+with existing sessions without adding new direct dials), then re-run one
+bounded Plan 458 attempt. That RI-propagation and TunnelData-delivery owner
+is handed to active Plan 478; no new per-timeout plan number is created.
+Plan 478 product gates (genuine inbound install, owner generation, signed
+LS2, bidirectional binary SAM STREAM, expiry/replacement) remain open.
