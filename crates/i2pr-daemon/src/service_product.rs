@@ -1463,7 +1463,9 @@ fn classify_publication_failure(error: &ServiceProductError) -> LeasePublication
     };
     if detail.contains("LS2 missing") {
         LeasePublicationFailureStage::MissingLeaseSet
-    } else if detail.contains("type-5 record construction") {
+    } else if detail.contains("type-5 record construction")
+        || detail.contains("publication store envelope")
+    {
         LeasePublicationFailureStage::StoreConstruction
     } else if detail.contains("no floodfill") {
         LeasePublicationFailureStage::FloodfillSelection
@@ -4792,6 +4794,7 @@ enum DestinationDialPurpose {
     RouterBootstrapFirstHop,
     OutboundTunnelFirstHop,
     CreatorRouterInfoPublication,
+    ServiceLeaseSetPublication,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4833,11 +4836,22 @@ fn creator_router_info_publication_authority(floodfill: Hash) -> DestinationDial
     }
 }
 
+/// Names an explicit floodfill for direct service-LeaseSet
+/// publication. Same explicit-selection rule as the creator-RI
+/// purpose: never derived from a gateway or path role.
+fn service_lease_set_publication_authority(floodfill: Hash) -> DestinationDialAuthority {
+    DestinationDialAuthority {
+        router_hash: floodfill,
+        purpose: DestinationDialPurpose::ServiceLeaseSetPublication,
+    }
+}
+
 #[cfg(test)]
 mod plan482_destination_dial_authority_tests {
     use super::{
         DestinationDialPurpose, creator_router_info_publication_authority,
         destination_build_dial_authority, dial_destination_peer,
+        service_lease_set_publication_authority,
     };
     use crate::exploratory_build::BuildDirection;
     use i2pr_proto::Hash;
@@ -4938,6 +4952,33 @@ mod plan482_destination_dial_authority_tests {
                 assert_ne!(
                     route_authority.purpose,
                     DestinationDialPurpose::CreatorRouterInfoPublication
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leaseset_publication_names_an_explicit_floodfill_purpose() {
+        let floodfill = hash(0xF1);
+        let authority = service_lease_set_publication_authority(floodfill);
+        assert_eq!(authority.router_hash, floodfill);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::ServiceLeaseSetPublication
+        );
+        assert_ne!(
+            authority.purpose,
+            DestinationDialPurpose::CreatorRouterInfoPublication
+        );
+        // The build-route authority can never mint either
+        // publication purpose.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            let route_authority =
+                destination_build_dial_authority(direction, hash(0x47), Some(floodfill));
+            if let Some(route_authority) = route_authority {
+                assert_ne!(
+                    route_authority.purpose,
+                    DestinationDialPurpose::ServiceLeaseSetPublication
                 );
             }
         }
@@ -7142,23 +7183,98 @@ fn service_publication_store(
 /// Plan 212 §13 — server-side local LS2 publication through the
 /// existing publication state machine.
 ///
-/// For each server Destination: use the real signed LS2 from
-/// provisioning, invoke the existing
-/// `DestinationTunnelCoordinator` publication state machine,
-/// compose the DatabaseStore through the service's real outbound
-/// tunnel, require ACK/publication success semantics, retain/retry
-/// only through existing bounded coordinator policy. No second
-/// publication implementation exists in service tunnels.
-/// Client-only Destinations never call this path merely to receive
-/// replies (their real LS2 rides in Streaming establishment).
+/// Sends one short-framed DatabaseStore directly to the selected
+/// floodfill over the shared delivery service, ensuring the session
+/// first with bounded dial authority. Mirrors the proven creator-RI
+/// direct path; the store envelope, lifetime policy, and redacted
+/// receipt shape match it exactly.
+async fn direct_ls2_store_to_floodfill(
+    ssu2_handle: &Ssu2DaemonHandle,
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    store_message: &i2pr_proto::DatabaseStoreMessage,
+    floodfill: i2pr_netdb::RouterHash,
+    options: &ServiceProductOptions,
+    cancellation: &CancellationToken,
+) -> Result<(), ServicePublicationError> {
+    let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
+    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+        ServiceProductError::Provisioning(
+            "operating-system randomness unavailable for publication".to_owned(),
+        )
+    })?;
+    let message_id = fresh_message_id(&mut rng, &[]).map_err(|error| {
+        ServiceProductError::Provisioning(format!("publication message id: {error}"))
+    })?;
+    let wire = crate::outbound_lookup::encode_store_envelope_short(
+        store_message,
+        message_id,
+        // Same 60-second lifetime policy as the creator-RI direct
+        // path, in the seconds the short envelope carries.
+        wall_secs().saturating_add(60) as u32,
+    )
+    .map_err(|_| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(
+            "publication store envelope".to_owned(),
+        ))
+    })?;
+    let wire_len = wire.len();
+    ensure_selected_peer_session(
+        destination_tunnels,
+        ssu2_handle,
+        service_lease_set_publication_authority(floodfill_hash),
+        options.dial_timeout,
+        options.ssu2_qualification_profile,
+        cancellation,
+    )
+    .await
+    .map_err(|error| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(format!(
+            "publication session unavailable: {error}"
+        )))
+    })?;
+    let request = crate::router_i2np::RouterDeliveryRequest::new(
+        i2pr_transport::PeerId::from_hash(floodfill_hash),
+        wire,
+        options.delivery_timeout,
+    )
+    .map_err(|_| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(
+            "publication delivery".to_owned(),
+        ))
+    })?;
+    let outcome = ssu2_handle.delivery().deliver(request, cancellation);
+    if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+        tracing::warn!(
+            delivery_outcome = ?outcome,
+            "LS2 direct publication delivery rejected"
+        );
+        return Err(
+            ServiceProductError::Provisioning("publication transport rejected".to_owned()).into(),
+        );
+    }
+    tracing::info!(
+        publication_wire_len = wire_len,
+        transition = "ls2_direct_publication_sent",
+        "LS2 direct publication store emitted",
+    );
+    Ok(())
+}
+
+/// For each server Destination: publish the real signed LS2 to a
+/// floodfill. The coordinator publication entry guards capacity
+/// and record validity; the wire goes direct short-framed (see
+/// `direct_ls2_store_to_floodfill`) rather than through tunnel
+/// composition. Client-only Destinations never call this path
+/// merely to receive replies (their real LS2 rides in Streaming
+/// establishment).
 ///
-/// Plan 213 §C — the recorded intent alone never stores bytes at
-/// the floodfill, so the dispatch below composes the publication
-/// cells through the service's real router-backed outbound role
-/// (mirroring `resolve_remote_destination_for_service`) and hands
-/// every cell to the shared router delivery service. Transport
-/// admission (`Accepted`) is the bounded success signal, matching
-/// the proven destination external lane.
+/// Plan 213 §C recorded tunnel-composed publication; the
+/// controlled lane uses the direct short path instead because the
+/// tunneled cells die silently past the first hop on the pinned
+/// reference while direct short stores land and store
+/// (creator-RI precedent). There is no anonymity claim in scope;
+/// restoring tunnel-composed publication needs its own plan once
+/// the tunnel death is attributed.
 async fn publish_service_ls2_for_service(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
@@ -7186,8 +7302,6 @@ async fn publish_service_ls2_for_service(
     // otherwise — and the floodfill below is selected for whichever it is.
     let store_message =
         service_publication_store(manager, service_destination, lease_set2, wall_secs())?;
-    let deadline = Deadline::new(options.tunnel_deadline)
-        .map_err(|_| ServiceProductError::Provisioning("publication deadline".to_owned()))?;
     // The publication state machine requires a floodfill peer. The
     // controlled lane provisions the reference as floodfill; pick
     // the first floodfill candidate for the record's routing key from
@@ -7208,7 +7322,7 @@ async fn publish_service_ls2_for_service(
     let request_id = {
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
-            .begin_ls2_publication(store_message, floodfill)
+            .begin_ls2_publication(store_message.clone(), floodfill)
             .map_err(|error| {
                 let rejection = match error {
                     crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
@@ -7228,130 +7342,33 @@ async fn publish_service_ls2_for_service(
                 }
             })?
     };
-    // Compose the DatabaseStore through the service's real
-    // router-backed outbound tunnel (borrow stays inside the bridge
-    // closure, mirroring `resolve_remote_destination_for_service`).
-    // The dispatch is handed to the shared router delivery service;
-    // no second publication implementation exists.
-    let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
-    let mut publication_rng = ChaCha8Rng::seed_from_u64(
-        wall_secs()
-            .wrapping_add(u64::from(request_id as u32))
-            .wrapping_add(0x2130),
-    );
-    let dispatch = {
-        let mut coord_guard = destination_tunnels.lock().await;
-        manager
-            .with_destination_bridge(service_destination, |bridge| {
-                if !bridge.has_router_network_state(wall_ms()) {
-                    return None;
-                }
-                let role = bridge.router_outbound_role_ref(wall_ms())?;
-                let (dispatch, _proof) = coord_guard
-                    .compose_ls2_publication_via_tunnel(
-                        request_id,
-                        floodfill_hash,
-                        role.role(),
-                        0x51A7_9301,
-                        wall_ms().saturating_add(60_000),
-                        deadline,
-                        &mut publication_rng,
-                        wall_ms(),
-                    )
-                    .ok()?;
-                Some(dispatch)
-            })
-            .flatten()
-    };
-    let Some(dispatch) = dispatch else {
-        let _ = destination_tunnels
-            .lock()
-            .await
-            .cancel_ls2_publication(request_id);
-        return Err(
-            ServiceProductError::Provisioning("publication compose failed".to_owned()).into(),
-        );
-    };
-    // Redacted cell accounting mirroring the build submit receipts
-    // so a publication that never reaches stock can be checked
-    // cell-by-cell against stock-side counters.
-    {
-        let mut publication_wire_lens: Vec<usize> = Vec::new();
-        for cell_delivery in dispatch.deliveries.iter().take(8) {
-            publication_wire_lens.push(cell_delivery.message_bytes().len());
-        }
-        tracing::info!(
-            publication_cell_count = dispatch.cell_count,
-            publication_wire_lens = ?publication_wire_lens,
-            transition = "ls2_publication_composed",
-            "LS2 publication tunnel delivery composed"
-        );
-    }
-    let delivery = ssu2_handle.delivery().clone();
-    // The publication rides the service outbound role, whose first
-    // hop may have no live session (role replacement or churn since
-    // the last build). Ensure it with the same bounded outbound
-    // first-hop authority builds use; a direct send without a
-    // session fails closed as NoActiveSession.
-    if let Some(first_hop) = dispatch.deliveries.first().map(|cell| cell.target().hash())
-        && let Err(error) = ensure_selected_peer_session(
-            destination_tunnels,
-            ssu2_handle,
-            DestinationDialAuthority {
-                router_hash: first_hop,
-                purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
-            },
-            options.dial_timeout,
-            options.ssu2_qualification_profile,
-            cancellation,
-        )
+    // Controlled direct short store delivery to the selected
+    // floodfill. The tunneled composition path is retained for
+    // future re-hardening, but its cells die silently past the
+    // first hop on the pinned reference (no tunnel effect, no
+    // warning, unattributed after exact-ID tracing), while direct
+    // short stores land and store (creator-RI precedent). There is
+    // no anonymity claim in scope, so direct linkage is accepted
+    // for the controlled lane; unlinkability hardening needs its
+    // own plan once the tunnel death is attributed.
+    //
+    // The coordinator publication entry above guards capacity and
+    // record validity; the wire below bypasses tunnel composition
+    // and is released here so no dangling entry leaks.
+    let direct_result = direct_ls2_store_to_floodfill(
+        ssu2_handle,
+        destination_tunnels,
+        &store_message,
+        floodfill,
+        &options,
+        cancellation,
+    )
+    .await;
+    let _ = destination_tunnels
+        .lock()
         .await
-    {
-        let _ = destination_tunnels
-            .lock()
-            .await
-            .cancel_ls2_publication(request_id);
-        return Err(ServiceProductError::Provisioning(format!(
-            "publication session unavailable: {error}"
-        ))
-        .into());
-    }
-    for cell_delivery in &dispatch.deliveries {
-        let request = match crate::router_i2np::RouterDeliveryRequest::new(
-            cell_delivery.target(),
-            cell_delivery.message_bytes().to_vec(),
-            options.delivery_timeout,
-        ) {
-            Ok(request) => request,
-            Err(_) => {
-                let _ = destination_tunnels
-                    .lock()
-                    .await
-                    .cancel_ls2_publication(request_id);
-                return Err(
-                    ServiceProductError::Provisioning("publication delivery".to_owned()).into(),
-                );
-            }
-        };
-        let outcome = delivery.deliver(request, &CancellationToken::new());
-        if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
-            let _ = destination_tunnels
-                .lock()
-                .await
-                .cancel_ls2_publication(request_id);
-            // The outcome variant name is a static bounded token
-            // (no peers or contents); it tells the lane whether the
-            // session, queue, or size gate rejected the cell.
-            tracing::warn!(
-                delivery_outcome = ?outcome,
-                "LS2 publication cell delivery rejected"
-            );
-            return Err(ServiceProductError::Provisioning(
-                "publication transport rejected".to_owned(),
-            )
-            .into());
-        }
-    }
+        .cancel_ls2_publication(request_id);
+    direct_result?;
     Ok(())
 }
 
