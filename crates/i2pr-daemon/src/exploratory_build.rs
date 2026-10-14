@@ -1492,6 +1492,10 @@ impl ExploratoryBuildCoordinator {
         )?;
         let peer = PeerId::from_hash(first_peer_hash);
         let mut delivery_set = BuildDeliverySet::default();
+        // Redacted family of the selected transports, so a tunneled send
+        // that never reaches stock can be attributed to the
+        // SSU2-first/NTCP2-fallback seam without naming peers.
+        let mut delivery_family: Option<&'static str> = None;
         let delivery_outcome = if let Some(slot) = outbound_slot {
             let expiration_ms = match bridge_header {
                 BridgeHeader::Standard { expiration_ms, .. } => expiration_ms,
@@ -1522,8 +1526,16 @@ impl ExploratoryBuildCoordinator {
                         .map_err(|_| {
                             BuildCoordinatorError::Coordinator("delivery request validation failed")
                         })?;
-                let (cell_result, _selected, ticket) = delivery
+                let (cell_result, selected, ticket) = delivery
                     .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+                if let Some(transport) = selected {
+                    let family = transport.as_str();
+                    delivery_family = Some(match delivery_family {
+                        None => family,
+                        Some(previous) if previous == family => family,
+                        Some(_) => "mixed",
+                    });
+                }
                 delivery_set.unobserved |= ticket.is_none();
                 delivery_set.tickets.push(ticket);
                 result = cell_result;
@@ -1551,6 +1563,7 @@ impl ExploratoryBuildCoordinator {
         let accepted = matches!(delivery_outcome, RouterDeliveryOutcome::Accepted);
         tracing::info!(
             direction = ?direction,
+            delivery_family = delivery_family.unwrap_or("unobserved"),
             transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
             "destination build attempt"
         );

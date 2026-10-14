@@ -45,6 +45,7 @@ def parse_attempt_receipt_lines(lines):
     stage_counts = Counter()
     transport_stage_counts = Counter()
     source_owned_delivery_dispositions = Counter()
+    delivery_families = Counter()
     emitted_message_ids = set()
     postbuild_summary = None
     owner_install_receipts = []
@@ -97,6 +98,10 @@ def parse_attempt_receipt_lines(lines):
                 emitted_message_ids.update(
                     int(value) for value in ids.group(1).split(",") if value.strip()
                 )
+        if transition and transition.group(1) in ("delivery_admitted", "delivery_rejected"):
+            family = re.search(r'delivery_family\s*=\s*"?([a-z0-9]+)', line)
+            if family:
+                delivery_families[family.group(1)] += 1
         if "destination inbound owners installed" in line:
             installed = re.search(
                 r"inbound_receive_count\s*=\s*(\d+).*?inbound_owner_count\s*=\s*(\d+)",
@@ -151,6 +156,7 @@ def parse_attempt_receipt_lines(lines):
         "source_owned_delivery_dispositions": dict(
             sorted(source_owned_delivery_dispositions.items())
         ),
+        "delivery_families": dict(sorted(delivery_families.items())),
         "udp_emission_correlated_attempts": sum(
             message_id in emitted_message_ids for message_id in attempt_messages.values()
         ),

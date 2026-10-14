@@ -76,5 +76,18 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
         )
 
 
+    def test_delivery_family_counts_parse(self) -> None:
+        parsed = parse_attempt_receipt_lines([
+            'INFO destination build attempt direction=Inbound '
+            'delivery_family="ssu2" transition="delivery_admitted"',
+            'INFO destination build attempt direction=Outbound '
+            'delivery_family="unobserved" transition="delivery_admitted"',
+        ])
+        self.assertEqual(
+            parsed["delivery_families"],
+            {"ssu2": 1, "unobserved": 1},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
