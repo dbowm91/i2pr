@@ -231,6 +231,7 @@ class Lane:
             self.ports[f"{name}_http"] = free_port()
         self.stock_transit_before = {}
         self.stock_churn_before = {}
+        self.mesh_quiet = False
         self.stock_log_offsets = {}
         self.logs = self.scratch / "logs"
         self.logs.mkdir()
@@ -513,16 +514,31 @@ threshold = 0
         self.stock_transit_before = {
             name: self.stock_transit_count(name) for name in peers
         }
-        # Mesh-churn observability (no gating): re-poll after 30 s so a
-        # later failure receipt can tell a quiet mesh from a churning one.
-        time.sleep(30)
-        for name in peers:
-            before = self.stock_transit_before.get(name)
-            after = self.stock_transit_count(name)
-            if before is None or after is None:
-                self.stock_churn_before[name] = None
-            else:
-                self.stock_churn_before[name] = abs(after - before)
+        # Mesh-quiescence gate: freshly restarted stock routers rebuild
+        # their pools in a startup storm (tens of transit changes per
+        # 30 s), and i2pr's first sessions plus RI propagation land in
+        # the middle of it. Poll until two consecutive 30 s windows are
+        # jointly quiet, bounded so a never-quiet mesh is recorded, not
+        # fatal. Stock is never reconfigured; only i2pr start waits.
+        self.mesh_quiet = False
+        previous = dict(self.stock_transit_before)
+        for _ in range(10):
+            time.sleep(30)
+            current = {name: self.stock_transit_count(name) for name in peers}
+            deltas = {}
+            for name in peers:
+                before = previous.get(name)
+                after = current.get(name)
+                if before is None or after is None:
+                    deltas[name] = None
+                else:
+                    deltas[name] = abs(after - before)
+            self.stock_churn_before = deltas
+            known = [v for v in deltas.values() if v is not None]
+            if known and sum(known) <= 8:
+                self.mesh_quiet = True
+                break
+            previous = current
 
         # Select daemon listener ports only after the multi-minute reference
         # preparation, so another local test cannot claim a stale reservation.
@@ -658,7 +674,8 @@ def main():
             json.dumps(
                 {"schema": "plan471-stock-build-receipt-v1", **receipt,
                  "stock": stock_receipt,
-                 "mesh_churn_before": lane.stock_churn_before},
+                 "mesh_churn_before": lane.stock_churn_before,
+                 "mesh_quiet": lane.mesh_quiet},
                 sort_keys=True,
             )
             + "\n"
@@ -666,7 +683,8 @@ def main():
         print(
             "Plan 471 sanitized stock/build receipt: "
             + json.dumps({**receipt, "stock": stock_receipt,
-                          "mesh_churn_before": lane.stock_churn_before}, sort_keys=True),
+                          "mesh_churn_before": lane.stock_churn_before,
+                          "mesh_quiet": lane.mesh_quiet}, sort_keys=True),
             file=__import__("sys").stderr,
         )
         print(f"Plan 458 qualification failed: {exc}", file=__import__("sys").stderr)
