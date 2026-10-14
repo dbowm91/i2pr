@@ -4292,26 +4292,48 @@ async fn resolve_remote_destination_for_service_inner(
     let sender_bridge_present = manager
         .with_destination_bridge(service_destination, |_| ())
         .is_some();
+    let sender_is_sam = manager
+        .router_network_sam_runtime(service_destination)
+        .is_some();
     let local_receive_for_lookup = receive_ids.first().copied().ok_or_else(|| {
         tracing::warn!(
             sender_bridge_present,
+            sender_is_sam,
             bridge_receive_count = receive_ids.len(),
             transition = "peer_lease_no_receive_ids",
             "peer lease fetch has no sender receive ids",
         );
         ServiceProductError::Provisioning("service has no inbound receive ids".to_owned())
     })?;
-    let local_receive = TunnelId::new(local_receive_for_lookup)
-        .map_err(|_| ServiceProductError::Provisioning("invalid receive tunnel id".to_owned()))?;
-    let reply_path =
-        reply_path_for_inbound_route(coordinator.registry(), local_receive).map_err(|_| {
-            tracing::warn!(
-                lookup_stage = "reply-path",
-                transition = "peer_lease_lookup_stage",
-                "peer LeaseSet2 fetch failed before send",
-            );
-            ServiceProductError::LookupTimeout
-        })?;
+    // Prefer a receive id with a live registry gateway route: the
+    // bridge projection, owner table, and coordinator registry can
+    // diverge across replacement (each is correct alone), so probe
+    // each candidate in order and fail closed only when none has a
+    // route. Counts only; no tunnel ids logged.
+    let mut live_candidates = 0usize;
+    let mut routed_path = None;
+    for candidate in receive_ids.iter().copied() {
+        let Ok(tunnel_id) = TunnelId::new(candidate) else {
+            continue;
+        };
+        live_candidates += 1;
+        match reply_path_for_inbound_route(coordinator.registry(), tunnel_id) {
+            Ok(path) => {
+                routed_path = Some(path);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    let reply_path = routed_path.ok_or_else(|| {
+        tracing::warn!(
+            bridge_receive_count = receive_ids.len(),
+            live_candidates,
+            transition = "peer_lease_no_registry_route",
+            "peer lease fetch has no registry-routed receive id",
+        );
+        ServiceProductError::Provisioning("service has no registry-routed receive id".to_owned())
+    })?;
     let (lookup_id, action) = {
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
@@ -4594,6 +4616,18 @@ async fn resolve_remote_destination_for_service_inner(
         let coord_guard = destination_tunnels.lock().await;
         coord_guard.lease_store().get(&destination_hash).cloned()
     };
+    // Temporary Plan 478 attribution: the lookup loop reported
+    // success yet the exact-key read missed. Distinguish an empty
+    // store from a key mismatch by count only. Remove once
+    // attributed.
+    if cached.is_none() {
+        let coord_guard = destination_tunnels.lock().await;
+        tracing::warn!(
+            store_len = coord_guard.lease_store().len(),
+            transition = "peer_lease_cache_miss_after_resolve",
+            "peer LeaseSet2 resolved but exact-key read missed",
+        );
+    }
     let cached = cached.ok_or(ServiceProductError::LookupTimeout)?;
     let validated = cached.clone();
     let now_ms = wall_ms();
