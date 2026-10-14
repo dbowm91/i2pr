@@ -4112,13 +4112,6 @@ impl ServiceTunnelManager {
             crate::service_delivery::RoutingDecision::LocalCoOwned => Ok(false),
             crate::service_delivery::RoutingDecision::RemoteUnresolved => Ok(false),
             crate::service_delivery::RoutingDecision::RemoteRouter => {
-                // Temporary Plan 478 attribution: count remote-route
-                // entries (no identities). Remove once SYN delivery
-                // is attributed.
-                tracing::info!(
-                    transition = "remote_route_attempt",
-                    "outbound remote route entered",
-                );
                 let backend = capability
                     .backend()
                     .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
@@ -4248,6 +4241,24 @@ impl ServiceTunnelManager {
                     now_seconds,
                     &backend.router_delivery(),
                 )?;
+                // Redacted send accounting mirroring the build
+                // submit receipts: cell counts and wire lengths so a
+                // remote send that never arrives can be checked
+                // against stock-side counters.
+                {
+                    let mut remote_wire_lens: Vec<usize> = Vec::new();
+                    if let Some(dispatch) = composition.dispatch.as_ref() {
+                        for cell in dispatch.deliveries.iter().take(8) {
+                            remote_wire_lens.push(cell.message_bytes().len());
+                        }
+                    }
+                    tracing::info!(
+                        remote_cell_count = composition.cells.len(),
+                        remote_wire_lens = ?remote_wire_lens,
+                        transition = "remote_route_composed",
+                        "outbound remote send composed",
+                    );
+                }
                 let cell_count = composition.cells.len();
                 let plan_result = match composition.dispatch {
                     Some(dispatch) => dispatch,
