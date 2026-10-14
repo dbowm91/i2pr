@@ -5286,6 +5286,94 @@ fn reselect_inbound_with_session_predicate(
     Ok(selected)
 }
 
+/// Decides whether a failed outbound bootstrap build may be retried once
+/// on a fresh path. Only an emitted-but-unanswered attempt qualifies: the
+/// local writer proved the bytes left the socket, so a different random
+/// three-hop route may reach a peer that already resolves our RouterInfo.
+/// Explicit stock rejection, invalid replies, local delivery rejection,
+/// unobserved writes, and cancellation never retry.
+fn should_retry_bootstrap_build(
+    error: &ServiceProductError,
+    disposition: BuildEmissionDisposition,
+    cancellation: &CancellationToken,
+) -> bool {
+    if cancellation.is_cancelled() {
+        return false;
+    }
+    if !matches!(error, ServiceProductError::OutboundBuildMissing) {
+        return false;
+    }
+    matches!(
+        disposition,
+        BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+            | BuildEmissionDisposition::PartialEmission
+    )
+}
+
+#[cfg(test)]
+mod bootstrap_retry_tests {
+    use super::{BuildEmissionDisposition, ServiceProductError, should_retry_bootstrap_build};
+    use i2pr_core::CancellationReason;
+    use i2pr_runtime::CancellationToken;
+
+    fn missing() -> ServiceProductError {
+        ServiceProductError::OutboundBuildMissing
+    }
+
+    #[test]
+    fn emitted_timeout_retries_when_live() {
+        let live = CancellationToken::default();
+        assert!(should_retry_bootstrap_build(
+            &missing(),
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &live,
+        ));
+        assert!(should_retry_bootstrap_build(
+            &missing(),
+            BuildEmissionDisposition::PartialEmission,
+            &live,
+        ));
+    }
+
+    #[test]
+    fn unobserved_or_pending_writes_never_retry() {
+        let live = CancellationToken::default();
+        for disposition in [
+            BuildEmissionDisposition::Pending,
+            BuildEmissionDisposition::NotEmitted,
+            BuildEmissionDisposition::UnobservedTransport,
+        ] {
+            assert!(
+                !should_retry_bootstrap_build(&missing(), disposition, &live),
+                "disposition {disposition:?} must not retry"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_rejection_or_cancel_never_retries() {
+        let live = CancellationToken::default();
+        let emitted = BuildEmissionDisposition::AllOriginatorDeliveriesEmitted;
+        for error in [
+            ServiceProductError::OutboundBuildRejected,
+            ServiceProductError::OutboundBuildInvalidReply,
+            ServiceProductError::OutboundBuildDeliveryRejected,
+            ServiceProductError::InboundBuildMissing,
+            ServiceProductError::Provisioning(
+                "Destination-group provisioning cancelled".to_owned(),
+            ),
+        ] {
+            assert!(
+                !should_retry_bootstrap_build(&error, emitted, &live),
+                "error {error} must not retry"
+            );
+        }
+        let cancelled = CancellationToken::default();
+        cancelled.cancel(CancellationReason::TestHarnessTeardown);
+        assert!(!should_retry_bootstrap_build(&missing(), emitted, &cancelled));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
@@ -5473,44 +5561,155 @@ async fn provision_all_service_router_material(
             }
             if build_index == 0
                 && bootstrap_outbound_role_slot.is_none()
-                && let Some((outbound, bridge, outer_id, _expected_peer)) = pending_outbound.pop()
+                && let Some((mut outbound, mut bridge, mut outer_id, _expected_peer)) =
+                    pending_outbound.pop()
             {
-                let mut bootstrap_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-                    ServiceProductError::Provisioning(
-                        "operating-system randomness unavailable".to_owned(),
+                // At most one accounted retry: an emitted-but-unanswered
+                // bootstrap is cancelled (freeing its pending slot while its
+                // identifiers stay replay-retained) and resubmitted on a
+                // freshly selected path with fresh tunnel/message
+                // identifiers. Explicit rejection, invalid replies, local
+                // delivery failure, and cancellation never loop.
+                let mut attempts = 0u8;
+                let binding = loop {
+                    attempts = attempts.saturating_add(1);
+                    let mut bootstrap_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                        ServiceProductError::Provisioning(
+                            "operating-system randomness unavailable".to_owned(),
+                        )
+                    })?;
+                    let attempt_id = match coordinator
+                        .submit_destination(
+                            outbound,
+                            &delivery,
+                            &bridge,
+                            BridgeHeader::ShortTransport {
+                                message_id: outer_id,
+                                expiration_seconds: wall_secs().saturating_add(60) as u32,
+                            },
+                            &mut bootstrap_rng,
+                        )
+                        .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
+                    {
+                        SubmitResult::Submitted { attempt_id, .. } => attempt_id,
+                        SubmitResult::Rejected { .. } => {
+                            return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                        }
+                    };
+                    match await_destination_build_install(
+                        manager,
+                        coordinator,
+                        ssu2_handle,
+                        attempt_id,
+                        runtime.destination_id,
+                        BuildDirection::Outbound,
+                        options,
+                        cancellation,
+                        startup_inbound,
+                        startup_inbound_bytes,
                     )
-                })?;
-                let attempt_id = match coordinator
-                    .submit_destination(
-                        outbound,
-                        &delivery,
-                        &bridge,
-                        BridgeHeader::ShortTransport {
-                            message_id: outer_id,
-                            expiration_seconds: wall_secs().saturating_add(60) as u32,
-                        },
-                        &mut bootstrap_rng,
-                    )
-                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
-                {
-                    SubmitResult::Submitted { attempt_id, .. } => attempt_id,
-                    SubmitResult::Rejected { .. } => {
-                        return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                    .await
+                    {
+                        Ok(binding) => break binding,
+                        Err(error) => {
+                            let disposition = coordinator
+                                .emission_disposition(attempt_id)
+                                .unwrap_or(BuildEmissionDisposition::NotEmitted);
+                            if attempts >= 2
+                                || !should_retry_bootstrap_build(
+                                    &error,
+                                    disposition,
+                                    cancellation,
+                                )
+                            {
+                                return Err(error);
+                            }
+                            coordinator.cancel(attempt_id);
+                            tracing::info!(
+                                build_attempt_id = attempt_id.get(),
+                                originator_write_disposition = ?disposition,
+                                retry_attempt = attempts + 1,
+                                transition = "bootstrap_retry",
+                                "destination outbound bootstrap attempt unanswered after emission",
+                            );
+                            // Fresh random path for the single retry: new
+                            // peers, new dial authority/session, new tunnel
+                            // and message identifiers. The cancelled
+                            // attempt's identifiers stay replay-retained in
+                            // the coordinator, so the exclusion sets below
+                            // cannot collide with them.
+                            let retry_selected =
+                                select_destination_path_os(&candidates)?;
+                            let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+                            reserved_tunnel_ids
+                                .extend(allocated_startup_tunnel_ids.iter().copied());
+                            let retry_ids =
+                                allocator.allocate_set(5, &reserved_tunnel_ids)?;
+                            allocated_startup_tunnel_ids.extend(retry_ids.iter().copied());
+                            let retry_peers = selected_peer_material(
+                                retry_selected,
+                                [
+                                    HopRole::Participant,
+                                    HopRole::Participant,
+                                    HopRole::OutboundEndpoint,
+                                ],
+                                [retry_ids[1], retry_ids[2], retry_ids[3]],
+                                [retry_ids[2], retry_ids[3], retry_ids[4]],
+                                &spec_id,
+                            )?;
+                            let retry_creator = TunnelId::new(retry_ids[0]).map_err(|_| {
+                                ServiceProductError::Provisioning(format!(
+                                    "{spec_id}: bad retry outbound creator id"
+                                ))
+                            })?;
+                            let authority = destination_build_dial_authority(
+                                BuildDirection::Outbound,
+                                retry_peers[0].router_hash,
+                                None,
+                            )
+                            .ok_or_else(|| {
+                                ServiceProductError::Provisioning(
+                                    "retry outbound Destination build has no authorized first hop"
+                                        .to_owned(),
+                                )
+                            })?;
+                            ensure_selected_peer_session(
+                                destination_tunnels,
+                                ssu2_handle,
+                                authority,
+                                options.dial_timeout,
+                                options.ssu2_qualification_profile,
+                                cancellation,
+                            )
+                            .await?;
+                            let mut retry_rng =
+                                ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                                    ServiceProductError::Provisioning(
+                                        "operating-system randomness unavailable".to_owned(),
+                                    )
+                                })?;
+                            let retry_reply_id =
+                                fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
+                            excluded_message_ids.push(retry_reply_id);
+                            let retry_outer_id =
+                                fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
+                            excluded_message_ids.push(retry_outer_id);
+                            allocated_startup_message_ids
+                                .extend([retry_reply_id, retry_outer_id]);
+                            outbound = DestinationBuildRequest {
+                                destination_id: runtime.destination_id,
+                                direction: BuildDirection::Outbound,
+                                peers: retry_peers,
+                                creator_tunnel_id: retry_creator,
+                                message_id: retry_reply_id,
+                                outbound_reply_router: Some(peer.local_hash),
+                                originator_hash: None,
+                            };
+                            bridge = ShortBuildI2npBridge::new();
+                            outer_id = retry_outer_id;
+                        }
                     }
                 };
-                let binding = await_destination_build_install(
-                    manager,
-                    coordinator,
-                    ssu2_handle,
-                    attempt_id,
-                    runtime.destination_id,
-                    BuildDirection::Outbound,
-                    options,
-                    cancellation,
-                    startup_inbound,
-                    startup_inbound_bytes,
-                )
-                .await?;
                 bootstrap_outbound_role_slot = Some(binding.role_slot);
             }
             // Prefer an inbound terminal that already has a live session
