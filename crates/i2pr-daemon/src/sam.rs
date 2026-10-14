@@ -3058,10 +3058,22 @@ async fn execute_stream_connect(
     let (target_destination_id, signing_public_key) =
         match streams::decode_destination_id_and_signing(&destination) {
             Ok(pair) => pair,
-            Err(_) => {
+            Err(error) => {
+                // Static reason taxonomy (never error contents):
+                // base64 shape, destination structure, or a
+                // non-X25519 (ElGamal-legacy) encryption key.
+                let message = match error {
+                    streams::SamDestinationTripleError::Base64 => "DESTINATION base64 invalid",
+                    streams::SamDestinationTripleError::Destination(_) => {
+                        "DESTINATION structure invalid"
+                    }
+                    streams::SamDestinationTripleError::StaticPublicKeyLength => {
+                        "DESTINATION encryption is not X25519"
+                    }
+                };
                 return Err(StreamConnectFailed {
                     result: ReplyResult::InvalidKey,
-                    message: "could not decode DESTINATION".to_owned(),
+                    message: message.to_owned(),
                 });
             }
         };
@@ -3129,10 +3141,19 @@ async fn execute_stream_connect(
     } else {
         match streams::decode_destination_triple(&destination) {
             Ok((_, _, static_key)) => static_key,
-            Err(_) => {
+            Err(error) => {
+                let message = match error {
+                    streams::SamDestinationTripleError::Base64 => "DESTINATION base64 invalid",
+                    streams::SamDestinationTripleError::Destination(_) => {
+                        "DESTINATION structure invalid"
+                    }
+                    streams::SamDestinationTripleError::StaticPublicKeyLength => {
+                        "DESTINATION encryption is not X25519"
+                    }
+                };
                 return Err(StreamConnectFailed {
                     result: ReplyResult::InvalidKey,
-                    message: "could not decode DESTINATION".to_owned(),
+                    message: message.to_owned(),
                 });
             }
         }
