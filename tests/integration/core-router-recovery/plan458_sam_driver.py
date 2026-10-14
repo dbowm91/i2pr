@@ -106,10 +106,17 @@ def session_create_failure_category(message):
     return "unclassified"
 
 
-def create_session(endpoint, session_id, timeout):
+def create_session(endpoint, session_id, timeout, crypto_type=None):
     sam = SamSocket(endpoint, timeout)
     sam.hello()
-    sam.send_line("DEST GENERATE SIGNATURE_TYPE=7")
+    # Plan 478: the stock peer must use an ECIES-X25519 destination
+    # (CRYPTO_TYPE=4). The i2pr router product is ECIES-only by
+    # declared scope (ElGamal fails closed); stock defaults to
+    # ElGamal. Our own session keeps its existing parameters.
+    generate = "DEST GENERATE SIGNATURE_TYPE=7"
+    if crypto_type is not None:
+        generate += f" CRYPTO_TYPE={crypto_type}"
+    sam.send_line(generate)
     generated = sam.line()
     private = field(generated, "PRIV")
     if not generated.startswith("DEST REPLY") or not private:
@@ -190,7 +197,9 @@ def main():
     args = parser.parse_args()
 
     i2pr_session, i2pr_public = create_session(args.i2pr_sam, "p458router", args.timeout)
-    i2pd_session, i2pd_public = create_session(args.i2pd_sam, "p458peer", args.timeout)
+    i2pd_session, i2pd_public = create_session(
+        args.i2pd_sam, "p458peer", args.timeout, crypto_type="4"
+    )
     outcomes = {}
     try:
         for label, sender, receiver, sid, rid in (
