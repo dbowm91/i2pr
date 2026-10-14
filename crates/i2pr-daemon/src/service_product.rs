@@ -3284,7 +3284,56 @@ impl ServiceProduct {
                 }
             }
         }
+        // Plan 478 §6 — fulfill peer LeaseSet2 fetch requests filed
+        // by the outbound delivery sweep on cache misses. Each runs
+        // the standard bounded service remote resolution (same
+        // machinery, same bounds as configured remote targets), so
+        // SYN retransmits converge once the record lands instead of
+        // timing out on an empty cache. Failures are recorded with a
+        // static reason and retried only after the filing cooldown.
+        self.fulfill_peer_lease_requests().await;
         Ok(())
+    }
+
+    /// Plan 478 §6 — drains peer LeaseSet2 fetch requests filed by
+    /// the delivery sweep and resolves each through the standard
+    /// bounded service remote resolution. Runs inline in the advance
+    /// tick (same bounds as configured remote targets); failures
+    /// record a static reason and rely on the filing cooldown for
+    /// retry pacing, never on hot loops.
+    async fn fulfill_peer_lease_requests(&mut self) {
+        let requests = self.manager.take_peer_lease_requests();
+        for (sender, peer) in requests {
+            let Some(target) = crate::service_delivery::destination_hash_from_slice(&peer) else {
+                continue;
+            };
+            match resolve_remote_destination_for_service(
+                &self.manager,
+                &mut self.inner.coordinator,
+                &self.inner.destination_tunnels,
+                &mut self.inner.ssu2_handle,
+                sender,
+                target,
+                self.inner.options,
+            )
+            .await
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        transition = "peer_lease_fulfilled",
+                        "peer LeaseSet2 fetch resolved"
+                    );
+                }
+                Err(_) => {
+                    // Static reason only; the filing cooldown paces
+                    // retries, never hot loops.
+                    tracing::warn!(
+                        transition = "peer_lease_unresolved",
+                        "peer LeaseSet2 fetch failed; retry after filing cooldown"
+                    );
+                }
+            }
+        }
     }
 
     /// Fills current target deficits through the same bounded Plan 314

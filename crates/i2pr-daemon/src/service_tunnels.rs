@@ -448,6 +448,17 @@ pub struct ServiceTunnelManager {
     /// active and removed on expiry / failure / replacement /
     /// generation drain.
     inbound_tunnel_owners: Mutex<HashMap<u32, Arc<ServiceRuntime>>>,
+    /// Plan 478 §6 — remote-peer LeaseSet2 fetch requests filed by
+    /// the outbound delivery sweep when a remote-routed request
+    /// finds no cached peer record (`NotCached`). Keyed by peer
+    /// destination hash; the value names the requesting sender
+    /// destination and the first-request millisecond clock. The
+    /// product's advance loop drains the table and runs one
+    /// bounded lookup per entry, so SYN retransmits converge once
+    /// the record lands instead of timing out on an empty cache.
+    /// Bounded (cap + per-peer cooldown) so a missing peer cannot
+    /// spam floodfills.
+    peer_lease_requests: Mutex<HashMap<[u8; 32], (DestinationId, u64)>>,
     /// Plan 210 §G — diagnostic counter for inbound `TunnelData`
     /// cells whose receive tunnel id is unknown to the manager.
     /// Plan 210 §F requires stale / orphan receives to fail
@@ -643,6 +654,15 @@ impl EncryptedTargetStatus {
 }
 
 const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
+
+/// Plan 478 §6 — peer lease fetch table bound: at most this many
+/// distinct remote peers await a bounded lookup at once.
+const MAX_PEER_LEASE_REQUESTS: usize = 16;
+
+/// Plan 478 §6 — per-peer lookup request cooldown: a failed fetch
+/// is not re-filed until this long after the previous filing, so
+/// SYN retransmits against a missing peer cannot spam floodfills.
+const PEER_LEASE_REQUEST_COOLDOWN_MS: u64 = 60_000;
 
 /// One bounded request to activate a deferred Destination group.
 pub(crate) struct DeferredActivationRequest {
@@ -847,6 +867,7 @@ impl ServiceTunnelManager {
             service_tls_policy: Mutex::new(None),
             inbound_owners: Mutex::new(HashMap::new()),
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
+            peer_lease_requests: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
             deferred_activation_tx,
@@ -3184,6 +3205,49 @@ impl ServiceTunnelManager {
             .unwrap_or_default()
     }
 
+    /// Plan 478 §6 — files a remote-peer LeaseSet2 fetch request for
+    /// the product advance loop. Returns true when the request is
+    /// newly filed (the caller should expect a bounded lookup to
+    /// start); false when an identical request is already pending
+    /// within cooldown or the table is full. Never logs peer
+    /// identities; counts only.
+    pub(crate) fn request_peer_lease_lookup(
+        &self,
+        sender: DestinationId,
+        peer: [u8; 32],
+        now_ms: u64,
+    ) -> bool {
+        let Ok(mut table) = self.peer_lease_requests.lock() else {
+            return false;
+        };
+        match table.get(&peer) {
+            Some((_, last_ms))
+                if now_ms.saturating_sub(*last_ms) < PEER_LEASE_REQUEST_COOLDOWN_MS =>
+            {
+                false
+            }
+            _ => {
+                if table.len() >= MAX_PEER_LEASE_REQUESTS && !table.contains_key(&peer) {
+                    return false;
+                }
+                table.insert(peer, (sender, now_ms));
+                true
+            }
+        }
+    }
+
+    /// Plan 478 §6 — drains filed peer-lease fetch requests for the
+    /// product advance loop. Bounded by the table cap.
+    pub(crate) fn take_peer_lease_requests(&self) -> Vec<(DestinationId, [u8; 32])> {
+        let Ok(mut table) = self.peer_lease_requests.lock() else {
+            return Vec::new();
+        };
+        table
+            .drain()
+            .map(|(peer, (sender, _))| (sender, peer))
+            .collect()
+    }
+
     /// Plan 210 §F — records a single inbound orphan receive
     /// (receive tunnel id with no registered owner). Returns the
     /// total observation count since manager construction. The
@@ -4017,8 +4081,19 @@ impl ServiceTunnelManager {
                             .flatten()
                         })
                 };
-                let cached_ls2 =
-                    cached_ls2.ok_or(crate::service_delivery::RemoteDeliveryError::NotCached)?;
+                // Plan 478 §6 — cache miss: file a bounded peer-lease
+                // fetch for the product advance loop instead of
+                // dropping the SYN silently. SYN retransmits will
+                // retry once the record lands; the table cap and
+                // per-peer cooldown bound floodfill load.
+                let Some(cached_ls2) = cached_ls2 else {
+                    self.request_peer_lease_lookup(
+                        service_destination,
+                        destination_hash,
+                        service_streaming_now_ms(),
+                    );
+                    return Err(crate::service_delivery::RemoteDeliveryError::NotCached);
+                };
                 // Plan 208 §B — the queued `TransportSendRequest`
                 // is the same request the service-owned
                 // `StreamingManager` drained from its real outbound
@@ -9648,6 +9723,32 @@ mod plan212_router_backed_service_destination_tests {
     }
 
     /// Plan 212 §17.1 — install accepts matching identity.
+    /// Plan 478 §6 — peer lease fetch filings are bounded and
+    /// cooled down: first filing accepted, immediate refiling
+    /// suppressed, refiling after cooldown accepted, drain returns
+    /// filed entries.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_peer_lease_requests_bound_and_cool_down() {
+        let directory = temp_data_dir("plan478-lease-requests");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-lease");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let peer = [0x77u8; 32];
+        assert!(manager.request_peer_lease_lookup(destination_id, peer, 1_000));
+        // Immediate refiling is suppressed (cooldown).
+        assert!(!manager.request_peer_lease_lookup(destination_id, peer, 1_001));
+        // Refiling after cooldown is accepted.
+        assert!(manager.request_peer_lease_lookup(
+            destination_id,
+            peer,
+            1_000 + PEER_LEASE_REQUEST_COOLDOWN_MS + 1
+        ));
+        let drained = manager.take_peer_lease_requests();
+        assert_eq!(drained, vec![(destination_id, peer)]);
+        // Drained table files again.
+        assert!(manager.request_peer_lease_lookup(destination_id, peer, 2_000));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn plan212_install_accepts_matching_identity() {
         let directory = temp_data_dir("plan212-install-ok");
