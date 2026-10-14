@@ -309,6 +309,7 @@ threshold = 0
         """Aggregate pinned stock logs and read-only inventory; never retain text."""
         counts = Counter()
         deltas = []
+        creator = getattr(self, "local_ident", None)
         for name in ("f", "c", "n", "d"):
             path = self.logs / f"{name}.log"
             if path.is_file():
@@ -341,6 +342,13 @@ threshold = 0
             counts["transit_reply_send_failures"] += text.count(
                 "TransitTunnel: Failed to send reply for transit tunnel"
             )
+            if creator:
+                counts["creator_ri_store_requests"] += text.count(
+                    f"Store request: RouterInfo {creator}"
+                )
+                counts["creator_ri_added"] += text.count(
+                    f"RouterInfo added: {creator}"
+                )
             before = self.stock_transit_before.get(name)
             after = self.stock_transit_count(name)
             if before is not None and after is not None:
@@ -591,6 +599,7 @@ introducer_service = false
         )
         for name in peers:
             self.seed_i2pd(name, local_router_info)
+        self.local_ident = storage_ident(local_router_info)
         self.stock_log_offsets = {
             name: (self.logs / f"{name}.log").stat().st_size for name in peers
         }

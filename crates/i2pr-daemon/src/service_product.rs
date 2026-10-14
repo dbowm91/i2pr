@@ -4760,10 +4760,18 @@ async fn submit_destination_replacement(
 /// Selects the only direct-dial target allowed by a Destination build
 /// operation. Inbound gateway identity is an encrypted target behind the
 /// outbound tunnel; it never grants direct-dial authority.
+///
+/// Creator RouterInfo publication is the narrow NetDb-precondition
+/// exception: short-build endpoints reply directly to the creator
+/// (Plan 114 direct-to-creator reply routing), so the creator record
+/// must be resolvable mesh-wide before any build is submitted. The
+/// authority names an explicit floodfill hash and never derives from
+/// a gateway or path role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DestinationDialPurpose {
     RouterBootstrapFirstHop,
     OutboundTunnelFirstHop,
+    CreatorRouterInfoPublication,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4795,9 +4803,22 @@ fn destination_build_dial_authority(
     }
 }
 
+/// Names an explicit floodfill for creator-RouterInfo publication.
+/// The hash is caller-supplied (nearest-floodfill selection); it is
+/// never derived from a gateway, path role, or tunnel identifier.
+fn creator_router_info_publication_authority(floodfill: Hash) -> DestinationDialAuthority {
+    DestinationDialAuthority {
+        router_hash: floodfill,
+        purpose: DestinationDialPurpose::CreatorRouterInfoPublication,
+    }
+}
+
 #[cfg(test)]
 mod plan482_destination_dial_authority_tests {
-    use super::{DestinationDialPurpose, destination_build_dial_authority, dial_destination_peer};
+    use super::{
+        DestinationDialPurpose, creator_router_info_publication_authority,
+        destination_build_dial_authority, dial_destination_peer,
+    };
     use crate::exploratory_build::BuildDirection;
     use i2pr_proto::Hash;
     use i2pr_runtime::CancellationToken;
@@ -4876,6 +4897,30 @@ mod plan482_destination_dial_authority_tests {
             DestinationDialPurpose::OutboundTunnelFirstHop
         );
         assert_ne!(authority.router_hash, replacement_target);
+    }
+
+    #[test]
+    fn creator_publication_names_an_explicit_floodfill_purpose() {
+        let floodfill = hash(0xF0);
+        let authority = creator_router_info_publication_authority(floodfill);
+        assert_eq!(authority.router_hash, floodfill);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::CreatorRouterInfoPublication
+        );
+        // The build-route authority can never mint this purpose: it
+        // derives only from explicit floodfill selection, never from a
+        // gateway or path role.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            let route_authority =
+                destination_build_dial_authority(direction, hash(0x47), Some(floodfill));
+            if let Some(route_authority) = route_authority {
+                assert_ne!(
+                    route_authority.purpose,
+                    DestinationDialPurpose::CreatorRouterInfoPublication
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -5462,6 +5507,190 @@ mod inbound_retry_tests {
     }
 }
 
+/// Floodfills receiving one creator RouterInfo publication per
+/// provisioning pass. Mirrors the reference closest-floodfill lookup
+/// width so any standard lookup walk for our key intersects the
+/// publication set.
+const CREATOR_RI_PUBLICATION_FLOODFILLS: usize = 3;
+
+/// Composes the fire-and-forget `DatabaseStore` carrying our creator
+/// RouterInfo. Pure constructor for deterministic coverage; the bytes
+/// are the same public record future handshakes emit, never key
+/// material.
+fn creator_router_info_store(
+    local_hash: Hash,
+    router_info: Vec<u8>,
+) -> Result<i2pr_proto::DatabaseStoreMessage, ServiceProductError> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &router_info).map_err(|_| {
+        ServiceProductError::Provisioning("creator RouterInfo compression failed".to_owned())
+    })?;
+    let compressed = encoder.finish().map_err(|_| {
+        ServiceProductError::Provisioning("creator RouterInfo compression failed".to_owned())
+    })?;
+    let payload =
+        i2pr_proto::DeferredPayload::new(compressed, MAX_I2NP_PAYLOAD_SIZE).map_err(|_| {
+            ServiceProductError::Provisioning(
+                "creator RouterInfo exceeds the bounded store payload".to_owned(),
+            )
+        })?;
+    Ok(i2pr_proto::DatabaseStoreMessage {
+        key: local_hash,
+        reply_token: 0,
+        reply_tunnel_id: None,
+        reply_gateway: None,
+        data: i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload),
+    })
+}
+
+/// Publishes our creator RouterInfo to the nearest known floodfills
+/// before any build is submitted. Short-build endpoints reply
+/// directly to the creator (Plan 114 direct-to-creator reply
+/// routing), so the creator record must be resolvable mesh-wide;
+/// handshake gossip alone reaches only dialed peers and loses the
+/// race against the first build.
+///
+/// Best-effort precondition: every failure (missing record, no
+/// floodfill, dial/store rejection, cancellation) is logged with
+/// counts only and provisioning continues. Floodfill dials use the
+/// narrow publication purpose, never a gateway-derived authority.
+#[allow(clippy::too_many_arguments)]
+async fn publish_creator_router_info(
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &Ssu2DaemonHandle,
+    local_hash: Hash,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    cancellation: &CancellationToken,
+) {
+    let Some(router_info) = ssu2_handle.service().installed_local_router_info() else {
+        tracing::debug!(
+            transition = "creator_ri_publication_skipped",
+            "creator RouterInfo unavailable for floodfill publication",
+        );
+        return;
+    };
+    let our_router_hash = i2pr_netdb::router_hash_from_proto_hash(local_hash);
+    let floodfills = {
+        let guard = destination_tunnels.lock().await;
+        let mut scored: Vec<([u8; 32], Hash)> = Vec::new();
+        for record in guard.store().floodfill_advertisers() {
+            let key = record.key();
+            if key.as_hash() == &local_hash {
+                continue;
+            }
+            scored.push((
+                i2pr_netdb::xor_distance(&key, &our_router_hash),
+                Hash::from_bytes(*key.as_bytes()),
+            ));
+        }
+        scored.sort_by_key(|entry| entry.0);
+        scored.truncate(CREATOR_RI_PUBLICATION_FLOODFILLS);
+        scored.into_iter().map(|(_, hash)| hash).collect::<Vec<_>>()
+    };
+    if floodfills.is_empty() {
+        tracing::debug!(
+            transition = "creator_ri_publication_skipped",
+            "no known floodfill for creator RouterInfo publication",
+        );
+        return;
+    }
+    let Ok(store) = creator_router_info_store(local_hash, router_info) else {
+        tracing::debug!(
+            transition = "creator_ri_publication_skipped",
+            "creator RouterInfo store composition failed",
+        );
+        return;
+    };
+    let mut rng = match ChaCha8Rng::try_from_os_rng() {
+        Ok(rng) => rng,
+        Err(_) => {
+            tracing::debug!(
+                transition = "creator_ri_publication_skipped",
+                "operating-system randomness unavailable for publication",
+            );
+            return;
+        }
+    };
+    let mut stores_accepted = 0usize;
+    for floodfill in &floodfills {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let authority = creator_router_info_publication_authority(*floodfill);
+        if ensure_selected_peer_session(
+            destination_tunnels,
+            ssu2_handle,
+            authority,
+            dial_timeout,
+            qualification_profile,
+            cancellation,
+        )
+        .await
+        .is_err()
+        {
+            continue;
+        }
+        let Ok(message_id) = fresh_message_id(&mut rng, &[]) else {
+            continue;
+        };
+        let wire = match crate::outbound_lookup::encode_store_envelope(
+            &store,
+            message_id,
+            wall_ms().saturating_add(60_000),
+        ) {
+            Ok(wire) => wire,
+            Err(_) => continue,
+        };
+        let request = match crate::router_i2np::RouterDeliveryRequest::new(
+            i2pr_transport::PeerId::from_hash(*floodfill),
+            wire,
+            dial_timeout,
+        ) {
+            Ok(request) => request,
+            Err(_) => continue,
+        };
+        if matches!(
+            ssu2_handle.delivery().deliver(request, cancellation),
+            crate::router_i2np::RouterDeliveryOutcome::Accepted
+        ) {
+            stores_accepted = stores_accepted.saturating_add(1);
+        }
+    }
+    tracing::info!(
+        floodfills_targeted = floodfills.len(),
+        stores_accepted,
+        transition = "creator_ri_publication",
+        "creator RouterInfo floodfill publication",
+    );
+}
+
+#[cfg(test)]
+mod creator_router_info_publication_tests {
+    use super::creator_router_info_store;
+    use i2pr_proto::Hash;
+
+    #[test]
+    fn store_keys_us_and_round_trips_public_bytes() {
+        let local = Hash::from_bytes([0x77; 32]);
+        let router_info = vec![0xA5u8; 128];
+        let store =
+            creator_router_info_store(local, router_info.clone()).expect("creator store composes");
+        assert_eq!(store.key, local);
+        assert_eq!(store.reply_token, 0);
+        assert!(store.reply_tunnel_id.is_none());
+        assert!(store.reply_gateway.is_none());
+        let i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload) = &store.data else {
+            panic!("creator store must carry RouterInfo bytes");
+        };
+        let mut decoder = flate2::read::GzDecoder::new(payload.as_bytes());
+        let mut recovered = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut recovered)
+            .expect("creator store decompresses");
+        assert_eq!(recovered, router_info);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
@@ -5480,6 +5709,18 @@ async fn provision_all_service_router_material(
     use i2pr_client::{
         DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
     };
+    // Creator-RI resolvability precedes every build: endpoints reply
+    // directly to the creator, and handshake gossip alone loses that
+    // race. Best-effort publication; provisioning continues regardless.
+    publish_creator_router_info(
+        destination_tunnels,
+        ssu2_handle,
+        peer.local_hash,
+        options.dial_timeout,
+        options.ssu2_qualification_profile,
+        cancellation,
+    )
+    .await;
     // Collect per-service target hashes first so HTTP and IRC
     // resolve independently; a missing/invalid target fails that
     // service only when the profile requires remote lookup
