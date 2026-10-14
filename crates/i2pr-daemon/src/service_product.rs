@@ -4455,6 +4455,33 @@ async fn resolve_remote_destination_for_service_inner(
                     );
                     ServiceProductError::LookupTimeout
                 })?;
+            // The lookup rides the service outbound role, whose
+            // first hop may have no live session (role replacement
+            // or churn since the last build). Ensure it with the
+            // same bounded outbound first-hop authority builds use;
+            // a send without a session fails closed as
+            // NoActiveSession.
+            if let Some(first_hop) = dispatch.deliveries.first().map(|cell| cell.target().hash())
+                && let Err(_) = ensure_selected_peer_session(
+                    destination_tunnels,
+                    ssu2_handle,
+                    DestinationDialAuthority {
+                        router_hash: first_hop,
+                        purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+                    },
+                    options.dial_timeout,
+                    options.ssu2_qualification_profile,
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    lookup_stage = "ensure",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                return Err(ServiceProductError::LookupTimeout);
+            }
             for cell_delivery in &dispatch.deliveries {
                 let request = crate::router_i2np::RouterDeliveryRequest::new(
                     cell_delivery.target(),
