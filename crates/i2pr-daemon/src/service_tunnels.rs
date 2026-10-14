@@ -4048,6 +4048,13 @@ impl ServiceTunnelManager {
             crate::service_delivery::RoutingDecision::LocalCoOwned => Ok(false),
             crate::service_delivery::RoutingDecision::RemoteUnresolved => Ok(false),
             crate::service_delivery::RoutingDecision::RemoteRouter => {
+                // Temporary Plan 478 attribution: count remote-route
+                // entries (no identities). Remove once SYN delivery
+                // is attributed.
+                tracing::info!(
+                    transition = "remote_route_attempt",
+                    "outbound remote route entered",
+                );
                 let backend = capability
                     .backend()
                     .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
@@ -4087,11 +4094,16 @@ impl ServiceTunnelManager {
                 // retry once the record lands; the table cap and
                 // per-peer cooldown bound floodfill load.
                 let Some(cached_ls2) = cached_ls2 else {
-                    self.request_peer_lease_lookup(
+                    if self.request_peer_lease_lookup(
                         service_destination,
                         destination_hash,
                         service_streaming_now_ms(),
-                    );
+                    ) {
+                        tracing::info!(
+                            transition = "peer_lease_filed",
+                            "peer LeaseSet2 fetch filed for advance-loop fulfillment",
+                        );
+                    }
                     return Err(crate::service_delivery::RemoteDeliveryError::NotCached);
                 };
                 // Plan 208 §B — the queued `TransportSendRequest`

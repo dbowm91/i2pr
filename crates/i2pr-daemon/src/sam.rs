@@ -3094,6 +3094,12 @@ async fn execute_stream_connect(
             });
         }
     };
+    // Redacted receipt for lane timing: a CONNECT was accepted
+    // for processing (no peer identities or keys).
+    tracing::info!(
+        transition = "stream_connect_received",
+        "SAM STREAM CONNECT accepted for processing",
+    );
 
     // Plan 149 §7: when the target destination is locally owned, resolve
     // the peer's validated LeaseSet2 through the SAM service's local
