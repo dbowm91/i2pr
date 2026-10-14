@@ -151,7 +151,12 @@ def open_stream(endpoint, command, timeout, wait_for_peer_line=False):
     status = sam.line()
     if "RESULT=OK" not in status:
         sam.close()
-        raise RuntimeError(f"SAM stream command failed: {status.split(' ', 4)[:4]}")
+        # Full status line (truncated): endpoint attribution matters
+        # because both routers emit STREAM STATUS lines.
+        raise RuntimeError(
+            f"SAM stream command failed on {endpoint}: {command.split(' ', 3)[:3]} "
+            f"status={status[:160]!r}"
+        )
     if wait_for_peer_line:
         # STREAM ACCEPT emits the peer destination line before raw stream bytes.
         sam.line()
@@ -199,6 +204,14 @@ def main():
     i2pr_session, i2pr_public = create_session(args.i2pr_sam, "p458router", args.timeout)
     i2pd_session, i2pd_public = create_session(
         args.i2pd_sam, "p458peer", args.timeout, crypto_type="4"
+    )
+    # Peer identities are public (published in NetDb); record shapes
+    # (lengths only) so lane forensics can match LS2 store keys and
+    # destination decodes without persisting key material.
+    print(
+        f"peer destinations: i2pr_public_len={len(i2pr_public)} "
+        f"i2pd_public_len={len(i2pd_public)}",
+        flush=True,
     )
     outcomes = {}
     try:
