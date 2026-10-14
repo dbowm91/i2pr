@@ -4305,14 +4305,33 @@ async fn resolve_remote_destination_for_service_inner(
         );
         ServiceProductError::Provisioning("service has no inbound receive ids".to_owned())
     })?;
-    // Prefer a receive id with a live registry gateway route: the
-    // bridge projection, owner table, and coordinator registry can
-    // diverge across replacement (each is correct alone), so probe
-    // each candidate in order and fail closed only when none has a
-    // route. Counts only; no tunnel ids logged.
+    // Prefer a receive id with a live registry gateway route.
+    // The bridge projection and the coordinator registry can name
+    // disjoint id sets across replacement, so probe the bridge ids
+    // first (the sender's own tunnels) and fall back to any
+    // registry-routed receive id: the lookup reply correlates by
+    // lookup id, not by tunnel, so any live inbound tunnel of ours
+    // carries it. Fail closed only when nothing has a route. Counts
+    // only; no tunnel ids logged.
     let mut live_candidates = 0usize;
     let mut routed_path = None;
-    for candidate in receive_ids.iter().copied() {
+    // Temporary Plan 478 attribution: registry population vs
+    // bridge projection. Counts only.
+    let registry_receive_ids = coordinator.registry().inbound_receive_ids();
+    let registry_receive_count = registry_receive_ids.len();
+    let mut candidates: Vec<u32> =
+        Vec::with_capacity(receive_ids.len() + registry_receive_ids.len());
+    for id in receive_ids.iter().copied() {
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+    }
+    for id in registry_receive_ids.iter().map(|id| id.get()) {
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+    }
+    for candidate in candidates {
         let Ok(tunnel_id) = TunnelId::new(candidate) else {
             continue;
         };
@@ -4329,6 +4348,7 @@ async fn resolve_remote_destination_for_service_inner(
         tracing::warn!(
             bridge_receive_count = receive_ids.len(),
             live_candidates,
+            registry_receive_count,
             transition = "peer_lease_no_registry_route",
             "peer lease fetch has no registry-routed receive id",
         );
