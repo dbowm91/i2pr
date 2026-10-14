@@ -65,7 +65,7 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = { version = "0.12.1", default-features = false }
 landlock = "=0.4.7"
-libc = "=0.2.189"
+libc = "=0.2.190"
 rand_chacha = "0.9"
 rand_core = { version = "0.9", default-features = false }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
