@@ -7289,6 +7289,13 @@ async fn publish_service_ls2_for_service(
                 .lock()
                 .await
                 .cancel_ls2_publication(request_id);
+            // The outcome variant name is a static bounded token
+            // (no peers or contents); it tells the lane whether the
+            // session, queue, or size gate rejected the cell.
+            tracing::warn!(
+                delivery_outcome = ?outcome,
+                "LS2 publication cell delivery rejected"
+            );
             return Err(ServiceProductError::Provisioning(
                 "publication transport rejected".to_owned(),
             )
