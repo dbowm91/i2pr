@@ -654,7 +654,11 @@ def main():
         raise SystemExit(1)
     finally:
         lane.stop_references()
-        shutil.rmtree(lane.scratch, ignore_errors=True)
+        keep = os.environ.get("I2PR_PLAN458_KEEP_SCRATCH") == "1"
+        if keep:
+            print(f"Plan 458 scratch preserved at {lane.scratch}", file=__import__("sys").stderr)
+        else:
+            shutil.rmtree(lane.scratch, ignore_errors=True)
 
 
 if __name__ == "__main__":

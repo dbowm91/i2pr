@@ -4980,17 +4980,21 @@ mod session_terminal_reselection_tests {
     #[test]
     fn session_terminal_selection_preserves_qualified_shape() {
         let candidates = diverse_four();
-        let selected = reselect_inbound_with_session_predicate(&candidates, |_| true)
+        let reselected = reselect_inbound_with_session_predicate(&candidates, |_| true)
             .expect("reselection with live sessions");
-        assert_eq!(selected.len(), 3);
+        assert_eq!(reselected.path.len(), 3);
+        assert!(reselected.session_backed);
+        assert_eq!(reselected.selections, 1);
     }
 
     #[test]
     fn sessionless_terminal_fails_open_to_qualified_shape() {
         let candidates = diverse_four();
-        let selected = reselect_inbound_with_session_predicate(&candidates, |_| false)
+        let reselected = reselect_inbound_with_session_predicate(&candidates, |_| false)
             .expect("fail-open reselection without sessions");
-        assert_eq!(selected.len(), 3);
+        assert_eq!(reselected.path.len(), 3);
+        assert!(!reselected.session_backed);
+        assert_eq!(reselected.selections, 9);
     }
 
     #[test]
@@ -5258,11 +5262,19 @@ async fn await_destination_build_install(
 fn reselect_inbound_with_session_terminal(
     candidates: &[crate::destination_peers::DestinationPeerCandidate],
     ssu2_handle: &Ssu2DaemonHandle,
-) -> Result<Vec<crate::destination_peers::DestinationPeerCandidate>, ServiceProductError> {
+) -> Result<TerminalReselection, ServiceProductError> {
     reselect_inbound_with_session_predicate(candidates, |hash| {
         let peer_id = i2pr_transport::PeerId::from_hash(hash);
         !ssu2_handle.service().session_peer_links(peer_id).is_empty()
     })
+}
+
+/// Outcome of session-preferring inbound terminal reselection. Carries
+/// only counts, never peer identities.
+struct TerminalReselection {
+    path: Vec<crate::destination_peers::DestinationPeerCandidate>,
+    session_backed: bool,
+    selections: u8,
 }
 
 /// Pure terminal-preference core: bounded retries, fail-open to the last
@@ -5270,8 +5282,9 @@ fn reselect_inbound_with_session_terminal(
 fn reselect_inbound_with_session_predicate(
     candidates: &[crate::destination_peers::DestinationPeerCandidate],
     has_session: impl Fn(i2pr_proto::Hash) -> bool,
-) -> Result<Vec<crate::destination_peers::DestinationPeerCandidate>, ServiceProductError> {
+) -> Result<TerminalReselection, ServiceProductError> {
     let mut selected = crate::destination_peers::select_destination_path_os(candidates)?;
+    let mut selections = 1u8;
     for _ in 0..8 {
         let terminal = selected.last().ok_or_else(|| {
             ServiceProductError::Provisioning(
@@ -5279,11 +5292,20 @@ fn reselect_inbound_with_session_predicate(
             )
         })?;
         if has_session(terminal.router_hash()) {
-            return Ok(selected);
+            return Ok(TerminalReselection {
+                path: selected,
+                session_backed: true,
+                selections,
+            });
         }
         selected = crate::destination_peers::select_destination_path_os(candidates)?;
+        selections = selections.saturating_add(1);
     }
-    Ok(selected)
+    Ok(TerminalReselection {
+        path: selected,
+        session_backed: false,
+        selections,
+    })
 }
 
 /// Decides whether a failed outbound bootstrap build may be retried once
@@ -5370,7 +5392,11 @@ mod bootstrap_retry_tests {
         }
         let cancelled = CancellationToken::default();
         cancelled.cancel(CancellationReason::TestHarnessTeardown);
-        assert!(!should_retry_bootstrap_build(&missing(), emitted, &cancelled));
+        assert!(!should_retry_bootstrap_build(
+            &missing(),
+            emitted,
+            &cancelled
+        ));
     }
 }
 
@@ -5616,11 +5642,7 @@ async fn provision_all_service_router_material(
                                 .emission_disposition(attempt_id)
                                 .unwrap_or(BuildEmissionDisposition::NotEmitted);
                             if attempts >= 2
-                                || !should_retry_bootstrap_build(
-                                    &error,
-                                    disposition,
-                                    cancellation,
-                                )
+                                || !should_retry_bootstrap_build(&error, disposition, cancellation)
                             {
                                 return Err(error);
                             }
@@ -5638,13 +5660,11 @@ async fn provision_all_service_router_material(
                             // attempt's identifiers stay replay-retained in
                             // the coordinator, so the exclusion sets below
                             // cannot collide with them.
-                            let retry_selected =
-                                select_destination_path_os(&candidates)?;
+                            let retry_selected = select_destination_path_os(&candidates)?;
                             let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
                             reserved_tunnel_ids
                                 .extend(allocated_startup_tunnel_ids.iter().copied());
-                            let retry_ids =
-                                allocator.allocate_set(5, &reserved_tunnel_ids)?;
+                            let retry_ids = allocator.allocate_set(5, &reserved_tunnel_ids)?;
                             allocated_startup_tunnel_ids.extend(retry_ids.iter().copied());
                             let retry_peers = selected_peer_material(
                                 retry_selected,
@@ -5682,20 +5702,18 @@ async fn provision_all_service_router_material(
                                 cancellation,
                             )
                             .await?;
-                            let mut retry_rng =
-                                ChaCha8Rng::try_from_os_rng().map_err(|_| {
-                                    ServiceProductError::Provisioning(
-                                        "operating-system randomness unavailable".to_owned(),
-                                    )
-                                })?;
+                            let mut retry_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                                ServiceProductError::Provisioning(
+                                    "operating-system randomness unavailable".to_owned(),
+                                )
+                            })?;
                             let retry_reply_id =
                                 fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
                             excluded_message_ids.push(retry_reply_id);
                             let retry_outer_id =
                                 fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
                             excluded_message_ids.push(retry_outer_id);
-                            allocated_startup_message_ids
-                                .extend([retry_reply_id, retry_outer_id]);
+                            allocated_startup_message_ids.extend([retry_reply_id, retry_outer_id]);
                             outbound = DestinationBuildRequest {
                                 destination_id: runtime.destination_id,
                                 direction: BuildDirection::Outbound,
@@ -5723,7 +5741,13 @@ async fn provision_all_service_router_material(
                 && let Ok(reselected) =
                     reselect_inbound_with_session_terminal(&candidates, ssu2_handle)
             {
-                inbound_candidates = Some(reselected);
+                tracing::info!(
+                    session_backed = reselected.session_backed,
+                    reselections = reselected.selections,
+                    transition = "inbound_terminal_reselected",
+                    "destination inbound terminal reselection",
+                );
+                inbound_candidates = Some(reselected.path);
             }
             let inbound_peers = inbound_candidates
                 .map(|selected| {
