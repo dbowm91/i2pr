@@ -6317,14 +6317,28 @@ impl Ssu2RuntimeService {
                         // socket emission with stock-side per-message
                         // counters. One datagram carries at most a
                         // handful of messages; the recorded prefix is
-                        // bounded regardless.
+                        // bounded regardless. Fragment ordinals
+                        // (`id:number/total`) distinguish packed
+                        // multi-message datagrams from retransmits.
                         let mut emitted_ids: Vec<u32> = Vec::new();
                         for id in send.message_ids.iter().take(8) {
                             emitted_ids.push(*id);
                         }
+                        let mut emitted_fragments: Vec<u64> = Vec::new();
+                        for fragment in send.fragments.iter().take(8) {
+                            // Packed `message_id:frag/total` ledger:
+                            // high 32 bits carry the message id, then
+                            // fragment ordinal, then total count.
+                            emitted_fragments.push(
+                                (u64::from(fragment.message_id) << 32)
+                                    | (u64::from(fragment.fragment_number) << 8)
+                                    | u64::from(fragment.total_fragments),
+                            );
+                        }
                         tracing::info!(
                             i2np_message_count = send.message_ids.len(),
                             i2np_message_ids = ?emitted_ids,
+                            i2np_fragments = ?emitted_fragments,
                             transition = "udp_emitted",
                             "SSU2 message send receipt"
                         );

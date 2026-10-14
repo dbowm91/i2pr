@@ -7265,6 +7265,21 @@ async fn publish_service_ls2_for_service(
             ServiceProductError::Provisioning("publication compose failed".to_owned()).into(),
         );
     };
+    // Redacted cell accounting mirroring the build submit receipts
+    // so a publication that never reaches stock can be checked
+    // cell-by-cell against stock-side counters.
+    {
+        let mut publication_wire_lens: Vec<usize> = Vec::new();
+        for cell_delivery in dispatch.deliveries.iter().take(8) {
+            publication_wire_lens.push(cell_delivery.message_bytes().len());
+        }
+        tracing::info!(
+            publication_cell_count = dispatch.cell_count,
+            publication_wire_lens = ?publication_wire_lens,
+            transition = "ls2_publication_composed",
+            "LS2 publication tunnel delivery composed"
+        );
+    }
     let delivery = ssu2_handle.delivery().clone();
     for cell_delivery in &dispatch.deliveries {
         let request = match crate::router_i2np::RouterDeliveryRequest::new(
