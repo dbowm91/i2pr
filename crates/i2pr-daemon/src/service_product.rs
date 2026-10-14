@@ -3307,6 +3307,14 @@ impl ServiceProduct {
             let Some(target) = crate::service_delivery::destination_hash_from_slice(&peer) else {
                 continue;
             };
+            // Re-file immediately so the entry stays fresh while
+            // this lookup runs; the sweep requeues cache misses
+            // against it and success clears it below.
+            self.manager.request_peer_lease_lookup(
+                sender,
+                peer,
+                crate::service_tunnels::service_streaming_now_ms(),
+            );
             match resolve_remote_destination_for_service(
                 &self.manager,
                 &mut self.inner.coordinator,
@@ -3319,6 +3327,7 @@ impl ServiceProduct {
             .await
             {
                 Ok(()) => {
+                    self.manager.clear_peer_lease_request(&peer);
                     tracing::info!(
                         transition = "peer_lease_fulfilled",
                         "peer LeaseSet2 fetch resolved"

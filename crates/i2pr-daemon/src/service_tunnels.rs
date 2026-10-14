@@ -2754,6 +2754,34 @@ impl ServiceTunnelManager {
                             self.terminate_failed_delivery(destination_id, request);
                         }
                         Err(error) => {
+                            // Plan 478 §6 — a cache miss with a fresh
+                            // peer-lease fetch in flight requeues
+                            // instead of terminating: SYN retransmits
+                            // (and this sweep's next tick) retry once
+                            // the record lands. Any other failure, or
+                            // a miss with no fresh fetch, terminates
+                            // as before so hopeless peers cannot spin.
+                            let retryable = matches!(
+                                error,
+                                crate::service_delivery::RemoteDeliveryError::NotCached
+                            ) && self.peer_lease_request_fresh(
+                                &request.destination_hash,
+                                service_streaming_now_ms(),
+                            );
+                            if retryable {
+                                if let Some(sender) = destinations_arc
+                                    .lock()
+                                    .expect("sam destinations poisoned")
+                                    .get(destination_id)
+                                {
+                                    sender.with(|bridge| {
+                                        bridge
+                                            .streaming_mut()
+                                            .queue_outbound_packet(request.clone());
+                                    });
+                                }
+                                continue;
+                            }
                             debug!(
                                 error = %error,
                                 "service remote route failed; terminating request"
@@ -3246,6 +3274,30 @@ impl ServiceTunnelManager {
             .drain()
             .map(|(peer, (sender, _))| (sender, peer))
             .collect()
+    }
+
+    /// Plan 478 §6 — reports whether a peer-lease fetch filing is
+    /// fresh (filed within cooldown). The delivery sweep requeues
+    /// cache-miss requests only while their fetch is fresh, so a
+    /// hopeless peer still terminates instead of spinning.
+    pub(crate) fn peer_lease_request_fresh(&self, peer: &[u8; 32], now_ms: u64) -> bool {
+        self.peer_lease_requests
+            .lock()
+            .ok()
+            .and_then(|table| table.get(peer).map(|(_, filed_ms)| *filed_ms))
+            .is_some_and(|filed_ms| {
+                now_ms.saturating_sub(filed_ms) < PEER_LEASE_REQUEST_COOLDOWN_MS
+            })
+    }
+
+    /// Plan 478 §6 — removes a fulfilled peer-lease fetch filing so
+    /// a later miss files fresh. Failures keep their filing (the
+    /// cooldown paces retries); success clears it because the cache
+    /// now answers.
+    pub(crate) fn clear_peer_lease_request(&self, peer: &[u8; 32]) {
+        if let Ok(mut table) = self.peer_lease_requests.lock() {
+            table.remove(peer);
+        }
     }
 
     /// Plan 210 §F — records a single inbound orphan receive
