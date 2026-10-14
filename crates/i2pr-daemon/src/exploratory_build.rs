@@ -165,7 +165,7 @@ fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
     wire: &[u8],
     now_ms: u64,
     rng: &mut R,
-) -> Result<Vec<(PeerId, Vec<u8>)>, BuildCoordinatorError> {
+) -> Result<Vec<(PeerId, Vec<u8>, u32)>, BuildCoordinatorError> {
     let header = TunnelPayloadHeader {
         delivery: DeliveryInstruction::Router {
             router: target_router,
@@ -188,8 +188,13 @@ fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
     cells
         .into_iter()
         .map(|routed| {
+            // The fresh transport message ID is returned alongside
+            // the wire so submit receipts can attribute stock-side
+            // per-message outcomes (expiry/duplicate counters name
+            // these IDs) without naming peers.
+            let transport_message_id = fresh_transport_message_id(rng)?;
             let transport_message = I2npMessage::new_short_transport(
-                fresh_transport_message_id(rng)?,
+                transport_message_id,
                 transport_expiration,
                 I2npBody::TunnelData(Box::new(routed.cell)),
             )
@@ -200,6 +205,7 @@ fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
             Ok((
                 PeerId::from_hash(routed.target_router.hash()),
                 transport_wire,
+                transport_message_id,
             ))
         })
         .collect()
@@ -1501,6 +1507,13 @@ impl ExploratoryBuildCoordinator {
         // checked against session rotation without naming peers.
         let mut delivery_links: Vec<u64> = Vec::new();
         let mut delivery_family: Option<&'static str> = None;
+        // Redacted per-cell accounting: wire lengths and fresh
+        // transport message IDs (ephemeral randoms, same class
+        // as link generations) so a tunneled send that never
+        // reaches stock can be checked cell-by-cell against
+        // stock-side fragment/expiry counters.
+        let mut cell_wire_lens: Vec<usize> = Vec::new();
+        let mut cell_message_ids: Vec<u32> = Vec::new();
         let delivery_outcome = if let Some(slot) = outbound_slot {
             let expiration_ms = match bridge_header {
                 BridgeHeader::Standard { expiration_ms, .. } => expiration_ms,
@@ -1525,7 +1538,9 @@ impl ExploratoryBuildCoordinator {
             )?;
             delivery_set.required = cells.len();
             let mut result = RouterDeliveryOutcome::Accepted;
-            for (target_peer, transport_wire) in cells {
+            for (target_peer, transport_wire, cell_message_id) in cells {
+                cell_wire_lens.push(transport_wire.len());
+                cell_message_ids.push(cell_message_id);
                 let delivery_request =
                     RouterDeliveryRequest::new(target_peer, transport_wire, BUILD_DELIVERY_TIMEOUT)
                         .map_err(|_| {
@@ -1558,6 +1573,7 @@ impl ExploratoryBuildCoordinator {
             }
             result
         } else {
+            let wire_len = wire.len();
             let delivery_request = RouterDeliveryRequest::new(peer, wire, BUILD_DELIVERY_TIMEOUT)
                 .map_err(|_| {
                 BuildCoordinatorError::Coordinator("delivery request validation failed")
@@ -1565,6 +1581,10 @@ impl ExploratoryBuildCoordinator {
             delivery_set.required = 1;
             let (result, selected, ticket) = delivery
                 .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+            // Direct bootstrap exception: one cell carrying the outer
+            // message ID, recorded with the same redacted accounting.
+            cell_wire_lens.push(wire_len);
+            cell_message_ids.push(outer_message_id);
             if let Some(transport) = selected {
                 delivery_family = Some(transport.as_str());
                 let generation = match transport {
@@ -1586,6 +1606,9 @@ impl ExploratoryBuildCoordinator {
             direction = ?direction,
             delivery_family = delivery_family.unwrap_or("unobserved"),
             delivery_links = ?delivery_links,
+            cell_count = cell_wire_lens.len(),
+            cell_wire_lens = ?cell_wire_lens,
+            cell_message_ids = ?cell_message_ids,
             transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
             "destination build attempt"
         );
@@ -2778,9 +2801,13 @@ mod tests {
         )
         .expect("tunnel route composition");
         assert_eq!(deliveries.len(), 1);
-        let (target, bytes) = &deliveries[0];
+        let (target, bytes, cell_message_id) = &deliveries[0];
         assert_eq!(*target, PeerId::from_hash(outbound_peer_hash));
         assert_ne!(*target, PeerId::from_hash(build_gateway_hash));
+        assert_ne!(
+            *cell_message_id, 0,
+            "tunnel-data transport ID must be nonzero"
+        );
         let message = I2npMessage::decode_short_transport(bytes, MAX_I2NP_MESSAGE_BYTES)
             .expect("TunnelData transport envelope");
         let I2npBody::TunnelData(cell) = message.body() else {
@@ -3281,5 +3308,117 @@ mod tests {
             extract_reply_payload(&wire),
             Err("inbound build reply is not OutboundTunnelBuildReply")
         ));
+    }
+
+    #[test]
+    fn tunneled_inbound_build_composes_single_two_fragment_cell() {
+        use i2pr_tunnel::build_crypto::LayerKeys;
+        use i2pr_tunnel::established::{
+            EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+        };
+        use i2pr_tunnel::roles::OutboundGatewayRole;
+        use i2pr_tunnel::{TunnelDirection, TunnelPeer};
+
+        let peers = (0..3)
+            .map(|index| PeerBuildMaterial {
+                router_hash: Hash::from_bytes([0x60 + index; 32]),
+                static_encryption_key: [0x70 + index; 32],
+                receive_tunnel: TunnelId::new(0x8100 + u32::from(index)).expect("receive"),
+                next_tunnel: TunnelId::new(0x8101 + u32::from(index)).expect("next"),
+                role: match index {
+                    0 => HopRole::InboundGateway,
+                    _ => HopRole::Participant,
+                },
+            })
+            .collect::<Vec<_>>();
+        let request = BuildPathRequest {
+            direction: BuildDirection::Inbound,
+            peers,
+            creator_tunnel_id: TunnelId::new(0x8001).expect("creator tunnel"),
+            message_id: 0x8002,
+            outbound_reply_router: None,
+            originator_hash: Some(Hash::from_bytes([0x79; 32])),
+            destination_id: None,
+        };
+        let now_ms = 1_700_000_000_000_u64;
+        let path = short_build_path(&request, BuildAttemptId::new(99), now_ms);
+        path.validate().expect("valid path");
+        let mut state = ShortBuildStateMachine::with_cryptography(
+            path,
+            now_ms.saturating_add(60_000),
+            i2pr_tunnel::build_crypto::EciesX25519BuildCryptography::new(),
+        );
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4780);
+        let message = state.prepare(&mut rng).expect("prepare");
+        let action: ShortBuildAction = state.deliver_action(message).expect("deliver");
+        let bridge = ShortBuildI2npBridge::new();
+        let header = BridgeHeader::ShortTransport {
+            message_id: 0x8003,
+            expiration_seconds: 1_700_000_060,
+        };
+        let (i2np_message, _) = bridge
+            .wrap_deliver_action(&action, header)
+            .expect("wrap deliver action");
+        let wire = i2np_message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .expect("encode inner");
+        // A three-hop short build request is 882 bytes: small enough
+        // for one TunnelData cell, large enough that the 1028-byte
+        // cell body always needs two SSU2 fragments at the default
+        // 1024-byte budget. Both facts are live-lane evidence inputs,
+        // so they are pinned here.
+        assert_eq!(wire.len(), 882, "inner build wire size");
+        let outbound_peer_hash = Hash::from_bytes([0x31; 32]);
+        let outbound_hops = vec![
+            EstablishedHop::with_next(
+                TunnelPeer::from_hash(outbound_peer_hash),
+                EstablishedRole::Participant,
+                TunnelId::new(0x301).expect("first receive"),
+                LayerKeys::new([0x51; 32], [0x52; 32], [0x53; 32]),
+                EstablishedNextHop::new(
+                    TunnelPeer::from_hash(Hash::from_bytes([0x32; 32])),
+                    TunnelId::new(0x401).expect("endpoint receive"),
+                ),
+            ),
+            EstablishedHop::terminal(
+                TunnelPeer::from_hash(Hash::from_bytes([0x32; 32])),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(0x401).expect("endpoint receive"),
+                LayerKeys::new([0x54; 32], [0x55; 32], [0x56; 32]),
+            ),
+        ];
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(0x2345).expect("creator id"),
+            outbound_hops,
+            0,
+            None,
+            None,
+        )
+        .expect("established outbound tunnel");
+        let role = OutboundGatewayRole::new(tunnel, now_ms.saturating_add(60_000));
+        let deliveries = compose_outbound_build_deliveries(
+            &role,
+            Hash::from_bytes([0x60; 32]),
+            0x8003,
+            60_000,
+            &wire,
+            now_ms,
+            &mut rng,
+        )
+        .expect("tunnel route composition");
+        assert_eq!(deliveries.len(), 1, "one cell per inbound build");
+        let (_, bytes, cell_message_id) = &deliveries[0];
+        assert_ne!(*cell_message_id, 0, "cell transport ID must be nonzero");
+        // 4-byte tunnel ID + 16-byte IV + 1008-byte payload, framed
+        // with a 9-byte short-transport header.
+        assert_eq!(bytes.len(), 1037, "cell transport wire size");
+        let body_len = bytes.len() - 9;
+        assert_eq!(body_len, 1028, "cell transport body size");
+        assert_eq!(
+            body_len.div_ceil(1024),
+            2,
+            "cell needs two SSU2 fragments at the default budget"
+        );
     }
 }

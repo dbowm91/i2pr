@@ -53,6 +53,7 @@ def parse_attempt_receipt_lines(lines):
     owner_eviction_removed_owner = 0
     owner_eviction_removed_receive = 0
     inbound_build_wait_receipts = []
+    delivery_admitted_cells = []
     for raw_line in lines:
         line = strip_ansi(raw_line)
         attempt = re.search(r"build_attempt_id\s*=\s*(\d+)", line)
@@ -102,6 +103,22 @@ def parse_attempt_receipt_lines(lines):
             family = re.search(r'delivery_family\s*=\s*"?([a-z0-9]+)', line)
             if family:
                 delivery_families[family.group(1)] += 1
+            direction = re.search(r'direction\s*=\s*"?([A-Za-z]+)', line)
+            cell_count = re.search(r"cell_count\s*=\s*(\d+)", line)
+            cell_ids = re.search(r"cell_message_ids\s*=\s*\[([0-9, ]*)\]", line)
+            if direction and cell_count:
+                delivery_admitted_cells.append(
+                    {
+                        "direction": direction.group(1).lower(),
+                        "transition": transition.group(1),
+                        "cell_count": int(cell_count.group(1)),
+                        "cell_message_ids": [
+                            int(value)
+                            for value in (cell_ids.group(1).split(",") if cell_ids else [])
+                            if value.strip()
+                        ],
+                    }
+                )
         if "destination inbound owners installed" in line:
             installed = re.search(
                 r"inbound_receive_count\s*=\s*(\d+).*?inbound_owner_count\s*=\s*(\d+)",
@@ -157,6 +174,7 @@ def parse_attempt_receipt_lines(lines):
             sorted(source_owned_delivery_dispositions.items())
         ),
         "delivery_families": dict(sorted(delivery_families.items())),
+        "delivery_admitted_cells": delivery_admitted_cells,
         "udp_emission_correlated_attempts": sum(
             message_id in emitted_message_ids for message_id in attempt_messages.values()
         ),

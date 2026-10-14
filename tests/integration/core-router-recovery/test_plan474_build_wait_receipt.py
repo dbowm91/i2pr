@@ -88,6 +88,27 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
             {"ssu2": 1, "unobserved": 1},
         )
 
+    def test_delivery_admitted_cells_parse(self) -> None:
+        parsed = parse_attempt_receipt_lines([
+            'INFO destination build attempt direction=Inbound '
+            'delivery_family="ssu2" delivery_links=[4] cell_count=1 '
+            'cell_wire_lens=[1037] cell_message_ids=[31011] '
+            'transition="delivery_admitted"',
+            'INFO destination build attempt direction=Outbound '
+            'delivery_family="ssu2" delivery_links=[4] cell_count=1 '
+            'cell_wire_lens=[891] cell_message_ids=[31010] '
+            'transition="delivery_admitted"',
+        ])
+        self.assertEqual(
+            parsed["delivery_admitted_cells"],
+            [
+                {"direction": "inbound", "transition": "delivery_admitted",
+                 "cell_count": 1, "cell_message_ids": [31011]},
+                {"direction": "outbound", "transition": "delivery_admitted",
+                 "cell_count": 1, "cell_message_ids": [31010]},
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6312,8 +6312,19 @@ impl Ssu2RuntimeService {
                         );
                     }
                     if !send.message_ids.is_empty() {
+                        // Ephemeral per-datagram I2NP IDs (never peer
+                        // identities) so lane harnesses can correlate
+                        // socket emission with stock-side per-message
+                        // counters. One datagram carries at most a
+                        // handful of messages; the recorded prefix is
+                        // bounded regardless.
+                        let mut emitted_ids: Vec<u32> = Vec::new();
+                        for id in send.message_ids.iter().take(8) {
+                            emitted_ids.push(*id);
+                        }
                         tracing::info!(
                             i2np_message_count = send.message_ids.len(),
+                            i2np_message_ids = ?emitted_ids,
                             transition = "udp_emitted",
                             "SSU2 message send receipt"
                         );
