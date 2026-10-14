@@ -60,6 +60,21 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
         ])
         self.assertEqual(parsed["inbound_build_wait_receipts"], [])
 
+    def test_ansi_colored_daemon_lines_still_parse(self) -> None:
+        parsed = parse_attempt_receipt_lines([
+            '\x1b[2m2026-10-14T03:09:39.742192Z\x1b[0m INFO '
+            '\x1b[2mi2pr_daemon::service_product\x1b[0m: '
+            'destination build source-owned delivery result '
+            '\x1b[3mdirection\x1b[0m\x1b[2m=\x1b[0mOutbound '
+            '\x1b[3moriginator_write_disposition\x1b[0m\x1b[2m=\x1b[0m'
+            'AllOriginatorDeliveriesEmitted '
+            '\x1b[3mtransition\x1b[0m\x1b[2m=\x1b[0m"build_wait_expired"',
+        ])
+        self.assertEqual(
+            parsed["source_owned_delivery_dispositions"],
+            {"outbound:all-emitted": 1},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

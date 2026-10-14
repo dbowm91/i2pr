@@ -4963,6 +4963,43 @@ mod plan482_destination_dial_authority_tests {
     }
 }
 
+#[cfg(test)]
+mod session_terminal_reselection_tests {
+    use super::reselect_inbound_with_session_predicate;
+    use crate::destination_peers::test_candidate;
+
+    fn diverse_four() -> Vec<crate::destination_peers::DestinationPeerCandidate> {
+        vec![
+            test_candidate(6_001, "family-a", "10.1.1.1", 1001),
+            test_candidate(6_002, "family-b", "10.2.1.1", 1002),
+            test_candidate(6_003, "family-c", "10.3.1.1", 1003),
+            test_candidate(6_004, "family-d", "10.4.1.1", 1004),
+        ]
+    }
+
+    #[test]
+    fn session_terminal_selection_preserves_qualified_shape() {
+        let candidates = diverse_four();
+        let selected = reselect_inbound_with_session_predicate(&candidates, |_| true)
+            .expect("reselection with live sessions");
+        assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn sessionless_terminal_fails_open_to_qualified_shape() {
+        let candidates = diverse_four();
+        let selected = reselect_inbound_with_session_predicate(&candidates, |_| false)
+            .expect("fail-open reselection without sessions");
+        assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn empty_candidates_fail_closed() {
+        let result = reselect_inbound_with_session_predicate(&[], |_| true);
+        assert!(result.is_err());
+    }
+}
+
 /// Ensures the normal SSU2 owner has an authenticated direct session to the
 /// first hop authorized by the current build route. Endpoint and key material
 /// come from that peer's validated RouterInfo; only loopback targets can pass
@@ -5192,9 +5229,16 @@ async fn await_destination_build_install(
     let emission = coordinator
         .emission_disposition(attempt_id)
         .unwrap_or(BuildEmissionDisposition::NotEmitted);
+    let counters = coordinator.counters();
     tracing::info!(
         direction = ?direction,
         originator_write_disposition = ?emission,
+        inbound_gateway_messages = counters.inbound_gateway_messages,
+        inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
+        inbound_gateway_route_match = counters.inbound_gateway_route_match,
+        inbound_orphans = counters.inbound_orphans,
+        invalid_replies = counters.invalid_replies,
+        pending_builds = counters.pending,
         transition = "build_wait_expired",
         "destination build source-owned delivery result"
     );
@@ -5202,6 +5246,44 @@ async fn await_destination_build_install(
         BuildDirection::Inbound => ServiceProductError::InboundBuildMissing,
         BuildDirection::Outbound => ServiceProductError::OutboundBuildMissing,
     })
+}
+
+/// Reselects an inbound three-hop path whose terminal already has a live
+/// SSU2 session, so the stock terminal can forward the ShortTunnelBuild to
+/// us without a fresh RouterInfo lookup. No new direct dial is issued here;
+/// this only reuses sessions established for the outbound route (dialed
+/// first hop, reverse session from the outbound reply). Bounded retries with
+/// fail-open to the last selection preserves existing behavior when no
+/// session terminal is found.
+fn reselect_inbound_with_session_terminal(
+    candidates: &[crate::destination_peers::DestinationPeerCandidate],
+    ssu2_handle: &Ssu2DaemonHandle,
+) -> Result<Vec<crate::destination_peers::DestinationPeerCandidate>, ServiceProductError> {
+    reselect_inbound_with_session_predicate(candidates, |hash| {
+        let peer_id = i2pr_transport::PeerId::from_hash(hash);
+        !ssu2_handle.service().session_peer_links(peer_id).is_empty()
+    })
+}
+
+/// Pure terminal-preference core: bounded retries, fail-open to the last
+/// selection. Testable without a live runtime handle.
+fn reselect_inbound_with_session_predicate(
+    candidates: &[crate::destination_peers::DestinationPeerCandidate],
+    has_session: impl Fn(i2pr_proto::Hash) -> bool,
+) -> Result<Vec<crate::destination_peers::DestinationPeerCandidate>, ServiceProductError> {
+    let mut selected = crate::destination_peers::select_destination_path_os(candidates)?;
+    for _ in 0..8 {
+        let terminal = selected.last().ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "qualified selector returned an empty inbound path".to_owned(),
+            )
+        })?;
+        if has_session(terminal.router_hash()) {
+            return Ok(selected);
+        }
+        selected = crate::destination_peers::select_destination_path_os(candidates)?;
+    }
+    Ok(selected)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5273,7 +5355,7 @@ async fn provision_all_service_router_material(
             } else {
                 None
             };
-            let inbound_candidates = if build_index < inbound_target {
+            let mut inbound_candidates = if build_index < inbound_target {
                 Some(select_destination_path_os(&candidates)?)
             } else {
                 None
@@ -5335,21 +5417,9 @@ async fn provision_all_service_router_material(
                     )
                 })
                 .transpose()?;
-            let inbound_peers = inbound_candidates
-                .map(|selected| {
-                    selected_peer_material(
-                        selected,
-                        [
-                            HopRole::InboundGateway,
-                            HopRole::Participant,
-                            HopRole::Participant,
-                        ],
-                        [ids[6], ids[7], ids[8]],
-                        [ids[7], ids[8], ids[9]],
-                        &spec_id,
-                    )
-                })
-                .transpose()?;
+            // Inbound peer material is built after the outbound bootstrap
+            // installs, so a session-filtered reselection below can prefer a
+            // terminal that already has a live session (no new dial).
             if let Some(peers) = outbound_peers.as_ref() {
                 let active_outbound_first_hop = bootstrap_outbound_role_slot
                     .and_then(|slot| coordinator.registry_outbound_first_hop(slot))
@@ -5374,7 +5444,6 @@ async fn provision_all_service_router_material(
                 )
                 .await?;
             }
-            let inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
             let outbound_creator = TunnelId::new(ob_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad outbound creator id"))
             })?;
@@ -5444,6 +5513,35 @@ async fn provision_all_service_router_material(
                 .await?;
                 bootstrap_outbound_role_slot = Some(binding.role_slot);
             }
+            // Prefer an inbound terminal that already has a live session
+            // (outbound first hop or reverse endpoint session) so the stock
+            // forward to us does not depend on a fresh floodfill lookup.
+            // No new dial here; Plan 482 authority still routes dials only
+            // through the outbound first hop below.
+            if need_inbound
+                && inbound_candidates.is_some()
+                && bootstrap_outbound_role_slot.is_some()
+                && let Ok(reselected) =
+                    reselect_inbound_with_session_terminal(&candidates, ssu2_handle)
+            {
+                inbound_candidates = Some(reselected);
+            }
+            let inbound_peers = inbound_candidates
+                .map(|selected| {
+                    selected_peer_material(
+                        selected,
+                        [
+                            HopRole::InboundGateway,
+                            HopRole::Participant,
+                            HopRole::Participant,
+                        ],
+                        [ids[6], ids[7], ids[8]],
+                        [ids[7], ids[8], ids[9]],
+                        &spec_id,
+                    )
+                })
+                .transpose()?;
+            let inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
             let inbound_reply_peer = inbound_peers
                 .as_ref()
                 .and_then(|peers| peers.last())

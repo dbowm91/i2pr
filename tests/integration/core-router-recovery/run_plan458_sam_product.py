@@ -32,6 +32,14 @@ def parse_stock_transit_rows(body):
     return body.count('<tr class="tcell_center">')
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(line):
+    """Remove terminal color escapes the daemon emits even when piped."""
+    return ANSI_ESCAPE.sub("", line)
+
+
 def parse_attempt_receipt_lines(lines):
     attempt_messages = {}
     stage_counts = Counter()
@@ -44,7 +52,8 @@ def parse_attempt_receipt_lines(lines):
     owner_eviction_removed_owner = 0
     owner_eviction_removed_receive = 0
     inbound_build_wait_receipts = []
-    for line in lines:
+    for raw_line in lines:
+        line = strip_ansi(raw_line)
         attempt = re.search(r"build_attempt_id\s*=\s*(\d+)", line)
         message = re.search(r"i2np_message_id\s*=\s*(\d+)", line)
         transition = re.search(r'transition\s*=\s*"?([a-z_]+)', line)
@@ -412,7 +421,8 @@ threshold = 0
         for log in log_paths:
             if not log.is_file():
                 continue
-            for line in log.read_text(errors="replace").splitlines():
+            for raw_line in log.read_text(errors="replace").splitlines():
+                line = strip_ansi(raw_line)
                 if "router-network SAM destination provisioning failed" not in line:
                     continue
                 match = re.search(r'failure_stage=["\']?([a-z0-9-]+)', line)
