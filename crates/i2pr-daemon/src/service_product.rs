@@ -2551,6 +2551,9 @@ impl ServiceProduct {
     /// / Garlic payloads back into the manager's authoritative
     /// state.
     pub async fn poll_inbound(&mut self) -> Result<InboundPollOutcome, ServiceProductError> {
+        // Fulfill first so a stalled inbound handler or maintenance
+        // pass cannot starve lease fetches behind other work.
+        self.fulfill_peer_lease_requests().await;
         let poll_interval = self.inner.options.poll_interval;
         let inbound = match tokio::time::timeout(poll_interval, self.next_inbound()).await {
             Err(_) => {
@@ -3284,14 +3287,6 @@ impl ServiceProduct {
                 }
             }
         }
-        // Plan 478 §6 — fulfill peer LeaseSet2 fetch requests filed
-        // by the outbound delivery sweep on cache misses. Each runs
-        // the standard bounded service remote resolution (same
-        // machinery, same bounds as configured remote targets), so
-        // SYN retransmits converge once the record lands instead of
-        // timing out on an empty cache. Failures are recorded with a
-        // static reason and retried only after the filing cooldown.
-        self.fulfill_peer_lease_requests().await;
         Ok(())
     }
 
