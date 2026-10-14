@@ -230,6 +230,7 @@ class Lane:
         for name in ("f", "c", "n", "d"):
             self.ports[f"{name}_http"] = free_port()
         self.stock_transit_before = {}
+        self.stock_churn_before = {}
         self.stock_log_offsets = {}
         self.logs = self.scratch / "logs"
         self.logs.mkdir()
@@ -512,6 +513,16 @@ threshold = 0
         self.stock_transit_before = {
             name: self.stock_transit_count(name) for name in peers
         }
+        # Mesh-churn observability (no gating): re-poll after 30 s so a
+        # later failure receipt can tell a quiet mesh from a churning one.
+        time.sleep(30)
+        for name in peers:
+            before = self.stock_transit_before.get(name)
+            after = self.stock_transit_count(name)
+            if before is None or after is None:
+                self.stock_churn_before[name] = None
+            else:
+                self.stock_churn_before[name] = abs(after - before)
 
         # Select daemon listener ports only after the multi-minute reference
         # preparation, so another local test cannot claim a stale reservation.
@@ -646,14 +657,16 @@ def main():
         (EVIDENCE / "attempt-diagnostic.json").write_text(
             json.dumps(
                 {"schema": "plan471-stock-build-receipt-v1", **receipt,
-                 "stock": stock_receipt},
+                 "stock": stock_receipt,
+                 "mesh_churn_before": lane.stock_churn_before},
                 sort_keys=True,
             )
             + "\n"
         )
         print(
             "Plan 471 sanitized stock/build receipt: "
-            + json.dumps({**receipt, "stock": stock_receipt}, sort_keys=True),
+            + json.dumps({**receipt, "stock": stock_receipt,
+                          "mesh_churn_before": lane.stock_churn_before}, sort_keys=True),
             file=__import__("sys").stderr,
         )
         print(f"Plan 458 qualification failed: {exc}", file=__import__("sys").stderr)

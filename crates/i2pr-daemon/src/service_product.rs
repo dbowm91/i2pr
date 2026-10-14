@@ -5400,6 +5400,68 @@ mod bootstrap_retry_tests {
     }
 }
 
+/// Decides whether a timed-out tunneled inbound build may be retried
+/// once on a fresh path. Only an emitted-but-unanswered attempt
+/// qualifies: the cells left the socket, so a different random
+/// three-hop route may complete. Explicit stock rejection and invalid
+/// replies return before this predicate is consulted, so only the
+/// wait-timeout path reaches it. Unobserved writes and cancellation
+/// never retry.
+fn should_retry_inbound_build(
+    disposition: BuildEmissionDisposition,
+    cancellation: &CancellationToken,
+) -> bool {
+    if cancellation.is_cancelled() {
+        return false;
+    }
+    matches!(
+        disposition,
+        BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+            | BuildEmissionDisposition::PartialEmission
+    )
+}
+
+#[cfg(test)]
+mod inbound_retry_tests {
+    use super::{BuildEmissionDisposition, should_retry_inbound_build};
+    use i2pr_core::CancellationReason;
+    use i2pr_runtime::CancellationToken;
+
+    #[test]
+    fn emitted_timeout_retries_when_live() {
+        let live = CancellationToken::default();
+        assert!(should_retry_inbound_build(
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &live,
+        ));
+        assert!(should_retry_inbound_build(
+            BuildEmissionDisposition::PartialEmission,
+            &live,
+        ));
+    }
+
+    #[test]
+    fn unobserved_writes_or_cancel_never_retry() {
+        let live = CancellationToken::default();
+        for disposition in [
+            BuildEmissionDisposition::Pending,
+            BuildEmissionDisposition::NotEmitted,
+            BuildEmissionDisposition::UnobservedTransport,
+        ] {
+            assert!(
+                !should_retry_inbound_build(disposition, &live),
+                "disposition {disposition:?} must not retry"
+            );
+        }
+        let cancelled = CancellationToken::default();
+        cancelled.cancel(CancellationReason::TestHarnessTeardown);
+        assert!(!should_retry_inbound_build(
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &cancelled,
+        ));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
@@ -5491,7 +5553,7 @@ async fn provision_all_service_router_material(
                     )));
                 }
             }
-            let inbound_bridge = ShortBuildI2npBridge::new();
+            let mut inbound_bridge = ShortBuildI2npBridge::new();
             let outbound_bridge = ShortBuildI2npBridge::new();
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
@@ -5505,11 +5567,11 @@ async fn provision_all_service_router_material(
             excluded_message_ids.extend(allocated_startup_message_ids.iter().copied());
             let outbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             excluded_message_ids.push(outbound_reply_id);
-            let inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            let mut inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             excluded_message_ids.push(inbound_reply_id);
             let outbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             excluded_message_ids.push(outbound_outer_id);
-            let inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            let mut inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
             allocated_startup_message_ids.extend([
                 outbound_reply_id,
                 inbound_reply_id,
@@ -5561,7 +5623,7 @@ async fn provision_all_service_router_material(
             let outbound_creator = TunnelId::new(ob_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad outbound creator id"))
             })?;
-            let inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
+            let mut inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?;
             let outbound_reply_peer = outbound_peers
@@ -5734,237 +5796,296 @@ async fn provision_all_service_router_material(
             // (outbound first hop or reverse endpoint session) so the stock
             // forward to us does not depend on a fresh floodfill lookup.
             // No new dial here; Plan 482 authority still routes dials only
-            // through the outbound first hop below.
-            if need_inbound
-                && inbound_candidates.is_some()
-                && bootstrap_outbound_role_slot.is_some()
-                && let Ok(reselected) =
-                    reselect_inbound_with_session_terminal(&candidates, ssu2_handle)
-            {
-                tracing::info!(
-                    session_backed = reselected.session_backed,
-                    reselections = reselected.selections,
-                    transition = "inbound_terminal_reselected",
-                    "destination inbound terminal reselection",
-                );
-                inbound_candidates = Some(reselected.path);
-            }
-            let inbound_peers = inbound_candidates
-                .map(|selected| {
-                    selected_peer_material(
-                        selected,
-                        [
-                            HopRole::InboundGateway,
-                            HopRole::Participant,
-                            HopRole::Participant,
-                        ],
-                        [ids[6], ids[7], ids[8]],
-                        [ids[7], ids[8], ids[9]],
-                        &spec_id,
-                    )
-                })
-                .transpose()?;
-            let inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
-            let inbound_reply_peer = inbound_peers
-                .as_ref()
-                .and_then(|peers| peers.last())
-                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
-            let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
-                destination_id: runtime.destination_id,
-                direction: BuildDirection::Inbound,
-                peers,
-                creator_tunnel_id: inbound_creator,
-                message_id: inbound_reply_id,
-                outbound_reply_router: None,
-                originator_hash: Some(peer.local_hash),
-            });
-            let inbound_attempt_id = if let Some(inbound) = inbound {
-                let outbound_slot = bootstrap_outbound_role_slot.ok_or_else(|| {
-                    ServiceProductError::Provisioning(
-                        "inbound Destination build has no usable outbound tunnel route".to_owned(),
-                    )
-                })?;
-                let outbound_first_hop = coordinator
-                    .registry_outbound_first_hop(outbound_slot)
-                    .map(|(router_hash, _)| router_hash)
-                    .ok_or_else(|| {
-                        ServiceProductError::Provisioning(
-                            "inbound Destination route has no first hop".to_owned(),
-                        )
-                    })?;
-                let authority = destination_build_dial_authority(
-                    BuildDirection::Inbound,
-                    inbound_gateway_hash.ok_or_else(|| {
-                        ServiceProductError::Provisioning(
-                            "inbound Destination build has no selected gateway".to_owned(),
-                        )
-                    })?,
-                    Some(outbound_first_hop),
-                )
-                .ok_or_else(|| {
-                    ServiceProductError::Provisioning(
-                        "inbound Destination build has no authorized outbound first hop".to_owned(),
-                    )
-                })?;
-                ensure_selected_peer_session(
-                    destination_tunnels,
-                    ssu2_handle,
-                    authority,
-                    options.dial_timeout,
-                    options.ssu2_qualification_profile,
-                    cancellation,
-                )
-                .await?;
-                let bridge_header = BridgeHeader::ShortTransport {
-                    message_id: inbound_outer_id,
-                    expiration_seconds: wall_secs().saturating_add(60) as u32,
-                };
-                let submission = coordinator
-                    .submit_destination_via_outbound_tunnel(
-                        inbound,
-                        &delivery,
-                        &inbound_bridge,
-                        bridge_header,
-                        outbound_slot,
-                        &mut rng,
-                    )
-                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-                match submission {
-                    SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
-                    SubmitResult::Rejected { .. } => {
-                        return Err(ServiceProductError::InboundBuildDeliveryRejected);
-                    }
-                }
-            } else {
-                None
-            };
-            // Wait for both installs.
+            // through the outbound first hop below. Reselection runs on
+            // every attempt, so the single retry below also prefers a
+            // currently live terminal.
+            //
+            // At most one accounted retry mirrors the outbound bootstrap:
+            // an emitted-but-unanswered tunneled build is cancelled and
+            // resubmitted through the same outbound role with fresh
+            // peers/identifiers. Explicit rejection, invalid replies,
+            // local delivery failure, and cancellation never loop.
+            let mut inbound_receive_layout = [ids[6], ids[7], ids[8]];
+            let mut inbound_next_layout = [ids[7], ids[8], ids[9]];
+            let mut inbound_gateway_hash = None;
+            let mut last_inbound_attempt = None;
             let mut installed_inbound = false;
             let mut local_receive_tunnel = None;
-            let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
-            while need_inbound
-                && !installed_inbound
-                && tokio::time::Instant::now() < install_deadline
-            {
-                coordinator.advance_time(wall_ms());
-                let Some(inbound_msg) = wait_for_startup_inbound(
-                    options.poll_interval,
-                    cancellation,
-                    ssu2_handle.next_inbound(),
-                )
-                .await?
-                else {
-                    continue;
-                };
-                let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
-                queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
-                let Ok(routed) = routed else {
-                    continue;
-                };
-                let matching_build_reply = matches!(
-                    &routed.dispatcher,
-                    RouterI2npOutcome::TunnelBuildReserved {
-                        kind: RouterI2npKind::ShortTunnelBuild,
-                        message_id,
-                        peer,
-                        ..
-                    } if *message_id == inbound_reply_id
-                        && Some(*peer) == inbound_reply_peer
-                );
-                if matching_build_reply
-                    && routed.coordinator.iter().any(|outcome| {
-                        matches!(
-                            outcome,
-                            BuildCoordinatorOutcome::InvalidReply {
-                                attempt_id,
-                                direction: BuildDirection::Inbound,
-                                ..
-                            } if Some(*attempt_id) == inbound_attempt_id
+            let mut inbound_attempts = 0u8;
+            while need_inbound && !installed_inbound && inbound_attempts < 2 {
+                inbound_attempts = inbound_attempts.saturating_add(1);
+                if inbound_attempts > 1 {
+                    let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+                    reserved_tunnel_ids.extend(allocated_startup_tunnel_ids.iter().copied());
+                    let retry_ids = allocator.allocate_set(5, &reserved_tunnel_ids)?;
+                    allocated_startup_tunnel_ids.extend(retry_ids.iter().copied());
+                    inbound_creator = TunnelId::new(retry_ids[0]).map_err(|_| {
+                        ServiceProductError::Provisioning(format!(
+                            "{spec_id}: bad retry inbound creator id"
+                        ))
+                    })?;
+                    inbound_receive_layout = [retry_ids[1], retry_ids[2], retry_ids[3]];
+                    inbound_next_layout = [retry_ids[2], retry_ids[3], retry_ids[4]];
+                    inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+                    excluded_message_ids.push(inbound_reply_id);
+                    allocated_startup_message_ids.push(inbound_reply_id);
+                    inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+                    excluded_message_ids.push(inbound_outer_id);
+                    allocated_startup_message_ids.push(inbound_outer_id);
+                    inbound_bridge = ShortBuildI2npBridge::new();
+                }
+                if bootstrap_outbound_role_slot.is_some()
+                    && inbound_candidates.is_some()
+                    && let Ok(reselected) =
+                        reselect_inbound_with_session_terminal(&candidates, ssu2_handle)
+                {
+                    tracing::info!(
+                        session_backed = reselected.session_backed,
+                        reselections = reselected.selections,
+                        transition = "inbound_terminal_reselected",
+                        "destination inbound terminal reselection",
+                    );
+                    inbound_candidates = Some(reselected.path);
+                }
+                let inbound_peers = inbound_candidates
+                    .clone()
+                    .map(|selected| {
+                        selected_peer_material(
+                            selected,
+                            [
+                                HopRole::InboundGateway,
+                                HopRole::Participant,
+                                HopRole::Participant,
+                            ],
+                            inbound_receive_layout,
+                            inbound_next_layout,
+                            &spec_id,
                         )
                     })
+                    .transpose()?;
+                inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
+                let inbound_reply_peer = inbound_peers
+                    .as_ref()
+                    .and_then(|peers| peers.last())
+                    .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
+                let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
+                    destination_id: runtime.destination_id,
+                    direction: BuildDirection::Inbound,
+                    peers,
+                    creator_tunnel_id: inbound_creator,
+                    message_id: inbound_reply_id,
+                    outbound_reply_router: None,
+                    originator_hash: Some(peer.local_hash),
+                });
+                let inbound_attempt_id = if let Some(inbound) = inbound {
+                    let outbound_slot = bootstrap_outbound_role_slot.ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination build has no usable outbound tunnel route"
+                                .to_owned(),
+                        )
+                    })?;
+                    let outbound_first_hop = coordinator
+                        .registry_outbound_first_hop(outbound_slot)
+                        .map(|(router_hash, _)| router_hash)
+                        .ok_or_else(|| {
+                            ServiceProductError::Provisioning(
+                                "inbound Destination route has no first hop".to_owned(),
+                            )
+                        })?;
+                    let authority = destination_build_dial_authority(
+                        BuildDirection::Inbound,
+                        inbound_gateway_hash.ok_or_else(|| {
+                            ServiceProductError::Provisioning(
+                                "inbound Destination build has no selected gateway".to_owned(),
+                            )
+                        })?,
+                        Some(outbound_first_hop),
+                    )
+                    .ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination build has no authorized outbound first hop"
+                                .to_owned(),
+                        )
+                    })?;
+                    ensure_selected_peer_session(
+                        destination_tunnels,
+                        ssu2_handle,
+                        authority,
+                        options.dial_timeout,
+                        options.ssu2_qualification_profile,
+                        cancellation,
+                    )
+                    .await?;
+                    let bridge_header = BridgeHeader::ShortTransport {
+                        message_id: inbound_outer_id,
+                        expiration_seconds: wall_secs().saturating_add(60) as u32,
+                    };
+                    let submission = coordinator
+                        .submit_destination_via_outbound_tunnel(
+                            inbound,
+                            &delivery,
+                            &inbound_bridge,
+                            bridge_header,
+                            outbound_slot,
+                            &mut rng,
+                        )
+                        .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+                    match submission {
+                        SubmitResult::Submitted { attempt_id, .. } => {
+                            last_inbound_attempt = Some(attempt_id);
+                            Some(attempt_id)
+                        }
+                        SubmitResult::Rejected { .. } => {
+                            return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                        }
+                    }
+                } else {
+                    None
+                };
+                // Wait for both installs.
+                let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
+                while need_inbound
+                    && !installed_inbound
+                    && tokio::time::Instant::now() < install_deadline
                 {
-                    return Err(ServiceProductError::InboundBuildInvalidReply);
-                }
-                for outcome in routed.coordinator {
-                    if matches!(
-                        &outcome,
-                        BuildCoordinatorOutcome::DestinationBuildFailed {
-                            destination_id,
-                            direction: BuildDirection::Inbound,
-                        } if *destination_id == runtime.destination_id
-                    ) {
-                        return Err(ServiceProductError::InboundBuildRejected);
-                    }
-                    if let BuildCoordinatorOutcome::DestinationEstablished {
-                        attempt_id,
-                        destination_id,
-                        direction,
-                        ..
-                    } = outcome
+                    coordinator.advance_time(wall_ms());
+                    let Some(inbound_msg) = wait_for_startup_inbound(
+                        options.poll_interval,
+                        cancellation,
+                        ssu2_handle.next_inbound(),
+                    )
+                    .await?
+                    else {
+                        continue;
+                    };
+                    let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
+                    queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
+                    let Ok(routed) = routed else {
+                        continue;
+                    };
+                    let matching_build_reply = matches!(
+                        &routed.dispatcher,
+                        RouterI2npOutcome::TunnelBuildReserved {
+                            kind: RouterI2npKind::ShortTunnelBuild,
+                            message_id,
+                            peer,
+                            ..
+                        } if *message_id == inbound_reply_id
+                            && Some(*peer) == inbound_reply_peer
+                    );
+                    if matching_build_reply
+                        && routed.coordinator.iter().any(|outcome| {
+                            matches!(
+                                outcome,
+                                BuildCoordinatorOutcome::InvalidReply {
+                                    attempt_id,
+                                    direction: BuildDirection::Inbound,
+                                    ..
+                                } if Some(*attempt_id) == inbound_attempt_id
+                            )
+                        })
                     {
-                        if destination_id != runtime.destination_id {
-                            return Err(ServiceProductError::Provisioning(
-                                "established Destination material named a different group"
-                                    .to_owned(),
-                            ));
+                        return Err(ServiceProductError::InboundBuildInvalidReply);
+                    }
+                    for outcome in routed.coordinator {
+                        if matches!(
+                            &outcome,
+                            BuildCoordinatorOutcome::DestinationBuildFailed {
+                                destination_id,
+                                direction: BuildDirection::Inbound,
+                            } if *destination_id == runtime.destination_id
+                        ) {
+                            return Err(ServiceProductError::InboundBuildRejected);
                         }
-                        if direction != BuildDirection::Inbound {
-                            return Err(ServiceProductError::Provisioning(
-                                "inbound startup received a non-inbound build result".to_owned(),
-                            ));
-                        }
-                        let binding = register_destination_material(
-                            manager,
-                            coordinator,
-                            destination_id,
+                        if let BuildCoordinatorOutcome::DestinationEstablished {
                             attempt_id,
+                            destination_id,
                             direction,
-                            wall_secs(),
-                        )?;
-                        tracing::info!(
-                            build_attempt_id = attempt_id.get(),
-                            direction = ?direction,
-                            transition = "install_committed",
-                            "destination build attempt"
-                        );
-                        local_receive_tunnel = binding.local_receive_tunnel;
-                        installed_inbound = true;
+                            ..
+                        } = outcome
+                        {
+                            if destination_id != runtime.destination_id {
+                                return Err(ServiceProductError::Provisioning(
+                                    "established Destination material named a different group"
+                                        .to_owned(),
+                                ));
+                            }
+                            if direction != BuildDirection::Inbound {
+                                return Err(ServiceProductError::Provisioning(
+                                    "inbound startup received a non-inbound build result"
+                                        .to_owned(),
+                                ));
+                            }
+                            let binding = register_destination_material(
+                                manager,
+                                coordinator,
+                                destination_id,
+                                attempt_id,
+                                direction,
+                                wall_secs(),
+                            )?;
+                            tracing::info!(
+                                build_attempt_id = attempt_id.get(),
+                                direction = ?direction,
+                                transition = "install_committed",
+                                "destination build attempt"
+                            );
+                            local_receive_tunnel = binding.local_receive_tunnel;
+                            installed_inbound = true;
+                        }
                     }
                 }
-            }
-            if need_inbound && !installed_inbound {
-                coordinator.advance_time(wall_ms());
-                let counters = coordinator.counters();
-                let attempt_observation = inbound_attempt_id
-                    .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
-                    .unwrap_or_default();
-                tracing::warn!(
-                    build_attempt_id = inbound_attempt_id.map_or(0, |id| id.get()),
-                    direction = ?BuildDirection::Inbound,
-                    originator_write_disposition = ?inbound_attempt_id
+                if !installed_inbound {
+                    coordinator.advance_time(wall_ms());
+                    let counters = coordinator.counters();
+                    let attempt_observation = last_inbound_attempt
+                        .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        build_attempt_id = last_inbound_attempt.map_or(0, |id| id.get()),
+                        direction = ?BuildDirection::Inbound,
+                        originator_write_disposition = ?last_inbound_attempt
+                            .and_then(|attempt_id| coordinator.emission_disposition(attempt_id))
+                            .unwrap_or(BuildEmissionDisposition::NotEmitted),
+                        inbound_routed = counters.inbound_routed,
+                        inbound_orphans = counters.inbound_orphans,
+                        inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
+                        inbound_orphans_message_match = counters.inbound_orphans_message_match,
+                        inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
+                        inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
+                        inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
+                        inbound_gateway_messages = counters.inbound_gateway_messages,
+                        inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
+                        inbound_gateway_route_match = counters.inbound_gateway_route_match,
+                        authenticated_candidates = attempt_observation.authenticated_candidates,
+                        candidate_peer_matches = attempt_observation.peer_matches,
+                        candidate_message_id_matches = attempt_observation.message_id_matches,
+                        candidate_peer_match_id_plus_one = attempt_observation.peer_match_id_plus_one,
+                        candidate_peer_match_id_minus_one = attempt_observation.peer_match_id_minus_one,
+                        candidate_peer_match_id_other = attempt_observation.peer_match_id_other,
+                        pending_builds = counters.pending,
+                        transition = "inbound_build_wait_expired",
+                        "destination inbound build attempt"
+                    );
+                    let disposition = last_inbound_attempt
                         .and_then(|attempt_id| coordinator.emission_disposition(attempt_id))
-                        .unwrap_or(BuildEmissionDisposition::NotEmitted),
-                    inbound_routed = counters.inbound_routed,
-                    inbound_orphans = counters.inbound_orphans,
-                    inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
-                    inbound_orphans_message_match = counters.inbound_orphans_message_match,
-                    inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
-                    inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
-                    inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
-                    inbound_gateway_messages = counters.inbound_gateway_messages,
-                    inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
-                    inbound_gateway_route_match = counters.inbound_gateway_route_match,
-                    authenticated_candidates = attempt_observation.authenticated_candidates,
-                    candidate_peer_matches = attempt_observation.peer_matches,
-                    candidate_message_id_matches = attempt_observation.message_id_matches,
-                    candidate_peer_match_id_plus_one = attempt_observation.peer_match_id_plus_one,
-                    candidate_peer_match_id_minus_one = attempt_observation.peer_match_id_minus_one,
-                    candidate_peer_match_id_other = attempt_observation.peer_match_id_other,
-                    pending_builds = counters.pending,
-                    transition = "inbound_build_wait_expired",
-                    "destination inbound build attempt"
-                );
-                return Err(ServiceProductError::InboundBuildMissing);
+                        .unwrap_or(BuildEmissionDisposition::NotEmitted);
+                    if inbound_attempts < 2 && should_retry_inbound_build(disposition, cancellation)
+                    {
+                        if let Some(previous) = last_inbound_attempt {
+                            coordinator.cancel(previous);
+                        }
+                        tracing::info!(
+                            build_attempt_id = last_inbound_attempt.map_or(0, |id| id.get()),
+                            originator_write_disposition = ?disposition,
+                            retry_attempt = inbound_attempts + 1,
+                            transition = "inbound_retry",
+                            "destination inbound build attempt unanswered after emission",
+                        );
+                        continue;
+                    }
+                    return Err(ServiceProductError::InboundBuildMissing);
+                }
             }
             // The local endpoint receive id is distinct from the pool's
             // creator id. Use the id retained from EstablishedTunnel rather
