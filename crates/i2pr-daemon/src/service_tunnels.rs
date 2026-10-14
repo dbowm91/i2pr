@@ -3264,16 +3264,28 @@ impl ServiceTunnelManager {
         }
     }
 
-    /// Plan 478 §6 — drains filed peer-lease fetch requests for the
-    /// product advance loop. Bounded by the table cap.
-    pub(crate) fn take_peer_lease_requests(&self) -> Vec<(DestinationId, [u8; 32])> {
+    /// Plan 478 §6 — atomically drains filed requests and refreshes
+    /// their timestamps to now. The sweep's freshness check must not
+    /// observe an empty table while a lookup is already running;
+    /// separate take-then-insert leaves exactly that window and the
+    /// sweep terminates instead of requeueing. Success clears via
+    /// [`Self::clear_peer_lease_request`]; failure leaves the
+    /// refreshed stamp so the filing cooldown paces retries.
+    pub(crate) fn take_and_refresh_peer_lease_requests(
+        &self,
+        now_ms: u64,
+    ) -> Vec<(DestinationId, [u8; 32])> {
         let Ok(mut table) = self.peer_lease_requests.lock() else {
             return Vec::new();
         };
-        table
+        let drained: Vec<(DestinationId, [u8; 32])> = table
             .drain()
             .map(|(peer, (sender, _))| (sender, peer))
-            .collect()
+            .collect();
+        for (sender, peer) in &drained {
+            table.insert(*peer, (*sender, now_ms));
+        }
+        drained
     }
 
     /// Plan 478 §6 — reports whether a peer-lease fetch filing is
@@ -9807,10 +9819,18 @@ mod plan212_router_backed_service_destination_tests {
             peer,
             1_000 + PEER_LEASE_REQUEST_COOLDOWN_MS + 1
         ));
-        let drained = manager.take_peer_lease_requests();
+        let drained = manager.take_and_refresh_peer_lease_requests(2_000);
         assert_eq!(drained, vec![(destination_id, peer)]);
-        // Drained table files again.
-        assert!(manager.request_peer_lease_lookup(destination_id, peer, 2_000));
+        // Atomic take-and-refresh leaves the entry fresh, so an
+        // immediate refiling is suppressed (no drain race).
+        assert!(!manager.request_peer_lease_lookup(destination_id, peer, 2_001));
+        assert!(manager.peer_lease_request_fresh(&peer, 2_001));
+        // Refiling after cooldown is accepted.
+        assert!(manager.request_peer_lease_lookup(
+            destination_id,
+            peer,
+            2_000 + PEER_LEASE_REQUEST_COOLDOWN_MS + 1
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

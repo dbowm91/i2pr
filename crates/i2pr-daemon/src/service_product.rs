@@ -3302,18 +3302,20 @@ impl ServiceProduct {
     /// record a static reason and rely on the filing cooldown for
     /// retry pacing, never on hot loops.
     async fn fulfill_peer_lease_requests(&mut self) {
-        let requests = self.manager.take_peer_lease_requests();
+        // Atomically drain and refresh so the sweep never observes
+        // an empty table mid-lookup (it would terminate instead of
+        // requeueing). Success clears below; failure leaves the
+        // refreshed stamp for cooldown-paced retry.
+        let requests = self.manager.take_and_refresh_peer_lease_requests(
+            crate::service_tunnels::service_streaming_now_ms(),
+        );
         for (sender, peer) in requests {
             let Some(target) = crate::service_delivery::destination_hash_from_slice(&peer) else {
                 continue;
             };
-            // Re-file immediately so the entry stays fresh while
-            // this lookup runs; the sweep requeues cache misses
-            // against it and success clears it below.
-            self.manager.request_peer_lease_lookup(
-                sender,
-                peer,
-                crate::service_tunnels::service_streaming_now_ms(),
+            tracing::info!(
+                transition = "peer_lease_fulfilling",
+                "peer LeaseSet2 fetch starting bounded lookup",
             );
             match resolve_remote_destination_for_service(
                 &self.manager,
