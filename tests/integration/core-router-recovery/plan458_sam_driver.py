@@ -213,6 +213,16 @@ def main():
         f"i2pd_public_len={len(i2pd_public)}",
         flush=True,
     )
+    try:
+        with open(args.evidence + ".peers.json", "w", encoding="utf-8") as peers_handle:
+            json.dump(
+                {"schema": "plan458-sam-peers-v1", "i2pr_public": i2pr_public,
+                 "i2pd_public": i2pd_public},
+                peers_handle,
+            )
+            peers_handle.write("\n")
+    except OSError as exc:
+        print(f"peer evidence unavailable: {exc}", flush=True)
     outcomes = {}
     try:
         for label, sender, receiver, sid, rid in (
