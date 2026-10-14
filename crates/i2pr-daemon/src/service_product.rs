@@ -2779,6 +2779,27 @@ impl ServiceProduct {
                     )
                     .await
                     .map_err(|error| {
+                        // Redacted static reason (never error
+                        // contents): the failure-stage taxonomy
+                        // already classifies product errors without
+                        // identities.
+                        let publication_failure_stage: &'static str = match &error {
+                            ServicePublicationError::Begin { rejection, .. } => match rejection {
+                                PublicationBeginRejection::Capacity => "begin-capacity",
+                                PublicationBeginRejection::NoEligibleFloodfill => {
+                                    "begin-no-floodfill"
+                                }
+                                PublicationBeginRejection::InvalidRecord => "begin-invalid-record",
+                                PublicationBeginRejection::Other => "begin-other",
+                            },
+                            ServicePublicationError::Product(inner) => {
+                                classify_publication_failure(inner).label()
+                            }
+                        };
+                        tracing::warn!(
+                            publication_failure_stage,
+                            "SAM destination LS2 publication failed"
+                        );
                         ServiceProductError::Provisioning(format!(
                             "SAM destination LS2 publication failed: {error:?}"
                         ))
@@ -3173,20 +3194,14 @@ impl ServiceProduct {
                 .unwrap_or(now_seconds)
                 .saturating_mul(1000);
             self.manager
-                .with_destination_bridge(destination_id, |bridge| {
-                    bridge.refresh_router_pool_snapshot(
-                        lease_snapshot,
-                        inbound_receive_ids,
-                        inbound_expires_at_ms,
-                        now_ms,
-                    )
-                })
-                .ok_or_else(|| {
-                    ServiceProductError::Provisioning(
-                        "group bridge missing during refresh".to_owned(),
-                    )
-                })?
-                .map_err(ServiceProductError::Provisioning)?;
+                .refresh_service_router_pool_snapshot_with_owners(
+                    destination_id,
+                    lease_snapshot,
+                    &inbound_receive_ids,
+                    inbound_expires_at_ms,
+                    now_ms,
+                )
+                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
             self.replenish_group_destination(destination_id).await?;
         }
         let publication_ids: Vec<_> = self
@@ -5634,10 +5649,12 @@ async fn publish_creator_router_info(
         let Ok(message_id) = fresh_message_id(&mut rng, &[]) else {
             continue;
         };
-        let wire = match crate::outbound_lookup::encode_store_envelope(
+        let wire = match crate::outbound_lookup::encode_store_envelope_short(
             &store,
             message_id,
-            wall_ms().saturating_add(60_000),
+            // Same 60-second lifetime policy as before, in the
+            // seconds the direct short envelope carries.
+            wall_secs().saturating_add(60) as u32,
         ) {
             Ok(wire) => wire,
             Err(_) => continue,

@@ -3282,6 +3282,102 @@ impl ServiceTunnelManager {
         })?
     }
 
+    /// Refreshes the installed pool snapshot (signed LS2 plus receive
+    /// projection) after the canonical pool advances, keeping the
+    /// inbound-owner table coherent with the bridge. The bridge-only
+    /// refresh drops replaced receive ids from the projection while
+    /// the owner table still maps them, so a later summary counts
+    /// zero owners for a live destination (observed live: bridge and
+    /// owner table held disjoint id sets for the same destination).
+    /// This method holds the owner registry across the bridge swap —
+    /// the same lock order as the transactional install — unregisters
+    /// ids the new snapshot drops, and registers ids it adds under
+    /// the existing same-destination runtime. Added ids conflicting
+    /// with a live registration fail closed before any mutation.
+    pub(crate) fn refresh_service_router_pool_snapshot_with_owners(
+        &self,
+        service_destination: DestinationId,
+        lease_snapshot: Option<(LeaseSet2, ValidatedLeaseSet2)>,
+        inbound_receive_ids: &[u32],
+        inbound_expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), ServiceTunnelError> {
+        if inbound_receive_ids.contains(&0) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed refresh carries zero receive tunnel id".to_owned(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::with_capacity(inbound_receive_ids.len());
+        if inbound_receive_ids.iter().any(|id| !unique.insert(*id)) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed refresh contains duplicate receive ids".to_owned(),
+            ));
+        }
+        let mut owners = self.inbound_tunnel_owners.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("inbound tunnel owners poisoned".to_owned())
+        })?;
+        let previous_ids = self
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_inbound_receive_ids()
+            })
+            .ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
+            })?;
+        let runtime = owners
+            .values()
+            .find(|owner| owner.destination_id == service_destination)
+            .cloned();
+        let added: Vec<u32> = inbound_receive_ids
+            .iter()
+            .copied()
+            .filter(|id| !previous_ids.contains(id))
+            .collect();
+        // Resolve the owning runtime before mutating: added ids join
+        // the existing same-destination generation, never a fresh
+        // authority.
+        let runtime = if added.is_empty() {
+            None
+        } else {
+            if added.iter().any(|id| owners.contains_key(id)) {
+                return Err(ServiceTunnelError::InvalidConfig(
+                    "router-backed refresh conflicts with a live receive id".to_owned(),
+                ));
+            }
+            Some(runtime.ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig(
+                    "router-backed refresh adds receive ids with no registered owner runtime"
+                        .to_owned(),
+                )
+            })?)
+        };
+        let removed: Vec<u32> = previous_ids
+            .iter()
+            .copied()
+            .filter(|id| !inbound_receive_ids.contains(id))
+            .collect();
+        self.with_destination_bridge(service_destination, |bridge| {
+            bridge.refresh_router_pool_snapshot(
+                lease_snapshot,
+                inbound_receive_ids.to_vec(),
+                inbound_expires_at_ms,
+                now_ms,
+            )
+        })
+        .ok_or_else(|| {
+            ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
+        })?
+        .map_err(ServiceTunnelError::InvalidConfig)?;
+        for receive_id in removed {
+            owners.remove(&receive_id);
+        }
+        if let Some(runtime) = runtime {
+            for receive_id in added {
+                owners.insert(receive_id, Arc::clone(&runtime));
+            }
+        }
+        Ok(())
+    }
+
     /// Plan 212 §6 — removes router-backed state from the service
     /// runtime that owns `service_destination`. Local/co-owned
     /// material is untouched. The caller must also remove the
@@ -3339,6 +3435,23 @@ impl ServiceTunnelManager {
                 )
             })?;
         let mut summary = summary.take()?;
+        // Redacted owner-table attribution (counts and booleans
+        // only): distinguishes an emptied owner table from
+        // key/destination mismatch when a live destination reports
+        // zero owners.
+        let owners_table_len = owners.len();
+        let any_key_present = receive_ids.iter().any(|id| owners.contains_key(id));
+        let any_destination_match = owners
+            .values()
+            .any(|owner| owner.destination_id == service_destination);
+        tracing::info!(
+            owners_table_len,
+            any_key_present,
+            any_destination_match,
+            bridge_receive_count = receive_ids.len(),
+            transition = "router_network_summary_attribution",
+            "router-network SAM summary owner attribution"
+        );
         summary.inbound_owner_count = receive_ids
             .iter()
             .filter(|id| {
@@ -9870,6 +9983,65 @@ mod plan212_router_backed_service_destination_tests {
         assert!(
             replaced.is_some_and(|outcome| outcome.is_ok()),
             "explicit replace must succeed"
+        );
+    }
+
+    /// Plan 478 §5 — pool-advance refresh keeps the owner table
+    /// coherent with the bridge projection. Replacing a receive id
+    /// unregisters the dropped id and registers the added id under
+    /// the same destination runtime; the summary stays complete.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_replaces_owner_projection_atomically() {
+        let directory = temp_data_dir("plan478-refresh");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-refresh");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6101,
+            &[0x9611, 0x9612],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9611, 0x9612],
+                now_ms,
+            )
+            .expect("install");
+        // Pool advances: 0x9611 is replaced by 0x9613 while 0x9612
+        // stays live.
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9612, 0x9613],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("summary");
+        assert_eq!(summary.inbound_receive_count, 2);
+        assert_eq!(summary.inbound_owner_count, 2);
+        assert!(
+            summary.inbound_owner_registered,
+            "refreshed projection stays fully owned"
+        );
+        assert!(summary.is_complete());
+        assert!(manager.inbound_tunnel_owner(0x9611).is_none());
+        assert!(manager.inbound_tunnel_owner(0x9612).is_some());
+        assert!(manager.inbound_tunnel_owner(0x9613).is_some());
+        let mut pairs = manager.inbound_tunnel_owner_pairs();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![(0x9612, destination_id), (0x9613, destination_id),]
         );
     }
 
