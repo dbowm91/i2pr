@@ -3324,10 +3324,13 @@ impl ServiceProduct {
                         "peer LeaseSet2 fetch resolved"
                     );
                 }
-                Err(_) => {
-                    // Static reason only; the filing cooldown paces
-                    // retries, never hot loops.
+                Err(error) => {
+                    // Temporary Plan 478 attribution: full lookup
+                    // census (counts + target/gateway hashes already
+                    // emitted by the resolver itself). Remove once
+                    // the fetch failure is attributed.
                     tracing::warn!(
+                        lookup_error = ?error,
                         transition = "peer_lease_unresolved",
                         "peer LeaseSet2 fetch failed; retry after filing cooldown"
                     );
@@ -4284,18 +4287,43 @@ async fn resolve_remote_destination_for_service_inner(
             bridge.router_inbound_receive_ids()
         })
         .unwrap_or_default();
+    // Temporary Plan 478 attribution: distinguish a missing sender
+    // bridge from a bridge with an empty projection. Counts only.
+    let sender_bridge_present = manager
+        .with_destination_bridge(service_destination, |_| ())
+        .is_some();
     let local_receive_for_lookup = receive_ids.first().copied().ok_or_else(|| {
+        tracing::warn!(
+            sender_bridge_present,
+            bridge_receive_count = receive_ids.len(),
+            transition = "peer_lease_no_receive_ids",
+            "peer lease fetch has no sender receive ids",
+        );
         ServiceProductError::Provisioning("service has no inbound receive ids".to_owned())
     })?;
     let local_receive = TunnelId::new(local_receive_for_lookup)
         .map_err(|_| ServiceProductError::Provisioning("invalid receive tunnel id".to_owned()))?;
-    let reply_path = reply_path_for_inbound_route(coordinator.registry(), local_receive)
-        .map_err(|_| ServiceProductError::LookupTimeout)?;
+    let reply_path =
+        reply_path_for_inbound_route(coordinator.registry(), local_receive).map_err(|_| {
+            tracing::warn!(
+                lookup_stage = "reply-path",
+                transition = "peer_lease_lookup_stage",
+                "peer LeaseSet2 fetch failed before send",
+            );
+            ServiceProductError::LookupTimeout
+        })?;
     let (lookup_id, action) = {
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
             .begin_lease_lookup(destination_hash, &routing_key, reply_path)
-            .map_err(|_| ServiceProductError::LookupTimeout)?
+            .map_err(|_| {
+                tracing::warn!(
+                    lookup_stage = "begin",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                ServiceProductError::LookupTimeout
+            })?
     };
     // Compose the lookup through the service's real router-backed
     // outbound role (borrow by reference; no removal, no
@@ -4349,8 +4377,14 @@ async fn resolve_remote_destination_for_service_inner(
             // the router-backed outbound role by reference; the
             // coordinator composes the DatabaseLookup cells; the
             // delivery service carries them to the first hop.
-            let deadline = Deadline::new(options.tunnel_deadline)
-                .map_err(|_| ServiceProductError::LookupTimeout)?;
+            let deadline = Deadline::new(options.tunnel_deadline).map_err(|_| {
+                tracing::warn!(
+                    lookup_stage = "deadline",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                ServiceProductError::LookupTimeout
+            })?;
             let dispatch = manager
                 .with_destination_bridge(service_destination, |bridge| {
                     if !bridge.has_router_network_state(wall_ms()) {
@@ -4371,16 +4405,36 @@ async fn resolve_remote_destination_for_service_inner(
                     Some(dispatch)
                 })
                 .flatten()
-                .ok_or(ServiceProductError::LookupTimeout)?;
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        lookup_stage = "compose",
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
+                    ServiceProductError::LookupTimeout
+                })?;
             for cell_delivery in &dispatch.deliveries {
                 let request = crate::router_i2np::RouterDeliveryRequest::new(
                     cell_delivery.target(),
                     cell_delivery.message_bytes().to_vec(),
                     options.delivery_timeout,
                 )
-                .map_err(|_| ServiceProductError::LookupTimeout)?;
+                .map_err(|_| {
+                    tracing::warn!(
+                        lookup_stage = "request",
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
+                    ServiceProductError::LookupTimeout
+                })?;
                 let outcome = delivery.deliver(request, &CancellationToken::new());
                 if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                    tracing::warn!(
+                        lookup_stage = "deliver",
+                        delivery_outcome = ?outcome,
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
                     return Err(ServiceProductError::LookupTimeout);
                 }
             }
