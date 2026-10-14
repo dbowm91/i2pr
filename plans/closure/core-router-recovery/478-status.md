@@ -46,6 +46,16 @@ Also validated this turn: the outbound bootstrap retry fires exactly once on a f
 
 **Evidence hygiene:** `/tmp` lane scratch proved volatile (a reaper cleared kept scratch dirs mid-turn, including the analyzed runs). After each lane run, snapshot the scratch into the repo evidence root before analysis; status notes above are reconstructed from committed code, exact-ID receipts, and contemporaneous log extracts.
 
+## 2026-10-14 LS2 publication, ECIES peer, and outbound STREAM resolution (commits `4fabc4f`–`51dc94b`, `666bff2`–`02b810d` and follow-ons)
+
+**Breakthrough 5 — direct LS2 publication lands.** The tunneled LS2 path was abandoned after exact-ID tracing showed its cells arriving yet never surfacing (no tunnel effect, no warning, unattributed): LS2 now goes direct short-framed to the selected floodfill with a narrow `ServiceLeaseSetPublication` dial purpose, mirroring the proven creator-RI path. First run with it: `LeaseSet2 updated` for our key on the target floodfill. A duplicate-composition wart (provision + activate each publish) remains; stores are idempotent. The tunneled composition stays in-tree for future re-hardening.
+
+**Breakthrough 6 — the lane peer must be ECIES (lane profile, not product).** i2pr→stock STREAM failed `INVALID_KEY`: stock SAM defaults to ElGamal destinations and the router product is ECIES-only by declared scope (ElGamal fails closed per the I2CP conformance note). The driver now requests `CRYPTO_TYPE=4` for the stock peer only. A redacted decode-failure taxonomy (`base64 invalid` / `structure invalid` / `not X25519`) replaced the catch-all message.
+
+**Breakthrough 7 — on-demand peer LeaseSet2 fetch.** Outbound STREAM to a never-seen peer failed closed as `NotCached` with no lookup ever initiated, so SYNs never left and CONNECT timed out. The delivery sweep now files a bounded cooldown-gated fetch on cache miss; the product advance loop fulfills it through standard bounded remote resolution; the sweep requeues (instead of terminating) while the fetch stays fresh; an atomic take-and-refresh closes a drain race where the sweep terminated instead of requeueing. A registry-fallback probes any registry-routed tunnel when bridge/registry id sets diverge, and the lookup first-hop session is ensured like builds. Deterministic table tests pinned.
+
+**Current frontier (one direction complete, reverse open):** i2pr→stock binary STREAM now completes end to end (payload digest-matched). Stock→us times out: stock never sends SYN, and its CONNECT never appears in stock logs. Our LS2 is stored on one floodfill but visibly not replicated mesh-wide within the window, and stock never looks our key up. Also observed: per-run variance is high (bootstrap/inbound/outbound legs each fail closed on different runs under churn; duplicate publications; stock transit noise through us polluting reply correlation). Single-run outcomes stay weak evidence; the remaining work is the reverse STREAM leg plus §6 recovery, not the (now green) build/install/owner/publication machinery.
+
 ## Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
