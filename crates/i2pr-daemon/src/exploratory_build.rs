@@ -93,7 +93,8 @@ use i2pr_tunnel::short_record::HopRole;
 
 use crate::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryRequest, RouterDeliveryService, RouterDeliveryTicket,
-    RouterI2npError, RouterI2npKind, RouterI2npOutcome, dispatch_router_i2np,
+    RouterDeliveryTransport, RouterI2npError, RouterI2npKind, RouterI2npOutcome,
+    dispatch_router_i2np,
 };
 
 /// Maximum number of simultaneous pending exploratory build
@@ -1495,6 +1496,10 @@ impl ExploratoryBuildCoordinator {
         // Redacted family of the selected transports, so a tunneled send
         // that never reaches stock can be attributed to the
         // SSU2-first/NTCP2-fallback seam without naming peers.
+        // Ephemeral selected-link generations (never peer identities),
+        // so a socket-emitted send that never reaches stock can be
+        // checked against session rotation without naming peers.
+        let mut delivery_links: Vec<u64> = Vec::new();
         let mut delivery_family: Option<&'static str> = None;
         let delivery_outcome = if let Some(slot) = outbound_slot {
             let expiration_ms = match bridge_header {
@@ -1535,6 +1540,13 @@ impl ExploratoryBuildCoordinator {
                         Some(previous) if previous == family => family,
                         Some(_) => "mixed",
                     });
+                    let generation = match transport {
+                        RouterDeliveryTransport::Ssu2(link)
+                        | RouterDeliveryTransport::Ntcp2(link) => link.value(),
+                    };
+                    if delivery_links.len() < 8 {
+                        delivery_links.push(generation);
+                    }
                 }
                 delivery_set.unobserved |= ticket.is_none();
                 delivery_set.tickets.push(ticket);
@@ -1551,8 +1563,17 @@ impl ExploratoryBuildCoordinator {
                 BuildCoordinatorError::Coordinator("delivery request validation failed")
             })?;
             delivery_set.required = 1;
-            let (result, _selected, ticket) = delivery
+            let (result, selected, ticket) = delivery
                 .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+            if let Some(transport) = selected {
+                delivery_family = Some(transport.as_str());
+                let generation = match transport {
+                    RouterDeliveryTransport::Ssu2(link) | RouterDeliveryTransport::Ntcp2(link) => {
+                        link.value()
+                    }
+                };
+                delivery_links.push(generation);
+            }
             delivery_set.unobserved = ticket.is_none();
             delivery_set.tickets.push(ticket);
             if !matches!(result, RouterDeliveryOutcome::Accepted) {
@@ -1564,6 +1585,7 @@ impl ExploratoryBuildCoordinator {
         tracing::info!(
             direction = ?direction,
             delivery_family = delivery_family.unwrap_or("unobserved"),
+            delivery_links = ?delivery_links,
             transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
             "destination build attempt"
         );
