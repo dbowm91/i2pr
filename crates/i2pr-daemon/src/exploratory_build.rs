@@ -157,6 +157,48 @@ fn fresh_transport_message_id<R: RngCore>(rng: &mut R) -> Result<u32, BuildCoord
     ))
 }
 
+fn wrap_inner_wire(
+    bridge: &ShortBuildI2npBridge,
+    action: &ShortBuildAction,
+    header: BridgeHeader,
+) -> Result<Vec<u8>, BuildCoordinatorError> {
+    let (i2np_message, _) = bridge
+        .wrap_deliver_action(action, header)
+        .map_err(|error| {
+            BuildCoordinatorError::Coordinator(match error {
+                i2pr_tunnel::bridge::BridgeError::ZeroRecordCount => "STBM record count is zero",
+                i2pr_tunnel::bridge::BridgeError::RecordCountMismatch { .. } => {
+                    "STBM record count prefix mismatch"
+                }
+                i2pr_tunnel::bridge::BridgeError::RecordCountOutOfRange { .. } => {
+                    "STBM record count above maximum"
+                }
+                i2pr_tunnel::bridge::BridgeError::PayloadLengthMismatch { .. } => {
+                    "STBM payload length mismatch"
+                }
+                i2pr_tunnel::bridge::BridgeError::DeferredBuildRecords(_) => {
+                    "deferred build records rejected"
+                }
+                i2pr_tunnel::bridge::BridgeError::MessageFraming(_) => {
+                    "I2NP framing rejected the build message"
+                }
+                i2pr_tunnel::bridge::BridgeError::RoundTripBodyMismatch { .. } => {
+                    "I2NP round-trip body mismatch"
+                }
+            })
+        })?;
+    match header {
+        BridgeHeader::Standard { .. } => i2np_message
+            .encode_standard_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| BuildCoordinatorError::Coordinator("I2NP standard encoding failed")),
+        BridgeHeader::ShortTransport { .. } => i2np_message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| {
+                BuildCoordinatorError::Coordinator("I2NP short-transport encoding failed")
+            }),
+    }
+}
+
 fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
     role: &i2pr_tunnel::roles::OutboundGatewayRole,
     target_router: Hash,
@@ -1462,38 +1504,16 @@ impl ExploratoryBuildCoordinator {
         let action: ShortBuildAction = state
             .deliver_action(message)
             .map_err(map_construction_error)?;
-        let (i2np_message, _bridge_record) = bridge
-            .wrap_deliver_action(&action, bridge_header)
-            .map_err(|error| {
-                BuildCoordinatorError::Coordinator(match error {
-                    i2pr_tunnel::bridge::BridgeError::ZeroRecordCount => {
-                        "STBM record count is zero"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RecordCountMismatch { .. } => {
-                        "STBM record count prefix mismatch"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RecordCountOutOfRange { .. } => {
-                        "STBM record count above maximum"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::PayloadLengthMismatch { .. } => {
-                        "STBM payload length mismatch"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::DeferredBuildRecords(_) => {
-                        "deferred build records rejected"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::MessageFraming(_) => {
-                        "I2NP framing rejected the build message"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RoundTripBodyMismatch { .. } => {
-                        "I2NP round-trip body mismatch"
-                    }
-                })
-            })?;
-        let wire = i2np_message
-            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
-            .map_err(|_| {
-                BuildCoordinatorError::Coordinator("I2NP short-transport encoding failed")
-            })?;
+        // The inner build wire is framed per delivery branch
+        // below: the direct bootstrap exception keeps the short
+        // framing the pinned reference dispatches from complete
+        // SSU2 blocks, while a tunneled inner must be standard
+        // framed. The stock tunnel endpoint checks the inner
+        // `IsExpired` at the standard millisecond offset before
+        // routing; a short inner reads its seconds expiry plus
+        // record bytes as far-future milliseconds and is dropped
+        // as `TunnelMessage: Message expired` at the OBEP after
+        // traversing the whole outbound path.
         let first_peer_hash = request.peers.first().map(|peer| peer.router_hash).ok_or(
             BuildCoordinatorError::Coordinator("build path has no first hop"),
         )?;
@@ -1527,6 +1547,17 @@ impl ExploratoryBuildCoordinator {
                     .ok_or(BuildCoordinatorError::Coordinator(
                         "selected outbound tunnel is unavailable",
                     ))?;
+            // Same identifiers and instant as the direct framing,
+            // standard envelope so the stock OBEP expiry check
+            // passes on the tunneled inner.
+            let wire = wrap_inner_wire(
+                bridge,
+                &action,
+                BridgeHeader::Standard {
+                    message_id: outer_message_id,
+                    expiration_ms,
+                },
+            )?;
             let cells = compose_outbound_build_deliveries(
                 outbound_role,
                 first_peer_hash,
@@ -1573,6 +1604,8 @@ impl ExploratoryBuildCoordinator {
             }
             result
         } else {
+            // Direct bootstrap exception keeps the caller framing.
+            let wire = wrap_inner_wire(bridge, &action, bridge_header)?;
             let wire_len = wire.len();
             let delivery_request = RouterDeliveryRequest::new(peer, wire, BUILD_DELIVERY_TIMEOUT)
                 .map_err(|_| {
@@ -3352,22 +3385,29 @@ mod tests {
         let message = state.prepare(&mut rng).expect("prepare");
         let action: ShortBuildAction = state.deliver_action(message).expect("deliver");
         let bridge = ShortBuildI2npBridge::new();
-        let header = BridgeHeader::ShortTransport {
+        // The tunneled inner mirrors the live submit path: standard
+        // framing with millisecond expiry, so the stock OBEP
+        // `IsExpired` check at the standard offset passes. A short
+        // inner reads as far-future and is dropped as
+        // `TunnelMessage: Message expired` after traversing the
+        // whole outbound path.
+        let header = BridgeHeader::Standard {
             message_id: 0x8003,
-            expiration_seconds: 1_700_000_060,
+            expiration_ms: 1_700_000_060_000,
         };
-        let (i2np_message, _) = bridge
-            .wrap_deliver_action(&action, header)
-            .expect("wrap deliver action");
-        let wire = i2np_message
-            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
-            .expect("encode inner");
-        // A three-hop short build request is 882 bytes: small enough
-        // for one TunnelData cell, large enough that the 1028-byte
-        // cell body always needs two SSU2 fragments at the default
-        // 1024-byte budget. Both facts are live-lane evidence inputs,
-        // so they are pinned here.
-        assert_eq!(wire.len(), 882, "inner build wire size");
+        let wire = wrap_inner_wire(&bridge, &action, header).expect("wrap inner");
+        let decoded = I2npMessage::decode_standard(&wire, MAX_I2NP_MESSAGE_BYTES)
+            .expect("standard inner decodes");
+        assert!(
+            matches!(decoded.body(), I2npBody::ShortTunnelBuild(_)),
+            "tunneled inner carries the build records"
+        );
+        // A three-hop short build request (4 records) is small
+        // enough for one TunnelData cell; the fixed 1028-byte cell
+        // body always needs two SSU2 fragments at the default
+        // 1024-byte budget. Both facts are live-lane evidence
+        // inputs, so they are pinned here.
+        assert_eq!(wire.len(), 889, "standard inner build wire size");
         let outbound_peer_hash = Hash::from_bytes([0x31; 32]);
         let outbound_hops = vec![
             EstablishedHop::with_next(
