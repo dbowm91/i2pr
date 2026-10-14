@@ -1471,7 +1471,10 @@ fn classify_publication_failure(error: &ServiceProductError) -> LeasePublication
         LeasePublicationFailureStage::PublicationCoordination
     } else if detail.contains("publication compose") {
         LeasePublicationFailureStage::TunnelComposition
-    } else if detail.contains("publication transport") || detail.contains("publication delivery") {
+    } else if detail.contains("publication transport")
+        || detail.contains("publication delivery")
+        || detail.contains("publication session")
+    {
         LeasePublicationFailureStage::DeliveryAdmission
     } else {
         LeasePublicationFailureStage::Other
@@ -2776,6 +2779,7 @@ impl ServiceProduct {
                         &mut self.inner.ssu2_handle,
                         destination_id,
                         self.inner.options,
+                        &self.token,
                     )
                     .await
                     .map_err(|error| {
@@ -3224,6 +3228,7 @@ impl ServiceProduct {
                 &mut self.inner.ssu2_handle,
                 destination_id,
                 self.inner.options,
+                &self.token,
             )
             .await;
             match result {
@@ -6613,6 +6618,7 @@ async fn provision_all_service_router_material(
                 ssu2_handle,
                 runtime.destination_id,
                 options,
+                cancellation,
             )
             .await
             .map_err(|error| {
@@ -7159,6 +7165,7 @@ async fn publish_service_ls2_for_service(
     ssu2_handle: &mut Ssu2DaemonHandle,
     service_destination: i2pr_client::DestinationId,
     options: ServiceProductOptions,
+    cancellation: &CancellationToken,
 ) -> Result<(), ServicePublicationError> {
     // Fetch the real signed LS2 from the router-backed state
     // through the dedicated bridge accessor that clones the public
@@ -7281,6 +7288,34 @@ async fn publish_service_ls2_for_service(
         );
     }
     let delivery = ssu2_handle.delivery().clone();
+    // The publication rides the service outbound role, whose first
+    // hop may have no live session (role replacement or churn since
+    // the last build). Ensure it with the same bounded outbound
+    // first-hop authority builds use; a direct send without a
+    // session fails closed as NoActiveSession.
+    if let Some(first_hop) = dispatch.deliveries.first().map(|cell| cell.target().hash())
+        && let Err(error) = ensure_selected_peer_session(
+            destination_tunnels,
+            ssu2_handle,
+            DestinationDialAuthority {
+                router_hash: first_hop,
+                purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+            },
+            options.dial_timeout,
+            options.ssu2_qualification_profile,
+            cancellation,
+        )
+        .await
+    {
+        let _ = destination_tunnels
+            .lock()
+            .await
+            .cancel_ls2_publication(request_id);
+        return Err(ServiceProductError::Provisioning(format!(
+            "publication session unavailable: {error}"
+        ))
+        .into());
+    }
     for cell_delivery in &dispatch.deliveries {
         let request = match crate::router_i2np::RouterDeliveryRequest::new(
             cell_delivery.target(),
