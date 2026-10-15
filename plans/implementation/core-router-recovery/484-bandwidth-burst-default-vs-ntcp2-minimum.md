@@ -1,6 +1,6 @@
 # Plan 484 — Bandwidth default burst vs NTCP2 wire-frame minimum
 
-**Status:** registered / ready. **Owner:** daemon config default + NTCP2
+**Status:** passed 2026-10-15 — see `plans/closure/core-router-recovery/484-status.md`. **Owner:** daemon config default + NTCP2
 runtime shaper (cross-owner policy, one coherent pass). **Baseline:** main
 `7b54fdd6` (Plan 483 close). **Predecessors:**
 `plans/closure/floodfill/479-status.md` (finding: 64 KiB default
@@ -86,6 +86,34 @@ no wire, codec, transport state-machine, or NetDB change.
    contract under test (not a lower-tier repeat: it is the gate this
    plan decides).
 4. WP4 — Closure record, registry/roadmap update, unblock audit.
+
+## WP1 decision record (2026-10-15): branch (a)
+
+Raise the daemon default to the smallest burst that fits one maximum NTCP2
+data frame above the default control reserve:
+
+```text
+MAX_WIRE_FRAME_LENGTH = 65_535 + 2 = 65_537
+minimum = ceil(65_537 * 100 / (100 - 10)) = ceil(6_553_700 / 90) = 72_819
+```
+
+- Operator impact: none for any working daemon. `[bandwidth]` is
+  default-off and experimental; no bandwidth-enabled daemon with NTCP2 can
+  exist on the 64 KiB default today because construction fails, so no
+  working configuration changes shape. Daemons that set `burst_bytes`
+  explicitly keep exact semantics (small explicit values are still rejected
+  by the unchanged runtime gate — no silent clamp is added).
+- Migration: none on wire, peers, or persisted state. Raising
+  `control_reserve_percent` above the default can push the required minimum
+  above the new default; that path stays fail-closed at construction and is
+  documented for the operator.
+- No ADR: policy default for an experimental default-off knob, following the
+  Plan 454 precedent (no ADR filed there either). The decision, arithmetic,
+  and guards live in this plan record plus the code comment and operator
+  doc.
+- Branch (b) rejected because it adds a new error path and operator repair
+  burden for a configuration that can never have worked; the fail-closed
+  gate for explicit small values is preserved unchanged.
 
 ## Failure / cancellation / restart / contention semantics
 

@@ -210,7 +210,7 @@ values. No silent default change, no lowered wire minimum, no live lane.
 
 | Plan | State | Implementation handoff | Dependency / executable acceptance |
 | --- | --- | --- | --- |
-| **484** | **ready** | [Bandwidth default burst vs NTCP2 wire-frame minimum](implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md) | 479 finding + 454 dormant-adapter regression (closed evidence, no new external gate) → one default-or-fail-closed policy with guards; 437/438/433/436 unaffected. |
+| **484** | **passed: burst default 72_819 fits NTCP2 frame, explicit-small stays fail-closed** | [Bandwidth default burst vs NTCP2 wire-frame minimum](implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md) | `closure/core-router-recovery/484-status.md`: WP1 branch (a) landed with drift + explicit-small guards (both inversion-probed), 454 baseline green unchanged; 437/438/433/436 unaffected, nothing promoted. |
 
 ## Active subsystem roadmaps
 
