@@ -140,7 +140,7 @@ def parse_attempt_receipt_lines(lines):
                     "inbound_routed", "inbound_orphans",
                     "inbound_orphans_peer_match", "inbound_orphans_message_match",
                     "inbound_orphans_peer_id_plus_one", "inbound_orphans_peer_id_minus_one",
-                    "inbound_orphans_peer_id_other",
+                    "inbound_orphans_peer_id_other", "inbound_orphans_retired_id_match",
                     "inbound_gateway_messages", "inbound_gateway_peer_match",
                     "inbound_gateway_route_match", "authenticated_candidates",
                     "candidate_peer_matches", "candidate_message_id_matches",

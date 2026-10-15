@@ -6548,6 +6548,8 @@ async fn provision_all_service_router_material(
                         inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
                         inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
                         inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
+                        inbound_orphans_retired_id_match =
+                            counters.inbound_orphans_retired_id_match,
                         inbound_gateway_messages = counters.inbound_gateway_messages,
                         inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
                         inbound_gateway_route_match = counters.inbound_gateway_route_match,

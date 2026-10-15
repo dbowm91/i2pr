@@ -15,6 +15,7 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
             'inbound_routed=0 inbound_orphans=0 inbound_orphans_peer_match=0 '
             'inbound_orphans_message_match=0 inbound_orphans_peer_id_plus_one=0 '
             'inbound_orphans_peer_id_minus_one=0 inbound_orphans_peer_id_other=1 '
+            'inbound_orphans_retired_id_match=0 '
             'inbound_gateway_messages=3 '
             'inbound_gateway_peer_match=1 inbound_gateway_route_match=0 '
             'authenticated_candidates=2 candidate_peer_matches=1 '
@@ -33,6 +34,7 @@ class Plan474BuildWaitReceiptTests(unittest.TestCase):
               "inbound_orphans_peer_id_plus_one": 0,
               "inbound_orphans_peer_id_minus_one": 0,
               "inbound_orphans_peer_id_other": 1,
+              "inbound_orphans_retired_id_match": 0,
               "inbound_gateway_messages": 3,
               "inbound_gateway_peer_match": 1,
               "inbound_gateway_route_match": 0,

@@ -692,6 +692,10 @@ pub struct BuildCoordinatorCounters {
     pub inbound_orphans_peer_id_minus_one: u64,
     /// Same-terminal-peer orphan forwarded builds with another nonmatching ID.
     pub inbound_orphans_peer_id_other: u64,
+    /// Same-terminal-peer orphans whose message id matches a retired
+    /// (superseded or completed) attempt: late replies arriving
+    /// after their wait expired, versus stock traffic through us.
+    pub inbound_orphans_retired_id_match: u64,
     /// Inbound-build TunnelGateway replies observed on the authenticated path.
     pub inbound_gateway_messages: u64,
     /// Unmatched inbound-build gateways from the selected terminal peer.
@@ -1907,6 +1911,12 @@ impl ExploratoryBuildCoordinator {
             if peer_match {
                 self.counters.inbound_orphans_peer_match =
                     self.counters.inbound_orphans_peer_match.saturating_add(1);
+                // Late-ours signal: same peer, id of a retired
+                // attempt (versus unrelated stock traffic).
+                if self.retired_message_ids.contains_key(&message_id) {
+                    self.counters.inbound_orphans_retired_id_match =
+                        self.counters.inbound_orphans_retired_id_match.saturating_add(1);
+                }
             }
             if message_match {
                 self.counters.inbound_orphans_message_match = self
