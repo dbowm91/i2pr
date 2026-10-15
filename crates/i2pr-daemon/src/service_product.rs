@@ -99,8 +99,8 @@ use crate::service_delivery::{
 };
 use crate::service_tunnels::{
     DeferredActivationRequest, DestinationProductOperation, EncryptedTargetStatus,
-    RemoteTargetProjection, RouterNetworkSamProvisioningFailure, ServiceTunnelManager,
-    ServiceTunnelManagerConfig,
+    InboundOwnerMissClass, RemoteTargetProjection, RouterNetworkSamProvisioningFailure,
+    ServiceTunnelManager, ServiceTunnelManagerConfig,
 };
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
@@ -1241,6 +1241,13 @@ pub struct InboundTrafficSnapshot {
     pub complete_garlic_envelopes: u64,
     pub service_owner_matches: u64,
     pub service_owner_misses: u64,
+    /// Plan 478 owner-miss taxonomy: the miss split by where the
+    /// receive tunnel id pointed (own exploratory endpoint, retired
+    /// service generation, never-known). Mirrored into the manager
+    /// per class so SAM can report it on CONNECT timeout.
+    pub service_owner_miss_exploratory: u64,
+    pub service_owner_miss_retired: u64,
+    pub service_owner_miss_unknown: u64,
     pub service_dispatch_errors: u64,
     pub service_garlic_authenticated: u64,
     pub service_garlic_rejected: u64,
@@ -1299,6 +1306,15 @@ impl InboundTrafficSnapshot {
             service_owner_misses: self
                 .service_owner_misses
                 .saturating_sub(earlier.service_owner_misses),
+            service_owner_miss_exploratory: self
+                .service_owner_miss_exploratory
+                .saturating_sub(earlier.service_owner_miss_exploratory),
+            service_owner_miss_retired: self
+                .service_owner_miss_retired
+                .saturating_sub(earlier.service_owner_miss_retired),
+            service_owner_miss_unknown: self
+                .service_owner_miss_unknown
+                .saturating_sub(earlier.service_owner_miss_unknown),
             service_dispatch_errors: self
                 .service_dispatch_errors
                 .saturating_sub(earlier.service_dispatch_errors),
@@ -1403,12 +1419,16 @@ mod inbound_traffic_snapshot_tests {
         let earlier = InboundTrafficSnapshot {
             tunnel_data_received: 4,
             service_owner_misses: 2,
+            service_owner_miss_retired: 1,
             streaming_packets_accepted: u64::MAX,
             ..InboundTrafficSnapshot::default()
         };
         let later = InboundTrafficSnapshot {
             tunnel_data_received: 9,
             service_owner_misses: 1,
+            service_owner_miss_exploratory: 2,
+            service_owner_miss_retired: 3,
+            service_owner_miss_unknown: 1,
             streaming_packets_accepted: 3,
             ..InboundTrafficSnapshot::default()
         };
@@ -1417,6 +1437,9 @@ mod inbound_traffic_snapshot_tests {
             InboundTrafficSnapshot {
                 tunnel_data_received: 5,
                 service_owner_misses: 0,
+                service_owner_miss_exploratory: 2,
+                service_owner_miss_retired: 2,
+                service_owner_miss_unknown: 1,
                 streaming_packets_accepted: 0,
                 ..InboundTrafficSnapshot::default()
             }
@@ -3921,8 +3944,44 @@ impl ServiceProduct {
                         .inbound_traffic
                         .service_owner_misses
                         .saturating_add(1);
+                    // Plan 478 miss taxonomy, decided from already-held
+                    // registries (never a new lookup or network read):
+                    // own exploratory endpoint, retired service
+                    // generation, or never-known addressing. Counts
+                    // only; the class always sums into the aggregate.
+                    let class = {
+                        let exploratory_known =
+                            TunnelId::new(receive_tunnel_id).ok().is_some_and(|tunnel| {
+                                self.inner.coordinator.registry().inbound(tunnel).is_some()
+                            });
+                        let retired_service = self.manager.is_retired_receive_id(receive_tunnel_id);
+                        InboundOwnerMissClass::classify(exploratory_known, retired_service)
+                    };
+                    match class {
+                        InboundOwnerMissClass::ExploratoryKnown => {
+                            self.inner.inbound_traffic.service_owner_miss_exploratory = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_exploratory
+                                .saturating_add(1);
+                        }
+                        InboundOwnerMissClass::RetiredService => {
+                            self.inner.inbound_traffic.service_owner_miss_retired = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_retired
+                                .saturating_add(1);
+                        }
+                        InboundOwnerMissClass::Unknown => {
+                            self.inner.inbound_traffic.service_owner_miss_unknown = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_unknown
+                                .saturating_add(1);
+                        }
+                    }
                     self.manager.note_inbound_orphan_receive();
-                    self.manager.note_inbound_garlic_owner_miss();
+                    self.manager.note_inbound_garlic_owner_miss_class(class);
                     return;
                 };
                 self.inner.inbound_traffic.service_owner_matches = self

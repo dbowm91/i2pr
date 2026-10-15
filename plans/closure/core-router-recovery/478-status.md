@@ -337,3 +337,164 @@ close-out remain open; 478 stays active.
 | §6 lifecycle recovery (tunnel expiry/replenishment or controlled peer loss + daemon restart) | Deterministic rotation/retry/replenishment-order tests green; live proof gated behind a working return leg |
 | Executed lifecycle negative controls (bootstrap-exception refusal, wrong-terminal/generation/damaged-garlic fail-closed, cancellation-to-baseline, no cross-destination aliasing) | Deterministic tests green (`inbound_route_miss_fails_closed_and_bootstrap_remains_explicit`, `replacement_builds_use_the_existing_outbound_route_first_hop`, 477 five-way taxonomy + cancel/replay regressions, 474 owner-generation tests) |
 | Full AGENTS.md floor on the closing tree | Open: scoped batteries green; full floor + ELS2 Plan 393 handoff belong to the closing pass, not this instrumentation turn |
+
+## 2026-10-15 handshake-wait receipts machine-readable; bounded lane rerun
+
+Source change (this plan's lane-evidence owner, no new plan number):
+
+- `tests/integration/core-router-recovery/run_plan458_sam_product.py`:
+  `parse_attempt_receipt_lines` now extracts
+  `stream_connect_handshake_wait_receipts` — the full 12-key
+  attribution (synack ×3, bridge garlic ×4, manager arrival ×5) from
+  the daemon TIMEOUT warn — into `attempt-diagnostic.json`. A line
+  missing any key yields no receipt (same fail-closed shape as the
+  existing inbound-wait receipts); the daemon warn carries no
+  `build_attempt_id`, so it contributes no stage count by design.
+- `tests/integration/core-router-recovery/test_plan478_handshake_wait_receipt.py`
+  (new, 4 tests): full-12-key parse, missing-key refusal,
+  ANSI-colored lines, counts-only shape. All lane receipt suites
+  green (`test_plan464/474/478/481`).
+
+This is the material change licensing the next bounded lane: the §6
+mirror keys have never reported on a STREAM-reaching run (run
+`vilzzd8q` stopped at `inbound-build`), and they are now
+machine-readable in the diagnostic. One exact-pin run authorized; no
+unchanged-topology retry beyond it. Outcome recorded below.
+
+## 2026-10-15 arrival proven, owner-miss localized (run `51yb1g49`)
+
+Bounded exact-pin lane with the machine-readable receipts live
+(pinned i2pd 2.61.0, `mesh_quiet: true`, scratch `51yb1g49`
+snapshotted to `target/interop/plan458-scratch-snaps/` with its
+`attempt-diagnostic.json`). Builds/installs fully green again (4/4
+replies matched, 3 installs, owners 2/2). The forward CONNECT timed
+out, and its wait receipt is the first below-bridge arrival ever
+recorded:
+
+`synack 0/0/0, garlic 0/0/0/0, tunnel_data_received=4,
+cells_accepted=1, owner_matches=0, owner_misses=3, direct=0`
+
+**Disposition:** the no-arrival theory is dead — 4 TunnelData
+messages reached the daemon and 1 cell was accepted, but zero
+envelopes resolved to a service owner. The loss is now bounded to
+owner routing: the return arrives addressed to tunnel ids with no
+registered destination owner (stale lease, own-exploratory traffic,
+or foreign addressing — previously indistinguishable). Streaming,
+bridge, and ECIES theories stay ruled out. Per the bounded policy,
+the next lane moves only on the taxonomy material change below, not
+on repetition.
+
+## 2026-10-15 owner-miss taxonomy landed (this plan's miss owner)
+
+Source change (no new plan number):
+
+- `service_tunnels.rs`: `InboundOwnerMissClass`
+  (`ExploratoryKnown`/`RetiredService`/`Unknown`) with a pure
+  `classify` (exploratory wins over retired, retired over unknown);
+  three class counters beside the aggregate (class counts always sum
+  to it); bounded retired-id memory (`MAX_RETIRED_RECEIVE_IDS=64`,
+  ephemeral local ids only, never logged/exported, never a decision
+  input) fed by both unregister paths and cleared on re-register.
+- `service_product.rs`: the miss arm classifies from already-held
+  registries (exploratory endpoint table, retired memory) and folds
+  the class into `InboundTrafficSnapshot` (3 new fields + delta
+  arms); `classify` keeps the arm branch-free.
+- `sam.rs`: CONNECT timeout captures the taxonomy deltas and emits
+  `miss_exploratory_known/_retired_service/_unknown` in the warn and
+  the TIMEOUT message (prefix kept).
+- Lane parser: the handshake-wait receipt grows 12→15 keys with a
+  sum-check (`exploratory+retired+unknown == misses`).
+
+Verification: taxonomy sum/cap/roundtrip/clear/eviction test,
+`classify` 4-arm test (arm-swap inversion fails, probe reverted),
+snapshot delta test extended, mirror accumulation green; fmt/clippy/
+service-tunnel + runtime boundaries pass. (Scoped battery; full
+floor belongs to the closing pass.)
+
+Next: one bounded exact-pin lane reading the taxonomy; then §6 live
+recovery behind a working return leg, or the next causal step the
+taxonomy dictates. Reverse STREAM, §6 recovery, and product
+close-out remain open; 478 stays active.
+
+## 2026-10-15 taxonomy reads exploratory; stock-side forensics
+
+Run `ou1v6wii` (taxonomy live, `mesh_quiet: true`, snapshotted with
+diagnostic): builds/installs/owners green again (4/4 replies, 3
+installs, owners 2/2); forward CONNECT timed out with
+
+`synack 0/0/0, garlic 0/0/0/0, received=6, cells=2, matches=0,
+misses=4, direct=0, exploratory=4, retired=0, unknown=0`
+
+(classes sum to the aggregate ✓). Both taxonomy runs replicate:
+every miss is own-exploratory traffic, none is a stale lease.
+
+Offline forensics on the preserved snaps (counts and shapes only,
+no id material retained) kill two theories and bound the third:
+
+- Stale-lease addressing is dead: `retired=0`, no replenishment or
+  replacement lines anywhere in the run, and the timeline is tight
+  (installs :46:56–58, LS2 published :46:58, CONNECT :47:07,
+  SYN-ACK ~:47:07, timeout :47:42) — the leases were seconds old.
+- Lease/gateway mismatch is dead by construction: the LS2 compose
+  path (`i2pr-client/src/leaseset.rs::evaluate`) rejects any
+  advertised lease that is not an owned `InboundLeaseSource`
+  (`ForeignLease`), so the published leases provably named owned
+  gateways and receive ids at publish time.
+- What remains is stock-send-side: stock `f` accepts our SYNs
+  repeatedly (:07/:12/:17/:22, plus a new-rSID stream at :27),
+  re-resolves our lease mid-wait (:07 and :16 `RemoteLease
+  changed`), emits exactly one SYN-ACK attempt, terminates it for
+  no-ACK at :25 — while a `Garlic: Incoming sessions come too
+  often` throttle warn fires on `f` in the accept second (:07) and
+  no SYN-ACK send trace appears in any of the four peer logs. Our
+  IBGW→us leg demonstrably carries cells (exploratory arrivals),
+  and `f` holds outbound tunnels throughout, so the plausible
+  locus is `f`'s send (suppressed once, concurrently with its
+  throttle) rather than our reception.
+
+Next bounded experiment (material change, in-plan): fresh-handshake
+recovery in the lane driver — after a zero-service-arrival forward
+timeout, one fresh STREAM CONNECT (new stream/SYN ids after the
+peer-side termination, not a retry of the same send) tests whether
+the loss was transient (throttle window) or structural. Bounded to
+exactly one fresh attempt on the forward leg; reverse keeps
+single-attempt shape; both attempts land in the evidence JSON.
+`plan458_sam_driver.py::run_forward_leg_with_recovery` plus
+`test_plan478_driver_recovery.py` (3 tests: no-retry on success,
+exactly-once on first failure, raise after double failure).
+
+## 2026-10-15 fresh-handshake recovery fails identically (run `v7ap08nx`)
+
+Bounded lane with the recovery live (pinned i2pd 2.61.0,
+`mesh_quiet: true`, snapshotted with diagnostic). Builds/installs/
+owners green again (4/4 replies, 3 installs, owners 2/2). Two
+handshake waits, both timed out:
+
+- Attempt 1: `received=6, cells=2, matches=0, misses=4 exploratory,
+  synack 0` — the now-familiar shape; recovery triggered.
+- Attempt 2 (fresh CONNECT, new stream/SYN): `received=0, cells=0,
+  misses=0, synack 0` — absolute zero, not even exploratory traffic.
+
+Stock-side (counts only): first SYN accepted :27 with the recurring
+`Garlic: Incoming sessions come too often` throttle warn in the same
+second, SYN-ACK #1 terminated :45 for no-ACK; the fresh SYN accepted
+:46 as a new stream, SYN-ACK #2 terminated :04 for no-ACK. Two
+independent handshakes, two stock sends, zero arrival both times —
+while build replies and exploratory cells demonstrably flow down our
+tunnels and `f` holds outbound capacity throughout.
+
+**Disposition — live campaign concluded for this pass.** Five
+arrival-characterized runs plus one recovery run, all identical in
+shape. Our-side hypotheses are exhausted with evidence: builds,
+installs, owners, LS2 publication, forward delivery, inbound
+dispatch, taxonomy (stale-lease dead by `retired=0` + tight
+timeline; gateway-mismatch dead by the `ForeignLease` compose
+self-check; transient/throttle dead by the fresh-handshake twin
+failure). What remains is stock-send-side (single SYN-ACK attempt
+with no send trace in any peer log, concurrent with `f`'s
+per-accept garlic throttle) — not addressable from this tree, and
+no our-side material change remains to license another lane. 478
+stays active with reverse STREAM and §6 open; the next step needs a
+genuinely new causal hypothesis (new plan-of-record), not another
+attempt. No dependent capability is unblocked; 433/439 gates
+unchanged.

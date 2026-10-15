@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import threading
+import time
 
 
 HELLO = b"HELLO VERSION MIN=3.1 MAX=3.1\n"
@@ -192,6 +193,57 @@ def connect_exchange(endpoint, session_id, destination, payload, timeout):
         sam.close()
 
 
+def run_leg(sender, receiver, sid, rid, remote, payload, timeout):
+    """One complete STREAM leg: accept worker plus CONNECT exchange."""
+    accepted = {}
+    failure = []
+
+    def accept():
+        try:
+            echo_accept(receiver, rid, payload, timeout, accepted)
+        except Exception as exc:
+            failure.append(str(exc))
+
+    worker = threading.Thread(target=accept, daemon=True)
+    worker.start()
+    try:
+        sent = connect_exchange(sender, sid, remote, payload, timeout)
+    except Exception:
+        # A failed CONNECT leaves its accept worker parked on the
+        # socket recv; it is daemon-owned and dies on socket timeout.
+        # Never block recovery on it.
+        raise
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError("accepting SAM stream did not finish")
+    if failure:
+        raise RuntimeError(f"accept failed: {failure[0]}")
+    if accepted != sent:
+        raise RuntimeError("sender/receiver digest mismatch")
+    return sent
+
+
+def run_forward_leg_with_recovery(sender, receiver, sid, rid, remote, payload, timeout,
+                                 sleep_fn=time.sleep):
+    """Forward STREAM leg with at most one fresh-handshake recovery.
+
+    Returns `(sent, recovery)`. A fresh CONNECT after a failed first
+    handshake is a new handshake with new stream/SYN ids — not a retry
+    of the same send — and is only attempted on the forward leg, where
+    prior runs show stock terminating its stream after a single
+    SYN-ACK attempt that never arrives.
+    """
+    recovery = {}
+    try:
+        sent = run_leg(sender, receiver, sid, rid, remote, payload, timeout)
+    except Exception as first_exc:
+        recovery["forward_first_error"] = str(first_exc)[:200]
+        sleep_fn(5)
+        sent = run_leg(sender, receiver, sid, rid, remote, payload, timeout)
+        recovery["forward_recovered"] = True
+    return sent, recovery
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--i2pr-sam", required=True)
@@ -224,32 +276,24 @@ def main():
     except OSError as exc:
         print(f"peer evidence unavailable: {exc}", flush=True)
     outcomes = {}
+    recovery = {}
     try:
         for label, sender, receiver, sid, rid in (
             ("i2pr-to-i2pd", args.i2pr_sam, args.i2pd_sam, "p458router", "p458peer"),
             ("i2pd-to-i2pr", args.i2pd_sam, args.i2pr_sam, "p458peer", "p458router"),
         ):
             payload = PAYLOADS[label]
-            accepted = {}
-            failure = []
-
-            def accept():
-                try:
-                    echo_accept(receiver, rid, payload, args.timeout, accepted)
-                except Exception as exc:
-                    failure.append(str(exc))
-
-            worker = threading.Thread(target=accept, daemon=True)
-            worker.start()
             remote = i2pd_public if label == "i2pr-to-i2pd" else i2pr_public
-            sent = connect_exchange(sender, sid, remote, payload, args.timeout)
-            worker.join(args.timeout)
-            if worker.is_alive():
-                raise TimeoutError(f"{label}: accepting SAM stream did not finish")
-            if failure:
-                raise RuntimeError(f"{label}: {failure[0]}")
-            if accepted != sent:
-                raise RuntimeError(f"{label}: sender/receiver digest mismatch")
+            if label == "i2pr-to-i2pd":
+                # Plan 478 fresh-handshake recovery, forward leg only,
+                # at most once (see run_forward_leg_with_recovery).
+                # Reverse leg keeps single-attempt shape.
+                sent, leg_recovery = run_forward_leg_with_recovery(
+                    sender, receiver, sid, rid, remote, payload, args.timeout
+                )
+                recovery.update(leg_recovery)
+            else:
+                sent = run_leg(sender, receiver, sid, rid, remote, payload, args.timeout)
             evidence_label = (
                 {
                     "i2pr-to-i2pd": "stock-f-to-stock-c",
@@ -264,7 +308,11 @@ def main():
         i2pd_session.close()
 
     with open(args.evidence, "w", encoding="utf-8") as handle:
-        json.dump({"schema": "plan458-sam-exchange-v1", "directions": outcomes}, handle)
+        json.dump(
+            {"schema": "plan458-sam-exchange-v1", "directions": outcomes,
+             "recovery": recovery},
+            handle,
+        )
         handle.write("\n")
     for label, row in outcomes.items():
         print(f"{label}=passed bytes={row['length']} sha256={row['sha256']}")

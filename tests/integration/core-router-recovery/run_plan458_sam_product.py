@@ -53,6 +53,7 @@ def parse_attempt_receipt_lines(lines):
     owner_eviction_removed_owner = 0
     owner_eviction_removed_receive = 0
     inbound_build_wait_receipts = []
+    stream_connect_handshake_wait_receipts = []
     delivery_admitted_cells = []
     for raw_line in lines:
         line = strip_ansi(raw_line)
@@ -153,6 +154,24 @@ def parse_attempt_receipt_lines(lines):
                 inbound_build_wait_receipts.append(
                     {key: int(match.group(1)) for key, match in values.items()}
                 )
+        if re.search(r'transition\s*=\s*"?stream_connect_handshake_wait_expired', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "synack_observed", "synack_accepted", "synack_rejected",
+                    "garlic_authenticated", "garlic_rejected",
+                    "payloads_dequeued", "streaming_accepted",
+                    "tunnel_data_received", "tunnel_data_cells_accepted",
+                    "garlic_owner_matches", "garlic_owner_misses",
+                    "direct_garlic_received",
+                    "miss_exploratory_known", "miss_retired_service",
+                    "miss_unknown",
+                )
+            }
+            if all(match for match in values.values()):
+                stream_connect_handshake_wait_receipts.append(
+                    {key: int(match.group(1)) for key, match in values.items()}
+                )
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
             r"inbound_owner_registered\s*=\s*(true|false).*?"
@@ -186,6 +205,7 @@ def parse_attempt_receipt_lines(lines):
         "owner_eviction_removed_owner": owner_eviction_removed_owner,
         "owner_eviction_removed_receive": owner_eviction_removed_receive,
         "inbound_build_wait_receipts": inbound_build_wait_receipts,
+        "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
     }
 
 

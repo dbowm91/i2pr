@@ -28,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -476,6 +477,21 @@ pub struct ServiceTunnelManager {
     inbound_tunnel_data_cells_accepted: AtomicUsize,
     inbound_garlic_owner_matches: AtomicUsize,
     inbound_garlic_owner_misses: AtomicUsize,
+    /// Plan 478 owner-miss taxonomy: one counter per
+    /// [`InboundOwnerMissClass`] arm, so a CONNECT timeout can tell
+    /// own-exploratory traffic, retired service generations, and
+    /// never-known ids apart. Counts only; no ids or payloads.
+    inbound_owner_miss_exploratory: AtomicUsize,
+    inbound_owner_miss_retired: AtomicUsize,
+    inbound_owner_miss_unknown: AtomicUsize,
+    /// Plan 478 retired service receive ids, most-recent last,
+    /// capped at [`MAX_RETIRED_RECEIVE_IDS`]. Populated on owner
+    /// unregister (expiry / failure / replacement / generation
+    /// drain) so a later miss can be classified as a stale lease
+    /// rather than never-known addressing. Ephemeral local tunnel
+    /// ids only — never peer identities — and never logged or
+    /// exported; only the class counts leave the manager.
+    retired_receive_ids: Mutex<VecDeque<u32>>,
     /// Plan 478 §6 — direct (non-tunneled) Garlic receipts. Gw-self
     /// peers send Garlic replies directly when their own outbound
     /// pool is not ready; without this mirror a direct-only return
@@ -843,6 +859,44 @@ impl RemoteTargetProjection {
     }
 }
 
+/// Plan 478 owner-miss taxonomy: where a recovered Garlic envelope's
+/// receive tunnel id pointed when no service runtime owned it.
+/// Decided from already-held registries (never a new lookup or
+/// network read); only the class counts leave the manager.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InboundOwnerMissClass {
+    /// The id is a live inbound endpoint of our own exploratory
+    /// pool: own exploratory garlic, not a service return.
+    ExploratoryKnown,
+    /// The id belonged to a retired service generation: a stale
+    /// lease the peer has not rotated past yet.
+    RetiredService,
+    /// Neither live nor retired: never-known addressing (or another
+    /// router's traffic we endpoint).
+    Unknown,
+}
+
+/// Cap for the retired service receive-id memory. Bounded and tiny:
+/// taxonomy only, never a decision input.
+pub const MAX_RETIRED_RECEIVE_IDS: usize = 64;
+
+impl InboundOwnerMissClass {
+    /// Pure miss classifier shared by the product miss arm: a live
+    /// exploratory endpoint wins over retired memory (an id cannot be
+    /// both, but the live registry is authoritative if it ever is),
+    /// retired wins over unknown. Unit-tested with an arm-swap
+    /// inversion probe.
+    pub const fn classify(exploratory_known: bool, retired_service: bool) -> Self {
+        if exploratory_known {
+            Self::ExploratoryKnown
+        } else if retired_service {
+            Self::RetiredService
+        } else {
+            Self::Unknown
+        }
+    }
+}
+
 impl ServiceTunnelManager {
     /// Creates a new manager from a validated configuration.
     pub fn new(config: ServiceTunnelManagerConfig) -> Result<Self, ServiceTunnelError> {
@@ -889,6 +943,10 @@ impl ServiceTunnelManager {
             inbound_tunnel_data_cells_accepted: AtomicUsize::new(0),
             inbound_garlic_owner_matches: AtomicUsize::new(0),
             inbound_garlic_owner_misses: AtomicUsize::new(0),
+            inbound_owner_miss_exploratory: AtomicUsize::new(0),
+            inbound_owner_miss_retired: AtomicUsize::new(0),
+            inbound_owner_miss_unknown: AtomicUsize::new(0),
+            retired_receive_ids: Mutex::new(VecDeque::new()),
             inbound_direct_garlic_received: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
             deferred_activation_tx,
@@ -1207,10 +1265,20 @@ impl ServiceTunnelManager {
         let receive_ids = session
             .bridge
             .with(|bridge| bridge.router_inbound_receive_ids());
+        // Plan 478 — retired memory uses the same lock order as the
+        // single-id unregister path (owners released before the
+        // retired lock is taken): collect under the owners lock,
+        // record after it drops.
+        let mut retired_ids = Vec::new();
         if let Ok(mut owners) = self.inbound_tunnel_owners.lock() {
             for receive_id in receive_ids {
-                owners.remove(&receive_id);
+                if owners.remove(&receive_id).is_some() {
+                    retired_ids.push(receive_id);
+                }
             }
+        }
+        for receive_id in retired_ids {
+            self.record_retired_receive_id(receive_id);
         }
         // Drop the retained identity and bridge only after all registry
         // references have been removed.
@@ -3205,6 +3273,12 @@ impl ServiceTunnelManager {
             )));
         }
         owners.insert(receive_tunnel_id, runtime_holder);
+        drop(owners);
+        // Plan 478 — a re-registered id is live again, not retired:
+        // drop any stale memory so a later miss cannot misread it.
+        if let Ok(mut retired) = self.retired_receive_ids.lock() {
+            retired.retain(|id| *id != receive_tunnel_id);
+        }
         Ok(())
     }
 
@@ -3220,7 +3294,15 @@ impl ServiceTunnelManager {
             .inbound_tunnel_owners
             .lock()
             .expect("inbound tunnel owners poisoned");
-        owners.remove(&receive_tunnel_id)
+        let removed = owners.remove(&receive_tunnel_id);
+        drop(owners);
+        if removed.is_some() {
+            // Plan 478 — a removed id becomes taxonomy memory so a
+            // later miss on it reads as a stale lease, not
+            // never-known addressing.
+            self.record_retired_receive_id(receive_tunnel_id);
+        }
+        removed
     }
 
     /// Plan 210 §F — resolves the owning service runtime for the
@@ -3388,6 +3470,60 @@ impl ServiceTunnelManager {
             .inbound_garlic_owner_misses
             .fetch_add(1, Ordering::AcqRel);
         previous.saturating_add(1)
+    }
+
+    /// Plan 478 — records one owner miss under its taxonomy class.
+    /// Exactly one class counter moves per call, alongside the
+    /// aggregate miss counter, so the class counts always sum to
+    /// the aggregate. Returns the class total since construction.
+    pub fn note_inbound_garlic_owner_miss_class(&self, class: InboundOwnerMissClass) -> usize {
+        let _ = self.note_inbound_garlic_owner_miss();
+        let previous = match class {
+            InboundOwnerMissClass::ExploratoryKnown => self
+                .inbound_owner_miss_exploratory
+                .fetch_add(1, Ordering::AcqRel),
+            InboundOwnerMissClass::RetiredService => self
+                .inbound_owner_miss_retired
+                .fetch_add(1, Ordering::AcqRel),
+            InboundOwnerMissClass::Unknown => self
+                .inbound_owner_miss_unknown
+                .fetch_add(1, Ordering::AcqRel),
+        };
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 — owner-miss taxonomy snapshot as
+    /// `(exploratory_known, retired_service, unknown)`. Counts only;
+    /// SAM reads this through its attached manager handle on STREAM
+    /// CONNECT timeout.
+    pub fn inbound_owner_miss_taxonomy_totals(&self) -> (u64, u64, u64) {
+        (
+            self.inbound_owner_miss_exploratory.load(Ordering::Acquire) as u64,
+            self.inbound_owner_miss_retired.load(Ordering::Acquire) as u64,
+            self.inbound_owner_miss_unknown.load(Ordering::Acquire) as u64,
+        )
+    }
+
+    /// Plan 478 — remembers one unregistered service receive id for
+    /// miss taxonomy. Bounded at [`MAX_RETIRED_RECEIVE_IDS`]
+    /// (oldest evicted); ephemeral local ids only, never logged or
+    /// exported, never a decision input.
+    pub fn record_retired_receive_id(&self, receive_tunnel_id: u32) {
+        if let Ok(mut retired) = self.retired_receive_ids.lock() {
+            retired.push_back(receive_tunnel_id);
+            while retired.len() > MAX_RETIRED_RECEIVE_IDS {
+                retired.pop_front();
+            }
+        }
+    }
+
+    /// Plan 478 — reports whether the id sits in the retired memory.
+    /// Fail-closed to false when the lock is unavailable.
+    pub fn is_retired_receive_id(&self, receive_tunnel_id: u32) -> bool {
+        self.retired_receive_ids
+            .lock()
+            .map(|retired| retired.contains(&receive_tunnel_id))
+            .unwrap_or(false)
     }
 
     /// Plan 478 §6 — records one direct (non-tunneled) Garlic
@@ -11033,6 +11169,82 @@ mod plan212_router_backed_service_destination_tests {
         assert_eq!(manager.inbound_arrival_totals(), (2, 1, 1, 1, 1));
         // The legacy orphan counter is untouched by the mirrors.
         assert_eq!(manager.inbound_orphan_receives(), 0);
+    }
+
+    /// Plan 478 owner-miss taxonomy: each class moves only its own
+    /// counter alongside the aggregate, so the classes always sum to
+    /// the aggregate; retired memory round-trips register →
+    /// unregister → retired, clears on re-register, and stays
+    /// bounded. Structural: no id material is logged or exported.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_owner_miss_taxonomy_sums_and_retired_memory_is_bounded() {
+        let directory = temp_data_dir("plan478-miss-taxonomy");
+        let manager = empty_manager(directory.path());
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (0, 0, 0));
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::ExploratoryKnown),
+            1
+        );
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::RetiredService),
+            1
+        );
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::RetiredService),
+            2
+        );
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (1, 2, 0));
+        // The legacy aggregate tracks every classed miss.
+        assert_eq!(manager.inbound_arrival_totals().3, 3);
+
+        let directory = temp_data_dir("plan478-retired");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-r");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let runtime = Arc::clone(&runtimes[0]);
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        manager
+            .register_inbound_tunnel_owner(0xA11CE, Arc::clone(&runtime))
+            .expect("register");
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        let _ = manager.unregister_inbound_tunnel_owner(0xA11CE);
+        assert!(manager.is_retired_receive_id(0xA11CE));
+        // Re-registration clears the memory: the id is live again.
+        manager
+            .register_inbound_tunnel_owner(0xA11CE, Arc::clone(&runtime))
+            .expect("re-register");
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        let _ = manager.unregister_inbound_tunnel_owner(0xA11CE);
+        // The memory is capped, oldest evicted first.
+        for id in 0..(super::MAX_RETIRED_RECEIVE_IDS as u32 + 10) {
+            manager.record_retired_receive_id(id);
+        }
+        assert!(!manager.is_retired_receive_id(0));
+        assert!(manager.is_retired_receive_id(super::MAX_RETIRED_RECEIVE_IDS as u32 + 9));
+    }
+
+    /// Plan 478 miss classifier: exploratory wins over retired,
+    /// retired over unknown; all four input combinations map
+    /// exactly once. Inversion probe: swapping any two arms fails
+    /// this test (probe reverted, zero markers).
+    #[test]
+    fn plan478_owner_miss_classify_covers_all_inputs() {
+        use super::InboundOwnerMissClass;
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, true),
+            InboundOwnerMissClass::ExploratoryKnown
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, false),
+            InboundOwnerMissClass::ExploratoryKnown
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, false),
+            InboundOwnerMissClass::Unknown
+        );
     }
 
     /// Plan 212 §17.24 — local/co-owned Plan 182 path stays green.

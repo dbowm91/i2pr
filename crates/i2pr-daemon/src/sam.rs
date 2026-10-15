@@ -3283,6 +3283,7 @@ async fn execute_stream_connect(
     let synack_before = syn_response_ingress_totals(&state, destination_id);
     let garlic_before = bridge_garlic_totals(&state, destination_id);
     let arrival_before = product_inbound_arrival_totals(&state);
+    let miss_taxonomy_before = product_owner_miss_taxonomy_totals(&state);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3325,6 +3326,15 @@ async fn execute_stream_connect(
         let garlic_owner_matches = arrival_after.2.saturating_sub(arrival_before.2);
         let garlic_owner_misses = arrival_after.3.saturating_sub(arrival_before.3);
         let direct_garlic_received = arrival_after.4.saturating_sub(arrival_before.4);
+        // Plan 478 owner-miss taxonomy: splits the miss count into
+        // own-exploratory, retired-service (stale lease), and
+        // never-known addressing, so the lane can tell a stale
+        // return path from foreign addressing without any id
+        // material crossing the boundary.
+        let miss_taxonomy_after = product_owner_miss_taxonomy_totals(&state);
+        let miss_exploratory_known = miss_taxonomy_after.0.saturating_sub(miss_taxonomy_before.0);
+        let miss_retired_service = miss_taxonomy_after.1.saturating_sub(miss_taxonomy_before.1);
+        let miss_unknown = miss_taxonomy_after.2.saturating_sub(miss_taxonomy_before.2);
         warn!(
             synack_observed = synack_observed,
             synack_accepted = synack_accepted,
@@ -3338,6 +3348,9 @@ async fn execute_stream_connect(
             garlic_owner_matches = garlic_owner_matches,
             garlic_owner_misses = garlic_owner_misses,
             direct_garlic_received = direct_garlic_received,
+            miss_exploratory_known = miss_exploratory_known,
+            miss_retired_service = miss_retired_service,
+            miss_unknown = miss_unknown,
             transition = "stream_connect_handshake_wait_expired",
             "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
         );
@@ -3357,7 +3370,10 @@ async fn execute_stream_connect(
                  tunnel_data_cells_accepted={tunnel_data_cells_accepted} \
                  garlic_owner_matches={garlic_owner_matches} \
                  garlic_owner_misses={garlic_owner_misses} \
-                 direct_garlic_received={direct_garlic_received}"
+                 direct_garlic_received={direct_garlic_received} \
+                 miss_exploratory_known={miss_exploratory_known} \
+                 miss_retired_service={miss_retired_service} \
+                 miss_unknown={miss_unknown}"
             ),
         });
     }
@@ -3456,6 +3472,19 @@ fn product_inbound_arrival_totals(state: &SamServiceState) -> (u64, u64, u64, u6
         return (0, 0, 0, 0, 0);
     };
     manager.inbound_arrival_totals()
+}
+/// Plan 478 owner-miss taxonomy attribution: reads the attached
+/// router-network manager's `(exploratory_known, retired_service,
+/// unknown)` miss-class counters. Counts only; fails closed to zeros
+/// when no manager is attached.
+fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64) {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return (0, 0, 0);
+    };
+    let Some(manager) = slot.as_ref() else {
+        return (0, 0, 0);
+    };
+    manager.inbound_owner_miss_taxonomy_totals()
 }
 /// Plan 147 §7: parks the caller until `manager.get_connection(id)`
 /// reports `ConnectionState::Established`, or returns `false` once
