@@ -3280,6 +3280,8 @@ async fn execute_stream_connect(
     // above this.
     let deadline = Duration::from_secs(60);
     let established_notify = state.established_signal(destination_id);
+    let synack_before = syn_response_ingress_totals(&state, destination_id);
+    let garlic_before = bridge_garlic_totals(&state, destination_id);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3289,10 +3291,50 @@ async fn execute_stream_connect(
     )
     .await;
     if !established {
+        // Plan 478 handshake attribution: the wait ended without
+        // Established. Report how many SYN-responses the destination's
+        // managers classified during the wait (counts only) so the
+        // lane can distinguish "no SYN-ACK ever arrived" (transit
+        // loss toward our inbound path) from "arrived but rejected"
+        // (streaming-layer discard with a typed error).
+        let synack_after = syn_response_ingress_totals(&state, destination_id);
+        let synack_observed = synack_after.0.saturating_sub(synack_before.0);
+        let synack_accepted = synack_after.1.saturating_sub(synack_before.1);
+        let synack_rejected = synack_after.2.saturating_sub(synack_before.2);
+        // Plan 478 garlic-arrival attribution: deltas of the bridge's
+        // cumulative garlic-dispatch outcomes over the same wait, so the
+        // lane can split "nothing reached the bridge" (all zero alongside
+        // synack_observed=0) from "garlic arrived but ECIES-rejected"
+        // (garlic_rejected>0) or "authenticated but never dequeued".
+        let garlic_after = bridge_garlic_totals(&state, destination_id);
+        let garlic_authenticated = garlic_after.0.saturating_sub(garlic_before.0);
+        let garlic_rejected = garlic_after.1.saturating_sub(garlic_before.1);
+        let payloads_dequeued = garlic_after.2.saturating_sub(garlic_before.2);
+        let streaming_accepted = garlic_after.3.saturating_sub(garlic_before.3);
+        warn!(
+            synack_observed = synack_observed,
+            synack_accepted = synack_accepted,
+            synack_rejected = synack_rejected,
+            garlic_authenticated = garlic_authenticated,
+            garlic_rejected = garlic_rejected,
+            payloads_dequeued = payloads_dequeued,
+            streaming_accepted = streaming_accepted,
+            transition = "stream_connect_handshake_wait_expired",
+            "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
+        );
         let _ = bridge.with(|bridge| bridge.streaming_mut().remove_connection(connection_id));
         return Err(StreamConnectFailed {
             result: ReplyResult::Timeout,
-            message: format!("STREAM CONNECT did not reach Established within {deadline:?}"),
+            message: format!(
+                "STREAM CONNECT did not reach Established within {deadline:?} \
+                 synack_observed={synack_observed} \
+                 synack_accepted={synack_accepted} \
+                 synack_rejected={synack_rejected} \
+                 garlic_authenticated={garlic_authenticated} \
+                 garlic_rejected={garlic_rejected} \
+                 payloads_dequeued={payloads_dequeued} \
+                 streaming_accepted={streaming_accepted}"
+            ),
         });
     }
 
@@ -3324,6 +3366,57 @@ async fn execute_stream_connect(
     })
 }
 
+/// Plan 478 handshake attribution: sums the redacted SYN-response
+/// ingress counters across the destination's canonical and receiver
+/// managers as `(observed, accepted, rejected)` counts. No stream
+/// ids, ports, hashes, or payload material cross this boundary.
+fn syn_response_ingress_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return (0, 0, 0);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return (0, 0, 0);
+    };
+    handle.with(|bridge| {
+        let canonical = bridge.streaming().syn_response_ingress();
+        let mirror = bridge.receiver_streaming().syn_response_ingress();
+        (
+            canonical.observed.saturating_add(mirror.observed),
+            canonical.accepted.saturating_add(mirror.accepted),
+            canonical.rejected.saturating_add(mirror.rejected),
+        )
+    })
+}
+
+/// Plan 478 garlic-arrival attribution: reads the destination bridge's
+/// cumulative garlic-dispatch outcome counters as
+/// `(authenticated, rejected, payloads_dequeued, streaming_accepted)`.
+/// Counts only; no identities, keys, payloads, or rejection detail.
+fn bridge_garlic_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64, u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return (0, 0, 0, 0);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return (0, 0, 0, 0);
+    };
+    handle.with(|bridge| {
+        let diagnostics = bridge.diagnostics_snapshot().clone();
+        (
+            diagnostics.garlic_authenticated(),
+            diagnostics.garlic_rejected(),
+            diagnostics.payloads_dequeued(),
+            diagnostics.streaming_accepted(),
+        )
+    })
+}
 /// Plan 147 §7: parks the caller until `manager.get_connection(id)`
 /// reports `ConnectionState::Established`, or returns `false` once
 /// `deadline` expires. The destination's runtime driver notifies

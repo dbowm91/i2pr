@@ -62,6 +62,18 @@ pub struct BridgeDiagnostics {
     outbound_dispatches: usize,
     inbound_dispatched: u64,
     inbound_observations: u64,
+    /// Garlic envelopes that authenticated, cumulative over every
+    /// router-inbound dispatch producing a report (Plan 478
+    /// garlic-arrival attribution).
+    garlic_authenticated: u64,
+    /// Garlic envelopes rejected at the authenticated-dispatch
+    /// boundary, cumulative (category detail stays in the
+    /// per-dispatch report and the product snapshot).
+    garlic_rejected: u64,
+    /// Destination payloads dequeued across authenticated dispatches.
+    payloads_dequeued: u64,
+    /// Dequeued payloads accepted into Streaming.
+    streaming_accepted: u64,
 }
 
 impl BridgeDiagnostics {
@@ -70,6 +82,10 @@ impl BridgeDiagnostics {
             outbound_dispatches: 0,
             inbound_dispatched: 0,
             inbound_observations: 0,
+            garlic_authenticated: 0,
+            garlic_rejected: 0,
+            payloads_dequeued: 0,
+            streaming_accepted: 0,
         }
     }
 
@@ -98,6 +114,45 @@ impl BridgeDiagnostics {
 
     pub fn inbound_observations(&self) -> u64 {
         self.inbound_observations
+    }
+
+    /// Plan 478 garlic-arrival attribution: folds one router-inbound
+    /// dispatch report into the cumulative outcome counters. Counts
+    /// only — no identities, keys, payloads, or rejection strings.
+    /// Existing `inbound_dispatched` / `inbound_observations` calls
+    /// stay untouched; this adds the outcome breakdown they lack.
+    pub fn record_dispatch_report(&mut self, report: &RouterInboundDispatchReport) {
+        if report.garlic_authenticated {
+            self.garlic_authenticated = self.garlic_authenticated.saturating_add(1);
+            self.payloads_dequeued = self
+                .payloads_dequeued
+                .saturating_add(report.payloads_dequeued as u64);
+            self.streaming_accepted = self
+                .streaming_accepted
+                .saturating_add(report.streaming_packets_accepted as u64);
+        } else {
+            self.garlic_rejected = self.garlic_rejected.saturating_add(1);
+        }
+    }
+
+    /// Cumulative garlic-authenticated dispatch envelopes.
+    pub fn garlic_authenticated(&self) -> u64 {
+        self.garlic_authenticated
+    }
+
+    /// Cumulative garlic-rejected dispatch envelopes.
+    pub fn garlic_rejected(&self) -> u64 {
+        self.garlic_rejected
+    }
+
+    /// Cumulative payloads dequeued across authenticated dispatches.
+    pub fn payloads_dequeued(&self) -> u64 {
+        self.payloads_dequeued
+    }
+
+    /// Cumulative dequeued payloads accepted into Streaming.
+    pub fn streaming_accepted(&self) -> u64 {
+        self.streaming_accepted
     }
 }
 
@@ -319,6 +374,13 @@ pub struct RouterInboundDispatchReport {
     /// `StreamingDestinationAdapter::receive` into the canonical
     /// service `StreamingManager`.
     pub streaming_packets_accepted: usize,
+    /// Number of inbound SYN-response (SYN-ACK) packets the target
+    /// `StreamingManager` classified during this dispatch
+    /// (arrival count, Plan 478 handshake attribution).
+    pub synack_observed: usize,
+    /// Of the observed SYN-responses, how many transitioned an
+    /// outbound connection to Established.
+    pub synack_accepted: usize,
     /// Number of payloads rejected by the adapter (unknown
     /// non-datagram protocols count as rejected; Garlic auth
     /// failures return `garlic_authenticated = false` with zero
@@ -1301,26 +1363,43 @@ impl SamDestinationBridge {
             } => sender_destination.as_ref().map(|hash| *hash.as_bytes()),
             i2pr_client::InboundDispatchOutcome::Rejected(error) => {
                 self.diagnostics.record_inbound_observation();
-                return Ok(RouterInboundDispatchReport {
+                let report = RouterInboundDispatchReport {
                     garlic_authenticated: false,
                     garlic_rejection: Some(classify_router_garlic_rejection(error)),
                     payloads_dequeued: 0,
                     streaming_packets_accepted: 0,
                     streaming_rejected: 0,
                     datagrams_accepted: 0,
-                });
+                    synack_observed: 0,
+                    synack_accepted: 0,
+                };
+                self.diagnostics.record_dispatch_report(&report);
+                return Ok(report);
             }
         };
         let Some(remote_hash) = remote_hash_opt else {
             self.diagnostics.record_inbound_observation();
-            return Ok(RouterInboundDispatchReport {
+            let report = RouterInboundDispatchReport {
                 garlic_authenticated: true,
                 garlic_rejection: None,
                 payloads_dequeued: 0,
                 streaming_packets_accepted: 0,
                 streaming_rejected: 0,
                 datagrams_accepted: 0,
-            });
+                synack_observed: 0,
+                synack_accepted: 0,
+            };
+            self.diagnostics.record_dispatch_report(&report);
+            return Ok(report);
+        };
+        // Plan 478 handshake attribution: snapshot the target
+        // manager's SYN-response accounting around the payload drain
+        // so arrival (`observed`) and acceptance (`accepted`) are
+        // distinguished by source-owned counts.
+        let synack_before = if is_server {
+            self.receiver_streaming.syn_response_ingress()
+        } else {
+            self.streaming.syn_response_ingress()
         };
         // Drain every queued payload for the local destination (not
         // just the first clove) into the SAME canonical service
@@ -1404,14 +1483,24 @@ impl SamDestinationBridge {
         } else {
             self.diagnostics.record_inbound_observation();
         }
-        Ok(RouterInboundDispatchReport {
+        let synack_after = if is_server {
+            self.receiver_streaming.syn_response_ingress()
+        } else {
+            self.streaming.syn_response_ingress()
+        };
+        let synack_delta = synack_after.delta_since(synack_before);
+        let report = RouterInboundDispatchReport {
             garlic_authenticated: true,
             garlic_rejection: None,
             payloads_dequeued: dequeued,
             streaming_packets_accepted: accepted,
             streaming_rejected: rejected,
             datagrams_accepted,
-        })
+            synack_observed: usize::try_from(synack_delta.observed).unwrap_or(usize::MAX),
+            synack_accepted: usize::try_from(synack_delta.accepted).unwrap_or(usize::MAX),
+        };
+        self.diagnostics.record_dispatch_report(&report);
+        Ok(report)
     }
 }
 
@@ -2263,5 +2352,52 @@ mod router_network_bridge_tests {
                 .expect("no local LeaseSet2 validation attempted")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn dispatch_report_outcomes_accumulate_without_touching_legacy_counts() {
+        let mut diagnostics = BridgeDiagnostics::new();
+        // Garlic-rejected envelope: only the rejected outcome moves.
+        diagnostics.record_dispatch_report(&RouterInboundDispatchReport {
+            garlic_authenticated: false,
+            garlic_rejection: Some(RouterGarlicRejection::EciesAuthentication),
+            payloads_dequeued: 0,
+            streaming_packets_accepted: 0,
+            streaming_rejected: 0,
+            datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
+        });
+        // Authenticated but unattributed: counts as authenticated with
+        // zero dequeued, so "arrived but never dequeued" stays visible.
+        diagnostics.record_dispatch_report(&RouterInboundDispatchReport {
+            garlic_authenticated: true,
+            garlic_rejection: None,
+            payloads_dequeued: 0,
+            streaming_packets_accepted: 0,
+            streaming_rejected: 0,
+            datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
+        });
+        // Authenticated with a two-payload drain, one accepted.
+        diagnostics.record_dispatch_report(&RouterInboundDispatchReport {
+            garlic_authenticated: true,
+            garlic_rejection: None,
+            payloads_dequeued: 2,
+            streaming_packets_accepted: 1,
+            streaming_rejected: 1,
+            datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
+        });
+        assert_eq!(diagnostics.garlic_authenticated(), 2);
+        assert_eq!(diagnostics.garlic_rejected(), 1);
+        assert_eq!(diagnostics.payloads_dequeued(), 2);
+        assert_eq!(diagnostics.streaming_accepted(), 1);
+        // The legacy Plan 210 counters are owned by their own call
+        // sites; outcome folding never moves them.
+        assert_eq!(diagnostics.inbound_dispatched(), 0);
+        assert_eq!(diagnostics.inbound_observations(), 0);
     }
 }

@@ -104,3 +104,34 @@ pub struct WirePacketObservation {
     /// Payload length in bytes.
     pub payload_len: usize,
 }
+
+/// Redacted ingress accounting for inbound SYN-response (SYN-ACK)
+/// packets observed by one [`crate::streaming::StreamingManager`].
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies as
+/// a SYN response; exactly one of `accepted` / `rejected` advances
+/// per observed packet, so `accepted + rejected == observed` always
+/// holds. A SYN response that arrives but never establishes (unknown
+/// connection, port-tuple mismatch, bad signature) is visible as
+/// `observed > accepted`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SynResponseIngressAccounting {
+    /// SYN-response packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets that transitioned an outbound connection.
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error.
+    pub rejected: u64,
+}
+
+impl SynResponseIngressAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+        }
+    }
+}

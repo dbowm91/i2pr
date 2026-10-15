@@ -363,6 +363,34 @@ impl RouterInfoLookup {
         store: &RouterInfoStore,
         routing_key: &RouterHash,
     ) -> StartOutcome {
+        self.advance_active(store, routing_key)
+    }
+
+    /// Advances the active lookup after one emitted attempt went
+    /// unanswered within its window. Peers already queried for this
+    /// lookup are skipped by the shared advance path, so a retry
+    /// rotates to the next eligible floodfill instead of re-asking
+    /// the silent one; exhaustion terminates honestly. Fails closed
+    /// with no active lookup. Bounded by the same queried/excluded
+    /// bookkeeping as every other advance: no new allocations
+    /// beyond the existing per-lookup vectors.
+    pub fn advance_after_attempt_timeout(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> StartOutcome {
+        self.advance_active(store, routing_key)
+    }
+
+    /// Shared body of [`Self::handle_pending_after_path`] and
+    /// [`Self::advance_after_attempt_timeout`]: re-selects against
+    /// the authoritative store and emits the next unqueried
+    /// candidate for the same active lookup.
+    fn advance_active(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> StartOutcome {
         let active_id = match self.active_lookup() {
             Some(id) => id,
             None => {

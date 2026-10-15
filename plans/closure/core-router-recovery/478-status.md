@@ -90,4 +90,181 @@ No fake lease, zero-hop tunnel, or summary readiness was introduced. Inbound own
 
 The source path now exposes the outbound role before ordinary inbound service builds and composes the IBGW-targeted request through that role as TunnelData. The pinned lane confirms the first outbound bootstrap installs and the stock network creates transit tunnels, but the subsequent inbound return still fails strict message-ID matching. Remaining work includes source attribution for that return, signed usable leases, complete owner generation, bidirectional binary SAM STREAM, and expiry/replenishment or restart recovery. Do not claim those gates from the local composer test.
 
+## 2026-10-15 timeout-advance rotation landed; forward-leg handshake divergence localized
+
+Source change (this plan's peer-lease-fetch owner, no new plan number):
+
+- `i2pr-netdb/src/lookup_engine.rs`: `advance_after_attempt_timeout` shares
+  the `advance_active` body with `handle_pending_after_path`, so a retry
+  emits the next unqueried floodfill for the same active lookup; exhaustion
+  terminates honestly. No signature changed.
+- `i2pr-daemon/src/netdb_seam.rs`: `advance_lease_set2_after_timeout_with_store`
+  plus an extracted shared outcome mapping.
+- `i2pr-daemon/src/destination_tunnels.rs`: `advance_lease_lookup_after_timeout`
+  fails closed on unknown ids, refreshes the pending deadline, and frees the
+  slot on exhaustion. A first-cut `begin_lease_lookup_excluding` approach was
+  discarded before wiring: re-beginning would collide with the seam's single
+  active-lookup slot, while advance reuses it.
+- `i2pr-daemon/src/service_product.rs`: resolve attempts after the first
+  advance instead of re-sending the same action, with a redacted `rotate`
+  stage warn (counts only).
+- Regression `lookup_timeout_advance_rotates_floodfill_then_terminates_honestly`:
+  two seeded floodfills, distinct peers across advance, honest exhaustion,
+  stale id fails closed.
+
+Verification: `i2pr-netdb` 282 passed; daemon lib 764 passed;
+`destination_tunnel_unit` 44 passed; `netdb_tunnel_unit` 22 passed; clippy
+clean on both crates; fmt clean; runtime and service-tunnel boundary scripts
+pass. (Scoped battery; full floor not run.)
+
+One bounded exact-pin lane after the change (pinned i2pd 2.61.0, quiet mesh,
+scratch `eunfpd5r` preserved then snapshotted). The rotation did **not** fire:
+the forward peer lease fulfilled on attempt 1. New information instead came
+from the forward STREAM leg, which failed where earlier runs completed:
+
+- Our CONNECT was received, stock's LS2 fetched and fulfilled in 38 ms, our
+  SYNs emitted and retransmitted on a 5 s cadence. Stock accepted immediately
+  (`Stream accept`, `STREAM STATUS RESULT=OK`), had stored and updated our LS2
+  six seconds earlier, added our remote LeaseSet, then logged `SYNACK packet
+  was not ACKed after 1 attempts, terminate` 18 s later while our duplicate
+  SYNs kept arriving (`already exists`). Our CONNECT timed out at 60 s with
+  zero inbound stream-processing lines on our side. A `Garlic: Incoming
+  sessions come too often` throttle warn appears on the accepting peer in the
+  same window.
+- The first divergence is therefore bounded to the SYN-ACK return: emitted
+  (at most once observed) and never ACKed. Two sub-causes remain open:
+  transit loss toward our inbound gateway versus silent drop on our ingress/
+  streaming path. Our LS2 and leases are proven on the accepting floodfill,
+  so this is not a publication or lookup failure.
+
+**Disposition:** no unchanged-topology retry. The next lane run requires the
+material change first: redacted inbound-handshake accounting on our side
+(SYN-ACK observed at the streaming manager, garlic-to-stream dispatch
+outcome), so arrival and processing are distinguished by source-owned counts.
+Rotation stays landed and unproven-live; the reverse leg, §6 recovery, and
+product close-out remain open.
+
+## 2026-10-15 SYN-ACK ingress accounting landed; streaming discard ruled out
+
+Source change (this plan's handshake owner, no new plan number):
+
+- `i2pr-client/src/streaming/events.rs`: `SynResponseIngressAccounting`
+  `{ observed, accepted, rejected }` (counts only) with `delta_since`.
+- `i2pr-client/src/streaming/manager.rs`: one counter set per manager,
+  incremented at the SYN-response peek classification (`observed`) with
+  exactly one of `accepted` / `rejected` on every exit (port-tuple
+  mismatch, decode failure, handler outcome). New round-trip test
+  (SYN → accept → SYN response → Established records 1/1/0) and
+  negative test (SYN-shaped packet with no outbound state records
+  1/0/1; data packets leave the counters untouched).
+- `i2pr-daemon/src/sam/streams.rs`: `RouterInboundDispatchReport` gains
+  `synack_observed` / `synack_accepted`, captured as target-manager
+  deltas around the payload drain (server mirror vs canonical honored).
+- `i2pr-daemon/src/service_product.rs`: `InboundTrafficSnapshot` gains
+  `service_synack_observed` / `service_synack_accepted` plus delta
+  support, fed at both router-inbound dispatch sites.
+- `i2pr-daemon/src/sam.rs`: CONNECT timeout now emits
+  `transition="stream_connect_handshake_wait_expired"` with the wait
+  deltas and appends them to the SAM TIMEOUT message (prefix kept).
+
+Verification: `i2pr-client --lib` 115 passed; daemon lib 764 passed;
+`destination_tunnel_unit` 44 passed; `i2pr-netdb` 282 passed; clippy
+clean on both crates; fmt clean; runtime and service-tunnel boundary
+scripts pass; receipt parsers OK; `cargo doc` clean. (Scoped battery;
+full floor not run.)
+
+Bounded exact-pin lane with the accounting live (pinned i2pd 2.61.0,
+quiet mesh, scratch `lmiggsap` snapshotted). Forward CONNECT failed,
+and the timeout message now carries the attribution directly:
+
+`synack_observed=0 synack_accepted=0 synack_rejected=0` over the full
+60 s wait, while stock floodfill `f` accepted our SYN three times
+(`Incoming stream`, duplicate SYNs `already exists`), held our LS2
+(`LeaseSet2 updated` on four peers), emitted a SYN-ACK once, and
+terminated it for no-ACK (`SYNACK packet was not ACKed after 1
+attempts`). Our outbound retransmits (2×1037B cells every ~5 s) and
+our inbound path were stable (`owner_eviction_events=0`, builds
+installed); our stdout shows zero garlic/service-inbound processing
+lines in the window.
+
+**Disposition:** streaming-layer or ingress-dispatch discard is ruled
+out — no SYN-response-shaped packet reached either of our managers.
+The loss is bounded to stock-emission → our-inbound-gateway → us
+transit (or stale-lease addressing by the peer). The next material
+change before any further lane is garlic-level arrival evidence on
+the timeout path (product inbound-traffic snapshot deltas: TunnelData
+received, owner matches, garlic auth outcomes), which splits "nothing
+reached our daemon" from "garlic arrived but ECIES-rejected".
+
+2026-10-15 replication (Plan 477's bounded post-change attempt, scratch
+`df2wrjie`): same shape, second consecutive run. Builds/installs fully
+green (3 installs, 4/4 replies matched, owners 2/2, no inbound expiry);
+forward SYNs reach stock `f` repeatedly; stock emits the SYN-ACK and logs
+`SYNACK packet was not ACKed after 1 attempts, terminate,
+rSID=1497887931`; our wait records `synack_observed=0`. The divergence
+is characterized across runs, not single-run weak evidence — but per
+the bounded policy the next lane still moves only on the garlic-level
+arrival material change above, not on repetition.
+
+## 2026-10-15 garlic-arrival evidence landed; below-bridge loss proven
+
+Source change (this plan's handshake owner, no new plan number):
+
+- `sam/streams.rs`: `BridgeDiagnostics` gains cumulative outcome
+  counters (`garlic_authenticated`, `garlic_rejected`,
+  `payloads_dequeued`, `streaming_accepted`) folded from every
+  router-inbound dispatch report via `record_dispatch_report`. Legacy
+  `inbound_dispatched` / `inbound_observations` call sites untouched.
+  New unit test pins all three report shapes (rejected, authenticated
+  unattributed, authenticated drained) and the legacy-counter
+  non-interference; it fails under a swapped-branch inversion (probe
+  reverted, zero markers).
+- `sam.rs`: CONNECT timeout snapshots bridge diagnostics before/after
+  the wait (`bridge_garlic_totals`, same fail-closed pattern as the
+  synack totals) and emits the four deltas in the warn and the TIMEOUT
+  message (prefix kept; lane driver captures MESSAGE to the quote, so
+  additive keys are safe).
+
+Verification: daemon lib 769 passed; `destination_tunnel_unit` 44;
+`sam_stream_self_composed` 4; receipt parsers OK; daemon clippy clean;
+fmt/diff clean; runtime + service-tunnel boundaries pass. (Scoped
+battery; full floor not run — full floor ran green on the 477 closing
+tree two commits back except the two recorded external reds.)
+
+Bounded exact-pin lane with the evidence live (pinned i2pd 2.61.0,
+quiet mesh, scratch `1obo_t0p` snapshotted). Third consecutive run of
+the same shape, now with the complete owned-layer chain:
+
+`synack_observed=0 synack_accepted=0 synack_rejected=0
+garlic_authenticated=0 garlic_rejected=0 payloads_dequeued=0
+streaming_accepted=0` over the full 60 s wait, while stock accepted
+our SYNs repeatedly (`Incoming stream rSID=2674265016`, retransmits
+`already exists`), emitted the SYN-ACK, and terminated it for no-ACK.
+Builds/installs green again (3 installs, 4/4 replies, owners 2/2).
+
+**Disposition:** the arrival-vs-processing split is now exhaustive at
+every layer this router owns: streaming (synack=0), garlic bridge
+(all-zero), with ECIES rejection affirmatively ruled out
+(`garlic_rejected=0` — nothing arrived to reject). The loss is below
+the bridge: stock→our-inbound-gateway transit, the IBGW→us leg, or
+owner routing. TunnelData-received/owner-match granularity stays
+product-side (`InboundTrafficSnapshot`, not reachable from SAM state
+without a new cross-owner handle) and is the only finer split left;
+adding it is a bigger seam change, recorded here, not done here. No
+further lane without it or another material change. Reverse STREAM,
+§6 recovery, and product close-out remain open; 478 stays active.
+
+Note for the ELS2 line (floor red, not this plan's to fix): the
+`check-els2-live-lane-evidence.sh` Plan 393 count guard (needs 3
+`.cancel_ls2_publication(request_id)` sites, tree has 1) was bisected
+to committed 478 change `5b874e86` (direct-short LS2 publication).
+Verified semantically equivalent, not a leak: the single coordinator
+entry is created at `begin_ls2_publication` and unconditionally
+cancelled after the direct send on every outcome; earlier failures
+return before any entry exists; the direct helper creates no entry.
+The guard's literal count is stale for the restructured code — updating
+it to assert the semantic property belongs to the ELS2 owner with its
+own plan-of-record. Fix code, never weaken the script; no contrived
+call-site duplication was added to game the count.
+
 **Roadmap disposition:** active; no dependent capability is unblocked.

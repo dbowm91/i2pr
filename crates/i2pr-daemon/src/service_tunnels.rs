@@ -10823,6 +10823,8 @@ mod plan212_router_backed_service_destination_tests {
             streaming_packets_accepted: 1,
             streaming_rejected: 0,
             datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
         };
         assert!(report.streaming_packets_accepted == 1);
         assert!(report.garlic_authenticated);
@@ -10843,6 +10845,8 @@ mod plan212_router_backed_service_destination_tests {
             streaming_packets_accepted: 2,
             streaming_rejected: 1,
             datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
         };
         assert_eq!(report.payloads_dequeued, 3);
         assert_eq!(

@@ -918,6 +918,47 @@ impl DestinationTunnelCoordinator {
         }
     }
 
+    /// Advances one pending LeaseSet2 lookup to its next floodfill
+    /// candidate after the previous attempt went unanswered. The
+    /// state machine skips already-queried peers, so a retry rotates
+    /// instead of re-asking the silent floodfill; exhaustion frees
+    /// the pending slot and terminates honestly with
+    /// `NoEligibleCandidates`, never a spin. Unknown or already
+    /// completed request ids fail closed with `UnknownLookup`.
+    pub fn advance_lease_lookup_after_timeout(
+        &mut self,
+        request_id: u64,
+        routing_key: &RouterHash,
+    ) -> Result<LookupAction, DestinationTunnelError> {
+        let pending = self
+            .pending
+            .get_mut(&request_id)
+            .ok_or(DestinationTunnelError::UnknownLookup)?;
+        pending.retries = pending.retries.saturating_add(1);
+        pending.deadline_ms = pending
+            .deadline_ms
+            .saturating_add(DEFAULT_LEASE_LOOKUP_DEADLINE_MS);
+        let action = self
+            .seam
+            .advance_lease_set2_after_timeout_with_store(&self.store, routing_key);
+        match action {
+            LookupAction::SendDatabaselookup { .. } => Ok(action),
+            LookupAction::NeedExploratoryReplyPath { .. } => {
+                self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+                self.counters.reply_paths_unresolved =
+                    self.counters.reply_paths_unresolved.saturating_add(1);
+                Err(DestinationTunnelError::InvalidReplyPath)
+            }
+            LookupAction::Complete { .. } => {
+                self.pending.remove(&request_id);
+                self.retained_paths.remove(&request_id);
+                self.seam.cancel_lease_set2_lookup();
+                self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+                Err(DestinationTunnelError::NoEligibleCandidates)
+            }
+        }
+    }
+
     /// Composes one outbound LeaseSet2 `DatabaseLookup` dispatch
     /// through the supplied outbound role. The helper is the only
     /// counted lookup path; direct transport delivery is never a

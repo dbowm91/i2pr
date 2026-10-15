@@ -1267,6 +1267,12 @@ pub struct InboundTrafficSnapshot {
     pub service_other_garlic_rejected: u64,
     pub service_payloads_dequeued: u64,
     pub service_streaming_rejected: u64,
+    /// Inbound SYN-response (SYN-ACK) packets the target Streaming
+    /// manager classified while draining this product's Garlic
+    /// traffic (arrival count, Plan 478 handshake attribution).
+    pub service_synack_observed: u64,
+    /// Of those, how many transitioned an outbound connection.
+    pub service_synack_accepted: u64,
     pub direct_garlic_received: u64,
     pub streaming_packets_accepted: u64,
 }
@@ -1372,6 +1378,12 @@ impl InboundTrafficSnapshot {
             service_streaming_rejected: self
                 .service_streaming_rejected
                 .saturating_sub(earlier.service_streaming_rejected),
+            service_synack_observed: self
+                .service_synack_observed
+                .saturating_sub(earlier.service_synack_observed),
+            service_synack_accepted: self
+                .service_synack_accepted
+                .saturating_sub(earlier.service_synack_accepted),
             direct_garlic_received: self
                 .direct_garlic_received
                 .saturating_sub(earlier.direct_garlic_received),
@@ -3828,6 +3840,16 @@ impl ServiceProduct {
             if !report.garlic_authenticated {
                 continue;
             }
+            self.inner.inbound_traffic.service_synack_observed = self
+                .inner
+                .inbound_traffic
+                .service_synack_observed
+                .saturating_add(report.synack_observed as u64);
+            self.inner.inbound_traffic.service_synack_accepted = self
+                .inner
+                .inbound_traffic
+                .service_synack_accepted
+                .saturating_add(report.synack_accepted as u64);
             if report.streaming_packets_accepted > 0
                 && let Some(capability) = self.manager.router_delivery()
             {
@@ -4101,6 +4123,16 @@ impl ServiceProduct {
                     .inbound_traffic
                     .service_streaming_rejected
                     .saturating_add(report.streaming_rejected as u64);
+                self.inner.inbound_traffic.service_synack_observed = self
+                    .inner
+                    .inbound_traffic
+                    .service_synack_observed
+                    .saturating_add(report.synack_observed as u64);
+                self.inner.inbound_traffic.service_synack_accepted = self
+                    .inner
+                    .inbound_traffic
+                    .service_synack_accepted
+                    .saturating_add(report.synack_accepted as u64);
                 // Plan 212 §14 step 8 — advance the typed
                 // `remote_inbound_dispatched` counter ONLY after
                 // >=1 Streaming payload was accepted through the
@@ -4412,7 +4444,7 @@ async fn resolve_remote_destination_for_service_inner(
         );
         ServiceProductError::Provisioning("service has no registry-routed receive id".to_owned())
     })?;
-    let (lookup_id, action) = {
+    let (lookup_id, mut action) = {
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
             .begin_lease_lookup(destination_hash, &routing_key, reply_path)
@@ -4442,6 +4474,14 @@ async fn resolve_remote_destination_for_service_inner(
     // At most MAX_LOOKUP_ATTEMPTS transmissions per service, each
     // with a bounded pump window; pump accounting is cumulative
     // across attempts for the timeout attribution below.
+    //
+    // Retries rotate floodfill candidates instead of re-asking the
+    // silent one: the state machine skips already-queried peers for
+    // the same active lookup, so attempt N>1 names the next
+    // eligible floodfill (observed in-lane: the nearest candidate
+    // stayed silent while a farther one held the record). Candidate
+    // exhaustion terminates honestly through the shared unresolved
+    // attribution below. Counts only; no peer identities logged.
     const MAX_LOOKUP_ATTEMPTS: u64 = 3;
     const LOOKUP_ATTEMPT_WINDOW: Duration = Duration::from_secs(25);
     const LOOKUP_SETTLE_DELAY: Duration = Duration::from_secs(5);
@@ -4468,8 +4508,33 @@ async fn resolve_remote_destination_for_service_inner(
     // observed type number.
     let mut direct_types: Vec<(u8, u64)> = Vec::new();
     let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
+    let mut lookup_rotations: u64 = 0;
     while !resolved && attempts < MAX_LOOKUP_ATTEMPTS {
         attempts += 1;
+        if attempts > 1 {
+            // Rotate to the next unqueried floodfill for the same
+            // active lookup. Exhaustion (or a failed advance) ends
+            // the retry loop through the shared unresolved
+            // attribution below; it is not a send-stage failure.
+            let advanced = {
+                let mut coord_guard = destination_tunnels.lock().await;
+                coord_guard.advance_lease_lookup_after_timeout(lookup_id, &routing_key)
+            };
+            match advanced {
+                Ok(next_action) => {
+                    action = next_action;
+                    lookup_rotations = lookup_rotations.saturating_add(1);
+                    tracing::warn!(
+                        lookup_stage = "rotate",
+                        lookup_rotations,
+                        attempts,
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch rotates to the next floodfill candidate",
+                    );
+                }
+                Err(_) => break,
+            }
+        }
         {
             let coord_guard = destination_tunnels.lock().await;
             let delivery = ssu2_handle.delivery().clone();
