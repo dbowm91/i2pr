@@ -3272,10 +3272,13 @@ async fn execute_stream_connect(
     // the destination's established-signal until the manager
     // transitions to Established or the deadline expires.
     //
-    // The deadline defaults to a bounded 30 seconds; production
-    // callers that want a tighter limit must extend the limit
-    // surface explicitly.
-    let deadline = Duration::from_secs(20);
+    // The deadline is a bounded 60 seconds: the reference peer
+    // builds its own tunnels lazily on session create (observed
+    // live taking 15-30+s across churn waves), and our SYN
+    // retransmits persist across it. Shorter budgets fail peers
+    // that are still building; the lane driver timeout stays far
+    // above this.
+    let deadline = Duration::from_secs(60);
     let established_notify = state.established_signal(destination_id);
     let established = wait_for_established(
         state.clone(),
