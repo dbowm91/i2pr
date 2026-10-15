@@ -186,6 +186,19 @@ Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute sour
 
 **Continuation, no duplicate plan numbers:** 477 is closed having delivered strict terminal reply attribution on Plan 481's source interface; 478 still owns genuine signed LS2, atomic owner generation, and bidirectional external SAM STREAM, and consumes Plan 482's dial policy. Plan 479 is closed on the separate Java floodfill comparator and NetDB response (controlled-Java evidence only; 437/438 stay blocked on 433/436); Plan 480 retains independent SSU2 observer/Plan 476 consumer work. Do not create a Plan 483 for the next failed stock timeout or repeat Plan 475/461 lower-tier proofs. Pinned i2pd/Java unchanged, routine CI never sends public traffic, and `specs/support.toml` plus older closure records are immutable until conformance closure.
 
+### Plan 479 residual-risk hardening — Plan 483 (registered 2026-10-15)
+
+**Not the prohibited timeout-retry plan.** The number 483 is taken for a
+different, explicitly scoped purpose: converting 479's three recorded
+limitations (profile-A XOR-order recipient nondeterminism, the structurally
+unreachable `fL`-vs-`fN` arm, normal-role replication staying with 437/438)
+into executable evidence. No stock-timeout retry and no 475/461 lower-tier
+repeat is authorized by this row.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **483** | **passed** | [Residual-risk hardening: deterministic selection, degenerate arm, tiered replication](implementation/floodfill/483-residual-risk-hardening-deterministic-selection-degenerate-arm-tiered-replication.md) | `closure/floodfill/483-status.md` (`passed-479-residual-risks-executable-no-normal-role-change`; implementation `deed140b`): 479's limitations now executable — width-1 no-starvation proof (A/B), L-only fail-closed profile C, tiered-form owner regressions. Per-profile budget 1. 437/438 stay blocked on 433/436; no support/capability change. |
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
