@@ -172,7 +172,7 @@ Current authority: NTCP2 Plans 459/461 and 467–469 **passed at controlled scop
 | **477** | **passed: canonical short-build IDs, collision retention, writer-receipt consumption** | [Per-hop IDs, CSPRNG IDs and attributable short-build return](implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md) | `closure/core-router-recovery/477-status.md`: per-hop forwarding IDs, separate outer/reply IDs, bounded active/retiring/replay collision reservation, writer-receipt consumption with five-way terminal taxonomy, late/cancel/replay regressions, restart-seed non-aliasing, and a fully attributed exact-pin attempt. Residual STREAM SYN-ACK return owned by active 478. Floor reds recorded as external: ELS2 Plan 393 count (broken by committed 478 change `5b874e86`) and rustls advisories on the HEAD-pinned lock. |
 | **478** | **active: outbound-backed source route wired; product qualification open** | [Normal exploratory-backed SAM destination product](implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md) | `closure/core-router-recovery/478-status.md`: one initial direct outbound bootstrap, then inbound/replacement/additional builds through outbound TunnelData roles; exact-pinned stock acceptance, signed LS2, external bidirectional SAM STREAM and recovery remain. Controlled client router only; Plan 433 external gate remains. |
 | **479** | **passed: controlled Java comparator with truthful tiers and correlated store** | [Java floodfill candidate and NetDB product](implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md) | `closure/floodfill/479-status.md`: exact-pinned Java observes eligible `fN` + truthful `L`, selects only the eligible candidate for its normal Store with a daemon-accepted effect and none on the low-tier; a second profile proves operation among `{fN, stock fO}` with the recipient attributed. No dependent row moves: 437/438 stay blocked on 433/436 (unblock audit in the closure). |
-| **480** | **active: bounded runtime observer landed; process consumer and product-effect fixture open** | [Source-authenticated SSU2 receipt observer](implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md) | `closure/core-router-recovery/480-status.md`: real UDP session/ingress/write events pass focused tests; daemon effect hook is source-wired; Plan 476 local process collector and direct NetDB/floodfill effect fixture remain open. No host pair supplied. |
+| **480** | **active: bounded runtime observer landed; local collector + NetDB product fixture landed, process consumer open** | [Source-authenticated SSU2 receipt observer](implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md) | `closure/core-router-recovery/480-status.md`: real UDP session/ingress/write events pass focused tests; daemon effect hook is source-wired; permission-gated local collector, bootstrap-insert product fixture, and negative provenance matrix landed; Plan 476 process consumer, floodfill-served product path, and live pair remain open. No host pair supplied. |
 
 Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute source fixes inside each active plan after concrete causal divergence, not new per-timeout numbered micro-plans. Plans 433, 435–439, 431 and specs/support.toml remain unchanged until their own external/public acceptance closes.
 
@@ -198,6 +198,19 @@ repeat is authorized by this row.
 | Plan | State | Implementation handoff | Dependency / executable acceptance |
 | --- | --- | --- | --- |
 | **483** | **passed** | [Residual-risk hardening: deterministic selection, degenerate arm, tiered replication](implementation/floodfill/483-residual-risk-hardening-deterministic-selection-degenerate-arm-tiered-replication.md) | `closure/floodfill/483-status.md` (`passed-479-residual-risks-executable-no-normal-role-change`; implementation `deed140b`): 479's limitations now executable — width-1 no-starvation proof (A/B), L-only fail-closed profile C, tiered-form owner regressions. Per-profile budget 1. 437/438 stay blocked on 433/436; no support/capability change. |
+
+### Burst-default policy corrective — Plan 484 (registered 2026-10-15)
+
+Carried forward from the 479 finding and the 483 limitation: the 64 KiB
+daemon default `burst_bytes` is below the NTCP2 runtime's wire-frame
+minimum (`72819` at 10% reserve), so a bandwidth-enabled daemon fails
+construction at defaults. One coherent policy pass, decision-provable
+offline: raise the default to fit, or keep it and fail closed naming both
+values. No silent default change, no lowered wire minimum, no live lane.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **484** | **ready** | [Bandwidth default burst vs NTCP2 wire-frame minimum](implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md) | 479 finding + 454 dormant-adapter regression (closed evidence, no new external gate) → one default-or-fail-closed policy with guards; 437/438/433/436 unaffected. |
 
 ## Active subsystem roadmaps
 

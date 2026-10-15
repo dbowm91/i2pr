@@ -39,6 +39,46 @@ The existing Plan 476/472 checks remain offline-only and have not been connected
 
 No general network API, public bind, capability advertisement, raw packet logging, or live peer attempt was added. Default-off startup does not construct an SSU2 runtime or observer. Runtime events are in-memory only; raw message IDs are transient correlation values and are not serialized by the observer. Plan 476 remains incomplete independently: its local process/session executor is missing, and the two-host live gate is unavailable until an authorized pair is supplied.
 
-**Next executable step:** connect the in-process producer stream to a strictly local, permission-gated Plan 476 receipt collector and add a product-effect fixture that exercises the daemon success hook; then run the negative provenance matrix, including link loss/replay, cancellation, overflow, wrong network identity and changed restart identity.
+**Next executable step:** the Plan 476 process consumer (local
+permission-gated receipt collector feeding its per-host executor) and the
+floodfill-served product path remain open; then run the negative
+provenance matrix, including link loss/replay, cancellation, overflow,
+wrong network identity and changed restart identity.
+
+## 2026-10-15 local collector, NetDB product fixture, and negative matrix landed
+
+In-plan scope reduction, honestly recorded: what landed is the
+*local* collector and the *bootstrap-insert* product path, not the Plan
+476 process consumer and not the floodfill-served path.
+
+- `crates/i2pr-daemon/tests/ssu2_qualification_receipts.rs` (new, 8
+  tests): a permission-gated `LocalReceiptCollector` (consent +
+  controlled-loopback permit required; default-off construction refused)
+  projects one drained observer epoch into phase labels plus counts —
+  the export struct has no field capable of holding a transient message
+  ID, and an id-independence check proves two distinct message IDs
+  project identically. A live bootstrap-insert fixture delivers a genuine
+  third-party signed RouterInfo store over an authenticated session,
+  ingests it through the real `Bootstrap` owner (same call the
+  composition loop makes), and asserts the exact hook tuple
+  `(peer, link_id, message_id)` is accepted with the effect bound to the
+  ingress commitment/generation. Negatives: fabricated peer/link/ID,
+  product-before-ingress, replay, cancelled delivery emitting no
+  ingress, link loss clearing pending claims (live), 600-send overflow
+  failing the receipt (live), revoked consent, and default-off service
+  refusal. The permit gate is inversion-probed (mutant fails, reverted).
+- `ssu2_qualification_observer.rs` test module: session-close clears
+  pending claims; a fresh epoch rejects prior-epoch tuples (restart
+  identity boundary at owner level).
+- `tests/integration/ssu2/plan476_executor.py`: `LOCAL_PHASES` +
+  `validate_local_observed` — single-role locally observed sequences,
+  counts only, `live_qualification` stays `"not-run"`; positive and
+  10-case negative matrix pass (`test_plan476_executor.py`, 6 tests).
+
+Still open, unchanged: the Plan 476 process consumer (spawning,
+per-host collection, receipt exchange), the floodfill-served product
+path through the composition hook, and the live two-host Tier B (no
+authorized pair supplied). 480 stays active; no dependent capability is
+unblocked.
 
 **Roadmap disposition:** active; no live SSU2 capability is unblocked.
