@@ -5750,6 +5750,25 @@ async fn run_service_delivery_driver(
         let second_sweep = manager.deliver_outbound(destination_id).await;
         sweep.saturating_add_assign(second_sweep);
         manager.record_delivery_counters(destination_id, sweep);
+        // Redacted sweep activity (counts only, no identities):
+        // quiet ticks stay silent; any delivery work is visible
+        // for lane attribution of stuck streams.
+        if sweep.delivered > 0
+            || sweep.unknown_peer > 0
+            || sweep.delivery_failed > 0
+            || sweep.missing_factory > 0
+            || sweep.factory_exhausted > 0
+        {
+            tracing::info!(
+                delivered = sweep.delivered,
+                unknown_peer = sweep.unknown_peer,
+                delivery_failed = sweep.delivery_failed,
+                missing_factory = sweep.missing_factory,
+                factory_exhausted = sweep.factory_exhausted,
+                transition = "delivery_sweep_activity",
+                "service delivery driver sweep completed work",
+            );
+        }
         if let Some(reason) = degrade_to_reason(sweep) {
             debug!(
                 destination = ?destination_id,
