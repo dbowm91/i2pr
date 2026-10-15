@@ -465,6 +465,22 @@ pub struct ServiceTunnelManager {
     /// closed and advance a bounded rejection counter; the
     /// counter is plaintext so the static checker can inspect it.
     inbound_orphan_receives: AtomicUsize,
+    /// Plan 478 §6 — below-bridge arrival counters for the router
+    /// inbound path. The product folds the same events into its
+    /// `InboundTrafficSnapshot`, which SAM cannot reach (it holds
+    /// only this manager, never the product). These lock-free
+    /// mirrors let a STREAM CONNECT timeout report how far a
+    /// SYN-ACK return travelled: TunnelData received, cells
+    /// accepted, owner match/miss. Counts only; no ids or payloads.
+    inbound_tunnel_data_received: AtomicUsize,
+    inbound_tunnel_data_cells_accepted: AtomicUsize,
+    inbound_garlic_owner_matches: AtomicUsize,
+    inbound_garlic_owner_misses: AtomicUsize,
+    /// Plan 478 §6 — direct (non-tunneled) Garlic receipts. Gw-self
+    /// peers send Garlic replies directly when their own outbound
+    /// pool is not ready; without this mirror a direct-only return
+    /// would read as all-zero below-bridge arrival.
+    inbound_direct_garlic_received: AtomicUsize,
     /// Plan 294 canonical address-book resolver cell. Empty unless the
     /// composition root installs the active subsystem's shared handle;
     /// static aliases always win over address-book entries.
@@ -869,6 +885,11 @@ impl ServiceTunnelManager {
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             peer_lease_requests: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
+            inbound_tunnel_data_received: AtomicUsize::new(0),
+            inbound_tunnel_data_cells_accepted: AtomicUsize::new(0),
+            inbound_garlic_owner_matches: AtomicUsize::new(0),
+            inbound_garlic_owner_misses: AtomicUsize::new(0),
+            inbound_direct_garlic_received: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
             deferred_activation_tx,
             deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
@@ -3326,6 +3347,71 @@ impl ServiceTunnelManager {
     /// receive counter.
     pub fn inbound_orphan_receives(&self) -> usize {
         self.inbound_orphan_receives.load(Ordering::Acquire)
+    }
+
+    /// Plan 478 §6 — records one inbound `TunnelData` cell observed
+    /// on the router path, before dispatch. Called by the product
+    /// alongside its snapshot fold; the manager mirror is what SAM
+    /// can read. Returns the total since manager construction.
+    pub fn note_inbound_tunnel_data_received(&self) -> usize {
+        let previous = self
+            .inbound_tunnel_data_received
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one inbound `TunnelData` cell accepted
+    /// by the data-plane dispatcher. Returns the total since
+    /// manager construction.
+    pub fn note_inbound_tunnel_data_cell_accepted(&self) -> usize {
+        let previous = self
+            .inbound_tunnel_data_cells_accepted
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one recovered Garlic envelope whose
+    /// receive tunnel id resolved to a registered service runtime.
+    /// Returns the total since manager construction.
+    pub fn note_inbound_garlic_owner_match(&self) -> usize {
+        let previous = self
+            .inbound_garlic_owner_matches
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one recovered Garlic envelope whose
+    /// receive tunnel id had no registered owner (stale/orphaned,
+    /// failed closed). Returns the total since manager construction.
+    pub fn note_inbound_garlic_owner_miss(&self) -> usize {
+        let previous = self
+            .inbound_garlic_owner_misses
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one direct (non-tunneled) Garlic
+    /// receipt. Returns the total since manager construction.
+    pub fn note_inbound_direct_garlic_received(&self) -> usize {
+        let previous = self
+            .inbound_direct_garlic_received
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — below-bridge arrival snapshot as
+    /// `(tunnel_data_received, cells_accepted, owner_matches,
+    /// owner_misses, direct_garlic_received)`. Counts only; SAM reads this through its
+    /// attached manager handle on STREAM CONNECT timeout.
+    pub fn inbound_arrival_totals(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.inbound_tunnel_data_received.load(Ordering::Acquire) as u64,
+            self.inbound_tunnel_data_cells_accepted
+                .load(Ordering::Acquire) as u64,
+            self.inbound_garlic_owner_matches.load(Ordering::Acquire) as u64,
+            self.inbound_garlic_owner_misses.load(Ordering::Acquire) as u64,
+            self.inbound_direct_garlic_received.load(Ordering::Acquire) as u64,
+        )
     }
 
     /// Plan 212 §6 — installs router-backed network state onto the
@@ -10921,6 +11007,32 @@ mod plan212_router_backed_service_destination_tests {
         assert!(manager.inbound_tunnel_owner(0x9B01).is_none());
         let count = manager.note_inbound_orphan_receive();
         assert!(count >= 1);
+    }
+
+    /// Plan 478 §6 — below-bridge arrival mirrors accumulate
+    /// independently and the snapshot reads them back in order.
+    /// Structural: each note path moves exactly one counter, so a
+    /// CONNECT timeout can tell "nothing arrived" (all zero) from
+    /// "arrived but never reached a service runtime".
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_inbound_arrival_mirrors_accumulate() {
+        let directory = temp_data_dir("plan478-arrival");
+        let manager = empty_manager(directory.path());
+        assert_eq!(manager.inbound_arrival_totals(), (0, 0, 0, 0, 0));
+        // TunnelData observed but dispatch-rejected: received moves,
+        // cells accepted does not.
+        assert_eq!(manager.note_inbound_tunnel_data_received(), 1);
+        assert_eq!(manager.note_inbound_tunnel_data_received(), 2);
+        assert_eq!(manager.inbound_arrival_totals(), (2, 0, 0, 0, 0));
+        // One cell accepted, one owner match, one owner miss, one
+        // direct garlic: each moves only its own counter.
+        assert_eq!(manager.note_inbound_tunnel_data_cell_accepted(), 1);
+        assert_eq!(manager.note_inbound_garlic_owner_match(), 1);
+        assert_eq!(manager.note_inbound_garlic_owner_miss(), 1);
+        assert_eq!(manager.note_inbound_direct_garlic_received(), 1);
+        assert_eq!(manager.inbound_arrival_totals(), (2, 1, 1, 1, 1));
+        // The legacy orphan counter is untouched by the mirrors.
+        assert_eq!(manager.inbound_orphan_receives(), 0);
     }
 
     /// Plan 212 §17.24 — local/co-owned Plan 182 path stays green.

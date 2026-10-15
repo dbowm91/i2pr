@@ -268,3 +268,72 @@ own plan-of-record. Fix code, never weaken the script; no contrived
 call-site duplication was added to game the count.
 
 **Roadmap disposition:** active; no dependent capability is unblocked.
+
+## 2026-10-15 §6 below-bridge arrival mirrors landed; lane stopped pre-STREAM under churn
+
+Source change (this plan's product/SAM seam owner, no new plan number):
+
+- `service_tunnels.rs`: `ServiceTunnelManager` gains five lock-free
+  `AtomicUsize` arrival mirrors (`inbound_tunnel_data_received`,
+  `inbound_tunnel_data_cells_accepted`,
+  `inbound_garlic_owner_matches`, `inbound_garlic_owner_misses`,
+  `inbound_direct_garlic_received`) with `note_*` methods and an
+  `inbound_arrival_totals` snapshot, following the established
+  `note_inbound_orphan_receive` pattern. No lock, no allocation,
+  no identity or payload material.
+- `service_product.rs`: the four existing inbound update sites
+  (TunnelData observed, cell accepted, owner match/miss, direct
+  garlic) mirror into the manager alongside the `inner` fold.
+  Ownership unchanged: the product stays the sole inbound owner;
+  the manager only counts.
+- `sam.rs`: CONNECT timeout snapshots the attached manager's
+  arrival totals before/after the wait
+  (`product_inbound_arrival_totals`, fail-closed to zeros when no
+  manager is attached) and emits the five deltas in the warn and
+  the TIMEOUT message (prefix kept; driver captures MESSAGE to
+  the quote, so additive keys are safe).
+- New unit test `plan478_inbound_arrival_mirrors_accumulate` pins
+  per-counter independence and legacy-counter non-interference;
+  it fails under a wrong-counter inversion (probe reverted, zero
+  markers).
+
+Verification: daemon lib 770 passed; `destination_tunnel_unit` 44;
+`sam_stream_self_composed` 4; receipt parsers OK; daemon clippy
+clean; fmt/diff clean; runtime + service-tunnel boundaries pass.
+(Scoped battery; full floor last ran green on the 477 closing
+tree except the two recorded external reds.)
+
+Bounded exact-pin lane with the mirrors live (pinned i2pd 2.61.0,
+quiet-mesh gate passed, scratch `vilzzd8q` snapshotted). This run
+stopped **before** STREAM at `inbound-build`: bootstrap needed one
+retry, then two inbound waits expired with peer-matching but
+zero message-ID matches (`candidate_message_id_matches=0`,
+orphans 17/25 with `peer_match` but `message_match=0`). Mesh was
+hot despite the quiet gate (71 short-build records, 235 transit
+inventory delta, 30 transit creates, 7 creator-RI store
+requests): the recorded churn signature — stock transit builds
+routed through us during the wait polluting correlation. The new
+arrival keys were not exercised (no STREAM attempt); they stay
+covered by unit test plus fail-closed defaults and will report
+on the next run that reaches the forward leg.
+
+**Disposition:** no defect, no fix, no second run on this
+topology — the outcome is the known variance arm, and the
+bounded policy spends attempts on changed causal paths only.
+The arrival-vs-processing chain is now complete end to end for
+the next STREAM-reaching run: manager TunnelData/cell/owner/
+direct counters → bridge garlic outcomes → streaming SYN-ACK
+accounting. Reverse STREAM, §6 live recovery, and product
+close-out remain open; 478 stays active.
+
+## Closure checklist (pass gate, refreshed 2026-10-15)
+
+| Criterion | State |
+| --- | --- |
+| Normal router-owned exploratory→destination build route (outbound-backed TunnelData, one explicit direct bootstrap, Plan 482 dial authority consumed) | Implemented + live-proven across runs; deterministic target/generation tests green |
+| Genuine nonzero-hop signed LS2 + stable complete owner registry (N/N leases, transactional generation, no aliasing) | Live-proven (3 installs, 4/4 replies, owners 2/2 across replicated runs); deterministic owner/lifecycle tests green |
+| Forward external SAM STREAM (i2pr→stock binary, digest-matched) | Proven once end to end; later runs vary at build/STREAM legs under churn |
+| Reverse external SAM STREAM (stock→us, SYN-ACK return completes) | Open, externally blocked: 3 replicated runs show stock emitting the SYN-ACK with zero arrival below our bridge; owner-routing vs transit loss now instrumented to the finest layer this router owns |
+| §6 lifecycle recovery (tunnel expiry/replenishment or controlled peer loss + daemon restart) | Deterministic rotation/retry/replenishment-order tests green; live proof gated behind a working return leg |
+| Executed lifecycle negative controls (bootstrap-exception refusal, wrong-terminal/generation/damaged-garlic fail-closed, cancellation-to-baseline, no cross-destination aliasing) | Deterministic tests green (`inbound_route_miss_fails_closed_and_bootstrap_remains_explicit`, `replacement_builds_use_the_existing_outbound_route_first_hop`, 477 five-way taxonomy + cancel/replay regressions, 474 owner-generation tests) |
+| Full AGENTS.md floor on the closing tree | Open: scoped batteries green; full floor + ELS2 Plan 393 handoff belong to the closing pass, not this instrumentation turn |

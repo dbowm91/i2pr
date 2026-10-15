@@ -3711,6 +3711,10 @@ impl ServiceProduct {
                     .inbound_traffic
                     .tunnel_data_received
                     .saturating_add(1);
+                // Plan 478 §6 — mirror into the manager so SAM (which
+                // holds only the manager) can report below-bridge
+                // arrival on CONNECT timeout.
+                self.manager.note_inbound_tunnel_data_received();
                 cell.clone()
             }
             I2npBody::Garlic(_) => {
@@ -3752,6 +3756,7 @@ impl ServiceProduct {
                     .inbound_traffic
                     .tunnel_data_cells_accepted
                     .saturating_add(1);
+                self.manager.note_inbound_tunnel_data_cell_accepted();
             }
             InboundDispatchOutcome::DatabaseStoreComplete { bytes }
             | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
@@ -3787,6 +3792,7 @@ impl ServiceProduct {
             .inbound_traffic
             .direct_garlic_received
             .saturating_add(1);
+        self.manager.note_inbound_direct_garlic_received();
         use i2pr_proto::I2npHeader;
         let standard_bytes: Vec<u8> = match message.header() {
             I2npHeader::Standard { .. } => raw_bytes.to_vec(),
@@ -3916,6 +3922,7 @@ impl ServiceProduct {
                         .service_owner_misses
                         .saturating_add(1);
                     self.manager.note_inbound_orphan_receive();
+                    self.manager.note_inbound_garlic_owner_miss();
                     return;
                 };
                 self.inner.inbound_traffic.service_owner_matches = self
@@ -3923,6 +3930,7 @@ impl ServiceProduct {
                     .inbound_traffic
                     .service_owner_matches
                     .saturating_add(1);
+                self.manager.note_inbound_garlic_owner_match();
                 let destination_id = runtime.destination_id;
                 // Plan 213: server profiles feed the receiver mirror
                 // (the polled server loop accepts there); clients feed

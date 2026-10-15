@@ -3282,6 +3282,7 @@ async fn execute_stream_connect(
     let established_notify = state.established_signal(destination_id);
     let synack_before = syn_response_ingress_totals(&state, destination_id);
     let garlic_before = bridge_garlic_totals(&state, destination_id);
+    let arrival_before = product_inbound_arrival_totals(&state);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3311,6 +3312,19 @@ async fn execute_stream_connect(
         let garlic_rejected = garlic_after.1.saturating_sub(garlic_before.1);
         let payloads_dequeued = garlic_after.2.saturating_sub(garlic_before.2);
         let streaming_accepted = garlic_after.3.saturating_sub(garlic_before.3);
+        // Plan 478 §6 below-bridge arrival attribution: deltas of the
+        // manager-level mirrors over the same wait. TunnelData
+        // received with zero cells accepted dies in dispatch;
+        // cells accepted with zero owner matches never reached a
+        // service runtime; owner matches with zero bridge garlic
+        // means the envelope never authenticated; direct garlic
+        // covers the gw-self non-tunneled return.
+        let arrival_after = product_inbound_arrival_totals(&state);
+        let tunnel_data_received = arrival_after.0.saturating_sub(arrival_before.0);
+        let tunnel_data_cells_accepted = arrival_after.1.saturating_sub(arrival_before.1);
+        let garlic_owner_matches = arrival_after.2.saturating_sub(arrival_before.2);
+        let garlic_owner_misses = arrival_after.3.saturating_sub(arrival_before.3);
+        let direct_garlic_received = arrival_after.4.saturating_sub(arrival_before.4);
         warn!(
             synack_observed = synack_observed,
             synack_accepted = synack_accepted,
@@ -3319,6 +3333,11 @@ async fn execute_stream_connect(
             garlic_rejected = garlic_rejected,
             payloads_dequeued = payloads_dequeued,
             streaming_accepted = streaming_accepted,
+            tunnel_data_received = tunnel_data_received,
+            tunnel_data_cells_accepted = tunnel_data_cells_accepted,
+            garlic_owner_matches = garlic_owner_matches,
+            garlic_owner_misses = garlic_owner_misses,
+            direct_garlic_received = direct_garlic_received,
             transition = "stream_connect_handshake_wait_expired",
             "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
         );
@@ -3333,7 +3352,12 @@ async fn execute_stream_connect(
                  garlic_authenticated={garlic_authenticated} \
                  garlic_rejected={garlic_rejected} \
                  payloads_dequeued={payloads_dequeued} \
-                 streaming_accepted={streaming_accepted}"
+                 streaming_accepted={streaming_accepted} \
+                 tunnel_data_received={tunnel_data_received} \
+                 tunnel_data_cells_accepted={tunnel_data_cells_accepted} \
+                 garlic_owner_matches={garlic_owner_matches} \
+                 garlic_owner_misses={garlic_owner_misses} \
+                 direct_garlic_received={direct_garlic_received}"
             ),
         });
     }
@@ -3416,6 +3440,22 @@ fn bridge_garlic_totals(
             diagnostics.streaming_accepted(),
         )
     })
+}
+/// Plan 478 §6 below-bridge arrival attribution: reads the
+/// attached router-network manager's cumulative inbound-arrival
+/// mirrors as `(tunnel_data_received, cells_accepted,
+/// owner_matches, owner_misses, direct_garlic_received)`. Counts
+/// only; no identities, tunnel ids, or payload material. Reads
+/// fail closed to zeros when no manager is attached (local-only
+/// states never report remote arrival).
+fn product_inbound_arrival_totals(state: &SamServiceState) -> (u64, u64, u64, u64, u64) {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return (0, 0, 0, 0, 0);
+    };
+    let Some(manager) = slot.as_ref() else {
+        return (0, 0, 0, 0, 0);
+    };
+    manager.inbound_arrival_totals()
 }
 /// Plan 147 §7: parks the caller until `manager.get_connection(id)`
 /// reports `ConnectionState::Established`, or returns `false` once
