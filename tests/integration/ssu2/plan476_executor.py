@@ -21,6 +21,15 @@ PHASES = (
 )
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
+#: Local-observed vocabulary for one role's Plan 480 collector projection.
+#: Must stay a superset of the Rust export in
+#: `crates/i2pr-daemon/tests/ssu2_qualification_receipts.rs::LOCAL_PHASES`.
+LOCAL_PHASES = (
+    "permit_checked", "router_started", "peer_authenticated",
+    "request_received", "product_effect_observed", "router_stopped",
+)
+REQUIRED_LOCAL_PHASES = ("permit_checked", "peer_authenticated", "request_received")
+
 
 class ExecutorError(ValueError):
     """Sanitized fail-closed executor error."""
@@ -182,6 +191,61 @@ def reconcile_receipts(
 def digest_label(label: str) -> str:
     """Deterministic simulator-only opaque label digest."""
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def validate_local_observed(host: HostAuthorization, rows: tuple) -> dict[str, object]:
+    """Validate one role's locally observed phase sequence; counts only.
+
+    Rows are `(phase, count)` pairs projected by the Plan 480 collector:
+    no transient message IDs, peer hashes, endpoints, or payloads may be
+    present, which the pair shape enforces by construction. A locally
+    observed sequence is not a two-host claim: `live_qualification` stays
+    `"not-run"`.
+    """
+    if not host.consent:
+        raise ExecutorError("authorization-revoked")
+    if not all(_digest(value) for value in (
+        host.host_digest, host.router_info_digest, host.endpoint_digest,
+        host.run_epoch,
+    )):
+        raise ExecutorError("authorization-digest-invalid")
+    if not isinstance(rows, (tuple, list)) or not rows:
+        raise ExecutorError("receipt-empty")
+    seen: list[str] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        if (
+            not isinstance(row, (tuple, list)) or len(row) != 2
+            or not isinstance(row[0], str)
+            or not isinstance(row[1], int) or isinstance(row[1], bool)
+            or row[1] < 0
+        ):
+            raise ExecutorError("receipt-row-invalid")
+        phase, count = row
+        if phase not in LOCAL_PHASES:
+            raise ExecutorError("receipt-phase-invalid")
+        if phase in seen:
+            raise ExecutorError("receipt-replay")
+        if LOCAL_PHASES.index(phase) < (LOCAL_PHASES.index(seen[-1]) if seen else -1):
+            raise ExecutorError("receipt-phase-order-invalid")
+        seen.append(phase)
+        counts[phase] = count
+    for phase in REQUIRED_LOCAL_PHASES:
+        if phase not in counts:
+            raise ExecutorError("receipt-sequence-incomplete")
+        if counts[phase] == 0:
+            if phase == "peer_authenticated":
+                raise ExecutorError("authenticated-session-unobserved")
+            if phase == "request_received":
+                raise ExecutorError("product-request-unobserved")
+            raise ExecutorError("permit-unchecked")
+    return {
+        "schema": "i2pr-plan476-local-observed-v1",
+        "result": "local-observation-passed",
+        "phase_count": len(seen),
+        "product_observed": counts.get("product_effect_observed", 0) > 0,
+        "live_qualification": "not-run",
+    }
 
 
 class FakeReceiptAdapter:

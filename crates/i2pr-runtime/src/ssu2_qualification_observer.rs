@@ -347,4 +347,26 @@ mod tests {
         assert_eq!(events[0].link_generation(), events[1].link_generation());
         assert_eq!(events[0].message_id(), events[1].message_id());
     }
+
+    #[test]
+    fn session_close_clears_pending_product_claim() {
+        let observer = Ssu2QualificationObserver::new().expect("observer");
+        let peer = PeerId::from_bytes([5; 32]);
+        let link = LinkId::new(31).expect("link");
+        observer.record_authenticated_ingress(peer, link, 91);
+        observer.record(peer, link, Ssu2QualificationEventKind::SessionClosed, &[]);
+        assert!(!observer.record_product_effect(peer, link, 91));
+    }
+
+    #[test]
+    fn fresh_epoch_rejects_prior_epoch_tuples() {
+        let first = Ssu2QualificationObserver::new().expect("first");
+        let second = Ssu2QualificationObserver::new().expect("second");
+        let peer = PeerId::from_bytes([6; 32]);
+        let link = LinkId::new(41).expect("link");
+        first.record_authenticated_ingress(peer, link, 92);
+        assert_ne!(first.peer_commitment(peer), second.peer_commitment(peer));
+        assert!(!second.record_product_effect(peer, link, 92));
+        assert!(first.record_product_effect(peer, link, 92));
+    }
 }
