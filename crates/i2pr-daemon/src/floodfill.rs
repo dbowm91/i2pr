@@ -1385,6 +1385,10 @@ pub struct FloodfillServiceState {
     reasons: Vec<NormalIneligibility>,
     pending_snapshot: Option<FloodfillEligibilitySnapshot>,
     last_queue_full_drops: u64,
+    /// Set once the tiered addressed non-floodfill form is published
+    /// after a below-floor refusal; later ticks skip republishing.
+    /// Clears only on restart (fresh state) like every other field.
+    controlled_tiered_addressed_published: bool,
 }
 
 /// Bounded inputs for applying one floodfill withdrawal transition.
@@ -1428,6 +1432,7 @@ impl FloodfillServiceState {
             reasons: Vec::new(),
             pending_snapshot: None,
             last_queue_full_drops: 0,
+            controlled_tiered_addressed_published: false,
         })
     }
 
@@ -1552,7 +1557,10 @@ impl FloodfillServiceState {
             controlled_qualification_permit: self.intent && dual_router_info_ready,
             qualified_ssu2_address: dual_router_info_ready,
             // This bit is the role controller's activation gate. The
-            // controlled qualification builder still emits only `f`.
+            // controlled qualification builder emits `f`, plus the
+            // enforced tier beside it when bandwidth enforcement is
+            // enabled (a below-floor tier publishes the addressed
+            // non-floodfill form instead and never reaches this bit).
             direct_reachability: true,
             netdb_ready: readiness.netdb_ready,
             storage_ready: readiness.storage_ready,
@@ -1635,9 +1643,66 @@ impl FloodfillServiceState {
         Ok(prepared.router_info)
     }
 
+    /// Maps a derived class to its controlled publication form. Pure
+    /// so the tier split is unit-testable without a socket.
+    pub const fn controlled_capacity_form(
+        class: i2pr_netdb::BandwidthClass,
+    ) -> ControlledCapacityForm {
+        if class.supports_floodfill_role() {
+            ControlledCapacityForm::Floodfill
+        } else {
+            ControlledCapacityForm::Addressed
+        }
+    }
+
+    /// Resolves the capacity class for one controlled activation tick.
+    /// `Ok(None)` is the legacy classless path (bandwidth enforcement
+    /// disabled: both inputs absent). Any half-present or stale
+    /// combination fails closed — a bandwidth-enabled daemon must
+    /// never publish the classless `f` form.
+    pub fn resolve_controlled_capacity(
+        eligibility: Option<&crate::bandwidth_eligibility::CapacityEligibility>,
+        governor: Option<&i2pr_runtime::BandwidthGovernor>,
+    ) -> Result<Option<i2pr_netdb::BandwidthClass>, NormalActivationError> {
+        match (eligibility, governor) {
+            (None, None) => Ok(None),
+            (Some(eligibility), Some(governor)) => eligibility
+                .current_class(Some(governor))
+                .ok_or(NormalActivationError::InvalidConfig)
+                .map(Some),
+            (Some(_), None) | (None, Some(_)) => Err(NormalActivationError::InvalidConfig),
+        }
+    }
+
+    /// Builds the tiered addressed non-floodfill record for a
+    /// below-floor class: dual loopback addresses, the truthful tier
+    /// letter, no `f`. Pure so the comparator form is unit-testable
+    /// without a socket; the caller installs the returned bytes.
+    pub fn build_controlled_tiered_addressed_record(
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        addresses: Vec<i2pr_proto::RouterAddress>,
+        class: i2pr_netdb::BandwidthClass,
+        wall_now_ms: u64,
+    ) -> Result<Vec<u8>, i2pr_netdb::LocalRouterInfoError> {
+        let local = i2pr_netdb::LocalRouterInfoBuilder::new(bundle)
+            .build_controlled_addressed_with_bandwidth_class(
+                i2pr_proto::Date::from_millis(wall_now_ms),
+                i2pr_netdb::controlled_router_options()?,
+                addresses,
+                class,
+            )?;
+        local
+            .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+            .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping { context: "encode" })
+    }
+
     /// Activates the controlled loopback role over the already signed dual
-    /// transport record. It adds only `caps=f` after the role controller
-    /// grants its opaque permit.
+    /// transport record. With enforcement disabled it adds only `caps=f`
+    /// after the role controller grants its opaque permit; with a current
+    /// capacity class it appends the enforced tier beside `f`, and a
+    /// below-floor tier refuses with `TierBelowFloodfillFloor` before the
+    /// role opens activation.
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_controlled_dual_activation(
         &mut self,
         handle: &crate::router_i2np::Ssu2DaemonHandle,
@@ -1646,6 +1711,8 @@ impl FloodfillServiceState {
         ntcp2_endpoint: std::net::SocketAddr,
         readiness: &NormalReadiness<'_>,
         cancellation: &i2pr_runtime::CancellationToken,
+        eligibility: Option<&crate::bandwidth_eligibility::CapacityEligibility>,
+        governor: Option<&i2pr_runtime::BandwidthGovernor>,
     ) -> Result<Vec<u8>, NormalActivationError> {
         if cancellation.is_cancelled() || !self.controlled_loopback {
             return Err(NormalActivationError::Cancelled);
@@ -1657,36 +1724,19 @@ impl FloodfillServiceState {
         if !snapshot.eligible() || self.coordinator.role_state() != FloodfillRoleState::Eligible {
             return Err(NormalActivationError::InvalidConfig);
         }
-        let decoded = RouterInfo::decode(dual_router_info, MAX_CONTROLLED_ROUTER_INFO_BYTES)
-            .map_err(|_| NormalActivationError::InvalidConfig)?;
-        i2pr_crypto::verify_router_info(&decoded)
-            .map_err(|_| NormalActivationError::InvalidConfig)?;
-        let addresses = decoded.addresses().to_vec();
-        if addresses.len() != 2
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "SSU2")
-                .count()
-                != 1
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "NTCP2")
-                .count()
-                != 1
-            || addresses.iter().any(|address| {
-                address
-                    .options()
-                    .get("host")
-                    .and_then(|host| host.parse::<std::net::IpAddr>().ok())
-                    .is_none_or(|host| !host.is_loopback())
-                    || address
-                        .options()
-                        .get("port")
-                        .and_then(|port| port.parse::<u16>().ok())
-                        .is_none_or(|port| port < 1024)
-            })
+        let addresses = Self::decode_controlled_dual_addresses(dual_router_info)?;
+        // Plan 479: a bandwidth-enabled daemon must consult the
+        // enforced class before the role opens activation. A
+        // below-floor class returns before begin/complete so the
+        // coordinator stays Eligible-but-unadvertised; the caller
+        // publishes the tiered addressed form instead. A stale or
+        // half-present capacity gate fails closed: the classless `f`
+        // form is only available with enforcement disabled.
+        let capacity_class = Self::resolve_controlled_capacity(eligibility, governor)?;
+        if let Some(class) = capacity_class
+            && Self::controlled_capacity_form(class) == ControlledCapacityForm::Addressed
         {
-            return Err(NormalActivationError::InvalidConfig);
+            return Err(NormalActivationError::TierBelowFloodfillFloor(class));
         }
         if !self.coordinator.begin_activation() {
             self.coordinator.fail_activation();
@@ -1700,13 +1750,26 @@ impl FloodfillServiceState {
             self.coordinator.fail_activation();
             return Err(NormalActivationError::ActivationFailed);
         };
-        let local = match i2pr_netdb::LocalRouterInfoBuilder::new(bundle)
-            .build_controlled_floodfill_with_dual_loopback_addresses(
-                Date::from_millis(readiness.wall_now_ms),
-                controlled_router_options().map_err(|_| NormalActivationError::InvalidConfig)?,
+        let builder = i2pr_netdb::LocalRouterInfoBuilder::new(bundle);
+        let published = Date::from_millis(readiness.wall_now_ms);
+        let options =
+            controlled_router_options().map_err(|_| NormalActivationError::InvalidConfig)?;
+        let local = match capacity_class {
+            Some(class) => builder.build_controlled_floodfill_with_bandwidth_class_dual(
+                published,
+                options,
                 addresses.clone(),
                 &permit,
-            ) {
+                class,
+            ),
+            None => builder.build_controlled_floodfill_with_dual_loopback_addresses(
+                published,
+                options,
+                addresses.clone(),
+                &permit,
+            ),
+        };
+        let local = match local {
             Ok(local) => local,
             Err(error) => {
                 self.coordinator.fail_activation();
@@ -1768,6 +1831,95 @@ impl FloodfillServiceState {
         self.active_addresses = Some(addresses);
         self.active_permit = Some(permit);
         Ok(encoded)
+    }
+
+    /// Publishes the tiered addressed non-floodfill record after a
+    /// `TierBelowFloodfillFloor` activation refusal: builds the
+    /// comparator form from the already-validated dual addresses,
+    /// installs it on the runtime through the same endpoint-bound
+    /// gate as the floodfill form (the NTCP2 address must name the
+    /// bound loopback endpoint; the caps letter is not part of that
+    /// gate), and records the publication so later ticks do not
+    /// republish. The role coordinator is never touched: no permit
+    /// is minted, no role activates, and no floodfill advertisement
+    /// exists to withdraw. Fails closed on build or install; the
+    /// caller reports the refusal.
+    pub fn publish_controlled_tiered_addressed(
+        &mut self,
+        handle: &crate::router_i2np::Ssu2DaemonHandle,
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        addresses: Vec<i2pr_proto::RouterAddress>,
+        class: i2pr_netdb::BandwidthClass,
+        wall_now_ms: u64,
+        ntcp2_endpoint: std::net::SocketAddr,
+    ) -> Result<Vec<u8>, NormalActivationError> {
+        if !self.controlled_loopback {
+            return Err(NormalActivationError::InvalidConfig);
+        }
+        if Self::controlled_capacity_form(class) != ControlledCapacityForm::Addressed {
+            return Err(NormalActivationError::InvalidConfig);
+        }
+        let encoded = Self::build_controlled_tiered_addressed_record(
+            bundle,
+            addresses.clone(),
+            class,
+            wall_now_ms,
+        )
+        .map_err(NormalActivationError::BuildFailed)?;
+        handle
+            .install_controlled_dual_router_info(encoded.clone(), wall_now_ms, ntcp2_endpoint)
+            .map_err(|_| NormalActivationError::InstallFailed)?;
+        self.active_addresses = Some(addresses);
+        self.controlled_tiered_addressed_published = true;
+        Ok(encoded)
+    }
+
+    /// Whether the tiered addressed form is already published; later
+    /// activation ticks skip republishing while the tier holds.
+    pub const fn controlled_tiered_addressed_published(&self) -> bool {
+        self.controlled_tiered_addressed_published
+    }
+
+    /// Decodes the already-signed dual-transport record and enforces
+    /// the controlled loopback shape: exactly one SSU2 and one NTCP2
+    /// address, every host loopback, every port at least 1024.
+    /// Shared by the floodfill activation and the tiered addressed
+    /// fallback so both compositions gate identical material.
+    pub fn decode_controlled_dual_addresses(
+        dual_router_info: &[u8],
+    ) -> Result<Vec<i2pr_proto::RouterAddress>, NormalActivationError> {
+        let decoded = RouterInfo::decode(dual_router_info, MAX_CONTROLLED_ROUTER_INFO_BYTES)
+            .map_err(|_| NormalActivationError::InvalidConfig)?;
+        i2pr_crypto::verify_router_info(&decoded)
+            .map_err(|_| NormalActivationError::InvalidConfig)?;
+        let addresses = decoded.addresses().to_vec();
+        if addresses.len() != 2
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                != 1
+            || addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                != 1
+            || addresses.iter().any(|address| {
+                address
+                    .options()
+                    .get("host")
+                    .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                    .is_none_or(|host| !host.is_loopback())
+                    || address
+                        .options()
+                        .get("port")
+                        .and_then(|port| port.parse::<u16>().ok())
+                        .is_none_or(|port| port < 1024)
+            })
+        {
+            return Err(NormalActivationError::InvalidConfig);
+        }
+        Ok(addresses)
     }
 
     /// Builds the withdrawal record for the active address without
@@ -2072,6 +2224,12 @@ pub enum NormalActivationError {
     BuildFailed(i2pr_netdb::LocalRouterInfoError),
     /// The RouterInfo install failed; the role was failed closed.
     InstallFailed,
+    /// The enforced capacity tier sits below the pinned Java
+    /// floodfill floor, so no `f` record may be built. The caller
+    /// publishes the tiered addressed non-floodfill form instead;
+    /// the role coordinator is left untouched. Carries the derived
+    /// class (public caps material only, never a secret).
+    TierBelowFloodfillFloor(i2pr_netdb::BandwidthClass),
     /// The local publish failed; the role was failed closed.
     PublishFailed,
     /// The withdrawal sequence failed; the role stays Draining and
@@ -2090,6 +2248,9 @@ impl std::fmt::Display for NormalActivationError {
             Self::ActivationFailed => "normal role activation failed",
             Self::BuildFailed(_) => "normal RouterInfo build failed",
             Self::InstallFailed => "normal RouterInfo install failed",
+            Self::TierBelowFloodfillFloor(_) => {
+                "normal capacity tier below floodfill floor; non-floodfill addressed form applies"
+            }
             Self::PublishFailed => "normal local publish failed",
             Self::WithdrawalFailed => "normal withdrawal failed",
         })
@@ -2097,6 +2258,19 @@ impl std::fmt::Display for NormalActivationError {
 }
 
 impl std::error::Error for NormalActivationError {}
+
+/// Which RouterInfo form a derived capacity class selects on the
+/// controlled loopback path. No secret material: the class is a
+/// public caps letter.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ControlledCapacityForm {
+    /// N-or-higher: the floodfill role may advertise `f` beside
+    /// the enforced tier.
+    Floodfill,
+    /// Below the pinned Java floor: only the addressed,
+    /// tier-bearing, non-floodfill record may be published.
+    Addressed,
+}
 
 /// Shared tail of both activation compositions: eligibility update,
 /// role begin/complete, permit-gated floodfill build, atomic install,
@@ -2864,6 +3038,113 @@ mod tests {
                 context: "floodfill bandwidth class below pinned Java floor"
             })
         ));
+    }
+
+    /// Plan 479 — the tier split is total: every class maps to
+    /// exactly one controlled form, with the floor at N.
+    #[test]
+    fn controlled_capacity_form_splits_every_class_at_java_floor() {
+        use i2pr_netdb::BandwidthClass as Class;
+        for class in [Class::N, Class::O, Class::P, Class::X] {
+            assert_eq!(
+                FloodfillServiceState::controlled_capacity_form(class),
+                ControlledCapacityForm::Floodfill,
+                "class {class:?} must keep the floodfill form"
+            );
+        }
+        for class in [Class::K, Class::L, Class::M] {
+            assert_eq!(
+                FloodfillServiceState::controlled_capacity_form(class),
+                ControlledCapacityForm::Addressed,
+                "class {class:?} must take the addressed form"
+            );
+        }
+    }
+
+    fn capacity_governor(inbound: u64, outbound: u64) -> i2pr_runtime::BandwidthGovernor {
+        i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+            inbound_bytes_per_second: inbound,
+            outbound_bytes_per_second: outbound,
+            burst_bytes: 128 * 1024,
+            control_reserve_percent: 10,
+            max_pending_requests: 16,
+            max_pending_per_peer: 2,
+        })
+        .expect("enabled shaper")
+    }
+
+    /// Plan 479 — resolution is total and fail-closed: absent
+    /// enforcement stays legacy, a current class resolves, and stale
+    /// or half-present gates refuse instead of publishing classless.
+    #[test]
+    fn resolve_controlled_capacity_stays_legacy_or_current_or_refused() {
+        assert_eq!(
+            FloodfillServiceState::resolve_controlled_capacity(None, None),
+            Ok(None)
+        );
+        let governor = capacity_governor(512 * 1024, 256 * 1024);
+        let eligibility = CapacityEligibility::issue(Some(&governor), 50).expect("class permit");
+        assert_eq!(
+            FloodfillServiceState::resolve_controlled_capacity(Some(&eligibility), Some(&governor)),
+            Ok(Some(i2pr_netdb::BandwidthClass::N))
+        );
+        let replacement = capacity_governor(1024 * 1024, 1024 * 1024);
+        assert_eq!(
+            FloodfillServiceState::resolve_controlled_capacity(
+                Some(&eligibility),
+                Some(&replacement)
+            ),
+            Err(NormalActivationError::InvalidConfig)
+        );
+        assert_eq!(
+            FloodfillServiceState::resolve_controlled_capacity(Some(&eligibility), None),
+            Err(NormalActivationError::InvalidConfig)
+        );
+        assert_eq!(
+            FloodfillServiceState::resolve_controlled_capacity(None, Some(&governor)),
+            Err(NormalActivationError::InvalidConfig)
+        );
+    }
+
+    fn controlled_ntcp2_test_address() -> i2pr_proto::RouterAddress {
+        let options = i2pr_proto::Mapping::from_entries(vec![
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("i".to_string(), i2p_b64(&[3; 16])),
+            ("port".to_string(), "23456".to_string()),
+            ("s".to_string(), i2p_b64(&[4; 32])),
+            ("v".to_string(), "2".to_string()),
+        ])
+        .expect("test ntcp2 address options");
+        i2pr_proto::RouterAddress::new(
+            10,
+            Date::from_millis(9_999_999_999_999),
+            "NTCP2".to_string(),
+            options,
+        )
+        .expect("test ntcp2 address")
+    }
+
+    /// Plan 479 — the below-floor record carries the truthful tier
+    /// with both loopback addresses, no `f`, and a valid signature.
+    #[test]
+    fn tiered_addressed_record_carries_truthful_tier_without_f() {
+        let bundle = test_bundle();
+        let addresses = vec![
+            test_material("127.0.0.1", true).address,
+            controlled_ntcp2_test_address(),
+        ];
+        let encoded = FloodfillServiceState::build_controlled_tiered_addressed_record(
+            &bundle,
+            addresses,
+            i2pr_netdb::BandwidthClass::L,
+            TEST_WALL_MS,
+        )
+        .expect("tiered addressed record");
+        let decoded = i2pr_proto::RouterInfo::decode(&encoded, MAX_CONTROLLED_ROUTER_INFO_BYTES)
+            .expect("record decodes");
+        i2pr_crypto::verify_router_info(&decoded).expect("record verifies");
+        assert_eq!(decoded.options().get("caps"), Some("L"));
+        assert_eq!(decoded.addresses().len(), 2);
     }
 
     fn coordinator() -> FloodfillCoordinator {

@@ -258,26 +258,91 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         addresses: Vec<RouterAddress>,
         permit: &FloodfillAdvertisementPermit,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
-        if addresses.len() != 2
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "SSU2")
-                .count()
-                != 1
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "NTCP2")
-                .count()
-                != 1
-            || !addresses.iter().any(is_qualified_ssu2_address)
-            || !addresses
-                .iter()
-                .filter(|address| address.transport_style() == "NTCP2")
-                .all(is_controlled_loopback_ntcp2_address)
-        {
+        if !Self::dual_loopback_addresses_valid(&addresses) {
             return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
         }
         self.build_floodfill_with_addresses(published, options, addresses, permit, "f")
+    }
+
+    /// Dual-loopback counterpart to
+    /// [`Self::build_floodfill_with_bandwidth_class`]: the enforced
+    /// capacity tier is appended beside `f` (`fN`, `fO`, ...) only when
+    /// the daemon's eligibility gate derived it from a current healthy
+    /// shaper. Address gates are identical to the classless dual form.
+    pub fn build_controlled_floodfill_with_bandwidth_class_dual(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        permit: &FloodfillAdvertisementPermit,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !class.supports_floodfill_role() {
+            return Err(LocalRouterInfoError::InvalidMapping {
+                context: "floodfill bandwidth class below pinned Java floor",
+            });
+        }
+        if !Self::dual_loopback_addresses_valid(&addresses) {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        let mut suffix = String::from("f");
+        suffix.push(class.as_capability());
+        self.build_floodfill_with_addresses(published, options, addresses, permit, &suffix)
+    }
+
+    /// Builds a controlled-loopback addressed RouterInfo carrying only
+    /// the enforced capacity tier (`L`, `M`, ...) and no floodfill
+    /// flag. This is the truthful-tier comparator form for candidates
+    /// whose derived class sits below the pinned Java floodfill floor:
+    /// the daemon publishes a reachable, biddable record without ever
+    /// claiming the `f` role the guard refuses. Address gates are
+    /// identical to the dual floodfill form, caller-supplied
+    /// capability letters stay forbidden, and no advertisement permit
+    /// is consumed because no floodfill role is advertised.
+    pub fn build_controlled_addressed_with_bandwidth_class(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !Self::dual_loopback_addresses_valid(&addresses) {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        Self::validate_options(&options)?;
+        let mut entries: Vec<_> = options
+            .entries()
+            .iter()
+            .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+            .filter(|(key, _)| key != "caps")
+            .collect();
+        let mut tiered_caps = options.get("caps").unwrap_or("").to_owned();
+        tiered_caps.push(class.as_capability());
+        entries.push(("caps".to_owned(), tiered_caps));
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        self.sign_addressed_many(published, options, addresses)
+    }
+
+    /// Shared controlled-loopback transport gate: exactly one qualified
+    /// SSU2 address and one loopback NTCP2 address, no more, no less.
+    fn dual_loopback_addresses_valid(addresses: &[RouterAddress]) -> bool {
+        addresses.len() == 2
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                == 1
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                == 1
+            && addresses.iter().any(is_qualified_ssu2_address)
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .all(is_controlled_loopback_ntcp2_address)
     }
 
     /// Builds a floodfill RouterInfo with a capacity tier supplied by the
@@ -856,6 +921,102 @@ mod tests {
                 .any(|address| address.transport_style() == "NTCP2")
         );
         i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+    }
+
+    /// Plan 479 — the dual class-bearing floodfill form appends the
+    /// enforced tier beside `f` and refuses a below-floor class with
+    /// the same context the single-address capacity path uses.
+    #[test]
+    fn controlled_dual_floodfill_builder_appends_enforced_tier_beside_f() {
+        let signer = bundle(0x417);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let permit = active_role_permit();
+        let local = builder
+            .build_controlled_floodfill_with_bandwidth_class_dual(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                vec![
+                    qualified_ssu2_test_address(),
+                    qualified_ntcp2_test_address(),
+                ],
+                &permit,
+                BandwidthClass::N,
+            )
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("fN"));
+        assert_eq!(local.router_info().addresses().len(), 2);
+        i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+        assert_eq!(
+            builder
+                .build_controlled_floodfill_with_bandwidth_class_dual(
+                    Date::from_millis(102),
+                    controlled_router_options().unwrap(),
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address(),
+                    ],
+                    &permit,
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidMapping {
+                context: "floodfill bandwidth class below pinned Java floor"
+            }
+        );
+    }
+
+    /// Plan 479 — the truthful-tier comparator form carries the class
+    /// letter with no `f`, keeps both loopback addresses, verifies,
+    /// and still refuses caller-supplied capability letters.
+    #[test]
+    fn controlled_addressed_builder_carries_tier_without_floodfill_flag() {
+        let signer = bundle(0x418);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let local = builder
+            .build_controlled_addressed_with_bandwidth_class(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                vec![
+                    qualified_ssu2_test_address(),
+                    qualified_ntcp2_test_address(),
+                ],
+                BandwidthClass::L,
+            )
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("L"));
+        assert_eq!(local.router_info().addresses().len(), 2);
+        i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+        let smuggled = Mapping::from_entries(vec![
+            ("router.version".into(), "0.9.69".into()),
+            ("netId".into(), "2".into()),
+            ("caps".into(), "L".into()),
+        ])
+        .unwrap();
+        assert_eq!(
+            builder
+                .build_controlled_addressed_with_bandwidth_class(
+                    Date::from_millis(102),
+                    smuggled,
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address(),
+                    ],
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidMapping { context: "caps" }
+        );
+        assert_eq!(
+            builder
+                .build_controlled_addressed_with_bandwidth_class(
+                    Date::from_millis(103),
+                    controlled_router_options().unwrap(),
+                    vec![qualified_ssu2_test_address()],
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidControlledTransportAddresses
+        );
     }
 
     #[test]

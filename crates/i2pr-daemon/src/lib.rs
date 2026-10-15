@@ -1851,6 +1851,11 @@ struct FloodfillEvaluationContext<'a> {
     controlled_ntcp2_endpoint: Option<std::net::SocketAddr>,
     local_router_info: &'a tokio::sync::watch::Sender<Option<Arc<Vec<u8>>>>,
     inspection: &'a Arc<InspectionHandles>,
+    /// Plan 479: shared shaper for the controlled capacity gate.
+    /// `None` preserves the legacy classless controlled form.
+    bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
+    /// Configured shared-capacity fraction feeding class derivation.
+    bandwidth_share_percent: u8,
 }
 
 /// Runs one bounded Plan 279 evaluation tick for the router-owned
@@ -1872,6 +1877,8 @@ async fn run_floodfill_evaluation(
         controlled_ntcp2_endpoint,
         local_router_info,
         inspection,
+        bandwidth,
+        bandwidth_share_percent,
     } = context;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1926,8 +1933,16 @@ async fn run_floodfill_evaluation(
     match step {
         crate::floodfill::FloodfillServiceStep::Idle => {}
         crate::floodfill::FloodfillServiceStep::Activate => {
+            // Plan 479: the capacity gate is issued fresh per tick so a
+            // replaced or degraded shaper cannot lend a stale class.
+            let capacity_eligibility = bandwidth.as_ref().and_then(|governor| {
+                crate::bandwidth_eligibility::CapacityEligibility::issue(
+                    Some(governor),
+                    bandwidth_share_percent,
+                )
+            });
             let activation = if controlled_profile {
-                match dual_router_info {
+                match dual_router_info.clone() {
                     Some(info) => match controlled_ntcp2_endpoint {
                         Some(endpoint) => {
                             state
@@ -1938,6 +1953,8 @@ async fn run_floodfill_evaluation(
                                     endpoint,
                                     &readiness,
                                     cancellation,
+                                    capacity_eligibility.as_ref(),
+                                    bandwidth.as_ref(),
                                 )
                                 .await
                         }
@@ -1950,41 +1967,101 @@ async fn run_floodfill_evaluation(
                     .apply_activation(handle, bundle, &readiness, cancellation)
                     .await
             };
-            match activation {
-                Ok(encoded) => {
-                    if controlled_profile {
-                        match i2pr_netdb::encode_router_info(&encoded) {
-                            Ok(info_b64) => match inspection
-                                .publish_local_router_info_b64(info_b64.trim_end_matches('='))
-                            {
-                                Ok(()) => tracing::info!(
-                                    router_info_bytes = encoded.len(),
-                                    "controlled floodfill RouterInfo inspection snapshot published"
+            // Below-floor tiers publish the addressed non-floodfill
+            // form exactly once instead of the floodfill activation.
+            // The role coordinator stays untouched; nothing is
+            // withdrawn later because nothing was advertised.
+            if controlled_profile
+                && !state.controlled_tiered_addressed_published()
+                && let Err(crate::floodfill::NormalActivationError::TierBelowFloodfillFloor(class)) =
+                    activation
+            {
+                let tiered = match dual_router_info.clone() {
+                    Some(info) => {
+                        match crate::floodfill::FloodfillServiceState::decode_controlled_dual_addresses(
+                            info.as_ref(),
+                        ) {
+                            Ok(addresses) => match controlled_ntcp2_endpoint {
+                                Some(endpoint) => state.publish_controlled_tiered_addressed(
+                                    handle,
+                                    bundle,
+                                    addresses,
+                                    class,
+                                    now_ms,
+                                    endpoint,
                                 ),
-                                Err(error) => tracing::warn!(
-                                    reason = %error,
-                                    "controlled floodfill RouterInfo inspection publication rejected"
+                                None => Err(
+                                    crate::floodfill::NormalActivationError::InvalidConfig,
                                 ),
                             },
-                            Err(error) => tracing::warn!(
-                                reason = %error,
-                                "controlled floodfill RouterInfo base64 encoding failed"
-                            ),
+                            Err(error) => Err(error),
+                        }
+                    }
+                    None => Err(crate::floodfill::NormalActivationError::InvalidConfig),
+                };
+                match tiered {
+                    Ok(encoded) => {
+                        if let Ok(info_b64) = i2pr_netdb::encode_router_info(&encoded)
+                            && inspection
+                                .publish_local_router_info_b64(info_b64.trim_end_matches('='))
+                                .is_err()
+                        {
+                            tracing::warn!(
+                                "tiered addressed RouterInfo inspection publication rejected"
+                            );
                         }
                         let _ = local_router_info.send(Some(Arc::new(encoded)));
+                        tracing::info!(
+                            requested = true,
+                            role = "Addressed",
+                            tier = %class.as_capability(),
+                            "controlled tiered addressed RouterInfo published without floodfill role"
+                        );
                     }
-                    tracing::info!(
+                    Err(error) => tracing::warn!(
                         requested = true,
-                        role = "Active",
-                        "floodfill qualification activated"
-                    );
+                        role = "Failed",
+                        reason = %error,
+                        "controlled tiered addressed publication failed closed"
+                    ),
                 }
-                Err(error) => tracing::warn!(
-                    requested = true,
-                    role = "Failed",
-                    reason = %error,
-                    "normal floodfill activation failed closed"
-                ),
+            } else {
+                match activation {
+                    Ok(encoded) => {
+                        if controlled_profile {
+                            match i2pr_netdb::encode_router_info(&encoded) {
+                                Ok(info_b64) => match inspection
+                                    .publish_local_router_info_b64(info_b64.trim_end_matches('='))
+                                {
+                                    Ok(()) => tracing::info!(
+                                        router_info_bytes = encoded.len(),
+                                        "controlled floodfill RouterInfo inspection snapshot published"
+                                    ),
+                                    Err(error) => tracing::warn!(
+                                        reason = %error,
+                                        "controlled floodfill RouterInfo inspection publication rejected"
+                                    ),
+                                },
+                                Err(error) => tracing::warn!(
+                                    reason = %error,
+                                    "controlled floodfill RouterInfo base64 encoding failed"
+                                ),
+                            }
+                            let _ = local_router_info.send(Some(Arc::new(encoded)));
+                        }
+                        tracing::info!(
+                            requested = true,
+                            role = "Active",
+                            "floodfill qualification activated"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        requested = true,
+                        role = "Failed",
+                        reason = %error,
+                        "normal floodfill activation failed closed"
+                    ),
+                }
             }
         }
         crate::floodfill::FloodfillServiceStep::Withdraw => {
@@ -2725,6 +2802,7 @@ fn register_ssu2_service(
         == crate::config::FloodfillQualificationProfile::ControlledLoopback;
     let reply_token_probe_enabled = config.floodfill.send_reply_token_probe;
     let request_driven_lookup_probe_enabled = config.floodfill.send_initiator_lookup_probe;
+    let bandwidth_share_percent = config.bandwidth.share_percent;
     let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
     let controlled_ntcp2_endpoint = controlled_floodfill.then(|| {
         std::net::SocketAddr::new(
@@ -2756,6 +2834,11 @@ fn register_ssu2_service(
                 let ntcp2_max_active_links = ntcp2_max_active_links;
                 let controlled_ntcp2_endpoint = controlled_ntcp2_endpoint;
                 let bandwidth = bandwidth.clone();
+                let bandwidth_share_percent = bandwidth_share_percent;
+                // Plan 479: reserved for the per-tick controlled
+                // capacity gate; the SSU2 owner below moves the
+                // enforcement handle into its construction.
+                let capacity_bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
                 let service_runtime_active = service_runtime_active;
                 let bootstrap = bootstrap.clone();
@@ -3728,6 +3811,8 @@ fn register_ssu2_service(
                                             controlled_ntcp2_endpoint,
                                             local_router_info: &local_router_info,
                                             inspection: &inspection,
+                                            bandwidth: capacity_bandwidth.clone(),
+                                            bandwidth_share_percent,
                                         },
                                         &token,
                                     )
