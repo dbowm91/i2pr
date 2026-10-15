@@ -498,3 +498,229 @@ stays active with reverse STREAM and §6 open; the next step needs a
 genuinely new causal hypothesis (new plan-of-record), not another
 attempt. No dependent capability is unblocked; 433/439 gates
 unchanged.
+
+## 2026-10-15 pinned-source forensics: f HAS our lease and sends (run `ou1v6wii` re-read)
+
+Read-only archaeology against the exact pinned i2pd commit
+(`635b013a`, fetched to scratch, never vendored) plus the
+preserved snaps, answering where the SYN-ACK dies:
+
+- `oilmu74...` is f's own SAM peer destination (its LS2
+  republishes at :47:06/:47:36 on c/f/n), not ours. Our LS2
+  (`gwbun5...`) was stored only on `d` at :46:58 (+ :47:49) —
+  f's NetDb never holds it, by design.
+- At :47:07 f receives TWO garlics on separate tunnels: a 662B
+  block carrying a DatabaseStore of OUR LS2 (`Remote LeaseSet /
+  New remote LeaseSet added` — our daemon garlic-sends its LS2
+  to the peer destination alongside the SYN, working as
+  designed) and a 580B block carrying the SYN (`Incoming stream`,
+  `RemoteLease changed`, `OutboundTunnel changed`, `SAM:
+  Incoming I2P connection`). f HAD our current lease.
+- f's send path (`Stream::SendPackets`) queues the SYN-ACK via
+  `m_CurrentOutboundTunnel->SendTunnelDataMsgs` to
+  `(our-IBGW, our-T_gw)` with no error branch taken (no `No
+  outbound tunnels`, no `Remote lease is not available`, no
+  `All remote leases are expired` anywhere in-window). The
+  `SYNACK ... terminate after 1 attempt` fires only because the
+  stream has no shared garlic routing path — i.e. the ACK never
+  came back, not because the send failed.
+- The `Garlic: Incoming sessions come too often` throttle is
+  inbound-only (drops a third same-second new ECIES session
+  message, after the SYN was fully processed) — it cannot block
+  f's sends. Throttle theory dead.
+- So the loss is bounded to f's out-queue → our-IBGW transit,
+  our IBGW handling, or our owner dispatch — with f's send
+  proven queued and our IBGW→us leg proven working for other
+  cells.
+
+## 2026-10-15 taxonomy vacuity found and fixed (this plan's miss owner)
+
+Code proof (no lane needed): the dispatch registry is SHARED —
+exploratory pool roles and destination roles activate into the
+same `DataPlaneRegistry` (`activate_destination_tunnel` writes
+only the registry, never the exploratory pool). The old
+`exploratory_known` arm tested that shared registry, and every
+dispatch-accepted cell is registry-known by construction — so
+the old label was tautological for accepted misses. The prior
+"every miss is own-exploratory traffic" conclusion is retracted
+as unproven; stale-lease stays dead (`retired=0` + tight
+timeline hold independently).
+
+Rework (material change licensing the next bounded lane):
+
+- `exploratory_build.rs`: `DESTINATION_ROLE_SLOT_BASE`
+  (`0x8000_0000`, single source of truth, replaces the init
+  literal) + `is_destination_role_slot` (exploratory pool slots
+  allocate from zero; disjoint by construction) +
+  `exploratory_pool_holds_inbound` (tests the pool, never the
+  shared registry). Namespace-boundary unit test pinned.
+- `service_tunnels.rs`: new `ServiceUnowned` class — id bound
+  to a live destination role slot but with no live service
+  owner (owner-table divergence alarm, never expected
+  nonzero). Precedence retired > service-unowned >
+  exploratory > unknown; 8-arm test (arm-swap probe kills,
+  reverted); counter + 4-tuple totals; sum test extended.
+- `service_product.rs`: miss arm computes
+  `destination_role_bound` (registry slot namespace) and
+  genuine `exploratory_pool_known`; snapshot field + delta
+  arms; delta test extended.
+- `sam.rs`: TIMEOUT warn + message gain
+  `miss_service_unowned` (additive, prefix kept).
+- Lane parser: receipt grows 15→16 keys with a 4-class
+  sum-check (`service+exploratory+retired+unknown == misses`);
+  receipt tests (parse, sum-mismatch refusal, ANSI,
+  counts-only).
+
+Verification: daemon lib 779 passed (`--test-threads=1`;
+one parallel-run flake, green on both reruns);
+`destination_tunnel_unit` 44; `sam_stream_self_composed` 4;
+receipt suites 8; clippy clean; fmt clean; service-tunnel +
+runtime boundaries pass. (Scoped battery; full floor belongs
+to the closing pass.)
+
+Next: ONE bounded exact-pin lane reading the fixed taxonomy.
+`service_unowned > 0` proves our-side divergence (fix under
+478); all-exploratory proves background and bounds the loss
+upstream of our daemon (record, no further lane without a new
+hypothesis). Reverse STREAM, §6 recovery, and product
+close-out remain open; 478 stays active.
+
+## 2026-10-15 lane reads `service_unowned=1` (run `msmizqup`)
+
+Bounded exact-pin lane with the fixed taxonomy live (pinned
+i2pd 2.61.0, `mesh_quiet: true`, scratch
+`msmizqup-service-unowned-run` snapshotted with diagnostic).
+Builds/installs/owners green (4/4 replies, 3 installs, owners
+2/2, no evictions). Attempt-1 wait receipt:
+
+`tunnel_data_received=1, cells_accepted=0, matches=0,
+misses=1, service_unowned=1, exploratory=0, retired=0,
+unknown=0`
+
+The alarm fired on its first live run: a garlic envelope
+arrived on a tunnel id bound to a LIVE destination role slot
+with no service owner — not background, not stale, not
+foreign. Attempt 2 (fresh recovery CONNECT) ended in 35 ms
+with all-zero: our daemon failed fast (no forward path; f
+never saw a second SYN), so the recovery leg contributed no
+information this run.
+
+Timeline: installs :46:24 (owners coherent:
+`owners_table_len=2 any_key_present=true`), CONNECT :46:30,
+peer LS2 fetch fulfilled :47:00, f accepted :47:00, our wait
+expired :47:05 — the SYN-ACK had ~5 s and one cell made it,
+dropped by our owner table.
+
+## 2026-10-15 root cause: creator/local id namespace swap in the advance loop
+
+Code-proof (no lane needed), three distinct allocator-drawn
+ids per inbound tunnel confirmed in `short.rs` + allocator:
+
+- LS2 advertises the gateway id (`first_hop_receive_tunnel`).
+- Registry roles + owner table + bridge key on the LOCAL
+  endpoint id (`local_inbound_receive`).
+- Destination pool registrations key on the CREATOR id
+  (`register_inbound_with_material` uses
+  `established.creator_tunnel_id()`).
+
+The advance loop built its refresh/eviction id lists from
+`registration.tunnel_id()` (creator) and fed them to owner and
+bridge state (local): `owners_changed` was therefore ALWAYS
+true, so the first poll after every install inserted creator
+ids as owners, direct-removed the real local owners (without
+retiring — `owners.remove`, not unregister), and swapped the
+bridge projection to creator ids. The summary stayed masked
+(`any_key_present` compares bridge vs owners — both creator
+after the swap). Every later service arrival hit a live role
+with no owner: total inbound deafness from seconds after
+install, in every run. The eviction path had the same
+confusion (removing creator ids that own nothing, leaving
+role + owner + bridge behind).
+
+Fix (this plan's product owner, no new plan number):
+
+- `i2pr-client/src/pool.rs`: `DestinationTunnelPool` keeps a
+  durable slot→local map, maintained on every insert and every
+  removal path (register, zero-hop, mark_failed, remove,
+  advance_time evictions, release_all) + `inbound_local_receive`
+  accessor; `registry.rs` facade. Pool tests (map returns
+  local ≠ creator on genuine short-build fixtures; cleared on
+  all four removal paths).
+- Daemon advance loop: eviction resolves slots to locals
+  (fail-closed honest receipts when unresolvable); refresh
+  list built by pure `local_inbound_receive_ids` (live
+  registrations → locals minus evicted; `None` on any gap →
+  tick skips refresh+replenishment, error-logged, practically
+  unreachable); helper unit-tested incl. fail-closed +
+  eviction-skip arms.
+- `refresh_service_router_pool_snapshot_with_owners`:
+  dropped ids now retire into taxonomy memory (lock order
+  matches unregister); stability no-op + retire tests pinned.
+- Probes: creator-fallback in helper, retire removal, map
+  insert removal — each kills its test (all reverted, zero
+  markers).
+
+Verification: daemon lib 783 passed (`--test-threads=1`);
+i2pr-client lib 117 passed; `destination_tunnel_unit` 44;
+`sam_stream_self_composed` 4; receipt suites 8; clippy clean
+both crates (one missing `#[cfg(test)]` caught and fixed);
+fmt clean; service-tunnel + runtime + dependency boundaries
+pass. (Scoped battery; full floor belongs to the closing
+pass.)
+
+Next: ONE bounded exact-pin lane with the fix, expecting
+owner matches and handshake progress. The persistent upstream
+cell loss (most SYN-ACK sends never arriving) is a separate,
+still-open observation — this fix removes our self-inflicted
+drop so the next lane measures only that.
+
+## 2026-10-15 fix verified: forward full pass + reverse handshake (run `qr06eib6`)
+
+Bounded exact-pin lane with the fix live (pinned i2pd 2.61.0,
+`mesh_quiet: true`, scratch `qr06eib6-handshake-complete-run`
+snapshotted). Builds/installs/owners green (4/4 replies, 3
+installs, owners 2/2, no evictions, no handshake-wait
+receipts at all):
+
+- FORWARD leg (i2pr→stock) completed end to end, 2328-byte
+  echo digest-matched — first forward full pass since the
+  refresh path existed.
+- REVERSE leg (stock→us): stock's CONNECT got `STREAM STATUS
+  RESULT=OK`; our SAM ACCEPT bound the inbound stream (no
+  wait-expired). Reverse HANDSHAKE completed — first time ever.
+  Owner deafness is fixed.
+
+New frontier — reverse DATA: stock resent its 2328-byte
+payload 10 times over ~100 s (cycling both our leases and its
+tunnels, `terminate after 10 attempts` at :22:17) while our
+accept worker read EOF (0/2328); our daemon closed our SAM
+socket with no error/warn logged. Forward echo arrived in
+the same window, so f→us delivery works in principle.
+
+Standing hypotheses for the next material change (NOT
+conclusions — the current evidence cannot split them):
+
+1. Payload cells never arrived (upstream/lease/session
+   scope, same family as the old SYN-ACK loss; note f's
+   forward-stream resends also went unacked, so us→f ACKs
+   were lost too).
+2. Cells arrived but our streaming/server-side path dropped
+   them silently (no data-phase attribution is emitted on
+   the ACCEPT path — handshake attribution exists only on
+   CONNECT timeout — so silence proves nothing).
+
+What the evidence rules out: owner-table drops (matches
+flow; no misses logged), LS2/lease staleness (f cycled both
+leases), our ACCEPT plumbing direction (server profiles feed
+the receiver mirror end to end, code-verified), our ACK
+generation as the zero-byte cause (2328 B fits the initial
+window; first flight needs no ACKs).
+
+Next material change (in-plan): data-phase attribution on
+the ACCEPT path — per-accepted-stream ingress counts
+(dequeued/accepted/rejected + close reason, counts-only) and
+surfacing of accept-worker failures into the lane
+diagnostic. That makes the next lane decisive between (1)
+and (2). No further lane without it. Reverse STREAM data,
+§6 recovery, and product close-out remain open; 478 stays
+active.

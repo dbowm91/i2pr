@@ -619,9 +619,22 @@ impl DestinationRuntime {
     }
 
     /// Returns the remote inbound registrations retained by this
-    /// Destination's canonical pool.
+    /// destination's pool. Registrations key on the creator tunnel
+    /// id; use [`Self::inbound_local_receive`] for the data-plane
+    /// endpoint id (Plan 478).
     pub fn inbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
         self.pool.inbound_registrations()
+    }
+
+    /// Returns the local inbound endpoint receive tunnel id for one
+    /// live pool slot, or `None` when the slot holds no live
+    /// inbound registration. The data-plane registry, the owner
+    /// table, and the bridge all key on this id (Plan 478).
+    pub fn inbound_local_receive(
+        &self,
+        slot: i2pr_tunnel::TunnelSlot,
+    ) -> Option<i2pr_tunnel::TunnelId> {
+        self.pool.inbound_local_receive(slot)
     }
 
     /// Returns the remote outbound registrations retained by this

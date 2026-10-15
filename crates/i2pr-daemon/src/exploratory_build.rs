@@ -864,6 +864,21 @@ struct RetainedBuildDeliverySet {
     expires_at_ms: u64,
 }
 
+/// Base of the destination-role data-plane slot namespace. Exploratory
+/// pool slots allocate upward from zero; destination roles allocate
+/// upward from here, so the high bit discriminates a registry slot
+/// bound by [`ExploratoryBuildCoordinator::activate_destination_tunnel`]
+/// from one bound by the exploratory pool. Single source of truth
+/// for the Plan 478 owner-miss taxonomy's service/divergence arm.
+pub const DESTINATION_ROLE_SLOT_BASE: u32 = 0x8000_0000;
+
+/// Reports whether the supplied data-plane slot was allocated to a
+/// destination role (as opposed to the exploratory pool). Pure and
+/// total; the namespaces are disjoint by construction.
+pub const fn is_destination_role_slot(slot: TunnelSlot) -> bool {
+    slot.get() >= DESTINATION_ROLE_SLOT_BASE
+}
+
 /// Daemon-owned exploratory build coordinator.
 pub struct ExploratoryBuildCoordinator {
     pool: ExploratoryPool,
@@ -906,7 +921,7 @@ impl ExploratoryBuildCoordinator {
             established_handoffs: BTreeMap::new(),
             next_attempt_id: INITIAL_ATTEMPT_ID,
             next_creator_tunnel_id: INITIAL_CREATOR_TUNNEL_ID,
-            next_destination_role_slot: 0x8000_0000,
+            next_destination_role_slot: DESTINATION_ROLE_SLOT_BASE,
             counters: BuildCoordinatorCounters::default(),
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
             lifetime_seconds: DEFAULT_EXPLORATORY_LIFETIME_SECONDS,
@@ -1188,6 +1203,19 @@ impl ExploratoryBuildCoordinator {
     /// tunnel id, when present.
     pub fn registry_inbound_slot(&self, receive: TunnelId) -> Option<TunnelSlot> {
         self.registry.inbound_slot(receive)
+    }
+
+    /// Reports whether the supplied local receive tunnel id is a
+    /// live inbound endpoint of the exploratory pool itself (as
+    /// opposed to a destination role sharing the data-plane
+    /// registry). Bounded scan over the tiny inbound pool; used by
+    /// the Plan 478 owner-miss taxonomy so the exploratory arm
+    /// tests the pool, not the shared registry.
+    pub fn exploratory_pool_holds_inbound(&self, receive: TunnelId) -> bool {
+        self.pool
+            .inbound_registrations()
+            .iter()
+            .any(|registration| registration.tunnel_id() == receive)
     }
 
     /// Returns the registry's outbound-first-hop router hash and
@@ -2698,6 +2726,23 @@ mod tests {
     use super::*;
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
+
+    /// Plan 478 — the destination-role slot namespace starts at
+    /// [`DESTINATION_ROLE_SLOT_BASE`] while exploratory pool slots
+    /// allocate upward from zero, so the high bit discriminates a
+    /// registry slot bound by `activate_destination_tunnel` from
+    /// one bound by the exploratory pool. Pins the boundary the
+    /// owner-miss taxonomy's divergence arm depends on.
+    #[test]
+    fn destination_role_slot_namespace_starts_at_high_bit() {
+        assert_eq!(DESTINATION_ROLE_SLOT_BASE, 0x8000_0000);
+        assert!(!is_destination_role_slot(TunnelSlot::from_raw(0)));
+        assert!(!is_destination_role_slot(TunnelSlot::from_raw(0x7FFF_FFFF)));
+        assert!(is_destination_role_slot(TunnelSlot::from_raw(
+            DESTINATION_ROLE_SLOT_BASE
+        )));
+        assert!(is_destination_role_slot(TunnelSlot::from_raw(u32::MAX)));
+    }
 
     #[test]
     fn build_delivery_set_waits_for_every_source_owned_writer_ticket() {

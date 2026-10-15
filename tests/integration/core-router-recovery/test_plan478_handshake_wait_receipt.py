@@ -13,15 +13,15 @@ FULL_LINE = (
     'WARN synack_observed=0 synack_accepted=0 synack_rejected=0 '
     'garlic_authenticated=0 garlic_rejected=0 payloads_dequeued=0 '
     'streaming_accepted=0 tunnel_data_received=4 tunnel_data_cells_accepted=4 '
-    'garlic_owner_matches=2 garlic_owner_misses=3 direct_garlic_received=0 '
-    'miss_exploratory_known=1 miss_retired_service=2 miss_unknown=0 '
-    'transition="stream_connect_handshake_wait_expired" '
+    'garlic_owner_matches=2 garlic_owner_misses=4 direct_garlic_received=0 '
+    'miss_service_unowned=1 miss_exploratory_known=1 miss_retired_service=2 '
+    'miss_unknown=0 transition="stream_connect_handshake_wait_expired" '
     'STREAM CONNECT wait ended without Established'
 )
 
 
 class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
-    def test_full_attribution_line_parses_all_fifteen_counts(self) -> None:
+    def test_full_attribution_line_parses_all_sixteen_counts(self) -> None:
         parsed = parse_attempt_receipt_lines([FULL_LINE])
         # The daemon TIMEOUT warn carries no build_attempt_id, so it
         # contributes no stage count; the receipts list is the evidence.
@@ -33,20 +33,26 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
                 "garlic_authenticated": 0, "garlic_rejected": 0,
                 "payloads_dequeued": 0, "streaming_accepted": 0,
                 "tunnel_data_received": 4, "tunnel_data_cells_accepted": 4,
-                "garlic_owner_matches": 2, "garlic_owner_misses": 3,
+                "garlic_owner_matches": 2, "garlic_owner_misses": 4,
                 "direct_garlic_received": 0,
-                "miss_exploratory_known": 1, "miss_retired_service": 2,
-                "miss_unknown": 0,
+                "miss_service_unowned": 1, "miss_exploratory_known": 1,
+                "miss_retired_service": 2, "miss_unknown": 0,
             }],
         )
         # The class counts always sum to the aggregate miss count.
         receipt = parsed["stream_connect_handshake_wait_receipts"][0]
         self.assertEqual(
-            receipt["miss_exploratory_known"]
+            receipt["miss_service_unowned"]
+            + receipt["miss_exploratory_known"]
             + receipt["miss_retired_service"]
             + receipt["miss_unknown"],
             receipt["garlic_owner_misses"],
         )
+
+    def test_class_sum_mismatch_refuses_receipt(self) -> None:
+        bad = FULL_LINE.replace("garlic_owner_misses=4", "garlic_owner_misses=9")
+        parsed = parse_attempt_receipt_lines([bad])
+        self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])
 
     def test_missing_keys_do_not_create_receipts(self) -> None:
         parsed = parse_attempt_receipt_lines([

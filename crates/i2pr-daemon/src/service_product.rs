@@ -86,7 +86,7 @@ use crate::encrypted_service_resolver::{
 };
 use crate::exploratory_build::{
     BuildCoordinatorOutcome, BuildDirection, BuildEmissionDisposition, DestinationBuildRequest,
-    ExploratoryBuildCoordinator, PeerBuildMaterial, SubmitResult,
+    ExploratoryBuildCoordinator, PeerBuildMaterial, SubmitResult, is_destination_role_slot,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
@@ -1242,9 +1242,11 @@ pub struct InboundTrafficSnapshot {
     pub service_owner_matches: u64,
     pub service_owner_misses: u64,
     /// Plan 478 owner-miss taxonomy: the miss split by where the
-    /// receive tunnel id pointed (own exploratory endpoint, retired
-    /// service generation, never-known). Mirrored into the manager
-    /// per class so SAM can report it on CONNECT timeout.
+    /// receive tunnel id pointed (live destination role without an
+    /// owner, own exploratory pool endpoint, retired service
+    /// generation, never-known). Mirrored into the manager per class
+    /// so SAM can report it on CONNECT timeout.
+    pub service_owner_miss_service_unowned: u64,
     pub service_owner_miss_exploratory: u64,
     pub service_owner_miss_retired: u64,
     pub service_owner_miss_unknown: u64,
@@ -1306,6 +1308,9 @@ impl InboundTrafficSnapshot {
             service_owner_misses: self
                 .service_owner_misses
                 .saturating_sub(earlier.service_owner_misses),
+            service_owner_miss_service_unowned: self
+                .service_owner_miss_service_unowned
+                .saturating_sub(earlier.service_owner_miss_service_unowned),
             service_owner_miss_exploratory: self
                 .service_owner_miss_exploratory
                 .saturating_sub(earlier.service_owner_miss_exploratory),
@@ -1426,6 +1431,7 @@ mod inbound_traffic_snapshot_tests {
         let later = InboundTrafficSnapshot {
             tunnel_data_received: 9,
             service_owner_misses: 1,
+            service_owner_miss_service_unowned: 1,
             service_owner_miss_exploratory: 2,
             service_owner_miss_retired: 3,
             service_owner_miss_unknown: 1,
@@ -1437,6 +1443,7 @@ mod inbound_traffic_snapshot_tests {
             InboundTrafficSnapshot {
                 tunnel_data_received: 5,
                 service_owner_misses: 0,
+                service_owner_miss_service_unowned: 1,
                 service_owner_miss_exploratory: 2,
                 service_owner_miss_retired: 2,
                 service_owner_miss_unknown: 1,
@@ -1640,6 +1647,71 @@ mod destination_replenishment_tests {
         );
         assert_eq!(destination_replenishment_order(6, 6, 13).len(), 12);
         assert!(destination_replenishment_order(6, 6, 13).len() <= 12);
+    }
+}
+
+/// Plan 478 local-id translation: the refresh/eviction lists carry
+/// the data-plane endpoint ids, never pool registration (creator)
+/// ids. Inversion probe: mapping from `registration.tunnel_id()`
+/// instead of the locals table fails the mismatch case (probe
+/// reverted, zero markers).
+#[cfg(test)]
+mod local_inbound_receive_id_tests {
+    use super::TunnelSlot;
+    use super::local_inbound_receive_ids;
+    use i2pr_proto::Hash;
+    use i2pr_tunnel::{TunnelDirection, TunnelId, TunnelPeer, TunnelRegistration, TunnelState};
+    use std::collections::HashSet;
+
+    fn registration(slot: u32, creator_id: u32) -> TunnelRegistration {
+        TunnelRegistration::new(
+            TunnelSlot::from_raw(slot),
+            TunnelId::new(creator_id).expect("nonzero creator id"),
+            TunnelDirection::Inbound,
+            TunnelState::Established,
+            vec![TunnelPeer::from_hash(Hash::from_bytes([0x11; 32]))],
+            1_000,
+        )
+        .expect("registration")
+    }
+
+    #[test]
+    fn live_registrations_translate_to_local_ids_and_skip_evicted() {
+        let registrations = vec![registration(1, 0xC001), registration(2, 0xC002)];
+        let locals = vec![
+            (TunnelSlot::from_raw(1), 0xA001),
+            (TunnelSlot::from_raw(2), 0xA002),
+        ];
+        let none = HashSet::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &none),
+            Some(vec![0xA001, 0xA002])
+        );
+        // Evicted slots leave the list even when translated.
+        let evicted: HashSet<TunnelSlot> = HashSet::from([TunnelSlot::from_raw(1)]);
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &evicted),
+            Some(vec![0xA002])
+        );
+    }
+
+    #[test]
+    fn missing_translation_fails_closed_instead_of_partial_list() {
+        let registrations = vec![registration(1, 0xC001), registration(2, 0xC002)];
+        // Slot 2 has no local translation: no partial list.
+        let locals = vec![(TunnelSlot::from_raw(1), 0xA001)];
+        let none = HashSet::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &none),
+            None
+        );
+        // The creator ids must never leak into the list: with no
+        // translations at all the answer is None, not creators.
+        let empty: Vec<(TunnelSlot, u32)> = Vec::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &empty, &none),
+            None
+        );
     }
 }
 
@@ -3142,6 +3214,21 @@ impl ServiceProduct {
                 self.manager
                     .with_destination_runtime(destination_id, |destination| {
                         let inbound_registrations = destination.inbound_registrations();
+                        // Plan 478 — snapshot the pool-slot to local
+                        // endpoint receive id translation BEFORE
+                        // advance_time evicts: pool registrations key
+                        // on the creator tunnel id, while the
+                        // registry, the owner table, and the bridge
+                        // all key on the local endpoint id. Every
+                        // consumer below must use the local ids.
+                        let inbound_locals: Vec<(TunnelSlot, u32)> = inbound_registrations
+                            .iter()
+                            .filter_map(|registration| {
+                                destination
+                                    .inbound_local_receive(registration.slot())
+                                    .map(|local| (registration.slot(), local.get()))
+                            })
+                            .collect();
                         let outbound_registrations = destination.outbound_registrations();
                         let progress = destination.advance_time(now_seconds);
                         let lease_sources = destination.inbound_lease_sources(now_seconds);
@@ -3151,6 +3238,7 @@ impl ServiceProduct {
                             .map(|current| current.lease_set2().clone());
                         (
                             inbound_registrations,
+                            inbound_locals,
                             outbound_registrations,
                             progress,
                             lease_sources,
@@ -3170,6 +3258,7 @@ impl ServiceProduct {
             };
             let (
                 inbound_registrations,
+                inbound_locals,
                 outbound_registrations,
                 progress,
                 sources,
@@ -3182,26 +3271,41 @@ impl ServiceProduct {
             let evicted_slots: std::collections::HashSet<_> =
                 progress.evicted_slots.iter().copied().collect();
             for slot in evicted_slots.iter().copied() {
-                if let Some(registration) = inbound_registrations
+                // Plan 478 — evict by the LOCAL endpoint id, never
+                // the pool registration (creator) id: the registry
+                // role, the owner entry, and the bridge projection
+                // all key on the local id. A slot with no local
+                // translation has no data-plane footprint to clean;
+                // the receipt stays honest (both false) instead of
+                // removing the wrong id.
+                let is_inbound = inbound_registrations
                     .iter()
-                    .find(|registration| registration.slot() == slot)
-                {
-                    let receive_id = registration.tunnel_id();
-                    let _ = self
-                        .inner
-                        .coordinator
-                        .registry_mut()
-                        .remove_inbound(receive_id);
-                    let removed_owner = self
-                        .manager
-                        .unregister_inbound_tunnel_owner(receive_id.get())
-                        .is_some();
-                    let removed_receive = self
-                        .manager
-                        .with_destination_bridge(destination_id, |bridge| {
-                            bridge.remove_router_inbound_receive(receive_id.get())
-                        })
-                        .unwrap_or(false);
+                    .any(|registration| registration.slot() == slot);
+                if is_inbound {
+                    let mut removed_owner = false;
+                    let mut removed_receive = false;
+                    if let Some(local_receive) = inbound_locals
+                        .iter()
+                        .find(|(registered_slot, _)| *registered_slot == slot)
+                        .map(|(_, local)| *local)
+                        && let Ok(local_tunnel) = TunnelId::new(local_receive)
+                    {
+                        let _ = self
+                            .inner
+                            .coordinator
+                            .registry_mut()
+                            .remove_inbound(local_tunnel);
+                        removed_owner = self
+                            .manager
+                            .unregister_inbound_tunnel_owner(local_receive)
+                            .is_some();
+                        removed_receive = self
+                            .manager
+                            .with_destination_bridge(destination_id, |bridge| {
+                                bridge.remove_router_inbound_receive(local_receive)
+                            })
+                            .unwrap_or(false);
+                    }
                     tracing::info!(
                         removed_owner,
                         removed_receive,
@@ -3224,11 +3328,24 @@ impl ServiceProduct {
                 // material after the group has entered Retiring.
                 continue;
             }
-            let inbound_receive_ids: Vec<u32> = inbound_registrations
-                .iter()
-                .filter(|registration| !evicted_slots.contains(&registration.slot()))
-                .map(|registration| registration.tunnel_id().get())
-                .collect();
+            // Plan 478 — the refresh list carries LOCAL endpoint
+            // receive ids, never pool registration (creator) ids:
+            // the bridge projection and the owner table both key on
+            // the local id, and feeding creator ids silently swapped
+            // both to the wrong namespace on the first poll after
+            // every install. A live registration without a local
+            // translation fails closed: the tick skips refresh and
+            // replenishment rather than amputating live owners with
+            // a partial list.
+            let Some(inbound_receive_ids) =
+                local_inbound_receive_ids(&inbound_registrations, &inbound_locals, &evicted_slots)
+            else {
+                tracing::error!(
+                    live_inbound_registrations = inbound_registrations.len(),
+                    "destination pool slots lack local endpoint mapping; skipping refresh"
+                );
+                continue;
+            };
             let current_bridge = self
                 .manager
                 .with_destination_bridge(destination_id, |bridge| {
@@ -3946,18 +4063,46 @@ impl ServiceProduct {
                         .saturating_add(1);
                     // Plan 478 miss taxonomy, decided from already-held
                     // registries (never a new lookup or network read):
-                    // own exploratory endpoint, retired service
-                    // generation, or never-known addressing. Counts
-                    // only; the class always sums into the aggregate.
+                    // retired service memory, then a live
+                    // destination-role binding without an owner
+                    // (divergence alarm), then the exploratory pool,
+                    // then never-known addressing. The exploratory
+                    // arm tests the pool, never the shared
+                    // data-plane registry: every dispatch-accepted
+                    // cell is registry-known by construction, so a
+                    // registry test would mask the divergence arm.
+                    // Counts only; the class always sums into the
+                    // aggregate.
                     let class = {
-                        let exploratory_known =
-                            TunnelId::new(receive_tunnel_id).ok().is_some_and(|tunnel| {
-                                self.inner.coordinator.registry().inbound(tunnel).is_some()
-                            });
+                        let tunnel = TunnelId::new(receive_tunnel_id).ok();
+                        let destination_role_bound = tunnel.is_some_and(|tunnel| {
+                            self.inner
+                                .coordinator
+                                .registry_inbound_slot(tunnel)
+                                .is_some_and(is_destination_role_slot)
+                        });
+                        let exploratory_pool_known = tunnel.is_some_and(|tunnel| {
+                            self.inner
+                                .coordinator
+                                .exploratory_pool_holds_inbound(tunnel)
+                        });
                         let retired_service = self.manager.is_retired_receive_id(receive_tunnel_id);
-                        InboundOwnerMissClass::classify(exploratory_known, retired_service)
+                        InboundOwnerMissClass::classify(
+                            destination_role_bound,
+                            exploratory_pool_known,
+                            retired_service,
+                        )
                     };
                     match class {
+                        InboundOwnerMissClass::ServiceUnowned => {
+                            self.inner
+                                .inbound_traffic
+                                .service_owner_miss_service_unowned = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_service_unowned
+                                .saturating_add(1);
+                        }
                         InboundOwnerMissClass::ExploratoryKnown => {
                             self.inner.inbound_traffic.service_owner_miss_exploratory = self
                                 .inner
@@ -4902,6 +5047,36 @@ async fn resolve_remote_destination_for_service_inner(
 /// Tunnel ids allocate disjointly per service via
 /// [`Plan212TunnelIdAllocator`]. A failed provisioning pass fails
 /// atomically (caller tears down staged listeners).
+/// Plan 478 — translates live pool registrations to the local
+/// endpoint receive ids the data-plane registry, the owner table,
+/// and the bridge projection key on, excluding evicted slots.
+/// Pool registrations key on the creator tunnel id (a distinct
+/// allocator draw); feeding those ids to owner/bridge state
+/// silently swapped both namespaces on the first poll after every
+/// install and deafened all tunneled service inbound.
+///
+/// Returns `None` when any live registration lacks a local
+/// translation: callers must skip refresh rather than amputate
+/// live owners with a partial list. Pure; unit-tested.
+fn local_inbound_receive_ids(
+    registrations: &[i2pr_tunnel::TunnelRegistration],
+    locals: &[(TunnelSlot, u32)],
+    evicted: &std::collections::HashSet<TunnelSlot>,
+) -> Option<Vec<u32>> {
+    let mut ids = Vec::with_capacity(registrations.len());
+    for registration in registrations
+        .iter()
+        .filter(|registration| !evicted.contains(&registration.slot()))
+    {
+        let local = locals
+            .iter()
+            .find(|(slot, _)| *slot == registration.slot())
+            .map(|(_, local)| *local)?;
+        ids.push(local);
+    }
+    Some(ids)
+}
+
 fn register_destination_material(
     manager: &crate::service_tunnels::ServiceTunnelManager,
     coordinator: &mut ExploratoryBuildCoordinator,

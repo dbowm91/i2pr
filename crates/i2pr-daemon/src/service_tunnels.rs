@@ -479,8 +479,10 @@ pub struct ServiceTunnelManager {
     inbound_garlic_owner_misses: AtomicUsize,
     /// Plan 478 owner-miss taxonomy: one counter per
     /// [`InboundOwnerMissClass`] arm, so a CONNECT timeout can tell
-    /// own-exploratory traffic, retired service generations, and
-    /// never-known ids apart. Counts only; no ids or payloads.
+    /// service-but-unowned divergence, own-exploratory traffic,
+    /// retired service generations, and never-known ids apart.
+    /// Counts only; no ids or payloads.
+    inbound_owner_miss_service_unowned: AtomicUsize,
     inbound_owner_miss_exploratory: AtomicUsize,
     inbound_owner_miss_retired: AtomicUsize,
     inbound_owner_miss_unknown: AtomicUsize,
@@ -863,8 +865,22 @@ impl RemoteTargetProjection {
 /// receive tunnel id pointed when no service runtime owned it.
 /// Decided from already-held registries (never a new lookup or
 /// network read); only the class counts leave the manager.
+///
+/// The arms test disjoint sets: the retired memory (previously
+/// owned), the destination-role slot namespace in the shared
+/// data-plane registry (live service tunnel, owner missing), and
+/// the exploratory pool's own inbound endpoints (genuine
+/// background). The exploratory arm deliberately does NOT test the
+/// shared registry: every dispatch-accepted cell is registry-known
+/// by construction, so a registry test would read every accepted
+/// miss as exploratory and mask the divergence arm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InboundOwnerMissClass {
+    /// The id is bound to a live destination role slot in the
+    /// data-plane registry but has no live service owner:
+    /// owner-table divergence (a service return the daemon dropped
+    /// itself). Alarm arm, never expected nonzero.
+    ServiceUnowned,
     /// The id is a live inbound endpoint of our own exploratory
     /// pool: own exploratory garlic, not a service return.
     ExploratoryKnown,
@@ -881,16 +897,22 @@ pub enum InboundOwnerMissClass {
 pub const MAX_RETIRED_RECEIVE_IDS: usize = 64;
 
 impl InboundOwnerMissClass {
-    /// Pure miss classifier shared by the product miss arm: a live
-    /// exploratory endpoint wins over retired memory (an id cannot be
-    /// both, but the live registry is authoritative if it ever is),
-    /// retired wins over unknown. Unit-tested with an arm-swap
-    /// inversion probe.
-    pub const fn classify(exploratory_known: bool, retired_service: bool) -> Self {
-        if exploratory_known {
-            Self::ExploratoryKnown
-        } else if retired_service {
+    /// Pure miss classifier shared by the product miss arm:
+    /// retired memory is authoritative for previously-owned ids,
+    /// then a live destination-role binding without an owner is
+    /// the divergence alarm, then the exploratory pool, then
+    /// unknown. Unit-tested with arm-swap inversion probes.
+    pub const fn classify(
+        destination_role_bound: bool,
+        exploratory_pool_known: bool,
+        retired_service: bool,
+    ) -> Self {
+        if retired_service {
             Self::RetiredService
+        } else if destination_role_bound {
+            Self::ServiceUnowned
+        } else if exploratory_pool_known {
+            Self::ExploratoryKnown
         } else {
             Self::Unknown
         }
@@ -943,6 +965,7 @@ impl ServiceTunnelManager {
             inbound_tunnel_data_cells_accepted: AtomicUsize::new(0),
             inbound_garlic_owner_matches: AtomicUsize::new(0),
             inbound_garlic_owner_misses: AtomicUsize::new(0),
+            inbound_owner_miss_service_unowned: AtomicUsize::new(0),
             inbound_owner_miss_exploratory: AtomicUsize::new(0),
             inbound_owner_miss_retired: AtomicUsize::new(0),
             inbound_owner_miss_unknown: AtomicUsize::new(0),
@@ -3479,6 +3502,9 @@ impl ServiceTunnelManager {
     pub fn note_inbound_garlic_owner_miss_class(&self, class: InboundOwnerMissClass) -> usize {
         let _ = self.note_inbound_garlic_owner_miss();
         let previous = match class {
+            InboundOwnerMissClass::ServiceUnowned => self
+                .inbound_owner_miss_service_unowned
+                .fetch_add(1, Ordering::AcqRel),
             InboundOwnerMissClass::ExploratoryKnown => self
                 .inbound_owner_miss_exploratory
                 .fetch_add(1, Ordering::AcqRel),
@@ -3493,11 +3519,13 @@ impl ServiceTunnelManager {
     }
 
     /// Plan 478 — owner-miss taxonomy snapshot as
-    /// `(exploratory_known, retired_service, unknown)`. Counts only;
-    /// SAM reads this through its attached manager handle on STREAM
-    /// CONNECT timeout.
-    pub fn inbound_owner_miss_taxonomy_totals(&self) -> (u64, u64, u64) {
+    /// `(service_unowned, exploratory_known, retired_service,
+    /// unknown)`. Counts only; SAM reads this through its attached
+    /// manager handle on STREAM CONNECT timeout.
+    pub fn inbound_owner_miss_taxonomy_totals(&self) -> (u64, u64, u64, u64) {
         (
+            self.inbound_owner_miss_service_unowned
+                .load(Ordering::Acquire) as u64,
             self.inbound_owner_miss_exploratory.load(Ordering::Acquire) as u64,
             self.inbound_owner_miss_retired.load(Ordering::Acquire) as u64,
             self.inbound_owner_miss_unknown.load(Ordering::Acquire) as u64,
@@ -3718,7 +3746,14 @@ impl ServiceTunnelManager {
         })?
         .map_err(ServiceTunnelError::InvalidConfig)?;
         for receive_id in removed {
-            owners.remove(&receive_id);
+            if owners.remove(&receive_id).is_some() {
+                // Plan 478 — a dropped id becomes taxonomy memory
+                // so a later arrival on it reads as a stale lease,
+                // not never-known addressing. Lock order matches
+                // `unregister_inbound_tunnel_owner` (owners, then
+                // retired); the retired lock is a separate mutex.
+                self.record_retired_receive_id(receive_id);
+            }
         }
         if let Some(runtime) = runtime {
             for receive_id in added {
@@ -10482,6 +10517,100 @@ mod plan212_router_backed_service_destination_tests {
         );
     }
 
+    /// Plan 478 — refresh with the identical receive-id set is a
+    /// stable no-op for the owner table: no unregister, no retire,
+    /// bridge projection untouched. The daemon advance loop relies
+    /// on this stability every poll; feeding it creator ids
+    /// instead of local endpoint ids broke exactly this contract
+    /// and deafened all tunneled service inbound.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_with_identical_ids_is_stable_noop() {
+        let directory = temp_data_dir("plan478-refresh-stable");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-rs");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6102,
+            &[0x9621, 0x9622],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9621, 0x9622],
+                now_ms,
+            )
+            .expect("install");
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9621, 0x9622],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        assert!(manager.inbound_tunnel_owner(0x9621).is_some());
+        assert!(manager.inbound_tunnel_owner(0x9622).is_some());
+        assert!(!manager.is_retired_receive_id(0x9621));
+        assert!(!manager.is_retired_receive_id(0x9622));
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("summary");
+        assert!(summary.inbound_owner_registered);
+    }
+
+    /// Plan 478 — a refresh-dropped receive id retires into the
+    /// taxonomy memory, so a later arrival on it reads as a stale
+    /// lease rather than never-known addressing. Direct owner-table
+    /// removal without retiring masked genuine drops as unknown.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_drop_retires_the_dropped_id() {
+        let directory = temp_data_dir("plan478-refresh-retire");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-rr");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6103,
+            &[0x9631, 0x9632],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9631, 0x9632],
+                now_ms,
+            )
+            .expect("install");
+        assert!(!manager.is_retired_receive_id(0x9631));
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9632],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        assert!(manager.inbound_tunnel_owner(0x9631).is_none());
+        assert!(
+            manager.is_retired_receive_id(0x9631),
+            "dropped id retires into taxonomy memory"
+        );
+        assert!(manager.inbound_tunnel_owner(0x9632).is_some());
+        assert!(!manager.is_retired_receive_id(0x9632));
+    }
+
     /// Plan 212 §17.4 — clear removes router-backed state.
     #[tokio::test(flavor = "current_thread")]
     async fn plan212_clear_removes_router_state() {
@@ -11180,7 +11309,11 @@ mod plan212_router_backed_service_destination_tests {
     async fn plan478_owner_miss_taxonomy_sums_and_retired_memory_is_bounded() {
         let directory = temp_data_dir("plan478-miss-taxonomy");
         let manager = empty_manager(directory.path());
-        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (0, 0, 0));
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (0, 0, 0, 0));
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::ServiceUnowned),
+            1
+        );
         assert_eq!(
             manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::ExploratoryKnown),
             1
@@ -11193,9 +11326,9 @@ mod plan212_router_backed_service_destination_tests {
             manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::RetiredService),
             2
         );
-        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (1, 2, 0));
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (1, 1, 2, 0));
         // The legacy aggregate tracks every classed miss.
-        assert_eq!(manager.inbound_arrival_totals().3, 3);
+        assert_eq!(manager.inbound_arrival_totals().3, 4);
 
         let directory = temp_data_dir("plan478-retired");
         let manager = make_manager_with_one_server(directory.path(), "plan478-r");
@@ -11222,27 +11355,47 @@ mod plan212_router_backed_service_destination_tests {
         assert!(manager.is_retired_receive_id(super::MAX_RETIRED_RECEIVE_IDS as u32 + 9));
     }
 
-    /// Plan 478 miss classifier: exploratory wins over retired,
-    /// retired over unknown; all four input combinations map
-    /// exactly once. Inversion probe: swapping any two arms fails
-    /// this test (probe reverted, zero markers).
+    /// Plan 478 miss classifier: retired wins, then a live
+    /// destination-role binding without an owner (divergence alarm),
+    /// then the exploratory pool, then unknown; all eight input
+    /// combinations map exactly once. Inversion probe: swapping any
+    /// two arms fails this test (probe reverted, zero markers).
     #[test]
     fn plan478_owner_miss_classify_covers_all_inputs() {
         use super::InboundOwnerMissClass;
+        // Retired memory is authoritative for previously-owned ids.
         assert_eq!(
-            InboundOwnerMissClass::classify(true, true),
-            InboundOwnerMissClass::ExploratoryKnown
-        );
-        assert_eq!(
-            InboundOwnerMissClass::classify(true, false),
-            InboundOwnerMissClass::ExploratoryKnown
-        );
-        assert_eq!(
-            InboundOwnerMissClass::classify(false, true),
+            InboundOwnerMissClass::classify(true, true, true),
             InboundOwnerMissClass::RetiredService
         );
         assert_eq!(
-            InboundOwnerMissClass::classify(false, false),
+            InboundOwnerMissClass::classify(true, false, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, true, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, false, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        // A live destination role without an owner is divergence.
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, true, false),
+            InboundOwnerMissClass::ServiceUnowned
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, false, false),
+            InboundOwnerMissClass::ServiceUnowned
+        );
+        // Otherwise the exploratory pool, otherwise unknown.
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, true, false),
+            InboundOwnerMissClass::ExploratoryKnown
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, false, false),
             InboundOwnerMissClass::Unknown
         );
     }

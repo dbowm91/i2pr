@@ -164,14 +164,21 @@ def parse_attempt_receipt_lines(lines):
                     "tunnel_data_received", "tunnel_data_cells_accepted",
                     "garlic_owner_matches", "garlic_owner_misses",
                     "direct_garlic_received",
-                    "miss_exploratory_known", "miss_retired_service",
-                    "miss_unknown",
+                    "miss_service_unowned", "miss_exploratory_known",
+                    "miss_retired_service", "miss_unknown",
                 )
             }
             if all(match for match in values.values()):
-                stream_connect_handshake_wait_receipts.append(
-                    {key: int(match.group(1)) for key, match in values.items()}
+                receipt = {key: int(match.group(1)) for key, match in values.items()}
+                classes = (
+                    receipt["miss_service_unowned"]
+                    + receipt["miss_exploratory_known"]
+                    + receipt["miss_retired_service"]
+                    + receipt["miss_unknown"]
                 )
+                if classes != receipt["garlic_owner_misses"]:
+                    continue
+                stream_connect_handshake_wait_receipts.append(receipt)
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
             r"inbound_owner_registered\s*=\s*(true|false).*?"

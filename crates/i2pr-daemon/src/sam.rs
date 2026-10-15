@@ -3327,14 +3327,17 @@ async fn execute_stream_connect(
         let garlic_owner_misses = arrival_after.3.saturating_sub(arrival_before.3);
         let direct_garlic_received = arrival_after.4.saturating_sub(arrival_before.4);
         // Plan 478 owner-miss taxonomy: splits the miss count into
+        // service-but-unowned divergence (live destination role,
+        // no owner — the daemon dropping its own return),
         // own-exploratory, retired-service (stale lease), and
-        // never-known addressing, so the lane can tell a stale
-        // return path from foreign addressing without any id
+        // never-known addressing, so the lane can tell owner-table
+        // divergence from background and stale paths without any id
         // material crossing the boundary.
         let miss_taxonomy_after = product_owner_miss_taxonomy_totals(&state);
-        let miss_exploratory_known = miss_taxonomy_after.0.saturating_sub(miss_taxonomy_before.0);
-        let miss_retired_service = miss_taxonomy_after.1.saturating_sub(miss_taxonomy_before.1);
-        let miss_unknown = miss_taxonomy_after.2.saturating_sub(miss_taxonomy_before.2);
+        let miss_service_unowned = miss_taxonomy_after.0.saturating_sub(miss_taxonomy_before.0);
+        let miss_exploratory_known = miss_taxonomy_after.1.saturating_sub(miss_taxonomy_before.1);
+        let miss_retired_service = miss_taxonomy_after.2.saturating_sub(miss_taxonomy_before.2);
+        let miss_unknown = miss_taxonomy_after.3.saturating_sub(miss_taxonomy_before.3);
         warn!(
             synack_observed = synack_observed,
             synack_accepted = synack_accepted,
@@ -3348,6 +3351,7 @@ async fn execute_stream_connect(
             garlic_owner_matches = garlic_owner_matches,
             garlic_owner_misses = garlic_owner_misses,
             direct_garlic_received = direct_garlic_received,
+            miss_service_unowned = miss_service_unowned,
             miss_exploratory_known = miss_exploratory_known,
             miss_retired_service = miss_retired_service,
             miss_unknown = miss_unknown,
@@ -3370,8 +3374,9 @@ async fn execute_stream_connect(
                  tunnel_data_cells_accepted={tunnel_data_cells_accepted} \
                  garlic_owner_matches={garlic_owner_matches} \
                  garlic_owner_misses={garlic_owner_misses} \
-                 direct_garlic_received={direct_garlic_received} \
-                 miss_exploratory_known={miss_exploratory_known} \
+                  direct_garlic_received={direct_garlic_received} \
+                  miss_service_unowned={miss_service_unowned} \
+                  miss_exploratory_known={miss_exploratory_known} \
                  miss_retired_service={miss_retired_service} \
                  miss_unknown={miss_unknown}"
             ),
@@ -3474,15 +3479,15 @@ fn product_inbound_arrival_totals(state: &SamServiceState) -> (u64, u64, u64, u6
     manager.inbound_arrival_totals()
 }
 /// Plan 478 owner-miss taxonomy attribution: reads the attached
-/// router-network manager's `(exploratory_known, retired_service,
-/// unknown)` miss-class counters. Counts only; fails closed to zeros
-/// when no manager is attached.
-fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64) {
+/// router-network manager's `(service_unowned, exploratory_known,
+/// retired_service, unknown)` miss-class counters. Counts only;
+/// fails closed to zeros when no manager is attached.
+fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64, u64) {
     let Ok(slot) = state.router_network_manager.lock() else {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     };
     let Some(manager) = slot.as_ref() else {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     };
     manager.inbound_owner_miss_taxonomy_totals()
 }
