@@ -40,6 +40,35 @@ def strip_ansi(line):
     return ANSI_ESCAPE.sub("", line)
 
 
+def read_driver_leg_failure(evidence_path):
+    """Return the driver's structured leg-failure record, if present.
+
+    Fail-closed allowlist: only the documented v1 schema with a
+    known leg label, a short error string, and a bounded numeric
+    elapsed survive; a missing/unreadable sidecar or any other shape
+    yields None rather than a partial record.
+    """
+    sidecar = Path(str(evidence_path) + ".leg-failure.json")
+    try:
+        record = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("schema") != "plan458-sam-leg-failure-v1":
+        return None
+    leg = record.get("leg")
+    error = record.get("error")
+    elapsed = record.get("elapsed_s")
+    if leg not in ("i2pr-to-i2pd", "i2pd-to-i2pr"):
+        return None
+    if not isinstance(error, str) or len(error) > 200:
+        return None
+    if not isinstance(elapsed, (int, float)) or not 0 <= elapsed <= 3600:
+        return None
+    return {"leg": leg, "error": error, "elapsed_s": elapsed}
+
+
 def parse_attempt_receipt_lines(lines):
     attempt_messages = {}
     stage_counts = Counter()
@@ -54,6 +83,7 @@ def parse_attempt_receipt_lines(lines):
     owner_eviction_removed_receive = 0
     inbound_build_wait_receipts = []
     stream_connect_handshake_wait_receipts = []
+    stream_accept_data_phase_close_receipts = []
     delivery_admitted_cells = []
     for raw_line in lines:
         line = strip_ansi(raw_line)
@@ -179,6 +209,35 @@ def parse_attempt_receipt_lines(lines):
                 if classes != receipt["garlic_owner_misses"]:
                     continue
                 stream_connect_handshake_wait_receipts.append(receipt)
+        if re.search(r'transition\s*=\s*"?stream_accept_data_phase_closed', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "data_observed", "data_accepted", "data_rejected",
+                    "data_payload_bytes",
+                    "canon_data_observed", "canon_data_accepted",
+                    "canon_data_rejected", "canon_data_payload_bytes",
+                    "garlic_authenticated", "garlic_rejected",
+                    "payloads_dequeued", "streaming_accepted",
+                    "connection_state_code", "undrained_bytes", "reset",
+                )
+            }
+            if all(match for match in values.values()):
+                receipt = {key: int(match.group(1)) for key, match in values.items()}
+                # Both managers share the observed/accepted/rejected
+                # invariant by construction; a line violating it is a
+                # malformed receipt, not evidence.
+                mirror = (
+                    receipt["data_accepted"] + receipt["data_rejected"]
+                    == receipt["data_observed"]
+                )
+                canon = (
+                    receipt["canon_data_accepted"] + receipt["canon_data_rejected"]
+                    == receipt["canon_data_observed"]
+                )
+                if not (mirror and canon):
+                    continue
+                stream_accept_data_phase_close_receipts.append(receipt)
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
             r"inbound_owner_registered\s*=\s*(true|false).*?"
@@ -213,6 +272,7 @@ def parse_attempt_receipt_lines(lines):
         "owner_eviction_removed_receive": owner_eviction_removed_receive,
         "inbound_build_wait_receipts": inbound_build_wait_receipts,
         "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
+        "stream_accept_data_phase_close_receipts": stream_accept_data_phase_close_receipts,
     }
 
 
@@ -724,10 +784,12 @@ def main():
     except Exception as exc:
         receipt = lane.router_network_sam_attempt_receipt()
         stock_receipt = lane.stock_build_receipt()
+        driver_leg_failure = read_driver_leg_failure(EVIDENCE / "result.json")
         (EVIDENCE / "attempt-diagnostic.json").write_text(
             json.dumps(
                 {"schema": "plan471-stock-build-receipt-v1", **receipt,
                  "stock": stock_receipt,
+                 "driver_leg_failure": driver_leg_failure,
                  "mesh_churn_before": lane.stock_churn_before,
                  "mesh_quiet": lane.mesh_quiet},
                 sort_keys=True,
@@ -737,6 +799,7 @@ def main():
         print(
             "Plan 471 sanitized stock/build receipt: "
             + json.dumps({**receipt, "stock": stock_receipt,
+                          "driver_leg_failure": driver_leg_failure,
                           "mesh_churn_before": lane.stock_churn_before,
                           "mesh_quiet": lane.mesh_quiet}, sort_keys=True),
             file=__import__("sys").stderr,

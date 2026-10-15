@@ -135,3 +135,49 @@ impl SynResponseIngressAccounting {
         }
     }
 }
+
+/// Redacted ingress accounting for established-connection (data /
+/// CLOSE / RESET / plain-ACK) packets observed by one
+/// [`crate::streaming::StreamingManager`].
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies as
+/// established-connection traffic; exactly one of `accepted` /
+/// `rejected` advances per observed packet, so `accepted + rejected
+/// == observed` always holds. `payload_bytes_admitted` accumulates
+/// only application payload bytes the receive window admitted
+/// (in-order delivery plus reorder-buffer admission, including
+/// backlog drains released by the arriving packet), so a data-phase
+/// stall splits into "nothing arrived" (`observed == 0`),
+/// "arrived but rejected" (`rejected > 0`), "only control arrived"
+/// (`accepted > 0` with `payload_bytes_admitted == 0`), and
+/// "payload admitted but never drained" (admitted bytes with no
+/// application read).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DataPacketIngressAccounting {
+    /// Established-traffic packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets the connection processed without error
+    /// (includes payload-free control: plain ACKs, CLOSE/RESET).
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error (unknown
+    /// connection, port-tuple mismatch, decode failure, or a
+    /// receive-window rejection).
+    pub rejected: u64,
+    /// Application payload bytes admitted by the receive window.
+    pub payload_bytes_admitted: u64,
+}
+
+impl DataPacketIngressAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+            payload_bytes_admitted: self
+                .payload_bytes_admitted
+                .saturating_sub(earlier.payload_bytes_admitted),
+        }
+    }
+}

@@ -60,7 +60,9 @@ use crate::streaming::connection::{
     ConnectionId, ConnectionState, ConnectionTransition, StreamDirection, StreamingConnection,
 };
 use crate::streaming::errors::StreamingError;
-use crate::streaming::events::{SynResponseIngressAccounting, WirePacketObservation};
+use crate::streaming::events::{
+    DataPacketIngressAccounting, SynResponseIngressAccounting, WirePacketObservation,
+};
 use crate::streaming::send_window::SendWindowDecision;
 use crate::streaming::transport::TransportSendRequest;
 
@@ -323,6 +325,12 @@ pub struct StreamingManager {
     /// Redacted SYN-response ingress accounting (counts only, no
     /// stream ids, ports, hashes, or payload material).
     syn_response_ingress: SynResponseIngressAccounting,
+    /// Redacted established-traffic ingress accounting (counts
+    /// only). Lets the runtime distinguish "no data packet ever
+    /// arrived" (`observed == 0`) from "arrived but rejected"
+    /// (`rejected > 0`) and "only control arrived"
+    /// (`payload_bytes_admitted == 0`).
+    data_packet_ingress: DataPacketIngressAccounting,
 }
 
 impl StreamingManager {
@@ -345,6 +353,7 @@ impl StreamingManager {
             pending_bytes_by_connection: BTreeMap::new(),
             pending_syn_payloads: BTreeMap::new(),
             syn_response_ingress: SynResponseIngressAccounting::default(),
+            data_packet_ingress: DataPacketIngressAccounting::default(),
         }
     }
 
@@ -376,6 +385,33 @@ impl StreamingManager {
 
     fn note_syn_response_rejected(&mut self) {
         self.syn_response_ingress.rejected = self.syn_response_ingress.rejected.saturating_add(1);
+    }
+
+    /// Returns the redacted established-traffic ingress accounting
+    /// snapshot (counts only). `accepted + rejected == observed`
+    /// always holds; `payload_bytes_admitted` counts only receive-
+    /// window-admitted application payload bytes.
+    pub fn data_packet_ingress(&self) -> DataPacketIngressAccounting {
+        self.data_packet_ingress
+    }
+
+    fn note_data_observed(&mut self) {
+        self.data_packet_ingress.observed = self.data_packet_ingress.observed.saturating_add(1);
+    }
+
+    fn note_data_accepted(&mut self) {
+        self.data_packet_ingress.accepted = self.data_packet_ingress.accepted.saturating_add(1);
+    }
+
+    fn note_data_rejected(&mut self) {
+        self.data_packet_ingress.rejected = self.data_packet_ingress.rejected.saturating_add(1);
+    }
+
+    fn note_data_payload_admitted(&mut self, bytes: u64) {
+        self.data_packet_ingress.payload_bytes_admitted = self
+            .data_packet_ingress
+            .payload_bytes_admitted
+            .saturating_add(bytes);
     }
 
     /// Binds a listener on the given port.
@@ -911,12 +947,25 @@ impl StreamingManager {
         // against the retained peer signing key, so resolve the
         // connection before the full strict decode supplies its option
         // context.
-        let connection_id = self
+        //
+        // Plan 478 data-phase attribution: accounting starts at the
+        // peek classification so every outcome below (unknown
+        // connection, port-tuple mismatch, decode failure, handler
+        // rejection, or acceptance) is attributed against the same
+        // arrival count, mirroring the SYN-response arm above.
+        self.note_data_observed();
+        let connection_id = match self
             .inbound_by_stream
             .get(&peek.send_stream_id)
             .copied()
             .or_else(|| self.outbound_by_stream.get(&peek.send_stream_id).copied())
-            .ok_or(StreamingManagerError::UnknownConnection)?;
+        {
+            Some(connection_id) => connection_id,
+            None => {
+                self.note_data_rejected();
+                return Err(StreamingManagerError::UnknownConnection);
+            }
+        };
 
         // Plan 130 §8 E3: established traffic must carry the exact
         // port tuple fixed by the handshake. A mismatched delivery is
@@ -932,6 +981,7 @@ impl StreamingManager {
                 .get(&connection_id)
                 .map(|conn| (conn.remote_port(), conn.local_port()))
                 .expect("connection exists");
+            self.note_data_rejected();
             return Err(StreamingManagerError::PortTupleMismatch {
                 expected_destination,
                 expected_source,
@@ -940,27 +990,42 @@ impl StreamingManager {
             });
         }
 
-        let peer_signing_key = self
-            .connections
-            .get(&connection_id)
-            .ok_or(StreamingManagerError::UnknownConnection)?
-            .peer_signing_key()
-            .clone();
+        let peer_signing_key = match self.connections.get(&connection_id) {
+            Some(connection) => connection.peer_signing_key().clone(),
+            None => {
+                // Unreachable while the stream-id maps stay coherent
+                // with the connection table (see `remove_connection`),
+                // but counted so the observed/accepted/rejected
+                // invariant holds structurally on every path.
+                self.note_data_rejected();
+                return Err(StreamingManagerError::UnknownConnection);
+            }
+        };
         let limit = StreamingReceiveLimit::destination_path();
-        let (packet, signature_location) = decode_streaming_packet(
+        let (packet, signature_location) = match decode_streaming_packet(
             wire_bytes,
             limit,
             StreamingOptionDecodeContext::with_peer_key(&peer_signing_key),
-        )
-        .map_err(StreamingManagerError::Codec)?;
-        self.handle_data_packet(
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.note_data_rejected();
+                return Err(StreamingManagerError::Codec(error));
+            }
+        };
+        let outcome = self.handle_data_packet(
             &packet,
             signature_location,
             wire_bytes,
             from_destination_hash,
             connection_id,
             now_ms,
-        )
+        );
+        match &outcome {
+            Ok(_) => self.note_data_accepted(),
+            Err(_) => self.note_data_rejected(),
+        }
+        outcome
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1461,6 +1526,17 @@ impl StreamingManager {
         let delay_requested_now =
             received_new_data && connection_active && packet.options.delay_requested == Some(0);
         let _ = conn;
+
+        // Plan 478 data-phase attribution: the arriving packet's
+        // application payload was admitted by the receive window
+        // (in-order delivery or reorder-buffer admission; duplicates,
+        // plain ACKs, and terminated connections admit nothing).
+        // Counts wire payload bytes exactly once per admission, so
+        // the lane can split "payload arrived" from "only control
+        // arrived" without touching payload material.
+        if received_new_data {
+            self.note_data_payload_admitted(packet.payload.len() as u64);
+        }
 
         if terminated {
             self.pending_acks.remove(&connection_id);
@@ -2247,7 +2323,7 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
-    use crate::streaming::events::SynResponseIngressAccounting;
+    use crate::streaming::events::{DataPacketIngressAccounting, SynResponseIngressAccounting};
 
     const LOCAL_PORT: u16 = 10_134;
     const REMOTE_PORT: u16 = 20_134;
@@ -2661,6 +2737,268 @@ mod tests {
         );
         assert_eq!(manager.syn_response_ingress().observed, 1);
         assert_eq!(manager.syn_response_ingress().rejected, 1);
+    }
+
+    /// Establishes one outbound connection addressed by the returned
+    /// local receive stream id, following the same forced-
+    /// establishment shape as the production-path tests above.
+    fn established_outbound(
+        seed: u64,
+    ) -> (
+        StreamingManager,
+        crate::DestinationIdentity,
+        crate::streaming::connection::ConnectionId,
+        u32,
+    ) {
+        let local = destination(seed);
+        let remote_identity = destination(seed ^ 0x00FF_00FF);
+        let remote = RemoteDestination {
+            destination_hash: *remote_identity.id().as_hash().as_bytes(),
+            signing_public_key: remote_identity.destination().signing_key().clone(),
+            static_public_key: remote_identity.static_public_bytes(),
+        };
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent {
+            connection_id,
+            receive_stream_id,
+            ..
+        } = manager
+            .connect(
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(seed ^ 0x0F0F_0F0F),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        manager.drain_outbound();
+        let connection = manager
+            .get_connection_mut(connection_id)
+            .expect("connection");
+        connection.set_remote_stream_id(REMOTE_STREAM_ID);
+        connection
+            .transition_established(super::DEFAULT_ADVERTISED_MAX_PAYLOAD.into(), NOW_MS)
+            .expect("established connection");
+        (manager, local, connection_id, receive_stream_id)
+    }
+
+    #[test]
+    fn data_packet_ingress_counts_accepted_payload_on_established_connection() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0001);
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting::default()
+        );
+        let packet = raw_data_packet_with_payload(receive_stream_id, REMOTE_STREAM_ID, 1, 64);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("data accepted");
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(accounting.payload_bytes_admitted, 64);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        // Data traffic never touches the handshake accounting.
+        assert_eq!(
+            manager.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn data_packet_without_connection_counts_observed_and_rejected() {
+        let local = destination(0x1352_0002);
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let packet = raw_data_packet(0x3333_3333, 0x4444_4444, 7);
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting {
+                observed: 1,
+                accepted: 0,
+                rejected: 1,
+                payload_bytes_admitted: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn data_packet_port_tuple_mismatch_counts_rejected() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0003);
+        let packet = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, 1);
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    LOCAL_PORT,
+                    REMOTE_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.payload_bytes_admitted, 0);
+    }
+
+    #[test]
+    fn data_packet_buffered_out_of_order_admits_payload() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0004);
+        // Sequence 2 arrives with sequence 1 still missing: held in
+        // the reorder buffer, not delivered, but its payload arrived.
+        let packet = raw_data_packet_with_payload(receive_stream_id, REMOTE_STREAM_ID, 2, 32);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("out-of-order data buffered");
+        assert_eq!(manager.pending_delivered_len(), 0);
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(accounting.payload_bytes_admitted, 32);
+    }
+
+    #[test]
+    fn close_without_signature_counts_rejected() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0005);
+        // CLOSE requires SIGNATURE_INCLUDED with a real signature;
+        // the signature-free control shape is a typed decode
+        // rejection, not a state transition.
+        let packet = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: receive_stream_id,
+                receive_stream_id: REMOTE_STREAM_ID,
+                sequence_num: 1,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::CLOSE_FLAGS)
+                    .expect("close flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("close-shaped packet encoding");
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.payload_bytes_admitted, 0);
+    }
+
+    #[test]
+    fn syn_response_traffic_never_touches_data_accounting() {
+        use i2pr_proto::streaming::SYN_RESPONSE_FLAGS;
+
+        let local = destination(0x1352_0006);
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let shaped = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0x1111_1111,
+                receive_stream_id: 0x2222_2222,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(SYN_RESPONSE_FLAGS).expect("response flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("syn-response-shaped packet encoding");
+        let _ = manager.process_inbound_packet(
+            &shaped,
+            &[0_u8; 32],
+            &local,
+            REMOTE_PORT,
+            LOCAL_PORT,
+            NOW_MS,
+        );
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn data_packet_ingress_delta_since_subtracts_fieldwise() {
+        let later = DataPacketIngressAccounting {
+            observed: 10,
+            accepted: 7,
+            rejected: 3,
+            payload_bytes_admitted: 2328,
+        };
+        let earlier = DataPacketIngressAccounting {
+            observed: 4,
+            accepted: 4,
+            rejected: 0,
+            payload_bytes_admitted: 1000,
+        };
+        assert_eq!(
+            later.delta_since(earlier),
+            DataPacketIngressAccounting {
+                observed: 6,
+                accepted: 3,
+                rejected: 3,
+                payload_bytes_admitted: 1328,
+            }
+        );
+        assert_eq!(
+            earlier.delta_since(later),
+            DataPacketIngressAccounting::default()
+        );
     }
 
     #[test]

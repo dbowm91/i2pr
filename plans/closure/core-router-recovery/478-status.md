@@ -724,3 +724,135 @@ diagnostic. That makes the next lane decisive between (1)
 and (2). No further lane without it. Reverse STREAM data,
 §6 recovery, and product close-out remain open; 478 stays
 active.
+
+## 2026-10-15 material change: ACCEPT data-phase attribution (no lane yet)
+
+Implemented the in-plan change the `qr06eib6` frontier
+requires. Per-accepted-stream ingress accounting plus the
+close reason, counts-only throughout:
+
+- `i2pr-client` (`streaming/events.rs`, `manager.rs`,
+  `streaming/mod.rs`): new `DataPacketIngressAccounting
+  { observed, accepted, rejected, payload_bytes_admitted }`
+  with `delta_since`, mirroring the SYN-response arm.
+  `process_inbound_packet`'s established-traffic branch notes
+  observed at peek classification and exactly one of
+  accepted/rejected on every exit (unknown connection,
+  port-tuple mismatch, decode failure, handler outcome —
+  including a provably-unreachable lookup arm kept counted
+  so the invariant holds structurally).
+  `handle_data_packet` counts the arriving packet's wire
+  payload once on receive-window admission (Delivered or
+  Buffered; duplicates, plain ACKs, terminated: nothing).
+  7 new manager tests (accept/unknown/tuple/buffered/
+  close-without-signature/handshake-isolation/delta); the
+  accepted-arm probe kills and is reverted with zero
+  markers. Client lib 117 → 124 green.
+- `i2pr-daemon` (`sam.rs`, `sam/raw_stream.rs`):
+  `RawStreamCleanup` carries an `AcceptDataPhaseBaseline`
+  (bridge garlic 4-tuple + receiver-mirror and canonical
+  data ingress) captured at the command→raw handoff for
+  inbound streams only (ACCEPT command path + both FORWARD
+  sites); outbound CONNECT closes stay unattributed.
+  `finish_raw_stream` emits
+  `transition="stream_accept_data_phase_closed"` with 15
+  counts-only keys (mirror 4 + canonical 4 + bridge 4 +
+  `connection_state_code`/`undrained_bytes`/`reset`) BEFORE
+  removing the connection. State code: 0 absent (removed
+  out from under the pump), 1 Established, 2 closing,
+  3 closed/reset, 4 handshake states — exhaustive over the
+  7 `ConnectionState` variants. New lib test pins the
+  no-baseline and missing-bridge fail-closed arms (probe
+  kills, reverted). Daemon lib 783 + self-composed 4 +
+  tunnel-unit 44 green; clippy/fmt clean.
+- Lane plumbing: parser gains
+  `stream_accept_data_phase_close_receipts` (15 keys,
+  fail-closed on either manager's
+  accepted+rejected≠observed); new offline receipt suite
+  (12 tests: full line, both invariant refusals, missing
+  keys, ANSI, counts-only, handshake/close independence,
+  sidecar round-trip/bound/schema/leg/range); driver
+  accept worker records elapsed-to-failure (fast EOF vs
+  timeout EOF) and `main()` prints per-leg start/fail
+  lines plus a `plan458-sam-leg-failure-v1` sidecar the
+  lane merges into `attempt-diagnostic.json` (fail-closed
+  allowlist reader). Core-recovery offline suite 36
+  green; planning suite 51 green.
+
+Decision table for the next lane (read the reverse-leg
+close receipt + the driver sidecar):
+- `data_observed == 0` → payload never arrived (upstream
+  scope; hypothesis 1). Canon zeros confirm no path
+  confusion.
+- `data_observed > 0, data_accepted == 0` → arrived but
+  our manager rejected everything (hypothesis 2,
+  streaming path).
+- `data_accepted > 0, data_payload_bytes == 0` → only
+  control arrived (ACK/CLOSE), no payload.
+- `data_payload_bytes > 0` with lane 0 bytes →
+  admitted but never reached TCP: split by
+  `connection_state_code` (1 = pump exited while peer
+  alive; 0 = connection removed under the pump) and
+  `undrained_bytes` (>0 = never drained).
+- `canon_data_* > 0` on an ACCEPT close → unexpected
+  path (data landing on the wrong manager).
+
+## 2026-10-15 lane `sy7cqc9a`: forward CONNECT fails before the frontier (plumbing live-proven)
+
+Bounded exact-pin lane with the attribution live (pinned
+i2pd 2.61.0, `mesh_quiet: true`, scratch
+`sy7cqc9a-forward-zero-arrival-run` snapshotted). Builds
+were rockier than `qr06eib6` (2 inbound-build waits
+expired with orphans peer-matching but message-missing,
+`bootstrap_retry: 1`, `inbound_retry: 2`; still 3 installs
+committed, owners 2/2, no evictions). The forward leg
+failed on BOTH attempts before any ACCEPT existed, so the
+reverse-DATA frontier was not reached:
+
+- Attempt 1: CONNECT :21:43, peer-LS2 fulfillment took
+  30 s (:22:13), 8 SYN cells composed and tunnel-delivered,
+  then a `delivery_failed=1` sweep at :22:18 removed the
+  SYN connection and the wait exited at 35 s (NOT the 60 s
+  deadline) with all-zero attribution.
+- Attempt 2 (fresh-handshake recovery): CONNECT :22:23,
+  `delivery_failed=1` at :22:23.28, wait exited in 55 ms
+  with all zeros — the `msmizqup` fast-fail shape.
+- f's log shows no incoming SYN at all (only its own
+  parked SAM ACCEPT + session teardown), despite our
+  `delivered=8`.
+
+The new plumbing is live-proven by this failure:
+`driver_leg_failure` (`i2pr-to-i2pd`, 40.2 s, CONNECT
+TIMEOUT) merged into `attempt-diagnostic.json` via the
+sidecar; `stream_accept_data_phase_close_receipts: []`
+parsed correctly alongside 2 handshake-wait receipts —
+old formats unbroken.
+
+What this run measures (NOT conclusions):
+1. `wait_for_established` returns false immediately on a
+   removed connection (`sam.rs` early-exit arm), so a
+   delivery-side removal reads as a handshake timeout with
+   all-zero ingress. The 35 s / 55 ms exits (vs the 60 s
+   deadline) are the readable signature — the sidecar
+   elapsed makes it visible for the first time.
+2. Our-side `deliver_outbound → bridge_to_peer` failure
+   for the SYN is a first-order open: `delivered=8` at
+   :22:13, then `delivery_failed=1` at :22:18 and again
+   at :22:23. The sweep counter conflates LS2/install/
+   bridge causes and the typed reason is debug-gated, so
+   the cause is unrecorded. Outbound-role churn between
+   :13 and :18 is one candidate; the refresh path from
+   the creator/local fix is inbound-scoped and qr06eib6
+   passed forward with it, so it is not the suspect —
+   but the suspicion is recorded, not assumed away.
+3. The 8 tunnel-delivered SYN cells never appeared in
+   f's log: tunnel-path loss downstream of our
+   `bridge_to_peer Ok` is also still open (same family
+   as the old SYN-ACK loss, now on the forward leg).
+
+Next material change (in-plan, no lane until it lands):
+split `delivery_failed` by typed cause (LS2 vs install
+vs bridge-subcause, counts-only) so a SYN-send failure
+attributes like the handshake wait does. Reverse STREAM
+data, §6 recovery, and product close-out remain open;
+478 stays active.

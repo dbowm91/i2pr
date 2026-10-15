@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use i2pr_api::sam::session::SamSessionId;
 use i2pr_client::DestinationId;
+use i2pr_client::streaming::DataPacketIngressAccounting;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
@@ -184,6 +185,32 @@ pub(crate) struct RawStreamCleanup {
     pub(crate) connection_id: ConnectionId,
     pub(crate) peer_destination: RemoteDestination,
     pub(crate) direction: RawDirection,
+    /// Plan 478 data-phase baseline, captured at the command→raw
+    /// handoff for inbound (`STREAM ACCEPT`/FORWARD) streams only.
+    /// `finish_raw_stream` diffs the destination bridge counters
+    /// against this baseline and emits the per-accepted-stream
+    /// ingress attribution, so the lane can split "payload never
+    /// arrived" from "arrived but dropped" on the ACCEPT path the
+    /// same way the CONNECT path attributes the handshake wait.
+    pub(crate) data_phase_baseline: Option<AcceptDataPhaseBaseline>,
+}
+
+/// Counts-only snapshot of the destination bridge ingress state at
+/// the moment an inbound stream enters its data phase. No stream
+/// ids, ports, hashes, or payload material.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AcceptDataPhaseBaseline {
+    /// Bridge garlic-dispatch outcomes
+    /// `(authenticated, rejected, payloads_dequeued,
+    /// streaming_accepted)`.
+    pub(crate) garlic: (u64, u64, u64, u64),
+    /// Receiver-mirror established-traffic ingress (the manager
+    /// that owns ACCEPT-side connections).
+    pub(crate) mirror_data: DataPacketIngressAccounting,
+    /// Canonical-manager established-traffic ingress
+    /// (unexpected-path detector: ACCEPT-side data must not land
+    /// here).
+    pub(crate) canonical_data: DataPacketIngressAccounting,
 }
 
 /// SAM narrow capability adapting one Streaming connection to the
@@ -458,6 +485,11 @@ impl SamServiceState {
     /// attachment are then released, while the peer receives the terminal
     /// packet through the same supervised local-delivery path.
     pub(crate) fn finish_raw_stream(&self, cleanup: RawStreamCleanup, reset: bool) {
+        // Plan 478: attribute the ACCEPT data phase before the
+        // connection is removed — the close-time state (present /
+        // established / closing / gone) is itself the decisive
+        // evidence for "who ended the stream".
+        self.emit_accept_data_phase_close(&cleanup, reset);
         let RawStreamCleanup {
             session_id,
             destination_id,
@@ -465,6 +497,7 @@ impl SamServiceState {
             connection_id,
             peer_destination,
             direction,
+            data_phase_baseline: _,
         } = cleanup;
         let now_ms = streaming_now_ms();
         let terminal_queued = self

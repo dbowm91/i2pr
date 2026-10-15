@@ -83,7 +83,7 @@ pub use fabric::{
     LocalTransportRequest, SamLocalProductFabric, degrade_to_reason,
 };
 pub use faults::{FaultPacketClass, SamDeliveryFaultCounters, SamDeliveryFaultProfile};
-pub(crate) use raw_stream::RawStreamCleanup;
+pub(crate) use raw_stream::{AcceptDataPhaseBaseline, RawStreamCleanup};
 pub use raw_stream::{
     RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
     SamAsyncStream, SamIoStream, run_raw_stream,
@@ -2325,6 +2325,14 @@ async fn handle_connection(
             connection_id: handoff.connection_id,
             peer_destination: handoff.peer_destination.clone(),
             direction: handoff.direction,
+            // Plan 478: inbound streams carry the data-phase
+            // baseline so the close attributes the ACCEPT data
+            // phase; outbound streams close unattributed.
+            data_phase_baseline: if handoff.direction == RawDirection::Inbound {
+                Some(accept_data_phase_baseline(&state, handoff.destination_id))
+            } else {
+                None
+            },
         };
         // Plan 151: when the scope rejects the raw driver (live task
         // ceiling), unwind the just-allocated attachment through the
@@ -3491,6 +3499,130 @@ fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64
     };
     manager.inbound_owner_miss_taxonomy_totals()
 }
+
+/// Plan 478 ACCEPT data-phase baseline: snapshots the destination
+/// bridge ingress counters at the moment an inbound stream enters
+/// its data phase. Fail-closed zeros when no bridge is installed
+/// (mirrors `bridge_garlic_totals`). Counts only; no identities,
+/// keys, ports, or payload material.
+fn accept_data_phase_baseline(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> AcceptDataPhaseBaseline {
+    let garlic = bridge_garlic_totals(state, destination_id);
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return AcceptDataPhaseBaseline {
+            garlic,
+            mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+        };
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return AcceptDataPhaseBaseline {
+            garlic,
+            mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+        };
+    };
+    handle.with(|bridge| AcceptDataPhaseBaseline {
+        garlic,
+        mirror_data: bridge.receiver_streaming().data_packet_ingress(),
+        canonical_data: bridge.streaming().data_packet_ingress(),
+    })
+}
+
+impl SamServiceState {
+    /// Plan 478 ACCEPT data-phase close attribution: diffs the
+    /// destination bridge ingress counters against the handoff
+    /// baseline and emits the per-accepted-stream receipt. Must run
+    /// before the connection is removed — the close-time state is
+    /// itself decisive evidence:
+    /// - `connection_state_code = 1` (still Established): the pump
+    ///   exited for a non-streaming reason while the peer session
+    ///   was alive.
+    /// - `2` (ClosingLocal/Remote): a CLOSE was sent or received.
+    /// - `3` (Closed/Reset): abnormal termination.
+    /// - `4`: a handshake state (never Established on this path).
+    /// - `0` (absent): the connection was removed out from under
+    ///   the pump (delivery-failure termination or driver teardown).
+    ///
+    /// No-op when the cleanup carries no baseline (outbound
+    /// CONNECT streams). Counts only; no identities, keys, ports,
+    /// or payload material.
+    pub(crate) fn emit_accept_data_phase_close(&self, cleanup: &RawStreamCleanup, reset: bool) {
+        use i2pr_client::streaming::connection::ConnectionState;
+
+        let Some(baseline) = cleanup.data_phase_baseline.as_ref() else {
+            return;
+        };
+        let garlic_now = bridge_garlic_totals(self, cleanup.destination_id);
+        let (mirror_now, canonical_now, state_code, undrained) = {
+            let destinations_arc = self.sam_destinations();
+            let Ok(destinations) = destinations_arc.lock() else {
+                return;
+            };
+            let Some(handle) = destinations.get(cleanup.destination_id) else {
+                return;
+            };
+            handle.with(|bridge| {
+                let (manager, mirror) = match cleanup.direction {
+                    RawDirection::Inbound => (bridge.receiver_streaming(), true),
+                    RawDirection::Outbound => (bridge.streaming(), false),
+                };
+                // The canonical snapshot is always the canonical
+                // manager regardless of direction; the mirror
+                // snapshot follows the stream's owning manager.
+                let (mirror_now, canonical_now) = if mirror {
+                    (
+                        manager.data_packet_ingress(),
+                        bridge.streaming().data_packet_ingress(),
+                    )
+                } else {
+                    (
+                        bridge.receiver_streaming().data_packet_ingress(),
+                        manager.data_packet_ingress(),
+                    )
+                };
+                let state_code = match manager
+                    .get_connection(cleanup.connection_id)
+                    .map(|connection| connection.state())
+                {
+                    None => 0,
+                    Some(ConnectionState::Established) => 1,
+                    Some(ConnectionState::ClosingLocal | ConnectionState::ClosingRemote) => 2,
+                    Some(ConnectionState::Closed | ConnectionState::Reset) => 3,
+                    Some(
+                        ConnectionState::OutboundSynSent | ConnectionState::InboundSynReceived,
+                    ) => 4,
+                };
+                let undrained = manager.pending_bytes_for(cleanup.connection_id);
+                (mirror_now, canonical_now, state_code, undrained)
+            })
+        };
+        let mirror = mirror_now.delta_since(baseline.mirror_data);
+        let canonical = canonical_now.delta_since(baseline.canonical_data);
+        warn!(
+            data_observed = mirror.observed,
+            data_accepted = mirror.accepted,
+            data_rejected = mirror.rejected,
+            data_payload_bytes = mirror.payload_bytes_admitted,
+            canon_data_observed = canonical.observed,
+            canon_data_accepted = canonical.accepted,
+            canon_data_rejected = canonical.rejected,
+            canon_data_payload_bytes = canonical.payload_bytes_admitted,
+            garlic_authenticated = garlic_now.0.saturating_sub(baseline.garlic.0),
+            garlic_rejected = garlic_now.1.saturating_sub(baseline.garlic.1),
+            payloads_dequeued = garlic_now.2.saturating_sub(baseline.garlic.2),
+            streaming_accepted = garlic_now.3.saturating_sub(baseline.garlic.3),
+            connection_state_code = state_code,
+            undrained_bytes = undrained,
+            reset = u64::from(reset),
+            transition = "stream_accept_data_phase_closed",
+            "STREAM ACCEPT data phase closed; per-accepted-stream ingress attribution (counts only)",
+        );
+    }
+}
 /// Plan 147 §7: parks the caller until `manager.get_connection(id)`
 /// reports `ConnectionState::Established`, or returns `false` once
 /// `deadline` expires. The destination's runtime driver notifies
@@ -4120,6 +4252,7 @@ async fn run_forward_worker(
                     connection_id,
                     peer_destination: peer_destination.clone(),
                     direction: RawDirection::Inbound,
+                    data_phase_baseline: Some(accept_data_phase_baseline(&state, destination_id)),
                 };
                 state.finish_raw_stream(cleanup, true);
                 break;
@@ -4143,6 +4276,7 @@ async fn run_forward_worker(
             connection_id: handoff.connection_id,
             peer_destination: handoff.peer_destination.clone(),
             direction: handoff.direction,
+            data_phase_baseline: Some(accept_data_phase_baseline(&state, destination_id)),
         };
         let stream_cancellation = task_cancellation.child_token();
         let raw_future = run_raw_stream(Arc::clone(&state), handoff, stream_cancellation.clone());
@@ -4424,6 +4558,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn accept_data_phase_close_is_silent_without_baseline_or_bridge() {
+        use i2pr_client::streaming::connection::ConnectionId;
+
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let mut rng = OsRng;
+        let peer = DestinationIdentity::generate(&mut rng).expect("peer identity");
+        let cleanup = RawStreamCleanup {
+            session_id: SamSessionId::new("accept-close-probe").unwrap(),
+            destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([9_u8; 32])),
+            attachment_id: 1,
+            connection_id: ConnectionId::new(7),
+            peer_destination: i2pr_client::streaming::manager::RemoteDestination {
+                destination_hash: *peer.id().as_hash().as_bytes(),
+                signing_public_key: peer.destination().signing_key().clone(),
+                static_public_key: peer.static_public_bytes(),
+            },
+            direction: RawDirection::Inbound,
+            data_phase_baseline: None,
+        };
+        // No baseline (outbound shape): returns before touching any
+        // bridge state — no panic, no attribution line.
+        state.emit_accept_data_phase_close(&cleanup, false);
+        // Unknown destination: the baseline captures fail-closed
+        // zeros, and the close against a missing bridge returns
+        // before reading any manager.
+        let baseline = accept_data_phase_baseline(&state, cleanup.destination_id);
+        assert_eq!(baseline.garlic, (0, 0, 0, 0));
+        assert_eq!(
+            baseline.mirror_data,
+            i2pr_client::streaming::DataPacketIngressAccounting::default()
+        );
+        assert_eq!(
+            baseline.canonical_data,
+            i2pr_client::streaming::DataPacketIngressAccounting::default()
+        );
+        let cleanup = RawStreamCleanup {
+            data_phase_baseline: Some(baseline),
+            ..cleanup
+        };
+        state.emit_accept_data_phase_close(&cleanup, true);
     }
 
     async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {

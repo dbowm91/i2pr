@@ -197,12 +197,17 @@ def run_leg(sender, receiver, sid, rid, remote, payload, timeout):
     """One complete STREAM leg: accept worker plus CONNECT exchange."""
     accepted = {}
     failure = []
+    accept_started = time.monotonic()
 
     def accept():
         try:
             echo_accept(receiver, rid, payload, timeout, accepted)
         except Exception as exc:
-            failure.append(str(exc))
+            # Elapsed time is itself evidence: a fast EOF means our
+            # daemon closed the SAM socket, while an EOF near the
+            # timeout means the worker outlived the peer exchange.
+            elapsed = time.monotonic() - accept_started
+            failure.append(f"{exc} after {elapsed:.1f}s")
 
     worker = threading.Thread(target=accept, daemon=True)
     worker.start()
@@ -242,6 +247,31 @@ def run_forward_leg_with_recovery(sender, receiver, sid, rid, remote, payload, t
         sent = run_leg(sender, receiver, sid, rid, remote, payload, timeout)
         recovery["forward_recovered"] = True
     return sent, recovery
+
+
+def write_leg_failure_sidecar(evidence_path, label, error, elapsed_s):
+    """Record a failed STREAM leg beside the exchange evidence.
+
+    The lane's attempt-diagnostic path merges this record when the
+    exchange evidence itself is absent, so a failed leg still
+    attributes which direction failed, how the worker failed, and
+    how long the worker lived. Counts and short messages only; no
+    key material or payload bytes.
+    """
+    record = {
+        "schema": "plan458-sam-leg-failure-v1",
+        "leg": label,
+        "error": str(error)[:200],
+        "elapsed_s": round(float(elapsed_s), 1),
+        "at_wall": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        with open(evidence_path + ".leg-failure.json", "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+            handle.write("\n")
+    except OSError as exc:
+        print(f"leg-failure evidence unavailable: {exc}", flush=True)
+    return record
 
 
 def main():
@@ -284,16 +314,28 @@ def main():
         ):
             payload = PAYLOADS[label]
             remote = i2pd_public if label == "i2pr-to-i2pd" else i2pr_public
-            if label == "i2pr-to-i2pd":
-                # Plan 478 fresh-handshake recovery, forward leg only,
-                # at most once (see run_forward_leg_with_recovery).
-                # Reverse leg keeps single-attempt shape.
-                sent, leg_recovery = run_forward_leg_with_recovery(
-                    sender, receiver, sid, rid, remote, payload, args.timeout
+            leg_started = time.monotonic()
+            print(f"leg {label} started", flush=True)
+            try:
+                if label == "i2pr-to-i2pd":
+                    # Plan 478 fresh-handshake recovery, forward leg only,
+                    # at most once (see run_forward_leg_with_recovery).
+                    # Reverse leg keeps single-attempt shape.
+                    sent, leg_recovery = run_forward_leg_with_recovery(
+                        sender, receiver, sid, rid, remote, payload, args.timeout
+                    )
+                    recovery.update(leg_recovery)
+                else:
+                    sent = run_leg(sender, receiver, sid, rid, remote, payload, args.timeout)
+            except Exception as exc:
+                elapsed = time.monotonic() - leg_started
+                record = write_leg_failure_sidecar(args.evidence, label, exc, elapsed)
+                print(
+                    f"leg {label} failed after {record['elapsed_s']}s: "
+                    f"{record['error']}",
+                    flush=True,
                 )
-                recovery.update(leg_recovery)
-            else:
-                sent = run_leg(sender, receiver, sid, rid, remote, payload, args.timeout)
+                raise
             evidence_label = (
                 {
                     "i2pr-to-i2pd": "stock-f-to-stock-c",
