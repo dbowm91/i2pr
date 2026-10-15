@@ -457,6 +457,27 @@ impl StreamingManager {
         // Plan 125 §6: the connection is created in `OutboundSynSent`
         // state. It does NOT transition to Established here; that
         // happens after the peer supplies a signed SYN response.
+        //
+        // Plan 478 §6: track the originator SYN for retransmission
+        // like any other signed packet. Without this the first SYN
+        // is single-shot: a single loss anywhere on the path fails
+        // the whole CONNECT with a timeout, and the sweep has
+        // nothing to retry. Sequence 0 is cleared by the SYN
+        // response acknowledgement through the standard path.
+        self.outbound_packets
+            .entry(connection_id)
+            .or_default()
+            .insert(
+                0,
+                OutboundPacket {
+                    sequence: 0,
+                    payload_len: initial_payload.len(),
+                    sent_at_ms: now_ms,
+                    retransmit_count: 0,
+                    request: request.clone(),
+                    signed: true,
+                },
+            );
         self.outbound_queue.push_back(request);
 
         Ok(ConnectOutcome::SynSent {
@@ -1197,6 +1218,12 @@ impl StreamingManager {
         conn.set_remote_stream_id(packet.receive_stream_id);
         conn.transition_established(u32::from(negotiated), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
+        // The originator SYN (sequence 0) is acknowledged by this
+        // SYN response; drop its retransmit tracking so an
+        // established connection never re-emits SYNs.
+        if let Some(tracked) = self.outbound_packets.get_mut(&connection_id) {
+            tracked.remove(&0);
+        }
 
         Ok(WirePacketObservation {
             connection_id: Some(connection_id),
