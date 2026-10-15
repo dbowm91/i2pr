@@ -15,12 +15,21 @@ use flate2::write::GzEncoder;
 use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
 use i2pr_daemon::bootstrap::Bootstrap;
 use i2pr_daemon::config::{Config, ReseedConfig};
+use i2pr_daemon::floodfill::{
+    FloodfillCoordinator, FloodfillCoordinatorPolicy, FloodfillDispatchOutcome, NormalReadiness,
+    evaluate_normal_eligibility,
+};
 use i2pr_daemon::router_i2np::{
-    MAX_ROUTER_I2NP_BYTES, RouterDeliveryOutcome, RouterDeliveryRequest, RouterI2npKind,
-    RouterI2npOutcome, Ssu2DaemonService,
+    FloodfillControlBody, MAX_ROUTER_I2NP_BYTES, RouterDeliveryOutcome, RouterDeliveryRequest,
+    RouterI2npKind, RouterI2npOutcome, Ssu2DaemonService,
+};
+use i2pr_daemon::ssu2_qualification_receipts::{
+    LOCAL_PHASES, LocalQualificationPermit, LocalQualificationProfile, LocalReceiptCollector,
 };
 use i2pr_netdb::{
-    RouterInfoStoreConfig, UnsolicitedStoreOutcome, ValidatedRouterInfo, ValidationContext,
+    FloodfillResourcePolicy, FloodfillRoleState, FloodfillStoreEffect, FloodfillStorePolicy,
+    FloodfillTime, ReplicationPolicy, RouterInfoStoreConfig, ServerNetDbConfig,
+    UnsolicitedStoreOutcome, ValidatedRouterInfo, ValidationContext,
 };
 use i2pr_proto::{
     DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody, I2npMessage,
@@ -28,9 +37,9 @@ use i2pr_proto::{
 };
 use i2pr_runtime::{
     CancellationReason, CancellationToken, ChildFailurePolicy, ChildScope, Ssu2IdentityMaterial,
-    Ssu2QualificationEventKind, Ssu2QualificationObserver,
+    Ssu2PublicationMaterial, Ssu2QualificationEventKind,
 };
-use i2pr_transport::{PeerId, TerminationCategory};
+use i2pr_transport::{AddressFamily, PeerId, ReachabilityState, TerminationCategory};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{SeedableRng, TryRngCore};
 
@@ -38,138 +47,10 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Canonical local phase vocabulary, in order. Must stay a subset of the
-/// Python `LOCAL_PHASES` in `tests/integration/ssu2/plan476_executor.py`.
-const LOCAL_PHASES: [&str; 6] = [
-    "permit_checked",
-    "router_started",
-    "peer_authenticated",
-    "request_received",
-    "product_effect_observed",
-    "router_stopped",
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LocalQualificationProfile {
-    ControlledLoopback,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct LocalQualificationPermit {
-    profile: LocalQualificationProfile,
-    consent: bool,
-}
-
-/// Sanitized local receipt: phase labels plus counts only. There is
-/// deliberately no field capable of holding a transient message ID,
-/// peer hash, endpoint, or payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct LocalObservedReceipt {
-    phases: Vec<(&'static str, u32)>,
-    session_observed: bool,
-    product_observed: bool,
-    live_qualification: &'static str,
-}
-
-/// Strictly local, permission-gated projection of one observer epoch into
-/// the Plan 476 local-observed vocabulary. In-memory only; no sockets,
-/// no subprocesses, no files.
-struct LocalReceiptCollector {
-    permit: LocalQualificationPermit,
-}
-
-impl LocalReceiptCollector {
-    fn new(permit: LocalQualificationPermit) -> Result<Self, &'static str> {
-        if !permit.consent {
-            return Err("permit-consent-revoked");
-        }
-        if permit.profile != LocalQualificationProfile::ControlledLoopback {
-            return Err("permit-profile-invalid");
-        }
-        Ok(Self { permit })
-    }
-
-    fn collect(
-        &self,
-        observer: &Ssu2QualificationObserver,
-    ) -> Result<LocalObservedReceipt, &'static str> {
-        // The gate is re-checked at collection time, not just at
-        // construction: a collector must never project an epoch it is no
-        // longer permitted to read.
-        if !self.permit.consent {
-            return Err("permit-consent-revoked");
-        }
-        let (events, overflowed) = observer.drain();
-        if overflowed {
-            return Err("receipt-overflow");
-        }
-        if events.is_empty() {
-            return Err("receipt-empty");
-        }
-        for pair in events.windows(2) {
-            if pair[0].sequence() >= pair[1].sequence() {
-                return Err("receipt-sequence-invalid");
-            }
-        }
-        // Re-verify the observer's exact-match invariant from the projected
-        // batch: a product row is accepted only with a preceding ingress row
-        // carrying the same opaque commitment and link generation.
-        let mut ingress: Vec<([u8; 16], u64)> = Vec::new();
-        let mut counts = [0_u32; LOCAL_PHASES.len()];
-        for event in &events {
-            match event.kind() {
-                Ssu2QualificationEventKind::LocalIdentityAttested
-                | Ssu2QualificationEventKind::SocketsBound => {
-                    counts[1] = counts[1].saturating_add(1);
-                }
-                Ssu2QualificationEventKind::OutboundSessionAuthenticated
-                | Ssu2QualificationEventKind::InboundSessionAuthenticated => {
-                    counts[2] = counts[2].saturating_add(1);
-                }
-                Ssu2QualificationEventKind::AuthenticatedI2npReceived => {
-                    counts[3] = counts[3].saturating_add(1);
-                    ingress.push((event.peer_commitment(), event.link_generation()));
-                }
-                Ssu2QualificationEventKind::I2npProductEffectAccepted => {
-                    let key = (event.peer_commitment(), event.link_generation());
-                    if !ingress.contains(&key) {
-                        return Err("product-without-authenticated-ingress");
-                    }
-                    counts[4] = counts[4].saturating_add(1);
-                }
-                Ssu2QualificationEventKind::SessionClosed
-                | Ssu2QualificationEventKind::RouterShutdown => {
-                    counts[5] = counts[5].saturating_add(1);
-                }
-                // Bounded transport internals (queue admission, socket
-                // write dispositions) are evidence of liveness, not
-                // qualification phases; they are counted nowhere and
-                // their transient IDs never leave this function.
-                Ssu2QualificationEventKind::I2npQueueAccepted
-                | Ssu2QualificationEventKind::I2npDatagramWritten
-                | Ssu2QualificationEventKind::I2npDatagramWriteFailed
-                | Ssu2QualificationEventKind::I2npDatagramStageRejected => {}
-            }
-        }
-        if counts[2] == 0 {
-            return Err("authenticated-session-unobserved");
-        }
-        let mut phases = Vec::new();
-        phases.push((LOCAL_PHASES[0], 1));
-        for (index, phase) in LOCAL_PHASES.iter().enumerate().skip(1) {
-            if counts[index] > 0 {
-                phases.push((*phase, counts[index]));
-            }
-        }
-        Ok(LocalObservedReceipt {
-            phases,
-            session_observed: true,
-            product_observed: counts[4] > 0,
-            live_qualification: "not-run",
-        })
-    }
-}
-
+/// Collector, permit, receipt, and phase vocabulary live in
+/// production (`i2pr_daemon::ssu2_qualification_receipts`): the Plan
+/// 476 per-host executor drains through that interface, not through a
+/// test-local copy. These tests pin its gates over live sessions.
 fn wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -275,16 +156,19 @@ fn make_local_keys(port_placeholder: u16) -> LocalKeys {
 
 /// Deterministic third-party signed RouterInfo store, mirroring the
 /// daemon bootstrap unit fixture (fresh identity, compressed encoding).
+/// The record carries the live network ID and a router version so the
+/// floodfill serving owner accepts it; the bootstrap owner is
+/// network-agnostic and keeps accepting it.
 fn signed_router_store(seed: u64, now_ms: u64) -> DatabaseStoreMessage {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+    let options = Mapping::from_entries(vec![
+        ("router.version".to_string(), "0.9.58".to_string()),
+        ("netId".to_string(), "2".to_string()),
+    ])
+    .expect("record options");
     let info = bundle
-        .sign_router_info(
-            Date::from_millis(now_ms),
-            Vec::new(),
-            Vec::new(),
-            Mapping::empty(),
-        )
+        .sign_router_info(Date::from_millis(now_ms), Vec::new(), Vec::new(), options)
         .expect("signed RouterInfo");
     let validated = ValidatedRouterInfo::from_router_info(
         info,
@@ -837,4 +721,148 @@ fn disabled_profile_has_no_observer_to_collect() {
         .is_err(),
         "default-off profile must refuse service construction"
     );
+}
+
+/// Publication material shaped like the runtime's output for a
+/// documentation (TEST-NET-2) address. Documentation ranges pass the
+/// eligibility spelling check without implying reachability, and no
+/// packet is ever sent to them: activation is proven, then a live
+/// loopback session carries the floodfill message.
+fn documentation_material() -> Ssu2PublicationMaterial {
+    let options = Mapping::from_entries(vec![
+        ("host".to_string(), "198.51.100.7".to_string()),
+        ("port".to_string(), "44831".to_string()),
+        ("mtu".to_string(), "1472".to_string()),
+        ("v".to_string(), "2".to_string()),
+        ("caps".to_string(), "4".to_string()),
+        ("s".to_string(), i2p_b64_encode(&[7_u8; 32])),
+        ("i".to_string(), i2p_b64_encode(&[9_u8; 32])),
+    ])
+    .expect("documentation address options");
+    let address = RouterAddress::new(
+        10,
+        Date::from_millis(9_999_999_999_999),
+        "SSU2".to_string(),
+        options,
+    )
+    .expect("documentation router address");
+    Ssu2PublicationMaterial {
+        address,
+        evidence_expires_at: Duration::from_secs(3600),
+        reachability: ReachabilityState::Reachable,
+        bound_family: AddressFamily::Ipv4,
+    }
+}
+
+/// Drives a fresh serving coordinator to the Active role through the
+/// real eligibility/role transitions (documentation-address material,
+/// all measured signals true). No install or publish step runs here:
+/// those are composition-owned and already covered by the activation
+/// unit tests; the owner decision under test starts at Active.
+fn activate_serving_coordinator(
+    material: &Ssu2PublicationMaterial,
+    now_ms: u64,
+) -> FloodfillCoordinator {
+    let mut coordinator = FloodfillCoordinator::new(
+        Hash::from_bytes([0x48; 32]),
+        FloodfillCoordinatorPolicy::default(),
+        FloodfillStorePolicy::default(),
+        ServerNetDbConfig::default(),
+        FloodfillResourcePolicy::default(),
+        ReplicationPolicy::default(),
+    )
+    .expect("bounded coordinator");
+    let readiness = NormalReadiness {
+        material: Some(material),
+        wall_now_ms: now_ms,
+        netdb_ready: true,
+        storage_ready: true,
+        maintenance_ready: true,
+        resource_headroom: true,
+        clock_sane: true,
+        supervision_healthy: true,
+    };
+    let (snapshot, reasons) = evaluate_normal_eligibility(true, &readiness);
+    assert!(
+        snapshot.eligible() && reasons.is_empty(),
+        "documentation material must be eligible"
+    );
+    coordinator.update_eligibility(snapshot);
+    assert!(coordinator.begin_activation());
+    assert!(coordinator.complete_activation());
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Active);
+    coordinator
+}
+
+#[tokio::test]
+async fn daemon_product_hook_accepts_floodfill_served_store_over_live_session() {
+    let (handle_a, mut handle_b, scope_a, scope_b, _ta, _tb, keys_a, keys_b) =
+        start_daemon_pair().await;
+    let peer_a = PeerId::from_hash(keys_a.hash);
+    let peer_b = PeerId::from_hash(keys_b.hash);
+    let _established = dial_a_to_b(&handle_a, &handle_b, &keys_b).await;
+    let observer_b = handle_b
+        .qualification_observer()
+        .expect("explicit controlled profile observer");
+
+    // The serving owner reaches Active through the real role
+    // transitions; the live session under observation is untouched.
+    let now_ms = wall_ms();
+    let material = documentation_material();
+    let mut coordinator = activate_serving_coordinator(&material, now_ms);
+
+    // A genuine third-party signed store traverses the live
+    // authenticated session, then the real serving owner decides.
+    let store = signed_router_store(0x4802, now_ms);
+    let message_id = 0xD15C_7001_u32;
+    deliver_short(
+        &handle_a,
+        peer_b,
+        message_id,
+        I2npBody::DatabaseStore(Box::new(store.clone())),
+    );
+    let dispatched = next_control(&mut handle_b, RouterI2npKind::DatabaseStore).await;
+    assert_eq!(dispatched.peer(), peer_a);
+    assert_eq!(dispatched.message_id(), Some(message_id));
+    let link_id = dispatched.link_id();
+
+    // The composition's served arm is `Store(Stored { .. })`: the owner
+    // accepted the record for service. `handle_authenticated_decoded`
+    // is the exact owner entry point the daemon composition loop calls
+    // through `handle_decoded_inbound`.
+    let outcome = coordinator
+        .handle_authenticated_decoded(
+            peer_a,
+            link_id,
+            dispatched,
+            Some(FloodfillControlBody::DatabaseStore(store)),
+            FloodfillTime {
+                wall_ms: now_ms,
+                monotonic_ms: now_ms,
+            },
+        )
+        .expect("owner dispatch");
+    assert!(
+        matches!(
+            outcome,
+            FloodfillDispatchOutcome::Store(FloodfillStoreEffect::Stored { .. })
+        ),
+        "serving owner must store the valid record"
+    );
+
+    // The exact hook tuple is accepted, and the collector projects the
+    // served product effect in the same epoch as its ingress.
+    assert!(observer_b.record_product_effect(peer_a, link_id, message_id));
+    let receipt = permitted_collector()
+        .collect(&observer_b)
+        .expect("collect served receipt");
+    assert!(receipt.product_observed);
+    assert_eq!(receipt.live_qualification, "not-run");
+    assert!(
+        receipt
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "product_effect_observed")
+    );
+    shutdown_pair(&handle_a, &handle_b, scope_a, scope_b).await;
 }

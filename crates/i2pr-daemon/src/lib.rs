@@ -58,6 +58,7 @@ pub mod service_tunnels_socks5;
 pub mod service_tunnels_socks_irc;
 pub mod service_tunnels_streamr;
 pub mod service_tunnels_tls;
+pub mod ssu2_qualification_receipts;
 pub mod transit_compose;
 pub mod transit_owner;
 pub mod transit_volume;

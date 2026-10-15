@@ -1,6 +1,6 @@
 # Plan 480 — Authenticate SSU2 runtime evidence for the existing Plan 476 per-host executor
 
-**Status:** registered / ready, P1 independent of physical LAN and Plans 477–479 (2026-10-13). **Owner:** i2pr-runtime SSU2 authenticated session and I2NP event boundary, daemon/router_i2np verified product-effect observation, minimal inspect/control export. **Baseline:** PR #45 head 846c0e2b69f5379aaa0d8bb98ff0ffa7c15a3bfa. **Predecessor:** plans/closure/core-router-recovery/476-status.md and 476-status-amendment-pair-bound-receipts.md. **Consumer:** existing Plan 476 run --live --role local runner. Plan 476, not 480, continues to own process spawning, authorization checks, receipt reconciliation, operator manual workflow and the eventual live two-host run. Do not split that existing implementation across duplicate owners.
+**Status:** passed-narrowly 2026-10-15 (infrastructure: observer, local collector, bootstrap + floodfill fixtures, receipt export, contract) — see `plans/closure/core-router-recovery/480-status.md`. 476 process consumer + Tier B stay 476-owned/environment-blocked. **Owner:** i2pr-runtime SSU2 authenticated session and I2NP event boundary, daemon/router_i2np verified product-effect observation, minimal inspect/control export. **Baseline:** PR #45 head 846c0e2b69f5379aaa0d8bb98ff0ffa7c15a3bfa. **Predecessor:** plans/closure/core-router-recovery/476-status.md and 476-status-amendment-pair-bound-receipts.md. **Consumer:** existing Plan 476 run --live --role local runner. Plan 476, not 480, continues to own process spawning, authorization checks, receipt reconciliation, operator manual workflow and the eventual live two-host run. Do not split that existing implementation across duplicate owners.
 
 ## Exact missing source interface
 
@@ -32,3 +32,40 @@ The runtime producers are the local signed-identity validation, successful socke
 ## 2026-10-13 interface boundary: private SSU2 host observer versus router-build writer completion
 
 Plan **481** is the new **separate producer/completion owner** for router-build delivery fanout and transport-neutral SSU2/NTCP2 write tickets. This Plan 480 retains the current bounded, opt-in SSU2 authentication/I2NP observer and its *existing* remaining tests: direct real daemon NetDB/floodfill product-effect fixture, negative provenance matrix, private strictly local receipt export, and the owned Plan 476 process collector handoff. Plan 481 may read source-owned in-memory write events through a narrow authenticated runtime interface, but may not export Plan 480's transient message IDs or peer commitments into general logs, public admin APIs or persisted stock evidence. Source-owned write confirmation is not a substitute for Plan 476's separately consented private physical two-host qualification.
+
+## 2026-10-15 receipt contract and Plan 476 continuation pointer
+
+**Production interface (this plan):**
+`crates/i2pr-daemon/src/ssu2_qualification_receipts.rs` —
+`LOCAL_PHASES` (6 phases, subset of the Python vocabulary),
+`LocalQualificationProfile::ControlledLoopback` (sole variant),
+`LocalQualificationPermit { profile, consent }`,
+`LocalObservedReceipt { phases, session_observed, product_observed, live_qualification }`,
+`LocalReceiptCollector::new/collect`. Pure projection (no I/O,
+sockets, clock, timers, tasks); consent re-checked at collect;
+overflow/empty/non-monotonic/product-without-ingress/no-session all
+fail closed; transient IDs never leave `collect`;
+`live_qualification` is always `"not-run"`. Covered by
+`crates/i2pr-daemon/tests/ssu2_qualification_receipts.rs` (9 tests:
+collector gates, id-independence, bootstrap-insert and
+floodfill-served fixtures over live sessions, fabricated/replay/
+cancelled/link-loss/overflow/consent/default-off negatives) plus the
+runtime observer contract tests (epoch-boundary restart rejection).
+
+**Layering findings (honestly recorded, no new scope):** no
+owner-level record-content network gate exists at any owner —
+bootstrap and floodfill serving alike store a correctly signed
+foreign-`netId` record. Network enforcement lives at the session
+codec (`SSU2_NETWORK_ID` byte-14 check,
+`long_header_rejects_bad_version_network_flags_and_ids`). A
+record-content gate would be a NetDB plan-of-record, not 480. The
+hook fires on owner dispatch for the exact ingress tuple; it does not
+re-judge owner acceptance — composition's served arms own that mapping.
+
+**Plan 476 continuation (476-owned, still open):** the guarded
+per-host process/session executor drains live epochs through
+`Ssu2DaemonHandle::qualification_observer` and this collector
+(spawning, per-host collection, receipt exchange, revocation).
+Tier B additionally needs the independently-addressed explicitly
+owner-authorized private host pair. Do not mark 476 complete by
+passing 480.

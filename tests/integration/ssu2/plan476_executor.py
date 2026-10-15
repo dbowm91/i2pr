@@ -23,7 +23,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 #: Local-observed vocabulary for one role's Plan 480 collector projection.
 #: Must stay a superset of the Rust export in
-#: `crates/i2pr-daemon/tests/ssu2_qualification_receipts.rs::LOCAL_PHASES`.
+#: `crates/i2pr-daemon/src/ssu2_qualification_receipts.rs::LOCAL_PHASES`.
 LOCAL_PHASES = (
     "permit_checked", "router_started", "peer_authenticated",
     "request_received", "product_effect_observed", "router_stopped",
