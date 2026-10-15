@@ -2551,9 +2551,6 @@ impl ServiceProduct {
     /// / Garlic payloads back into the manager's authoritative
     /// state.
     pub async fn poll_inbound(&mut self) -> Result<InboundPollOutcome, ServiceProductError> {
-        // Fulfill first so a stalled inbound handler or maintenance
-        // pass cannot starve lease fetches behind other work.
-        self.fulfill_peer_lease_requests().await;
         let poll_interval = self.inner.options.poll_interval;
         let inbound = match tokio::time::timeout(poll_interval, self.next_inbound()).await {
             Err(_) => {
@@ -3287,6 +3284,9 @@ impl ServiceProduct {
                 }
             }
         }
+        // Fulfill peer lease fetches inline (advance runs via the
+        // daemon loop; poll_inbound is not on the live path).
+        self.fulfill_peer_lease_requests().await;
         Ok(())
     }
 
