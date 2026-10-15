@@ -784,8 +784,9 @@ struct PendingBuild {
     /// attempt ceiling. Raw peer and message identifiers are not retained.
     inbound_observation: InboundBuildObservation,
     /// Source-owned writer receipts for the one direct request or each
-    /// TunnelData transport cell. SSU2 queue admission remains explicitly
-    /// unobserved until its writer-ticket producer is available.
+    /// TunnelData transport cell. Both SSU2 (`send_i2np_with_receipt`)
+    /// and NTCP2 (`deliver_with_link_and_receipt`) attach a ticket;
+    /// a missing ticket marks the cell unobserved, never emitted.
     delivery_set: BuildDeliverySet,
     /// Live state machine. The coordinator never spawns a task
     /// per attempt; the daemon-owned pump drives every attempt.
@@ -1914,8 +1915,10 @@ impl ExploratoryBuildCoordinator {
                 // Late-ours signal: same peer, id of a retired
                 // attempt (versus unrelated stock traffic).
                 if self.retired_message_ids.contains_key(&message_id) {
-                    self.counters.inbound_orphans_retired_id_match =
-                        self.counters.inbound_orphans_retired_id_match.saturating_add(1);
+                    self.counters.inbound_orphans_retired_id_match = self
+                        .counters
+                        .inbound_orphans_retired_id_match
+                        .saturating_add(1);
                 }
             }
             if message_match {
@@ -2766,6 +2769,123 @@ mod tests {
             partial.disposition(),
             BuildEmissionDisposition::PartialEmission
         );
+    }
+
+    #[test]
+    fn cancelled_build_drops_live_writer_tickets_and_never_resurrects() {
+        let attempt_id = BuildAttemptId::new(71);
+        let (ticket_tx, ticket_rx) = tokio::sync::oneshot::channel();
+        let pending = PendingBuild {
+            attempt_id,
+            direction: BuildDirection::Outbound,
+            destination_id: None,
+            target_peer: PeerId::from_hash(Hash::from_bytes([0x41; 32])),
+            deadline_ms: 1_700_000_060_000,
+            message_id: 0x7711,
+            outer_message_id: 0x7712,
+            reserved_tunnel_ids: vec![0x7611],
+            next_tunnel: TunnelId::new(0x7511).expect("next tunnel"),
+            garlic_key: None,
+            garlic_tag: None,
+            inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet {
+                required: 1,
+                tickets: vec![Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x41; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(11).expect("link generation"),
+                    ),
+                    ticket_rx,
+                ))],
+                observed: 0,
+                emitted: 0,
+                failed: false,
+                unobserved: false,
+            },
+            state: ShortBuildStateMachine::new(
+                short_build_path(
+                    &BuildPathRequest {
+                        direction: BuildDirection::Outbound,
+                        peers: vec![PeerBuildMaterial {
+                            router_hash: Hash::from_bytes([0x41; 32]),
+                            static_encryption_key: [0x42; 32],
+                            receive_tunnel: TunnelId::new(0x7411).expect("receive"),
+                            next_tunnel: TunnelId::new(0x7511).expect("next"),
+                            role: HopRole::OutboundEndpoint,
+                        }],
+                        creator_tunnel_id: TunnelId::new(0x7611).expect("creator tunnel"),
+                        message_id: 0x7711,
+                        outbound_reply_router: None,
+                        originator_hash: None,
+                        destination_id: None,
+                    },
+                    attempt_id,
+                    1_700_000_000_000,
+                ),
+                1_700_000_060_000,
+            ),
+        };
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator
+            .pending_tunnel_ids
+            .extend(pending.reserved_tunnel_ids.iter().copied());
+        coordinator.pending.insert(attempt_id, pending);
+        assert_eq!(
+            coordinator.emission_disposition(attempt_id),
+            Some(BuildEmissionDisposition::Pending)
+        );
+        assert!(coordinator.cancel(attempt_id).is_some());
+        // The late writer receipt settles nowhere: the receiver died
+        // with the cancelled attempt, so the send must fail rather
+        // than flip any terminal outcome.
+        assert!(
+            ticket_tx.send(true).is_err(),
+            "late receipt after cancel must not resurrect the attempt"
+        );
+        assert_eq!(coordinator.emission_disposition(attempt_id), None);
+        assert_eq!(coordinator.pending_len(), 0);
+        // Cancellation still replay-retains the attempt identifiers.
+        assert!(coordinator.reserved_tunnel_ids().contains(&0x7611));
+        assert!(coordinator.reserved_message_ids().contains(&0x7711));
+    }
+
+    #[test]
+    fn retained_delivery_set_settles_without_resurrecting_its_attempt() {
+        let attempt_id = BuildAttemptId::new(72);
+        let (ticket_tx, ticket_rx) = tokio::sync::oneshot::channel();
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.settling_delivery_sets.insert(
+            attempt_id,
+            RetainedBuildDeliverySet {
+                set: BuildDeliverySet {
+                    required: 1,
+                    tickets: vec![Some(RouterDeliveryTicket::from_receiver(
+                        PeerId::from_hash(Hash::from_bytes([0x43; 32])),
+                        crate::router_i2np::RouterDeliveryTransport::Ssu2(
+                            i2pr_transport::LinkId::new(12).expect("link generation"),
+                        ),
+                        ticket_rx,
+                    ))],
+                    observed: 0,
+                    emitted: 0,
+                    failed: false,
+                    unobserved: false,
+                },
+                expires_at_ms: 1_700_000_060_000,
+            },
+        );
+        // The attempt itself is gone; only the retained set settles.
+        assert_eq!(coordinator.pending_len(), 0);
+        ticket_tx.send(true).expect("late write receipt");
+        coordinator.advance_time(1_700_000_000_000);
+        assert_eq!(
+            coordinator.emission_disposition(attempt_id),
+            Some(BuildEmissionDisposition::AllOriginatorDeliveriesEmitted),
+            "retained set records the late write without a pending attempt"
+        );
+        coordinator.advance_time(1_700_000_060_001);
+        assert_eq!(coordinator.emission_disposition(attempt_id), None);
+        assert_eq!(coordinator.pending_len(), 0);
     }
 
     #[test]

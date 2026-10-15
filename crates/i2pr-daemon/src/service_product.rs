@@ -134,7 +134,7 @@ fn fresh_message_id<R: RngCore>(rng: &mut R, excluded: &[u32]) -> Result<u32, Se
 
 #[cfg(test)]
 mod plan477_message_id_tests {
-    use super::fresh_message_id;
+    use super::{Plan212TunnelIdAllocator, fresh_message_id};
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
@@ -149,6 +149,53 @@ mod plan477_message_id_tests {
             excluded.push(id);
         }
     }
+
+    #[test]
+    fn same_start_replays_same_sequence_so_fixed_starts_stay_test_only() {
+        // The retired production seed replayed one tunnel-id sequence on
+        // every restart. Identical starts must still reproduce their
+        // sequence, which keeps the defect mechanism visible and pins
+        // why production starts go through `os_seeded`, never a constant.
+        let replay = |mut allocator: Plan212TunnelIdAllocator| {
+            allocator.allocate_set(8, &[]).expect("bounded set")
+        };
+        let first = replay(Plan212TunnelIdAllocator::new(0x51A7_9300));
+        let second = replay(Plan212TunnelIdAllocator::new(0x51A7_9300));
+        assert_eq!(first, second, "a fixed start replays its sequence");
+        assert!(first.iter().all(|id| *id != 0));
+        // A restarted process excludes the previous run's live ids
+        // through the caller registry check and stays disjoint.
+        let mut restarted = Plan212TunnelIdAllocator::new(0x51A7_9400);
+        let disjoint = restarted.allocate_set(8, &first).expect("bounded set");
+        assert!(disjoint.iter().all(|id| !first.contains(id)));
+    }
+
+    #[test]
+    fn os_seeded_allocator_allocates_valid_disjoint_sets() {
+        // Independent restarts must draw independent starts; a fixed
+        // constant here would replay one sequence on every restart.
+        // (Two consecutive OS draws collide with probability 2^-32.)
+        let first_start = Plan212TunnelIdAllocator::os_seeded()
+            .expect("os randomness")
+            .next;
+        let second_start = Plan212TunnelIdAllocator::os_seeded()
+            .expect("os randomness")
+            .next;
+        assert_ne!(
+            first_start, second_start,
+            "independent restarts draw independent starts"
+        );
+        let mut allocator = Plan212TunnelIdAllocator::os_seeded().expect("os randomness");
+        let first = allocator.allocate_set(8, &[]).expect("bounded set");
+        assert_eq!(first.len(), 8);
+        assert!(first.iter().all(|id| *id != 0));
+        let mut sorted = first.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 8, "one process never aliases itself");
+        let second = allocator.allocate_set(8, &first).expect("bounded set");
+        assert!(second.iter().all(|id| !first.contains(id)));
+    }
 }
 
 impl Plan212TunnelIdAllocator {
@@ -156,6 +203,17 @@ impl Plan212TunnelIdAllocator {
     /// preferred; zero start wraps to 1 on first allocation).
     pub(crate) const fn new(start: u32) -> Self {
         Self { next: start }
+    }
+
+    /// Production constructor: the start is one OS-CSPRNG draw. A fixed
+    /// start would replay the same tunnel-id sequence on every restart,
+    /// so production construction goes through this function and never
+    /// a constant; deterministic starts stay test-only.
+    pub(crate) fn os_seeded() -> Result<Self, ServiceProductError> {
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+        })?;
+        Ok(Self::new(rng.next_u32()))
     }
 
     /// Allocates one non-zero tunnel id, wrapping on overflow and
@@ -1974,10 +2032,7 @@ impl ServiceProduct {
         // traffic. When no reference peer is configured (local
         // product) this is a no-op and supervisors start
         // immediately.
-        let mut allocator_seed_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
-        })?;
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(allocator_seed_rng.next_u32());
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::os_seeded()?;
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let readiness = if router_bootstrap.is_some() && !deferred_destination_ids.is_empty() {
@@ -2211,10 +2266,7 @@ impl ServiceProduct {
                 destination_ids.push(runtime.destination_id);
             }
         }
-        let mut allocator_seed_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
-        })?;
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(allocator_seed_rng.next_u32());
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::os_seeded()?;
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let peer = RouterBootstrapMaterial {

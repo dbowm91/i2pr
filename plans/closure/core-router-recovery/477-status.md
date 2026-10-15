@@ -1,8 +1,8 @@
-# Plan 477 status — source corrections landed; first divergence remains unresolved
+# Plan 477 status — closed: canonical short-build IDs, collision retention, writer-receipt consumption
 
-**Status token:** `in-progress-per-hop-collision-scopes-landed-first-divergence-unattributed`
-**Disposition:** retain the deterministic per-hop ID and separate outer-header/reply-ID corrections. The pinned product attempt improved to one of two inbound installs, but the remaining failure is not attributable to a source-owned stage. Plan 477 is not closed.  
-**Implementation commits:** `623ceb5` (per-hop and outer/header ID separation) and `eb8cdca` (live pending-ID exclusion and log redaction).
+**Status token:** `passed-canonical-short-build-ids-collision-retention-and-writer-receipt-consumption`
+**Disposition:** closed 2026-10-15. Every requirement has landed code, failing-before/passing-after tests, and live exact-pin evidence; the remaining product-path divergence (STREAM SYN-ACK return) is owned by active Plan 478. Floor reds are recorded as externally owned follow-ups below, not 477 defects.
+**Implementation commits:** `623ceb5` (per-hop and outer/header ID separation), `eb8cdca` (live pending-ID exclusion and log redaction), and `1371c04` (writer-receipt lifecycle regressions with inversion proofs, `os_seeded` allocator centralization, restart-seed tests, stale-comment repair, and this closure with the registry/roadmap transition).
 
 ## Requirement-to-evidence matrix
 
@@ -58,7 +58,181 @@ No identity, endpoint, raw message ID, raw RouterInfo, packet, or raw stock log 
 
 Connect the Plan 480 source-owned write events to each pending build's peer/link generation and terminal outcome, so one finite exact-pinned attempt can tie candidate mismatches to a specific emitted request. The immediate failure transition is now bounded and count-attributed; the request-to-return attribution remains open. Plan 478 has an outbound TunnelData source route but its full SAM product path remains unqualified.
 
-**Roadmap disposition:** active; no dependent capability is unblocked.
+**Roadmap disposition:** closed; 478 retains the product gates. No dependent capability is unblocked.
+
+## 2026-10-15 closure
+
+Requirement-to-evidence close-out against the implementation plan's pass gate
+(changed production contract; failing-before/passing-after tests; all
+denial/collision/restart cases; an executed attributable finite reference
+attempt; no external SAM STREAM or Plan 433 claim):
+
+- Changed contract: per-hop forwarding IDs, separate outer/reply IDs,
+  OS-CSPRNG ID allocation with bounded active/pending/retiring/replay
+  collision retention, and Plan 481 writer-receipt consumption with the
+  five-way terminal taxonomy — all landed and live-exercised.
+- Tests: the ID/collision suites fail pre-fix behavior and pass after
+  (retained predecessor evidence); the four closing tests each failed a
+  targeted temporary production inversion and pass after its revert
+  (cancel-leaks-tickets, disabled retained-set expiry, fixed allocator
+  start; same-start replay pins the defect mechanism deterministically).
+- Denial/collision/restart: invalid-reply rejection keeps the exact
+  attempt id, orphan observations are attempt-scoped and identifier-free,
+  zero/over-max rejected, cancel-by-owner counted, replay retained, and
+  restarted processes draw independent allocator starts through the single
+  `os_seeded()` production constructor.
+- Attributable attempt: the 2026-10-15 bounded exact-pin run committed 3
+  installs with 4/4 authenticated replies matched and owners 2/2 — every
+  short-build leg attributed, no divergence at this plan's scope.
+- Strict terminal peer/ID matching untouched throughout; no SAM STREAM,
+  anonymity, advertisement, or Plan 433 claim.
+
+Floor: full AGENTS.md floor run on the closing tree — green except two
+items proven outside this plan (recorded as external follow-ups, not
+defects): the ELS2 Plan 393 count guard, broken by committed 478 change
+`5b874e86` (needs a 478/ELS2 plan-of-record; fix code, never weaken the
+script), and `cargo deny` advisories for HEAD-pinned rustls 0.23.45
+(RUSTSEC-2026-0346/0347; needs a reviewed dependency-update plan).
+`Cargo.lock` and the ELS2 guard are untouched by this plan's diff.
+
+Unblock audit: Plan 478 already consumes this plan's interface and is
+active — no state change. No other registered plan lists 477 as a hard
+dependency blocking readiness; nothing moves to ready. Findings:
+critical — none; high — none; medium — the two external floor items
+above, each with a named owner class; low — no hosted-CI run for the
+closing commit.
+
+## 2026-10-15 writer-receipt lifecycle closure and bounded post-change attempt
+
+Narrowly controlled work inside this active plan; no new plan number.
+
+**Source changes (all in-plan):**
+
+- Stale-contract comment repair in `exploratory_build.rs`: the pending-attempt
+  field claimed SSU2 queue admission stayed unobserved for lack of a
+  writer-ticket producer. Plan 481 has since landed that producer
+  (`send_i2np_with_receipt` / `deliver_with_link_and_receipt`), and the
+  coordinator attaches a ticket per direct request and per TunnelData cell,
+  polls them in `advance_time`, and exposes `emission_disposition`. The
+  comment now states the true contract; no behavior change.
+- Two lifecycle regressions pinning the handoff's late/cancel cases:
+  `cancelled_build_drops_live_writer_tickets_and_never_resurrects` (cancel
+  drops a live ticket; the late send fails instead of flipping any outcome;
+  disposition goes `None`; identifiers stay replay-retained) and
+  `retained_delivery_set_settles_without_resurrecting_its_attempt` (a
+  retained set records a late write with no pending attempt, then expires
+  without resurrecting anything). Cancellation already fails closed at the
+  ticket level (`TryRecvError::Closed` settles `false`); these tests lock
+  the attempt-level consequence.
+
+**Verification:** `i2pr-daemon --lib exploratory_build` 19 passed (17 + 2
+new); `exploratory_build_unit` 15; `exploratory_build_live` 11;
+`i2pr-tunnel` 401; receipt parsers 5 + 6; runtime/service-tunnel/SSU2-vector
+scripts pass; daemon clippy `-D warnings` clean; fmt and `git diff --check`
+clean. (Scoped battery; full floor not run.)
+
+**One bounded exact-pin attempt after the change** (pinned i2pd 2.61.0,
+quiet mesh, scratch `df2wrjie` snapshotted). Short-build layer fully
+attributed, no divergence left at this plan's scope:
+
+- 3 installs committed, 4/4 authenticated replies matched, owners 2/2, no
+  evictions, creator RI on 4/4 peers, zero decrypt/next-hop/reply-send
+  failures stock-side. No inbound-build expiry this run
+  (`inbound_build_wait_receipts` empty).
+- Forward STREAM SYNs reach stock repeatedly (first accepted as `Incoming
+  stream rSID=1497887931`, retransmits deduplicated as `already exists`).
+  Stock `f` emitted the SYN-ACK and terminated it for no-ACK
+  (`SYNACK packet was not ACKed after 1 attempts`); our managers observed
+  zero (`synack_observed=0` over the whole wait). A second stock-side
+  stream died on `Acceptor for incoming stream is not set` /
+  `Pending incoming timeout expired` — stock SAM-accept scope, not ours.
+
+**Disposition:** every Plan 477 requirement now has landed code, failing-
+before/passing-after tests, and live exact-pin evidence: per-hop IDs,
+outer/reply separation, CSPRNG/collision retention, writer-receipt
+consumption with `delivery-accepted` / `partial` / `all-emitted` /
+`not-emitted` / `unobserved` terminal reasons, late/cancel/replay
+regressions, and strict terminal peer/ID matching untouched. The remaining
+product-path divergence is the STREAM SYN-ACK return leg, owned by active
+Plan 478 — two consecutive runs now replicate the shape (stock emits,
+we observe zero), so it is characterized, not merely single-run weak
+evidence. No unchanged-topology retry from this plan; the next lane moves
+only on a 478-owned material change. Plan 477 stays active until the
+planning flow closes it; the registry token update is a registry action,
+not taken here.
+
+## 2026-10-15 gap closure: inversion proofs, restart regression, full floor
+
+All three gaps named for closure are now closed inside this plan.
+
+**Failing-before proofs for the lifecycle tests.** Each new test was run
+against a targeted temporary production inversion and failed, then the
+probe was reverted (zero markers remain; suite green after):
+
+- `cancelled_build_drops_live_writer_tickets_and_never_resurrects` fails
+  when `cancel()` retains the delivery set in the settling map instead
+  of dropping it (late send succeeds; disposition stays `Some`).
+- `retained_delivery_set_settles_without_resurrecting_its_attempt` fails
+  when retained-set expiry is disabled in `advance_time` (disposition
+  never goes `None`).
+
+**Restart/forked-seed regression (plan step 3).** Production
+`Plan212TunnelIdAllocator` construction is centralized in one named
+`os_seeded()` constructor (both provisioning call sites unified, no
+behavior change); deterministic starts stay test-only and the historical
+fixed constants remain `#[allow(dead_code)]` documentation. New tests:
+`same_start_replays_same_sequence_so_fixed_starts_stay_test_only`
+(pins the retired `0x51A7_9300` replay mechanism and the
+exclude-to-stay-disjoint restart contract) and
+`os_seeded_allocator_allocates_valid_disjoint_sets` (independent draws
+give independent starts; sets are nonzero and disjoint). The latter
+fails under a fixed-start inversion. All assertions are deterministic
+except one 2^-32 independent-draw inequality, stated inline.
+
+**Full AGENTS.md floor** (bash 5.2 host; `cargo`/`python3` run verbatim):
+
+- Pass: `fmt --check`, `check --locked --workspace --all-targets`,
+  managed-app sibling build, `test --locked --workspace --all-targets`
+  (187 suites, 4897 passed, 0 failed, 39 ignored),
+  `clippy --all-targets --all-features -D warnings` (no warnings),
+  `cargo doc -D warnings`, workspace doc-tests (29 suites, 0 tests,
+  0 failures), and every boundary/evidence/self-test script including
+  dependency direction, plan/ADR uniqueness, portable-tunnel API +
+  consumer, planning tests (51), runtime/console/browser/managed-app
+  (process with `--self-test` via `python3`; the `bash` invocation of
+  that `.py` file is a misuse, exit 2, not a failure), readiness and
+  core-router-recovery contracts + self-tests, SSU2 preflight,
+  M11/transit/anonymity, fixture manifest (exit 0 silent),
+  NTCP2/SSU2/I2CP vectors + interop static check, SAM/SSU2/I2CP/
+  I2PControl acceptance evidence, ELS2 type-11 boundary,
+  encrypted-service consumer, outproxy path + wire lane, secret hygiene,
+  workflow validity, floodfill type-5, service-tunnel acceptance (29
+  rows), exploratory/NetDB/destination/streaming/M6 evidence, M12
+  qualification + boundaries self-tests, NTCP2 harness tests (18).
+  `bans`/`sources` ok.
+- Two failures, both proven outside this plan's scope, neither touched
+  by its diff:
+  1. `check-els2-live-lane-evidence.sh` Plan 393 row (needs 3
+     `.cancel_ls2_publication(request_id)` sites, tree has 1).
+     Bisected to committed 478 change `5b874e86` (direct-short LS2
+     publication), which removed the tunneled path's three
+     failure-path cancellations; at Plan 481's commit the count was 3.
+     Whether the new direct path preserves cancellation intent is a
+     478/ELS2-owned semantic question — fix code, never weaken the
+     script, and not inside 477.
+  2. `cargo deny check advisories`: rustls 0.23.45
+     RUSTSEC-2026-0346/0347 (fixed in >=0.23.46). `Cargo.lock` is
+     untouched by this tree and HEAD pins the same version; the
+     advisories postdate Plan 481's green floor. A dependency update
+     needs review and its own plan-of-record, not a 477 drive-by.
+
+**Remaining for closure (mechanics, not evidence):** focused commits
+separating 477-owned files (`exploratory_build.rs`,
+`service_product.rs` allocator/test sections, `477-status.md`) from
+478-owned files, then the `i2pr-planning` registry transition
+(`in-progress-*` → `passed-*`), roadmap disposition, and unblock audit.
+No history rewrite, no `specs/support.toml` change, no SAM STREAM or
+Plan 433 claim.
 
 ## 2026-10-13 exact-pin short-build source trace and writer-receipt correlation
 
@@ -182,3 +356,41 @@ bounded Plan 458 attempt. That RI-propagation and TunnelData-delivery owner
 is handed to active Plan 478; no new per-timeout plan number is created.
 Plan 478 product gates (genuine inbound install, owner generation, signed
 LS2, bidirectional binary SAM STREAM, expiry/replacement) remain open.
+
+## 2026-10-15 re-verification on the current branch head (no new source divergence)
+
+No lane run: the bounded stop stands (no unchanged-topology retry, no new
+causal divergence to fix inside this plan). A half-finished Plan 478
+floodfill-rotation edit (`begin_lease_lookup_excluding`, unwired, tree left
+non-compiling) was found in the working tree and shelved to
+`stash@{0}` ("WIP-478 ...") untouched for Plan 478; it is out of scope here
+and no part of it was consumed. One whitespace-only repair inside this
+plan's owned file: `fbc453d7` left a rustfmt drift at
+`exploratory_build.rs:1914` (retired-ID orphan counter wrap); `cargo fmt -p
+i2pr-daemon` restored `cargo fmt --all --check` clean with no behavior
+change.
+
+Battery on the current head (includes all later Plan 478 commits):
+
+| Command | Outcome |
+| --- | --- |
+| `cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl` | Passed (fresh) |
+| `cargo test --locked -p i2pr-tunnel --all-targets -- --test-threads=1` | Passed (401) |
+| `cargo test --locked -p i2pr-daemon --lib exploratory_build -- --test-threads=1` | Passed (17) |
+| `cargo test --locked -p i2pr-daemon --test exploratory_build_unit -- --test-threads=1` | Passed (15) |
+| `cargo test --locked -p i2pr-daemon --test exploratory_build_live -- --test-threads=1` | Passed (11) |
+| `cargo test --locked -p i2pr-daemon --lib plan477_message_id_tests` / `wrapped_outbound_invalid_reply_keeps_its_exact_attempt_id` | Passed (1 + 1) |
+| `python3 tests/integration/core-router-recovery/test_plan474_build_wait_receipt.py` | Passed (5 tests) |
+| `python3 tests/integration/core-router-recovery/test_plan464_attempt_receipt.py` | Passed (6 tests) |
+| `bash scripts/check-service-tunnel-boundaries.sh` / `check-runtime-boundaries.sh` / `check-ssu2-vectors.sh` | Passed |
+| `cargo clippy --locked -p i2pr-daemon --all-targets --all-features -- -D warnings` | Passed |
+| `cargo fmt --all --check`, `git diff --check` | Passed after the whitespace repair above |
+
+**Disposition:** the per-hop ID, outer/reply separation, CSPRNG/collision,
+writer-disposition, and strict terminal peer/ID corrections hold under the
+current tree; deterministic tests still fail pre-fix behavior and pass after
+(no production contract change in this pass). The registry token (`first
+divergence unresolved`) postdates the 2026-10-14 attribution section above;
+updating it is a planning-registry action, not taken here. Plan 477 stays
+active owning strict terminal reply attribution until the planning flow
+closes it; the full AGENTS.md floor was not run (scoped battery only).
