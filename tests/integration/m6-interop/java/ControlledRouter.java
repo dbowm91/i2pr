@@ -928,6 +928,14 @@ public final class ControlledRouter {
                             return p220Error("missing-hash-arguments");
                         }
                         return p220Selector(parts[1], parts[2]);
+                    case "P220-SELECTOR-N1":
+                        // Plan 483 — width-1 single-recipient probe for a
+                        // caller-supplied routing key. Read-only; same
+                        // stock selector path as P220-SELECTOR.
+                        if (parts.length < 3) {
+                            return p220Error("missing-hash-arguments");
+                        }
+                        return p220SelectorN1(parts[1], parts[2]);
                     case "P470-TRANSPORT":
                         if (parts.length < 2) {
                             return "P470-EV observable=false reason=missing-candidate-hash";
@@ -1348,6 +1356,29 @@ public final class ControlledRouter {
                 + " selector_count=" + result.selected.size()
                 + " selector_contains_b=" + result.selected.contains(bHash)
                 + " probe_inputs=key-target,N-3,exclude-empty,live-kbuckets";
+        }
+
+        private String p220SelectorN1(String targetHex, String bHex) {
+            Hash target = p220ParseHexHash(targetHex);
+            Hash bHash = p220ParseHexHash(bHex);
+            if (target == null || bHash == null) {
+                return p220Error("invalid-hex-hash");
+            }
+            // No hash material is echoed beyond the caller's own
+            // arguments; the verdict is counts and booleans only.
+            P220SelectorProbe.Result result =
+                P220SelectorProbe.selectForKeyWidth(context(), target, bHash, 1);
+            if (result.error != null) {
+                return "P220-EV kind=selector-n1 target_hash_hex=" + targetHex
+                    + " b_hash_hex=" + bHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P220-EV kind=selector-n1 target_hash_hex=" + targetHex
+                + " b_hash_hex=" + bHex
+                + " observable=true "
+                + "selector_n1_count=" + result.selected.size()
+                + " selector_n1_contains_b=" + result.selected.contains(bHash)
+                + " probe_inputs=key-target,N-1,exclude-empty,live-kbuckets";
         }
 
         private String p470Transport(String candidateHex) {

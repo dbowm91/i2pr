@@ -21,10 +21,34 @@ admitted and selector-included, Java's normal Store succeeds, and the
 recipient is attributed (i2pr effect or stock recipient) without
 overclaiming preference between two healthy peers.
 
+Profile C (degenerate last-resort arm, Plan 483): Java's NetDB holds
+only the truthful `L` non-`f` candidate. The gate is fail-closed
+degeneration: the lowtier peer never enters the floodfill peer set,
+the width-1 verdict for its adjacent key is never itself, and the
+normal Store fails boundedly with no send and no daemon effect while
+Java stays diagnosable.
+
+Width-1 single-recipient proof (Plan 483): the live Store travels the
+pinned width-1 selector path, so one run's recipient is the XOR-nearest
+peer for that run's fresh local-RI routing key — deterministic within
+the run, varying across runs. The lane crafts near-keys (peer hash with
+the last byte flipped, distance <= 0xFF) after a fail-closed separability
+precheck, and probes the stock selector at width 1 through the read-only
+`P220-SELECTOR-N1` diagnostic: each healthy peer must win its own
+near-key (no starvation), and every winner must be a healthy-`f` member.
+Both loopback peers share 127.0.0.1, so stock classifies both into the
+same same-/16 bad tail in profile A and the width-1 winner is the
+XOR-nearest bad peer — the proof shows XOR-determinism and starvation
+freedom, not health preference (never claimed for A). Profile B's
+cross-key proof is classification-based: the non-`f` peer is never in
+the selector set for any key.
+
 Frozen per-profile attempt budget: 1. A failure stops the profile with
-the first missing stage; the other profile still runs, because the two
+the first missing stage; the other profiles still run, because the
 profiles are independent evidence. Missing exact pins fail hard
 (exit 2), never silently pass. Reference processes are never patched.
+Run order under `--profile all` is C, B, A: the degenerate arm is the
+cheapest failure mode, so it gates the two controlled replays.
 """
 
 from __future__ import annotations
@@ -259,6 +283,70 @@ def java_transport(port: int, digest_hex: str, deadline: float) -> str:
     return java_diagnostic(port, "P470-TRANSPORT " + digest_hex, deadline)
 
 
+def java_selector_n1(
+    port: int, target_hex: str, b_hex: str, deadline: float,
+) -> tuple[bool, int, bool]:
+    """Width-1 stock selector verdict for one routing key, in memory only.
+
+    Returns (observable, selected_count, contains_b). Hashes never leave
+    this tuple: callers assert booleans/counts and print stages only.
+    """
+    response = java_diagnostic(
+        port, f"P220-SELECTOR-N1 {target_hex} {b_hex}", deadline)
+    if "kind=selector-n1" not in response or "observable=true" not in response:
+        return False, -1, False
+    count = re.search(r"selector_n1_count=(\d+)", response)
+    if count is None:
+        return False, -1, False
+    return True, int(count.group(1)), "selector_n1_contains_b=true" in response
+
+
+def craft_near_key(peer_digest: bytes) -> str:
+    """Routing key at XOR distance <= 0xFF from one peer (last byte flip)."""
+    key = bytearray(peer_digest)
+    key[-1] ^= 0x01
+    return bytes(key).hex()
+
+
+def assert_peer_hashes_separable(first: bytes, second: bytes) -> None:
+    """Fail closed unless the near-key of one peer cannot cover the other.
+
+    A near-key differs from its peer in the last byte only, so its
+    distance to that peer is <= 0xFF. When the peers differ anywhere in
+    the first 31 bytes, the near-key is strictly nearer to its own peer
+    and the width-1 verdict is deterministic. Fresh identities collide
+    here with probability ~2^-248; a hit fails the run, never the proof.
+    """
+    if int.from_bytes(first) >> 8 == int.from_bytes(second) >> 8:
+        raise RuntimeError("degenerate-peer-hashes")
+
+
+def assert_hashes_pairwise_separable(*digests: bytes) -> None:
+    """Separability over a whole probe topology, Java-self included.
+
+    Java lists itself in its own capability index, so it contends in
+    every width-1 verdict. Covering self removes the last ~2^-248
+    hole: every asserted winner is then strictly determined.
+    """
+    for index in range(len(digests)):
+        for other in range(index + 1, len(digests)):
+            assert_peer_hashes_separable(digests[index], digests[other])
+
+
+def assert_selector_n1(
+    port: int, target_hex: str, b_hex: str, expect_count: int,
+    expect_contains: bool, deadline: float, what: str,
+) -> None:
+    observable, count, contains = java_selector_n1(
+        port, target_hex, b_hex, deadline)
+    if not observable:
+        raise RuntimeError(f"{what}-n1-unobservable")
+    if count != expect_count:
+        raise RuntimeError(f"{what}-n1-count-unexpected")
+    if contains != expect_contains:
+        raise RuntimeError(f"{what}-n1-membership-unexpected")
+
+
 def trigger_java_store_job(port: int, deadline: float) -> bool:
     while time.monotonic() < deadline:
         try:
@@ -425,6 +513,34 @@ def start_java(
     return child
 
 
+def assert_selector_pin(java_source: Path) -> None:
+    """Mechanical tripwire for the two pinned-source facts the lane relies on.
+
+    Plan 483: the `fL`-vs-`fN` last-resort arm is unreachable from honest
+    code, so the lane refuses to run unless the pinned checkout still
+    carries both halves of the demotion/fail-closed semantics — tier-`L`
+    demoted to the selector's bad tail, and an empty flood selection
+    failing the Store job instead of sending nowhere. Any stock refactor
+    touching these lines fails hard here (exit 2), never silently passes
+    with drifted semantics.
+    """
+    kademlia = (java_source / "router/java/src/net/i2p/router/networkdb/kademlia")
+    try:
+        selector = (kademlia / "FloodfillPeerSelector.java").read_text()
+        store = (kademlia / "StoreJob.java").read_text()
+    except OSError:
+        print("plan479: exact Java selector sources unreadable", file=sys.stderr)
+        raise SystemExit(2)
+    if "getBandwidthTier().equals(\"L\")" not in selector:
+        print("plan479: selector pin drifted: L-demotion branch absent", file=sys.stderr)
+        raise SystemExit(2)
+    if ("getClosestFloodfillRouters" not in store
+            or "closestHashes.isEmpty()" not in store):
+        print("plan479: selector pin drifted: empty-selection fail arm absent",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+
 def check_environment(root: Path) -> tuple[Path, Path, Path, Path]:
     java_cache = Path(os.environ.get(
         "I2PR_PLAN479_JAVA_CACHE",
@@ -450,6 +566,7 @@ def check_environment(root: Path) -> tuple[Path, Path, Path, Path]:
     if revision != JAVA_PIN:
         print("plan479: exact Java source pin mismatch", file=sys.stderr)
         raise SystemExit(2)
+    assert_selector_pin(java_source)
     if not (i2pd_cache / "bin" / "i2pd").is_file():
         print("plan479: environment-unavailable: exact i2pd 2.61.0 cache absent", file=sys.stderr)
         raise SystemExit(2)
@@ -712,6 +829,9 @@ def run_profile_b(
               "eligible_in_floodfill_peer_set": 0, "lowtier_absent_from_peer_set": 0,
               "eligible_selected_for_local_key": 0, "lowtier_not_selected": 0,
               "lowtier_ntcp_bid_available": 0,
+              "eligible_wins_own_near_key_n1": 0,
+              "eligible_wins_lowtier_near_key_n1": 0,
+              "lowtier_loses_lowtier_near_key_n1": 0,
               "java_store_job_succeeded": 0, "java_stock_transport_send": 0,
               "eligible_store_effect_accepted": 0, "lowtier_no_store_effect": 0}
     eligible_holder: list[subprocess.Popen[bytes] | None] = [None]
@@ -756,7 +876,6 @@ def run_profile_b(
         java_hash, java_summary = router_info_hash(interop, java_ri_path, root, java_ntcp)
         assert_router(java_summary, label="java", ntcp2_only=True,
                       expected_loopback_port=java_ntcp)
-        _ = java_hash
         deadline = time.monotonic() + 15
         eligible_hex = eligible_hash.hex()
         lowtier_hex = lowtier_hash.hex()
@@ -797,6 +916,35 @@ def run_profile_b(
         if "ntcp2_bid_available=true" not in lowtier_preflight:
             return fail(profile, stages, "lowtier-not-biddable-selection-confounded")
         stages["lowtier_ntcp_bid_available"] = 1
+        # Plan 483 cross-key preference proof. The selector consumes
+        # k-bucket `f` members; here that set is exactly {eligible}
+        # (the non-`f` peer is filtered, self is not k-bucketed), so
+        # the width-1 verdict for a key crafted next to EITHER peer
+        # must be exactly the eligible candidate. Asserting the
+        # lowtier-adjacent winner (not just lowtier-exclusion) is
+        # deterministic, because no other `f` member contends.
+        assert_hashes_pairwise_separable(eligible_hash, lowtier_hash, java_hash)
+        key_near_eligible = craft_near_key(eligible_hash)
+        key_near_lowtier = craft_near_key(lowtier_hash)
+        probe_deadline = time.monotonic() + 5
+        try:
+            assert_selector_n1(java_diag, key_near_eligible, eligible_hex,
+                               1, True, probe_deadline,
+                               "eligible-near-key")
+        except RuntimeError as exc:
+            return fail(profile, stages, str(exc))
+        stages["eligible_wins_own_near_key_n1"] = 1
+        try:
+            assert_selector_n1(java_diag, key_near_lowtier, eligible_hex,
+                               1, True, probe_deadline,
+                               "lowtier-near-key-eligible")
+            assert_selector_n1(java_diag, key_near_lowtier, lowtier_hex,
+                               1, False, probe_deadline,
+                               "lowtier-near-key-lowtier")
+        except RuntimeError as exc:
+            return fail(profile, stages, str(exc))
+        stages["eligible_wins_lowtier_near_key_n1"] = 1
+        stages["lowtier_loses_lowtier_near_key_n1"] = 1
 
         deadline = time.monotonic() + RUN_TIMEOUT
         _, succeeded = wait_store_effect(java_diag, java_publish, deadline)
@@ -841,6 +989,133 @@ def run_profile_b(
         stop(java_holder[0])
 
 
+def run_profile_c(
+    root: Path, java_cache: Path, daemon: Path, interop: Path, work: Path,
+) -> int:
+    """Degenerate last-resort arm: truthful `L` non-`f` only (Plan 483).
+
+    No healthy floodfill exists, so the pinned selector has no
+    selectable seeded peer: the lowtier record must stay out of the
+    floodfill peer set, the width-1 verdict for its adjacent key must
+    never be itself, and the normal Store must fail boundedly with no
+    send and no daemon effect. This executes the nearest reachable
+    arm to `fL`-vs-`fN` with honest code — an i2pr `fL`
+    record is unpublishable (guard + live refusal), so the arm the
+    lane can honestly run is refusal-shaped, not preference-shaped.
+    """
+    profile = "c"
+    stages = {"lowtier_role_shaped": 0,
+              "lowtier_present_in_java_netdb": 0,
+              "lowtier_java_tier_l": 0,
+              "lowtier_without_floodfill_capability": 0,
+              "lowtier_absent_from_peer_set": 0,
+              "lowtier_not_selected_for_local_key": 0,
+              "near_key_selects_no_lowtier_n1": 0,
+              "java_store_job_failed_bounded": 0,
+              "java_no_stock_transport_send": 0,
+              "lowtier_no_store_effect": 0}
+    lowtier_holder: list[subprocess.Popen[bytes] | None] = [None]
+    java_holder: list[subprocess.Popen[bytes] | None] = [None]
+    try:
+        lowtier_raw, lowtier_hash, lowtier_ntcp, lowtier_control = run_daemon_shape(
+            interop, root, daemon, work, "lowtier", LOWTIER_RATES, False,
+            "controlled tiered addressed RouterInfo published without floodfill role",
+        )
+        stages["lowtier_role_shaped"] = 1
+        lowtier_config = work / "lowtier.toml"
+        restart_daemon(root, daemon, lowtier_config, lowtier_control, lowtier_ntcp,
+                       interop, work, "lowtier", False,
+                       work / "lowtier.log", lowtier_holder)
+
+        java_data = work / "java"
+        java_data.mkdir(mode=0o700)
+        java_seed(java_data, lowtier_raw.read_bytes(), lowtier_hash)
+        java_ntcp = reserve(socket.SOCK_STREAM)
+        java_diag = reserve(socket.SOCK_STREAM)
+        java_publish = reserve(socket.SOCK_STREAM)
+        java_log = work / "java.log"
+        start_java(root, java_cache, work, java_data, java_ntcp,
+                   java_diag, java_publish, java_log, java_holder)
+        java_ri_path = java_data / "router" / "router.info"
+        _, java_summary = router_info_hash(interop, java_ri_path, root, java_ntcp)
+        assert_router(java_summary, label="java", ntcp2_only=True,
+                      expected_loopback_port=java_ntcp)
+        deadline = time.monotonic() + 15
+        lowtier_hex = lowtier_hash.hex()
+        while time.monotonic() < deadline:
+            lowtier_caps = java_caps(java_diag, lowtier_hex, deadline)
+            if lowtier_caps.get("present"):
+                break
+            time.sleep(0.25)
+        else:
+            return fail(profile, stages, "seeded-candidate-not-visible-in-java-netdb")
+        stages["lowtier_present_in_java_netdb"] = 1
+        if lowtier_caps.get("bandwidth_tier") != "L":
+            return fail(profile, stages, "lowtier-tier-not-l-as-observed-by-stock-java")
+        stages["lowtier_java_tier_l"] = 1
+        if lowtier_caps.get("has_floodfill_capability") is not False:
+            return fail(profile, stages, "lowtier-carries-floodfill-capability")
+        stages["lowtier_without_floodfill_capability"] = 1
+        peers = java_peers_ff(java_diag, time.monotonic() + 5)
+        # Absence-based, not emptiness-based: Java runs with
+        # router.floodfillParticipant=true, so it lists itself in its
+        # own capability index. The claim is only that the non-`f`
+        # peer never enters the selector path. The index must still
+        # be live (self present) so the gates below cannot pass
+        # vacuously on a dead Java.
+        if lowtier_hex in peers:
+            return fail(profile, stages, "lowtier-present-in-java-floodfill-peer-set")
+        if not peers:
+            return fail(profile, stages, "java-capability-index-unlive")
+        stages["lowtier_absent_from_peer_set"] = 1
+        lowtier_preflight = java_transport(java_diag, lowtier_hex, time.monotonic() + 5)
+        if "selected_for_local_router_info=true" in lowtier_preflight:
+            return fail(profile, stages, "lowtier-selected-for-local-key")
+        stages["lowtier_not_selected_for_local_key"] = 1
+        # The selector consumes k-bucket `f` members, and the seeded
+        # set holds no `f` peer (self-listing lives only in the
+        # capability index above), so the width-1 verdict for the
+        # lowtier-adjacent key must be empty — never the lowtier peer.
+        key_near_lowtier = craft_near_key(lowtier_hash)
+        try:
+            assert_selector_n1(java_diag, key_near_lowtier, lowtier_hex,
+                               0, False, time.monotonic() + 5,
+                               "near-key")
+        except RuntimeError as exc:
+            return fail(profile, stages, str(exc))
+        stages["near_key_selects_no_lowtier_n1"] = 1
+
+        deadline = time.monotonic() + RUN_TIMEOUT
+        submitted, succeeded = wait_store_effect(java_diag, java_publish, deadline)
+        if not submitted or succeeded:
+            return fail(profile, stages, "degenerate-store-job-outcome-unexpected")
+        status = java_diagnostic(
+            java_diag, "P470-STORE-STATUS", time.monotonic() + 5)
+        if "P470-STORE submitted=1 succeeded=0 failed=1" not in status:
+            return fail(profile, stages, "degenerate-store-job-not-failed-bounded")
+        stages["java_store_job_failed_bounded"] = 1
+        # Same close-flush note as profiles A/B: stop Java before
+        # counting its log text.
+        stop(java_holder[0])
+        java_holder[0] = None
+        java_text = java_runtime_log(java_data, java_log)
+        if count_in(java_text, "Attempting to send on transport NTCP") != 0:
+            return fail(profile, stages, "degenerate-store-sent")
+        stages["java_no_stock_transport_send"] = 1
+        lowtier_text = (work / "lowtier.log").read_text(errors="replace")
+        if count_in(lowtier_text,
+                    "authenticated floodfill DatabaseStore accepted with response owed") != 0:
+            return fail(profile, stages, "lowtier-received-store-effect")
+        stages["lowtier_no_store_effect"] = 1
+        emit_receipt(profile, stages, {"degenerate_outcome": "fail-closed"})
+        return 0
+    except (RuntimeError, TimeoutError, AssertionError, subprocess.CalledProcessError) as exc:
+        return fail(profile, stages, type(exc).__name__ + ":" + str(exc)[:120])
+    finally:
+        stop(lowtier_holder[0])
+        stop(java_holder[0])
+
+
 def run_profile_a(
     root: Path, java_cache: Path, i2pd_bin: Path, daemon: Path, interop: Path, work: Path,
 ) -> int:
@@ -851,6 +1126,7 @@ def run_profile_a(
               "eligible_java_tier_n": 0, "stock_floodfill_capable": 0,
               "eligible_in_floodfill_peer_set": 0, "stock_in_floodfill_peer_set": 0,
               "eligible_selected_for_local_key": 0, "stock_selected_for_local_key": 0,
+              "eligible_wins_own_near_key_n1": 0, "stock_wins_own_near_key_n1": 0,
               "java_store_job_succeeded": 0, "java_stock_transport_send": 0,
               "store_recipient_attributed": 0}
     stock_holder: list[subprocess.Popen[bytes] | None] = [None]
@@ -885,7 +1161,6 @@ def run_profile_a(
         java_hash, java_summary = router_info_hash(interop, java_ri_path, root, java_ntcp)
         assert_router(java_summary, label="java", ntcp2_only=True,
                       expected_loopback_port=java_ntcp)
-        _ = java_hash
         deadline = time.monotonic() + 15
         eligible_hex = eligible_hash.hex()
         stock_hex = stock_hash.hex()
@@ -919,6 +1194,35 @@ def run_profile_a(
                 java_diag, stock_hex, time.monotonic() + 5):
             return fail(profile, stages, "stock-not-selected-for-local-key")
         stages["stock_selected_for_local_key"] = 1
+        # Plan 483 no-starvation proof: each healthy peer must win the
+        # width-1 verdict for its own near-key, so the run's single
+        # recipient is XOR-key-determined with neither peer excludable.
+        # Both share loopback, so stock puts both in the same same-/16
+        # bad tail and the winner is the XOR-nearest bad peer — this
+        # proves determinism and starvation freedom, not health
+        # preference (never claimed for A). The observed selector
+        # input is exactly the two seeded peers (self is capability-
+        # indexed but not k-bucketed); the precheck covers self anyway
+        # so a stock topology change fails closed instead of silently
+        # changing the contender set.
+        assert_hashes_pairwise_separable(eligible_hash, stock_hash, java_hash)
+        key_near_eligible = craft_near_key(eligible_hash)
+        key_near_stock = craft_near_key(stock_hash)
+        probe_deadline = time.monotonic() + 5
+        try:
+            assert_selector_n1(java_diag, key_near_eligible, eligible_hex,
+                               1, True, probe_deadline,
+                               "eligible-near-key")
+        except RuntimeError as exc:
+            return fail(profile, stages, str(exc))
+        stages["eligible_wins_own_near_key_n1"] = 1
+        try:
+            assert_selector_n1(java_diag, key_near_stock, stock_hex,
+                               1, True, probe_deadline,
+                               "stock-near-key")
+        except RuntimeError as exc:
+            return fail(profile, stages, str(exc))
+        stages["stock_wins_own_near_key_n1"] = 1
 
         deadline = time.monotonic() + RUN_TIMEOUT
         _, succeeded = wait_store_effect(java_diag, java_publish, deadline)
@@ -959,7 +1263,7 @@ def run_profile_a(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", choices=("a", "b", "all"), default="all")
+    parser.add_argument("--profile", choices=("a", "b", "c", "all"), default="all")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[3]
     java_cache, _, i2pd_cache, daemon, interop = check_environment(root)
@@ -968,6 +1272,18 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="i2pr-plan479-") as temporary:
         work = Path(temporary)
         os.chmod(work, 0o700)
+        if args.profile in ("c", "all"):
+            with tempfile.TemporaryDirectory(prefix="i2pr-plan479-C-", dir=str(work)) as c_tmp:
+                results["c"] = run_profile_c(
+                    root, java_cache, daemon, interop, Path(c_tmp))
+                if results["c"] != 0 and keep:
+                    snap = (root / "target/interop/plan479-scratch-snaps"
+                            / f"c-{int(time.time())}")
+                    snap.parent.mkdir(parents=True, exist_ok=True)
+                    import shutil as _shutil
+
+                    _shutil.copytree(c_tmp, snap, symlinks=True)
+                    print(f"plan479: scratch snapshot at {snap}")
         if args.profile in ("b", "all"):
             with tempfile.TemporaryDirectory(prefix="i2pr-plan479-B-", dir=str(work)) as b_tmp:
                 results["b"] = run_profile_b(

@@ -3106,6 +3106,30 @@ mod tests {
         );
     }
 
+    /// Plan 483 — the below-floor refusal is a pure per-tick decision:
+    /// repeated resolution with L-class inputs yields the addressed
+    /// form on every tick, so no evaluation tick can drift into
+    /// activation. (The live shape phases prove the caller maps this
+    /// refusal to the tiered addressed publication instead.)
+    #[test]
+    fn tier_below_floor_refuses_identically_every_tick() {
+        let governor = capacity_governor(131_072, 131_072);
+        let eligibility = CapacityEligibility::issue(Some(&governor), 25).expect("class permit");
+        for _ in 0..3 {
+            let class = FloodfillServiceState::resolve_controlled_capacity(
+                Some(&eligibility),
+                Some(&governor),
+            )
+            .expect("current class resolves")
+            .expect("bandwidth-enabled tick carries a class");
+            assert_eq!(class, i2pr_netdb::BandwidthClass::L);
+            assert_eq!(
+                FloodfillServiceState::controlled_capacity_form(class),
+                ControlledCapacityForm::Addressed
+            );
+        }
+    }
+
     fn controlled_ntcp2_test_address() -> i2pr_proto::RouterAddress {
         let options = i2pr_proto::Mapping::from_entries(vec![
             ("host".to_string(), "127.0.0.1".to_string()),
