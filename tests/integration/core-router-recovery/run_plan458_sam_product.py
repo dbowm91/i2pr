@@ -278,6 +278,9 @@ def parse_attempt_receipt_lines(lines):
                 key: re.search(rf"{key}\s*=\s*(\d+)", line)
                 for key in (
                     "syn_observed", "syn_accepted", "syn_rejected",
+                    "syn_rejected_decode", "syn_rejected_validation",
+                    "syn_rejected_signature", "syn_rejected_no_listener",
+                    "syn_rejected_backlog_full",
                     "accept_backlog_start", "accept_backlog_end",
                 )
             }
@@ -287,6 +290,18 @@ def parse_attempt_receipt_lines(lines):
                 # invariant by construction; a line violating it is a
                 # malformed receipt, not evidence.
                 if receipt["syn_accepted"] + receipt["syn_rejected"] != receipt["syn_observed"]:
+                    continue
+                # Single-recorder split: the five reject causes sum to
+                # the reject aggregate exactly (every site notes
+                # exactly one cause). A line violating it is malformed.
+                split = (
+                    receipt["syn_rejected_decode"]
+                    + receipt["syn_rejected_validation"]
+                    + receipt["syn_rejected_signature"]
+                    + receipt["syn_rejected_no_listener"]
+                    + receipt["syn_rejected_backlog_full"]
+                )
+                if split != receipt["syn_rejected"]:
                     continue
                 stream_accept_syn_wait_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?session_teardown', line):

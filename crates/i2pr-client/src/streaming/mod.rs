@@ -58,7 +58,8 @@ pub use errors::StreamingError;
 #[allow(unused_imports)]
 pub use events::{
     AckObservation, DataPacketIngressAccounting, InboundStreamEvent, OutboundStreamEvent,
-    SynIngressAccounting, SynResponseIngressAccounting, WirePacketObservation,
+    SynIngressAccounting, SynIngressRejectCause, SynResponseIngressAccounting,
+    WirePacketObservation,
 };
 #[allow(unused_imports)]
 pub use manager::{

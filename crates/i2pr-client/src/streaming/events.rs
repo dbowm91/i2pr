@@ -145,10 +145,11 @@ impl SynResponseIngressAccounting {
 /// as an inbound SYN; exactly one of `accepted` / `rejected`
 /// advances per observed packet, so `accepted + rejected ==
 /// observed` always holds. `accepted` means the SYN reached a
-/// listener backlog (the application may still need to accept it);
-/// a SYN that arrives but is never accepted is visible as
-/// `observed > accepted`, and listener/backlog/validation
-/// failures are visible as `rejected > 0`.
+/// listener backlog (the application may still need to accept it).
+/// `rejected` is additionally split by cause so a refused SYN names
+/// its owner (undecodable wire vs policy validation vs signature
+/// authentication vs listener selection vs backlog capacity); the
+/// five split fields always sum to `rejected`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SynIngressAccounting {
     /// Inbound SYN packets classified by the header peek.
@@ -157,15 +158,90 @@ pub struct SynIngressAccounting {
     pub accepted: u64,
     /// Observed packets discarded with a typed error.
     pub rejected: u64,
+    /// Split of `rejected`: the anonymous decode failed.
+    pub rejected_decode: u64,
+    /// Split of `rejected`: initial-SYN policy validation failed.
+    pub rejected_validation: u64,
+    /// Split of `rejected`: FROM/signature authentication failed.
+    pub rejected_signature: u64,
+    /// Split of `rejected`: no listener claimed the port.
+    pub rejected_no_listener: u64,
+    /// Split of `rejected`: the listener backlog was full.
+    pub rejected_backlog_full: u64,
+}
+
+/// Typed inbound-SYN rejection cause for the
+/// [`SynIngressAccounting`] split. Counts only; no identities,
+/// keys, or payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SynIngressRejectCause {
+    /// The anonymous decode failed.
+    Decode,
+    /// Initial-SYN policy validation failed.
+    Validation,
+    /// FROM/signature authentication failed.
+    Signature,
+    /// No listener claimed the destination port.
+    NoListener,
+    /// The listener backlog was full.
+    BacklogFull,
 }
 
 impl SynIngressAccounting {
+    /// Records one typed inbound-SYN rejection: increments the
+    /// aggregate and exactly the matching split field, with
+    /// saturating arithmetic. Every `rejected` site must go through
+    /// here so the split sum invariant holds structurally.
+    pub fn note_rejected(&mut self, cause: SynIngressRejectCause) {
+        self.rejected = self.rejected.saturating_add(1);
+        match cause {
+            SynIngressRejectCause::Decode => {
+                self.rejected_decode = self.rejected_decode.saturating_add(1);
+            }
+            SynIngressRejectCause::Validation => {
+                self.rejected_validation = self.rejected_validation.saturating_add(1);
+            }
+            SynIngressRejectCause::Signature => {
+                self.rejected_signature = self.rejected_signature.saturating_add(1);
+            }
+            SynIngressRejectCause::NoListener => {
+                self.rejected_no_listener = self.rejected_no_listener.saturating_add(1);
+            }
+            SynIngressRejectCause::BacklogFull => {
+                self.rejected_backlog_full = self.rejected_backlog_full.saturating_add(1);
+            }
+        }
+    }
+
+    /// Sum of the five split fields. Equals `rejected` when every
+    /// rejection site used [`SynIngressAccounting::note_rejected`].
+    pub fn split_rejected_sum(&self) -> u64 {
+        self.rejected_decode
+            .saturating_add(self.rejected_validation)
+            .saturating_add(self.rejected_signature)
+            .saturating_add(self.rejected_no_listener)
+            .saturating_add(self.rejected_backlog_full)
+    }
+
     /// Returns saturating fieldwise deltas from an earlier snapshot.
     pub fn delta_since(self, earlier: Self) -> Self {
         Self {
             observed: self.observed.saturating_sub(earlier.observed),
             accepted: self.accepted.saturating_sub(earlier.accepted),
             rejected: self.rejected.saturating_sub(earlier.rejected),
+            rejected_decode: self.rejected_decode.saturating_sub(earlier.rejected_decode),
+            rejected_validation: self
+                .rejected_validation
+                .saturating_sub(earlier.rejected_validation),
+            rejected_signature: self
+                .rejected_signature
+                .saturating_sub(earlier.rejected_signature),
+            rejected_no_listener: self
+                .rejected_no_listener
+                .saturating_sub(earlier.rejected_no_listener),
+            rejected_backlog_full: self
+                .rejected_backlog_full
+                .saturating_sub(earlier.rejected_backlog_full),
         }
     }
 }

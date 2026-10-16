@@ -1554,3 +1554,82 @@ belongs to its own plan-of-record, proposed:
 - No code, no lane this turn by the bounded policy
   (design-only outcome). 478 stays active; the plan
   proposal above is the next act, not this turn.
+
+## 2026-10-16 SYN reject-cause split landed + lane `m8v2xk5q`
+
+Material change licensing exactly one lane: the
+ACCEPT SYN-wait expiry receipt now splits
+`syn_rejected` into `decode / validation /
+signature / no_listener / backlog_full`.
+
+- Client (`crates/i2pr-client/src/streaming/`):
+  `SynIngressRejectCause::{Decode,Validation,
+  Signature,NoListener,BacklogFull}` with
+  `note_rejected()` + `split_rejected_sum()` on
+  `SynIngressAccounting`; every reject site in
+  `handle_inbound_syn` (peek decode, FROM/option
+  validation, signature stages, no-listener,
+  backlog-full) counts its cause exactly once.
+  Rejections stay inside the handler; the caller
+  records only acceptance, so no double-count.
+  `?`-returns converted to explicit match arms
+  with byte-identical error variants (audit by
+  diff). 5 new tests (cause-matrix, corrupt
+  signature, flag-only, truncated decode,
+  backlog-1); streaming suite 38 pass.
+- Daemon (`crates/i2pr-daemon/src/sam.rs`):
+  `syn_ingress_totals()` 3-tuple to 8-tuple;
+  expiry WARN and TIMEOUT reply 5 to 10 keys.
+  Fail-closed unit test updated to 8 zeros.
+- Parser (`run_plan458_sam_product.py`):
+  `stream_accept_syn_wait_expired` requires all 10
+  keys with split-sum `== rejected` gate;
+  5-key pre-split receipts refused. Offline
+  `test_plan478_accept_syn_wait_receipt.py` +2
+  tests (split-mismatch, 5-key refusal), 68 pass.
+- Probe-kills (both reverted): dropping the
+  NoListener note fails the no-listener unit
+  test; dropping `syn_rejected_signature` from
+  required keys fails 4 offline tests with
+  `KeyError`.
+- Battery: client lib 131, daemon lib 794,
+  streaming 38, `destination_tunnel_unit` 44,
+  `sam_stream_self_composed` 4,
+  `sam_stream_final_acceptance` 11/11, offline
+  68, planning 51, clippy `-D warnings`, fmt,
+  all green.
+
+Lane `m8v2xk5q-syn-reject-split-run` (exact pins,
+`mesh_quiet:true`, fresh binary verified by
+`strings` + mtime; provenance `git_head
+571eabd7`, `git_dirty_files` 6):
+
+- Forward leg: `install_committed` 4/4,
+  `response_matched` 4/4, delivery families
+  `ssu2:4` (2 outbound + 2 inbound cells).
+- Reverse leg: same frontier stall —
+  `driver_leg_failure i2pd-to-i2pr short stream
+  read (0/2328)` at 99 s. NOT a regression;
+  §6 blocker unchanged.
+- ACCEPT-SYN 10-key receipt live on stock
+  traffic: `syn_observed=2, syn_accepted=0,
+  syn_rejected=2` with split `decode=0,
+  validation=0, signature=0, no_listener=2,
+  backlog_full=0`, `accept_backlog 0→0`. Split
+  sum equals rejected. Both SYNs arrived for a
+  port with no listener (ACCEPT serially parked
+  behind the CONNECT leg) — bind-gap class,
+  consistent with `zwzvlxax`/`zgcd_jsn` reads.
+- Teardown: single cause-2 (`ControlSocketClosed`)
+  with `session_live=1, driver_live=1` — union
+  gauge holds; no cause-3 this lane.
+- Decision-table read: session survival ✔ (no
+  cause-3); forward ✔; ACCEPT-SYN split ✔;
+  DATA decision: no DATA-phase entry (nothing
+  entered DATA — correct for all-rejected).
+- Scratch snapshotted local-only to
+  `target/interop/plan458-scratch-snaps/
+  m8v2xk5q-syn-reject-split-run/` (not committed).
+
+478 stays active; §6 reverse stall remains the
+blocker.

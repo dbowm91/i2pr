@@ -61,8 +61,8 @@ use crate::streaming::connection::{
 };
 use crate::streaming::errors::StreamingError;
 use crate::streaming::events::{
-    DataPacketIngressAccounting, SynIngressAccounting, SynResponseIngressAccounting,
-    WirePacketObservation,
+    DataPacketIngressAccounting, SynIngressAccounting, SynIngressRejectCause,
+    SynResponseIngressAccounting, WirePacketObservation,
 };
 use crate::streaming::send_window::SendWindowDecision;
 use crate::streaming::transport::TransportSendRequest;
@@ -410,8 +410,8 @@ impl StreamingManager {
         self.syn_ingress.accepted = self.syn_ingress.accepted.saturating_add(1);
     }
 
-    fn note_syn_ingress_rejected(&mut self) {
-        self.syn_ingress.rejected = self.syn_ingress.rejected.saturating_add(1);
+    fn note_syn_ingress_rejected(&mut self, cause: SynIngressRejectCause) {
+        self.syn_ingress.note_rejected(cause);
     }
 
     /// Returns the redacted established-traffic ingress accounting
@@ -902,7 +902,7 @@ impl StreamingManager {
             ) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    self.note_syn_ingress_rejected();
+                    self.note_syn_ingress_rejected(SynIngressRejectCause::Decode);
                     return Err(StreamingManagerError::Codec(error));
                 }
             };
@@ -916,9 +916,11 @@ impl StreamingManager {
                 destination_port,
                 now_ms,
             );
-            match &outcome {
-                Ok(_) => self.note_syn_ingress_accepted(),
-                Err(_) => self.note_syn_ingress_rejected(),
+            // Rejections are already counted with their cause
+            // inside `handle_inbound_syn`; only acceptance is
+            // recorded here so no outcome is double-counted.
+            if outcome.is_ok() {
+                self.note_syn_ingress_accepted();
             }
             return outcome;
         }
@@ -1085,14 +1087,24 @@ impl StreamingManager {
     ) -> Result<WirePacketObservation, StreamingManagerError> {
         // The SYN replay binding NACK field carries the receiver
         // (local destination) hash.
-        let local_destination_hash: [u8; 32] = *to_destination
+        let local_destination_hash: [u8; 32] = match to_destination
             .destination()
             .hash()
-            .map_err(StreamingManagerError::I2npCodec)?
-            .as_bytes();
-        validate_initial_syn(packet, &local_destination_hash)?;
+            .map_err(StreamingManagerError::I2npCodec)
+        {
+            Ok(hash) => *hash.as_bytes(),
+            Err(error) => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_initial_syn(packet, &local_destination_hash) {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
+            return Err(StreamingManagerError::Codec(error));
+        }
         let initial_maximum = usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         if packet.payload.len() > initial_maximum {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
             return Err(StreamingManagerError::InitialSynPayloadTooLarge {
                 actual: packet.payload.len(),
                 maximum: initial_maximum,
@@ -1102,31 +1114,50 @@ impl StreamingManager {
         // Verify the originator's signature over the canonical
         // preimage (the full packet with the raw signature zeroed)
         // against the FROM destination's signing key.
-        let destination =
-            packet
-                .options
-                .from_destination
-                .clone()
-                .ok_or(StreamingManagerError::Codec(
+        let destination = match packet.options.from_destination.clone() {
+            Some(destination) => destination,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
                     StreamingPacketError::SynMissingFrom,
-                ))?;
-        let location = signature_location.ok_or(StreamingManagerError::Codec(
-            StreamingPacketError::SignatureMissing,
-        ))?;
+                ));
+            }
+        };
+        let location = match signature_location {
+            Some(location) => location,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
+                    StreamingPacketError::SignatureMissing,
+                ));
+            }
+        };
         let preimage = build_signature_preimage(wire_bytes, Some(location));
-        let signature = packet
-            .options
-            .signature
-            .clone()
-            .ok_or(StreamingManagerError::Codec(
-                StreamingPacketError::SignatureMissing,
-            ))?;
-        let signature_value = SignatureValue::new(destination.signing_key().key_type(), signature)
-            .map_err(|_| {
-                StreamingManagerError::Codec(StreamingPacketError::SignatureContextUnavailable)
-            })?;
-        verify_signature(destination.signing_key(), &preimage, &signature_value)
-            .map_err(|_| StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid))?;
+        let signature = match packet.options.signature.clone() {
+            Some(signature) => signature,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
+                    StreamingPacketError::SignatureMissing,
+                ));
+            }
+        };
+        let signature_value =
+            match SignatureValue::new(destination.signing_key().key_type(), signature) {
+                Ok(value) => value,
+                Err(_) => {
+                    self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                    return Err(StreamingManagerError::Codec(
+                        StreamingPacketError::SignatureContextUnavailable,
+                    ));
+                }
+            };
+        if verify_signature(destination.signing_key(), &preimage, &signature_value).is_err() {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::SignatureInvalid,
+            ));
+        }
 
         // Allocate a new inbound connection. The originator's
         // `receiveStreamId` is the id they want us to use in our
@@ -1185,6 +1216,7 @@ impl StreamingManager {
             self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
+            self.note_syn_ingress_rejected(SynIngressRejectCause::NoListener);
             return Err(StreamingManagerError::NoMatchingListener { destination_port });
         };
         let backlog_full = self
@@ -1197,6 +1229,7 @@ impl StreamingManager {
             self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
+            self.note_syn_ingress_rejected(SynIngressRejectCause::BacklogFull);
             return Err(StreamingManagerError::ListenerBacklogFull);
         }
         if let Some(entry) = self.listeners.get_mut(&matched_listener) {
@@ -2776,6 +2809,7 @@ mod tests {
             accounting.accepted.saturating_add(accounting.rejected),
             accounting.observed
         );
+        assert_eq!(accounting.split_rejected_sum(), 0);
         assert_eq!(
             sink.syn_response_ingress(),
             SynResponseIngressAccounting::default()
@@ -2829,10 +2863,258 @@ mod tests {
         assert_eq!(accounting.observed, 1);
         assert_eq!(accounting.accepted, 0);
         assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_no_listener, 1);
+        assert_eq!(accounting.rejected_decode, 0);
+        assert_eq!(accounting.rejected_validation, 0);
+        assert_eq!(accounting.rejected_signature, 0);
+        assert_eq!(accounting.rejected_backlog_full, 0);
         assert_eq!(
             accounting.accepted.saturating_add(accounting.rejected),
             accounting.observed
         );
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    /// Builds one real originator SYN and returns its wire bytes as
+    /// observed by the recipient (client-payload envelope stripped).
+    fn inbound_syn_bytes(
+        sender: &mut StreamingManager,
+        originator: &DestinationIdentity,
+        recipient_remote: &RemoteDestination,
+        seed: u64,
+    ) -> Vec<u8> {
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                originator,
+                recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(seed),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope")
+        .payload
+    }
+
+    fn syn_originator_pair(
+        originator_seed: u64,
+        recipient_seed: u64,
+    ) -> (DestinationIdentity, DestinationIdentity, RemoteDestination) {
+        let originator = destination(originator_seed);
+        let recipient = destination(recipient_seed);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        (originator, recipient, recipient_remote)
+    }
+
+    #[test]
+    fn syn_ingress_reject_causes_move_exactly_one_split_field() {
+        use crate::streaming::events::SynIngressRejectCause;
+
+        let causes = [
+            (
+                SynIngressRejectCause::Decode,
+                SynIngressAccounting {
+                    rejected_decode: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::Validation,
+                SynIngressAccounting {
+                    rejected_validation: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::Signature,
+                SynIngressAccounting {
+                    rejected_signature: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::NoListener,
+                SynIngressAccounting {
+                    rejected_no_listener: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::BacklogFull,
+                SynIngressAccounting {
+                    rejected_backlog_full: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+        ];
+        for (cause, expected) in causes {
+            let mut accounting = SynIngressAccounting::default();
+            accounting.note_rejected(cause);
+            assert_eq!(accounting.rejected, 1, "aggregate must move");
+            let mut expected_full = expected;
+            expected_full.rejected = 1;
+            assert_eq!(accounting, expected_full, "exactly one split field moves");
+            assert_eq!(
+                accounting.split_rejected_sum(),
+                accounting.rejected,
+                "split sum must equal the aggregate"
+            );
+        }
+        assert_eq!(SynIngressAccounting::default().split_rejected_sum(), 0);
+    }
+
+    #[test]
+    fn syn_ingress_corrupt_signature_counts_signature_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1362_0001, 0x1362_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1362_0003);
+        // Flip the trailing byte (inside the signature option, past
+        // every length prefix): decode still parses, verification
+        // must fail.
+        let mut bad = syn.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            &bad,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "corrupt signature must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_signature, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_flag_only_syn_counts_validation_cause() {
+        // SYNCHRONIZE-only shape (no FROM/SIGNATURE/MAX_PACKET_SIZE):
+        // decodes, then fails initial-SYN policy validation.
+        let shaped = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0,
+                receive_stream_id: 0x1363_00b5,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_SYNCHRONIZE)
+                    .expect("SYN flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("SYN-shaped packet encoding");
+        let recipient = destination(0x1363_0002);
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            &shaped,
+            &[0_u8; 32],
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "flag-only SYN must fail validation");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_validation, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_truncated_packet_counts_decode_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1364_0001, 0x1364_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1364_0003);
+        // Header present (peek classifies), body truncated (decode fails).
+        let cut = &syn[..64];
+        assert!(cut.len() >= i2pr_proto::streaming::MIN_STREAMING_HEADER_BYTES);
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            cut,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "truncated SYN must fail decode");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_decode, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_full_backlog_counts_backlog_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1365_0001, 0x1365_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let small_backlog = StreamingConfig {
+            max_listener_backlog: 1,
+            ..StreamingConfig::balanced()
+        };
+        let mut sink = StreamingManager::new(small_backlog);
+        sink.listen(REMOTE_PORT).expect("listener");
+        // First SYN fills the one-slot backlog.
+        let first = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1365_0003);
+        sink.process_inbound_packet(
+            &first,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        // Second SYN meets a full backlog.
+        let second = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1365_0004);
+        let outcome = sink.process_inbound_packet(
+            &second,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "over-backlog SYN must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 2);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_backlog_full, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
     }
 
     #[test]

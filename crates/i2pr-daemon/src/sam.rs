@@ -3694,18 +3694,20 @@ fn syn_response_ingress_totals(
 
 /// Plan 478 ACCEPT-side SYN attribution: sums the redacted
 /// inbound-SYN ingress counters across the destination's canonical
-/// and receiver managers as `(observed, accepted, rejected)`
-/// counts. The ACCEPT poller drains the receiver mirror, but the
-/// local seam may route the SYN to either manager, so both are
-/// summed exactly like the SYN-response totals. No stream ids,
-/// ports, hashes, or payload material cross this boundary.
-fn syn_ingress_totals(state: &SamServiceState, destination_id: DestinationId) -> (u64, u64, u64) {
+/// and receiver managers as `(observed, accepted, rejected,
+/// rejected_decode, rejected_validation, rejected_signature,
+/// rejected_no_listener, rejected_backlog_full)` counts. No stream
+/// ids, ports, hashes, or payload material cross this boundary.
+fn syn_ingress_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
     let destinations_arc = state.sam_destinations();
     let Ok(destinations) = destinations_arc.lock() else {
-        return (0, 0, 0);
+        return (0, 0, 0, 0, 0, 0, 0, 0);
     };
     let Some(handle) = destinations.get(destination_id) else {
-        return (0, 0, 0);
+        return (0, 0, 0, 0, 0, 0, 0, 0);
     };
     handle.with(|bridge| {
         let canonical = bridge.streaming().syn_ingress();
@@ -3714,6 +3716,21 @@ fn syn_ingress_totals(state: &SamServiceState, destination_id: DestinationId) ->
             canonical.observed.saturating_add(mirror.observed),
             canonical.accepted.saturating_add(mirror.accepted),
             canonical.rejected.saturating_add(mirror.rejected),
+            canonical
+                .rejected_decode
+                .saturating_add(mirror.rejected_decode),
+            canonical
+                .rejected_validation
+                .saturating_add(mirror.rejected_validation),
+            canonical
+                .rejected_signature
+                .saturating_add(mirror.rejected_signature),
+            canonical
+                .rejected_no_listener
+                .saturating_add(mirror.rejected_no_listener),
+            canonical
+                .rejected_backlog_full
+                .saturating_add(mirror.rejected_backlog_full),
         )
     })
 }
@@ -4285,11 +4302,21 @@ async fn execute_stream_accept(
                 let syn_observed = syn_after.0.saturating_sub(syn_before.0);
                 let syn_accepted = syn_after.1.saturating_sub(syn_before.1);
                 let syn_rejected = syn_after.2.saturating_sub(syn_before.2);
+                let syn_rejected_decode = syn_after.3.saturating_sub(syn_before.3);
+                let syn_rejected_validation = syn_after.4.saturating_sub(syn_before.4);
+                let syn_rejected_signature = syn_after.5.saturating_sub(syn_before.5);
+                let syn_rejected_no_listener = syn_after.6.saturating_sub(syn_before.6);
+                let syn_rejected_backlog_full = syn_after.7.saturating_sub(syn_before.7);
                 let backlog_end = accept_backlog_depth(&state, destination_id, listen_port);
                 warn!(
                     syn_observed = syn_observed,
                     syn_accepted = syn_accepted,
                     syn_rejected = syn_rejected,
+                    syn_rejected_decode = syn_rejected_decode,
+                    syn_rejected_validation = syn_rejected_validation,
+                    syn_rejected_signature = syn_rejected_signature,
+                    syn_rejected_no_listener = syn_rejected_no_listener,
+                    syn_rejected_backlog_full = syn_rejected_backlog_full,
                     accept_backlog_start = backlog_start,
                     accept_backlog_end = backlog_end,
                     transition = "stream_accept_syn_wait_expired",
@@ -4302,6 +4329,11 @@ async fn execute_stream_accept(
                          syn_observed={syn_observed} \
                          syn_accepted={syn_accepted} \
                          syn_rejected={syn_rejected} \
+                         syn_rejected_decode={syn_rejected_decode} \
+                         syn_rejected_validation={syn_rejected_validation} \
+                         syn_rejected_signature={syn_rejected_signature} \
+                         syn_rejected_no_listener={syn_rejected_no_listener} \
+                         syn_rejected_backlog_full={syn_rejected_backlog_full} \
                          accept_backlog_start={backlog_start} \
                          accept_backlog_end={backlog_end}"
                     ),
@@ -5223,7 +5255,7 @@ mod tests {
         // SYN-ingress totals and the backlog gauge.
         assert_eq!(
             syn_ingress_totals(&state, destination_id),
-            (0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0, 0),
             "absent bridge must read zero SYN ingress"
         );
         assert_eq!(
