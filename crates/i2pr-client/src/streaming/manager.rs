@@ -61,7 +61,8 @@ use crate::streaming::connection::{
 };
 use crate::streaming::errors::StreamingError;
 use crate::streaming::events::{
-    DataPacketIngressAccounting, SynResponseIngressAccounting, WirePacketObservation,
+    DataPacketIngressAccounting, SynIngressAccounting, SynResponseIngressAccounting,
+    WirePacketObservation,
 };
 use crate::streaming::send_window::SendWindowDecision;
 use crate::streaming::transport::TransportSendRequest;
@@ -325,6 +326,11 @@ pub struct StreamingManager {
     /// Redacted SYN-response ingress accounting (counts only, no
     /// stream ids, ports, hashes, or payload material).
     syn_response_ingress: SynResponseIngressAccounting,
+    /// Redacted inbound-SYN ingress accounting (counts only).
+    /// Lets the runtime distinguish "no SYN ever arrived"
+    /// (`observed == 0`) from "SYNs arrived but never reached a
+    /// listener backlog" (`observed > accepted`).
+    syn_ingress: SynIngressAccounting,
     /// Redacted established-traffic ingress accounting (counts
     /// only). Lets the runtime distinguish "no data packet ever
     /// arrived" (`observed == 0`) from "arrived but rejected"
@@ -353,6 +359,7 @@ impl StreamingManager {
             pending_bytes_by_connection: BTreeMap::new(),
             pending_syn_payloads: BTreeMap::new(),
             syn_response_ingress: SynResponseIngressAccounting::default(),
+            syn_ingress: SynIngressAccounting::default(),
             data_packet_ingress: DataPacketIngressAccounting::default(),
         }
     }
@@ -385,6 +392,26 @@ impl StreamingManager {
 
     fn note_syn_response_rejected(&mut self) {
         self.syn_response_ingress.rejected = self.syn_response_ingress.rejected.saturating_add(1);
+    }
+
+    /// Returns the redacted inbound-SYN ingress accounting snapshot
+    /// (counts only). Lets the runtime distinguish "no SYN ever
+    /// arrived" (`observed == 0`) from "SYNs arrived but never
+    /// reached a listener backlog" (`observed > accepted`).
+    pub fn syn_ingress(&self) -> SynIngressAccounting {
+        self.syn_ingress
+    }
+
+    fn note_syn_ingress_observed(&mut self) {
+        self.syn_ingress.observed = self.syn_ingress.observed.saturating_add(1);
+    }
+
+    fn note_syn_ingress_accepted(&mut self) {
+        self.syn_ingress.accepted = self.syn_ingress.accepted.saturating_add(1);
+    }
+
+    fn note_syn_ingress_rejected(&mut self) {
+        self.syn_ingress.rejected = self.syn_ingress.rejected.saturating_add(1);
     }
 
     /// Returns the redacted established-traffic ingress accounting
@@ -861,14 +888,25 @@ impl StreamingManager {
             && peek.send_stream_id == 0
             && peek.receive_stream_id != 0
         {
+            // Accounting starts at the peek classification so every
+            // outcome below (decode failure, handler rejection, or
+            // acceptance into a listener backlog) is attributed
+            // against the same arrival count, mirroring the
+            // SYN-response arm below.
+            self.note_syn_ingress_observed();
             let limit = StreamingReceiveLimit::destination_path();
-            let (packet, signature_location) = decode_streaming_packet(
+            let (packet, signature_location) = match decode_streaming_packet(
                 wire_bytes,
                 limit,
                 StreamingOptionDecodeContext::anonymous(),
-            )
-            .map_err(StreamingManagerError::Codec)?;
-            return self.handle_inbound_syn(
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    self.note_syn_ingress_rejected();
+                    return Err(StreamingManagerError::Codec(error));
+                }
+            };
+            let outcome = self.handle_inbound_syn(
                 &packet,
                 signature_location,
                 wire_bytes,
@@ -878,6 +916,11 @@ impl StreamingManager {
                 destination_port,
                 now_ms,
             );
+            match &outcome {
+                Ok(_) => self.note_syn_ingress_accepted(),
+                Err(_) => self.note_syn_ingress_rejected(),
+            }
+            return outcome;
         }
 
         // SYN response (recipient): packet.sendStreamId == our
@@ -2323,7 +2366,9 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
-    use crate::streaming::events::{DataPacketIngressAccounting, SynResponseIngressAccounting};
+    use crate::streaming::events::{
+        DataPacketIngressAccounting, SynIngressAccounting, SynResponseIngressAccounting,
+    };
 
     const LOCAL_PORT: u16 = 10_134;
     const REMOTE_PORT: u16 = 20_134;
@@ -2675,6 +2720,119 @@ mod tests {
         );
         let connection = sender.get_connection(connection_id).expect("connection");
         assert_eq!(connection.state(), ConnectionState::Established);
+    }
+
+    #[test]
+    fn syn_ingress_accounting_accepts_an_inbound_syn() {
+        let originator = destination(0x1360_0001);
+        let recipient = destination(0x1360_0002);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                &originator,
+                &recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1360_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        let syn_envelope = decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        assert_eq!(sink.syn_ingress(), SynIngressAccounting::default());
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &syn_envelope.payload,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("authenticated inbound SYN");
+        // The sink received an initial SYN as acceptor: its
+        // SYN-ingress accounting moves, its SYN-response accounting
+        // stays at zero.
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        assert_eq!(
+            sink.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn syn_ingress_without_listener_counts_observed_and_rejected() {
+        let originator = destination(0x1361_0001);
+        let recipient = destination(0x1361_0002);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                &originator,
+                &recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1361_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        let syn_envelope = decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+
+        // No listener installed: the well-formed SYN decodes and
+        // verifies, then fails closed at listener selection.
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        let outcome = sink.process_inbound_packet(
+            &syn_envelope.payload,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "unclaimed port must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
     }
 
     #[test]

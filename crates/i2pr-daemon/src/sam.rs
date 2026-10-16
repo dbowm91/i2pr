@@ -3496,6 +3496,56 @@ fn syn_response_ingress_totals(
     })
 }
 
+/// Plan 478 ACCEPT-side SYN attribution: sums the redacted
+/// inbound-SYN ingress counters across the destination's canonical
+/// and receiver managers as `(observed, accepted, rejected)`
+/// counts. The ACCEPT poller drains the receiver mirror, but the
+/// local seam may route the SYN to either manager, so both are
+/// summed exactly like the SYN-response totals. No stream ids,
+/// ports, hashes, or payload material cross this boundary.
+fn syn_ingress_totals(state: &SamServiceState, destination_id: DestinationId) -> (u64, u64, u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return (0, 0, 0);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return (0, 0, 0);
+    };
+    handle.with(|bridge| {
+        let canonical = bridge.streaming().syn_ingress();
+        let mirror = bridge.receiver_streaming().syn_ingress();
+        (
+            canonical.observed.saturating_add(mirror.observed),
+            canonical.accepted.saturating_add(mirror.accepted),
+            canonical.rejected.saturating_add(mirror.rejected),
+        )
+    })
+}
+
+/// Plan 478 ACCEPT-side backlog gauge: the receiver-mirror
+/// listener backlog depth for one port as a snapshot. Counts
+/// only; no identities or payload material. Fail-closed zero
+/// when the bridge is absent. Read at ACCEPT-wait start and end:
+/// SYNs accepted into the backlog with a still-empty drain at
+/// expiry means the ACCEPT poller never converted arrival into
+/// an established connection.
+fn accept_backlog_depth(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+    listen_port: u16,
+) -> u64 {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return 0;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return 0;
+    };
+    handle.with(|bridge| {
+        u64::try_from(bridge.receiver_streaming().listener_backlog(listen_port)).unwrap_or(u64::MAX)
+    })
+}
+
 /// Plan 478 garlic-arrival attribution: reads the destination bridge's
 /// cumulative garlic-dispatch outcome counters as
 /// `(authenticated, rejected, payloads_dequeued, streaming_accepted)`.
@@ -3973,6 +4023,14 @@ async fn execute_stream_accept(
     let deadline = Duration::from_secs(20);
     let established_notify = state.established_signal(destination_id);
     state.notify_outbound_signal(destination_id);
+    // Plan 478 ACCEPT-side SYN attribution: baseline the
+    // acceptor ingress counters and the listener backlog so an
+    // expiry can split "no SYN ever arrived" (all zero) from
+    // "SYNs arrived but never reached a backlog" (observed >
+    // accepted) and "backlogged but never drained" (backlog still
+    // held at expiry).
+    let syn_before = syn_ingress_totals(&state, destination_id);
+    let backlog_start = accept_backlog_depth(&state, destination_id, listen_port);
     let (inbound_connection_id, peer_destination, peer_destination_b64) =
         match wait_for_accept_established(
             state.clone(),
@@ -3985,10 +4043,29 @@ async fn execute_stream_accept(
         {
             Some(value) => value,
             None => {
+                let syn_after = syn_ingress_totals(&state, destination_id);
+                let syn_observed = syn_after.0.saturating_sub(syn_before.0);
+                let syn_accepted = syn_after.1.saturating_sub(syn_before.1);
+                let syn_rejected = syn_after.2.saturating_sub(syn_before.2);
+                let backlog_end = accept_backlog_depth(&state, destination_id, listen_port);
+                warn!(
+                    syn_observed = syn_observed,
+                    syn_accepted = syn_accepted,
+                    syn_rejected = syn_rejected,
+                    accept_backlog_start = backlog_start,
+                    accept_backlog_end = backlog_end,
+                    transition = "stream_accept_syn_wait_expired",
+                    "STREAM ACCEPT wait ended without Established; inbound-SYN ingress attribution (counts only)",
+                );
                 return Err(StreamAcceptFailed {
                     result: ReplyResult::Timeout,
                     message: format!(
-                        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?}"
+                        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?} \
+                         syn_observed={syn_observed} \
+                         syn_accepted={syn_accepted} \
+                         syn_rejected={syn_rejected} \
+                         accept_backlog_start={backlog_start} \
+                         accept_backlog_end={backlog_end}"
                     ),
                 });
             }
@@ -4839,6 +4916,31 @@ mod tests {
             delivery_send_totals(&state, destination_id),
             (8, 1, 2, 3, 5, 1, 1, 1, 2, 7),
             "send totals must map each counter field in order"
+        );
+    }
+
+    #[test]
+    fn accept_side_attribution_reads_zero_without_bridge() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([12_u8; 32]));
+        // Unknown destination fails closed to all zeros on both the
+        // SYN-ingress totals and the backlog gauge.
+        assert_eq!(
+            syn_ingress_totals(&state, destination_id),
+            (0, 0, 0),
+            "absent bridge must read zero SYN ingress"
+        );
+        assert_eq!(
+            accept_backlog_depth(&state, destination_id, 0),
+            0,
+            "absent bridge must read zero backlog depth"
         );
     }
 

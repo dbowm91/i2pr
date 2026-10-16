@@ -1278,3 +1278,78 @@ frontier unchanged (reverse DATA still unfired). No
 further lane without a new change. 478 stays active;
 reverse DATA, §6 live recovery, product close-out
 open; 433/439 gates unchanged.
+
+## 2026-10-16 follow-up: ACCEPT-side SYN instrument + lane `98nph0lj` splits never-sent live
+
+Forensics first (correcting two readings): the
+frontier short-read comes from stock's CONNECT side
+(no `accept failed:` prefix), and our daemon's stdout
+shows exactly one stream command all run (the forward
+CONNECT) — our ACCEPT was never issued that run, so
+pump 0 was "no ACCEPT", not "ACCEPT without pump".
+The unfired question stands below the pump, now with
+a daemon-side bounded wait to probe: the 20 s
+`wait_for_accept_established`.
+
+Instrument (same seams, no behavior change):
+
+- `i2pr-client`: `SynIngressAccounting
+  {observed, accepted, rejected}` + `delta_since`,
+  counted at the inbound-SYN peek classification in
+  `process_inbound_packet` (observed on classify,
+  rejected on decode/handler failure, accepted on
+  backlog reach) — the exact mirror of the
+  SYN-response/data arms. Exported through
+  `streaming/mod.rs`. Tests: full-handshake mirror
+  (sink `{1,1,0}`, response accounting stays zero) and
+  no-listener reject (`{1,0,1}` + invariant).
+- `i2pr-daemon`: `syn_ingress_totals()` (canonical +
+  receiver, mirroring response totals) and
+  `accept_backlog_depth()` (receiver-mirror backlog
+  gauge, fail-closed 0). ACCEPT path snapshots both
+  before the 20 s wait; expiry emits
+  `transition="stream_accept_syn_wait_expired"` WARN
+  with `syn_observed/syn_accepted/syn_rejected` +
+  `accept_backlog_start/end`, and the TIMEOUT reply
+  carries the same counts. Fail-closed unit test.
+- Lane parser: `stream_accept_syn_wait_receipts`
+  (5 keys, accepted+rejected==observed or refuse;
+  flows into the diagnostic wholesale). New offline
+  file (5 tests). Both probes kill for the right
+  reason (client assertion; parser KeyError on the
+  structurally-required key) and are reverted.
+- Battery: client lib 126, daemon lib 789, tunnel-unit
+  44, sam-composed 4, offline 59, planning 51,
+  clippy/fmt clean.
+
+Lane `98nph0lj` (verified-fresh binary, bin size
+295692872, HEAD `835d1701`): the 28-key receipt FIRED
+LIVE for the first time and split the class exactly
+as designed — `send_sweeps = 0` (driver never ran, not
+merely empty) with `send_queue_start = 1` /
+`send_queue_end = 0` (the SYN was queued, then gone
+with zero sweep outcomes) and every other key zero.
+Then a NEW shape: retry CONNECT failed
+`INVALID_ID "unknown session id p458router"` — the
+session died mid-run with no INFO-visible teardown,
+eviction, or panic in our stdout. No ACCEPT receipt
+fired (reverse leg never started); grace correctly
+skipped. Snap:
+`98nph0lj-sweeps-zero-session-invalid-run`.
+
+Next bounded questions (not this turn): (a) session
+mid-wait death — prime suspect for the queue drain
+with no sweep (teardown drops the manager with the
+queued SYN; bridge-missing sweeps would have counted
+had the driver run, so the driver task itself never
+looped); candidate instrument is INFO on
+`teardown_session` + driver liveness, its own
+change+lane. (b) The ACCEPT SYN receipt still awaits
+a live reverse-wait expiry.
+
+**Disposition.** Instrument landed + licensed lane run;
+never-sent is now split live; session lifecycle is
+the new frontier edge. No further lane without a new
+change. 478 stays active; reverse DATA, §6 live
+recovery, product close-out open; 433/439 gates
+unchanged.

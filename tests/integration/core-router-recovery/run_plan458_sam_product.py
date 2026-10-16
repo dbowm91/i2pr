@@ -88,6 +88,7 @@ def parse_attempt_receipt_lines(lines):
     inbound_build_wait_receipts = []
     stream_connect_handshake_wait_receipts = []
     stream_accept_data_phase_close_receipts = []
+    stream_accept_syn_wait_receipts = []
     accept_pump_started = 0
     delivery_admitted_cells = []
     for raw_line in lines:
@@ -266,6 +267,22 @@ def parse_attempt_receipt_lines(lines):
                 if receipt["bridge_present"] not in (0, 1):
                     continue
                 stream_accept_data_phase_close_receipts.append(receipt)
+        if re.search(r'transition\s*=\s*"?stream_accept_syn_wait_expired', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "syn_observed", "syn_accepted", "syn_rejected",
+                    "accept_backlog_start", "accept_backlog_end",
+                )
+            }
+            if all(match for match in values.values()):
+                receipt = {key: int(match.group(1)) for key, match in values.items()}
+                # Acceptor ingress shares the observed/accepted/rejected
+                # invariant by construction; a line violating it is a
+                # malformed receipt, not evidence.
+                if receipt["syn_accepted"] + receipt["syn_rejected"] != receipt["syn_observed"]:
+                    continue
+                stream_accept_syn_wait_receipts.append(receipt)
         # Plan 478 pump lifecycle: each inbound raw-pump start is one
         # INFO line with no build_attempt_id, so it is counted
         # explicitly (never a stage count). Together with the close
@@ -307,6 +324,7 @@ def parse_attempt_receipt_lines(lines):
         "inbound_build_wait_receipts": inbound_build_wait_receipts,
         "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
         "stream_accept_data_phase_close_receipts": stream_accept_data_phase_close_receipts,
+        "stream_accept_syn_wait_receipts": stream_accept_syn_wait_receipts,
         "accept_pump_started": accept_pump_started,
     }
 

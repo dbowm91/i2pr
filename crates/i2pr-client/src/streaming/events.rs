@@ -136,6 +136,40 @@ impl SynResponseIngressAccounting {
     }
 }
 
+/// Redacted ingress accounting for inbound SYN (originator)
+/// packets observed by one [`crate::streaming::StreamingManager`]
+/// acting as acceptor.
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies
+/// as an inbound SYN; exactly one of `accepted` / `rejected`
+/// advances per observed packet, so `accepted + rejected ==
+/// observed` always holds. `accepted` means the SYN reached a
+/// listener backlog (the application may still need to accept it);
+/// a SYN that arrives but is never accepted is visible as
+/// `observed > accepted`, and listener/backlog/validation
+/// failures are visible as `rejected > 0`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SynIngressAccounting {
+    /// Inbound SYN packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets that reached a listener backlog.
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error.
+    pub rejected: u64,
+}
+
+impl SynIngressAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+        }
+    }
+}
+
 /// Redacted ingress accounting for established-connection (data /
 /// CLOSE / RESET / plain-ACK) packets observed by one
 /// [`crate::streaming::StreamingManager`].
