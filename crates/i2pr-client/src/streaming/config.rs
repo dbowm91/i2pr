@@ -98,6 +98,17 @@ pub const DEFAULT_DELAYED_ACK_MS: u64 = 750;
 /// specification bounds advisory delay values at 60000 ms.
 pub const MAX_DELAYED_ACK_MS: u64 = 60_000;
 
+/// Default listener-backlog entry age in milliseconds (Plan
+/// 486). Entries older than this are evicted instead of being
+/// handed to a later acceptor: the 20 s SAM ACCEPT / FORWARD wait
+/// is the longest legitimate park window, so 30 s keeps a live
+/// waiter draining near its deadline while sweeping entries
+/// orphaned by a timed-out waiter.
+pub const DEFAULT_LISTENER_BACKLOG_ENTRY_AGE_MS: u64 = 30_000;
+
+/// Hard ceiling on the listener-backlog entry age in milliseconds.
+pub const MAX_LISTENER_BACKLOG_ENTRY_AGE_MS: u64 = 300_000;
+
 /// Configuration for the streaming layer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingConfig {
@@ -127,6 +138,10 @@ pub struct StreamingConfig {
     pub delayed_ack_ms: u64,
     /// Maximum pre-SYN reorder buffer size.
     pub max_pre_syn_buffer: u16,
+    /// Maximum age of one listener-backlog entry in milliseconds
+    /// (Plan 486). Entries older than this are evicted instead of
+    /// being handed to a later acceptor.
+    pub max_listener_backlog_entry_age_ms: u64,
 }
 
 impl StreamingConfig {
@@ -146,6 +161,7 @@ impl StreamingConfig {
         close_timeout_ms: u64,
         delayed_ack_ms: u64,
         max_pre_syn_buffer: u16,
+        max_listener_backlog_entry_age_ms: u64,
     ) -> Result<Self, StreamingConfigError> {
         if max_streams_per_destination == 0 {
             return Err(StreamingConfigError::ZeroMaxStreamsPerDestination);
@@ -240,6 +256,15 @@ impl StreamingConfig {
                 maximum: MAX_PRE_SYN_BUFFER as u16,
             });
         }
+        if max_listener_backlog_entry_age_ms == 0 {
+            return Err(StreamingConfigError::ZeroListenerBacklogEntryAge);
+        }
+        if max_listener_backlog_entry_age_ms > MAX_LISTENER_BACKLOG_ENTRY_AGE_MS {
+            return Err(StreamingConfigError::ListenerBacklogEntryAgeExceedsLimit {
+                actual: max_listener_backlog_entry_age_ms,
+                maximum: MAX_LISTENER_BACKLOG_ENTRY_AGE_MS,
+            });
+        }
         Ok(Self {
             max_streams_per_destination,
             max_inbound_pending,
@@ -254,10 +279,12 @@ impl StreamingConfig {
             close_timeout_ms,
             delayed_ack_ms,
             max_pre_syn_buffer,
+            max_listener_backlog_entry_age_ms,
         })
     }
 
     /// Returns a balanced experimental default.
+
     pub fn balanced() -> Self {
         Self::try_new(
             64,
@@ -273,10 +300,10 @@ impl StreamingConfig {
             DEFAULT_CLOSE_TIMEOUT_MS,
             DEFAULT_DELAYED_ACK_MS,
             4,
+            DEFAULT_LISTENER_BACKLOG_ENTRY_AGE_MS,
         )
         .expect("balanced streaming config is within every ceiling")
     }
-
     /// Interactive profile (Plan 292): constrained windows and a
     /// short delayed-ACK deadline for latency-sensitive tunnels.
     ///
@@ -300,6 +327,7 @@ impl StreamingConfig {
             DEFAULT_CLOSE_TIMEOUT_MS,
             100,
             4,
+            DEFAULT_LISTENER_BACKLOG_ENTRY_AGE_MS,
         )
         .expect("interactive streaming config is within every ceiling")
     }
@@ -357,4 +385,8 @@ pub enum StreamingConfigError {
     DelayedAckExceedsLimit { actual: u64, maximum: u64 },
     #[error("streaming pre-syn buffer {actual} exceeds limit {maximum}")]
     PreSynBufferExceedsLimit { actual: u16, maximum: u16 },
+    #[error("streaming listener-backlog entry age must be nonzero")]
+    ZeroListenerBacklogEntryAge,
+    #[error("streaming listener-backlog entry age {actual} ms exceeds limit {maximum} ms")]
+    ListenerBacklogEntryAgeExceedsLimit { actual: u64, maximum: u64 },
 }

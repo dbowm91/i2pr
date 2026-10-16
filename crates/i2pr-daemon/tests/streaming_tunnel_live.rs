@@ -377,7 +377,7 @@ fn outbound_syn_reaches_remote_streaming_manager_through_destination_tunnel() {
     );
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept inbound SYN");
     let accept_response = side_b.receiver_streaming.accept_inbound_syn(
         &side_b.identity,
@@ -450,7 +450,7 @@ fn streaming_data_round_trips_through_real_destination_tunnels() {
     .expect("deliver SYN");
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept inbound SYN");
     let response = side_b
         .receiver_streaming
@@ -547,7 +547,7 @@ fn multi_packet_application_data_survives_segmentation_through_tunnels() {
     .expect("SYN");
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept");
     let syn_response = side_b
         .receiver_streaming
@@ -650,7 +650,7 @@ fn streaming_close_propagates_through_destination_tunnels() {
     .expect("SYN");
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept");
     let syn_response = side_b
         .receiver_streaming
@@ -833,7 +833,7 @@ fn oversized_payload_rejected_through_destination_tunnel_path() {
     .expect("SYN");
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept");
     let syn_response = side_b
         .receiver_streaming
@@ -1028,7 +1028,7 @@ fn port_tuple_mismatch_rejected_after_streaming_delivery() {
     );
     let connection_id_b = side_b
         .receiver_streaming
-        .accept(REMOTE_PORT)
+        .accept(REMOTE_PORT, NOW_MS)
         .expect("accept");
     let forged = TransportSendRequest {
         destination_hash: *side_a.identity.id().as_hash().as_bytes(),

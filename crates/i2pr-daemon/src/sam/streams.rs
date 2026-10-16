@@ -43,6 +43,10 @@ use i2pr_netdb::LeaseSet2Store;
 use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::Hash;
 use i2pr_proto::LeaseSet2;
+use i2pr_proto::streaming::{FLAG_SYNCHRONIZE, peek_streaming_header};
+use i2pr_proto::{
+    I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, PROTOCOL_TYPE_STREAMING, decode_i2cp_data_body,
+};
 use i2pr_tunnel::{EstablishedTunnel, TunnelId, pool::TunnelSlot};
 use rand_core::{CryptoRng, RngCore, UnwrapMut};
 
@@ -1247,12 +1251,164 @@ impl SamDestinationBridge {
         )
         .map_err(|error| error.to_string())
     }
+}
+
+/// Plan 486 — which `StreamingManager` owns one dequeued inbound
+/// payload. The canonical manager owns outbound SYN state; the
+/// receiver mirror owns the inbound listener surface that STREAM
+/// ACCEPT and FORWARD drain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InboundStreamingTarget {
+    Canonical,
+    Mirror,
+}
+
+/// Plan 486 — how one dequeued payload settled, so the drain loop
+/// can attribute it without re-matching the adapter outcome.
+enum DequeuedPayloadOutcome {
+    StreamingAccepted,
+    StreamingRejected,
+    DatagramAccepted,
+}
+
+/// Plan 486 — waiter-scoped inbound-SYN classification. Server
+/// profiles always feed the receiver mirror (Plan 213, unchanged).
+/// Client profiles feed the mirror only when a STREAM ACCEPT waiter
+/// is parked for the destination AND the payload has the inbound-SYN
+/// shape (SYNCHRONIZE set, originator stream ids); every other
+/// packet — SYN-ACKs, DATA, datagrams, undecodable bytes — keeps
+/// profile routing, so the working forward leg never moves. Any
+/// classification failure routes by profile (fail-closed to the
+/// pre-486 behavior).
+pub(crate) fn classify_inbound_streaming_target(
+    payload_bytes: &[u8],
+    is_server: bool,
+    mirror_accept_parked: bool,
+) -> InboundStreamingTarget {
+    if is_server {
+        return InboundStreamingTarget::Mirror;
+    }
+    if !mirror_accept_parked {
+        return InboundStreamingTarget::Canonical;
+    }
+    if is_inbound_syn_shape(payload_bytes) {
+        InboundStreamingTarget::Mirror
+    } else {
+        InboundStreamingTarget::Canonical
+    }
+}
+
+/// Plan 486 — bounded inbound-SYN shape peek. Unwraps the already
+/// garlic-authenticated inner I2NP short-transport message, requires
+/// the I2NP Data body and the I2CP streaming-protocol envelope, and
+/// applies the manager's own originator-SYN rule (SYNCHRONIZE set,
+/// `send_stream_id == 0`, `receive_stream_id != 0`) through the same
+/// header peek the manager routes on. Pure bounded decodes over
+/// authenticated bytes: the garlic/auth path is untouched and the
+/// adapter still performs its own full decode downstream. Any
+/// failure reports "not a SYN" so the caller keeps profile routing.
+fn is_inbound_syn_shape(payload_bytes: &[u8]) -> bool {
+    let message = match I2npMessage::decode_short_transport(payload_bytes, MAX_I2NP_PAYLOAD_SIZE) {
+        Ok(message) => message,
+        Err(_) => return false,
+    };
+    let data_payload = match message.body() {
+        I2npBody::Data(body) => body.payload.as_bytes(),
+        _ => return false,
+    };
+    let envelope = match decode_i2cp_data_body(data_payload) {
+        Ok(envelope) => envelope,
+        Err(_) => return false,
+    };
+    if envelope.protocol != PROTOCOL_TYPE_STREAMING {
+        return false;
+    }
+    let peek = match peek_streaming_header(&envelope.payload) {
+        Ok(peek) => peek,
+        Err(_) => return false,
+    };
+    peek.flags_bits & FLAG_SYNCHRONIZE != 0
+        && peek.send_stream_id == 0
+        && peek.receive_stream_id != 0
+}
+
+impl SamDestinationBridge {
+    /// Plan 486 — routes one already-dequeued inbound payload to
+    /// its owning `StreamingManager` (waiter-scoped per
+    /// [`classify_inbound_streaming_target`]) and feeds it through
+    /// [`StreamingDestinationAdapter::receive`]. Extracted verbatim
+    /// from the drain loop so the routing decision is unit-testable
+    /// without ECIES/garlic material; the loop only attributes the
+    /// returned outcome.
+    fn receive_dequeued_payload(
+        &mut self,
+        payload_bytes: &[u8],
+        remote_hash: &[u8; 32],
+        now_ms: u64,
+        is_server: bool,
+        mirror_accept_parked: bool,
+    ) -> DequeuedPayloadOutcome {
+        let target =
+            classify_inbound_streaming_target(payload_bytes, is_server, mirror_accept_parked);
+        let receive_outcome = match target {
+            InboundStreamingTarget::Mirror => StreamingDestinationAdapter::receive(
+                payload_bytes,
+                &self.identity,
+                &mut self.receiver_streaming,
+                remote_hash,
+                now_ms,
+            ),
+            InboundStreamingTarget::Canonical => StreamingDestinationAdapter::receive(
+                payload_bytes,
+                &self.identity,
+                &mut self.streaming,
+                remote_hash,
+                now_ms,
+            ),
+        };
+        match receive_outcome {
+            Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::StreamingDispatched {
+                ..
+            }) => DequeuedPayloadOutcome::StreamingAccepted,
+            Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::UnsupportedProtocol {
+                protocol: _,
+            }) => DequeuedPayloadOutcome::StreamingRejected,
+            Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::DatagramReceived {
+                protocol,
+                source_port,
+                destination_port,
+                payload,
+            }) => {
+                // Plan 291: repliable datagrams authenticate
+                // here; raw datagrams bound-check here. Either
+                // rejection counts against the datagram path,
+                // never the streaming path.
+                if self
+                    .datagrams
+                    .process_inbound(
+                        protocol,
+                        source_port,
+                        destination_port,
+                        &payload,
+                        *remote_hash,
+                        now_ms,
+                    )
+                    .is_ok()
+                {
+                    DequeuedPayloadOutcome::DatagramAccepted
+                } else {
+                    DequeuedPayloadOutcome::StreamingRejected
+                }
+            }
+            Err(_) => DequeuedPayloadOutcome::StreamingRejected,
+        }
+    }
 
     /// Plan 212 §14 — decodes one recovered standard I2NP Garlic
     /// envelope against router-backed ECIES/session/routing state,
     /// drains every authenticated destination payload via
     /// `DestinationDispatcher::pop_payload(local_destination)`, and
-    /// delivers each payload into the SAME canonical service
+    /// delivers each payload into the owning service
     /// `StreamingManager` used by the application socket pump via
     /// `StreamingDestinationAdapter::receive`.
     ///
@@ -1267,7 +1423,9 @@ impl SamDestinationBridge {
     ///    the target is the canonical service `StreamingManager` for
     ///    client profiles and the receiver mirror for server profiles
     ///    (Plan 213: the polled server loop accepts from the mirror
-    ///    through the same tested path as local traffic);
+    ///    through the same tested path as local traffic; Plan 486:
+    ///    a parked STREAM ACCEPT waiter additionally routes inbound
+    ///    SYNs to the mirror);
     /// 6. normal SYN/SYN-ACK/DATA/ACK/close processing preserved;
     /// 7. caller wakes the existing delivery driver when receive
     ///    queued an outbound response (see
@@ -1288,6 +1446,7 @@ impl SamDestinationBridge {
         now_seconds: u32,
         now_ms: u64,
         is_server: bool,
+        mirror_accept_parked: bool,
     ) -> Result<RouterInboundDispatchReport, String> {
         let state = self
             .router_network
@@ -1410,71 +1569,21 @@ impl SamDestinationBridge {
         let mut datagrams_accepted = 0_usize;
         while let Some(payload) = self.dispatcher.pop_payload(local_id) {
             dequeued = dequeued.saturating_add(1);
-            // Plan 213: server profiles feed the receiver mirror so
-            // the polled server loop observes inbound SYNs; client
-            // profiles feed the canonical manager that owns the
-            // outbound SYN state.
-            let receive_outcome = if is_server {
-                StreamingDestinationAdapter::receive(
-                    payload.bytes(),
-                    &self.identity,
-                    &mut self.receiver_streaming,
-                    &remote_hash,
-                    now_ms,
-                )
-            } else {
-                StreamingDestinationAdapter::receive(
-                    payload.bytes(),
-                    &self.identity,
-                    &mut self.streaming,
-                    &remote_hash,
-                    now_ms,
-                )
-            };
-            match receive_outcome {
-                Ok(
-                    i2pr_client::streaming_adapter::InboundStreamingOutcome::StreamingDispatched {
-                        ..
-                    },
-                ) => {
+            match self.receive_dequeued_payload(
+                payload.bytes(),
+                &remote_hash,
+                now_ms,
+                is_server,
+                mirror_accept_parked,
+            ) {
+                DequeuedPayloadOutcome::StreamingAccepted => {
                     accepted = accepted.saturating_add(1);
                 }
-                Ok(
-                    i2pr_client::streaming_adapter::InboundStreamingOutcome::UnsupportedProtocol {
-                        protocol: _,
-                    },
-                ) => {
+                DequeuedPayloadOutcome::StreamingRejected => {
                     rejected = rejected.saturating_add(1);
                 }
-                Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::DatagramReceived {
-                    protocol,
-                    source_port,
-                    destination_port,
-                    payload,
-                }) => {
-                    // Plan 291: repliable datagrams authenticate
-                    // here; raw datagrams bound-check here. Either
-                    // rejection counts against the datagram path,
-                    // never the streaming path.
-                    if self
-                        .datagrams
-                        .process_inbound(
-                            protocol,
-                            source_port,
-                            destination_port,
-                            &payload,
-                            remote_hash,
-                            now_ms,
-                        )
-                        .is_ok()
-                    {
-                        datagrams_accepted = datagrams_accepted.saturating_add(1);
-                    } else {
-                        rejected = rejected.saturating_add(1);
-                    }
-                }
-                Err(_) => {
-                    rejected = rejected.saturating_add(1);
+                DequeuedPayloadOutcome::DatagramAccepted => {
+                    datagrams_accepted = datagrams_accepted.saturating_add(1);
                 }
             }
         }
@@ -2399,5 +2508,334 @@ mod router_network_bridge_tests {
         // sites; outcome folding never moves them.
         assert_eq!(diagnostics.inbound_dispatched(), 0);
         assert_eq!(diagnostics.inbound_observations(), 0);
+    }
+
+    use i2pr_client::streaming::manager::{
+        ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, RemoteDestination,
+    };
+    use i2pr_proto::streaming::decode_client_payload;
+    use i2pr_proto::{DeferredPayload, OpaqueMessageBody, encode_i2cp_data_body};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    const PLAN486_NOW_MS: u64 = 1_700_000_000_000;
+
+    /// Builds a router-identity bridge pair (no LeaseSet2, no
+    /// outbound role — the inbound SYN path needs neither).
+    fn plan486_bridge() -> (Arc<DestinationIdentity>, SamDestinationBridge) {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_0001);
+        let identity = Arc::new(DestinationIdentity::generate(&mut rng).expect("identity"));
+        let bridge = SamDestinationBridge::with_router_identity(
+            Arc::clone(&identity),
+            1_700_000_000,
+            StreamingConfig::balanced(),
+        );
+        (identity, bridge)
+    }
+
+    fn plan486_remote(identity: &DestinationIdentity) -> RemoteDestination {
+        RemoteDestination {
+            destination_hash: *identity.id().as_hash().as_bytes(),
+            signing_public_key: identity.destination().signing_key().clone(),
+            static_public_key: identity.static_public_bytes(),
+        }
+    }
+
+    /// Builds the exact inner-I2NP bytes the router seam dequeues
+    /// for one sender-produced Streaming packet: the sender
+    /// manager's gzip client payload is unwrapped (as the ECIES /
+    /// garlic layers would deliver it post-authentication),
+    /// re-wrapped in the I2CP Data body with the envelope's wire
+    /// ports, and framed as a short-transport I2NP Data message.
+    /// Garlic/ECIES authentication is out of scope here by design:
+    /// these tests prove the waiter-scoped manager selection, not
+    /// the crypto that precedes it.
+    fn plan486_inner_i2np_bytes(application_payload: &[u8]) -> Vec<u8> {
+        let envelope = decode_client_payload(
+            application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("client-payload envelope");
+        let body_bytes = encode_i2cp_data_body(
+            envelope.source_port,
+            envelope.destination_port,
+            envelope.protocol,
+            &envelope.payload,
+        )
+        .expect("I2CP data body");
+        let message = I2npMessage::new_short_transport(
+            0x4860_00b5,
+            1_700_000_000,
+            I2npBody::Data(OpaqueMessageBody {
+                payload: DeferredPayload::new(body_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                    .expect("bounded body"),
+            }),
+        )
+        .expect("short-transport message");
+        message
+            .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+            .expect("short-transport encoding")
+    }
+
+    /// Produces one real signed originator SYN (wire destination
+    /// port 0, the lane shape) and returns its inner-I2NP bytes.
+    fn plan486_stock_shaped_syn(
+        sender: &mut StreamingManager,
+        originator: &DestinationIdentity,
+        recipient_remote: &RemoteDestination,
+        seed: u64,
+    ) -> Vec<u8> {
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                originator,
+                recipient_remote,
+                0,
+                0,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                PLAN486_NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(seed),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let request = sender.drain_outbound().pop().expect("SYN request");
+        plan486_inner_i2np_bytes(&request.application_payload)
+    }
+
+    #[test]
+    fn parked_client_syn_reaches_mirror_backlog() {
+        // Plan 486 WP1 lane shape: GenericClient-profiled bridge
+        // (`is_server = false`), mirror wildcard bound exactly as
+        // `execute_stream_accept` binds it, stock-shaped inbound SYN
+        // (wire destination port 0), ACCEPT waiter parked.
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_0002);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4860_0003);
+        let originator_hash = *originator.id().as_hash().as_bytes();
+        let outcome =
+            bridge.receive_dequeued_payload(&syn, &originator_hash, PLAN486_NOW_MS, false, true);
+        assert!(
+            matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted),
+            "parked SYN must dispatch to the mirror, not reject"
+        );
+        // Mirror side: accepted into the backlog the ACCEPT waiter
+        // drains; canonical side: untouched (no no_listener).
+        assert_eq!(bridge.receiver_streaming().listener_backlog(0), 1);
+        assert_eq!(bridge.receiver_streaming().syn_ingress().accepted, 1);
+        assert_eq!(bridge.receiver_streaming().syn_ingress().observed, 1);
+        let canonical = bridge.streaming().syn_ingress();
+        assert_eq!(canonical.observed, 0);
+        assert_eq!(canonical.rejected, 0);
+        assert_eq!(canonical.rejected_no_listener, 0);
+    }
+
+    #[test]
+    fn unparked_client_syn_stays_canonical_no_listener() {
+        // Same lane shape with no waiter parked: the SYN keeps
+        // profile routing and fails closed on the canonical manager
+        // (the pre-486 behavior, locked as the diagnosis exhibit).
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_0004);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4860_0005);
+        let originator_hash = *originator.id().as_hash().as_bytes();
+        let outcome =
+            bridge.receive_dequeued_payload(&syn, &originator_hash, PLAN486_NOW_MS, false, false);
+        assert!(
+            matches!(outcome, DequeuedPayloadOutcome::StreamingRejected),
+            "unparked SYN must keep canonical profile routing"
+        );
+        let canonical = bridge.streaming().syn_ingress();
+        assert_eq!(canonical.observed, 1);
+        assert_eq!(canonical.rejected, 1);
+        assert_eq!(canonical.rejected_no_listener, 1);
+        assert_eq!(bridge.receiver_streaming().listener_backlog(0), 0);
+        assert_eq!(bridge.receiver_streaming().syn_ingress().observed, 0);
+    }
+
+    #[test]
+    fn parked_client_synack_stays_canonical() {
+        // Plan 486 forward-guard: with an ACCEPT waiter parked, only
+        // inbound SYNs move. A SYN-ACK answering the canonical
+        // outbound CONNECT keeps profile routing so the working
+        // forward leg never migrates.
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_0006);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let originator_hash = *originator.id().as_hash().as_bytes();
+        // Canonical outbound CONNECT toward the originator.
+        let ConnectOutcome::SynSent { .. } = bridge
+            .streaming_mut()
+            .connect(
+                &recipient,
+                &plan486_remote(&originator),
+                0,
+                0,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                PLAN486_NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x4860_0007),
+            )
+            .expect("bridge canonical connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let connect_request = bridge.streaming_mut().drain_outbound().pop().expect("SYN");
+        let connect_envelope = decode_client_payload(
+            &connect_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN envelope");
+        // The originator answers with a SYN-ACK for the canonical
+        // outbound stream ids.
+        let mut originator_manager = StreamingManager::new(StreamingConfig::balanced());
+        originator_manager.listen(0).expect("originator listen");
+        originator_manager
+            .process_inbound_packet(
+                &connect_envelope.payload,
+                recipient.id().as_hash().as_bytes(),
+                &originator,
+                0,
+                0,
+                PLAN486_NOW_MS,
+            )
+            .expect("originator processes SYN");
+        let originator_cid = originator_manager
+            .accept(0, PLAN486_NOW_MS)
+            .expect("originator backlog");
+        let syn_response = originator_manager
+            .accept_inbound_syn(
+                &originator,
+                &plan486_remote(&recipient),
+                originator_cid,
+                0,
+                0,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                PLAN486_NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x4860_0008),
+            )
+            .expect("originator SYN response");
+        let synack_bytes = plan486_inner_i2np_bytes(&syn_response.application_payload);
+        // The SYN-ACK arrives while still parked: it must stay
+        // canonical (the outbound CONNECT lives there).
+        let outcome = bridge.receive_dequeued_payload(
+            &synack_bytes,
+            &originator_hash,
+            PLAN486_NOW_MS,
+            false,
+            true,
+        );
+        assert!(
+            matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted),
+            "parked SYN-ACK must stay canonical"
+        );
+        assert_eq!(bridge.streaming().syn_response_ingress().accepted, 1);
+        assert_eq!(
+            bridge.receiver_streaming().syn_response_ingress().observed,
+            0
+        );
+        assert_eq!(bridge.receiver_streaming().syn_ingress().observed, 0);
+    }
+
+    #[test]
+    fn server_profile_ignores_parked_flag() {
+        // Server profiles feed the mirror with or without a waiter
+        // (Plan 213, unchanged by the waiter-scoped rule).
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_000b);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4860_000c);
+        let originator_hash = *originator.id().as_hash().as_bytes();
+        for parked in [false, true] {
+            let outcome = bridge.receive_dequeued_payload(
+                &syn,
+                &originator_hash,
+                PLAN486_NOW_MS,
+                true,
+                parked,
+            );
+            assert!(
+                matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted),
+                "server SYN must reach the mirror (parked={parked})"
+            );
+        }
+        assert_eq!(bridge.receiver_streaming().syn_ingress().accepted, 2);
+        assert_eq!(bridge.streaming().syn_ingress().observed, 0);
+    }
+
+    #[test]
+    fn corrupt_envelope_fails_closed_to_profile_routing() {
+        // Undecodable bytes can never be classified as a SYN: they
+        // keep profile routing and reject on the canonical manager.
+        let (_recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let garbage = vec![0xFF_u8; 64];
+        let outcome =
+            bridge.receive_dequeued_payload(&garbage, &[0x11_u8; 32], PLAN486_NOW_MS, false, true);
+        assert!(matches!(outcome, DequeuedPayloadOutcome::StreamingRejected));
+        assert_eq!(bridge.receiver_streaming().syn_ingress().observed, 0);
+        // The canonical manager peeked a non-SYN (garbage fails the
+        // header peek before any SYN accounting starts).
+        assert_eq!(bridge.streaming().syn_ingress().observed, 0);
+    }
+
+    #[test]
+    fn classifier_matrix_matches_routing_contract() {
+        let (recipient, _) = plan486_bridge();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4860_000d);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4860_000e);
+        use InboundStreamingTarget::{Canonical, Mirror};
+        // Client profile: mirror iff parked and SYN-shaped.
+        assert_eq!(classify_inbound_streaming_target(&syn, false, true), Mirror);
+        assert_eq!(
+            classify_inbound_streaming_target(&syn, false, false),
+            Canonical
+        );
+        // Server profile: mirror regardless.
+        assert_eq!(classify_inbound_streaming_target(&syn, true, false), Mirror);
+        assert_eq!(classify_inbound_streaming_target(&syn, true, true), Mirror);
+        // Non-SYN and undecodable: canonical on client profile even
+        // when parked.
+        assert_eq!(
+            classify_inbound_streaming_target(&[0xFF_u8; 64], false, true),
+            Canonical
+        );
+        assert_eq!(
+            classify_inbound_streaming_target(&[], false, true),
+            Canonical
+        );
     }
 }

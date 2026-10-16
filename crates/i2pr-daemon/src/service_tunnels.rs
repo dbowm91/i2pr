@@ -388,6 +388,13 @@ pub struct ServiceTunnelManager {
     /// product. These are deliberately separate from configured service
     /// runtimes and survive service-generation replacement.
     sam_network_destinations: Mutex<HashMap<DestinationId, RouterNetworkSamDestination>>,
+    /// Plan 486 — optional SAM stream-socket registry installed by
+    /// the composition root when the SAM service shares this
+    /// manager. The router-inbound dispatch seam queries it for
+    /// parked STREAM ACCEPT waiters (destination-keyed,
+    /// fail-closed); `None` for pure service-tunnel managers, where
+    /// every inbound packet keeps profile routing.
+    sam_stream_registry: Mutex<Option<Arc<i2pr_api::sam::streams::SamStreamRegistry>>>,
     /// Destination configuration (shared, balanced profile).
     destination_config: DestinationConfig,
     /// Plan 292 sweep reduction overrides by service id. A present
@@ -946,6 +953,7 @@ impl ServiceTunnelManager {
                 })?,
             )),
             sam_network_destinations: Mutex::new(HashMap::new()),
+            sam_stream_registry: Mutex::new(None),
             destination_config: DestinationConfig::service_compatibility_profile(),
             reduced_shaping: Mutex::new(HashMap::new()),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
@@ -1183,6 +1191,24 @@ impl ServiceTunnelManager {
             tls_handshakes_ok: AtomicUsize::new(0),
             tls_handshakes_failed: AtomicUsize::new(0),
         }))
+    }
+
+    /// Plan 486 — installs the SAM stream-socket registry handle
+    /// the router-inbound dispatch seam queries for parked STREAM
+    /// ACCEPT waiters. Called once by the composition root when the
+    /// SAM service shares this manager; idempotent (last install
+    /// wins). Lock discipline: the handle is cloned under this
+    /// lock and queried later without holding any manager or bridge
+    /// lock, so the registry lock stays a leaf and no lock cycle
+    /// can form with the dispatch path (which holds the bridge
+    /// lock while querying).
+    pub(crate) fn attach_sam_stream_registry(
+        &self,
+        registry: Arc<i2pr_api::sam::streams::SamStreamRegistry>,
+    ) {
+        if let Ok(mut slot) = self.sam_stream_registry.lock() {
+            *slot = Some(registry);
+        }
     }
 
     /// Registers an ephemeral SAM identity with the shared router product.
@@ -3880,6 +3906,23 @@ impl ServiceTunnelManager {
         now_ms: u64,
         is_server: bool,
     ) -> Result<RouterInboundDispatchReport, ServiceTunnelError> {
+        // Plan 486 — waiter-scoped mirror routing: an inbound SYN
+        // for a client-profile destination feeds the receiver
+        // mirror (which STREAM ACCEPT drains) only while an ACCEPT
+        // waiter is parked for that destination. The registry query
+        // runs without holding any manager or bridge lock; the
+        // bridge lock is taken inside the closure below, so the
+        // registry lock stays a leaf. Fail-closed `false` without a
+        // registry or on lock failure (profile routing preserved).
+        let mirror_accept_parked = self
+            .sam_stream_registry
+            .lock()
+            .ok()
+            .and_then(|slot| {
+                slot.as_ref()
+                    .map(|registry| registry.has_parked_accept_for_destination(service_destination))
+            })
+            .unwrap_or(false);
         let report = self
             .with_destination_bridge(service_destination, |bridge| {
                 bridge.dispatch_router_garlic_to_canonical_streaming(
@@ -3887,6 +3930,7 @@ impl ServiceTunnelManager {
                     now_seconds,
                     now_ms,
                     is_server,
+                    mirror_accept_parked,
                 )
             })
             .ok_or_else(|| {
@@ -6535,8 +6579,9 @@ pub(crate) fn poll_streaming_accept(
     port: u16,
 ) -> Vec<ConnectionId> {
     let mut accepted_ids = Vec::new();
+    let now_ms = service_streaming_now_ms();
     manager.with_destination_bridge(runtime.destination_id, |bridge| {
-        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
+        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port, now_ms) {
             accepted_ids.push(connection_id);
             let _ = runtime.server_syns_observed.fetch_update(
                 Ordering::Relaxed,
@@ -11158,6 +11203,7 @@ mod plan212_router_backed_service_destination_tests {
                 &[0x00; 16],
                 1_700_000_000,
                 test_now_ms(),
+                false,
                 false,
             )
         });

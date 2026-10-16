@@ -331,6 +331,10 @@ pub struct StreamingManager {
     /// (`observed == 0`) from "SYNs arrived but never reached a
     /// listener backlog" (`observed > accepted`).
     syn_ingress: SynIngressAccounting,
+    /// Cumulative listener-backlog entries evicted for age (Plan
+    /// 486). Counts only; lets the runtime distinguish "backlog
+    /// drained by acceptors" from "backlog swept as stale".
+    backlog_evicted: u64,
     /// Redacted established-traffic ingress accounting (counts
     /// only). Lets the runtime distinguish "no data packet ever
     /// arrived" (`observed == 0`) from "arrived but rejected"
@@ -360,6 +364,7 @@ impl StreamingManager {
             pending_syn_payloads: BTreeMap::new(),
             syn_response_ingress: SynResponseIngressAccounting::default(),
             syn_ingress: SynIngressAccounting::default(),
+            backlog_evicted: 0,
             data_packet_ingress: DataPacketIngressAccounting::default(),
         }
     }
@@ -400,6 +405,12 @@ impl StreamingManager {
     /// reached a listener backlog" (`observed > accepted`).
     pub fn syn_ingress(&self) -> SynIngressAccounting {
         self.syn_ingress
+    }
+
+    /// Returns the cumulative count of listener-backlog entries
+    /// evicted for age (Plan 486). Counts only.
+    pub fn backlog_evicted(&self) -> u64 {
+        self.backlog_evicted
     }
 
     fn note_syn_ingress_observed(&mut self) {
@@ -2370,8 +2381,77 @@ impl StreamingManager {
         self.listeners.get(&port).map(|q| q.len()).unwrap_or(0)
     }
 
+    /// Returns whether a backlogged connection is too old to hand
+    /// to an acceptor (Plan 486). A queue entry whose connection
+    /// is missing is also stale: `remove_connection` never leaves
+    /// live ids behind, so a dangling id can never become
+    /// acceptable later. Future-dated entries (clock skew between
+    /// caller domains) are never stale.
+    fn backlog_entry_stale(&self, id: ConnectionId, now_ms: u64) -> bool {
+        let Some(connection) = self.connections.get(&id) else {
+            return true;
+        };
+        now_ms.saturating_sub(connection.created_at_ms())
+            > self.config.max_listener_backlog_entry_age_ms
+    }
+
+    /// Removes one backlogged connection from every table it could
+    /// inhabit and counts the eviction (Plan 486). The queue entry
+    /// itself is removed by the caller.
+    fn evict_backlogged_connection(&mut self, id: ConnectionId) {
+        let _ = self.remove_connection(id);
+        self.backlog_evicted = self.backlog_evicted.saturating_add(1);
+    }
+
+    /// Sweeps every listener backlog, evicting entries older than
+    /// `max_listener_backlog_entry_age_ms` (Plan 486). Returns the
+    /// number of entries evicted. Bounded by the backlog ceilings;
+    /// waiters that drain promptly never observe it.
+    pub fn evict_stale_backlog_entries(&mut self, now_ms: u64) -> u64 {
+        let ports: Vec<u16> = self.listeners.keys().copied().collect();
+        let mut evicted = 0_u64;
+        for port in ports {
+            let stale: Vec<ConnectionId> = self
+                .listeners
+                .get(&port)
+                .map(|queue| {
+                    queue
+                        .iter()
+                        .copied()
+                        .filter(|id| self.backlog_entry_stale(*id, now_ms))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if stale.is_empty() {
+                continue;
+            }
+            if let Some(queue) = self.listeners.get_mut(&port) {
+                queue.retain(|id| !stale.contains(id));
+            }
+            for id in stale {
+                self.evict_backlogged_connection(id);
+                evicted = evicted.saturating_add(1);
+            }
+        }
+        evicted
+    }
+
     /// Pops the next pending inbound SYN from the listener backlog.
-    pub fn accept(&mut self, port: u16) -> Option<ConnectionId> {
+    /// Entries older than `max_listener_backlog_entry_age_ms` are
+    /// evicted (and counted) instead of being handed out, so a
+    /// waiter that parks after a previous waiter timed out never
+    /// inherits a stale handshake (Plan 486).
+    pub fn accept(&mut self, port: u16, now_ms: u64) -> Option<ConnectionId> {
+        loop {
+            let front = self.listeners.get(&port).and_then(|q| q.front().copied())?;
+            if !self.backlog_entry_stale(front, now_ms) {
+                break;
+            }
+            if let Some(queue) = self.listeners.get_mut(&port) {
+                queue.pop_front();
+            }
+            self.evict_backlogged_connection(front);
+        }
         self.listeners.get_mut(&port).and_then(|q| q.pop_front())
     }
 }
@@ -2621,7 +2701,9 @@ mod tests {
             sink.drain_delivered().is_empty(),
             "pending SYN data is not exposed before accept"
         );
-        let connection_id = sink.accept(REMOTE_PORT).expect("pending connection");
+        let connection_id = sink
+            .accept(REMOTE_PORT, NOW_MS)
+            .expect("pending connection");
         sink.accept_inbound_syn(
             &receiver,
             &initiator_remote,
@@ -2710,7 +2792,9 @@ mod tests {
             sink.syn_response_ingress(),
             SynResponseIngressAccounting::default()
         );
-        let inbound = sink.accept(REMOTE_PORT).expect("pending inbound SYN");
+        let inbound = sink
+            .accept(REMOTE_PORT, NOW_MS)
+            .expect("pending inbound SYN");
         let response = sink
             .accept_inbound_syn(
                 &recipient,
@@ -3115,6 +3199,270 @@ mod tests {
         assert_eq!(accounting.rejected, 1);
         assert_eq!(accounting.rejected_backlog_full, 1);
         assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    /// Builds a config identical to balanced except for a short
+    /// listener-backlog entry age (Plan 486 eviction tests).
+    fn short_backlog_age_config(entry_age_ms: u64) -> StreamingConfig {
+        StreamingConfig {
+            max_listener_backlog_entry_age_ms: entry_age_ms,
+            ..StreamingConfig::balanced()
+        }
+    }
+
+    #[test]
+    fn stale_backlog_entries_are_evicted_not_handed_out() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1366_0001, 0x1366_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(short_backlog_age_config(1_000));
+        sink.listen(REMOTE_PORT).expect("listener");
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1366_0003);
+        sink.process_inbound_packet(
+            &syn,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("SYN accepted");
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 1);
+        // Past the entry age the acceptor observes an empty backlog:
+        // the stale entry is evicted and counted, never handed out.
+        assert!(sink.accept(REMOTE_PORT, NOW_MS + 1_001).is_none());
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+        assert_eq!(sink.backlog_evicted(), 1);
+        assert_eq!(sink.connection_count(), 0);
+        assert!(sink.drain_outbound().is_empty());
+    }
+
+    #[test]
+    fn live_backlog_entries_survive_accept_before_ttl() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1367_0001, 0x1367_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(short_backlog_age_config(1_000));
+        sink.listen(REMOTE_PORT).expect("listener");
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1367_0003);
+        let observation = sink
+            .process_inbound_packet(
+                &syn,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS,
+            )
+            .expect("SYN accepted");
+        let expected = observation.connection_id.expect("backlogged id");
+        // At exactly the entry age the entry is still live (eviction
+        // fires only when strictly older).
+        let handed = sink
+            .accept(REMOTE_PORT, NOW_MS + 1_000)
+            .expect("live entry");
+        assert_eq!(handed, expected);
+        assert_eq!(sink.backlog_evicted(), 0);
+    }
+
+    #[test]
+    fn accept_skips_stale_front_and_hands_live_back() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1368_0001, 0x1368_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 2,
+            max_listener_backlog_entry_age_ms: 1_000,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        let first = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1368_0003);
+        sink.process_inbound_packet(
+            &first,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        let second = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1368_0004);
+        let second_observation = sink
+            .process_inbound_packet(
+                &second,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS + 500,
+            )
+            .expect("second SYN accepted");
+        let second_id = second_observation.connection_id.expect("backlogged id");
+        // The stale front entry is evicted; the live back entry is
+        // handed out (a dangling-id pop can never strand the queue).
+        let handed = sink.accept(REMOTE_PORT, NOW_MS + 1_001).expect("live back");
+        assert_eq!(handed, second_id);
+        assert_eq!(sink.backlog_evicted(), 1);
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+    }
+
+    #[test]
+    fn backlog_sweep_evicts_across_ports_and_frees_capacity() {
+        const OTHER_PORT: u16 = REMOTE_PORT + 1;
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1369_0001, 0x1369_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 1,
+            max_listener_backlog_entry_age_ms: 1_000,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.listen(OTHER_PORT).expect("listener");
+        for (seed, port) in [(0x1369_0003, REMOTE_PORT), (0x1369_0004, OTHER_PORT)] {
+            let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, seed);
+            sink.process_inbound_packet(
+                &syn,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                port,
+                NOW_MS,
+            )
+            .expect("SYN accepted");
+        }
+        // Both ports hold one stale entry; the sweep removes both
+        // and counts both.
+        assert_eq!(sink.evict_stale_backlog_entries(NOW_MS + 1_001), 2);
+        assert_eq!(sink.backlog_evicted(), 2);
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+        assert_eq!(sink.listener_backlog(OTHER_PORT), 0);
+        assert_eq!(sink.connection_count(), 0);
+        // The freed capacity admits a fresh SYN.
+        let fresh = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1369_0005);
+        sink.process_inbound_packet(
+            &fresh,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS + 1_001,
+        )
+        .expect("fresh SYN accepted after sweep");
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 1);
+    }
+
+    #[test]
+    fn backlog_entry_age_config_is_bounded() {
+        // Zero age would evict every entry on arrival: refused.
+        assert!(matches!(
+            StreamingConfig::try_new(
+                64, 32, 32, 16, 64, 64, 128, 8, 30_000, 300_000, 10_000, 750, 4, 0,
+            ),
+            Err(crate::streaming::config::StreamingConfigError::ZeroListenerBacklogEntryAge)
+        ));
+        // Above the ceiling: refused.
+        assert!(matches!(
+            StreamingConfig::try_new(
+                64, 32, 32, 16, 64, 64, 128, 8, 30_000, 300_000, 10_000, 750, 4,
+                crate::streaming::config::MAX_LISTENER_BACKLOG_ENTRY_AGE_MS + 1,
+            ),
+            Err(
+                crate::streaming::config::StreamingConfigError::ListenerBacklogEntryAgeExceedsLimit
+                    { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn rejected_syns_queue_no_outbound_packets() {
+        // Plan 486 silent-drop invariant: every SYN reject path is
+        // observable only through counts — no response packet is
+        // ever queued toward the peer.
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1370_0001, 0x1370_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1370_0003);
+        // Decode: header present so the peek classifies, body
+        // truncated so the strict decode fails.
+        let truncated = syn[..64].to_vec();
+        // Validation: SYNCHRONIZE-only shape with no FROM/SIGNATURE.
+        let flag_only = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0,
+                receive_stream_id: 0x1370_00b5,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_SYNCHRONIZE)
+                    .expect("SYN flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("SYN-shaped packet encoding");
+        // Signature: valid decode, corrupted signature bytes.
+        let mut corrupt = syn.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0x01;
+        let cases: Vec<(Vec<u8>, bool)> = vec![
+            (truncated, true),
+            (flag_only, true),
+            (corrupt, true),
+            // NoListener: well-formed SYN with no listener bound.
+            (syn.clone(), false),
+        ];
+        for (bytes, bind_listener) in cases {
+            let mut sink = StreamingManager::new(StreamingConfig::balanced());
+            if bind_listener {
+                sink.listen(REMOTE_PORT).expect("listener");
+            }
+            let outcome = sink.process_inbound_packet(
+                &bytes,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS,
+            );
+            assert!(outcome.is_err(), "reject path must fail closed");
+            assert!(
+                sink.drain_outbound().is_empty(),
+                "rejected SYN must queue no outbound packet"
+            );
+        }
+        // BacklogFull: fill the one-slot backlog, then overflow it.
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 1,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &syn,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        let overflow = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1370_0004);
+        let outcome = sink.process_inbound_packet(
+            &overflow,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "over-backlog SYN must fail closed");
+        assert_eq!(sink.syn_ingress().rejected_backlog_full, 1);
+        assert!(
+            sink.drain_outbound().is_empty(),
+            "backlog-full SYN must queue no outbound packet"
+        );
     }
 
     #[test]

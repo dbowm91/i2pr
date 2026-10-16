@@ -1122,6 +1122,12 @@ fn register_sam_service(
                     if sam_product_mode == crate::config::SamProductMode::RouterNetwork
                         && let Some(manager) = shared_service_manager
                     {
+                        // Plan 486: the SAM side owns the manager edge
+                        // (`attach_router_network_manager`); the
+                        // manager side owns the waiter-query edge so
+                        // the router-inbound dispatch seam can route
+                        // parked-ACCEPT SYNs to the receiver mirror.
+                        manager.attach_sam_stream_registry(state.stream_registry());
                         state.attach_router_network_manager(manager);
                     }
                     // Publish the live owner for the Plan 288

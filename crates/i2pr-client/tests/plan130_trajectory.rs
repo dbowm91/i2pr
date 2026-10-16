@@ -528,7 +528,10 @@ fn establish_stream(
     let _ = plan_ns;
 
     assert_eq!(b.streaming.listener_backlog(PORT_B), 1);
-    let b_conn = b.streaming.accept(PORT_B).expect("pending inbound stream");
+    let b_conn = b
+        .streaming
+        .accept(PORT_B, *clock)
+        .expect("pending inbound stream");
 
     // Reverse-routing handoff: install the validated sender LS2.
     let validated_a = b
@@ -752,7 +755,10 @@ fn plan130_fresh_handshake_sequence_transition_over_full_stack() {
         0x1301_0100,
         clock,
     );
-    let b_conn = side_b.streaming.accept(PORT_B).expect("pending stream");
+    let b_conn = side_b
+        .streaming
+        .accept(PORT_B, clock)
+        .expect("pending stream");
 
     // Reverse-routing handoff for the reply.
     let validated_a = side_b

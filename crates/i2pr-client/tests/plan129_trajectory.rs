@@ -615,7 +615,10 @@ fn establish_stream(
 
     // B has exactly one pending inbound stream on its listening port.
     assert_eq!(b.streaming.listener_backlog(PORT_B), 1);
-    let b_conn = b.streaming.accept(PORT_B).expect("pending inbound stream");
+    let b_conn = b
+        .streaming
+        .accept(PORT_B, *clock)
+        .expect("pending inbound stream");
     assert_eq!(
         b.streaming.get_connection(b_conn).expect("b conn").state(),
         ConnectionState::InboundSynReceived

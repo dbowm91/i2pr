@@ -274,6 +274,14 @@ def parse_attempt_receipt_lines(lines):
                     continue
                 stream_accept_data_phase_close_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?stream_accept_syn_wait_expired', line):
+            # Plan 486 per-instance split: `syn_*` reads the
+            # receiver mirror (the instance STREAM ACCEPT drains);
+            # `canon_syn_*` reads the canonical manager (the
+            # instance client-profile dispatch feeds). Both
+            # instances must satisfy the ingress invariant and the
+            # reject-cause split independently; a line missing
+            # either instance (including the pre-486 summed shape)
+            # is malformed, not evidence.
             values = {
                 key: re.search(rf"{key}\s*=\s*(\d+)", line)
                 for key in (
@@ -281,27 +289,41 @@ def parse_attempt_receipt_lines(lines):
                     "syn_rejected_decode", "syn_rejected_validation",
                     "syn_rejected_signature", "syn_rejected_no_listener",
                     "syn_rejected_backlog_full",
+                    "canon_syn_observed", "canon_syn_accepted", "canon_syn_rejected",
+                    "canon_syn_rejected_decode", "canon_syn_rejected_validation",
+                    "canon_syn_rejected_signature", "canon_syn_rejected_no_listener",
+                    "canon_syn_rejected_backlog_full",
                     "accept_backlog_start", "accept_backlog_end",
                 )
             }
             if all(match for match in values.values()):
                 receipt = {key: int(match.group(1)) for key, match in values.items()}
-                # Acceptor ingress shares the observed/accepted/rejected
-                # invariant by construction; a line violating it is a
-                # malformed receipt, not evidence.
+                # Mirror (ACCEPT-draining) instance gates.
                 if receipt["syn_accepted"] + receipt["syn_rejected"] != receipt["syn_observed"]:
                     continue
-                # Single-recorder split: the five reject causes sum to
-                # the reject aggregate exactly (every site notes
-                # exactly one cause). A line violating it is malformed.
-                split = (
+                mirror_split = (
                     receipt["syn_rejected_decode"]
                     + receipt["syn_rejected_validation"]
                     + receipt["syn_rejected_signature"]
                     + receipt["syn_rejected_no_listener"]
                     + receipt["syn_rejected_backlog_full"]
                 )
-                if split != receipt["syn_rejected"]:
+                if mirror_split != receipt["syn_rejected"]:
+                    continue
+                # Canonical (dispatch-fed) instance gates.
+                if (
+                    receipt["canon_syn_accepted"] + receipt["canon_syn_rejected"]
+                    != receipt["canon_syn_observed"]
+                ):
+                    continue
+                canon_split = (
+                    receipt["canon_syn_rejected_decode"]
+                    + receipt["canon_syn_rejected_validation"]
+                    + receipt["canon_syn_rejected_signature"]
+                    + receipt["canon_syn_rejected_no_listener"]
+                    + receipt["canon_syn_rejected_backlog_full"]
+                )
+                if canon_split != receipt["canon_syn_rejected"]:
                     continue
                 stream_accept_syn_wait_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?session_teardown', line):

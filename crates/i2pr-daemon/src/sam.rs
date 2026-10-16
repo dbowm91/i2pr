@@ -3692,47 +3692,70 @@ fn syn_response_ingress_totals(
     })
 }
 
-/// Plan 478 ACCEPT-side SYN attribution: sums the redacted
-/// inbound-SYN ingress counters across the destination's canonical
-/// and receiver managers as `(observed, accepted, rejected,
-/// rejected_decode, rejected_validation, rejected_signature,
-/// rejected_no_listener, rejected_backlog_full)` counts. No stream
-/// ids, ports, hashes, or payload material cross this boundary.
-fn syn_ingress_totals(
+/// Plan 486 per-instance ACCEPT-side SYN attribution: reads the
+/// destination's receiver-mirror (the instance STREAM ACCEPT
+/// drains) and canonical (the instance client-profile dispatch
+/// feeds) inbound-SYN ingress counters separately, each as
+/// `(observed, accepted, rejected, rejected_decode,
+/// rejected_validation, rejected_signature, rejected_no_listener,
+/// rejected_backlog_full)` counts. The Plan 478 summed shape
+/// concealed a total instance miss for a full turn, so the summed
+/// shape is gone: the expiry receipt carries both instances and
+/// the lane parser requires both. No stream ids, ports, hashes, or
+/// payload material cross this boundary.
+fn syn_ingress_per_instance(
     state: &SamServiceState,
     destination_id: DestinationId,
-) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+) -> ([u64; 8], [u64; 8]) {
     let destinations_arc = state.sam_destinations();
     let Ok(destinations) = destinations_arc.lock() else {
-        return (0, 0, 0, 0, 0, 0, 0, 0);
+        return ([0; 8], [0; 8]);
     };
     let Some(handle) = destinations.get(destination_id) else {
-        return (0, 0, 0, 0, 0, 0, 0, 0);
+        return ([0; 8], [0; 8]);
     };
     handle.with(|bridge| {
-        let canonical = bridge.streaming().syn_ingress();
-        let mirror = bridge.receiver_streaming().syn_ingress();
         (
-            canonical.observed.saturating_add(mirror.observed),
-            canonical.accepted.saturating_add(mirror.accepted),
-            canonical.rejected.saturating_add(mirror.rejected),
-            canonical
-                .rejected_decode
-                .saturating_add(mirror.rejected_decode),
-            canonical
-                .rejected_validation
-                .saturating_add(mirror.rejected_validation),
-            canonical
-                .rejected_signature
-                .saturating_add(mirror.rejected_signature),
-            canonical
-                .rejected_no_listener
-                .saturating_add(mirror.rejected_no_listener),
-            canonical
-                .rejected_backlog_full
-                .saturating_add(mirror.rejected_backlog_full),
+            syn_ingress_snapshot(&bridge.receiver_streaming().syn_ingress()),
+            syn_ingress_snapshot(&bridge.streaming().syn_ingress()),
         )
     })
+}
+
+/// Projects one manager's SYN-ingress accounting into the stable
+/// receipt column order.
+fn syn_ingress_snapshot(
+    accounting: &i2pr_client::streaming::events::SynIngressAccounting,
+) -> [u64; 8] {
+    [
+        accounting.observed,
+        accounting.accepted,
+        accounting.rejected,
+        accounting.rejected_decode,
+        accounting.rejected_validation,
+        accounting.rejected_signature,
+        accounting.rejected_no_listener,
+        accounting.rejected_backlog_full,
+    ]
+}
+
+/// Plan 486 — sweeps the destination bridge's receiver-mirror
+/// listener backlogs for age-evicted entries. Counts only (the
+/// manager's `backlog_evicted` counter observes it); fail-closed
+/// no-op when the bridge is absent.
+fn evict_stale_accept_backlog(state: &SamServiceState, destination_id: DestinationId, now_ms: u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return;
+    };
+    handle.with(|bridge| {
+        bridge
+            .receiver_streaming_mut()
+            .evict_stale_backlog_entries(now_ms);
+    });
 }
 
 /// Plan 478 ACCEPT-side backlog gauge: the receiver-mirror
@@ -4284,7 +4307,7 @@ async fn execute_stream_accept(
     // "SYNs arrived but never reached a backlog" (observed >
     // accepted) and "backlogged but never drained" (backlog still
     // held at expiry).
-    let syn_before = syn_ingress_totals(&state, destination_id);
+    let syn_before = syn_ingress_per_instance(&state, destination_id);
     let backlog_start = accept_backlog_depth(&state, destination_id, listen_port);
     let (inbound_connection_id, peer_destination, peer_destination_b64) =
         match wait_for_accept_established(
@@ -4298,15 +4321,43 @@ async fn execute_stream_accept(
         {
             Some(value) => value,
             None => {
-                let syn_after = syn_ingress_totals(&state, destination_id);
-                let syn_observed = syn_after.0.saturating_sub(syn_before.0);
-                let syn_accepted = syn_after.1.saturating_sub(syn_before.1);
-                let syn_rejected = syn_after.2.saturating_sub(syn_before.2);
-                let syn_rejected_decode = syn_after.3.saturating_sub(syn_before.3);
-                let syn_rejected_validation = syn_after.4.saturating_sub(syn_before.4);
-                let syn_rejected_signature = syn_after.5.saturating_sub(syn_before.5);
-                let syn_rejected_no_listener = syn_after.6.saturating_sub(syn_before.6);
-                let syn_rejected_backlog_full = syn_after.7.saturating_sub(syn_before.7);
+                // Plan 486: sweep backlog entries orphaned by this
+                // wait before snapshotting, so `accept_backlog_end`
+                // reports live entries and no later waiter inherits
+                // a stale handshake.
+                evict_stale_accept_backlog(&state, destination_id, streaming_now_ms());
+                let (mirror_after, canon_after) = syn_ingress_per_instance(&state, destination_id);
+                let (mirror_before, canon_before) = syn_before;
+                let delta = |after: [u64; 8], before: [u64; 8]| -> [u64; 8] {
+                    [
+                        after[0].saturating_sub(before[0]),
+                        after[1].saturating_sub(before[1]),
+                        after[2].saturating_sub(before[2]),
+                        after[3].saturating_sub(before[3]),
+                        after[4].saturating_sub(before[4]),
+                        after[5].saturating_sub(before[5]),
+                        after[6].saturating_sub(before[6]),
+                        after[7].saturating_sub(before[7]),
+                    ]
+                };
+                let mirror = delta(mirror_after, mirror_before);
+                let canon = delta(canon_after, canon_before);
+                let syn_observed = mirror[0];
+                let syn_accepted = mirror[1];
+                let syn_rejected = mirror[2];
+                let syn_rejected_decode = mirror[3];
+                let syn_rejected_validation = mirror[4];
+                let syn_rejected_signature = mirror[5];
+                let syn_rejected_no_listener = mirror[6];
+                let syn_rejected_backlog_full = mirror[7];
+                let canon_syn_observed = canon[0];
+                let canon_syn_accepted = canon[1];
+                let canon_syn_rejected = canon[2];
+                let canon_syn_rejected_decode = canon[3];
+                let canon_syn_rejected_validation = canon[4];
+                let canon_syn_rejected_signature = canon[5];
+                let canon_syn_rejected_no_listener = canon[6];
+                let canon_syn_rejected_backlog_full = canon[7];
                 let backlog_end = accept_backlog_depth(&state, destination_id, listen_port);
                 warn!(
                     syn_observed = syn_observed,
@@ -4317,10 +4368,18 @@ async fn execute_stream_accept(
                     syn_rejected_signature = syn_rejected_signature,
                     syn_rejected_no_listener = syn_rejected_no_listener,
                     syn_rejected_backlog_full = syn_rejected_backlog_full,
+                    canon_syn_observed = canon_syn_observed,
+                    canon_syn_accepted = canon_syn_accepted,
+                    canon_syn_rejected = canon_syn_rejected,
+                    canon_syn_rejected_decode = canon_syn_rejected_decode,
+                    canon_syn_rejected_validation = canon_syn_rejected_validation,
+                    canon_syn_rejected_signature = canon_syn_rejected_signature,
+                    canon_syn_rejected_no_listener = canon_syn_rejected_no_listener,
+                    canon_syn_rejected_backlog_full = canon_syn_rejected_backlog_full,
                     accept_backlog_start = backlog_start,
                     accept_backlog_end = backlog_end,
                     transition = "stream_accept_syn_wait_expired",
-                    "STREAM ACCEPT wait ended without Established; inbound-SYN ingress attribution (counts only)",
+                    "STREAM ACCEPT wait ended without Established; inbound-SYN ingress attribution per instance (counts only)",
                 );
                 return Err(StreamAcceptFailed {
                     result: ReplyResult::Timeout,
@@ -4334,6 +4393,14 @@ async fn execute_stream_accept(
                          syn_rejected_signature={syn_rejected_signature} \
                          syn_rejected_no_listener={syn_rejected_no_listener} \
                          syn_rejected_backlog_full={syn_rejected_backlog_full} \
+                         canon_syn_observed={canon_syn_observed} \
+                         canon_syn_accepted={canon_syn_accepted} \
+                         canon_syn_rejected={canon_syn_rejected} \
+                         canon_syn_rejected_decode={canon_syn_rejected_decode} \
+                         canon_syn_rejected_validation={canon_syn_rejected_validation} \
+                         canon_syn_rejected_signature={canon_syn_rejected_signature} \
+                         canon_syn_rejected_no_listener={canon_syn_rejected_no_listener} \
+                         canon_syn_rejected_backlog_full={canon_syn_rejected_backlog_full} \
                          accept_backlog_start={backlog_start} \
                          accept_backlog_end={backlog_end}"
                     ),
@@ -4449,7 +4516,7 @@ async fn wait_for_accept_established(
                 if manager.listener_backlog(listen_port) == 0 {
                     return None;
                 }
-                let cid = match manager.accept(listen_port) {
+                let cid = match manager.accept(listen_port, streaming_now_ms()) {
                     Some(cid) => cid,
                     None => return None,
                 };
@@ -4605,7 +4672,7 @@ async fn wait_for_forward_established(
                 if manager.listener_backlog(0) == 0 {
                     return None;
                 }
-                let connection_id = manager.accept(0)?;
+                let connection_id = manager.accept(0, streaming_now_ms())?;
                 let connection = manager.get_connection(connection_id)?;
                 let remote_port = connection.remote_port();
                 let local_port = connection.local_port();
@@ -5252,11 +5319,11 @@ mod tests {
         .expect("state");
         let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([12_u8; 32]));
         // Unknown destination fails closed to all zeros on both the
-        // SYN-ingress totals and the backlog gauge.
+        // per-instance SYN-ingress split and the backlog gauge.
         assert_eq!(
-            syn_ingress_totals(&state, destination_id),
-            (0, 0, 0, 0, 0, 0, 0, 0),
-            "absent bridge must read zero SYN ingress"
+            syn_ingress_per_instance(&state, destination_id),
+            ([0; 8], [0; 8]),
+            "absent bridge must read zero SYN ingress on both instances"
         );
         assert_eq!(
             accept_backlog_depth(&state, destination_id, 0),
