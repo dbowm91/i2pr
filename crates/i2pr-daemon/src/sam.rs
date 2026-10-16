@@ -3292,6 +3292,7 @@ async fn execute_stream_connect(
     let garlic_before = bridge_garlic_totals(&state, destination_id);
     let arrival_before = product_inbound_arrival_totals(&state);
     let miss_taxonomy_before = product_owner_miss_taxonomy_totals(&state);
+    let send_before = delivery_send_totals(&state, destination_id);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3346,6 +3347,23 @@ async fn execute_stream_connect(
         let miss_exploratory_known = miss_taxonomy_after.1.saturating_sub(miss_taxonomy_before.1);
         let miss_retired_service = miss_taxonomy_after.2.saturating_sub(miss_taxonomy_before.2);
         let miss_unknown = miss_taxonomy_after.3.saturating_sub(miss_taxonomy_before.3);
+        // Plan 478 send-side attribution: deltas of the
+        // destination's delivery-sweep counters over the same
+        // wait. `send_delivered == 0` means no SYN cell ever left
+        // the driver; a nonzero `send_delivery_failed` is split by
+        // cause (LS2 missing vs invalid vs install vs bridge
+        // seam) so a SYN-send failure attributes like the
+        // handshake wait does.
+        let send_after = delivery_send_totals(&state, destination_id);
+        let send_delivered = send_after.0.saturating_sub(send_before.0);
+        let send_unknown_peer = send_after.1.saturating_sub(send_before.1);
+        let send_missing_factory = send_after.2.saturating_sub(send_before.2);
+        let send_factory_exhausted = send_after.3.saturating_sub(send_before.3);
+        let send_delivery_failed = send_after.4.saturating_sub(send_before.4);
+        let send_failed_ls2_missing = send_after.5.saturating_sub(send_before.5);
+        let send_failed_ls2_invalid = send_after.6.saturating_sub(send_before.6);
+        let send_failed_ls2_install = send_after.7.saturating_sub(send_before.7);
+        let send_failed_bridge = send_after.8.saturating_sub(send_before.8);
         warn!(
             synack_observed = synack_observed,
             synack_accepted = synack_accepted,
@@ -3363,6 +3381,15 @@ async fn execute_stream_connect(
             miss_exploratory_known = miss_exploratory_known,
             miss_retired_service = miss_retired_service,
             miss_unknown = miss_unknown,
+            send_delivered = send_delivered,
+            send_unknown_peer = send_unknown_peer,
+            send_missing_factory = send_missing_factory,
+            send_factory_exhausted = send_factory_exhausted,
+            send_delivery_failed = send_delivery_failed,
+            send_failed_ls2_missing = send_failed_ls2_missing,
+            send_failed_ls2_invalid = send_failed_ls2_invalid,
+            send_failed_ls2_install = send_failed_ls2_install,
+            send_failed_bridge = send_failed_bridge,
             transition = "stream_connect_handshake_wait_expired",
             "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
         );
@@ -3384,9 +3411,18 @@ async fn execute_stream_connect(
                  garlic_owner_misses={garlic_owner_misses} \
                   direct_garlic_received={direct_garlic_received} \
                   miss_service_unowned={miss_service_unowned} \
-                  miss_exploratory_known={miss_exploratory_known} \
-                 miss_retired_service={miss_retired_service} \
-                 miss_unknown={miss_unknown}"
+                   miss_exploratory_known={miss_exploratory_known} \
+                  miss_retired_service={miss_retired_service} \
+                  miss_unknown={miss_unknown} \
+                  send_delivered={send_delivered} \
+                  send_unknown_peer={send_unknown_peer} \
+                  send_missing_factory={send_missing_factory} \
+                  send_factory_exhausted={send_factory_exhausted} \
+                  send_delivery_failed={send_delivery_failed} \
+                  send_failed_ls2_missing={send_failed_ls2_missing} \
+                  send_failed_ls2_invalid={send_failed_ls2_invalid} \
+                  send_failed_ls2_install={send_failed_ls2_install} \
+                  send_failed_bridge={send_failed_bridge}"
             ),
         });
     }
@@ -3498,6 +3534,34 @@ fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64
         return (0, 0, 0, 0);
     };
     manager.inbound_owner_miss_taxonomy_totals()
+}
+
+/// Plan 478 send-side attribution: reads the destination's
+/// cumulative delivery-sweep counters as `(delivered,
+/// unknown_peer, missing_factory, factory_exhausted,
+/// delivery_failed, failed_ls2_missing, failed_ls2_invalid,
+/// failed_ls2_install, failed_bridge)`. Counts only; no
+/// identities, keys, or payload material. Reads fail closed to
+/// zeros when the entry is absent (torn-down sessions never
+/// report sends).
+#[allow(clippy::type_complexity)]
+fn delivery_send_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+    let counters = state.delivery_counters(destination_id);
+    let widen = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    (
+        widen(counters.delivered),
+        widen(counters.unknown_peer),
+        widen(counters.missing_factory),
+        widen(counters.factory_exhausted),
+        widen(counters.delivery_failed),
+        widen(counters.delivery_failed_ls2_missing),
+        widen(counters.delivery_failed_ls2_invalid),
+        widen(counters.delivery_failed_ls2_install),
+        widen(counters.delivery_failed_bridge),
+    )
 }
 
 /// Plan 478 ACCEPT data-phase baseline: snapshots the destination
@@ -4392,6 +4456,10 @@ async fn run_destination_driver(
                 factory_exhausted = sweep.factory_exhausted,
                 unknown_peer = sweep.unknown_peer,
                 delivery_failed = sweep.delivery_failed,
+                delivery_failed_ls2_missing = sweep.delivery_failed_ls2_missing,
+                delivery_failed_ls2_invalid = sweep.delivery_failed_ls2_invalid,
+                delivery_failed_ls2_install = sweep.delivery_failed_ls2_install,
+                delivery_failed_bridge = sweep.delivery_failed_bridge,
                 reason = %reason,
                 "destination driver observed typed local-delivery degradation"
             );
@@ -4608,6 +4676,45 @@ mod tests {
             ..cleanup
         };
         state.emit_accept_data_phase_close(&cleanup, true);
+    }
+
+    #[test]
+    fn delivery_send_totals_reports_seeded_split_causes() {
+        use crate::sam::fabric::{DeliverySweepCounters, SendFailureCause};
+
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([11_u8; 32]));
+        // Unknown destination fails closed to all zeros.
+        assert_eq!(
+            delivery_send_totals(&state, destination_id),
+            (0, 0, 0, 0, 0, 0, 0, 0, 0),
+            "absent delivery entry must read zero"
+        );
+        let mut seeded = DeliverySweepCounters {
+            delivered: 8,
+            unknown_peer: 1,
+            missing_factory: 2,
+            factory_exhausted: 3,
+            ..DeliverySweepCounters::default()
+        };
+        seeded.note_split_failure(SendFailureCause::Ls2Missing);
+        seeded.note_split_failure(SendFailureCause::Ls2Invalid);
+        seeded.note_split_failure(SendFailureCause::Ls2Install);
+        seeded.note_split_failure(SendFailureCause::Bridge);
+        seeded.note_split_failure(SendFailureCause::Bridge);
+        state.record_delivery_counters(destination_id, seeded);
+        assert_eq!(
+            delivery_send_totals(&state, destination_id),
+            (8, 1, 2, 3, 5, 1, 1, 1, 2),
+            "send totals must map each counter field in order"
+        );
     }
 
     async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {

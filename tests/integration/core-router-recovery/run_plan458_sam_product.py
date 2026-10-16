@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import random
 import re
@@ -14,6 +15,9 @@ import tempfile
 import time
 from collections import Counter
 from urllib.request import urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import plan458_sam_driver as driver  # noqa: E402  (sidecar path helper only; no lane logic)
 
 
 PIN = "635b013a612ff47278ef02acf8580a28e10e26c5"
@@ -48,7 +52,7 @@ def read_driver_leg_failure(evidence_path):
     elapsed survive; a missing/unreadable sidecar or any other shape
     yields None rather than a partial record.
     """
-    sidecar = Path(str(evidence_path) + ".leg-failure.json")
+    sidecar = Path(driver.sidecar_path(evidence_path))
     try:
         record = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -196,6 +200,11 @@ def parse_attempt_receipt_lines(lines):
                     "direct_garlic_received",
                     "miss_service_unowned", "miss_exploratory_known",
                     "miss_retired_service", "miss_unknown",
+                    "send_delivered", "send_unknown_peer",
+                    "send_missing_factory", "send_factory_exhausted",
+                    "send_delivery_failed",
+                    "send_failed_ls2_missing", "send_failed_ls2_invalid",
+                    "send_failed_ls2_install", "send_failed_bridge",
                 )
             }
             if all(match for match in values.values()):
@@ -207,6 +216,17 @@ def parse_attempt_receipt_lines(lines):
                     + receipt["miss_unknown"]
                 )
                 if classes != receipt["garlic_owner_misses"]:
+                    continue
+                # Plan 478 send-side split: the four LS2/bridge
+                # causes must sum to the send-failure aggregate; a
+                # line violating it is malformed, not evidence.
+                split = (
+                    receipt["send_failed_ls2_missing"]
+                    + receipt["send_failed_ls2_invalid"]
+                    + receipt["send_failed_ls2_install"]
+                    + receipt["send_failed_bridge"]
+                )
+                if split != receipt["send_delivery_failed"]:
                     continue
                 stream_connect_handshake_wait_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?stream_accept_data_phase_closed', line):
@@ -755,10 +775,63 @@ introducer_service = false
             )
 
 
-def main():
-    EVIDENCE.mkdir(parents=True, exist_ok=True)
+def should_wait_for_accept_close(driver_leg_failure):
+    """Whether a late-flushing ACCEPT close receipt may still arrive.
+
+    The daemon emits `stream_accept_data_phase_closed` when its raw
+    pump finishes, which happens after the driver closes its SAM
+    sockets — potentially milliseconds after the driver subprocess
+    exits. Only a started reverse leg (driver reached the i2pd-to-i2pr
+    read) can leave such a receipt pending; any other failure has no
+    ACCEPT pump outstanding and must not burn the wait budget.
+    """
+    return (
+        isinstance(driver_leg_failure, dict)
+        and driver_leg_failure.get("leg") == "i2pd-to-i2pr"
+    )
+
+
+def wait_for_accept_close_receipt(stdout_path, budget_s=30.0):
+    """Poll a live daemon stdout for a late ACCEPT close receipt.
+
+    Returns `(found, waited_s)`. The daemon is still running while
+    the lane writes its diagnostic (it is stopped only in `finally`),
+    so a pump that finishes on driver-socket close flushes inside
+    this window. Bounded: absence after the budget is itself evidence
+    (pump never finished), not a reason to wait longer.
+    """
+    marker = b'transition="stream_accept_data_phase_closed"'
+    if budget_s <= 0:
+        return False, 0.0
+    deadline = time.monotonic() + budget_s
+    while True:
+        try:
+            if marker in Path(stdout_path).read_bytes():
+                return True, round(budget_s - max(deadline - time.monotonic(), 0.0), 1)
+        except OSError:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, round(budget_s, 1)
+        time.sleep(min(0.5, remaining))
+
+
+def clean_lane_evidence(evidence_dir=None):
+    """Remove previous-run lane outputs before a run starts.
+
+    Covers result, manifest, diagnostic, AND the driver
+    leg-failure sidecar: a previous run's sidecar must never merge
+    into the next run's diagnostic as a stale `driver_leg_failure`.
+    """
+    root = Path(evidence_dir) if evidence_dir is not None else EVIDENCE
+    root.mkdir(parents=True, exist_ok=True)
     for name in ("result.json", "manifest.json", "attempt-diagnostic.json"):
-        (EVIDENCE / name).unlink(missing_ok=True)
+        (root / name).unlink(missing_ok=True)
+    Path(driver.sidecar_path(root / "result.json")).unlink(missing_ok=True)
+
+
+def main():
+    clean_lane_evidence()
     lane = Lane()
     try:
         lane.run()
@@ -782,14 +855,28 @@ def main():
         )
         print("Plan 458 normal-process SAM exchanges passed in both directions.")
     except Exception as exc:
+        driver_leg_failure = read_driver_leg_failure(EVIDENCE / "result.json")
+        # Late-flush grace: the daemon's ACCEPT close receipt is
+        # emitted when its raw pump finishes on driver-socket close,
+        # which races the driver-subprocess exit. If a reverse leg
+        # started, poll the still-running daemon's stdout boundedly
+        # before snapshotting the diagnostic; otherwise parse at
+        # once. The daemon is stopped only in `finally` below.
+        accept_close_waited_s = 0.0
+        accept_close_found = False
+        if should_wait_for_accept_close(driver_leg_failure):
+            accept_close_found, accept_close_waited_s = wait_for_accept_close_receipt(
+                lane.scratch / "i2pr.stdout"
+            )
         receipt = lane.router_network_sam_attempt_receipt()
         stock_receipt = lane.stock_build_receipt()
-        driver_leg_failure = read_driver_leg_failure(EVIDENCE / "result.json")
         (EVIDENCE / "attempt-diagnostic.json").write_text(
             json.dumps(
                 {"schema": "plan471-stock-build-receipt-v1", **receipt,
                  "stock": stock_receipt,
                  "driver_leg_failure": driver_leg_failure,
+                 "accept_close_wait_s": accept_close_waited_s,
+                 "accept_close_found": accept_close_found,
                  "mesh_churn_before": lane.stock_churn_before,
                  "mesh_quiet": lane.mesh_quiet},
                 sort_keys=True,
@@ -800,6 +887,8 @@ def main():
             "Plan 471 sanitized stock/build receipt: "
             + json.dumps({**receipt, "stock": stock_receipt,
                           "driver_leg_failure": driver_leg_failure,
+                          "accept_close_wait_s": accept_close_waited_s,
+                          "accept_close_found": accept_close_found,
                           "mesh_churn_before": lane.stock_churn_before,
                           "mesh_quiet": lane.mesh_quiet}, sort_keys=True),
             file=__import__("sys").stderr,

@@ -856,3 +856,191 @@ vs bridge-subcause, counts-only) so a SYN-send failure
 attributes like the handshake wait does. Reverse STREAM
 data, §6 recovery, and product close-out remain open;
 478 stays active.
+
+## 2026-10-16 send-side cause-split landed (this plan's product/SAM seam owner)
+
+Source change (no new plan number):
+
+- `sam/fabric.rs`: `DeliverySweepCounters` gains four split
+  fields (`delivery_failed_ls2_missing/_ls2_invalid/
+  _ls2_install/_bridge`); new `SendFailureCause` enum +
+  `note_split_failure` (aggregate + exactly one split arm,
+  saturating) + `split_failure_sum`; `saturating_add_assign`
+  and `clean` cover the new fields. Two unit tests (4-arm
+  exactness + accumulate/clean); the arm-swap probe kills
+  and is reverted with zero markers.
+- `sam/raw_stream.rs`: the four `deliver_outbound`
+  `delivery_failed` sites now call `note_split_failure`
+  with `Ls2Missing` (peer holds no LS2), `Ls2Invalid`
+  (validation), `Ls2Install` (install), `Bridge`
+  (`bridge_to_peer` seam). Factory/unknown-peer arms
+  untouched.
+- `service_tunnels.rs`: product-sweep literal gains four
+  zeros (SAM-path only; aggregate increments there keep
+  the sum invariant trivially).
+- `sam.rs`: new `delivery_send_totals` (9-tuple, fail-closed
+  zeros, `u64::try_from` widening); CONNECT timeout
+  captures before/after deltas and emits 9 additive keys
+  (`send_delivered/_unknown_peer/_missing_factory/
+  _factory_exhausted/_delivery_failed/
+  _failed_ls2_missing/_ls2_invalid/_ls2_install/_bridge`)
+  in the warn and the TIMEOUT message (prefix kept).
+  `run_destination_driver` degradation debug carries the
+  split fields. New lib test pins the helper mapping
+  (seeded counters + absent-destination zeros); the
+  tuple-swap probe kills and is reverted.
+- Lane parser: handshake-wait receipt grows 16→25 keys with
+  a second sum-check (split sum == `send_delivery_failed`);
+  pre-split 16-key lines now refuse fail-closed (recorded,
+  same shape as the 12→15→16 transitions). Receipt tests:
+  full-25 parse, both sum-mismatch refusals, legacy
+  refusal, ANSI, counts-only; the accept-data independence
+  line updated to 25 keys.
+
+Verification: daemon lib 787 passed (`--test-threads=1`;
+784 + 2 fabric + 1 totals); `destination_tunnel_unit` 44;
+`sam_stream_self_composed` 4; `i2pr-client` lib 124;
+core-recovery offline 38 (36 + 2 new); planning 51;
+clippy `-D warnings` clean (one `field_reassign_with_
+default` caught and fixed); fmt clean; service-tunnel +
+runtime boundaries pass. (Scoped battery; full floor
+belongs to the closing pass.)
+
+Next: ONE bounded exact-pin lane. Read the forward
+handshake-wait receipt first: the send keys name the
+owner immediately if forward fails again
+(`send_failed_bridge` vs LS2 arms vs zeros-with-delivery).
+Only if forward passes does the reverse close receipt
+become reachable. Reverse STREAM data, §6 recovery, and
+product close-out remain open; 478 stays active.
+
+## 2026-10-16 lane `0h6f38y_`: pre-STREAM stop, match-without-install (variance arm)
+
+Bounded exact-pin lane with the split live (pinned i2pd
+2.61.0, `mesh_quiet: true`, scratch
+`0h6f38y_-inbound-build-no-install-run` snapshotted).
+Stopped at SESSION CREATE (`inbound-build`), 0 installs —
+the send-split keys were not exercised (no STREAM
+attempt; they stay unit-tested):
+
+- Outbound bootstrap reply `authenticated_reply_matched`
+  with NO `install_committed` (match-without-install —
+  first time observed; all prior runs installed on
+  match), then 2 all-emitted inbound submits, both waits
+  expired with zero peer/message matches at every level
+  (orphans, gateway, candidates).
+- Stock mesh showed normal background (13 build records,
+  7 transit creates, 0 decrypt failures, 0 rejections,
+  creator RI 4/4). Run-to-run build variance is the
+  standing characterization (clean → rocky → failed
+  across the last three runs); this tree's build/install
+  paths are untouched by the split change (counters +
+  warn/message keys + parser/driver only), and
+  deterministic suites stayed green, so no product fix
+  is indicated by a pre-STREAM stop.
+- Evidence defect found live and fixed (in-plan,
+  lane-evidence owner): the previous run's driver
+  leg-failure sidecar (`result.json.leg-failure.json`)
+  is NOT cleaned at lane startup, so this run's
+  diagnostic merged the `sy7cqc9a` sidecar (40.2 s
+  forward CONNECT TIMEOUT) as its `driver_leg_failure`.
+  Fixed via shared `driver.sidecar_path` helper +
+  `clean_lane_evidence` covering the sidecar, with
+  stale-sidecar-removal and path-parity tests (removal
+  probe kills, reverted). Note for archaeology: the
+  `0h6f38y_` diagnostic's `driver_leg_failure` is stale
+  (belongs to `sy7cqc9a`); the stale file has since been
+  removed from the evidence dir.
+
+**Disposition:** known variance arm (cf. `vilzzd8q`):
+no defect, no product fix, no unchanged-topology retry
+on this outcome alone. The split keys still await their
+first live report.
+
+## 2026-10-16 lane `djv2qtdv`: frontier re-reached, close receipt lost to a lane/daemon race
+
+Bounded exact-pin lane with split + sidecar-clean live
+(pinned i2pd 2.61.0, `mesh_quiet: true`, scratch
+`djv2qtdv-reverse-data-no-close-receipt-run`
+snapshotted). Builds/installs fully green again (4/4
+replies, 3 installs, owners 2/2, no build waits) —
+variance confirmed, no systematic build regression.
+Forward leg passed with no timeout (send-split keys
+correctly absent: they emit only on CONNECT timeout).
+Reverse leg reached the `qr06eib6` frontier exactly:
+driver `short stream read (0/2328)` after 99.0 s on
+`i2pd-to-i2pr` (fresh sidecar — the startup clean is
+verified live, no stale carryover). But
+`stream_accept_data_phase_close_receipts: []` — our
+stdout (91 lines) ends at the forward SYN sends with
+zero inbound lines and no close line.
+
+Root cause (design gap in the `dc81898` attribution,
+no lane needed to see it): the daemon emits the close
+receipt when its raw pump FINISHES (`finish_raw_stream`
+runs even on cancellation), but in the accept-timeout
+shape the pump is still alive — blocked in read — when
+the driver gives up. The lane then writes the
+diagnostic milliseconds after the driver subprocess
+exits and SIGTERMs the daemon in `finally`, so a
+receipt that would flush on socket close is lost. The
+missing receipt is a timing artifact, not a product
+finding; the decision table has still never fired.
+
+Fix (in-plan, lane-evidence owner): bounded late-flush
+grace in the lane's failure path — if the sidecar shows
+a started reverse leg (`i2pd-to-i2pr`), poll the
+still-running daemon's stdout up to 30 s for the close
+marker before snapshotting the diagnostic, and record
+`accept_close_wait_s` / `accept_close_found`. Any other
+failure parses at once (no ACCEPT pump can be
+outstanding). Offline tests: arm/skip conditions,
+present-at-once, budget-exhausted absence, late flush
+inside budget (marker probe kills 2, reverted). If the
+grace expires with no receipt on a future run, that is
+itself the next finding (pump never finished), not a
+reason to wait longer.
+
+Next: ONE verification lane reading the reverse close
+receipt through the grace window (firewall: no further
+lane this turn beyond it). Reverse STREAM data, §6
+recovery, and product close-out remain open; 478 stays
+active.
+
+## 2026-10-16 lane `kzn0a8gt`: pre-STREAM stop at outbound-build; live campaign paused
+
+Verification lane with split + sidecar-clean + grace
+live (pinned i2pd 2.61.0, `mesh_quiet: true`, scratch
+`kzn0a8gt-outbound-build-session-fail-run`
+snapshotted). Failed at SESSION CREATE
+(`terminal_failure_stage: outbound-build`, 2 installs
+committed of 3 matches). No STREAM attempt: send-split
+keys still never reported live; grace correctly skipped
+(`accept_close_wait_s: 0.0`, `accept_close_found:
+false` — no reverse leg, no wasted budget);
+`driver_leg_failure: null` (startup clean holds, no
+stale carryover). The evidence-plumbing fixes are all
+live-proven; the product frontier was not reached.
+
+**Disposition — live campaign paused for this turn.**
+Four lanes, four different early-stage signatures
+(`sy7cqc9a` forward delivery_failed; `0h6f38y_`
+match-without-install with zero matches everywhere;
+`djv2qtdv` full-green builds + forward pass + reverse
+DATA frontier; `kzn0a8gt` outbound-build session fail),
+while `djv2qtdv` proves the whole path still composes
+end to end. That is run-to-run mesh variance, not a
+tree regression (build/install paths untouched since
+`dc81898`; deterministic suites green throughout).
+But per the bounded policy an immediate fourth lane
+would be an unchanged-topology retry — nothing has
+changed since `djv2qtdv`, so no further lane is
+licensed. The next lane needs either a new material
+change or a genuinely new causal hypothesis (new
+plan-of-record), not repetition. Concretely still
+open: first live send-split report (needs a forward
+timeout run), first close receipt through the grace
+window (needs a frontier run), reverse DATA decision,
+§6 live recovery, product close-out. 478 stays active;
+no dependent capability unblocked; 433/439 gates
+unchanged.

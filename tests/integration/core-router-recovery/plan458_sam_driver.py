@@ -249,6 +249,16 @@ def run_forward_leg_with_recovery(sender, receiver, sid, rid, remote, payload, t
     return sent, recovery
 
 
+def sidecar_path(evidence_path):
+    """Path of the leg-failure sidecar beside the exchange evidence.
+
+    The lane must clean this at startup: otherwise a previous run's
+    sidecar merges into the next run's diagnostic as a stale
+    `driver_leg_failure`.
+    """
+    return str(evidence_path) + ".leg-failure.json"
+
+
 def write_leg_failure_sidecar(evidence_path, label, error, elapsed_s):
     """Record a failed STREAM leg beside the exchange evidence.
 
@@ -266,7 +276,7 @@ def write_leg_failure_sidecar(evidence_path, label, error, elapsed_s):
         "at_wall": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     try:
-        with open(evidence_path + ".leg-failure.json", "w", encoding="utf-8") as handle:
+        with open(sidecar_path(evidence_path), "w", encoding="utf-8") as handle:
             json.dump(record, handle)
             handle.write("\n")
     except OSError as exc:

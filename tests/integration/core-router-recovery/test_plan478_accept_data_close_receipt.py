@@ -8,8 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_plan458_sam_product import (  # noqa: E402
+    clean_lane_evidence,
     parse_attempt_receipt_lines,
     read_driver_leg_failure,
+    should_wait_for_accept_close,
+    wait_for_accept_close_receipt,
 )
 import plan458_sam_driver as driver  # noqa: E402
 
@@ -97,6 +100,10 @@ class Plan478AcceptDataCloseReceiptTests(unittest.TestCase):
             'garlic_owner_misses=0 direct_garlic_received=0 '
             'miss_service_unowned=0 miss_exploratory_known=0 '
             'miss_retired_service=0 miss_unknown=0 '
+            'send_delivered=0 send_unknown_peer=0 send_missing_factory=0 '
+            'send_factory_exhausted=0 send_delivery_failed=0 '
+            'send_failed_ls2_missing=0 send_failed_ls2_invalid=0 '
+            'send_failed_ls2_install=0 send_failed_bridge=0 '
             'transition="stream_connect_handshake_wait_expired" x',
             FULL_LINE,
         ])
@@ -158,6 +165,81 @@ class DriverLegFailureSidecarTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertIsNone(read_driver_leg_failure(Path(scratch) / "result.json"))
+
+    def test_startup_clean_removes_stale_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            evidence = str(Path(scratch) / "result.json")
+            driver.write_leg_failure_sidecar(
+                evidence, "i2pr-to-i2pd", "previous run failure", 40.2,
+            )
+            self.assertIsNotNone(read_driver_leg_failure(Path(evidence)))
+            clean_lane_evidence(Path(scratch))
+            self.assertIsNone(read_driver_leg_failure(Path(evidence)))
+
+    def test_sidecar_path_matches_lane_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            evidence = str(Path(scratch) / "result.json")
+            self.assertEqual(
+                Path(driver.sidecar_path(evidence)),
+                Path(scratch) / "result.json.leg-failure.json",
+            )
+
+
+class AcceptCloseGraceWaitTests(unittest.TestCase):
+    def test_reverse_leg_arms_the_wait(self) -> None:
+        self.assertTrue(should_wait_for_accept_close(
+            {"leg": "i2pd-to-i2pr", "error": "short read", "elapsed_s": 99.0},
+        ))
+
+    def test_forward_or_no_failure_skips_the_wait(self) -> None:
+        self.assertFalse(should_wait_for_accept_close(
+            {"leg": "i2pr-to-i2pd", "error": "timeout", "elapsed_s": 40.2},
+        ))
+        self.assertFalse(should_wait_for_accept_close(None))
+        self.assertFalse(should_wait_for_accept_close({"leg": "sideways"}))
+
+    def test_present_marker_returns_at_once(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            stdout = Path(scratch) / "i2pr.stdout"
+            stdout.write_bytes(
+                b'INFO transition="stream_accept_data_phase_closed" x\n',
+            )
+            found, waited = wait_for_accept_close_receipt(stdout, budget_s=5.0)
+            self.assertTrue(found)
+            self.assertLessEqual(waited, 5.0)
+
+    def test_absent_marker_waits_out_the_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            stdout = Path(scratch) / "i2pr.stdout"
+            stdout.write_bytes(b"INFO nothing relevant\n")
+            found, waited = wait_for_accept_close_receipt(stdout, budget_s=1.0)
+            self.assertFalse(found)
+            self.assertGreaterEqual(waited, 1.0)
+
+    def test_late_marker_is_observed_inside_budget(self) -> None:
+        import threading
+
+        with tempfile.TemporaryDirectory() as scratch:
+            stdout = Path(scratch) / "i2pr.stdout"
+            stdout.write_bytes(b"INFO starting\n")
+
+            def flush_late():
+                import time as _time
+                _time.sleep(0.6)
+                with open(stdout, "ab") as handle:
+                    handle.write(
+                        b'WARN transition="stream_accept_data_phase_closed" '
+                        b'data_observed=0 x\n',
+                    )
+
+            worker = threading.Thread(target=flush_late)
+            worker.start()
+            try:
+                found, waited = wait_for_accept_close_receipt(stdout, budget_s=5.0)
+            finally:
+                worker.join()
+            self.assertTrue(found)
+            self.assertLess(waited, 5.0)
 
 
 if __name__ == "__main__":

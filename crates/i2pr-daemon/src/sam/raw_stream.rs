@@ -742,6 +742,10 @@ impl SamServiceState {
             factory_exhausted: 0,
             unknown_peer: 0,
             delivery_failed: 0,
+            delivery_failed_ls2_missing: 0,
+            delivery_failed_ls2_invalid: 0,
+            delivery_failed_ls2_install: 0,
+            delivery_failed_bridge: 0,
         };
         // Step 2: deliver each request.
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
@@ -793,7 +797,9 @@ impl SamServiceState {
                     .cloned()
                     .map(|lease_set2| (lease_set2, bridge.identity_netdb_key()))
             }) else {
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // Plan 478: peer bridge holds no LeaseSet2 — the
+                // fetch path never fulfilled. Names the LS2 leg.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Missing);
                 if !is_datagram {
                     self.terminate_failed_delivery(destination_id, &request);
                 }
@@ -807,7 +813,8 @@ impl SamServiceState {
                 Ok(validated) => validated,
                 Err(error) => {
                     debug!(error = %error, "local peer LeaseSet2 validation failed");
-                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    // Plan 478: peer LeaseSet2 present but invalid.
+                    counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Invalid);
                     if !is_datagram {
                         self.terminate_failed_delivery(destination_id, &request);
                     }
@@ -820,7 +827,8 @@ impl SamServiceState {
                     .install_remote_lease_set2(peer_lease_set2)
             }) {
                 debug!(error = %error, "local peer LeaseSet2 install failed");
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // Plan 478: validated LS2 refused at install.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Install);
                 self.terminate_failed_delivery(destination_id, &request);
                 continue;
             }
@@ -874,8 +882,9 @@ impl SamServiceState {
             } else {
                 // Plan 149 §8: surface bridge_to_peer failures via
                 // the same sweep counters so the driver can wake
-                // waiters and avoid silent drops.
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // waiters and avoid silent drops. Plan 478: names
+                // the bridge seam as the cause.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Bridge);
                 if !is_datagram {
                     self.terminate_failed_delivery(destination_id, &request);
                 }

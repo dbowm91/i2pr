@@ -2797,6 +2797,13 @@ impl ServiceTunnelManager {
             factory_exhausted: 0,
             unknown_peer: 0,
             delivery_failed: 0,
+            // Plan 478 split causes are SAM-path only; the product
+            // sweep keeps the aggregate and leaves the split at
+            // zero (sum invariant holds trivially).
+            delivery_failed_ls2_missing: 0,
+            delivery_failed_ls2_invalid: 0,
+            delivery_failed_ls2_install: 0,
+            delivery_failed_bridge: 0,
         };
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
         let outbound_hop1_hash = i2pr_proto::Hash::from_bytes([0xA2; 32]);
