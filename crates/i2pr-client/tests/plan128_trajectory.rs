@@ -105,7 +105,7 @@ fn establish_pair(
             0,
         )
         .expect("bob process SYN");
-    let bob_inbound = bob_mgr.accept(REMOTE_PORT).expect("bob pending accept");
+    let bob_inbound = bob_mgr.accept(REMOTE_PORT, 0).expect("bob pending accept");
 
     // B accept emits the canonical SYN response.
     let response = bob_mgr
@@ -671,7 +671,7 @@ fn plan128_originator_stays_outbound_syn_sent_until_valid_response() {
             0,
         )
         .expect("bob process syn");
-    let bob_inbound = bob_mgr.accept(REMOTE_PORT).expect("pending accept");
+    let bob_inbound = bob_mgr.accept(REMOTE_PORT, 0).expect("pending accept");
     let response = bob_mgr
         .accept_inbound_syn(
             &bob_dest,

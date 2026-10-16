@@ -125,6 +125,47 @@ Emissary reference: [read-only comparison](../diagnostics/2026-10-10-emissary-ro
 
 Plans 446, 447, and 448 have blocked closure records; Plan 449 has passed only its preflight infrastructure scope. Corrective Plans 440–444 now each have closure records; Plan 444's latest resume status is blocked at stock Java selection and store/lookup evidence. Historical 430–432 and 410–424 records remain authoritative. No status is promoted. The indicated blocked statuses are scheduling constraints, not claims that source is missing.
 
+### Plans 477–480 — source-owned router recovery after PR #45 (2026-10-13)
+
+These plans do not promote product capability. Plan 477 is closed: per-hop forwarding IDs, OS-seeded production ID allocation through one named constructor, separate outer-header/reply-correlation IDs, bounded collision retention, writer-receipt consumption with a five-way terminal taxonomy, late/cancel/replay regressions, and a fully attributed exact-pin attempt (3 installs, 4/4 replies matched). The residual STREAM SYN-ACK return divergence is owned by active Plan 478. Plan 478 has the written ID interface and is active on the normal outbound-backed inbound service path and SAM product. Plan 479 is closed on the separate Java floodfill candidate/NetDB comparator described in the floodfill roadmap. Plan 480 owns the authenticated daemon SSU2 observation contract; **existing Plan 476** still owns the per-host process executor and live two-host evidence. Prior Plan 475 Java NTCP2 and Plan 461 controlled dual-family remain lower-layer evidence only.
+
+Dependency graph (implementation readiness, not protocol promotion):
+
+- Plan 474 blocked return path → **477** per-hop/request/delivery contract → **478** normal outbound-backed exploratory/destination and SAM app product → Plan 433 public/external client-router gate.
+- Plan 454 passed bandwidth governor + Plan 475 passed Java NTCP2 + Plan 444 blocked candidate qualification → **479** real stock Java preference/store/lookup (passed: controlled comparator, 437/438 still gated) → existing 437/438 normal floodfill gates.
+- Plan 449 preflight + 453 private-LAN source owner + Plan 476 simulated pair receipts → **480** authenticated session/product observer → resume existing **476** per-host executable → authorized two-host private LAN when available → separate Plan 431 external gate.
+
+Bounded causal corrections must remain inside their owning plan, with deterministic failure-before/pass-after tests and finite real-process attempts after actual source/fixture changes. Never count a test-only direct socket short build as proof of privacy-preserving service tunnel construction, a scheduled enqueue as a write, or an offline receipt simulator as independent host traffic. Unmodified exact-pinned references only, no ordinary CI root/VM/container/namespace/public I2P; all default-off, private/public advertisement and privacy constraints are unchanged.
+
+| Plan | Registered state | Implementation | Proof / closure |
+| --- | --- | --- | --- |
+| 477 | passed: short-build return attributed | `plans/implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md` | `plans/closure/core-router-recovery/477-status.md`: hop IDs, outer/reply separation, collision retention, writer-receipt consumption, lifecycle/restart regressions, and a fully attributed exact-pin attempt. STREAM return stays in 478. |
+| 478 | active: 477 interface delivered; product route open | `plans/implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md` | `plans/closure/core-router-recovery/478-status.md`: normal outbound-backed service inbound build, genuine LS2 owner generation, and external bidirectional SAM STREAM/recovery remain required. |
+| 479 | passed: controlled comparator with truthful tiers | `plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md` | `plans/closure/floodfill/479-status.md`: eligible `fN` preferred over truthful `L` with correlated store effect; healthy-stock `{fN, fO}` operation with attributed recipient. 437/438 remain gated. |
+| 480 | passed-narrowly: observer + receipt interface delivered; 476 consumer + Tier B stay 476-owned | `plans/implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md` | `plans/closure/core-router-recovery/480-status.md`: floodfill-served fixture, production export, provenance matrix; no pair supplied. |
+| 484 | passed: burst default 72_819 fits frame, explicit-small fail-closed | `plans/implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md` | `plans/closure/core-router-recovery/484-status.md`: branch (a) landed with guards; 454 baseline unchanged; 479 finding resolved. |
+| 485 | passed: sessions survive sequential streams; baselines unedited, lane proves forward-finish survival | `plans/implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md` | `plans/closure/core-router-recovery/485-status.md`: control-socket-gated teardown; fail-before/pass-after sequential test (probes reverted); baselines reach zero via same-socket reap + control close; exact-pin lane `zgcd_jsn` (no cause-3 row, ACCEPT parks with syn 2/0/2). Reverse DATA stays in 478. |
+| 486 | passed: waiter-scoped inbound-SYN routing to parked ACCEPT; reverse handshake proven live (DATA stall stays in 478) | `plans/implementation/core-router-recovery/486-sam-inbound-syn-routing-to-parked-accept.md` | `plans/closure/core-router-recovery/486-status.md`: dispatch-matrix fail-before/pass-after (probes reverted), forward-leg guard, per-instance receipt split, silent-drop negative, exact-pin lane `q3w7m9z2` (zero ACCEPT expiries, pump started, no SYN retry-exhaustion). Reverse DATA stays in 478. |
+
+### Plans 481–482 — completed cross-owner repair contracts following active 477–480 (2026-10-13)
+
+**Status:** both plans passed within their infrastructure/policy scope. No protocol or product capability is promoted.
+
+- **481 / P0 transport and daemon router-delivery owner — passed, infrastructure only**: [source-owned nested-build egress completion](../implementation/core-router-recovery/481-source-owned-build-egress-completion-bridge.md), closed at [`481-status.md`](../closure/core-router-recovery/481-status.md). The build owner consumes bounded per-build receipts from SSU2 and NTCP2 socket writers and aggregates nested TunnelData fanout. One exact-pinned stock run classified the originator cells as emitted but still had no correlated terminal reply; Plans 477/478 retain those product gates.
+- **482 / P0 Destination dial-policy owner — passed, policy infrastructure only**: [direct inbound-gateway dial privacy guard](../implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md), closed at [`482-status.md`](../closure/core-router-recovery/482-status.md). Startup and replacement distinguish the outbound route's actual first hop from the selected inbound gateway; inbound builds fail closed without a usable outbound role. One pinned stock attempt stopped at outbound build and did not exercise inbound construction. Plan 478 retains the real SAM product gate; no anonymity or stock acceptance is claimed.
+
+Dependency flow:
+
+```text
+477 active short-build state/correlation -----+-- consumes 481 writer completion --+ 
+480 active SSU2 provenance/source ----------+                                +--> 477 exact-build disposition
+478 active outbound-backed service routing --+-- consumes 482 dial policy -----+--> 478 true LS2 + 2-way SAM STREAM
+479 separate Java floodfill comparator ------------------------------------------------> 437/438 gated
+476 separate SSU2 per-host executor, no authorized physical pair --------------------> 431 gated
+```
+
+Two distinct implementation owners may proceed in parallel; source ownership of 477/478 is **not transferred**. Repair identified deterministic defects inside their existing active plans after these contracts land, rather than creating new observer plans each time the pinned stock topology times out. Security acceptance is prerequisite to normal service product closure but is not a shortcut around Plan 433 public/external reachability. Neither a socket write nor lack of a Destination-caused dial proves external delivery or anonymity. Retain exact-pinned reference sources, default-off advertisement, strict authenticated reply identity/message IDs and the routine floor.
+
 ### Corrective sequence (Plans 446–449; registered 2026-10-10)
 
 Four independent **bounded corrective owners** are dependency-ready after Plan 440's closed evidence contract and previous Plan 432's HTTPS bootstrap:

@@ -328,6 +328,39 @@ fn empty_store_has_no_candidates_and_lookup_terminates_honestly() {
 }
 
 #[test]
+fn lookup_timeout_advance_rotates_floodfill_then_terminates_honestly() {
+    let mut coord = coordinator();
+    let first = router_bundle(0xD011);
+    bootstrap_floodfill(&mut coord, &first, NOW_MS);
+    let second = router_bundle(0xD012);
+    bootstrap_floodfill(&mut coord, &second, NOW_MS);
+    let target = destination_hash(0x37);
+    let routing_key = router_hash_from_destination(target);
+    let (request_id, first_action) = coord
+        .begin_lease_lookup(target, &routing_key, reply_path())
+        .expect("send");
+    let first_peer = first_action.send_peer().expect("first peer");
+    let second_action = coord
+        .advance_lease_lookup_after_timeout(request_id, &routing_key)
+        .expect("rotate");
+    let second_peer = second_action.send_peer().expect("second peer");
+    assert_ne!(first_peer, second_peer);
+    // Both candidates are now queried: the next advance exhausts
+    // honestly and frees the slot; a further advance fails closed.
+    let exhausted = coord.advance_lease_lookup_after_timeout(request_id, &routing_key);
+    assert_eq!(
+        exhausted.expect_err("exhaustion must terminate"),
+        DestinationTunnelError::NoEligibleCandidates
+    );
+    assert_eq!(
+        coord
+            .advance_lease_lookup_after_timeout(request_id, &routing_key)
+            .expect_err("stale id must fail closed"),
+        DestinationTunnelError::UnknownLookup
+    );
+}
+
+#[test]
 fn bootstrapped_store_produces_lease_send_action() {
     let mut coord = coordinator();
     let floodfill = router_bundle(0xD003);

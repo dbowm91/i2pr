@@ -413,7 +413,7 @@ fn plan144_full_handshake_reaches_bidirectional_established() {
         // mirror that tuple exactly.
         let connection_id_opt = handle_b.with(|bridge| {
             let _ = bridge.receiver_streaming_mut().listen(0xC0FF);
-            bridge.receiver_streaming_mut().accept(0xC0FF)
+            bridge.receiver_streaming_mut().accept(0xC0FF, NOW_MS)
         });
         let connection_id = connection_id_opt.expect("B accept observation yields a connection id");
         let request = handle_b.with(|bridge| {

@@ -871,8 +871,14 @@ fn default_profile() -> String {
     String::from("balanced")
 }
 
+/// Smallest burst that fits one maximum NTCP2 data frame above the default
+/// control reserve: `ceil(65_537 * 100 / (100 - 10)) = 72_819` (Plan 484,
+/// branch (a)). The 64 KiB default could never construct a bandwidth-enabled
+/// NTCP2 owner, so no working configuration changes shape. Raising
+/// `control_reserve_percent` can push the required minimum above this
+/// default; that path stays fail-closed at NTCP2 construction time.
 const fn default_bandwidth_burst_bytes() -> u64 {
-    64 * 1024
+    72_819
 }
 
 const fn default_bandwidth_control_reserve_percent() -> u8 {
@@ -4078,6 +4084,79 @@ data_dir = "./state"
         assert_eq!(parsed.bandwidth.inbound_bytes_per_second, 131_072);
         assert_eq!(parsed.bandwidth.share_percent, 50);
         assert_eq!(parsed.bandwidth.control_reserve_percent, 10);
+    }
+
+    #[test]
+    fn bandwidth_default_burst_fits_ntcp2_frame_above_default_reserve() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n"
+        );
+        let parsed = Config::parse(&configured).expect("valid explicit limits");
+        assert_eq!(parsed.bandwidth.control_reserve_percent, 10);
+        // Plan 484 branch (a): ceil(65_537 * 100 / (100 - 10)) = 72_819.
+        assert_eq!(parsed.bandwidth.burst_bytes, 72_819);
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: parsed.bandwidth.burst_bytes,
+                control_reserve_percent: parsed.bandwidth.control_reserve_percent,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("default policy is a valid governor");
+        assert!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(governor),
+            )
+            .is_ok(),
+            "default burst must construct the NTCP2 owner"
+        );
+        let just_below =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: 72_819 - 1,
+                control_reserve_percent: 10,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("one byte below default is still a valid governor");
+        assert!(matches!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(just_below),
+            ),
+            Err(i2pr_runtime::Ntcp2RuntimeConfigError::BandwidthBurstTooSmall { minimum: 72_819 })
+        ));
+    }
+
+    #[test]
+    fn bandwidth_explicit_small_burst_keeps_fail_closed_semantics() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\nburst_bytes = 65536\n"
+        );
+        let parsed = Config::parse(&configured).expect("explicit burst parses");
+        // Exact configured semantics preserved: no silent clamp to the minimum.
+        assert_eq!(parsed.bandwidth.burst_bytes, 65_536);
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: parsed.bandwidth.burst_bytes,
+                control_reserve_percent: parsed.bandwidth.control_reserve_percent,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("explicit small burst is still a valid governor");
+        assert!(matches!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(governor),
+            ),
+            Err(i2pr_runtime::Ntcp2RuntimeConfigError::BandwidthBurstTooSmall { minimum: 72_819 })
+        ));
     }
 
     #[test]

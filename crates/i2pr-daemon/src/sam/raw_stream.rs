@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use i2pr_api::sam::session::SamSessionId;
 use i2pr_client::DestinationId;
+use i2pr_client::streaming::DataPacketIngressAccounting;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
@@ -184,6 +185,32 @@ pub(crate) struct RawStreamCleanup {
     pub(crate) connection_id: ConnectionId,
     pub(crate) peer_destination: RemoteDestination,
     pub(crate) direction: RawDirection,
+    /// Plan 478 data-phase baseline, captured at the command→raw
+    /// handoff for inbound (`STREAM ACCEPT`/FORWARD) streams only.
+    /// `finish_raw_stream` diffs the destination bridge counters
+    /// against this baseline and emits the per-accepted-stream
+    /// ingress attribution, so the lane can split "payload never
+    /// arrived" from "arrived but dropped" on the ACCEPT path the
+    /// same way the CONNECT path attributes the handshake wait.
+    pub(crate) data_phase_baseline: Option<AcceptDataPhaseBaseline>,
+}
+
+/// Counts-only snapshot of the destination bridge ingress state at
+/// the moment an inbound stream enters its data phase. No stream
+/// ids, ports, hashes, or payload material.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AcceptDataPhaseBaseline {
+    /// Bridge garlic-dispatch outcomes
+    /// `(authenticated, rejected, payloads_dequeued,
+    /// streaming_accepted)`.
+    pub(crate) garlic: (u64, u64, u64, u64),
+    /// Receiver-mirror established-traffic ingress (the manager
+    /// that owns ACCEPT-side connections).
+    pub(crate) mirror_data: DataPacketIngressAccounting,
+    /// Canonical-manager established-traffic ingress
+    /// (unexpected-path detector: ACCEPT-side data must not land
+    /// here).
+    pub(crate) canonical_data: DataPacketIngressAccounting,
 }
 
 /// SAM narrow capability adapting one Streaming connection to the
@@ -359,6 +386,17 @@ pub async fn run_raw_stream(
         initial_bytes = initial_raw_bytes.len(),
         "raw stream driver started"
     );
+    // Plan 478: inbound pump starts are INFO-visible. Together with
+    // the close receipt they form a complete pair per ACCEPT stream:
+    // start=1/close=0 proves the pump never finished (stuck or
+    // aborted without finish); start=0 proves the bind never
+    // happened. Outbound pumps stay debug-only by design.
+    if direction == RawDirection::Inbound {
+        tracing::info!(
+            transition = "stream_accept_pump_started",
+            "raw stream driver started for inbound stream"
+        );
+    }
 
     // Bound on the per-iteration TCP read chunk. The send-window
     // admission is also bounded; the two together enforce the
@@ -458,6 +496,11 @@ impl SamServiceState {
     /// attachment are then released, while the peer receives the terminal
     /// packet through the same supervised local-delivery path.
     pub(crate) fn finish_raw_stream(&self, cleanup: RawStreamCleanup, reset: bool) {
+        // Plan 478: attribute the ACCEPT data phase before the
+        // connection is removed — the close-time state (present /
+        // established / closing / gone) is itself the decisive
+        // evidence for "who ended the stream".
+        self.emit_accept_data_phase_close(&cleanup, reset);
         let RawStreamCleanup {
             session_id,
             destination_id,
@@ -465,6 +508,7 @@ impl SamServiceState {
             connection_id,
             peer_destination,
             direction,
+            data_phase_baseline: _,
         } = cleanup;
         let now_ms = streaming_now_ms();
         let terminal_queued = self
@@ -529,7 +573,19 @@ impl SamServiceState {
         let _ = self
             .stream_registry()
             .release_attachment(&session_id, attachment_id);
+        // Plan 485: a finished stream reaps its session only when no
+        // SAM control socket owns it anymore. The zero-attachment gap
+        // between sequential streams is ordinary session idle: a still-
+        // open control socket (the normal lane shape: session commands
+        // on the session socket, streams on fresh sockets) keeps the
+        // session, bridge, driver entries, and counters alive for the
+        // next stream. A session whose socket went raw (the Plan 149
+        // same-socket path) or closed has no control socket left, so
+        // the historical last-stream cleanup still applies to it. 3.3
+        // children stay exempt via the parent check below exactly as
+        // before.
         if self.stream_registry().attachment_count_for(&session_id) == 0
+            && !self.control_socket_live(&session_id)
             && let Some(entry) = self.session_registry().get(&session_id)
             && entry.parent_session_id().is_none()
             && !self
@@ -539,13 +595,11 @@ impl SamServiceState {
                     matches!(mode, i2pr_api::sam::streams::InboundMode::Forwarding { .. })
                 })
         {
-            // Standalone SAM sessions retain the existing last-stream cleanup
-            // behavior. A SAM 3.3 child is different: it does not own the
-            // shared Destination, so closing its last stream must leave the
-            // child and siblings alive until SESSION REMOVE or PRIMARY close.
-            // If the child was already removed, that explicit teardown owns
-            // the cleanup and this path does nothing.
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                crate::sam::SessionTeardownCause::RawStreamFinished,
+            );
         }
     }
 
@@ -676,7 +730,9 @@ impl SamServiceState {
             let destinations = destinations_arc.lock().expect("sam destinations poisoned");
             match destinations.get(destination_id) {
                 Some(bridge) => bridge,
-                None => return Ok(Default::default()),
+                None => {
+                    return Ok(crate::sam::fabric::DeliverySweepCounters::one_sweep());
+                }
             }
         };
         // Step 1: drain canonical + receiver outbound queues.
@@ -696,7 +752,7 @@ impl SamServiceState {
             .len()
             .saturating_add(datagram_requests.len());
         if request_count == 0 {
-            return Ok(Default::default());
+            return Ok(crate::sam::fabric::DeliverySweepCounters::one_sweep());
         }
         debug!(
             destination = ?destination_id,
@@ -709,6 +765,11 @@ impl SamServiceState {
             factory_exhausted: 0,
             unknown_peer: 0,
             delivery_failed: 0,
+            delivery_failed_ls2_missing: 0,
+            delivery_failed_ls2_invalid: 0,
+            delivery_failed_ls2_install: 0,
+            delivery_failed_bridge: 0,
+            sweeps: 1,
         };
         // Step 2: deliver each request.
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
@@ -760,7 +821,9 @@ impl SamServiceState {
                     .cloned()
                     .map(|lease_set2| (lease_set2, bridge.identity_netdb_key()))
             }) else {
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // Plan 478: peer bridge holds no LeaseSet2 — the
+                // fetch path never fulfilled. Names the LS2 leg.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Missing);
                 if !is_datagram {
                     self.terminate_failed_delivery(destination_id, &request);
                 }
@@ -774,7 +837,8 @@ impl SamServiceState {
                 Ok(validated) => validated,
                 Err(error) => {
                     debug!(error = %error, "local peer LeaseSet2 validation failed");
-                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    // Plan 478: peer LeaseSet2 present but invalid.
+                    counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Invalid);
                     if !is_datagram {
                         self.terminate_failed_delivery(destination_id, &request);
                     }
@@ -787,7 +851,8 @@ impl SamServiceState {
                     .install_remote_lease_set2(peer_lease_set2)
             }) {
                 debug!(error = %error, "local peer LeaseSet2 install failed");
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // Plan 478: validated LS2 refused at install.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Ls2Install);
                 self.terminate_failed_delivery(destination_id, &request);
                 continue;
             }
@@ -841,8 +906,9 @@ impl SamServiceState {
             } else {
                 // Plan 149 §8: surface bridge_to_peer failures via
                 // the same sweep counters so the driver can wake
-                // waiters and avoid silent drops.
-                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                // waiters and avoid silent drops. Plan 478: names
+                // the bridge seam as the cause.
+                counters.note_split_failure(crate::sam::fabric::SendFailureCause::Bridge);
                 if !is_datagram {
                     self.terminate_failed_delivery(destination_id, &request);
                 }

@@ -21,7 +21,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
@@ -83,7 +83,7 @@ pub use fabric::{
     LocalTransportRequest, SamLocalProductFabric, degrade_to_reason,
 };
 pub use faults::{FaultPacketClass, SamDeliveryFaultCounters, SamDeliveryFaultProfile};
-pub(crate) use raw_stream::RawStreamCleanup;
+pub(crate) use raw_stream::{AcceptDataPhaseBaseline, RawStreamCleanup};
 pub use raw_stream::{
     RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
     SamAsyncStream, SamIoStream, run_raw_stream,
@@ -320,6 +320,18 @@ pub struct SamServiceState {
     /// One explicit cancellation capability per live destination driver.
     /// Session teardown cancels it before removing the bridge.
     destination_drivers: Arc<Mutex<HashMap<DestinationId, CancellationToken>>>,
+    /// Plan 485: sessions with a live SAM control socket. A socket
+    /// enters the set when its connection state advances to
+    /// `SessionControl` and leaves it when the connection task ends
+    /// (close, error, or raw transition — a raw socket can never
+    /// issue control commands again). The standalone
+    /// last-stream cleanup in `finish_raw_stream` must not reap a
+    /// session whose control socket is still open: the
+    /// zero-attachment gap between sequential streams is ordinary
+    /// session idle, not session end. Leaf mutex: guarded only for
+    /// insert/remove/contains, never held across other locks.
+    /// Counts only; session ids never leave the process in logs.
+    session_control_sockets: Arc<Mutex<HashSet<SamSessionId>>>,
     /// Latest bounded delivery accounting for each live destination.
     delivery_counters: Arc<Mutex<HashMap<DestinationId, DeliverySweepCounters>>>,
     /// Plan 151 §8 deterministic pre-start delivery fault profile.
@@ -399,6 +411,7 @@ impl SamServiceState {
         let destination_drivers = Arc::new(Mutex::new(HashMap::new()));
         let delivery_counters = Arc::new(Mutex::new(HashMap::new()));
         let fault_profile = Arc::new(Mutex::new(SamDeliveryFaultProfile::disabled()));
+        let session_control_sockets = Arc::new(Mutex::new(HashSet::new()));
         let connection_permits = Arc::new(tokio::sync::Semaphore::new(usize::from(
             config.limits.max_clients,
         )));
@@ -424,6 +437,7 @@ impl SamServiceState {
             destination_drivers,
             delivery_counters,
             fault_profile,
+            session_control_sockets,
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
     }
@@ -813,14 +827,22 @@ impl SamServiceState {
             Ok(mut pools) => pools.install(destination_id),
             Err(_) => {
                 drop(product);
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(SessionCreateError::StreamingPoolsLocked);
             }
         };
         if pool_install.is_err() {
             drop(pool_install);
             drop(product);
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -830,7 +852,11 @@ impl SamServiceState {
         {
             drop(error);
             drop(product);
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -852,7 +878,11 @@ impl SamServiceState {
         let bridge_handle = match self.sam_destinations.lock() {
             Ok(mut destinations) => destinations.install(destination_id, bridge),
             Err(_) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(SessionCreateError::SamDestinationsLocked);
             }
         };
@@ -862,7 +892,11 @@ impl SamServiceState {
         // failure rolls the bridge and stream state back so we never
         // leave a destination with a bridge but no driver.
         if let Err(_error) = self.spawn_destination_driver(destination_id, children, cancellation) {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -874,7 +908,11 @@ impl SamServiceState {
         {
             Ok(entry) => entry,
             Err(error) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(map_registry_error(error));
             }
         };
@@ -1043,7 +1081,11 @@ impl SamServiceState {
             })
             .is_err()
         {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         }
@@ -1053,19 +1095,31 @@ impl SamServiceState {
                 .register_session(session_id.clone())
                 .is_err()
         {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         }
         let Some(bridge_handle) = manager.router_network_sam_bridge(destination_id) else {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         };
         if let Ok(mut destinations) = self.sam_destinations.lock() {
             destinations.install_handle(destination_id, bridge_handle);
         } else {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::SamDestinationsLocked);
         }
@@ -1076,7 +1130,11 @@ impl SamServiceState {
         {
             Ok(entry) => entry,
             Err(error) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(map_registry_error(error));
             }
         };
@@ -1088,21 +1146,106 @@ impl SamServiceState {
             style,
         })
     }
+}
+
+/// Typed cause for a SAM session teardown. Counts only; the
+/// INFO line reports the numeric [`SessionTeardownCause::code`],
+/// never session ids, identities, keys, or payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SessionTeardownCause {
+    /// Session provisioning failed and rolled back. Emits with
+    /// `session_live = 0` unless a live entry already existed
+    /// (e.g. a duplicate-create clobber).
+    CreateRollback,
+    /// The session control socket closed.
+    ControlSocketClosed,
+    /// The last raw stream finished on a standalone session.
+    RawStreamFinished,
+}
+
+impl SessionTeardownCause {
+    /// Stable numeric code for the attribution line: 1 =
+    /// create-rollback, 2 = control-socket-closed, 3 =
+    /// raw-stream-finished.
+    pub const fn code(self) -> u64 {
+        match self {
+            SessionTeardownCause::CreateRollback => 1,
+            SessionTeardownCause::ControlSocketClosed => 2,
+            SessionTeardownCause::RawStreamFinished => 3,
+        }
+    }
+}
+
+impl SamServiceState {
+    /// Records a live SAM control socket for its session (Plan
+    /// 485). Called when a connection state advances to
+    /// `SessionControl`; idempotent (a second SESSION CREATE on the
+    /// same socket is rejected by the state machine, so one socket
+    /// owns at most one session). Counts only; no logging.
+    pub(crate) fn note_control_socket(&self, session_id: &SamSessionId) {
+        if let Ok(mut live) = self.session_control_sockets.lock() {
+            live.insert(session_id.clone());
+        }
+    }
+
+    /// Drops control-socket tracking for a session (Plan 485).
+    /// Called when the owning connection task ends or the state
+    /// leaves `SessionControl`; idempotent. Counts only.
+    pub(crate) fn forget_control_socket(&self, session_id: &SamSessionId) {
+        if let Ok(mut live) = self.session_control_sockets.lock() {
+            live.remove(session_id);
+        }
+    }
+
+    /// Whether the session still owns a live SAM control socket
+    /// (Plan 485). Fail-closed `false` on lock failure. Read by the
+    /// standalone last-stream cleanup so sessions with an open
+    /// control socket survive zero-attachment gaps.
+    pub(crate) fn control_socket_live(&self, session_id: &SamSessionId) -> bool {
+        self.session_control_sockets
+            .lock()
+            .map(|live| live.contains(session_id))
+            .unwrap_or(false)
+    }
 
     /// Tears a session down exactly once. Called from the
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
-    pub fn teardown_session(&self, session_id: &SamSessionId, destination_id: DestinationId) {
+    ///
+    /// Plan 478 session-lifecycle attribution: every call emits one
+    /// INFO `session_teardown` line with a numeric cause code and
+    /// two 0/1 flags (`session_live` proves a live registry entry
+    /// was removed; `driver_live` proves a driver entry was still
+    /// installed in EITHER the SAM or the service map — the sweep
+    /// driver lives in exactly one per product mode). Unconditional by design — like the torn-down
+    /// close rows, the flags tell a real death (`session_live =
+    /// 1`) apart from a redundant call or a never-live rollback
+    /// (`session_live = 0`). Counts only; no session ids,
+    /// identities, keys, or payload material.
+    ///
+    /// Returns whether a live session entry was removed.
+    pub fn teardown_session(
+        &self,
+        session_id: &SamSessionId,
+        destination_id: DestinationId,
+        cause: SessionTeardownCause,
+    ) -> bool {
         for child_id in self.session_registry.subsession_ids(session_id) {
             self.remove_subsession(session_id, &child_id);
         }
-        if let Ok(mut drivers) = self.destination_drivers.lock()
+        let sam_driver_live = if let Ok(mut drivers) = self.destination_drivers.lock()
             && let Some(driver) = drivers.remove(&destination_id)
         {
             let _ = driver.cancel(i2pr_core::CancellationReason::ParentScope);
-        }
+            1u64
+        } else {
+            0u64
+        };
         self.teardown_forwards_for_session(session_id);
-        let _ = self.session_registry.remove_by_session(session_id);
+        let session_live = match self.session_registry.remove_by_session(session_id) {
+            Ok(Some(_)) => 1u64,
+            _ => 0u64,
+        };
         self.teardown_subsession_streams(session_id, destination_id);
         if let Ok(mut destinations) = self.destination_registry.lock() {
             destinations.remove(&destination_id);
@@ -1114,14 +1257,32 @@ impl SamServiceState {
             bridges.remove(destination_id);
         }
         self.drop_destination_signals(destination_id);
+        // Plan 478 two-recorder union: the sweep driver lives in the
+        // SAM map only in local-only mode and in the service map in
+        // router-network mode, so liveness is presence in EITHER
+        // map. Reading only the SAM map vacuous-zeros the gauge in
+        // production lanes.
+        let mut service_driver_live = 0u64;
         if let Ok(manager) = self.router_network_manager.lock()
             && let Some(manager) = manager.as_ref()
         {
+            if manager.destination_driver_live(destination_id) {
+                service_driver_live = 1;
+            }
             let _ = manager.request_router_network_sam_retirement(destination_id);
         }
         if let Ok(mut counters) = self.delivery_counters.lock() {
             counters.remove(&destination_id);
         }
+        let driver_live = sam_driver_live.max(service_driver_live);
+        info!(
+            cause_code = cause.code(),
+            session_live = session_live,
+            driver_live = driver_live,
+            transition = "session_teardown",
+            "SAM session torn down (counts only)",
+        );
+        session_live == 1
     }
 
     /// Registers a child session on a live PRIMARY without creating another
@@ -2223,6 +2384,7 @@ async fn handle_connection(
                 )
                 .await?;
                 apply_disposition(
+                    &state,
                     disposition,
                     &mut connection_state,
                     &mut pending_raw,
@@ -2261,6 +2423,7 @@ async fn handle_connection(
                     )
                     .await?;
                     apply_disposition(
+                        &state,
                         disposition,
                         &mut connection_state,
                         &mut pending_raw,
@@ -2289,6 +2452,13 @@ async fn handle_connection(
     // Calling `teardown_session` here would `bridges.remove(...)`
     // and orphan the runtime driver, dropping every queued SYN
     // response before it ever reaches the peer.
+    // Plan 485: the owning control socket is gone here in every
+    // case (close, error, or raw transition — a raw socket can
+    // never issue control commands again), so release tracking
+    // before the teardown guard below reads session state.
+    if let ServerConnectionState::SessionControl { session_id, .. } = &connection_state {
+        state.forget_control_socket(session_id);
+    }
     if let ServerConnectionState::SessionControl {
         session_id,
         destination_id,
@@ -2296,7 +2466,11 @@ async fn handle_connection(
     } = &connection_state
         && pending_raw.is_none()
     {
-        state.teardown_session(session_id, *destination_id);
+        state.teardown_session(
+            session_id,
+            *destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
     }
 
     // Plan 147 §8: on `ConnectionDisposition::RawTransition` the
@@ -2325,6 +2499,14 @@ async fn handle_connection(
             connection_id: handoff.connection_id,
             peer_destination: handoff.peer_destination.clone(),
             direction: handoff.direction,
+            // Plan 478: inbound streams carry the data-phase
+            // baseline so the close attributes the ACCEPT data
+            // phase; outbound streams close unattributed.
+            data_phase_baseline: if handoff.direction == RawDirection::Inbound {
+                Some(accept_data_phase_baseline(&state, handoff.destination_id))
+            } else {
+                None
+            },
         };
         // Plan 151: when the scope rejects the raw driver (live task
         // ceiling), unwind the just-allocated attachment through the
@@ -2364,13 +2546,21 @@ async fn handle_connection(
 }
 
 /// Plan 147 §8: applies one `ConnectionDisposition` produced by
-/// `dispatch_command` to the per-connection loop state.
+/// `dispatch_command` to the per-connection loop state. Plan 485
+/// also tracks live SAM control sockets per session here: entering
+/// `SessionControl` registers the socket, leaving it releases the
+/// registration, so a closed control socket never pins its session.
 fn apply_disposition(
+    state: &SamServiceState,
     disposition: ConnectionDisposition,
     connection_state: &mut ServerConnectionState,
     pending_raw: &mut Option<RawTransitionPayload>,
 ) -> Result<(), ConnectionFailure> {
-    match disposition {
+    let prior_control = match &*connection_state {
+        ServerConnectionState::SessionControl { session_id, .. } => Some(session_id.clone()),
+        _ => None,
+    };
+    let outcome = match disposition {
         ConnectionDisposition::Continue { next_state } => {
             *connection_state = next_state;
             Ok(())
@@ -2383,7 +2573,21 @@ fn apply_disposition(
             *pending_raw = Some(payload);
             Ok(())
         }
+    };
+    // A raw transition keeps `SessionControl` (release happens at
+    // connection exit, where a raw socket can no longer command);
+    // any other departure from it releases immediately.
+    match &*connection_state {
+        ServerConnectionState::SessionControl { session_id, .. } => {
+            state.note_control_socket(session_id);
+        }
+        _ => {
+            if let Some(prior) = prior_control {
+                state.forget_control_socket(&prior);
+            }
+        }
     }
+    outcome
 }
 
 async fn receive_command(
@@ -3058,10 +3262,22 @@ async fn execute_stream_connect(
     let (target_destination_id, signing_public_key) =
         match streams::decode_destination_id_and_signing(&destination) {
             Ok(pair) => pair,
-            Err(_) => {
+            Err(error) => {
+                // Static reason taxonomy (never error contents):
+                // base64 shape, destination structure, or a
+                // non-X25519 (ElGamal-legacy) encryption key.
+                let message = match error {
+                    streams::SamDestinationTripleError::Base64 => "DESTINATION base64 invalid",
+                    streams::SamDestinationTripleError::Destination(_) => {
+                        "DESTINATION structure invalid"
+                    }
+                    streams::SamDestinationTripleError::StaticPublicKeyLength => {
+                        "DESTINATION encryption is not X25519"
+                    }
+                };
                 return Err(StreamConnectFailed {
                     result: ReplyResult::InvalidKey,
-                    message: "could not decode DESTINATION".to_owned(),
+                    message: message.to_owned(),
                 });
             }
         };
@@ -3082,6 +3298,12 @@ async fn execute_stream_connect(
             });
         }
     };
+    // Redacted receipt for lane timing: a CONNECT was accepted
+    // for processing (no peer identities or keys).
+    tracing::info!(
+        transition = "stream_connect_received",
+        "SAM STREAM CONNECT accepted for processing",
+    );
 
     // Plan 149 §7: when the target destination is locally owned, resolve
     // the peer's validated LeaseSet2 through the SAM service's local
@@ -3129,10 +3351,19 @@ async fn execute_stream_connect(
     } else {
         match streams::decode_destination_triple(&destination) {
             Ok((_, _, static_key)) => static_key,
-            Err(_) => {
+            Err(error) => {
+                let message = match error {
+                    streams::SamDestinationTripleError::Base64 => "DESTINATION base64 invalid",
+                    streams::SamDestinationTripleError::Destination(_) => {
+                        "DESTINATION structure invalid"
+                    }
+                    streams::SamDestinationTripleError::StaticPublicKeyLength => {
+                        "DESTINATION encryption is not X25519"
+                    }
+                };
                 return Err(StreamConnectFailed {
                     result: ReplyResult::InvalidKey,
-                    message: "could not decode DESTINATION".to_owned(),
+                    message: message.to_owned(),
                 });
             }
         }
@@ -3245,11 +3476,20 @@ async fn execute_stream_connect(
     // the destination's established-signal until the manager
     // transitions to Established or the deadline expires.
     //
-    // The deadline defaults to a bounded 30 seconds; production
-    // callers that want a tighter limit must extend the limit
-    // surface explicitly.
-    let deadline = Duration::from_secs(20);
+    // The deadline is a bounded 60 seconds: the reference peer
+    // builds its own tunnels lazily on session create (observed
+    // live taking 15-30+s across churn waves), and our SYN
+    // retransmits persist across it. Shorter budgets fail peers
+    // that are still building; the lane driver timeout stays far
+    // above this.
+    let deadline = Duration::from_secs(60);
     let established_notify = state.established_signal(destination_id);
+    let synack_before = syn_response_ingress_totals(&state, destination_id);
+    let garlic_before = bridge_garlic_totals(&state, destination_id);
+    let arrival_before = product_inbound_arrival_totals(&state);
+    let miss_taxonomy_before = product_owner_miss_taxonomy_totals(&state);
+    let send_before = delivery_send_totals(&state, destination_id);
+    let send_queue_start = delivery_queue_depth(&state, destination_id);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3259,10 +3499,142 @@ async fn execute_stream_connect(
     )
     .await;
     if !established {
+        // Plan 478 handshake attribution: the wait ended without
+        // Established. Report how many SYN-responses the destination's
+        // managers classified during the wait (counts only) so the
+        // lane can distinguish "no SYN-ACK ever arrived" (transit
+        // loss toward our inbound path) from "arrived but rejected"
+        // (streaming-layer discard with a typed error).
+        let synack_after = syn_response_ingress_totals(&state, destination_id);
+        let synack_observed = synack_after.0.saturating_sub(synack_before.0);
+        let synack_accepted = synack_after.1.saturating_sub(synack_before.1);
+        let synack_rejected = synack_after.2.saturating_sub(synack_before.2);
+        // Plan 478 garlic-arrival attribution: deltas of the bridge's
+        // cumulative garlic-dispatch outcomes over the same wait, so the
+        // lane can split "nothing reached the bridge" (all zero alongside
+        // synack_observed=0) from "garlic arrived but ECIES-rejected"
+        // (garlic_rejected>0) or "authenticated but never dequeued".
+        let garlic_after = bridge_garlic_totals(&state, destination_id);
+        let garlic_authenticated = garlic_after.0.saturating_sub(garlic_before.0);
+        let garlic_rejected = garlic_after.1.saturating_sub(garlic_before.1);
+        let payloads_dequeued = garlic_after.2.saturating_sub(garlic_before.2);
+        let streaming_accepted = garlic_after.3.saturating_sub(garlic_before.3);
+        // Plan 478 §6 below-bridge arrival attribution: deltas of the
+        // manager-level mirrors over the same wait. TunnelData
+        // received with zero cells accepted dies in dispatch;
+        // cells accepted with zero owner matches never reached a
+        // service runtime; owner matches with zero bridge garlic
+        // means the envelope never authenticated; direct garlic
+        // covers the gw-self non-tunneled return.
+        let arrival_after = product_inbound_arrival_totals(&state);
+        let tunnel_data_received = arrival_after.0.saturating_sub(arrival_before.0);
+        let tunnel_data_cells_accepted = arrival_after.1.saturating_sub(arrival_before.1);
+        let garlic_owner_matches = arrival_after.2.saturating_sub(arrival_before.2);
+        let garlic_owner_misses = arrival_after.3.saturating_sub(arrival_before.3);
+        let direct_garlic_received = arrival_after.4.saturating_sub(arrival_before.4);
+        // Plan 478 owner-miss taxonomy: splits the miss count into
+        // service-but-unowned divergence (live destination role,
+        // no owner — the daemon dropping its own return),
+        // own-exploratory, retired-service (stale lease), and
+        // never-known addressing, so the lane can tell owner-table
+        // divergence from background and stale paths without any id
+        // material crossing the boundary.
+        let miss_taxonomy_after = product_owner_miss_taxonomy_totals(&state);
+        let miss_service_unowned = miss_taxonomy_after.0.saturating_sub(miss_taxonomy_before.0);
+        let miss_exploratory_known = miss_taxonomy_after.1.saturating_sub(miss_taxonomy_before.1);
+        let miss_retired_service = miss_taxonomy_after.2.saturating_sub(miss_taxonomy_before.2);
+        let miss_unknown = miss_taxonomy_after.3.saturating_sub(miss_taxonomy_before.3);
+        // Plan 478 send-side attribution: deltas of the
+        // destination's delivery-sweep counters over the same
+        // wait. `send_delivered == 0` means no SYN cell ever left
+        // the driver; a nonzero `send_delivery_failed` is split by
+        // cause (LS2 missing vs invalid vs install vs bridge
+        // seam) so a SYN-send failure attributes like the
+        // handshake wait does.
+        let send_after = delivery_send_totals(&state, destination_id);
+        let send_delivered = send_after.0.saturating_sub(send_before.0);
+        let send_unknown_peer = send_after.1.saturating_sub(send_before.1);
+        let send_missing_factory = send_after.2.saturating_sub(send_before.2);
+        let send_factory_exhausted = send_after.3.saturating_sub(send_before.3);
+        let send_delivery_failed = send_after.4.saturating_sub(send_before.4);
+        let send_failed_ls2_missing = send_after.5.saturating_sub(send_before.5);
+        let send_failed_ls2_invalid = send_after.6.saturating_sub(send_before.6);
+        let send_failed_ls2_install = send_after.7.saturating_sub(send_before.7);
+        let send_failed_bridge = send_after.8.saturating_sub(send_before.8);
+        // Plan 478 never-sent split: the sweep-activity delta over
+        // the same wait plus the queue-depth gauge at both ends.
+        // `send_sweeps == 0` means the driver never ran;
+        // `sweeps > 0` with zero delivered/failed and nonzero queue
+        // depth means queued but undrained; `sweeps > 0` with zero
+        // depth means nothing was ever queued.
+        let send_sweeps = send_after.9.saturating_sub(send_before.9);
+        let send_queue_end = delivery_queue_depth(&state, destination_id);
+        warn!(
+            synack_observed = synack_observed,
+            synack_accepted = synack_accepted,
+            synack_rejected = synack_rejected,
+            garlic_authenticated = garlic_authenticated,
+            garlic_rejected = garlic_rejected,
+            payloads_dequeued = payloads_dequeued,
+            streaming_accepted = streaming_accepted,
+            tunnel_data_received = tunnel_data_received,
+            tunnel_data_cells_accepted = tunnel_data_cells_accepted,
+            garlic_owner_matches = garlic_owner_matches,
+            garlic_owner_misses = garlic_owner_misses,
+            direct_garlic_received = direct_garlic_received,
+            miss_service_unowned = miss_service_unowned,
+            miss_exploratory_known = miss_exploratory_known,
+            miss_retired_service = miss_retired_service,
+            miss_unknown = miss_unknown,
+            send_delivered = send_delivered,
+            send_unknown_peer = send_unknown_peer,
+            send_missing_factory = send_missing_factory,
+            send_factory_exhausted = send_factory_exhausted,
+            send_delivery_failed = send_delivery_failed,
+            send_failed_ls2_missing = send_failed_ls2_missing,
+            send_failed_ls2_invalid = send_failed_ls2_invalid,
+            send_failed_ls2_install = send_failed_ls2_install,
+            send_failed_bridge = send_failed_bridge,
+            send_sweeps = send_sweeps,
+            send_queue_start = send_queue_start,
+            send_queue_end = send_queue_end,
+            transition = "stream_connect_handshake_wait_expired",
+            "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
+        );
         let _ = bridge.with(|bridge| bridge.streaming_mut().remove_connection(connection_id));
         return Err(StreamConnectFailed {
             result: ReplyResult::Timeout,
-            message: format!("STREAM CONNECT did not reach Established within {deadline:?}"),
+            message: format!(
+                "STREAM CONNECT did not reach Established within {deadline:?} \
+                 synack_observed={synack_observed} \
+                 synack_accepted={synack_accepted} \
+                 synack_rejected={synack_rejected} \
+                 garlic_authenticated={garlic_authenticated} \
+                 garlic_rejected={garlic_rejected} \
+                 payloads_dequeued={payloads_dequeued} \
+                 streaming_accepted={streaming_accepted} \
+                 tunnel_data_received={tunnel_data_received} \
+                 tunnel_data_cells_accepted={tunnel_data_cells_accepted} \
+                 garlic_owner_matches={garlic_owner_matches} \
+                 garlic_owner_misses={garlic_owner_misses} \
+                  direct_garlic_received={direct_garlic_received} \
+                  miss_service_unowned={miss_service_unowned} \
+                   miss_exploratory_known={miss_exploratory_known} \
+                  miss_retired_service={miss_retired_service} \
+                  miss_unknown={miss_unknown} \
+                  send_delivered={send_delivered} \
+                  send_unknown_peer={send_unknown_peer} \
+                  send_missing_factory={send_missing_factory} \
+                  send_factory_exhausted={send_factory_exhausted} \
+                  send_delivery_failed={send_delivery_failed} \
+                  send_failed_ls2_missing={send_failed_ls2_missing} \
+                  send_failed_ls2_invalid={send_failed_ls2_invalid} \
+                  send_failed_ls2_install={send_failed_ls2_install} \
+                  send_failed_bridge={send_failed_bridge} \
+                  send_sweeps={send_sweeps} \
+                  send_queue_start={send_queue_start} \
+                  send_queue_end={send_queue_end}"
+            ),
         });
     }
 
@@ -3294,6 +3666,517 @@ async fn execute_stream_connect(
     })
 }
 
+/// Plan 478 handshake attribution: sums the redacted SYN-response
+/// ingress counters across the destination's canonical and receiver
+/// managers as `(observed, accepted, rejected)` counts. No stream
+/// ids, ports, hashes, or payload material cross this boundary.
+fn syn_response_ingress_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return (0, 0, 0);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return (0, 0, 0);
+    };
+    handle.with(|bridge| {
+        let canonical = bridge.streaming().syn_response_ingress();
+        let mirror = bridge.receiver_streaming().syn_response_ingress();
+        (
+            canonical.observed.saturating_add(mirror.observed),
+            canonical.accepted.saturating_add(mirror.accepted),
+            canonical.rejected.saturating_add(mirror.rejected),
+        )
+    })
+}
+
+/// Plan 486 per-instance ACCEPT-side SYN attribution: reads the
+/// destination's receiver-mirror (the instance STREAM ACCEPT
+/// drains) and canonical (the instance client-profile dispatch
+/// feeds) inbound-SYN ingress counters separately, each as
+/// `(observed, accepted, rejected, rejected_decode,
+/// rejected_validation, rejected_signature, rejected_no_listener,
+/// rejected_backlog_full)` counts. The Plan 478 summed shape
+/// concealed a total instance miss for a full turn, so the summed
+/// shape is gone: the expiry receipt carries both instances and
+/// the lane parser requires both. No stream ids, ports, hashes, or
+/// payload material cross this boundary.
+fn syn_ingress_per_instance(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> ([u64; 8], [u64; 8]) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return ([0; 8], [0; 8]);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return ([0; 8], [0; 8]);
+    };
+    handle.with(|bridge| {
+        (
+            syn_ingress_snapshot(&bridge.receiver_streaming().syn_ingress()),
+            syn_ingress_snapshot(&bridge.streaming().syn_ingress()),
+        )
+    })
+}
+
+/// Projects one manager's SYN-ingress accounting into the stable
+/// receipt column order.
+fn syn_ingress_snapshot(
+    accounting: &i2pr_client::streaming::events::SynIngressAccounting,
+) -> [u64; 8] {
+    [
+        accounting.observed,
+        accounting.accepted,
+        accounting.rejected,
+        accounting.rejected_decode,
+        accounting.rejected_validation,
+        accounting.rejected_signature,
+        accounting.rejected_no_listener,
+        accounting.rejected_backlog_full,
+    ]
+}
+
+/// Plan 486 — renders the STREAM ACCEPT SYN-wait expiry message
+/// from the per-instance ingress deltas. The 18 `key=value` pairs
+/// are the lane parser's contract
+/// (`tests/integration/core-router-recovery/run_plan458_sam_product.py`
+/// requires every one; the offline receipt tests pin the shape):
+/// `syn_*` reads the receiver mirror, `canon_syn_*` the canonical
+/// manager. Extracted pure so a unit test can pin the key set
+/// mechanically — the `warn!` attribution line above the call site
+/// must carry the same keys.
+fn accept_syn_wait_expiry_message(
+    deadline: Duration,
+    mirror: [u64; 8],
+    canon: [u64; 8],
+    backlog_start: u64,
+    backlog_end: u64,
+) -> String {
+    format!(
+        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?} \
+         syn_observed={} \
+         syn_accepted={} \
+         syn_rejected={} \
+         syn_rejected_decode={} \
+         syn_rejected_validation={} \
+         syn_rejected_signature={} \
+         syn_rejected_no_listener={} \
+         syn_rejected_backlog_full={} \
+         canon_syn_observed={} \
+         canon_syn_accepted={} \
+         canon_syn_rejected={} \
+         canon_syn_rejected_decode={} \
+         canon_syn_rejected_validation={} \
+         canon_syn_rejected_signature={} \
+         canon_syn_rejected_no_listener={} \
+         canon_syn_rejected_backlog_full={} \
+         accept_backlog_start={backlog_start} \
+         accept_backlog_end={backlog_end}",
+        mirror[0],
+        mirror[1],
+        mirror[2],
+        mirror[3],
+        mirror[4],
+        mirror[5],
+        mirror[6],
+        mirror[7],
+        canon[0],
+        canon[1],
+        canon[2],
+        canon[3],
+        canon[4],
+        canon[5],
+        canon[6],
+        canon[7],
+    )
+}
+
+/// Plan 486 — sweeps the destination bridge's receiver-mirror
+/// listener backlogs for age-evicted entries. Counts only (the
+/// manager's `backlog_evicted` counter observes it); fail-closed
+/// no-op when the bridge is absent.
+fn evict_stale_accept_backlog(state: &SamServiceState, destination_id: DestinationId, now_ms: u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return;
+    };
+    handle.with(|bridge| {
+        bridge
+            .receiver_streaming_mut()
+            .evict_stale_backlog_entries(now_ms);
+    });
+}
+
+/// Plan 478 ACCEPT-side backlog gauge: the receiver-mirror
+/// listener backlog depth for one port as a snapshot. Counts
+/// only; no identities or payload material. Fail-closed zero
+/// when the bridge is absent. Read at ACCEPT-wait start and end:
+/// SYNs accepted into the backlog with a still-empty drain at
+/// expiry means the ACCEPT poller never converted arrival into
+/// an established connection.
+fn accept_backlog_depth(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+    listen_port: u16,
+) -> u64 {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return 0;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return 0;
+    };
+    handle.with(|bridge| {
+        u64::try_from(bridge.receiver_streaming().listener_backlog(listen_port)).unwrap_or(u64::MAX)
+    })
+}
+
+/// Plan 478 garlic-arrival attribution: reads the destination bridge's
+/// cumulative garlic-dispatch outcome counters as
+/// `(authenticated, rejected, payloads_dequeued, streaming_accepted)`.
+/// Counts only; no identities, keys, payloads, or rejection detail.
+fn bridge_garlic_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64, u64) {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return (0, 0, 0, 0);
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return (0, 0, 0, 0);
+    };
+    handle.with(|bridge| {
+        let diagnostics = bridge.diagnostics_snapshot().clone();
+        (
+            diagnostics.garlic_authenticated(),
+            diagnostics.garlic_rejected(),
+            diagnostics.payloads_dequeued(),
+            diagnostics.streaming_accepted(),
+        )
+    })
+}
+/// Plan 478 §6 below-bridge arrival attribution: reads the
+/// attached router-network manager's cumulative inbound-arrival
+/// mirrors as `(tunnel_data_received, cells_accepted,
+/// owner_matches, owner_misses, direct_garlic_received)`. Counts
+/// only; no identities, tunnel ids, or payload material. Reads
+/// fail closed to zeros when no manager is attached (local-only
+/// states never report remote arrival).
+fn product_inbound_arrival_totals(state: &SamServiceState) -> (u64, u64, u64, u64, u64) {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return (0, 0, 0, 0, 0);
+    };
+    let Some(manager) = slot.as_ref() else {
+        return (0, 0, 0, 0, 0);
+    };
+    manager.inbound_arrival_totals()
+}
+/// Plan 478 owner-miss taxonomy attribution: reads the attached
+/// router-network manager's `(service_unowned, exploratory_known,
+/// retired_service, unknown)` miss-class counters. Counts only;
+/// fails closed to zeros when no manager is attached.
+fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64, u64) {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return (0, 0, 0, 0);
+    };
+    let Some(manager) = slot.as_ref() else {
+        return (0, 0, 0, 0);
+    };
+    manager.inbound_owner_miss_taxonomy_totals()
+}
+
+/// Plan 478 send-side attribution: reads the SERVICE manager's
+/// cumulative delivery-sweep counters for one destination. Counts
+/// only; no identities, keys, or payload material. Reads fail
+/// closed to zeros when no router-network manager is attached
+/// (local-only states never report remote sends).
+fn service_delivery_counters(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> DeliverySweepCounters {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return DeliverySweepCounters::default();
+    };
+    let Some(manager) = slot.as_ref() else {
+        return DeliverySweepCounters::default();
+    };
+    manager.delivery_counters(destination_id)
+}
+
+/// Plan 478 two-recorder union: fieldwise saturating sum of the SAM
+/// and service delivery-sweep snapshots. Exactly one side records
+/// per product mode — the SAM driver runs only in local-only
+/// self-composition (its spawn lives in the non-router-network
+/// create path) while the service driver owns sweeps in
+/// router-network mode — so the union is complete in both modes
+/// with no double-counting. The split-subset property holds by
+/// construction: SAM splits sum to the SAM aggregate and service
+/// splits stay zero, so the union split sum never exceeds the
+/// union aggregate.
+fn union_delivery_counters(
+    sam: DeliverySweepCounters,
+    service: DeliverySweepCounters,
+) -> DeliverySweepCounters {
+    let mut union = sam;
+    union.saturating_add_assign(service);
+    union
+}
+
+/// Plan 478 send-side attribution: reads the destination's
+/// cumulative delivery-sweep counters as `(delivered,
+/// unknown_peer, missing_factory, factory_exhausted,
+/// delivery_failed, failed_ls2_missing, failed_ls2_invalid,
+/// failed_ls2_install, failed_bridge, sweeps)`. The SAM and service
+/// recorders are unioned (see [`union_delivery_counters`]) so the
+/// columns stay live in both product modes. Counts only; no
+/// identities, keys, or payload material. Reads fail closed to
+/// zeros when the entry is absent (torn-down sessions never
+/// report sends).
+#[allow(clippy::type_complexity)]
+fn delivery_send_totals(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+    let counters = union_delivery_counters(
+        state.delivery_counters(destination_id),
+        service_delivery_counters(state, destination_id),
+    );
+    let widen = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    (
+        widen(counters.delivered),
+        widen(counters.unknown_peer),
+        widen(counters.missing_factory),
+        widen(counters.factory_exhausted),
+        widen(counters.delivery_failed),
+        widen(counters.delivery_failed_ls2_missing),
+        widen(counters.delivery_failed_ls2_invalid),
+        widen(counters.delivery_failed_ls2_install),
+        widen(counters.delivery_failed_bridge),
+        widen(counters.sweeps),
+    )
+}
+
+/// Plan 478 never-sent split: the live outbound queue depth of one
+/// destination (canonical + receiver-mirror streaming queues plus
+/// the datagram queue) as a gauge snapshot. Counts only; no
+/// identities, keys, or payload material. Fail-closed zero when
+/// the bridge is absent. Read at wait start and wait end: a
+/// nonzero depth with zero delivered/failed deltas is "queued but
+/// undrained"; zero depth with `sweeps > 0` is "nothing ever
+/// queued".
+fn delivery_queue_depth(state: &SamServiceState, destination_id: DestinationId) -> u64 {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return 0;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return 0;
+    };
+    handle.with(|bridge| {
+        let depth = bridge
+            .streaming()
+            .outbound_queue_len()
+            .saturating_add(bridge.receiver_streaming().outbound_queue_len())
+            .saturating_add(bridge.datagrams().outbound_queue_len());
+        u64::try_from(depth).unwrap_or(u64::MAX)
+    })
+}
+
+/// Plan 478 ACCEPT data-phase baseline: snapshots the destination
+/// bridge ingress counters at the moment an inbound stream enters
+/// its data phase. Fail-closed zeros when no bridge is installed
+/// (mirrors `bridge_garlic_totals`). Counts only; no identities,
+/// keys, ports, or payload material.
+fn accept_data_phase_baseline(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> AcceptDataPhaseBaseline {
+    let garlic = bridge_garlic_totals(state, destination_id);
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return AcceptDataPhaseBaseline {
+            garlic,
+            mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+        };
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return AcceptDataPhaseBaseline {
+            garlic,
+            mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+        };
+    };
+    handle.with(|bridge| AcceptDataPhaseBaseline {
+        garlic,
+        mirror_data: bridge.receiver_streaming().data_packet_ingress(),
+        canonical_data: bridge.streaming().data_packet_ingress(),
+    })
+}
+
+/// Plan 478 ACCEPT data-phase close receipt: the
+/// per-accepted-stream ingress attribution as owned counts.
+/// `bridge_present = false` means the destination bridge was
+/// already gone when the pump finished (teardown won the race):
+/// every delta reads zero and `connection_state_code` reads 0 by
+/// construction. The receipt still fires so the lane can tell
+/// "torn down before close" apart from "no receipt at all" (pump
+/// never finished). Counts only; no identities, keys, ports, or
+/// payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct AcceptDataPhaseCloseReceipt {
+    pub mirror: i2pr_client::streaming::DataPacketIngressAccounting,
+    pub canonical: i2pr_client::streaming::DataPacketIngressAccounting,
+    pub garlic_authenticated: u64,
+    pub garlic_rejected: u64,
+    pub payloads_dequeued: u64,
+    pub streaming_accepted: u64,
+    pub connection_state_code: u64,
+    pub undrained_bytes: u64,
+    pub reset: bool,
+    pub bridge_present: bool,
+}
+
+impl AcceptDataPhaseCloseReceipt {
+    /// All-zero torn-down receipt: bridge absent at close.
+    fn torn_down(reset: bool) -> Self {
+        Self {
+            mirror: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            garlic_authenticated: 0,
+            garlic_rejected: 0,
+            payloads_dequeued: 0,
+            streaming_accepted: 0,
+            connection_state_code: 0,
+            undrained_bytes: 0,
+            reset,
+            bridge_present: false,
+        }
+    }
+}
+
+impl SamServiceState {
+    /// Plan 478 ACCEPT data-phase close attribution: diffs the
+    /// destination bridge ingress counters against the handoff
+    /// baseline into a per-accepted-stream receipt. Must run
+    /// before the connection is removed — the close-time state is
+    /// itself decisive evidence:
+    /// - `connection_state_code = 1` (still Established): the pump
+    ///   exited for a non-streaming reason while the peer session
+    ///   was alive.
+    /// - `2` (ClosingLocal/Remote): a CLOSE was sent or received.
+    /// - `3` (Closed/Reset): abnormal termination.
+    /// - `4`: a handshake state (never Established on this path).
+    /// - `0` (absent): the connection was removed out from under
+    ///   the pump (delivery-failure termination or driver teardown).
+    ///
+    /// No-op when the cleanup carries no baseline (outbound
+    /// CONNECT streams). Counts only; no identities, keys, ports,
+    /// or payload material.
+    /// Plan 478 ACCEPT data-phase close snapshot: diffs the
+    /// destination bridge ingress counters against the handoff
+    /// baseline. Returns `None` when the cleanup carries no baseline
+    /// (outbound CONNECT streams close unattributed by design).
+    /// Returns the all-zero torn-down receipt when the bridge is
+    /// already gone — teardown before close is itself evidence, and
+    /// must not read as a silent pump.
+    pub(crate) fn accept_data_phase_close_receipt(
+        &self,
+        cleanup: &RawStreamCleanup,
+        reset: bool,
+    ) -> Option<AcceptDataPhaseCloseReceipt> {
+        use i2pr_client::streaming::connection::ConnectionState;
+
+        let baseline = cleanup.data_phase_baseline.as_ref()?;
+        let garlic_now = bridge_garlic_totals(self, cleanup.destination_id);
+        let destinations_arc = self.sam_destinations();
+        let Ok(destinations) = destinations_arc.lock() else {
+            return Some(AcceptDataPhaseCloseReceipt::torn_down(reset));
+        };
+        let Some(handle) = destinations.get(cleanup.destination_id) else {
+            return Some(AcceptDataPhaseCloseReceipt::torn_down(reset));
+        };
+        Some(handle.with(|bridge| {
+            let (manager, mirror) = match cleanup.direction {
+                RawDirection::Inbound => (bridge.receiver_streaming(), true),
+                RawDirection::Outbound => (bridge.streaming(), false),
+            };
+            // The canonical snapshot is always the canonical
+            // manager regardless of direction; the mirror
+            // snapshot follows the stream's owning manager.
+            let (mirror_now, canonical_now) = if mirror {
+                (
+                    manager.data_packet_ingress(),
+                    bridge.streaming().data_packet_ingress(),
+                )
+            } else {
+                (
+                    bridge.receiver_streaming().data_packet_ingress(),
+                    manager.data_packet_ingress(),
+                )
+            };
+            let state_code = match manager
+                .get_connection(cleanup.connection_id)
+                .map(|connection| connection.state())
+            {
+                None => 0,
+                Some(ConnectionState::Established) => 1,
+                Some(ConnectionState::ClosingLocal | ConnectionState::ClosingRemote) => 2,
+                Some(ConnectionState::Closed | ConnectionState::Reset) => 3,
+                Some(ConnectionState::OutboundSynSent | ConnectionState::InboundSynReceived) => 4,
+            };
+            let undrained =
+                u64::try_from(manager.pending_bytes_for(cleanup.connection_id)).unwrap_or(u64::MAX);
+            let mirror = mirror_now.delta_since(baseline.mirror_data);
+            let canonical = canonical_now.delta_since(baseline.canonical_data);
+            AcceptDataPhaseCloseReceipt {
+                mirror,
+                canonical,
+                garlic_authenticated: garlic_now.0.saturating_sub(baseline.garlic.0),
+                garlic_rejected: garlic_now.1.saturating_sub(baseline.garlic.1),
+                payloads_dequeued: garlic_now.2.saturating_sub(baseline.garlic.2),
+                streaming_accepted: garlic_now.3.saturating_sub(baseline.garlic.3),
+                connection_state_code: state_code,
+                undrained_bytes: undrained,
+                reset,
+                bridge_present: true,
+            }
+        }))
+    }
+
+    pub(crate) fn emit_accept_data_phase_close(&self, cleanup: &RawStreamCleanup, reset: bool) {
+        let Some(receipt) = self.accept_data_phase_close_receipt(cleanup, reset) else {
+            return;
+        };
+        warn!(
+            data_observed = receipt.mirror.observed,
+            data_accepted = receipt.mirror.accepted,
+            data_rejected = receipt.mirror.rejected,
+            data_payload_bytes = receipt.mirror.payload_bytes_admitted,
+            canon_data_observed = receipt.canonical.observed,
+            canon_data_accepted = receipt.canonical.accepted,
+            canon_data_rejected = receipt.canonical.rejected,
+            canon_data_payload_bytes = receipt.canonical.payload_bytes_admitted,
+            garlic_authenticated = receipt.garlic_authenticated,
+            garlic_rejected = receipt.garlic_rejected,
+            payloads_dequeued = receipt.payloads_dequeued,
+            streaming_accepted = receipt.streaming_accepted,
+            connection_state_code = receipt.connection_state_code,
+            undrained_bytes = receipt.undrained_bytes,
+            reset = u64::from(receipt.reset),
+            bridge_present = u64::from(receipt.bridge_present),
+            transition = "stream_accept_data_phase_closed",
+            "STREAM ACCEPT data phase closed; per-accepted-stream ingress attribution (counts only)",
+        );
+    }
+}
 /// Plan 147 §7: parks the caller until `manager.get_connection(id)`
 /// reports `ConnectionState::Established`, or returns `false` once
 /// `deadline` expires. The destination's runtime driver notifies
@@ -3473,6 +4356,14 @@ async fn execute_stream_accept(
     let deadline = Duration::from_secs(20);
     let established_notify = state.established_signal(destination_id);
     state.notify_outbound_signal(destination_id);
+    // Plan 478 ACCEPT-side SYN attribution: baseline the
+    // acceptor ingress counters and the listener backlog so an
+    // expiry can split "no SYN ever arrived" (all zero) from
+    // "SYNs arrived but never reached a backlog" (observed >
+    // accepted) and "backlogged but never drained" (backlog still
+    // held at expiry).
+    let syn_before = syn_ingress_per_instance(&state, destination_id);
+    let backlog_start = accept_backlog_depth(&state, destination_id, listen_port);
     let (inbound_connection_id, peer_destination, peer_destination_b64) =
         match wait_for_accept_established(
             state.clone(),
@@ -3485,10 +4376,78 @@ async fn execute_stream_accept(
         {
             Some(value) => value,
             None => {
+                // Plan 486: sweep backlog entries orphaned by this
+                // wait before snapshotting, so `accept_backlog_end`
+                // reports live entries and no later waiter inherits
+                // a stale handshake.
+                evict_stale_accept_backlog(&state, destination_id, streaming_now_ms());
+                let (mirror_after, canon_after) = syn_ingress_per_instance(&state, destination_id);
+                let (mirror_before, canon_before) = syn_before;
+                let delta = |after: [u64; 8], before: [u64; 8]| -> [u64; 8] {
+                    [
+                        after[0].saturating_sub(before[0]),
+                        after[1].saturating_sub(before[1]),
+                        after[2].saturating_sub(before[2]),
+                        after[3].saturating_sub(before[3]),
+                        after[4].saturating_sub(before[4]),
+                        after[5].saturating_sub(before[5]),
+                        after[6].saturating_sub(before[6]),
+                        after[7].saturating_sub(before[7]),
+                    ]
+                };
+                let mirror = delta(mirror_after, mirror_before);
+                let canon = delta(canon_after, canon_before);
+                // Named bindings for the `warn!` attribution line;
+                // the TIMEOUT message renders from the same arrays
+                // via `accept_syn_wait_expiry_message` (key sets must
+                // stay identical).
+                let syn_observed = mirror[0];
+                let syn_accepted = mirror[1];
+                let syn_rejected = mirror[2];
+                let syn_rejected_decode = mirror[3];
+                let syn_rejected_validation = mirror[4];
+                let syn_rejected_signature = mirror[5];
+                let syn_rejected_no_listener = mirror[6];
+                let syn_rejected_backlog_full = mirror[7];
+                let canon_syn_observed = canon[0];
+                let canon_syn_accepted = canon[1];
+                let canon_syn_rejected = canon[2];
+                let canon_syn_rejected_decode = canon[3];
+                let canon_syn_rejected_validation = canon[4];
+                let canon_syn_rejected_signature = canon[5];
+                let canon_syn_rejected_no_listener = canon[6];
+                let canon_syn_rejected_backlog_full = canon[7];
+                let backlog_end = accept_backlog_depth(&state, destination_id, listen_port);
+                warn!(
+                    syn_observed = syn_observed,
+                    syn_accepted = syn_accepted,
+                    syn_rejected = syn_rejected,
+                    syn_rejected_decode = syn_rejected_decode,
+                    syn_rejected_validation = syn_rejected_validation,
+                    syn_rejected_signature = syn_rejected_signature,
+                    syn_rejected_no_listener = syn_rejected_no_listener,
+                    syn_rejected_backlog_full = syn_rejected_backlog_full,
+                    canon_syn_observed = canon_syn_observed,
+                    canon_syn_accepted = canon_syn_accepted,
+                    canon_syn_rejected = canon_syn_rejected,
+                    canon_syn_rejected_decode = canon_syn_rejected_decode,
+                    canon_syn_rejected_validation = canon_syn_rejected_validation,
+                    canon_syn_rejected_signature = canon_syn_rejected_signature,
+                    canon_syn_rejected_no_listener = canon_syn_rejected_no_listener,
+                    canon_syn_rejected_backlog_full = canon_syn_rejected_backlog_full,
+                    accept_backlog_start = backlog_start,
+                    accept_backlog_end = backlog_end,
+                    transition = "stream_accept_syn_wait_expired",
+                    "STREAM ACCEPT wait ended without Established; inbound-SYN ingress attribution per instance (counts only)",
+                );
                 return Err(StreamAcceptFailed {
                     result: ReplyResult::Timeout,
-                    message: format!(
-                        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?}"
+                    message: accept_syn_wait_expiry_message(
+                        deadline,
+                        mirror,
+                        canon,
+                        backlog_start,
+                        backlog_end,
                     ),
                 });
             }
@@ -3602,7 +4561,7 @@ async fn wait_for_accept_established(
                 if manager.listener_backlog(listen_port) == 0 {
                     return None;
                 }
-                let cid = match manager.accept(listen_port) {
+                let cid = match manager.accept(listen_port, streaming_now_ms()) {
                     Some(cid) => cid,
                     None => return None,
                 };
@@ -3758,7 +4717,7 @@ async fn wait_for_forward_established(
                 if manager.listener_backlog(0) == 0 {
                     return None;
                 }
-                let connection_id = manager.accept(0)?;
+                let connection_id = manager.accept(0, streaming_now_ms())?;
                 let connection = manager.get_connection(connection_id)?;
                 let remote_port = connection.remote_port();
                 let local_port = connection.local_port();
@@ -3923,6 +4882,7 @@ async fn run_forward_worker(
                     connection_id,
                     peer_destination: peer_destination.clone(),
                     direction: RawDirection::Inbound,
+                    data_phase_baseline: Some(accept_data_phase_baseline(&state, destination_id)),
                 };
                 state.finish_raw_stream(cleanup, true);
                 break;
@@ -3946,6 +4906,7 @@ async fn run_forward_worker(
             connection_id: handoff.connection_id,
             peer_destination: handoff.peer_destination.clone(),
             direction: handoff.direction,
+            data_phase_baseline: Some(accept_data_phase_baseline(&state, destination_id)),
         };
         let stream_cancellation = task_cancellation.child_token();
         let raw_future = run_raw_stream(Arc::clone(&state), handoff, stream_cancellation.clone());
@@ -4061,6 +5022,10 @@ async fn run_destination_driver(
                 factory_exhausted = sweep.factory_exhausted,
                 unknown_peer = sweep.unknown_peer,
                 delivery_failed = sweep.delivery_failed,
+                delivery_failed_ls2_missing = sweep.delivery_failed_ls2_missing,
+                delivery_failed_ls2_invalid = sweep.delivery_failed_ls2_invalid,
+                delivery_failed_ls2_install = sweep.delivery_failed_ls2_install,
+                delivery_failed_bridge = sweep.delivery_failed_bridge,
                 reason = %reason,
                 "destination driver observed typed local-delivery degradation"
             );
@@ -4227,6 +5192,291 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn accept_data_phase_close_is_silent_without_baseline_or_bridge() {
+        use i2pr_client::streaming::connection::ConnectionId;
+
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let mut rng = OsRng;
+        let peer = DestinationIdentity::generate(&mut rng).expect("peer identity");
+        let cleanup = RawStreamCleanup {
+            session_id: SamSessionId::new("accept-close-probe").unwrap(),
+            destination_id: DestinationId::from_hash(i2pr_proto::Hash::from_bytes([9_u8; 32])),
+            attachment_id: 1,
+            connection_id: ConnectionId::new(7),
+            peer_destination: i2pr_client::streaming::manager::RemoteDestination {
+                destination_hash: *peer.id().as_hash().as_bytes(),
+                signing_public_key: peer.destination().signing_key().clone(),
+                static_public_key: peer.static_public_bytes(),
+            },
+            direction: RawDirection::Inbound,
+            data_phase_baseline: None,
+        };
+        // No baseline (outbound shape): no receipt — the close stays
+        // unattributed by design, and emit is a silent no-op.
+        assert_eq!(state.accept_data_phase_close_receipt(&cleanup, false), None);
+        state.emit_accept_data_phase_close(&cleanup, false);
+        // Unknown destination: the baseline captures fail-closed
+        // zeros, but the close still fires — teardown before close
+        // must read as an explicit torn-down receipt (all zeros,
+        // state 0, bridge absent), never as a silent pump.
+        let baseline = accept_data_phase_baseline(&state, cleanup.destination_id);
+        assert_eq!(baseline.garlic, (0, 0, 0, 0));
+        assert_eq!(
+            baseline.mirror_data,
+            i2pr_client::streaming::DataPacketIngressAccounting::default()
+        );
+        assert_eq!(
+            baseline.canonical_data,
+            i2pr_client::streaming::DataPacketIngressAccounting::default()
+        );
+        let cleanup = RawStreamCleanup {
+            data_phase_baseline: Some(baseline),
+            ..cleanup
+        };
+        let receipt = state
+            .accept_data_phase_close_receipt(&cleanup, true)
+            .expect("torn-down close must still fire");
+        assert_eq!(receipt, AcceptDataPhaseCloseReceipt::torn_down(true));
+        assert!(!receipt.bridge_present);
+        assert_eq!(receipt.connection_state_code, 0);
+        assert_eq!(receipt.mirror.observed, 0);
+        assert_eq!(receipt.canonical.observed, 0);
+        assert_eq!(receipt.garlic_authenticated, 0);
+        // Emit path shares the snapshot: no panic, no bridge state.
+        state.emit_accept_data_phase_close(&cleanup, true);
+    }
+
+    #[test]
+    fn delivery_send_totals_reports_seeded_split_causes() {
+        use crate::sam::fabric::{DeliverySweepCounters, SendFailureCause};
+
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([11_u8; 32]));
+        // Unknown destination fails closed to all zeros.
+        assert_eq!(
+            delivery_send_totals(&state, destination_id),
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            "absent delivery entry must read zero"
+        );
+        assert_eq!(
+            delivery_queue_depth(&state, destination_id),
+            0,
+            "absent bridge must read zero queue depth"
+        );
+        let mut seeded = DeliverySweepCounters {
+            delivered: 8,
+            unknown_peer: 1,
+            missing_factory: 2,
+            factory_exhausted: 3,
+            sweeps: 7,
+            ..DeliverySweepCounters::default()
+        };
+        seeded.note_split_failure(SendFailureCause::Ls2Missing);
+        seeded.note_split_failure(SendFailureCause::Ls2Invalid);
+        seeded.note_split_failure(SendFailureCause::Ls2Install);
+        seeded.note_split_failure(SendFailureCause::Bridge);
+        seeded.note_split_failure(SendFailureCause::Bridge);
+        state.record_delivery_counters(destination_id, seeded);
+        assert_eq!(
+            delivery_send_totals(&state, destination_id),
+            (8, 1, 2, 3, 5, 1, 1, 1, 2, 7),
+            "send totals must map each counter field in order"
+        );
+    }
+
+    #[test]
+    fn combined_delivery_totals_union_both_recorders() {
+        use crate::sam::fabric::{DeliverySweepCounters, SendFailureCause};
+
+        // SAM side: split-classified failures plus sweeps.
+        let mut sam = DeliverySweepCounters {
+            delivered: 8,
+            sweeps: 100,
+            ..DeliverySweepCounters::default()
+        };
+        sam.note_split_failure(SendFailureCause::Bridge);
+        // Service side: aggregate-only outcomes plus sweeps (its
+        // split fields stay zero by seam design).
+        let service = DeliverySweepCounters {
+            delivered: 4,
+            delivery_failed: 3,
+            unknown_peer: 1,
+            sweeps: 50,
+            ..DeliverySweepCounters::default()
+        };
+        let union = union_delivery_counters(sam, service);
+        assert_eq!(union.delivered, 12);
+        assert_eq!(union.delivery_failed, 4);
+        assert_eq!(union.unknown_peer, 1);
+        assert_eq!(union.delivery_failed_bridge, 1);
+        assert_eq!(union.sweeps, 150);
+        assert_eq!(union.split_failure_sum(), 1);
+        assert!(
+            union.split_failure_sum() <= union.delivery_failed,
+            "union split sum must never exceed the union aggregate"
+        );
+    }
+
+    #[test]
+    fn service_delivery_counters_absent_manager_reads_zero() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([14_u8; 32]));
+        assert_eq!(
+            service_delivery_counters(&state, destination_id),
+            DeliverySweepCounters::default(),
+            "absent router manager must read zero service counters"
+        );
+    }
+
+    #[test]
+    fn accept_side_attribution_reads_zero_without_bridge() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([12_u8; 32]));
+        // Unknown destination fails closed to all zeros on both the
+        // per-instance SYN-ingress split and the backlog gauge.
+        assert_eq!(
+            syn_ingress_per_instance(&state, destination_id),
+            ([0; 8], [0; 8]),
+            "absent bridge must read zero SYN ingress on both instances"
+        );
+        assert_eq!(
+            accept_backlog_depth(&state, destination_id, 0),
+            0,
+            "absent bridge must read zero backlog depth"
+        );
+    }
+
+    #[test]
+    fn accept_syn_wait_expiry_message_carries_all_parser_keys() {
+        // Plan 486 daemon↔parser contract: the TIMEOUT message must
+        // carry exactly the 18 keys the lane parser requires (mirror
+        // `syn_*` + canonical `canon_syn_*` + backlog pair), with
+        // values rendered in column order. The offline receipt tests
+        // pin the parser side; this pins the daemon side.
+        let message = accept_syn_wait_expiry_message(
+            Duration::from_secs(20),
+            [1, 1, 0, 0, 0, 0, 0, 0],
+            [2, 0, 2, 0, 0, 0, 2, 0],
+            0,
+            1,
+        );
+        for key in [
+            "syn_observed=1",
+            "syn_accepted=1",
+            "syn_rejected=0",
+            "syn_rejected_decode=0",
+            "syn_rejected_validation=0",
+            "syn_rejected_signature=0",
+            "syn_rejected_no_listener=0",
+            "syn_rejected_backlog_full=0",
+            "canon_syn_observed=2",
+            "canon_syn_accepted=0",
+            "canon_syn_rejected=2",
+            "canon_syn_rejected_decode=0",
+            "canon_syn_rejected_validation=0",
+            "canon_syn_rejected_signature=0",
+            "canon_syn_rejected_no_listener=2",
+            "canon_syn_rejected_backlog_full=0",
+            "accept_backlog_start=0",
+            "accept_backlog_end=1",
+        ] {
+            assert!(message.contains(key), "expiry message must carry {key}");
+        }
+    }
+
+    #[test]
+    fn control_socket_tracking_is_idempotent_and_fail_closed() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let session_id = SamSessionId::new("control-track-probe").expect("session id");
+        // Unknown session has no control socket (fail-closed false).
+        assert!(!state.control_socket_live(&session_id));
+        // Noting is idempotent; forgetting an absent id is a no-op.
+        state.note_control_socket(&session_id);
+        state.note_control_socket(&session_id);
+        assert!(state.control_socket_live(&session_id));
+        state.forget_control_socket(&session_id);
+        assert!(!state.control_socket_live(&session_id));
+        state.forget_control_socket(&session_id);
+        assert!(!state.control_socket_live(&session_id));
+    }
+
+    #[test]
+    fn session_teardown_cause_codes_are_stable() {
+        // The lane matches cause codes numerically; the mapping
+        // must not shift silently.
+        assert_eq!(SessionTeardownCause::CreateRollback.code(), 1);
+        assert_eq!(SessionTeardownCause::ControlSocketClosed.code(), 2);
+        assert_eq!(SessionTeardownCause::RawStreamFinished.code(), 3);
+    }
+
+    #[test]
+    fn teardown_unknown_session_reports_not_live() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let session_id = SamSessionId::new("teardown-probe").expect("session id");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([13_u8; 32]));
+        // No live entry exists: teardown reports not-live and leaves
+        // every registry empty (idempotent, no half-state).
+        assert!(
+            !state.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::ControlSocketClosed,
+            ),
+            "unknown session must report not-live"
+        );
+        assert!(!state.session_registry.contains(&session_id));
+        assert!(
+            state
+                .destination_drivers
+                .lock()
+                .map(|drivers| drivers.is_empty())
+                .unwrap_or(false)
+        );
     }
 
     async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {
@@ -4968,7 +6218,11 @@ mod tests {
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)), 7655),
         );
         assert_eq!(rejected, Err("non-loopback UDP source"));
-        state.teardown_session(&primary, applied.destination_id);
+        state.teardown_session(
+            &primary,
+            applied.destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
         parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
         let _ = children.shutdown().await;
     }
@@ -5355,7 +6609,11 @@ mod tests {
         drop(private_client);
         private_driver.await.expect("private datagram driver join");
 
-        state.teardown_session(&primary_id, primary.destination_id);
+        state.teardown_session(
+            &primary_id,
+            primary.destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
         assert!(state.session_registry.session_count() == 0);
         assert!(state.destination_registry.lock().unwrap().is_empty());
         owner.cancel(i2pr_core::CancellationReason::OperatorRequest);

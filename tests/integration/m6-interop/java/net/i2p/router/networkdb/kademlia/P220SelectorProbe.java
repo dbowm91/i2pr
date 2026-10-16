@@ -68,8 +68,23 @@ public final class P220SelectorProbe {
      * Unknown instead of a synthesized zero.
      */
     public static Result selectForKey(RouterContext ctx, Hash targetKey, Hash bHash) {
+        return selectForKeyWidth(ctx, targetKey, bHash, PROBE_FANOUT);
+    }
+
+    /**
+     * Width-parameterized variant of {@link #selectForKey}. Plan 483 uses
+     * width 1 to ask the pinned stock selector for the single recipient it
+     * would choose for a key: the XOR-nearest good peer, else ok, else bad.
+     * Widths below 1 are refused without calling stock. Read-only like the
+     * fixed-width form.
+     */
+    public static Result selectForKeyWidth(RouterContext ctx, Hash targetKey, Hash bHash,
+                                           int width) {
         if (ctx == null || targetKey == null || bHash == null) {
             return Result.unavailable("null-argument");
+        }
+        if (width < 1) {
+            return Result.unavailable("invalid-width");
         }
         try {
             if (!(ctx.netDb() instanceof KademliaNetworkDatabaseFacade)) {
@@ -88,7 +103,7 @@ public final class P220SelectorProbe {
             }
             int kbucketSize = kbs.size();
             List<Hash> selected = floodfill.selectFloodfillParticipants(
-                targetKey, PROBE_FANOUT, Collections.emptySet(), kbs);
+                targetKey, width, Collections.emptySet(), kbs);
             if (selected == null) {
                 return Result.unavailable("selector-returned-null");
             }

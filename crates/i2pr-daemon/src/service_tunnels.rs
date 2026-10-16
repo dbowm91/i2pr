@@ -28,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -387,6 +388,13 @@ pub struct ServiceTunnelManager {
     /// product. These are deliberately separate from configured service
     /// runtimes and survive service-generation replacement.
     sam_network_destinations: Mutex<HashMap<DestinationId, RouterNetworkSamDestination>>,
+    /// Plan 486 — optional SAM stream-socket registry installed by
+    /// the composition root when the SAM service shares this
+    /// manager. The router-inbound dispatch seam queries it for
+    /// parked STREAM ACCEPT waiters (destination-keyed,
+    /// fail-closed); `None` for pure service-tunnel managers, where
+    /// every inbound packet keeps profile routing.
+    sam_stream_registry: Mutex<Option<Arc<i2pr_api::sam::streams::SamStreamRegistry>>>,
     /// Destination configuration (shared, balanced profile).
     destination_config: DestinationConfig,
     /// Plan 292 sweep reduction overrides by service id. A present
@@ -448,12 +456,56 @@ pub struct ServiceTunnelManager {
     /// active and removed on expiry / failure / replacement /
     /// generation drain.
     inbound_tunnel_owners: Mutex<HashMap<u32, Arc<ServiceRuntime>>>,
+    /// Plan 478 §6 — remote-peer LeaseSet2 fetch requests filed by
+    /// the outbound delivery sweep when a remote-routed request
+    /// finds no cached peer record (`NotCached`). Keyed by peer
+    /// destination hash; the value names the requesting sender
+    /// destination and the first-request millisecond clock. The
+    /// product's advance loop drains the table and runs one
+    /// bounded lookup per entry, so SYN retransmits converge once
+    /// the record lands instead of timing out on an empty cache.
+    /// Bounded (cap + per-peer cooldown) so a missing peer cannot
+    /// spam floodfills.
+    peer_lease_requests: Mutex<HashMap<[u8; 32], (DestinationId, u64)>>,
     /// Plan 210 §G — diagnostic counter for inbound `TunnelData`
     /// cells whose receive tunnel id is unknown to the manager.
     /// Plan 210 §F requires stale / orphan receives to fail
     /// closed and advance a bounded rejection counter; the
     /// counter is plaintext so the static checker can inspect it.
     inbound_orphan_receives: AtomicUsize,
+    /// Plan 478 §6 — below-bridge arrival counters for the router
+    /// inbound path. The product folds the same events into its
+    /// `InboundTrafficSnapshot`, which SAM cannot reach (it holds
+    /// only this manager, never the product). These lock-free
+    /// mirrors let a STREAM CONNECT timeout report how far a
+    /// SYN-ACK return travelled: TunnelData received, cells
+    /// accepted, owner match/miss. Counts only; no ids or payloads.
+    inbound_tunnel_data_received: AtomicUsize,
+    inbound_tunnel_data_cells_accepted: AtomicUsize,
+    inbound_garlic_owner_matches: AtomicUsize,
+    inbound_garlic_owner_misses: AtomicUsize,
+    /// Plan 478 owner-miss taxonomy: one counter per
+    /// [`InboundOwnerMissClass`] arm, so a CONNECT timeout can tell
+    /// service-but-unowned divergence, own-exploratory traffic,
+    /// retired service generations, and never-known ids apart.
+    /// Counts only; no ids or payloads.
+    inbound_owner_miss_service_unowned: AtomicUsize,
+    inbound_owner_miss_exploratory: AtomicUsize,
+    inbound_owner_miss_retired: AtomicUsize,
+    inbound_owner_miss_unknown: AtomicUsize,
+    /// Plan 478 retired service receive ids, most-recent last,
+    /// capped at [`MAX_RETIRED_RECEIVE_IDS`]. Populated on owner
+    /// unregister (expiry / failure / replacement / generation
+    /// drain) so a later miss can be classified as a stale lease
+    /// rather than never-known addressing. Ephemeral local tunnel
+    /// ids only — never peer identities — and never logged or
+    /// exported; only the class counts leave the manager.
+    retired_receive_ids: Mutex<VecDeque<u32>>,
+    /// Plan 478 §6 — direct (non-tunneled) Garlic receipts. Gw-self
+    /// peers send Garlic replies directly when their own outbound
+    /// pool is not ready; without this mirror a direct-only return
+    /// would read as all-zero below-bridge arrival.
+    inbound_direct_garlic_received: AtomicUsize,
     /// Plan 294 canonical address-book resolver cell. Empty unless the
     /// composition root installs the active subsystem's shared handle;
     /// static aliases always win over address-book entries.
@@ -644,6 +696,15 @@ impl EncryptedTargetStatus {
 
 const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
 
+/// Plan 478 §6 — peer lease fetch table bound: at most this many
+/// distinct remote peers await a bounded lookup at once.
+const MAX_PEER_LEASE_REQUESTS: usize = 16;
+
+/// Plan 478 §6 — per-peer lookup request cooldown: a failed fetch
+/// is not re-filed until this long after the previous filing, so
+/// SYN retransmits against a missing peer cannot spam floodfills.
+const PEER_LEASE_REQUEST_COOLDOWN_MS: u64 = 60_000;
+
 /// One bounded request to activate a deferred Destination group.
 pub(crate) struct DeferredActivationRequest {
     pub(crate) destination_id: DestinationId,
@@ -807,6 +868,64 @@ impl RemoteTargetProjection {
     }
 }
 
+/// Plan 478 owner-miss taxonomy: where a recovered Garlic envelope's
+/// receive tunnel id pointed when no service runtime owned it.
+/// Decided from already-held registries (never a new lookup or
+/// network read); only the class counts leave the manager.
+///
+/// The arms test disjoint sets: the retired memory (previously
+/// owned), the destination-role slot namespace in the shared
+/// data-plane registry (live service tunnel, owner missing), and
+/// the exploratory pool's own inbound endpoints (genuine
+/// background). The exploratory arm deliberately does NOT test the
+/// shared registry: every dispatch-accepted cell is registry-known
+/// by construction, so a registry test would read every accepted
+/// miss as exploratory and mask the divergence arm.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InboundOwnerMissClass {
+    /// The id is bound to a live destination role slot in the
+    /// data-plane registry but has no live service owner:
+    /// owner-table divergence (a service return the daemon dropped
+    /// itself). Alarm arm, never expected nonzero.
+    ServiceUnowned,
+    /// The id is a live inbound endpoint of our own exploratory
+    /// pool: own exploratory garlic, not a service return.
+    ExploratoryKnown,
+    /// The id belonged to a retired service generation: a stale
+    /// lease the peer has not rotated past yet.
+    RetiredService,
+    /// Neither live nor retired: never-known addressing (or another
+    /// router's traffic we endpoint).
+    Unknown,
+}
+
+/// Cap for the retired service receive-id memory. Bounded and tiny:
+/// taxonomy only, never a decision input.
+pub const MAX_RETIRED_RECEIVE_IDS: usize = 64;
+
+impl InboundOwnerMissClass {
+    /// Pure miss classifier shared by the product miss arm:
+    /// retired memory is authoritative for previously-owned ids,
+    /// then a live destination-role binding without an owner is
+    /// the divergence alarm, then the exploratory pool, then
+    /// unknown. Unit-tested with arm-swap inversion probes.
+    pub const fn classify(
+        destination_role_bound: bool,
+        exploratory_pool_known: bool,
+        retired_service: bool,
+    ) -> Self {
+        if retired_service {
+            Self::RetiredService
+        } else if destination_role_bound {
+            Self::ServiceUnowned
+        } else if exploratory_pool_known {
+            Self::ExploratoryKnown
+        } else {
+            Self::Unknown
+        }
+    }
+}
+
 impl ServiceTunnelManager {
     /// Creates a new manager from a validated configuration.
     pub fn new(config: ServiceTunnelManagerConfig) -> Result<Self, ServiceTunnelError> {
@@ -834,6 +953,7 @@ impl ServiceTunnelManager {
                 })?,
             )),
             sam_network_destinations: Mutex::new(HashMap::new()),
+            sam_stream_registry: Mutex::new(None),
             destination_config: DestinationConfig::service_compatibility_profile(),
             reduced_shaping: Mutex::new(HashMap::new()),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
@@ -847,7 +967,18 @@ impl ServiceTunnelManager {
             service_tls_policy: Mutex::new(None),
             inbound_owners: Mutex::new(HashMap::new()),
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
+            peer_lease_requests: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
+            inbound_tunnel_data_received: AtomicUsize::new(0),
+            inbound_tunnel_data_cells_accepted: AtomicUsize::new(0),
+            inbound_garlic_owner_matches: AtomicUsize::new(0),
+            inbound_garlic_owner_misses: AtomicUsize::new(0),
+            inbound_owner_miss_service_unowned: AtomicUsize::new(0),
+            inbound_owner_miss_exploratory: AtomicUsize::new(0),
+            inbound_owner_miss_retired: AtomicUsize::new(0),
+            inbound_owner_miss_unknown: AtomicUsize::new(0),
+            retired_receive_ids: Mutex::new(VecDeque::new()),
+            inbound_direct_garlic_received: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
             deferred_activation_tx,
             deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
@@ -1062,6 +1193,24 @@ impl ServiceTunnelManager {
         }))
     }
 
+    /// Plan 486 — installs the SAM stream-socket registry handle
+    /// the router-inbound dispatch seam queries for parked STREAM
+    /// ACCEPT waiters. Called once by the composition root when the
+    /// SAM service shares this manager; idempotent (last install
+    /// wins). Lock discipline: the handle is cloned under this
+    /// lock and queried later without holding any manager or bridge
+    /// lock, so the registry lock stays a leaf and no lock cycle
+    /// can form with the dispatch path (which holds the bridge
+    /// lock while querying).
+    pub(crate) fn attach_sam_stream_registry(
+        &self,
+        registry: Arc<i2pr_api::sam::streams::SamStreamRegistry>,
+    ) {
+        if let Ok(mut slot) = self.sam_stream_registry.lock() {
+            *slot = Some(registry);
+        }
+    }
+
     /// Registers an ephemeral SAM identity with the shared router product.
     /// The returned id is the same id derived from `identity`; callers keep
     /// ownership of the identity Arc and provision its real tunnel material
@@ -1165,10 +1314,20 @@ impl ServiceTunnelManager {
         let receive_ids = session
             .bridge
             .with(|bridge| bridge.router_inbound_receive_ids());
+        // Plan 478 — retired memory uses the same lock order as the
+        // single-id unregister path (owners released before the
+        // retired lock is taken): collect under the owners lock,
+        // record after it drops.
+        let mut retired_ids = Vec::new();
         if let Ok(mut owners) = self.inbound_tunnel_owners.lock() {
             for receive_id in receive_ids {
-                owners.remove(&receive_id);
+                if owners.remove(&receive_id).is_some() {
+                    retired_ids.push(receive_id);
+                }
             }
+        }
+        for receive_id in retired_ids {
+            self.record_retired_receive_id(receive_id);
         }
         // Drop the retained identity and bridge only after all registry
         // references have been removed.
@@ -2643,7 +2802,7 @@ impl ServiceTunnelManager {
             let destinations = destinations_arc.lock().expect("sam destinations poisoned");
             match destinations.get(destination_id) {
                 Some(bridge) => bridge,
-                None => return DeliverySweepCounters::default(),
+                None => return DeliverySweepCounters::one_sweep(),
             }
         };
         let requests: Vec<i2pr_client::streaming::transport::TransportSendRequest> =
@@ -2656,7 +2815,7 @@ impl ServiceTunnelManager {
                 all
             });
         if requests.is_empty() {
-            return DeliverySweepCounters::default();
+            return DeliverySweepCounters::one_sweep();
         }
         let mut counters = DeliverySweepCounters {
             delivered: 0,
@@ -2664,6 +2823,14 @@ impl ServiceTunnelManager {
             factory_exhausted: 0,
             unknown_peer: 0,
             delivery_failed: 0,
+            // Plan 478 split causes are SAM-path only; the product
+            // sweep keeps the aggregate and leaves the split at
+            // zero (sum invariant holds trivially).
+            delivery_failed_ls2_missing: 0,
+            delivery_failed_ls2_invalid: 0,
+            delivery_failed_ls2_install: 0,
+            delivery_failed_bridge: 0,
+            sweeps: 1,
         };
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
         let outbound_hop1_hash = i2pr_proto::Hash::from_bytes([0xA2; 32]);
@@ -2733,6 +2900,34 @@ impl ServiceTunnelManager {
                             self.terminate_failed_delivery(destination_id, request);
                         }
                         Err(error) => {
+                            // Plan 478 §6 — a cache miss with a fresh
+                            // peer-lease fetch in flight requeues
+                            // instead of terminating: SYN retransmits
+                            // (and this sweep's next tick) retry once
+                            // the record lands. Any other failure, or
+                            // a miss with no fresh fetch, terminates
+                            // as before so hopeless peers cannot spin.
+                            let retryable = matches!(
+                                error,
+                                crate::service_delivery::RemoteDeliveryError::NotCached
+                            ) && self.peer_lease_request_fresh(
+                                &request.destination_hash,
+                                service_streaming_now_ms(),
+                            );
+                            if retryable {
+                                if let Some(sender) = destinations_arc
+                                    .lock()
+                                    .expect("sam destinations poisoned")
+                                    .get(destination_id)
+                                {
+                                    sender.with(|bridge| {
+                                        bridge
+                                            .streaming_mut()
+                                            .queue_outbound_packet(request.clone());
+                                    });
+                                }
+                                continue;
+                            }
                             debug!(
                                 error = %error,
                                 "service remote route failed; terminating request"
@@ -3135,6 +3330,12 @@ impl ServiceTunnelManager {
             )));
         }
         owners.insert(receive_tunnel_id, runtime_holder);
+        drop(owners);
+        // Plan 478 — a re-registered id is live again, not retired:
+        // drop any stale memory so a later miss cannot misread it.
+        if let Ok(mut retired) = self.retired_receive_ids.lock() {
+            retired.retain(|id| *id != receive_tunnel_id);
+        }
         Ok(())
     }
 
@@ -3150,7 +3351,15 @@ impl ServiceTunnelManager {
             .inbound_tunnel_owners
             .lock()
             .expect("inbound tunnel owners poisoned");
-        owners.remove(&receive_tunnel_id)
+        let removed = owners.remove(&receive_tunnel_id);
+        drop(owners);
+        if removed.is_some() {
+            // Plan 478 — a removed id becomes taxonomy memory so a
+            // later miss on it reads as a stale lease, not
+            // never-known addressing.
+            self.record_retired_receive_id(receive_tunnel_id);
+        }
+        removed
     }
 
     /// Plan 210 §F — resolves the owning service runtime for the
@@ -3184,6 +3393,85 @@ impl ServiceTunnelManager {
             .unwrap_or_default()
     }
 
+    /// Plan 478 §6 — files a remote-peer LeaseSet2 fetch request for
+    /// the product advance loop. Returns true when the request is
+    /// newly filed (the caller should expect a bounded lookup to
+    /// start); false when an identical request is already pending
+    /// within cooldown or the table is full. Never logs peer
+    /// identities; counts only.
+    pub(crate) fn request_peer_lease_lookup(
+        &self,
+        sender: DestinationId,
+        peer: [u8; 32],
+        now_ms: u64,
+    ) -> bool {
+        let Ok(mut table) = self.peer_lease_requests.lock() else {
+            return false;
+        };
+        match table.get(&peer) {
+            Some((_, last_ms))
+                if now_ms.saturating_sub(*last_ms) < PEER_LEASE_REQUEST_COOLDOWN_MS =>
+            {
+                false
+            }
+            _ => {
+                if table.len() >= MAX_PEER_LEASE_REQUESTS && !table.contains_key(&peer) {
+                    return false;
+                }
+                table.insert(peer, (sender, now_ms));
+                true
+            }
+        }
+    }
+
+    /// Plan 478 §6 — atomically drains filed requests and refreshes
+    /// their timestamps to now. The sweep's freshness check must not
+    /// observe an empty table while a lookup is already running;
+    /// separate take-then-insert leaves exactly that window and the
+    /// sweep terminates instead of requeueing. Success clears via
+    /// [`Self::clear_peer_lease_request`]; failure leaves the
+    /// refreshed stamp so the filing cooldown paces retries.
+    pub(crate) fn take_and_refresh_peer_lease_requests(
+        &self,
+        now_ms: u64,
+    ) -> Vec<(DestinationId, [u8; 32])> {
+        let Ok(mut table) = self.peer_lease_requests.lock() else {
+            return Vec::new();
+        };
+        let drained: Vec<(DestinationId, [u8; 32])> = table
+            .drain()
+            .map(|(peer, (sender, _))| (sender, peer))
+            .collect();
+        for (sender, peer) in &drained {
+            table.insert(*peer, (*sender, now_ms));
+        }
+        drained
+    }
+
+    /// Plan 478 §6 — reports whether a peer-lease fetch filing is
+    /// fresh (filed within cooldown). The delivery sweep requeues
+    /// cache-miss requests only while their fetch is fresh, so a
+    /// hopeless peer still terminates instead of spinning.
+    pub(crate) fn peer_lease_request_fresh(&self, peer: &[u8; 32], now_ms: u64) -> bool {
+        self.peer_lease_requests
+            .lock()
+            .ok()
+            .and_then(|table| table.get(peer).map(|(_, filed_ms)| *filed_ms))
+            .is_some_and(|filed_ms| {
+                now_ms.saturating_sub(filed_ms) < PEER_LEASE_REQUEST_COOLDOWN_MS
+            })
+    }
+
+    /// Plan 478 §6 — removes a fulfilled peer-lease fetch filing so
+    /// a later miss files fresh. Failures keep their filing (the
+    /// cooldown paces retries); success clears it because the cache
+    /// now answers.
+    pub(crate) fn clear_peer_lease_request(&self, peer: &[u8; 32]) {
+        if let Ok(mut table) = self.peer_lease_requests.lock() {
+            table.remove(peer);
+        }
+    }
+
     /// Plan 210 §F — records a single inbound orphan receive
     /// (receive tunnel id with no registered owner). Returns the
     /// total observation count since manager construction. The
@@ -3198,6 +3486,130 @@ impl ServiceTunnelManager {
     /// receive counter.
     pub fn inbound_orphan_receives(&self) -> usize {
         self.inbound_orphan_receives.load(Ordering::Acquire)
+    }
+
+    /// Plan 478 §6 — records one inbound `TunnelData` cell observed
+    /// on the router path, before dispatch. Called by the product
+    /// alongside its snapshot fold; the manager mirror is what SAM
+    /// can read. Returns the total since manager construction.
+    pub fn note_inbound_tunnel_data_received(&self) -> usize {
+        let previous = self
+            .inbound_tunnel_data_received
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one inbound `TunnelData` cell accepted
+    /// by the data-plane dispatcher. Returns the total since
+    /// manager construction.
+    pub fn note_inbound_tunnel_data_cell_accepted(&self) -> usize {
+        let previous = self
+            .inbound_tunnel_data_cells_accepted
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one recovered Garlic envelope whose
+    /// receive tunnel id resolved to a registered service runtime.
+    /// Returns the total since manager construction.
+    pub fn note_inbound_garlic_owner_match(&self) -> usize {
+        let previous = self
+            .inbound_garlic_owner_matches
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — records one recovered Garlic envelope whose
+    /// receive tunnel id had no registered owner (stale/orphaned,
+    /// failed closed). Returns the total since manager construction.
+    pub fn note_inbound_garlic_owner_miss(&self) -> usize {
+        let previous = self
+            .inbound_garlic_owner_misses
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 — records one owner miss under its taxonomy class.
+    /// Exactly one class counter moves per call, alongside the
+    /// aggregate miss counter, so the class counts always sum to
+    /// the aggregate. Returns the class total since construction.
+    pub fn note_inbound_garlic_owner_miss_class(&self, class: InboundOwnerMissClass) -> usize {
+        let _ = self.note_inbound_garlic_owner_miss();
+        let previous = match class {
+            InboundOwnerMissClass::ServiceUnowned => self
+                .inbound_owner_miss_service_unowned
+                .fetch_add(1, Ordering::AcqRel),
+            InboundOwnerMissClass::ExploratoryKnown => self
+                .inbound_owner_miss_exploratory
+                .fetch_add(1, Ordering::AcqRel),
+            InboundOwnerMissClass::RetiredService => self
+                .inbound_owner_miss_retired
+                .fetch_add(1, Ordering::AcqRel),
+            InboundOwnerMissClass::Unknown => self
+                .inbound_owner_miss_unknown
+                .fetch_add(1, Ordering::AcqRel),
+        };
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 — owner-miss taxonomy snapshot as
+    /// `(service_unowned, exploratory_known, retired_service,
+    /// unknown)`. Counts only; SAM reads this through its attached
+    /// manager handle on STREAM CONNECT timeout.
+    pub fn inbound_owner_miss_taxonomy_totals(&self) -> (u64, u64, u64, u64) {
+        (
+            self.inbound_owner_miss_service_unowned
+                .load(Ordering::Acquire) as u64,
+            self.inbound_owner_miss_exploratory.load(Ordering::Acquire) as u64,
+            self.inbound_owner_miss_retired.load(Ordering::Acquire) as u64,
+            self.inbound_owner_miss_unknown.load(Ordering::Acquire) as u64,
+        )
+    }
+
+    /// Plan 478 — remembers one unregistered service receive id for
+    /// miss taxonomy. Bounded at [`MAX_RETIRED_RECEIVE_IDS`]
+    /// (oldest evicted); ephemeral local ids only, never logged or
+    /// exported, never a decision input.
+    pub fn record_retired_receive_id(&self, receive_tunnel_id: u32) {
+        if let Ok(mut retired) = self.retired_receive_ids.lock() {
+            retired.push_back(receive_tunnel_id);
+            while retired.len() > MAX_RETIRED_RECEIVE_IDS {
+                retired.pop_front();
+            }
+        }
+    }
+
+    /// Plan 478 — reports whether the id sits in the retired memory.
+    /// Fail-closed to false when the lock is unavailable.
+    pub fn is_retired_receive_id(&self, receive_tunnel_id: u32) -> bool {
+        self.retired_receive_ids
+            .lock()
+            .map(|retired| retired.contains(&receive_tunnel_id))
+            .unwrap_or(false)
+    }
+
+    /// Plan 478 §6 — records one direct (non-tunneled) Garlic
+    /// receipt. Returns the total since manager construction.
+    pub fn note_inbound_direct_garlic_received(&self) -> usize {
+        let previous = self
+            .inbound_direct_garlic_received
+            .fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 478 §6 — below-bridge arrival snapshot as
+    /// `(tunnel_data_received, cells_accepted, owner_matches,
+    /// owner_misses, direct_garlic_received)`. Counts only; SAM reads this through its
+    /// attached manager handle on STREAM CONNECT timeout.
+    pub fn inbound_arrival_totals(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.inbound_tunnel_data_received.load(Ordering::Acquire) as u64,
+            self.inbound_tunnel_data_cells_accepted
+                .load(Ordering::Acquire) as u64,
+            self.inbound_garlic_owner_matches.load(Ordering::Acquire) as u64,
+            self.inbound_garlic_owner_misses.load(Ordering::Acquire) as u64,
+            self.inbound_direct_garlic_received.load(Ordering::Acquire) as u64,
+        )
     }
 
     /// Plan 212 §6 — installs router-backed network state onto the
@@ -3282,6 +3694,109 @@ impl ServiceTunnelManager {
         })?
     }
 
+    /// Refreshes the installed pool snapshot (signed LS2 plus receive
+    /// projection) after the canonical pool advances, keeping the
+    /// inbound-owner table coherent with the bridge. The bridge-only
+    /// refresh drops replaced receive ids from the projection while
+    /// the owner table still maps them, so a later summary counts
+    /// zero owners for a live destination (observed live: bridge and
+    /// owner table held disjoint id sets for the same destination).
+    /// This method holds the owner registry across the bridge swap —
+    /// the same lock order as the transactional install — unregisters
+    /// ids the new snapshot drops, and registers ids it adds under
+    /// the existing same-destination runtime. Added ids conflicting
+    /// with a live registration fail closed before any mutation.
+    pub(crate) fn refresh_service_router_pool_snapshot_with_owners(
+        &self,
+        service_destination: DestinationId,
+        lease_snapshot: Option<(LeaseSet2, ValidatedLeaseSet2)>,
+        inbound_receive_ids: &[u32],
+        inbound_expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), ServiceTunnelError> {
+        if inbound_receive_ids.contains(&0) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed refresh carries zero receive tunnel id".to_owned(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::with_capacity(inbound_receive_ids.len());
+        if inbound_receive_ids.iter().any(|id| !unique.insert(*id)) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "router-backed refresh contains duplicate receive ids".to_owned(),
+            ));
+        }
+        let mut owners = self.inbound_tunnel_owners.lock().map_err(|_| {
+            ServiceTunnelError::InvalidConfig("inbound tunnel owners poisoned".to_owned())
+        })?;
+        let previous_ids = self
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_inbound_receive_ids()
+            })
+            .ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
+            })?;
+        let runtime = owners
+            .values()
+            .find(|owner| owner.destination_id == service_destination)
+            .cloned();
+        let added: Vec<u32> = inbound_receive_ids
+            .iter()
+            .copied()
+            .filter(|id| !previous_ids.contains(id))
+            .collect();
+        // Resolve the owning runtime before mutating: added ids join
+        // the existing same-destination generation, never a fresh
+        // authority.
+        let runtime = if added.is_empty() {
+            None
+        } else {
+            if added.iter().any(|id| owners.contains_key(id)) {
+                return Err(ServiceTunnelError::InvalidConfig(
+                    "router-backed refresh conflicts with a live receive id".to_owned(),
+                ));
+            }
+            Some(runtime.ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig(
+                    "router-backed refresh adds receive ids with no registered owner runtime"
+                        .to_owned(),
+                )
+            })?)
+        };
+        let removed: Vec<u32> = previous_ids
+            .iter()
+            .copied()
+            .filter(|id| !inbound_receive_ids.contains(id))
+            .collect();
+        self.with_destination_bridge(service_destination, |bridge| {
+            bridge.refresh_router_pool_snapshot(
+                lease_snapshot,
+                inbound_receive_ids.to_vec(),
+                inbound_expires_at_ms,
+                now_ms,
+            )
+        })
+        .ok_or_else(|| {
+            ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
+        })?
+        .map_err(ServiceTunnelError::InvalidConfig)?;
+        for receive_id in removed {
+            if owners.remove(&receive_id).is_some() {
+                // Plan 478 — a dropped id becomes taxonomy memory
+                // so a later arrival on it reads as a stale lease,
+                // not never-known addressing. Lock order matches
+                // `unregister_inbound_tunnel_owner` (owners, then
+                // retired); the retired lock is a separate mutex.
+                self.record_retired_receive_id(receive_id);
+            }
+        }
+        if let Some(runtime) = runtime {
+            for receive_id in added {
+                owners.insert(receive_id, Arc::clone(&runtime));
+            }
+        }
+        Ok(())
+    }
+
     /// Plan 212 §6 — removes router-backed state from the service
     /// runtime that owns `service_destination`. Local/co-owned
     /// material is untouched. The caller must also remove the
@@ -3339,6 +3854,23 @@ impl ServiceTunnelManager {
                 )
             })?;
         let mut summary = summary.take()?;
+        // Redacted owner-table attribution (counts and booleans
+        // only): distinguishes an emptied owner table from
+        // key/destination mismatch when a live destination reports
+        // zero owners.
+        let owners_table_len = owners.len();
+        let any_key_present = receive_ids.iter().any(|id| owners.contains_key(id));
+        let any_destination_match = owners
+            .values()
+            .any(|owner| owner.destination_id == service_destination);
+        tracing::info!(
+            owners_table_len,
+            any_key_present,
+            any_destination_match,
+            bridge_receive_count = receive_ids.len(),
+            transition = "router_network_summary_attribution",
+            "router-network SAM summary owner attribution"
+        );
         summary.inbound_owner_count = receive_ids
             .iter()
             .filter(|id| {
@@ -3374,6 +3906,23 @@ impl ServiceTunnelManager {
         now_ms: u64,
         is_server: bool,
     ) -> Result<RouterInboundDispatchReport, ServiceTunnelError> {
+        // Plan 486 — waiter-scoped mirror routing: an inbound SYN
+        // for a client-profile destination feeds the receiver
+        // mirror (which STREAM ACCEPT drains) only while an ACCEPT
+        // waiter is parked for that destination. The registry query
+        // runs without holding any manager or bridge lock; the
+        // bridge lock is taken inside the closure below, so the
+        // registry lock stays a leaf. Fail-closed `false` without a
+        // registry or on lock failure (profile routing preserved).
+        let mirror_accept_parked = self
+            .sam_stream_registry
+            .lock()
+            .ok()
+            .and_then(|slot| {
+                slot.as_ref()
+                    .map(|registry| registry.has_parked_accept_for_destination(service_destination))
+            })
+            .unwrap_or(false);
         let report = self
             .with_destination_bridge(service_destination, |bridge| {
                 bridge.dispatch_router_garlic_to_canonical_streaming(
@@ -3381,6 +3930,7 @@ impl ServiceTunnelManager {
                     now_seconds,
                     now_ms,
                     is_server,
+                    mirror_accept_parked,
                 )
             })
             .ok_or_else(|| {
@@ -3904,8 +4454,24 @@ impl ServiceTunnelManager {
                             .flatten()
                         })
                 };
-                let cached_ls2 =
-                    cached_ls2.ok_or(crate::service_delivery::RemoteDeliveryError::NotCached)?;
+                // Plan 478 §6 — cache miss: file a bounded peer-lease
+                // fetch for the product advance loop instead of
+                // dropping the SYN silently. SYN retransmits will
+                // retry once the record lands; the table cap and
+                // per-peer cooldown bound floodfill load.
+                let Some(cached_ls2) = cached_ls2 else {
+                    if self.request_peer_lease_lookup(
+                        service_destination,
+                        destination_hash,
+                        service_streaming_now_ms(),
+                    ) {
+                        tracing::info!(
+                            transition = "peer_lease_filed",
+                            "peer LeaseSet2 fetch filed for advance-loop fulfillment",
+                        );
+                    }
+                    return Err(crate::service_delivery::RemoteDeliveryError::NotCached);
+                };
                 // Plan 208 §B — the queued `TransportSendRequest`
                 // is the same request the service-owned
                 // `StreamingManager` drained from its real outbound
@@ -3984,6 +4550,24 @@ impl ServiceTunnelManager {
                     now_seconds,
                     &backend.router_delivery(),
                 )?;
+                // Redacted send accounting mirroring the build
+                // submit receipts: cell counts and wire lengths so a
+                // remote send that never arrives can be checked
+                // against stock-side counters.
+                {
+                    let mut remote_wire_lens: Vec<usize> = Vec::new();
+                    if let Some(dispatch) = composition.dispatch.as_ref() {
+                        for cell in dispatch.deliveries.iter().take(8) {
+                            remote_wire_lens.push(cell.message_bytes().len());
+                        }
+                    }
+                    tracing::info!(
+                        remote_cell_count = composition.cells.len(),
+                        remote_wire_lens = ?remote_wire_lens,
+                        transition = "remote_route_composed",
+                        "outbound remote send composed",
+                    );
+                }
                 let cell_count = composition.cells.len();
                 let plan_result = match composition.dispatch {
                     Some(dispatch) => dispatch,
@@ -5475,6 +6059,25 @@ async fn run_service_delivery_driver(
         let second_sweep = manager.deliver_outbound(destination_id).await;
         sweep.saturating_add_assign(second_sweep);
         manager.record_delivery_counters(destination_id, sweep);
+        // Redacted sweep activity (counts only, no identities):
+        // quiet ticks stay silent; any delivery work is visible
+        // for lane attribution of stuck streams.
+        if sweep.delivered > 0
+            || sweep.unknown_peer > 0
+            || sweep.delivery_failed > 0
+            || sweep.missing_factory > 0
+            || sweep.factory_exhausted > 0
+        {
+            tracing::info!(
+                delivered = sweep.delivered,
+                unknown_peer = sweep.unknown_peer,
+                delivery_failed = sweep.delivery_failed,
+                missing_factory = sweep.missing_factory,
+                factory_exhausted = sweep.factory_exhausted,
+                transition = "delivery_sweep_activity",
+                "service delivery driver sweep completed work",
+            );
+        }
         if let Some(reason) = degrade_to_reason(sweep) {
             debug!(
                 destination = ?destination_id,
@@ -5976,8 +6579,9 @@ pub(crate) fn poll_streaming_accept(
     port: u16,
 ) -> Vec<ConnectionId> {
     let mut accepted_ids = Vec::new();
+    let now_ms = service_streaming_now_ms();
     manager.with_destination_bridge(runtime.destination_id, |bridge| {
-        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
+        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port, now_ms) {
             accepted_ids.push(connection_id);
             let _ = runtime.server_syns_observed.fetch_update(
                 Ordering::Relaxed,
@@ -9535,6 +10139,40 @@ mod plan212_router_backed_service_destination_tests {
     }
 
     /// Plan 212 §17.1 — install accepts matching identity.
+    /// Plan 478 §6 — peer lease fetch filings are bounded and
+    /// cooled down: first filing accepted, immediate refiling
+    /// suppressed, refiling after cooldown accepted, drain returns
+    /// filed entries.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_peer_lease_requests_bound_and_cool_down() {
+        let directory = temp_data_dir("plan478-lease-requests");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-lease");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let peer = [0x77u8; 32];
+        assert!(manager.request_peer_lease_lookup(destination_id, peer, 1_000));
+        // Immediate refiling is suppressed (cooldown).
+        assert!(!manager.request_peer_lease_lookup(destination_id, peer, 1_001));
+        // Refiling after cooldown is accepted.
+        assert!(manager.request_peer_lease_lookup(
+            destination_id,
+            peer,
+            1_000 + PEER_LEASE_REQUEST_COOLDOWN_MS + 1
+        ));
+        let drained = manager.take_and_refresh_peer_lease_requests(2_000);
+        assert_eq!(drained, vec![(destination_id, peer)]);
+        // Atomic take-and-refresh leaves the entry fresh, so an
+        // immediate refiling is suppressed (no drain race).
+        assert!(!manager.request_peer_lease_lookup(destination_id, peer, 2_001));
+        assert!(manager.peer_lease_request_fresh(&peer, 2_001));
+        // Refiling after cooldown is accepted.
+        assert!(manager.request_peer_lease_lookup(
+            destination_id,
+            peer,
+            2_000 + PEER_LEASE_REQUEST_COOLDOWN_MS + 1
+        ));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn plan212_install_accepts_matching_identity() {
         let directory = temp_data_dir("plan212-install-ok");
@@ -9871,6 +10509,159 @@ mod plan212_router_backed_service_destination_tests {
             replaced.is_some_and(|outcome| outcome.is_ok()),
             "explicit replace must succeed"
         );
+    }
+
+    /// Plan 478 §5 — pool-advance refresh keeps the owner table
+    /// coherent with the bridge projection. Replacing a receive id
+    /// unregisters the dropped id and registers the added id under
+    /// the same destination runtime; the summary stays complete.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_replaces_owner_projection_atomically() {
+        let directory = temp_data_dir("plan478-refresh");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-refresh");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6101,
+            &[0x9611, 0x9612],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9611, 0x9612],
+                now_ms,
+            )
+            .expect("install");
+        // Pool advances: 0x9611 is replaced by 0x9613 while 0x9612
+        // stays live.
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9612, 0x9613],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("summary");
+        assert_eq!(summary.inbound_receive_count, 2);
+        assert_eq!(summary.inbound_owner_count, 2);
+        assert!(
+            summary.inbound_owner_registered,
+            "refreshed projection stays fully owned"
+        );
+        assert!(summary.is_complete());
+        assert!(manager.inbound_tunnel_owner(0x9611).is_none());
+        assert!(manager.inbound_tunnel_owner(0x9612).is_some());
+        assert!(manager.inbound_tunnel_owner(0x9613).is_some());
+        let mut pairs = manager.inbound_tunnel_owner_pairs();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![(0x9612, destination_id), (0x9613, destination_id),]
+        );
+    }
+
+    /// Plan 478 — refresh with the identical receive-id set is a
+    /// stable no-op for the owner table: no unregister, no retire,
+    /// bridge projection untouched. The daemon advance loop relies
+    /// on this stability every poll; feeding it creator ids
+    /// instead of local endpoint ids broke exactly this contract
+    /// and deafened all tunneled service inbound.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_with_identical_ids_is_stable_noop() {
+        let directory = temp_data_dir("plan478-refresh-stable");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-rs");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6102,
+            &[0x9621, 0x9622],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9621, 0x9622],
+                now_ms,
+            )
+            .expect("install");
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9621, 0x9622],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        assert!(manager.inbound_tunnel_owner(0x9621).is_some());
+        assert!(manager.inbound_tunnel_owner(0x9622).is_some());
+        assert!(!manager.is_retired_receive_id(0x9621));
+        assert!(!manager.is_retired_receive_id(0x9622));
+        let summary = manager
+            .service_router_network_summary(destination_id)
+            .expect("summary");
+        assert!(summary.inbound_owner_registered);
+    }
+
+    /// Plan 478 — a refresh-dropped receive id retires into the
+    /// taxonomy memory, so a later arrival on it reads as a stale
+    /// lease rather than never-known addressing. Direct owner-table
+    /// removal without retiring masked genuine drops as unknown.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_refresh_drop_retires_the_dropped_id() {
+        let directory = temp_data_dir("plan478-refresh-retire");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-rr");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_inbound_ids(
+            &manager,
+            destination_id,
+            0x6103,
+            &[0x9631, 0x9632],
+            now_ms,
+        );
+        manager
+            .install_service_router_material_with_inbound_owners(
+                destination_id,
+                material,
+                Arc::clone(&runtimes[0]),
+                &[0x9631, 0x9632],
+                now_ms,
+            )
+            .expect("install");
+        assert!(!manager.is_retired_receive_id(0x9631));
+        manager
+            .refresh_service_router_pool_snapshot_with_owners(
+                destination_id,
+                None,
+                &[0x9632],
+                now_ms.saturating_add(600_000),
+                now_ms,
+            )
+            .expect("refresh");
+        assert!(manager.inbound_tunnel_owner(0x9631).is_none());
+        assert!(
+            manager.is_retired_receive_id(0x9631),
+            "dropped id retires into taxonomy memory"
+        );
+        assert!(manager.inbound_tunnel_owner(0x9632).is_some());
+        assert!(!manager.is_retired_receive_id(0x9632));
     }
 
     /// Plan 212 §17.4 — clear removes router-backed state.
@@ -10413,6 +11204,7 @@ mod plan212_router_backed_service_destination_tests {
                 1_700_000_000,
                 test_now_ms(),
                 false,
+                false,
             )
         });
         assert!(
@@ -10436,6 +11228,8 @@ mod plan212_router_backed_service_destination_tests {
             streaming_packets_accepted: 1,
             streaming_rejected: 0,
             datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
         };
         assert!(report.streaming_packets_accepted == 1);
         assert!(report.garlic_authenticated);
@@ -10456,6 +11250,8 @@ mod plan212_router_backed_service_destination_tests {
             streaming_packets_accepted: 2,
             streaming_rejected: 1,
             datagrams_accepted: 0,
+            synack_observed: 0,
+            synack_accepted: 0,
         };
         assert_eq!(report.payloads_dequeued, 3);
         assert_eq!(
@@ -10530,6 +11326,132 @@ mod plan212_router_backed_service_destination_tests {
         assert!(manager.inbound_tunnel_owner(0x9B01).is_none());
         let count = manager.note_inbound_orphan_receive();
         assert!(count >= 1);
+    }
+
+    /// Plan 478 §6 — below-bridge arrival mirrors accumulate
+    /// independently and the snapshot reads them back in order.
+    /// Structural: each note path moves exactly one counter, so a
+    /// CONNECT timeout can tell "nothing arrived" (all zero) from
+    /// "arrived but never reached a service runtime".
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_inbound_arrival_mirrors_accumulate() {
+        let directory = temp_data_dir("plan478-arrival");
+        let manager = empty_manager(directory.path());
+        assert_eq!(manager.inbound_arrival_totals(), (0, 0, 0, 0, 0));
+        // TunnelData observed but dispatch-rejected: received moves,
+        // cells accepted does not.
+        assert_eq!(manager.note_inbound_tunnel_data_received(), 1);
+        assert_eq!(manager.note_inbound_tunnel_data_received(), 2);
+        assert_eq!(manager.inbound_arrival_totals(), (2, 0, 0, 0, 0));
+        // One cell accepted, one owner match, one owner miss, one
+        // direct garlic: each moves only its own counter.
+        assert_eq!(manager.note_inbound_tunnel_data_cell_accepted(), 1);
+        assert_eq!(manager.note_inbound_garlic_owner_match(), 1);
+        assert_eq!(manager.note_inbound_garlic_owner_miss(), 1);
+        assert_eq!(manager.note_inbound_direct_garlic_received(), 1);
+        assert_eq!(manager.inbound_arrival_totals(), (2, 1, 1, 1, 1));
+        // The legacy orphan counter is untouched by the mirrors.
+        assert_eq!(manager.inbound_orphan_receives(), 0);
+    }
+
+    /// Plan 478 owner-miss taxonomy: each class moves only its own
+    /// counter alongside the aggregate, so the classes always sum to
+    /// the aggregate; retired memory round-trips register →
+    /// unregister → retired, clears on re-register, and stays
+    /// bounded. Structural: no id material is logged or exported.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan478_owner_miss_taxonomy_sums_and_retired_memory_is_bounded() {
+        let directory = temp_data_dir("plan478-miss-taxonomy");
+        let manager = empty_manager(directory.path());
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (0, 0, 0, 0));
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::ServiceUnowned),
+            1
+        );
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::ExploratoryKnown),
+            1
+        );
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::RetiredService),
+            1
+        );
+        assert_eq!(
+            manager.note_inbound_garlic_owner_miss_class(InboundOwnerMissClass::RetiredService),
+            2
+        );
+        assert_eq!(manager.inbound_owner_miss_taxonomy_totals(), (1, 1, 2, 0));
+        // The legacy aggregate tracks every classed miss.
+        assert_eq!(manager.inbound_arrival_totals().3, 4);
+
+        let directory = temp_data_dir("plan478-retired");
+        let manager = make_manager_with_one_server(directory.path(), "plan478-r");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let runtime = Arc::clone(&runtimes[0]);
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        manager
+            .register_inbound_tunnel_owner(0xA11CE, Arc::clone(&runtime))
+            .expect("register");
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        let _ = manager.unregister_inbound_tunnel_owner(0xA11CE);
+        assert!(manager.is_retired_receive_id(0xA11CE));
+        // Re-registration clears the memory: the id is live again.
+        manager
+            .register_inbound_tunnel_owner(0xA11CE, Arc::clone(&runtime))
+            .expect("re-register");
+        assert!(!manager.is_retired_receive_id(0xA11CE));
+        let _ = manager.unregister_inbound_tunnel_owner(0xA11CE);
+        // The memory is capped, oldest evicted first.
+        for id in 0..(super::MAX_RETIRED_RECEIVE_IDS as u32 + 10) {
+            manager.record_retired_receive_id(id);
+        }
+        assert!(!manager.is_retired_receive_id(0));
+        assert!(manager.is_retired_receive_id(super::MAX_RETIRED_RECEIVE_IDS as u32 + 9));
+    }
+
+    /// Plan 478 miss classifier: retired wins, then a live
+    /// destination-role binding without an owner (divergence alarm),
+    /// then the exploratory pool, then unknown; all eight input
+    /// combinations map exactly once. Inversion probe: swapping any
+    /// two arms fails this test (probe reverted, zero markers).
+    #[test]
+    fn plan478_owner_miss_classify_covers_all_inputs() {
+        use super::InboundOwnerMissClass;
+        // Retired memory is authoritative for previously-owned ids.
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, true, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, false, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, true, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, false, true),
+            InboundOwnerMissClass::RetiredService
+        );
+        // A live destination role without an owner is divergence.
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, true, false),
+            InboundOwnerMissClass::ServiceUnowned
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(true, false, false),
+            InboundOwnerMissClass::ServiceUnowned
+        );
+        // Otherwise the exploratory pool, otherwise unknown.
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, true, false),
+            InboundOwnerMissClass::ExploratoryKnown
+        );
+        assert_eq!(
+            InboundOwnerMissClass::classify(false, false, false),
+            InboundOwnerMissClass::Unknown
+        );
     }
 
     /// Plan 212 §17.24 — local/co-owned Plan 182 path stays green.

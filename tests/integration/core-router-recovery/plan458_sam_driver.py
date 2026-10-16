@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import threading
+import time
 
 
 HELLO = b"HELLO VERSION MIN=3.1 MAX=3.1\n"
@@ -106,10 +107,17 @@ def session_create_failure_category(message):
     return "unclassified"
 
 
-def create_session(endpoint, session_id, timeout):
+def create_session(endpoint, session_id, timeout, crypto_type=None):
     sam = SamSocket(endpoint, timeout)
     sam.hello()
-    sam.send_line("DEST GENERATE SIGNATURE_TYPE=7")
+    # Plan 478: the stock peer must use an ECIES-X25519 destination
+    # (CRYPTO_TYPE=4). The i2pr router product is ECIES-only by
+    # declared scope (ElGamal fails closed); stock defaults to
+    # ElGamal. Our own session keeps its existing parameters.
+    generate = "DEST GENERATE SIGNATURE_TYPE=7"
+    if crypto_type is not None:
+        generate += f" CRYPTO_TYPE={crypto_type}"
+    sam.send_line(generate)
     generated = sam.line()
     private = field(generated, "PRIV")
     if not generated.startswith("DEST REPLY") or not private:
@@ -144,7 +152,12 @@ def open_stream(endpoint, command, timeout, wait_for_peer_line=False):
     status = sam.line()
     if "RESULT=OK" not in status:
         sam.close()
-        raise RuntimeError(f"SAM stream command failed: {status.split(' ', 4)[:4]}")
+        # Full status line (truncated): endpoint attribution matters
+        # because both routers emit STREAM STATUS lines.
+        raise RuntimeError(
+            f"SAM stream command failed on {endpoint}: {command.split(' ', 3)[:3]} "
+            f"status={status[:160]!r}"
+        )
     if wait_for_peer_line:
         # STREAM ACCEPT emits the peer destination line before raw stream bytes.
         sam.line()
@@ -180,6 +193,97 @@ def connect_exchange(endpoint, session_id, destination, payload, timeout):
         sam.close()
 
 
+def run_leg(sender, receiver, sid, rid, remote, payload, timeout):
+    """One complete STREAM leg: accept worker plus CONNECT exchange."""
+    accepted = {}
+    failure = []
+    accept_started = time.monotonic()
+
+    def accept():
+        try:
+            echo_accept(receiver, rid, payload, timeout, accepted)
+        except Exception as exc:
+            # Elapsed time is itself evidence: a fast EOF means our
+            # daemon closed the SAM socket, while an EOF near the
+            # timeout means the worker outlived the peer exchange.
+            elapsed = time.monotonic() - accept_started
+            failure.append(f"{exc} after {elapsed:.1f}s")
+
+    worker = threading.Thread(target=accept, daemon=True)
+    worker.start()
+    try:
+        sent = connect_exchange(sender, sid, remote, payload, timeout)
+    except Exception:
+        # A failed CONNECT leaves its accept worker parked on the
+        # socket recv; it is daemon-owned and dies on socket timeout.
+        # Never block recovery on it.
+        raise
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError("accepting SAM stream did not finish")
+    if failure:
+        raise RuntimeError(f"accept failed: {failure[0]}")
+    if accepted != sent:
+        raise RuntimeError("sender/receiver digest mismatch")
+    return sent
+
+
+def run_forward_leg_with_recovery(sender, receiver, sid, rid, remote, payload, timeout,
+                                 sleep_fn=time.sleep):
+    """Forward STREAM leg with at most one fresh-handshake recovery.
+
+    Returns `(sent, recovery)`. A fresh CONNECT after a failed first
+    handshake is a new handshake with new stream/SYN ids — not a retry
+    of the same send — and is only attempted on the forward leg, where
+    prior runs show stock terminating its stream after a single
+    SYN-ACK attempt that never arrives.
+    """
+    recovery = {}
+    try:
+        sent = run_leg(sender, receiver, sid, rid, remote, payload, timeout)
+    except Exception as first_exc:
+        recovery["forward_first_error"] = str(first_exc)[:200]
+        sleep_fn(5)
+        sent = run_leg(sender, receiver, sid, rid, remote, payload, timeout)
+        recovery["forward_recovered"] = True
+    return sent, recovery
+
+
+def sidecar_path(evidence_path):
+    """Path of the leg-failure sidecar beside the exchange evidence.
+
+    The lane must clean this at startup: otherwise a previous run's
+    sidecar merges into the next run's diagnostic as a stale
+    `driver_leg_failure`.
+    """
+    return str(evidence_path) + ".leg-failure.json"
+
+
+def write_leg_failure_sidecar(evidence_path, label, error, elapsed_s):
+    """Record a failed STREAM leg beside the exchange evidence.
+
+    The lane's attempt-diagnostic path merges this record when the
+    exchange evidence itself is absent, so a failed leg still
+    attributes which direction failed, how the worker failed, and
+    how long the worker lived. Counts and short messages only; no
+    key material or payload bytes.
+    """
+    record = {
+        "schema": "plan458-sam-leg-failure-v1",
+        "leg": label,
+        "error": str(error)[:200],
+        "elapsed_s": round(float(elapsed_s), 1),
+        "at_wall": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        with open(sidecar_path(evidence_path), "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+            handle.write("\n")
+    except OSError as exc:
+        print(f"leg-failure evidence unavailable: {exc}", flush=True)
+    return record
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--i2pr-sam", required=True)
@@ -190,34 +294,58 @@ def main():
     args = parser.parse_args()
 
     i2pr_session, i2pr_public = create_session(args.i2pr_sam, "p458router", args.timeout)
-    i2pd_session, i2pd_public = create_session(args.i2pd_sam, "p458peer", args.timeout)
+    i2pd_session, i2pd_public = create_session(
+        args.i2pd_sam, "p458peer", args.timeout, crypto_type="4"
+    )
+    # Peer identities are public (published in NetDb); record shapes
+    # (lengths only) so lane forensics can match LS2 store keys and
+    # destination decodes without persisting key material.
+    print(
+        f"peer destinations: i2pr_public_len={len(i2pr_public)} "
+        f"i2pd_public_len={len(i2pd_public)}",
+        flush=True,
+    )
+    try:
+        with open(args.evidence + ".peers.json", "w", encoding="utf-8") as peers_handle:
+            json.dump(
+                {"schema": "plan458-sam-peers-v1", "i2pr_public": i2pr_public,
+                 "i2pd_public": i2pd_public},
+                peers_handle,
+            )
+            peers_handle.write("\n")
+    except OSError as exc:
+        print(f"peer evidence unavailable: {exc}", flush=True)
     outcomes = {}
+    recovery = {}
     try:
         for label, sender, receiver, sid, rid in (
             ("i2pr-to-i2pd", args.i2pr_sam, args.i2pd_sam, "p458router", "p458peer"),
             ("i2pd-to-i2pr", args.i2pd_sam, args.i2pr_sam, "p458peer", "p458router"),
         ):
             payload = PAYLOADS[label]
-            accepted = {}
-            failure = []
-
-            def accept():
-                try:
-                    echo_accept(receiver, rid, payload, args.timeout, accepted)
-                except Exception as exc:
-                    failure.append(str(exc))
-
-            worker = threading.Thread(target=accept, daemon=True)
-            worker.start()
             remote = i2pd_public if label == "i2pr-to-i2pd" else i2pr_public
-            sent = connect_exchange(sender, sid, remote, payload, args.timeout)
-            worker.join(args.timeout)
-            if worker.is_alive():
-                raise TimeoutError(f"{label}: accepting SAM stream did not finish")
-            if failure:
-                raise RuntimeError(f"{label}: {failure[0]}")
-            if accepted != sent:
-                raise RuntimeError(f"{label}: sender/receiver digest mismatch")
+            leg_started = time.monotonic()
+            print(f"leg {label} started", flush=True)
+            try:
+                if label == "i2pr-to-i2pd":
+                    # Plan 478 fresh-handshake recovery, forward leg only,
+                    # at most once (see run_forward_leg_with_recovery).
+                    # Reverse leg keeps single-attempt shape.
+                    sent, leg_recovery = run_forward_leg_with_recovery(
+                        sender, receiver, sid, rid, remote, payload, args.timeout
+                    )
+                    recovery.update(leg_recovery)
+                else:
+                    sent = run_leg(sender, receiver, sid, rid, remote, payload, args.timeout)
+            except Exception as exc:
+                elapsed = time.monotonic() - leg_started
+                record = write_leg_failure_sidecar(args.evidence, label, exc, elapsed)
+                print(
+                    f"leg {label} failed after {record['elapsed_s']}s: "
+                    f"{record['error']}",
+                    flush=True,
+                )
+                raise
             evidence_label = (
                 {
                     "i2pr-to-i2pd": "stock-f-to-stock-c",
@@ -232,7 +360,11 @@ def main():
         i2pd_session.close()
 
     with open(args.evidence, "w", encoding="utf-8") as handle:
-        json.dump({"schema": "plan458-sam-exchange-v1", "directions": outcomes}, handle)
+        json.dump(
+            {"schema": "plan458-sam-exchange-v1", "directions": outcomes,
+             "recovery": recovery},
+            handle,
+        )
         handle.write("\n")
     for label, row in outcomes.items():
         print(f"{label}=passed bytes={row['length']} sha256={row['sha256']}")

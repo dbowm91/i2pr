@@ -213,6 +213,15 @@ impl DataPlaneRegistry {
         self.outbound.len()
     }
 
+    /// Returns the active slots with an outbound role usable at `now_ms`.
+    /// The result is bounded by the registry's configured capacity.
+    pub fn usable_outbound_slots(&self, now_ms: u64) -> Vec<TunnelSlot> {
+        self.outbound
+            .iter()
+            .filter_map(|(slot, role)| role.is_usable(now_ms).then_some(*slot))
+            .collect()
+    }
+
     /// Returns the number of active inbound roles.
     pub fn inbound_len(&self) -> usize {
         self.inbound.len()

@@ -163,6 +163,71 @@ Current authority: NTCP2 Plans 459/461 and 467–469 **passed at controlled scop
 
 **Priority/parallelism:** 474 remains P0 independently; 475 is closed; 476 implementation is P1 with no automatic remote packet. Merge review is **existing Plan 473**, oldest PR #37→#44 under normal owner approval. No newly registered PR merge plan or unrequested merge action. The separate M11 manual external workflow is not the ordinary required CI lane; investigate its launch failure on its own source/owner rather than treating green core CI as evidence that it passed. Avoid a numbered corrective for an isolated YAML/parser change absent a larger source-owned scope. **Immutable predecessor closures:** 470, 471, 472, 473 remain as executed, no `specs/support.toml` or public `R`/`f` claims, no patched Java/i2pd and no public-network tests. Follow [causal in-plan iteration](README.md#bounded-execution-and-causal-corrective-policy).
 
+### Causal core-router continuation — Plans 477–480 (registered 2026-10-13)
+
+**Planning-only, no capability promotion.** Research from PR #45 identifies a shared next-message ID across short-build hop records, production fixed-seed tunnel/build IDs, a delivery-admitted-versus-written distinction, and a normal service-destination construction path that sends directly to inbound gateway before an outbound pool. These are source-visible contracts requiring bounded regression; **none is independently proven to cause Plan 474's unmatched stock reply**. Older closure records remain authoritative. Plan 475 Java two-role NTCP2 is closed and Plan 461 controlled dual-family is passed; do not restart their lower-tier handshake loops.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **477** | **passed: canonical short-build IDs, collision retention, writer-receipt consumption** | [Per-hop IDs, CSPRNG IDs and attributable short-build return](implementation/core-router-recovery/477-short-build-message-ids-and-attributable-return-path.md) | `closure/core-router-recovery/477-status.md`: per-hop forwarding IDs, separate outer/reply IDs, bounded active/retiring/replay collision reservation, writer-receipt consumption with five-way terminal taxonomy, late/cancel/replay regressions, restart-seed non-aliasing, and a fully attributed exact-pin attempt. Residual STREAM SYN-ACK return owned by active 478. Floor reds recorded as external: ELS2 Plan 393 count (broken by committed 478 change `5b874e86`) and rustls advisories on the HEAD-pinned lock. |
+| **478** | **active: design done — standalone cleanup vs sequential sessions needs own plan** | [Normal exploratory-backed SAM destination product](implementation/core-router-recovery/478-normal-exploratory-backed-sam-tunnels-and-client-product.md) | `closure/core-router-recovery/478-status.md`: design-only turn, no code/lane. Verified: per-command socket close never tears down; reverse ACCEPT fails fast at session lookup (never parks); self-composed suites pass on concurrency, sequential reuse dies. No attribution narrows further — fix is behavior change (remove standalone last-stream teardown), proposed with scope inputs (6 baselines depend on cause-3; retention vs max_sessions/60 s command_timeout). Controlled client router only; Plan 433 external gate remains. |
+| **479** | **passed: controlled Java comparator with truthful tiers and correlated store** | [Java floodfill candidate and NetDB product](implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md) | `closure/floodfill/479-status.md`: exact-pinned Java observes eligible `fN` + truthful `L`, selects only the eligible candidate for its normal Store with a daemon-accepted effect and none on the low-tier; a second profile proves operation among `{fN, stock fO}` with the recipient attributed. No dependent row moves: 437/438 stay blocked on 433/436 (unblock audit in the closure). |
+| **480** | **passed-narrowly (infrastructure): bounded observer, production receipt export, bootstrap + floodfill fixtures, contract delivered; 476 consumer + Tier B stay 476-owned** | [Source-authenticated SSU2 receipt observer](implementation/core-router-recovery/480-ssu2-source-observer-and-plan476-executor-unblock.md) | `closure/core-router-recovery/480-status.md`: 9 receipt tests + executor negatives green on the closing tree; no pair supplied; nothing promoted. |
+
+Work line: work/plans-477-480-router-recovery stacked above PR #45. Execute source fixes inside each active plan after concrete causal divergence, not new per-timeout numbered micro-plans. Plans 433, 435–439, 431 and specs/support.toml remain unchanged until their own external/public acceptance closes.
+
+### Recovery ownership — Plans 481–482 closed (2026-10-13)
+
+**These cross-owner contracts are not numbered retries of unfinished Plan 478 product gates.** Plan 481 is closed for source-owned writer-completion infrastructure; its socket receipts do not prove remote acceptance (that gate is now closed for short-builds by 477 and remains open for STREAM in 478). Plan 482 is closed for Destination dial-authority policy; it does not prove anonymity or stock acceptance. Neither issue is asserted as the cause of unmatched reply IDs.
+
+| Plan | State | Bounded implementation handoff | Independent owner and acceptance |
+| --- | --- | --- | --- |
+| **482** | **passed: dial-authority guard only** | [Prevent Destination-driven direct inbound-gateway sessions](implementation/core-router-recovery/482-destination-build-direct-dial-authority-and-linkability.md) | [Closure](closure/core-router-recovery/482-status.md): inbound build and replacement authority is tied to a live outbound route's actual first hop; bootstrap remains explicit. One pinned product attempt stopped before inbound construction; no product or anonymity claim. |
+
+**Continuation, no duplicate plan numbers:** 477 is closed having delivered strict terminal reply attribution on Plan 481's source interface; 478 still owns genuine signed LS2, atomic owner generation, and bidirectional external SAM STREAM, and consumes Plan 482's dial policy. Plan 479 is closed on the separate Java floodfill comparator and NetDB response (controlled-Java evidence only; 437/438 stay blocked on 433/436); Plan 480 retains independent SSU2 observer/Plan 476 consumer work. Do not create a Plan 483 for the next failed stock timeout or repeat Plan 475/461 lower-tier proofs. Pinned i2pd/Java unchanged, routine CI never sends public traffic, and `specs/support.toml` plus older closure records are immutable until conformance closure.
+
+### Plan 479 residual-risk hardening — Plan 483 (registered 2026-10-15)
+
+**Not the prohibited timeout-retry plan.** The number 483 is taken for a
+different, explicitly scoped purpose: converting 479's three recorded
+limitations (profile-A XOR-order recipient nondeterminism, the structurally
+unreachable `fL`-vs-`fN` arm, normal-role replication staying with 437/438)
+into executable evidence. No stock-timeout retry and no 475/461 lower-tier
+repeat is authorized by this row.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **483** | **passed** | [Residual-risk hardening: deterministic selection, degenerate arm, tiered replication](implementation/floodfill/483-residual-risk-hardening-deterministic-selection-degenerate-arm-tiered-replication.md) | `closure/floodfill/483-status.md` (`passed-479-residual-risks-executable-no-normal-role-change`; implementation `deed140b`): 479's limitations now executable — width-1 no-starvation proof (A/B), L-only fail-closed profile C, tiered-form owner regressions. Per-profile budget 1. 437/438 stay blocked on 433/436; no support/capability change. |
+
+### Burst-default policy corrective — Plan 484 (registered 2026-10-15)
+
+Carried forward from the 479 finding and the 483 limitation: the 64 KiB
+daemon default `burst_bytes` is below the NTCP2 runtime's wire-frame
+minimum (`72819` at 10% reserve), so a bandwidth-enabled daemon fails
+construction at defaults. One coherent policy pass, decision-provable
+offline: raise the default to fit, or keep it and fail closed naming both
+values. No silent default change, no lowered wire minimum, no live lane.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **484** | **passed: burst default 72_819 fits NTCP2 frame, explicit-small stays fail-closed** | [Bandwidth default burst vs NTCP2 wire-frame minimum](implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md) | `closure/core-router-recovery/484-status.md`: WP1 branch (a) landed with drift + explicit-small guards (both inversion-probed), 454 baseline green unchanged; 437/438/433/436 unaffected, nothing promoted. |
+
+### SAM session lifetime corrective — Plan 485 (registered 2026-10-16)
+
+Carried forward from Plan 478's 7r7te3fb/tnm6su4j two-row teardown readings: `finish_raw_stream`'s standalone last-stream cleanup tears down live sessions, so sequential stream reuse on one session ID fails fast at lookup while concurrent streams pass. One coherent ownership pass: sessions die only on control-socket close, SESSION REMOVE (children), or create rollback; lifecycle baselines move to explicit control-close semantics. No support/capability/advertisement change; no stock patching.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **485** | **passed: control-socket-gated session teardown; sequential reuse proven** | [SAM session lifetime for sequential stream reuse](implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md) | Predecessor `closure/core-router-recovery/478-status.md` (cause-3-live teardown rows; union-gauge correction). Acceptance per plan: cause-3-live rows absent on sequential reuse, fail-before/pass-after deterministic tests, reworked baselines green, one exact-pin lane read in order. |
+
+### SAM inbound-SYN routing corrective — Plan 486 (registered 2026-10-16)
+
+Carried forward from Plan 478's lane `m8v2xk5q` 10-key ACCEPT-SYN receipt: inbound SYNs authenticate and dispatch to the bridge canonical manager (`GenericClient` profile), which holds no listener, while `STREAM ACCEPT` binds wildcard-0 and polls backlog on the receiver mirror — so the waiter can never succeed and stock retries 10× then terminates. One coherent routing pass: waiter-scoped SYN routing to the mirror, stale-backlog age eviction, per-instance receipt split, silent-drop invariant. Considered and rejected: always-feed-mirror type-split (forward-leg blast radius), canonical bind (pump re-thread audit surface), server-kind flip (server-machinery enrollment, new loopback surface), timeout lengthening, transit hunting. No support/capability/advertisement change; no stock patching.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **486** | **passed: waiter-scoped inbound-SYN routing to parked ACCEPT; reverse handshake proven live** | [SAM inbound-SYN routing to the parked ACCEPT instance](implementation/core-router-recovery/486-sam-inbound-syn-routing-to-parked-accept.md) | Predecessor `closure/core-router-recovery/478-status.md` (m8v2xk5q instance-mismatch chain). Acceptance per plan: fail-before/pass-after dispatch-matrix tests, forward-leg guard green, per-instance receipt split parsed, silent-drop negative held, one exact-pin lane read in order. Closure `closure/core-router-recovery/486-status.md`: lane `q3w7m9z2` shows zero ACCEPT expiries, pump started, stock SYN answered (DATA stall retained by 478). |
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
@@ -401,6 +466,9 @@ Parallel anonymity work is beside, not beneath, M12. Plans 297–305 remain stop
 ## Recently closed work
 
 | Subsystem | Plan | State | Closure record |
+| Core-router operational recovery | 482 Destination dial-authority and linkability guard | passed (policy infrastructure only) | `plans/closure/core-router-recovery/482-status.md` (`passed-destination-dial-authority-guard-with-stock-outbound-build-boundary`; implementation `3bb3dd8`, dial-cause fixture `3e4a75f`; Plan 478 product acceptance remains open) |
+| Core-router operational recovery | 481 source-owned build writer-completion bridge | passed (infrastructure only) | `plans/closure/core-router-recovery/481-status.md` (`passed-source-owned-build-egress-completion-infrastructure`; implementation `7416a61`; terminal stock reply remains unproven in active Plan 478) |
+| Core-router operational recovery | 477 canonical short-build IDs and attributable return | passed | `plans/closure/core-router-recovery/477-status.md` (`passed-canonical-short-build-ids-collision-retention-and-writer-receipt-consumption`; short-build return attributed, STREAM return and product gates remain in active Plan 478) |
 | Core-router operational recovery | 453 guarded private-LAN SSU2 owner (local implementation) | passed (infrastructure only) | `plans/closure/core-router-recovery/453-status.md` (`passed-guarded-private-lan-ssu2-owner-local-scope`; implementation `69af55c`, docs/guard `c757fe5`; independent Plan 431 two-host evidence remains open) |
 | Core-router operational recovery | 430 executable baseline and public-role safety gates | passed (infrastructure only) | `plans/closure/core-router-recovery/430-status.md` (`passed-core-router-baseline-and-public-role-safety-gates`) |
 | Core-router operational recovery | 440 evidence topology and qualification contract | passed | `plans/closure/core-router-recovery/440-status.md` (`passed-evidence-topology-and-qualification-contract-with-fail-closed-successor-gates`; implementation `82eea4b9`) |

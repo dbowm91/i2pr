@@ -105,7 +105,7 @@ fn complete_syn_handshake(
         now_ms,
     )
     .expect("bob process SYN");
-    let inbound_connection_id = bob.accept(listener_port).expect("bob accept");
+    let inbound_connection_id = bob.accept(listener_port, now_ms).expect("bob accept");
     let syn_response = bob
         .accept_inbound_syn(
             bob_dest,
@@ -355,7 +355,7 @@ fn plan123_full_two_destination_trajectory() {
 
     // Bob accepts the pending SYN. This emits a signed SYN response
     // and transitions the inbound connection to Established.
-    let inbound_connection_id = bob.accept(REMOTE_PORT).expect("bob accept");
+    let inbound_connection_id = bob.accept(REMOTE_PORT, clock_ms).expect("bob accept");
     let mut bob_mgr = bob;
     let bob_send_back = bob_mgr
         .accept_inbound_syn(

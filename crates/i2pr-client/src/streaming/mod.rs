@@ -56,7 +56,11 @@ pub use connection::{
 };
 pub use errors::StreamingError;
 #[allow(unused_imports)]
-pub use events::{AckObservation, InboundStreamEvent, OutboundStreamEvent, WirePacketObservation};
+pub use events::{
+    AckObservation, DataPacketIngressAccounting, InboundStreamEvent, OutboundStreamEvent,
+    SynIngressAccounting, SynIngressRejectCause, SynResponseIngressAccounting,
+    WirePacketObservation,
+};
 #[allow(unused_imports)]
 pub use manager::{
     ConnectOutcome, ConnectionRefused, DEFAULT_ADVERTISED_MAX_PAYLOAD, DeliveredApplicationBytes,

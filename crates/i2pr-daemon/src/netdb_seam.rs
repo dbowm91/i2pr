@@ -428,6 +428,29 @@ impl NetDbSeam {
         let outcome = self
             .lease_set2_lookup
             .handle_pending_after_path(store, routing_key);
+        self.map_lease_set2_start_outcome(outcome)
+    }
+
+    /// Drives the active LeaseSet2 lookup to its next candidate
+    /// after one emitted attempt went unanswered within its window.
+    /// Already-queried peers are skipped by the state machine, so a
+    /// retry rotates floodfills instead of re-asking the silent one;
+    /// exhaustion yields a terminal `Complete` action, never a spin.
+    pub fn advance_lease_set2_after_timeout_with_store(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> LookupAction {
+        let outcome = self
+            .lease_set2_lookup
+            .advance_after_attempt_timeout(store, routing_key);
+        self.map_lease_set2_start_outcome(outcome)
+    }
+
+    /// Shared mapping from a LeaseSet2 start/advance outcome to the
+    /// runtime action. Terminal results become `Complete` actions
+    /// with the classified final state.
+    fn map_lease_set2_start_outcome(&self, outcome: StartOutcome) -> LookupAction {
         match outcome {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => action,

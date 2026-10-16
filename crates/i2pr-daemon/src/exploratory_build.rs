@@ -60,13 +60,15 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::time::Duration;
 
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage};
 use i2pr_runtime::Ssu2InboundI2np;
 use i2pr_transport::{MAX_I2NP_MESSAGE_BYTES, PeerId};
+use rand_chacha::ChaCha8Rng;
+use rand_core::SeedableRng;
 use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -75,6 +77,7 @@ use i2pr_client::DestinationId;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::build_crypto::GARLIC_REPLY_TAG_LEN;
 use i2pr_tunnel::config::ExploratoryPoolConfig;
+use i2pr_tunnel::data::{DeliveryInstruction, TunnelPayloadHeader};
 use i2pr_tunnel::data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry};
 use i2pr_tunnel::garlic_reply::decrypt_build_reply_garlic;
 use i2pr_tunnel::identity::{TunnelDirection, TunnelId, TunnelLifetime, TunnelState};
@@ -89,8 +92,9 @@ use i2pr_tunnel::short::{
 use i2pr_tunnel::short_record::HopRole;
 
 use crate::router_i2np::{
-    RouterDeliveryOutcome, RouterDeliveryRequest, RouterDeliveryService, RouterI2npError,
-    RouterI2npKind, RouterI2npOutcome, dispatch_router_i2np,
+    RouterDeliveryOutcome, RouterDeliveryRequest, RouterDeliveryService, RouterDeliveryTicket,
+    RouterDeliveryTransport, RouterI2npError, RouterI2npKind, RouterI2npOutcome,
+    dispatch_router_i2np,
 };
 
 /// Maximum number of simultaneous pending exploratory build
@@ -98,6 +102,16 @@ use crate::router_i2np::{
 /// for loopback-only operation and matches the canonical I2P
 /// per-router build concurrency ceiling.
 pub const MAX_PENDING_BUILDS: usize = 16;
+/// Maximum message/tunnel identifiers retained across pending builds and the
+/// longest local tunnel plus I2NP replay window.
+pub const MAX_RETAINED_BUILD_IDS: usize = 65_536;
+/// I2NP accepts message expirations up to fifteen minutes ahead. Retain build
+/// message identifiers for that replay window after the active tunnel window.
+pub const BUILD_MESSAGE_REPLAY_RETENTION_MS: u64 = 15 * 60 * 1000;
+/// Upper bound for one active tunnel lifetime, from `TunnelLifetime`.
+const MAX_BUILD_TUNNEL_LIFETIME_MS: u64 = 30 * 60 * 1000;
+const BUILD_TUNNEL_ID_RETENTION_MS: u64 =
+    MAX_BUILD_TUNNEL_LIFETIME_MS + BUILD_MESSAGE_REPLAY_RETENTION_MS;
 /// Maximum established Destination materials awaiting owner registration.
 pub const MAX_DESTINATION_HANDOFFS: usize = MAX_PENDING_BUILDS;
 /// Maximum lifetime a tunnel is allowed to claim. Mirrors
@@ -130,6 +144,114 @@ pub const INITIAL_CREATOR_TUNNEL_ID: u32 = 0x1000;
 /// `next_attempt_id += 1`. The starting value is the first
 /// monotonic id the coordinator hands out.
 pub const INITIAL_ATTEMPT_ID: u64 = 1;
+
+fn fresh_transport_message_id<R: RngCore>(rng: &mut R) -> Result<u32, BuildCoordinatorError> {
+    for _ in 0..32 {
+        let candidate = rng.next_u32();
+        if candidate != 0 {
+            return Ok(candidate);
+        }
+    }
+    Err(BuildCoordinatorError::Coordinator(
+        "bounded tunnel-data message-id allocation exhausted",
+    ))
+}
+
+fn wrap_inner_wire(
+    bridge: &ShortBuildI2npBridge,
+    action: &ShortBuildAction,
+    header: BridgeHeader,
+) -> Result<Vec<u8>, BuildCoordinatorError> {
+    let (i2np_message, _) = bridge
+        .wrap_deliver_action(action, header)
+        .map_err(|error| {
+            BuildCoordinatorError::Coordinator(match error {
+                i2pr_tunnel::bridge::BridgeError::ZeroRecordCount => "STBM record count is zero",
+                i2pr_tunnel::bridge::BridgeError::RecordCountMismatch { .. } => {
+                    "STBM record count prefix mismatch"
+                }
+                i2pr_tunnel::bridge::BridgeError::RecordCountOutOfRange { .. } => {
+                    "STBM record count above maximum"
+                }
+                i2pr_tunnel::bridge::BridgeError::PayloadLengthMismatch { .. } => {
+                    "STBM payload length mismatch"
+                }
+                i2pr_tunnel::bridge::BridgeError::DeferredBuildRecords(_) => {
+                    "deferred build records rejected"
+                }
+                i2pr_tunnel::bridge::BridgeError::MessageFraming(_) => {
+                    "I2NP framing rejected the build message"
+                }
+                i2pr_tunnel::bridge::BridgeError::RoundTripBodyMismatch { .. } => {
+                    "I2NP round-trip body mismatch"
+                }
+            })
+        })?;
+    match header {
+        BridgeHeader::Standard { .. } => i2np_message
+            .encode_standard_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| BuildCoordinatorError::Coordinator("I2NP standard encoding failed")),
+        BridgeHeader::ShortTransport { .. } => i2np_message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| {
+                BuildCoordinatorError::Coordinator("I2NP short-transport encoding failed")
+            }),
+    }
+}
+
+fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
+    role: &i2pr_tunnel::roles::OutboundGatewayRole,
+    target_router: Hash,
+    message_id: u32,
+    expiration_ms: u64,
+    wire: &[u8],
+    now_ms: u64,
+    rng: &mut R,
+) -> Result<Vec<(PeerId, Vec<u8>, u32)>, BuildCoordinatorError> {
+    let header = TunnelPayloadHeader {
+        delivery: DeliveryInstruction::Router {
+            router: target_router,
+        },
+        message_id,
+        expiration_ms,
+    };
+    let cells = role
+        .forward_cells(&header, wire, rng, now_ms)
+        .map_err(|_| {
+            BuildCoordinatorError::Coordinator("outbound tunnel rejected build payload")
+        })?;
+    if cells.is_empty() || cells.len() > 8 {
+        return Err(BuildCoordinatorError::Coordinator(
+            "outbound build fragmentation exceeded bounded cell count",
+        ));
+    }
+    let transport_expiration = u32::try_from(expiration_ms / 1000)
+        .map_err(|_| BuildCoordinatorError::Coordinator("tunnel-data expiration out of range"))?;
+    cells
+        .into_iter()
+        .map(|routed| {
+            // The fresh transport message ID is returned alongside
+            // the wire so submit receipts can attribute stock-side
+            // per-message outcomes (expiry/duplicate counters name
+            // these IDs) without naming peers.
+            let transport_message_id = fresh_transport_message_id(rng)?;
+            let transport_message = I2npMessage::new_short_transport(
+                transport_message_id,
+                transport_expiration,
+                I2npBody::TunnelData(Box::new(routed.cell)),
+            )
+            .map_err(|_| BuildCoordinatorError::Coordinator("tunnel-data I2NP framing failed"))?;
+            let transport_wire = transport_message
+                .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+                .map_err(|_| BuildCoordinatorError::Coordinator("tunnel-data encoding failed"))?;
+            Ok((
+                PeerId::from_hash(routed.target_router.hash()),
+                transport_wire,
+                transport_message_id,
+            ))
+        })
+        .collect()
+}
 
 /// Direction of one pending build attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,8 +343,8 @@ pub struct BuildRequest {
     /// established material. The coordinator owns the monotonic
     /// pool of creator tunnel ids.
     pub creator_tunnel_id: TunnelId,
-    /// Per-attempt message id the I2NP header carries. The same
-    /// value also seeds the build request `next_message_id` field.
+    /// Terminal build reply-correlation ID. The outer I2NP header
+    /// ID is supplied independently through `BridgeHeader`.
     pub message_id: u32,
     /// Outbound reply-router identity hash the OBEP records as
     /// its terminal `next_router_hash`. Required for outbound
@@ -263,7 +385,8 @@ pub struct DestinationBuildRequest {
     pub peers: Vec<PeerBuildMaterial>,
     /// Creator tunnel id reserved for established material.
     pub creator_tunnel_id: TunnelId,
-    /// Per-attempt I2NP message id.
+    /// Terminal build reply-correlation ID. The outer I2NP header
+    /// ID is supplied independently through `BridgeHeader`.
     pub message_id: u32,
     /// Local router hash used by the outbound terminal hop.
     pub outbound_reply_router: Option<Hash>,
@@ -295,6 +418,46 @@ struct BuildPathRequest {
     outbound_reply_router: Option<Hash>,
     originator_hash: Option<Hash>,
     destination_id: Option<DestinationId>,
+}
+
+fn reserved_path_tunnel_ids(
+    request: &BuildPathRequest,
+) -> Result<HashSet<u32>, BuildCoordinatorError> {
+    if request.peers.is_empty() {
+        return Err(BuildCoordinatorError::Coordinator(
+            "build path has no peers",
+        ));
+    }
+    let mut ids = HashSet::new();
+    ids.insert(request.creator_tunnel_id.get());
+    for peer in &request.peers {
+        if !ids.insert(peer.receive_tunnel.get()) {
+            return Err(BuildCoordinatorError::Coordinator(
+                "receive tunnel id collides within build path",
+            ));
+        }
+    }
+    if request
+        .peers
+        .windows(2)
+        .any(|pair| pair[0].next_tunnel != pair[1].receive_tunnel)
+    {
+        return Err(BuildCoordinatorError::Coordinator(
+            "adjacent build-hop tunnel chain is inconsistent",
+        ));
+    }
+    let terminal_next = request
+        .peers
+        .last()
+        .expect("nonempty path")
+        .next_tunnel
+        .get();
+    if !ids.insert(terminal_next) {
+        return Err(BuildCoordinatorError::Coordinator(
+            "terminal tunnel id collides within build path",
+        ));
+    }
+    Ok(ids)
 }
 
 impl From<BuildRequest> for BuildPathRequest {
@@ -529,6 +692,10 @@ pub struct BuildCoordinatorCounters {
     pub inbound_orphans_peer_id_minus_one: u64,
     /// Same-terminal-peer orphan forwarded builds with another nonmatching ID.
     pub inbound_orphans_peer_id_other: u64,
+    /// Same-terminal-peer orphans whose message id matches a retired
+    /// (superseded or completed) attempt: late replies arriving
+    /// after their wait expired, versus stock traffic through us.
+    pub inbound_orphans_retired_id_match: u64,
     /// Inbound-build TunnelGateway replies observed on the authenticated path.
     pub inbound_gateway_messages: u64,
     /// Unmatched inbound-build gateways from the selected terminal peer.
@@ -599,6 +766,11 @@ struct PendingBuild {
     deadline_ms: u64,
     /// Per-attempt message id the I2NP header carried.
     message_id: u32,
+    /// Independently allocated initial outer-header message id.
+    outer_message_id: u32,
+    /// All locally allocated tunnel ids in this build, retained through
+    /// tunnel lifetime and the subsequent replay window.
+    reserved_tunnel_ids: Vec<u32>,
     /// Creator-supplied `next_tunnel` the reference echoes in its
     /// `TunnelGateway` reply for outbound endpoint builds.
     /// Plan 188 correlation seam for garlic-wrapped replies.
@@ -611,9 +783,100 @@ struct PendingBuild {
     /// Bounded by this pending attempt's lifetime and the existing pending
     /// attempt ceiling. Raw peer and message identifiers are not retained.
     inbound_observation: InboundBuildObservation,
+    /// Source-owned writer receipts for the one direct request or each
+    /// TunnelData transport cell. Both SSU2 (`send_i2np_with_receipt`)
+    /// and NTCP2 (`deliver_with_link_and_receipt`) attach a ticket;
+    /// a missing ticket marks the cell unobserved, never emitted.
+    delivery_set: BuildDeliverySet,
     /// Live state machine. The coordinator never spawns a task
     /// per attempt; the daemon-owned pump drives every attempt.
     state: ShortBuildStateMachine,
+}
+
+#[derive(Default)]
+struct BuildDeliverySet {
+    required: usize,
+    tickets: Vec<Option<RouterDeliveryTicket>>,
+    observed: usize,
+    emitted: usize,
+    failed: bool,
+    unobserved: bool,
+}
+
+/// Local disposition for one pending build's originator-side transport
+/// writes. This does not imply remote receipt or stock-router acceptance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildEmissionDisposition {
+    /// The selected transport owner has not completed the write yet.
+    Pending,
+    /// Every required originator delivery completed at its socket writer.
+    AllOriginatorDeliveriesEmitted,
+    /// At least one required delivery failed after some write activity.
+    PartialEmission,
+    /// No write completed and delivery was rejected or its owner closed.
+    NotEmitted,
+    /// One or more selected transports have no source-owned write ticket.
+    UnobservedTransport,
+}
+
+impl BuildDeliverySet {
+    fn disposition(&self) -> BuildEmissionDisposition {
+        if self.failed {
+            if self.observed < self.tickets.len() {
+                return BuildEmissionDisposition::Pending;
+            }
+            return if self.emitted == 0 {
+                BuildEmissionDisposition::NotEmitted
+            } else {
+                BuildEmissionDisposition::PartialEmission
+            };
+        }
+        if self.unobserved || self.tickets.len() != self.required {
+            return BuildEmissionDisposition::UnobservedTransport;
+        }
+        if self.observed == self.required && self.emitted == self.required {
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+        } else {
+            BuildEmissionDisposition::Pending
+        }
+    }
+
+    fn poll(&mut self) {
+        for slot in &mut self.tickets {
+            let Some(ticket) = slot.as_mut() else {
+                continue;
+            };
+            if let Some(result) = ticket.try_result() {
+                if result {
+                    self.emitted = self.emitted.saturating_add(1);
+                } else {
+                    self.failed = true;
+                }
+                self.observed = self.observed.saturating_add(1);
+                *slot = None;
+            }
+        }
+    }
+}
+
+struct RetainedBuildDeliverySet {
+    set: BuildDeliverySet,
+    expires_at_ms: u64,
+}
+
+/// Base of the destination-role data-plane slot namespace. Exploratory
+/// pool slots allocate upward from zero; destination roles allocate
+/// upward from here, so the high bit discriminates a registry slot
+/// bound by [`ExploratoryBuildCoordinator::activate_destination_tunnel`]
+/// from one bound by the exploratory pool. Single source of truth
+/// for the Plan 478 owner-miss taxonomy's service/divergence arm.
+pub const DESTINATION_ROLE_SLOT_BASE: u32 = 0x8000_0000;
+
+/// Reports whether the supplied data-plane slot was allocated to a
+/// destination role (as opposed to the exploratory pool). Pure and
+/// total; the namespaces are disjoint by construction.
+pub const fn is_destination_role_slot(slot: TunnelSlot) -> bool {
+    slot.get() >= DESTINATION_ROLE_SLOT_BASE
 }
 
 /// Daemon-owned exploratory build coordinator.
@@ -621,6 +884,11 @@ pub struct ExploratoryBuildCoordinator {
     pool: ExploratoryPool,
     registry: DataPlaneRegistry,
     pending: BTreeMap<BuildAttemptId, PendingBuild>,
+    settling_delivery_sets: BTreeMap<BuildAttemptId, RetainedBuildDeliverySet>,
+    pending_tunnel_ids: HashSet<u32>,
+    retired_tunnel_ids: BTreeMap<u32, u64>,
+    retired_message_ids: BTreeMap<u32, u64>,
+    build_id_scope_exhausted: bool,
     established_handoffs: BTreeMap<BuildAttemptId, i2pr_tunnel::EstablishedMaterial>,
     next_attempt_id: u64,
     next_creator_tunnel_id: u32,
@@ -645,10 +913,15 @@ impl ExploratoryBuildCoordinator {
             pool: ExploratoryPool::new(pool_config),
             registry: DataPlaneRegistry::new(registry_capacity),
             pending: BTreeMap::new(),
+            settling_delivery_sets: BTreeMap::new(),
+            pending_tunnel_ids: HashSet::new(),
+            retired_tunnel_ids: BTreeMap::new(),
+            retired_message_ids: BTreeMap::new(),
+            build_id_scope_exhausted: false,
             established_handoffs: BTreeMap::new(),
             next_attempt_id: INITIAL_ATTEMPT_ID,
             next_creator_tunnel_id: INITIAL_CREATOR_TUNNEL_ID,
-            next_destination_role_slot: 0x8000_0000,
+            next_destination_role_slot: DESTINATION_ROLE_SLOT_BASE,
             counters: BuildCoordinatorCounters::default(),
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
             lifetime_seconds: DEFAULT_EXPLORATORY_LIFETIME_SECONDS,
@@ -684,6 +957,19 @@ impl ExploratoryBuildCoordinator {
         coordinator
     }
 
+    /// Creates the production coordinator with an OS-randomized tunnel-id
+    /// generation. Deterministic callers should use `new` in test-owned code.
+    pub(crate) fn try_new_with_service_destination_capacity(
+        pool_config: ExploratoryPoolConfig,
+    ) -> Result<Self, BuildCoordinatorError> {
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            BuildCoordinatorError::Coordinator("operating-system randomness unavailable")
+        })?;
+        let mut coordinator = Self::new_with_service_destination_capacity(pool_config);
+        coordinator.next_creator_tunnel_id = rng.next_u32().max(1);
+        Ok(coordinator)
+    }
+
     /// Returns the configured failure threshold.
     pub const fn failure_threshold(&self) -> u16 {
         self.failure_threshold
@@ -717,6 +1003,44 @@ impl ExploratoryBuildCoordinator {
         snapshot.pending = self.pending.len();
         snapshot.consecutive_failures = self.pool.consecutive_failures();
         snapshot
+    }
+
+    /// Returns the message identifiers held by live pending attempts.
+    /// Callers that allocate another terminal reply identifier must exclude
+    /// this bounded set so two live builds cannot claim the same reply key.
+    #[cfg(test)]
+    pub(crate) fn pending_message_ids(&self) -> Vec<u32> {
+        self.pending
+            .values()
+            .map(|attempt| attempt.message_id)
+            .collect()
+    }
+
+    /// Returns every live or replay-retained message identifier that a new
+    /// build or outer I2NP header must exclude.
+    pub(crate) fn reserved_message_ids(&self) -> Vec<u32> {
+        let mut ids = self
+            .pending
+            .values()
+            .flat_map(|attempt| [attempt.message_id, attempt.outer_message_id])
+            .collect::<Vec<_>>();
+        ids.extend(self.retired_message_ids.keys().copied());
+        ids
+    }
+
+    /// Returns tunnel IDs held by pending builds or still inside their
+    /// active-tunnel/replay retention window.
+    pub(crate) fn reserved_tunnel_ids(&self) -> Vec<u32> {
+        let mut ids = self.pending_tunnel_ids.iter().copied().collect::<Vec<_>>();
+        ids.extend(self.retired_tunnel_ids.keys().copied());
+        ids
+    }
+
+    #[cfg(test)]
+    fn has_pending_message_id(&self, message_id: u32) -> bool {
+        self.pending
+            .values()
+            .any(|attempt| attempt.message_id == message_id)
     }
 
     /// Returns the count-only inbound correlation observations for one live
@@ -881,10 +1205,28 @@ impl ExploratoryBuildCoordinator {
         self.registry.inbound_slot(receive)
     }
 
+    /// Reports whether the supplied local receive tunnel id is a
+    /// live inbound endpoint of the exploratory pool itself (as
+    /// opposed to a destination role sharing the data-plane
+    /// registry). Bounded scan over the tiny inbound pool; used by
+    /// the Plan 478 owner-miss taxonomy so the exploratory arm
+    /// tests the pool, not the shared registry.
+    pub fn exploratory_pool_holds_inbound(&self, receive: TunnelId) -> bool {
+        self.pool
+            .inbound_registrations()
+            .iter()
+            .any(|registration| registration.tunnel_id() == receive)
+    }
+
     /// Returns the registry's outbound-first-hop router hash and
     /// receive tunnel id bound to the supplied pool slot.
     pub fn registry_outbound_first_hop(&self, slot: TunnelSlot) -> Option<(Hash, TunnelId)> {
         self.registry.outbound_first_hop(slot)
+    }
+
+    /// Returns the bounded set of currently usable outbound role slots.
+    pub fn usable_outbound_role_slots(&self) -> Vec<TunnelSlot> {
+        self.registry.usable_outbound_slots(self.now_ms)
     }
 
     /// Returns the data-plane registry holding the installed tunnel
@@ -906,6 +1248,35 @@ impl ExploratoryBuildCoordinator {
     /// must call this before any operation that depends on time.
     pub fn advance_time(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+        for pending in self.pending.values_mut() {
+            pending.delivery_set.poll();
+        }
+        for retained in self.settling_delivery_sets.values_mut() {
+            retained.set.poll();
+        }
+        self.settling_delivery_sets
+            .retain(|_, retained| retained.expires_at_ms > now_ms);
+        self.retired_tunnel_ids
+            .retain(|_, expires_at| *expires_at > now_ms);
+        self.retired_message_ids
+            .retain(|_, expires_at| *expires_at > now_ms);
+    }
+
+    /// Returns the local originator-writer disposition for a live attempt.
+    /// This reports only source-owned socket writes; reply correlation and
+    /// remote protocol acceptance remain separate outcomes.
+    pub fn emission_disposition(
+        &self,
+        attempt_id: BuildAttemptId,
+    ) -> Option<BuildEmissionDisposition> {
+        self.pending
+            .get(&attempt_id)
+            .map(|pending| pending.delivery_set.disposition())
+            .or_else(|| {
+                self.settling_delivery_sets
+                    .get(&attempt_id)
+                    .map(|retained| retained.set.disposition())
+            })
     }
 
     /// Allocates a fresh attempt id. The id is monotonic and never
@@ -922,11 +1293,56 @@ impl ExploratoryBuildCoordinator {
     /// Allocates a fresh creator tunnel id. The id is monotonic
     /// and never reused across the coordinator lifetime.
     fn next_creator_tunnel_id_value(&mut self) -> Result<u32, BuildCoordinatorError> {
-        let value = self.next_creator_tunnel_id;
-        self.next_creator_tunnel_id = self.next_creator_tunnel_id.checked_add(1).ok_or(
-            BuildCoordinatorError::Coordinator("creator tunnel id monotonic counter exhausted"),
-        )?;
-        Ok(value)
+        for _ in 0..=MAX_RETAINED_BUILD_IDS {
+            let value = self.next_creator_tunnel_id;
+            self.next_creator_tunnel_id = self.next_creator_tunnel_id.checked_add(1).ok_or(
+                BuildCoordinatorError::Coordinator("creator tunnel id monotonic counter exhausted"),
+            )?;
+            if value != 0
+                && !self.pending_tunnel_ids.contains(&value)
+                && !self.retired_tunnel_ids.contains_key(&value)
+            {
+                return Ok(value);
+            }
+        }
+        Err(BuildCoordinatorError::Coordinator(
+            "bounded creator tunnel id collision search exhausted",
+        ))
+    }
+
+    fn retire_pending_ids(&mut self, pending: &PendingBuild) {
+        let message_expiry = self
+            .now_ms
+            .saturating_add(BUILD_MESSAGE_REPLAY_RETENTION_MS);
+        let tunnel_expiry = self.now_ms.saturating_add(BUILD_TUNNEL_ID_RETENTION_MS);
+        self.pending_tunnel_ids
+            .retain(|id| !pending.reserved_tunnel_ids.contains(id));
+        let new_tunnel_ids = pending
+            .reserved_tunnel_ids
+            .iter()
+            .filter(|id| !self.retired_tunnel_ids.contains_key(id))
+            .count();
+        let new_message_ids = [pending.message_id, pending.outer_message_id]
+            .into_iter()
+            .filter(|id| !self.retired_message_ids.contains_key(id))
+            .count();
+        if self.retired_tunnel_ids.len().saturating_add(new_tunnel_ids) > MAX_RETAINED_BUILD_IDS
+            || self
+                .retired_message_ids
+                .len()
+                .saturating_add(new_message_ids)
+                > MAX_RETAINED_BUILD_IDS
+        {
+            self.build_id_scope_exhausted = true;
+            return;
+        }
+        for id in &pending.reserved_tunnel_ids {
+            self.retired_tunnel_ids.insert(*id, tunnel_expiry);
+        }
+        self.retired_message_ids
+            .insert(pending.message_id, message_expiry);
+        self.retired_message_ids
+            .insert(pending.outer_message_id, message_expiry);
     }
 
     /// Submits one build request through the canonical production
@@ -948,7 +1364,7 @@ impl ExploratoryBuildCoordinator {
     where
         R: CryptoRng + RngCore,
     {
-        self.submit_path(request.into(), delivery, bridge, bridge_header, rng)
+        self.submit_path(request.into(), delivery, bridge, bridge_header, None, rng)
     }
 
     /// Submits an exact-three-hop Destination request through the same shared
@@ -969,7 +1385,37 @@ impl ExploratoryBuildCoordinator {
                 reason: "qualified Destination path must contain exactly three hops",
             });
         }
-        self.submit_path(request.into(), delivery, bridge, bridge_header, rng)
+        self.submit_path(request.into(), delivery, bridge, bridge_header, None, rng)
+    }
+
+    /// Submits a service Destination build through an already activated
+    /// outbound tunnel, targeting the selected first build hop at the tunnel
+    /// endpoint. Bootstrap callers continue to use `submit_destination`.
+    pub fn submit_destination_via_outbound_tunnel<R>(
+        &mut self,
+        request: DestinationBuildRequest,
+        delivery: &RouterDeliveryService,
+        bridge: &ShortBuildI2npBridge,
+        bridge_header: BridgeHeader,
+        outbound_slot: TunnelSlot,
+        rng: &mut R,
+    ) -> Result<SubmitResult, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if request.peers.len() != crate::destination_peers::QUALIFIED_DESTINATION_HOPS {
+            return Err(BuildCoordinatorError::Coordinator(
+                "outbound-tunnel build delivery requires a qualified service Destination path",
+            ));
+        }
+        self.submit_path(
+            request.into(),
+            delivery,
+            bridge,
+            bridge_header,
+            Some(outbound_slot),
+            rng,
+        )
     }
 
     fn submit_path<R>(
@@ -978,6 +1424,7 @@ impl ExploratoryBuildCoordinator {
         delivery: &RouterDeliveryService,
         bridge: &ShortBuildI2npBridge,
         bridge_header: BridgeHeader,
+        outbound_slot: Option<TunnelSlot>,
         rng: &mut R,
     ) -> Result<SubmitResult, BuildCoordinatorError>
     where
@@ -995,9 +1442,19 @@ impl ExploratoryBuildCoordinator {
                 "coordinator is paused after consecutive failures",
             ));
         }
-        if self.pending.len() >= MAX_PENDING_BUILDS {
+        if self
+            .pending
+            .len()
+            .saturating_add(self.settling_delivery_sets.len())
+            >= MAX_PENDING_BUILDS
+        {
             return Err(BuildCoordinatorError::Coordinator(
                 "too many pending builds",
+            ));
+        }
+        if self.build_id_scope_exhausted {
+            return Err(BuildCoordinatorError::Coordinator(
+                "retained build identifier registry is exhausted",
             ));
         }
         if request.peers.is_empty()
@@ -1013,6 +1470,48 @@ impl ExploratoryBuildCoordinator {
         if request.message_id == 0 {
             return Err(BuildCoordinatorError::Coordinator("message id is zero"));
         }
+        let outer_message_id = match bridge_header {
+            BridgeHeader::Standard { message_id, .. }
+            | BridgeHeader::ShortTransport { message_id, .. } => message_id,
+        };
+        if outer_message_id == 0 || outer_message_id == request.message_id {
+            return Err(BuildCoordinatorError::Coordinator(
+                "outer and terminal message ids must be distinct and nonzero",
+            ));
+        }
+        if self.reserved_message_ids().contains(&request.message_id)
+            || self.reserved_message_ids().contains(&outer_message_id)
+        {
+            return Err(BuildCoordinatorError::Coordinator(
+                "message id is pending or retained for replay protection",
+            ));
+        }
+        let reserved_tunnel_ids = reserved_path_tunnel_ids(&request)?;
+        if reserved_tunnel_ids.iter().any(|id| {
+            self.pending_tunnel_ids.contains(id) || self.retired_tunnel_ids.contains_key(id)
+        }) {
+            return Err(BuildCoordinatorError::Coordinator(
+                "tunnel id is pending, active, retiring, or replay-retained",
+            ));
+        }
+        if self
+            .pending_tunnel_ids
+            .len()
+            .saturating_add(self.retired_tunnel_ids.len())
+            .saturating_add(reserved_tunnel_ids.len())
+            > MAX_RETAINED_BUILD_IDS
+            || self
+                .pending
+                .len()
+                .saturating_mul(2)
+                .saturating_add(self.retired_message_ids.len())
+                .saturating_add(2)
+                > MAX_RETAINED_BUILD_IDS
+        {
+            return Err(BuildCoordinatorError::Coordinator(
+                "bounded build identifier registry is full",
+            ));
+        }
         if self.now_ms == 0 {
             return Err(BuildCoordinatorError::Coordinator(
                 "advance_time not called",
@@ -1022,8 +1521,6 @@ impl ExploratoryBuildCoordinator {
         let now_ms = self.now_ms;
         let attempt_id = self.next_attempt_id();
         tracing::info!(
-            build_attempt_id = attempt_id.get(),
-            i2np_message_id = request.message_id,
             direction = ?direction,
             transition = "selected",
             "destination build attempt"
@@ -1040,58 +1537,160 @@ impl ExploratoryBuildCoordinator {
         let action: ShortBuildAction = state
             .deliver_action(message)
             .map_err(map_construction_error)?;
-        let (i2np_message, _bridge_record) = bridge
-            .wrap_deliver_action(&action, bridge_header)
-            .map_err(|error| {
-                BuildCoordinatorError::Coordinator(match error {
-                    i2pr_tunnel::bridge::BridgeError::ZeroRecordCount => {
-                        "STBM record count is zero"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RecordCountMismatch { .. } => {
-                        "STBM record count prefix mismatch"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RecordCountOutOfRange { .. } => {
-                        "STBM record count above maximum"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::PayloadLengthMismatch { .. } => {
-                        "STBM payload length mismatch"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::DeferredBuildRecords(_) => {
-                        "deferred build records rejected"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::MessageFraming(_) => {
-                        "I2NP framing rejected the build message"
-                    }
-                    i2pr_tunnel::bridge::BridgeError::RoundTripBodyMismatch { .. } => {
-                        "I2NP round-trip body mismatch"
-                    }
-                })
-            })?;
-        let wire = i2np_message
-            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
-            .map_err(|_| {
-                BuildCoordinatorError::Coordinator("I2NP short-transport encoding failed")
-            })?;
+        // The inner build wire is framed per delivery branch
+        // below: the direct bootstrap exception keeps the short
+        // framing the pinned reference dispatches from complete
+        // SSU2 blocks, while a tunneled inner must be standard
+        // framed. The stock tunnel endpoint checks the inner
+        // `IsExpired` at the standard millisecond offset before
+        // routing; a short inner reads its seconds expiry plus
+        // record bytes as far-future milliseconds and is dropped
+        // as `TunnelMessage: Message expired` at the OBEP after
+        // traversing the whole outbound path.
         let first_peer_hash = request.peers.first().map(|peer| peer.router_hash).ok_or(
             BuildCoordinatorError::Coordinator("build path has no first hop"),
         )?;
         let peer = PeerId::from_hash(first_peer_hash);
-        let delivery_request = RouterDeliveryRequest::new(peer, wire, BUILD_DELIVERY_TIMEOUT)
-            .map_err(|_| {
+        let mut delivery_set = BuildDeliverySet::default();
+        // Redacted family of the selected transports, so a tunneled send
+        // that never reaches stock can be attributed to the
+        // SSU2-first/NTCP2-fallback seam without naming peers.
+        // Ephemeral selected-link generations (never peer identities),
+        // so a socket-emitted send that never reaches stock can be
+        // checked against session rotation without naming peers.
+        let mut delivery_links: Vec<u64> = Vec::new();
+        let mut delivery_family: Option<&'static str> = None;
+        // Redacted per-cell accounting: wire lengths and fresh
+        // transport message IDs (ephemeral randoms, same class
+        // as link generations) so a tunneled send that never
+        // reaches stock can be checked cell-by-cell against
+        // stock-side fragment/expiry counters.
+        let mut cell_wire_lens: Vec<usize> = Vec::new();
+        let mut cell_message_ids: Vec<u32> = Vec::new();
+        let delivery_outcome = if let Some(slot) = outbound_slot {
+            let expiration_ms = match bridge_header {
+                BridgeHeader::Standard { expiration_ms, .. } => expiration_ms,
+                BridgeHeader::ShortTransport {
+                    expiration_seconds, ..
+                } => u64::from(expiration_seconds).saturating_mul(1000),
+            };
+            let outbound_role =
+                self.registry
+                    .outbound(slot)
+                    .ok_or(BuildCoordinatorError::Coordinator(
+                        "selected outbound tunnel is unavailable",
+                    ))?;
+            // Same identifiers and instant as the direct framing,
+            // standard envelope so the stock OBEP expiry check
+            // passes on the tunneled inner.
+            let wire = wrap_inner_wire(
+                bridge,
+                &action,
+                BridgeHeader::Standard {
+                    message_id: outer_message_id,
+                    expiration_ms,
+                },
+            )?;
+            let cells = compose_outbound_build_deliveries(
+                outbound_role,
+                first_peer_hash,
+                outer_message_id,
+                expiration_ms,
+                &wire,
+                now_ms,
+                rng,
+            )?;
+            delivery_set.required = cells.len();
+            let mut result = RouterDeliveryOutcome::Accepted;
+            for (target_peer, transport_wire, cell_message_id) in cells {
+                cell_wire_lens.push(transport_wire.len());
+                cell_message_ids.push(cell_message_id);
+                let delivery_request =
+                    RouterDeliveryRequest::new(target_peer, transport_wire, BUILD_DELIVERY_TIMEOUT)
+                        .map_err(|_| {
+                            BuildCoordinatorError::Coordinator("delivery request validation failed")
+                        })?;
+                let (cell_result, selected, ticket) = delivery
+                    .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+                if let Some(transport) = selected {
+                    let family = transport.as_str();
+                    delivery_family = Some(match delivery_family {
+                        None => family,
+                        Some(previous) if previous == family => family,
+                        Some(_) => "mixed",
+                    });
+                    let generation = match transport {
+                        RouterDeliveryTransport::Ssu2(link)
+                        | RouterDeliveryTransport::Ntcp2(link) => link.value(),
+                    };
+                    if delivery_links.len() < 8 {
+                        delivery_links.push(generation);
+                    }
+                }
+                delivery_set.unobserved |= ticket.is_none();
+                delivery_set.tickets.push(ticket);
+                result = cell_result;
+                if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                    delivery_set.failed = true;
+                    break;
+                }
+            }
+            result
+        } else {
+            // Direct bootstrap exception keeps the caller framing.
+            let wire = wrap_inner_wire(bridge, &action, bridge_header)?;
+            let wire_len = wire.len();
+            let delivery_request = RouterDeliveryRequest::new(peer, wire, BUILD_DELIVERY_TIMEOUT)
+                .map_err(|_| {
                 BuildCoordinatorError::Coordinator("delivery request validation failed")
             })?;
-        let delivery_outcome =
-            delivery.deliver(delivery_request, &i2pr_runtime::CancellationToken::new());
+            delivery_set.required = 1;
+            let (result, selected, ticket) = delivery
+                .deliver_with_ticket(delivery_request, &i2pr_runtime::CancellationToken::new());
+            // Direct bootstrap exception: one cell carrying the outer
+            // message ID, recorded with the same redacted accounting.
+            cell_wire_lens.push(wire_len);
+            cell_message_ids.push(outer_message_id);
+            if let Some(transport) = selected {
+                delivery_family = Some(transport.as_str());
+                let generation = match transport {
+                    RouterDeliveryTransport::Ssu2(link) | RouterDeliveryTransport::Ntcp2(link) => {
+                        link.value()
+                    }
+                };
+                delivery_links.push(generation);
+            }
+            delivery_set.unobserved = ticket.is_none();
+            delivery_set.tickets.push(ticket);
+            if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                delivery_set.failed = true;
+            }
+            result
+        };
         let accepted = matches!(delivery_outcome, RouterDeliveryOutcome::Accepted);
         tracing::info!(
-            build_attempt_id = attempt_id.get(),
-            i2np_message_id = request.message_id,
             direction = ?direction,
+            delivery_family = delivery_family.unwrap_or("unobserved"),
+            delivery_links = ?delivery_links,
+            cell_count = cell_wire_lens.len(),
+            cell_wire_lens = ?cell_wire_lens,
+            cell_message_ids = ?cell_message_ids,
             transition = if accepted { "delivery_admitted" } else { "delivery_rejected" },
             "destination build attempt"
         );
         self.counters.outbound_builds = self.counters.outbound_builds.saturating_add(1);
         if !accepted {
+            if !delivery_set.tickets.is_empty()
+                && self.settling_delivery_sets.len() < MAX_PENDING_BUILDS
+            {
+                self.settling_delivery_sets.insert(
+                    attempt_id,
+                    RetainedBuildDeliverySet {
+                        set: delivery_set,
+                        expires_at_ms: now_ms.saturating_add(BUILD_DEADLINE_MS),
+                    },
+                );
+            }
             self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
             if request.destination_id.is_none() {
                 self.record_failure();
@@ -1134,14 +1733,19 @@ impl ExploratoryBuildCoordinator {
             target_peer,
             deadline_ms,
             message_id: request.message_id,
+            outer_message_id,
+            reserved_tunnel_ids: reserved_tunnel_ids.into_iter().collect(),
             next_tunnel: request.peers.last().map(|peer| peer.next_tunnel).ok_or(
                 BuildCoordinatorError::Coordinator("build path has no terminal hop"),
             )?,
             garlic_key,
             garlic_tag,
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set,
             state,
         };
+        self.pending_tunnel_ids
+            .extend(pending.reserved_tunnel_ids.iter().copied());
         let _ = self.pending.insert(attempt_id, pending);
         Ok(SubmitResult::Submitted {
             direction,
@@ -1336,6 +1940,14 @@ impl ExploratoryBuildCoordinator {
             if peer_match {
                 self.counters.inbound_orphans_peer_match =
                     self.counters.inbound_orphans_peer_match.saturating_add(1);
+                // Late-ours signal: same peer, id of a retired
+                // attempt (versus unrelated stock traffic).
+                if self.retired_message_ids.contains_key(&message_id) {
+                    self.counters.inbound_orphans_retired_id_match = self
+                        .counters
+                        .inbound_orphans_retired_id_match
+                        .saturating_add(1);
+                }
             }
             if message_match {
                 self.counters.inbound_orphans_message_match = self
@@ -1489,6 +2101,7 @@ impl ExploratoryBuildCoordinator {
             Some(value) => value,
             None => return Vec::new(),
         };
+        self.retire_pending_ids(&pending);
         let mut pending = pending;
         let destination_id = pending.destination_id;
         let direction = pending.direction;
@@ -1743,6 +2356,7 @@ impl ExploratoryBuildCoordinator {
         let mut outcomes = Vec::with_capacity(expired.len());
         for id in expired {
             if let Some(pending) = self.pending.remove(&id) {
+                self.retire_pending_ids(&pending);
                 self.counters.timeouts = self.counters.timeouts.saturating_add(1);
                 self.record_attempt_failure(pending.destination_id);
                 outcomes.extend(scope_destination_terminal(
@@ -1761,6 +2375,7 @@ impl ExploratoryBuildCoordinator {
     /// disposition.
     pub fn cancel(&mut self, attempt_id: BuildAttemptId) -> Option<BuildCoordinatorOutcome> {
         let pending = self.pending.remove(&attempt_id)?;
+        self.retire_pending_ids(&pending);
         let outcome = pending.state.cancel();
         self.counters.cancellations = self.counters.cancellations.saturating_add(1);
         let terminal = match outcome {
@@ -2112,6 +2727,303 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
+    /// Plan 478 — the destination-role slot namespace starts at
+    /// [`DESTINATION_ROLE_SLOT_BASE`] while exploratory pool slots
+    /// allocate upward from zero, so the high bit discriminates a
+    /// registry slot bound by `activate_destination_tunnel` from
+    /// one bound by the exploratory pool. Pins the boundary the
+    /// owner-miss taxonomy's divergence arm depends on.
+    #[test]
+    fn destination_role_slot_namespace_starts_at_high_bit() {
+        assert_eq!(DESTINATION_ROLE_SLOT_BASE, 0x8000_0000);
+        assert!(!is_destination_role_slot(TunnelSlot::from_raw(0)));
+        assert!(!is_destination_role_slot(TunnelSlot::from_raw(0x7FFF_FFFF)));
+        assert!(is_destination_role_slot(TunnelSlot::from_raw(
+            DESTINATION_ROLE_SLOT_BASE
+        )));
+        assert!(is_destination_role_slot(TunnelSlot::from_raw(u32::MAX)));
+    }
+
+    #[test]
+    fn build_delivery_set_waits_for_every_source_owned_writer_ticket() {
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        let mut set = BuildDeliverySet {
+            required: 2,
+            tickets: vec![
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x11; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(1).expect("link generation"),
+                    ),
+                    first_rx,
+                )),
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x12; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(2).expect("link generation"),
+                    ),
+                    second_rx,
+                )),
+            ],
+            observed: 0,
+            emitted: 0,
+            failed: false,
+            unobserved: false,
+        };
+        assert_eq!(set.disposition(), BuildEmissionDisposition::Pending);
+        first_tx.send(true).expect("first write receipt");
+        set.poll();
+        assert_eq!(set.disposition(), BuildEmissionDisposition::Pending);
+        second_tx.send(true).expect("second write receipt");
+        set.poll();
+        assert_eq!(
+            set.disposition(),
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+        );
+
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        let mut partial = BuildDeliverySet {
+            required: 2,
+            tickets: vec![
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x13; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(3).expect("link generation"),
+                    ),
+                    first_rx,
+                )),
+                Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x14; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(4).expect("link generation"),
+                    ),
+                    second_rx,
+                )),
+            ],
+            observed: 0,
+            emitted: 0,
+            failed: false,
+            unobserved: false,
+        };
+        first_tx.send(true).expect("first write receipt");
+        second_tx.send(false).expect("failed second write");
+        partial.poll();
+        assert_eq!(
+            partial.disposition(),
+            BuildEmissionDisposition::PartialEmission
+        );
+    }
+
+    #[test]
+    fn cancelled_build_drops_live_writer_tickets_and_never_resurrects() {
+        let attempt_id = BuildAttemptId::new(71);
+        let (ticket_tx, ticket_rx) = tokio::sync::oneshot::channel();
+        let pending = PendingBuild {
+            attempt_id,
+            direction: BuildDirection::Outbound,
+            destination_id: None,
+            target_peer: PeerId::from_hash(Hash::from_bytes([0x41; 32])),
+            deadline_ms: 1_700_000_060_000,
+            message_id: 0x7711,
+            outer_message_id: 0x7712,
+            reserved_tunnel_ids: vec![0x7611],
+            next_tunnel: TunnelId::new(0x7511).expect("next tunnel"),
+            garlic_key: None,
+            garlic_tag: None,
+            inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet {
+                required: 1,
+                tickets: vec![Some(RouterDeliveryTicket::from_receiver(
+                    PeerId::from_hash(Hash::from_bytes([0x41; 32])),
+                    crate::router_i2np::RouterDeliveryTransport::Ntcp2(
+                        i2pr_transport::LinkId::new(11).expect("link generation"),
+                    ),
+                    ticket_rx,
+                ))],
+                observed: 0,
+                emitted: 0,
+                failed: false,
+                unobserved: false,
+            },
+            state: ShortBuildStateMachine::new(
+                short_build_path(
+                    &BuildPathRequest {
+                        direction: BuildDirection::Outbound,
+                        peers: vec![PeerBuildMaterial {
+                            router_hash: Hash::from_bytes([0x41; 32]),
+                            static_encryption_key: [0x42; 32],
+                            receive_tunnel: TunnelId::new(0x7411).expect("receive"),
+                            next_tunnel: TunnelId::new(0x7511).expect("next"),
+                            role: HopRole::OutboundEndpoint,
+                        }],
+                        creator_tunnel_id: TunnelId::new(0x7611).expect("creator tunnel"),
+                        message_id: 0x7711,
+                        outbound_reply_router: None,
+                        originator_hash: None,
+                        destination_id: None,
+                    },
+                    attempt_id,
+                    1_700_000_000_000,
+                ),
+                1_700_000_060_000,
+            ),
+        };
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator
+            .pending_tunnel_ids
+            .extend(pending.reserved_tunnel_ids.iter().copied());
+        coordinator.pending.insert(attempt_id, pending);
+        assert_eq!(
+            coordinator.emission_disposition(attempt_id),
+            Some(BuildEmissionDisposition::Pending)
+        );
+        assert!(coordinator.cancel(attempt_id).is_some());
+        // The late writer receipt settles nowhere: the receiver died
+        // with the cancelled attempt, so the send must fail rather
+        // than flip any terminal outcome.
+        assert!(
+            ticket_tx.send(true).is_err(),
+            "late receipt after cancel must not resurrect the attempt"
+        );
+        assert_eq!(coordinator.emission_disposition(attempt_id), None);
+        assert_eq!(coordinator.pending_len(), 0);
+        // Cancellation still replay-retains the attempt identifiers.
+        assert!(coordinator.reserved_tunnel_ids().contains(&0x7611));
+        assert!(coordinator.reserved_message_ids().contains(&0x7711));
+    }
+
+    #[test]
+    fn retained_delivery_set_settles_without_resurrecting_its_attempt() {
+        let attempt_id = BuildAttemptId::new(72);
+        let (ticket_tx, ticket_rx) = tokio::sync::oneshot::channel();
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.settling_delivery_sets.insert(
+            attempt_id,
+            RetainedBuildDeliverySet {
+                set: BuildDeliverySet {
+                    required: 1,
+                    tickets: vec![Some(RouterDeliveryTicket::from_receiver(
+                        PeerId::from_hash(Hash::from_bytes([0x43; 32])),
+                        crate::router_i2np::RouterDeliveryTransport::Ssu2(
+                            i2pr_transport::LinkId::new(12).expect("link generation"),
+                        ),
+                        ticket_rx,
+                    ))],
+                    observed: 0,
+                    emitted: 0,
+                    failed: false,
+                    unobserved: false,
+                },
+                expires_at_ms: 1_700_000_060_000,
+            },
+        );
+        // The attempt itself is gone; only the retained set settles.
+        assert_eq!(coordinator.pending_len(), 0);
+        ticket_tx.send(true).expect("late write receipt");
+        coordinator.advance_time(1_700_000_000_000);
+        assert_eq!(
+            coordinator.emission_disposition(attempt_id),
+            Some(BuildEmissionDisposition::AllOriginatorDeliveriesEmitted),
+            "retained set records the late write without a pending attempt"
+        );
+        coordinator.advance_time(1_700_000_060_001);
+        assert_eq!(coordinator.emission_disposition(attempt_id), None);
+        assert_eq!(coordinator.pending_len(), 0);
+    }
+
+    #[test]
+    fn path_id_reservations_allow_only_adjacent_tunnel_chain_aliases() {
+        let make_peer = |index: u8, receive: u32, next: u32| PeerBuildMaterial {
+            router_hash: Hash::from_bytes([index; 32]),
+            static_encryption_key: [index.wrapping_add(1); 32],
+            receive_tunnel: TunnelId::new(receive).expect("receive tunnel"),
+            next_tunnel: TunnelId::new(next).expect("next tunnel"),
+            role: if index == 3 {
+                HopRole::OutboundEndpoint
+            } else {
+                HopRole::Participant
+            },
+        };
+        let request = BuildPathRequest {
+            direction: BuildDirection::Outbound,
+            peers: vec![
+                make_peer(1, 11, 12),
+                make_peer(2, 12, 13),
+                make_peer(3, 13, 14),
+            ],
+            creator_tunnel_id: TunnelId::new(10).expect("creator tunnel"),
+            message_id: 20,
+            outbound_reply_router: None,
+            originator_hash: None,
+            destination_id: None,
+        };
+        let reserved = reserved_path_tunnel_ids(&request).expect("valid adjacent chain");
+        assert_eq!(reserved, HashSet::from([10, 11, 12, 13, 14]));
+
+        let mut nonadjacent_collision = request.clone();
+        nonadjacent_collision.peers[2].next_tunnel = TunnelId::new(12).expect("reused id");
+        assert!(reserved_path_tunnel_ids(&nonadjacent_collision).is_err());
+
+        let mut broken_chain = request;
+        broken_chain.peers[1].receive_tunnel = TunnelId::new(99).expect("unlinked receive");
+        assert!(reserved_path_tunnel_ids(&broken_chain).is_err());
+    }
+
+    #[test]
+    fn service_build_tunnel_delivery_targets_build_gateway_through_outbound_first_hop() {
+        use i2pr_tunnel::build_crypto::LayerKeys;
+        use i2pr_tunnel::established::{EstablishedHop, EstablishedRole, EstablishedTunnel};
+        use i2pr_tunnel::roles::OutboundGatewayRole;
+        use i2pr_tunnel::{TunnelDirection, TunnelPeer};
+
+        let outbound_peer_hash = Hash::from_bytes([0x31; 32]);
+        let build_gateway_hash = Hash::from_bytes([0x42; 32]);
+        let receive = TunnelId::new(0x1234).expect("outbound receive tunnel");
+        let hop = EstablishedHop::terminal(
+            TunnelPeer::from_hash(outbound_peer_hash),
+            EstablishedRole::OutboundEndpoint,
+            receive,
+            LayerKeys::new([0x51; 32], [0x52; 32], [0x53; 32]),
+        );
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(0x2345).expect("creator id"),
+            vec![hop],
+            0,
+            None,
+            None,
+        )
+        .expect("established outbound tunnel");
+        let role = OutboundGatewayRole::new(tunnel, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x478);
+        let deliveries = compose_outbound_build_deliveries(
+            &role,
+            build_gateway_hash,
+            0x3456,
+            30_000,
+            &[0x61; 32],
+            1_000,
+            &mut rng,
+        )
+        .expect("tunnel route composition");
+        assert_eq!(deliveries.len(), 1);
+        let (target, bytes, cell_message_id) = &deliveries[0];
+        assert_eq!(*target, PeerId::from_hash(outbound_peer_hash));
+        assert_ne!(*target, PeerId::from_hash(build_gateway_hash));
+        assert_ne!(
+            *cell_message_id, 0,
+            "tunnel-data transport ID must be nonzero"
+        );
+        let message = I2npMessage::decode_short_transport(bytes, MAX_I2NP_MESSAGE_BYTES)
+            .expect("TunnelData transport envelope");
+        let I2npBody::TunnelData(cell) = message.body() else {
+            panic!("outbound route must deliver TunnelData");
+        };
+        assert_eq!(cell.tunnel_id, receive.get());
+    }
+
     #[test]
     fn wrapped_outbound_invalid_reply_keeps_its_exact_attempt_id() {
         let destination_id = DestinationId::from_hash(Hash::from_bytes([0x31; 32]));
@@ -2149,15 +3061,23 @@ mod tests {
             target_peer,
             deadline_ms: 1_700_000_060_000,
             message_id: path.next_message_id,
+            outer_message_id: 0x7702,
+            reserved_tunnel_ids: vec![0x7601, 0x7400, 0x7401, 0x7402, 0x7500, 0x7501, 0x7502],
             next_tunnel,
             garlic_key: Some(Zeroizing::new([0xA1; 32])),
             garlic_tag: Some([0xB1; GARLIC_REPLY_TAG_LEN]),
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet::default(),
             state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator
+            .pending_tunnel_ids
+            .extend(pending.reserved_tunnel_ids.iter().copied());
         coordinator.pending.insert(attempt_id, pending);
-
+        assert_eq!(coordinator.pending_message_ids(), vec![0x7701]);
+        assert!(coordinator.has_pending_message_id(0x7701));
+        assert!(!coordinator.has_pending_message_id(0x7702));
         let garlic = I2npMessage::new_standard(
             0x7701,
             Date::from_millis(1_700_000_000_000),
@@ -2203,6 +3123,18 @@ mod tests {
                 ..
             }] if *correlated_attempt == attempt_id
         ));
+        assert_eq!(
+            coordinator.pending_len(),
+            1,
+            "bad garlic keeps the attempt pending"
+        );
+        assert!(coordinator.cancel(attempt_id).is_some());
+        assert!(coordinator.reserved_message_ids().contains(&0x7701));
+        assert!(coordinator.reserved_message_ids().contains(&0x7702));
+        assert!(coordinator.reserved_tunnel_ids().contains(&0x7601));
+        coordinator.advance_time(1_700_000_000_000 + BUILD_TUNNEL_ID_RETENTION_MS + 1);
+        assert!(!coordinator.reserved_tunnel_ids().contains(&0x7601));
+        assert!(!coordinator.reserved_message_ids().contains(&0x7701));
     }
 
     #[test]
@@ -2241,10 +3173,13 @@ mod tests {
             target_peer,
             deadline_ms: 1_700_000_060_000,
             message_id: expected_message_id,
+            outer_message_id: 0x7702,
+            reserved_tunnel_ids: vec![0x7601, 0x7400, 0x7401, 0x7402, 0x7500, 0x7501, 0x7502],
             next_tunnel: terminal.next_tunnel(),
             garlic_key: None,
             garlic_tag: None,
             inbound_observation: InboundBuildObservation::default(),
+            delivery_set: BuildDeliverySet::default(),
             state: ShortBuildStateMachine::new(path, 1_700_000_060_000),
         };
         let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
@@ -2387,6 +3322,11 @@ mod tests {
                     .then_some(Hash::from_bytes([0x79; 32])),
             };
             let path_request = BuildPathRequest::from(request);
+            let mut reserved_tunnel_ids = vec![path_request.creator_tunnel_id.get()];
+            for peer in &path_request.peers {
+                reserved_tunnel_ids.push(peer.receive_tunnel.get());
+                reserved_tunnel_ids.push(peer.next_tunnel.get());
+            }
             let attempt_id = BuildAttemptId::new(attempt_raw);
             let path = short_build_path(&path_request, attempt_id, 1_000);
             let target_peer = PeerId::from_hash(path.hops[0].router_hash());
@@ -2398,10 +3338,13 @@ mod tests {
                 target_peer,
                 deadline_ms: 60_000,
                 message_id,
+                outer_message_id: 0x7800 + attempt_raw as u32,
+                reserved_tunnel_ids,
                 next_tunnel: TunnelId::new(0x7A00 + attempt_raw as u32).expect("next tunnel"),
                 garlic_key: None,
                 garlic_tag: None,
                 inbound_observation: InboundBuildObservation::default(),
+                delivery_set: BuildDeliverySet::default(),
                 state: ShortBuildStateMachine::new(path, 60_000),
             }
         }
@@ -2573,5 +3516,124 @@ mod tests {
             extract_reply_payload(&wire),
             Err("inbound build reply is not OutboundTunnelBuildReply")
         ));
+    }
+
+    #[test]
+    fn tunneled_inbound_build_composes_single_two_fragment_cell() {
+        use i2pr_tunnel::build_crypto::LayerKeys;
+        use i2pr_tunnel::established::{
+            EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+        };
+        use i2pr_tunnel::roles::OutboundGatewayRole;
+        use i2pr_tunnel::{TunnelDirection, TunnelPeer};
+
+        let peers = (0..3)
+            .map(|index| PeerBuildMaterial {
+                router_hash: Hash::from_bytes([0x60 + index; 32]),
+                static_encryption_key: [0x70 + index; 32],
+                receive_tunnel: TunnelId::new(0x8100 + u32::from(index)).expect("receive"),
+                next_tunnel: TunnelId::new(0x8101 + u32::from(index)).expect("next"),
+                role: match index {
+                    0 => HopRole::InboundGateway,
+                    _ => HopRole::Participant,
+                },
+            })
+            .collect::<Vec<_>>();
+        let request = BuildPathRequest {
+            direction: BuildDirection::Inbound,
+            peers,
+            creator_tunnel_id: TunnelId::new(0x8001).expect("creator tunnel"),
+            message_id: 0x8002,
+            outbound_reply_router: None,
+            originator_hash: Some(Hash::from_bytes([0x79; 32])),
+            destination_id: None,
+        };
+        let now_ms = 1_700_000_000_000_u64;
+        let path = short_build_path(&request, BuildAttemptId::new(99), now_ms);
+        path.validate().expect("valid path");
+        let mut state = ShortBuildStateMachine::with_cryptography(
+            path,
+            now_ms.saturating_add(60_000),
+            i2pr_tunnel::build_crypto::EciesX25519BuildCryptography::new(),
+        );
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4780);
+        let message = state.prepare(&mut rng).expect("prepare");
+        let action: ShortBuildAction = state.deliver_action(message).expect("deliver");
+        let bridge = ShortBuildI2npBridge::new();
+        // The tunneled inner mirrors the live submit path: standard
+        // framing with millisecond expiry, so the stock OBEP
+        // `IsExpired` check at the standard offset passes. A short
+        // inner reads as far-future and is dropped as
+        // `TunnelMessage: Message expired` after traversing the
+        // whole outbound path.
+        let header = BridgeHeader::Standard {
+            message_id: 0x8003,
+            expiration_ms: 1_700_000_060_000,
+        };
+        let wire = wrap_inner_wire(&bridge, &action, header).expect("wrap inner");
+        let decoded = I2npMessage::decode_standard(&wire, MAX_I2NP_MESSAGE_BYTES)
+            .expect("standard inner decodes");
+        assert!(
+            matches!(decoded.body(), I2npBody::ShortTunnelBuild(_)),
+            "tunneled inner carries the build records"
+        );
+        // A three-hop short build request (4 records) is small
+        // enough for one TunnelData cell; the fixed 1028-byte cell
+        // body always needs two SSU2 fragments at the default
+        // 1024-byte budget. Both facts are live-lane evidence
+        // inputs, so they are pinned here.
+        assert_eq!(wire.len(), 889, "standard inner build wire size");
+        let outbound_peer_hash = Hash::from_bytes([0x31; 32]);
+        let outbound_hops = vec![
+            EstablishedHop::with_next(
+                TunnelPeer::from_hash(outbound_peer_hash),
+                EstablishedRole::Participant,
+                TunnelId::new(0x301).expect("first receive"),
+                LayerKeys::new([0x51; 32], [0x52; 32], [0x53; 32]),
+                EstablishedNextHop::new(
+                    TunnelPeer::from_hash(Hash::from_bytes([0x32; 32])),
+                    TunnelId::new(0x401).expect("endpoint receive"),
+                ),
+            ),
+            EstablishedHop::terminal(
+                TunnelPeer::from_hash(Hash::from_bytes([0x32; 32])),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(0x401).expect("endpoint receive"),
+                LayerKeys::new([0x54; 32], [0x55; 32], [0x56; 32]),
+            ),
+        ];
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(0x2345).expect("creator id"),
+            outbound_hops,
+            0,
+            None,
+            None,
+        )
+        .expect("established outbound tunnel");
+        let role = OutboundGatewayRole::new(tunnel, now_ms.saturating_add(60_000));
+        let deliveries = compose_outbound_build_deliveries(
+            &role,
+            Hash::from_bytes([0x60; 32]),
+            0x8003,
+            60_000,
+            &wire,
+            now_ms,
+            &mut rng,
+        )
+        .expect("tunnel route composition");
+        assert_eq!(deliveries.len(), 1, "one cell per inbound build");
+        let (_, bytes, cell_message_id) = &deliveries[0];
+        assert_ne!(*cell_message_id, 0, "cell transport ID must be nonzero");
+        // 4-byte tunnel ID + 16-byte IV + 1008-byte payload, framed
+        // with a 9-byte short-transport header.
+        assert_eq!(bytes.len(), 1037, "cell transport wire size");
+        let body_len = bytes.len() - 9;
+        assert_eq!(body_len, 1028, "cell transport body size");
+        assert_eq!(
+            body_len.div_ceil(1024),
+            2,
+            "cell needs two SSU2 fragments at the default budget"
+        );
     }
 }
