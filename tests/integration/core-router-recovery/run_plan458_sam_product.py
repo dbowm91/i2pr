@@ -88,6 +88,7 @@ def parse_attempt_receipt_lines(lines):
     inbound_build_wait_receipts = []
     stream_connect_handshake_wait_receipts = []
     stream_accept_data_phase_close_receipts = []
+    accept_pump_started = 0
     delivery_admitted_cells = []
     for raw_line in lines:
         line = strip_ansi(raw_line)
@@ -240,6 +241,7 @@ def parse_attempt_receipt_lines(lines):
                     "garlic_authenticated", "garlic_rejected",
                     "payloads_dequeued", "streaming_accepted",
                     "connection_state_code", "undrained_bytes", "reset",
+                    "bridge_present",
                 )
             }
             if all(match for match in values.values()):
@@ -257,7 +259,18 @@ def parse_attempt_receipt_lines(lines):
                 )
                 if not (mirror and canon):
                     continue
+                # bridge_present is a 0/1 flag: 0 marks the torn-down
+                # shape (bridge gone before close, all deltas zero by
+                # construction); anything else is malformed.
+                if receipt["bridge_present"] not in (0, 1):
+                    continue
                 stream_accept_data_phase_close_receipts.append(receipt)
+        # Plan 478 pump lifecycle: each inbound raw-pump start is one
+        # INFO line with no build_attempt_id, so it is counted
+        # explicitly (never a stage count). Together with the close
+        # receipts it splits bind-gap (0 starts) from unfinished-pump.
+        if re.search(r'transition\s*=\s*"?stream_accept_pump_started', line):
+            accept_pump_started += 1
         summary = re.search(
             r"inbound_receive_count\s*=\s*(\d+).*?lease_count\s*=\s*(\d+).*?"
             r"inbound_owner_registered\s*=\s*(true|false).*?"
@@ -293,6 +306,7 @@ def parse_attempt_receipt_lines(lines):
         "inbound_build_wait_receipts": inbound_build_wait_receipts,
         "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
         "stream_accept_data_phase_close_receipts": stream_accept_data_phase_close_receipts,
+        "accept_pump_started": accept_pump_started,
     }
 
 
@@ -816,6 +830,46 @@ def wait_for_accept_close_receipt(stdout_path, budget_s=30.0):
         time.sleep(min(0.5, remaining))
 
 
+def router_binary_provenance():
+    """Provenance of the i2pr binary the lane executes.
+
+    Records the binary mtime/size plus the source-tree identity
+    (HEAD SHA, dirty file count) so a receipt can never again be
+    read against the wrong build. Read-only; a collection failure
+    yields "unknown" fields rather than aborting the lane.
+    """
+    provenance = {
+        "bin_mtime": "unknown",
+        "bin_size": -1,
+        "git_head": "unknown",
+        "git_dirty_files": -1,
+    }
+    try:
+        stat = (ROOT / "target/debug/i2pr").stat()
+        provenance["bin_mtime"] = int(stat.st_mtime)
+        provenance["bin_size"] = int(stat.st_size)
+    except OSError:
+        pass
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        if head.returncode == 0:
+            provenance["git_head"] = head.stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        if dirty.returncode == 0:
+            provenance["git_dirty_files"] = len(
+                [line for line in dirty.stdout.splitlines() if line.strip()]
+            )
+    except (OSError, ValueError):
+        pass
+    return provenance
+
+
 def clean_lane_evidence(evidence_dir=None):
     """Remove previous-run lane outputs before a run starts.
 
@@ -870,6 +924,7 @@ def main():
             )
         receipt = lane.router_network_sam_attempt_receipt()
         stock_receipt = lane.stock_build_receipt()
+        provenance = router_binary_provenance()
         (EVIDENCE / "attempt-diagnostic.json").write_text(
             json.dumps(
                 {"schema": "plan471-stock-build-receipt-v1", **receipt,
@@ -877,6 +932,7 @@ def main():
                  "driver_leg_failure": driver_leg_failure,
                  "accept_close_wait_s": accept_close_waited_s,
                  "accept_close_found": accept_close_found,
+                 "router_binary_provenance": provenance,
                  "mesh_churn_before": lane.stock_churn_before,
                  "mesh_quiet": lane.mesh_quiet},
                 sort_keys=True,
@@ -889,6 +945,7 @@ def main():
                           "driver_leg_failure": driver_leg_failure,
                           "accept_close_wait_s": accept_close_waited_s,
                           "accept_close_found": accept_close_found,
+                          "router_binary_provenance": provenance,
                           "mesh_churn_before": lane.stock_churn_before,
                           "mesh_quiet": lane.mesh_quiet}, sort_keys=True),
             file=__import__("sys").stderr,

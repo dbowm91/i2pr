@@ -6512,7 +6512,7 @@ async fn provision_all_service_router_material(
                 // identifiers. Explicit rejection, invalid replies, local
                 // delivery failure, and cancellation never loop.
                 let mut attempts = 0u8;
-                let binding = loop {
+                let (binding, bootstrap_attempt_id) = loop {
                     attempts = attempts.saturating_add(1);
                     let mut bootstrap_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                         ServiceProductError::Provisioning(
@@ -6551,7 +6551,7 @@ async fn provision_all_service_router_material(
                     )
                     .await
                     {
-                        Ok(binding) => break binding,
+                        Ok(binding) => break (binding, attempt_id),
                         Err(error) => {
                             let disposition = coordinator
                                 .emission_disposition(attempt_id)
@@ -6643,6 +6643,18 @@ async fn provision_all_service_router_material(
                         }
                     }
                 };
+                // Plan 478: the bootstrap install commits the first
+                // outbound role like every other path. The commit was
+                // previously silent here, so a bootstrap-only run read
+                // as match-without-install in the lane receipts
+                // (run 0h6f38y_). Same line shape as the service
+                // install sites; no parser change needed.
+                tracing::info!(
+                    build_attempt_id = bootstrap_attempt_id.get(),
+                    direction = ?BuildDirection::Outbound,
+                    transition = "install_committed",
+                    "destination build attempt"
+                );
                 bootstrap_outbound_role_slot = Some(binding.role_slot);
             }
             // Prefer an inbound terminal that already has a live session

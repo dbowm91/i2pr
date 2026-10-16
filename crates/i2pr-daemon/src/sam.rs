@@ -3596,10 +3596,51 @@ fn accept_data_phase_baseline(
     })
 }
 
+/// Plan 478 ACCEPT data-phase close receipt: the
+/// per-accepted-stream ingress attribution as owned counts.
+/// `bridge_present = false` means the destination bridge was
+/// already gone when the pump finished (teardown won the race):
+/// every delta reads zero and `connection_state_code` reads 0 by
+/// construction. The receipt still fires so the lane can tell
+/// "torn down before close" apart from "no receipt at all" (pump
+/// never finished). Counts only; no identities, keys, ports, or
+/// payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct AcceptDataPhaseCloseReceipt {
+    pub mirror: i2pr_client::streaming::DataPacketIngressAccounting,
+    pub canonical: i2pr_client::streaming::DataPacketIngressAccounting,
+    pub garlic_authenticated: u64,
+    pub garlic_rejected: u64,
+    pub payloads_dequeued: u64,
+    pub streaming_accepted: u64,
+    pub connection_state_code: u64,
+    pub undrained_bytes: u64,
+    pub reset: bool,
+    pub bridge_present: bool,
+}
+
+impl AcceptDataPhaseCloseReceipt {
+    /// All-zero torn-down receipt: bridge absent at close.
+    fn torn_down(reset: bool) -> Self {
+        Self {
+            mirror: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            canonical: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            garlic_authenticated: 0,
+            garlic_rejected: 0,
+            payloads_dequeued: 0,
+            streaming_accepted: 0,
+            connection_state_code: 0,
+            undrained_bytes: 0,
+            reset,
+            bridge_present: false,
+        }
+    }
+}
+
 impl SamServiceState {
     /// Plan 478 ACCEPT data-phase close attribution: diffs the
     /// destination bridge ingress counters against the handoff
-    /// baseline and emits the per-accepted-stream receipt. Must run
+    /// baseline into a per-accepted-stream receipt. Must run
     /// before the connection is removed — the close-time state is
     /// itself decisive evidence:
     /// - `connection_state_code = 1` (still Established): the pump
@@ -3614,74 +3655,98 @@ impl SamServiceState {
     /// No-op when the cleanup carries no baseline (outbound
     /// CONNECT streams). Counts only; no identities, keys, ports,
     /// or payload material.
-    pub(crate) fn emit_accept_data_phase_close(&self, cleanup: &RawStreamCleanup, reset: bool) {
+    /// Plan 478 ACCEPT data-phase close snapshot: diffs the
+    /// destination bridge ingress counters against the handoff
+    /// baseline. Returns `None` when the cleanup carries no baseline
+    /// (outbound CONNECT streams close unattributed by design).
+    /// Returns the all-zero torn-down receipt when the bridge is
+    /// already gone — teardown before close is itself evidence, and
+    /// must not read as a silent pump.
+    pub(crate) fn accept_data_phase_close_receipt(
+        &self,
+        cleanup: &RawStreamCleanup,
+        reset: bool,
+    ) -> Option<AcceptDataPhaseCloseReceipt> {
         use i2pr_client::streaming::connection::ConnectionState;
 
-        let Some(baseline) = cleanup.data_phase_baseline.as_ref() else {
+        let baseline = cleanup.data_phase_baseline.as_ref()?;
+        let garlic_now = bridge_garlic_totals(self, cleanup.destination_id);
+        let destinations_arc = self.sam_destinations();
+        let Ok(destinations) = destinations_arc.lock() else {
+            return Some(AcceptDataPhaseCloseReceipt::torn_down(reset));
+        };
+        let Some(handle) = destinations.get(cleanup.destination_id) else {
+            return Some(AcceptDataPhaseCloseReceipt::torn_down(reset));
+        };
+        Some(handle.with(|bridge| {
+            let (manager, mirror) = match cleanup.direction {
+                RawDirection::Inbound => (bridge.receiver_streaming(), true),
+                RawDirection::Outbound => (bridge.streaming(), false),
+            };
+            // The canonical snapshot is always the canonical
+            // manager regardless of direction; the mirror
+            // snapshot follows the stream's owning manager.
+            let (mirror_now, canonical_now) = if mirror {
+                (
+                    manager.data_packet_ingress(),
+                    bridge.streaming().data_packet_ingress(),
+                )
+            } else {
+                (
+                    bridge.receiver_streaming().data_packet_ingress(),
+                    manager.data_packet_ingress(),
+                )
+            };
+            let state_code = match manager
+                .get_connection(cleanup.connection_id)
+                .map(|connection| connection.state())
+            {
+                None => 0,
+                Some(ConnectionState::Established) => 1,
+                Some(ConnectionState::ClosingLocal | ConnectionState::ClosingRemote) => 2,
+                Some(ConnectionState::Closed | ConnectionState::Reset) => 3,
+                Some(ConnectionState::OutboundSynSent | ConnectionState::InboundSynReceived) => 4,
+            };
+            let undrained =
+                u64::try_from(manager.pending_bytes_for(cleanup.connection_id)).unwrap_or(u64::MAX);
+            let mirror = mirror_now.delta_since(baseline.mirror_data);
+            let canonical = canonical_now.delta_since(baseline.canonical_data);
+            AcceptDataPhaseCloseReceipt {
+                mirror,
+                canonical,
+                garlic_authenticated: garlic_now.0.saturating_sub(baseline.garlic.0),
+                garlic_rejected: garlic_now.1.saturating_sub(baseline.garlic.1),
+                payloads_dequeued: garlic_now.2.saturating_sub(baseline.garlic.2),
+                streaming_accepted: garlic_now.3.saturating_sub(baseline.garlic.3),
+                connection_state_code: state_code,
+                undrained_bytes: undrained,
+                reset,
+                bridge_present: true,
+            }
+        }))
+    }
+
+    pub(crate) fn emit_accept_data_phase_close(&self, cleanup: &RawStreamCleanup, reset: bool) {
+        let Some(receipt) = self.accept_data_phase_close_receipt(cleanup, reset) else {
             return;
         };
-        let garlic_now = bridge_garlic_totals(self, cleanup.destination_id);
-        let (mirror_now, canonical_now, state_code, undrained) = {
-            let destinations_arc = self.sam_destinations();
-            let Ok(destinations) = destinations_arc.lock() else {
-                return;
-            };
-            let Some(handle) = destinations.get(cleanup.destination_id) else {
-                return;
-            };
-            handle.with(|bridge| {
-                let (manager, mirror) = match cleanup.direction {
-                    RawDirection::Inbound => (bridge.receiver_streaming(), true),
-                    RawDirection::Outbound => (bridge.streaming(), false),
-                };
-                // The canonical snapshot is always the canonical
-                // manager regardless of direction; the mirror
-                // snapshot follows the stream's owning manager.
-                let (mirror_now, canonical_now) = if mirror {
-                    (
-                        manager.data_packet_ingress(),
-                        bridge.streaming().data_packet_ingress(),
-                    )
-                } else {
-                    (
-                        bridge.receiver_streaming().data_packet_ingress(),
-                        manager.data_packet_ingress(),
-                    )
-                };
-                let state_code = match manager
-                    .get_connection(cleanup.connection_id)
-                    .map(|connection| connection.state())
-                {
-                    None => 0,
-                    Some(ConnectionState::Established) => 1,
-                    Some(ConnectionState::ClosingLocal | ConnectionState::ClosingRemote) => 2,
-                    Some(ConnectionState::Closed | ConnectionState::Reset) => 3,
-                    Some(
-                        ConnectionState::OutboundSynSent | ConnectionState::InboundSynReceived,
-                    ) => 4,
-                };
-                let undrained = manager.pending_bytes_for(cleanup.connection_id);
-                (mirror_now, canonical_now, state_code, undrained)
-            })
-        };
-        let mirror = mirror_now.delta_since(baseline.mirror_data);
-        let canonical = canonical_now.delta_since(baseline.canonical_data);
         warn!(
-            data_observed = mirror.observed,
-            data_accepted = mirror.accepted,
-            data_rejected = mirror.rejected,
-            data_payload_bytes = mirror.payload_bytes_admitted,
-            canon_data_observed = canonical.observed,
-            canon_data_accepted = canonical.accepted,
-            canon_data_rejected = canonical.rejected,
-            canon_data_payload_bytes = canonical.payload_bytes_admitted,
-            garlic_authenticated = garlic_now.0.saturating_sub(baseline.garlic.0),
-            garlic_rejected = garlic_now.1.saturating_sub(baseline.garlic.1),
-            payloads_dequeued = garlic_now.2.saturating_sub(baseline.garlic.2),
-            streaming_accepted = garlic_now.3.saturating_sub(baseline.garlic.3),
-            connection_state_code = state_code,
-            undrained_bytes = undrained,
-            reset = u64::from(reset),
+            data_observed = receipt.mirror.observed,
+            data_accepted = receipt.mirror.accepted,
+            data_rejected = receipt.mirror.rejected,
+            data_payload_bytes = receipt.mirror.payload_bytes_admitted,
+            canon_data_observed = receipt.canonical.observed,
+            canon_data_accepted = receipt.canonical.accepted,
+            canon_data_rejected = receipt.canonical.rejected,
+            canon_data_payload_bytes = receipt.canonical.payload_bytes_admitted,
+            garlic_authenticated = receipt.garlic_authenticated,
+            garlic_rejected = receipt.garlic_rejected,
+            payloads_dequeued = receipt.payloads_dequeued,
+            streaming_accepted = receipt.streaming_accepted,
+            connection_state_code = receipt.connection_state_code,
+            undrained_bytes = receipt.undrained_bytes,
+            reset = u64::from(receipt.reset),
+            bridge_present = u64::from(receipt.bridge_present),
             transition = "stream_accept_data_phase_closed",
             "STREAM ACCEPT data phase closed; per-accepted-stream ingress attribution (counts only)",
         );
@@ -4655,12 +4720,14 @@ mod tests {
             direction: RawDirection::Inbound,
             data_phase_baseline: None,
         };
-        // No baseline (outbound shape): returns before touching any
-        // bridge state — no panic, no attribution line.
+        // No baseline (outbound shape): no receipt — the close stays
+        // unattributed by design, and emit is a silent no-op.
+        assert_eq!(state.accept_data_phase_close_receipt(&cleanup, false), None);
         state.emit_accept_data_phase_close(&cleanup, false);
         // Unknown destination: the baseline captures fail-closed
-        // zeros, and the close against a missing bridge returns
-        // before reading any manager.
+        // zeros, but the close still fires — teardown before close
+        // must read as an explicit torn-down receipt (all zeros,
+        // state 0, bridge absent), never as a silent pump.
         let baseline = accept_data_phase_baseline(&state, cleanup.destination_id);
         assert_eq!(baseline.garlic, (0, 0, 0, 0));
         assert_eq!(
@@ -4675,6 +4742,16 @@ mod tests {
             data_phase_baseline: Some(baseline),
             ..cleanup
         };
+        let receipt = state
+            .accept_data_phase_close_receipt(&cleanup, true)
+            .expect("torn-down close must still fire");
+        assert_eq!(receipt, AcceptDataPhaseCloseReceipt::torn_down(true));
+        assert!(!receipt.bridge_present);
+        assert_eq!(receipt.connection_state_code, 0);
+        assert_eq!(receipt.mirror.observed, 0);
+        assert_eq!(receipt.canonical.observed, 0);
+        assert_eq!(receipt.garlic_authenticated, 0);
+        // Emit path shares the snapshot: no panic, no bridge state.
         state.emit_accept_data_phase_close(&cleanup, true);
     }
 

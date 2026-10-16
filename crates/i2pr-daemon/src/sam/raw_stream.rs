@@ -386,6 +386,17 @@ pub async fn run_raw_stream(
         initial_bytes = initial_raw_bytes.len(),
         "raw stream driver started"
     );
+    // Plan 478: inbound pump starts are INFO-visible. Together with
+    // the close receipt they form a complete pair per ACCEPT stream:
+    // start=1/close=0 proves the pump never finished (stuck or
+    // aborted without finish); start=0 proves the bind never
+    // happened. Outbound pumps stay debug-only by design.
+    if direction == RawDirection::Inbound {
+        tracing::info!(
+            transition = "stream_accept_pump_started",
+            "raw stream driver started for inbound stream"
+        );
+    }
 
     // Bound on the per-iteration TCP read chunk. The send-window
     // admission is also bounded; the two together enforce the

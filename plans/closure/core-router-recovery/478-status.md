@@ -1044,3 +1044,188 @@ window (needs a frontier run), reverse DATA decision,
 §6 live recovery, product close-out. 478 stays active;
 no dependent capability unblocked; 433/439 gates
 unchanged.
+
+## 2026-10-16 research: 0h6f38y_ match-without-install explained (no lane needed)
+
+Code proof: the outbound bootstrap path
+(`service_product.rs` build_index==0,
+`await_destination_build_install` →
+`bootstrap_outbound_role_slot`) never emitted
+`install_committed` — only the service outbound loop
+and the inbound installer log it. So a bootstrap-only
+run reads match-without-install in the receipts BY
+DESIGN of the log coverage, not by product anomaly:
+the bootstrap role existed (inbound submits routed via
+it), inbound replies were lost (known transit-loss
+family, same as the SYN-ACK loss, one stage earlier).
+No systematic defect; the durable gap is receipt
+completeness.
+
+Material change (in-plan): the bootstrap success now
+emits the identical `install_committed` line shape
+(`build_attempt_id` + `direction=Outbound`) — no
+parser change needed. The next 0h6f38y_-shaped run
+splits cleanly: commit≥1 + inbound expiry = bootstrap
+OK, inbound lost (transit); commit=0 = bootstrap
+itself never installed (different owner). Offline test
+pins the receipt contract (bootstrap match + commit
+reads install_committed_attempts=1).
+Emission-side verification is live by the next lane.
+Daemon lib 787, tunnel-unit 44, sam-composed 4,
+offline 46, clippy/fmt clean. (Scoped battery; full
+floor belongs to the closing pass.)
+
+Next: ONE bounded lane (licensed: lane evidence
+changed — install counts now complete on bootstrap
+paths; primary purpose remains frontier/grace).
+Firewall stands: no lane beyond it without a new
+change. Reverse DATA, §6, close-out open; 478 active.
+
+## 2026-10-16 lane `s7z3zkk0`: bootstrap line verified, grace expires with no receipt
+
+Bounded exact-pin lane with the bootstrap line live
+(pinned i2pd 2.61.0, mesh churn 0/0/0/0, scratch
+`s7z3zkk0-frontier-grace-expired-run` snapshotted).
+Builds 4/4 matched with **`install_committed_attempts:
+4`** (was 3) — the bootstrap commit line fires live;
+emission-side verified. Forward passed with no
+timeout. Reverse reached the frontier a third time
+(driver `short stream read (0/2328)`, 99 s,
+`i2pd-to-i2pr`). Grace ran its FULL 30 s budget:
+**`accept_close_found: false`**. Our stdout (88 lines)
+ends at the forward SYN sends with zero inbound lines.
+
+Diagnosis (code proof, no lane needed): the driver's
+EOF means our daemon closed the accepted socket first
+(~99 s), so its pump finished and `finish_raw_stream`
+ran — but the close receipt has TWO silent arms beyond
+no-baseline: `sam_destinations` lock failure and,
+decisively, bridge-absent (`destinations.get` None →
+return). Teardown before close removes the bridge, so
+a torn-down close reads as a silent pump. The
+`connection_state_code = 0` doc arm only covers
+connection-absent-with-bridge-present; whole-bridge
+removal was uncovered.
+
+Material change (in-plan, same seam): the close path
+now snapshots into an owned `AcceptDataPhaseCloseReceipt`
+(`None` only for no-baseline outbound closes, silent by
+design) and the bridge-absent arm returns the all-zero
+torn-down receipt with a new `bridge_present` key
+(0 = torn down before close, 1 = bridge present) —
+teardown-before-close is evidence, never silence. The
+DATA decision table is gated on `bridge_present = 1`;
+a 0-row excludes itself (evidence destroyed, not
+arrival proof). Receipt 15→16 keys; pre-key lines
+refuse fail-closed. Tests: snapshot test reworked
+(no-baseline None; torn-down Some-with-zeros probed
+both ways and reverted); offline torn-down parse +
+nonbinary refusal + legacy refusal. Daemon lib 787,
+tunnel-unit 44, sam-composed 4, client 124, offline
+49, clippy/fmt clean. (Scoped battery; full floor
+belongs to the closing pass.)
+
+Next: ONE bounded lane (licensed: close receipt
+changed — torn-down closes now report instead of
+going silent). If it yields a `bridge_present = 0`
+row, teardown-before-close is confirmed live and the
+next step is teardown ordering (new plan-of-record
+scale); if `bridge_present = 1` with data zeros, the
+DATA decision fires at last. Firewall stands: no lane
+beyond it without a new change. Reverse DATA, §6,
+close-out open; 478 active.
+
+## 2026-10-16 lane `zcye0ms5`: zeros-emit live, still no receipt — pump-lifecycle split needed
+
+Bounded exact-pin lane with the torn-down receipt live
+(pinned i2pd, mesh churn 3/0/1/4, scratch
+`zcye0ms5-frontier-still-no-close-run` snapshotted).
+Rocky builds (1 inbound wait expired + retry, then 4/4
+matched, 4 installs), forward passed, reverse frontier
+a fourth time (99 s short read), grace full 30 s,
+`accept_close_found: false` again. The bridge-absent
+zeros-emit did NOT fire — "finish ran silent" is dead
+as the explanation.
+
+Stock forensics (counts + timestamps only): f got our
+forward SYN 13:59:51, our forward echo completed, f's
+forward-stream packets went unacked (terminate
+14:01:13, rSID=465095979), f's reverse SYN (sSID=0,
+rSID=1310476799) went entirely unanswered — no SYN-ACK
+line, no SYNACK-timeout line — terminate 14:01:30.
+Our daemon logged nothing after 13:59:51 (no panic:
+stderr empty) while alive until SIGTERM. Driver EOF at
+~99 s means our daemon FINned the accepted socket —
+yet no pump-end evidence exists.
+
+Remaining split (code-level, no lane can split it):
+pump never finished (stuck, or aborted without
+finish) vs bind never happened. Material change
+(in-plan, 5 lines + parser): `transition=
+"stream_accept_pump_started"` INFO at raw-pump start
+for Inbound only, counted as `accept_pump_started`
+in the diagnostic. With the close receipts it forms a
+complete pair: close=1 → DATA decision (gated
+`bridge_present`); close=0/start=0 → bind gap (ACCEPT
+path defect); close=0/start=1 → pump never finished
+(teardown ownership question). Offline tests: default
+0, double-count, no stage-count leakage, ANSI
+(counting probe kills 2, reverted). Scoped: clippy/
+fmt clean (log-only Rust change; lib green on the
+unchanged behavior tree).
+
+Next: ONE bounded lane reading the start/close pair.
+Firewall stands: no lane beyond it without a new
+change. Reverse DATA, §6, close-out open; 478 active.
+
+## 2026-10-16 lane `xeewsj_6`: send-split proven live — new "SYN never sent" class
+
+Bounded exact-pin lane with verified-fresh binary
+(provenance in diagnostic: bin size 296143096,
+HEAD `63ea04ba`, 7 dirty files — freshness doubt is
+dead). Builds clean (4/4 matched, 4 installs, owners
+2/2, no waits; bootstrap line consistent). Forward
+CONNECT timed out on BOTH attempts (initial + fresh
+recovery), and the 25-key receipts fired live for the
+first time — a NEW signature: `send_delivered = 0`
+with every failure and factory counter also 0, over
+the full 60 s waits, alongside all-zero arrival keys.
+The SYN was never sent AND never failed: contrast
+`sy7cqc9a` (delivered=8, then `delivery_failed=1`
+bridge failure). The split pays for itself — three
+readings now exist: sent-then-failed, never-sent,
+sent-awaiting-stock. Grace correctly skipped (0.0 s);
+sidecar fresh (40.1 s forward TIMEOUT); no stale
+anywhere. Pump-start correctly 0 (no ACCEPT this run).
+
+The never-sent split (never queued vs swept-empty vs
+driver never ran) is NOT yet instrumented: empty
+sweeps and absent sweeps both read all-zero, and the
+queue depth is not snapshotted. Candidates, in
+seam order: a `sweeps` counter merged per driver loop
+(sweeps=0 ⇒ driver never ran; sweeps>0 ⇒ driver
+swept), plus outbound queue depth at wait start/end
+(sweeps>0 + queue>0 ⇒ queued but undrained;
+queue=0 ⇒ never queued). No conclusion recorded from
+this single run — one observation, and the send path
+is byte-identical to the runs that delivered
+(counter/keys-only diff). Next turn's well-posed
+research question, with this snap as the exhibit.
+Snap: `xeewsj_6-forward-syn-never-sent-run`.
+
+**Disposition — turn close-out.** Seven lanes across
+two turns chased the frontier through mesh variance;
+the instrumentation program is now complete and
+live-proven at every layer it owns (builds, owners,
+LS2, send-side, handshake, arrival, taxonomy, ACCEPT
+data-phase, pump lifecycle, evidence hygiene,
+provenance). What remains is product luck (a
+full-green run through a quiet mesh) plus two bounded
+research questions (never-sent split; pump-finish
+visibility on frontier runs) — both owned by 478,
+neither requiring a new plan number until teardown
+ordering or pump internals are implicated. No
+further lane this turn. 478 stays active; reverse
+DATA, §6 live recovery, and product close-out remain
+open; no dependent capability unblocked; 433/439
+gates unchanged.

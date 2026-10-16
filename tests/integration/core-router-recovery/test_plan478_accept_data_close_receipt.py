@@ -24,7 +24,19 @@ FULL_LINE = (
     'canon_data_payload_bytes=0 '
     'garlic_authenticated=12 garlic_rejected=0 payloads_dequeued=12 '
     'streaming_accepted=2 '
-    'connection_state_code=1 undrained_bytes=0 reset=0 '
+    'connection_state_code=1 undrained_bytes=0 reset=0 bridge_present=1 '
+    'transition="stream_accept_data_phase_closed" '
+    'STREAM ACCEPT data phase closed'
+)
+
+TORN_DOWN_LINE = (
+    'WARN data_observed=0 data_accepted=0 data_rejected=0 '
+    'data_payload_bytes=0 '
+    'canon_data_observed=0 canon_data_accepted=0 canon_data_rejected=0 '
+    'canon_data_payload_bytes=0 '
+    'garlic_authenticated=0 garlic_rejected=0 payloads_dequeued=0 '
+    'streaming_accepted=0 '
+    'connection_state_code=0 undrained_bytes=0 reset=1 bridge_present=0 '
     'transition="stream_accept_data_phase_closed" '
     'STREAM ACCEPT data phase closed'
 )
@@ -37,11 +49,12 @@ EXPECTED = {
     "garlic_authenticated": 12, "garlic_rejected": 0,
     "payloads_dequeued": 12, "streaming_accepted": 2,
     "connection_state_code": 1, "undrained_bytes": 0, "reset": 0,
+    "bridge_present": 1,
 }
 
 
 class Plan478AcceptDataCloseReceiptTests(unittest.TestCase):
-    def test_full_attribution_line_parses_all_fifteen_counts(self) -> None:
+    def test_full_attribution_line_parses_all_sixteen_counts(self) -> None:
         parsed = parse_attempt_receipt_lines([FULL_LINE])
         # The daemon close warn carries no build_attempt_id, so it
         # contributes no stage count; the receipts list is the evidence.
@@ -61,6 +74,79 @@ class Plan478AcceptDataCloseReceiptTests(unittest.TestCase):
         )
         parsed = parse_attempt_receipt_lines([bad])
         self.assertEqual(parsed["stream_accept_data_phase_close_receipts"], [])
+
+    def test_torn_down_shape_parses_with_bridge_absent(self) -> None:
+        # Teardown-before-close reads all zeros with state 0 and
+        # bridge_present=0 by construction; it must parse (it is
+        # evidence of teardown, not a malformed receipt).
+        parsed = parse_attempt_receipt_lines([TORN_DOWN_LINE])
+        self.assertEqual(
+            parsed["stream_accept_data_phase_close_receipts"],
+            [{
+                "data_observed": 0, "data_accepted": 0, "data_rejected": 0,
+                "data_payload_bytes": 0,
+                "canon_data_observed": 0, "canon_data_accepted": 0,
+                "canon_data_rejected": 0, "canon_data_payload_bytes": 0,
+                "garlic_authenticated": 0, "garlic_rejected": 0,
+                "payloads_dequeued": 0, "streaming_accepted": 0,
+                "connection_state_code": 0, "undrained_bytes": 0,
+                "reset": 1, "bridge_present": 0,
+            }],
+        )
+
+    def test_nonbinary_bridge_present_refuses_receipt(self) -> None:
+        bad = FULL_LINE.replace("bridge_present=1", "bridge_present=2")
+        parsed = parse_attempt_receipt_lines([bad])
+        self.assertEqual(parsed["stream_accept_data_phase_close_receipts"], [])
+
+    def test_fifteen_key_legacy_line_no_longer_parses(self) -> None:
+        # Pre-bridge_present daemon lines fail closed (same shape as
+        # the 16->25 handshake transition).
+        legacy = FULL_LINE.replace(" bridge_present=1", "")
+        parsed = parse_attempt_receipt_lines([legacy])
+        self.assertEqual(parsed["stream_accept_data_phase_close_receipts"], [])
+
+
+class AcceptPumpStartCountTests(unittest.TestCase):
+    START_LINE = (
+        'INFO transition="stream_accept_pump_started" '
+        'raw stream driver started for inbound stream'
+    )
+
+    def test_absent_by_default(self) -> None:
+        parsed = parse_attempt_receipt_lines([FULL_LINE])
+        self.assertEqual(parsed["accept_pump_started"], 0)
+
+    def test_each_start_line_counts_once(self) -> None:
+        parsed = parse_attempt_receipt_lines([
+            self.START_LINE,
+            self.START_LINE,
+            'INFO transition="install_committed" build_attempt_id=1',
+        ])
+        self.assertEqual(parsed["accept_pump_started"], 2)
+        # Pump starts carry no build_attempt_id: never a stage count.
+        self.assertNotIn("stream_accept_pump_started", parsed["stage_counts"])
+
+    def test_ansi_start_line_counts(self) -> None:
+        parsed = parse_attempt_receipt_lines([
+            '\x1b[2m2026-10-16T00:00:00.000000Z\x1b[0m INFO ' + self.START_LINE,
+        ])
+        self.assertEqual(parsed["accept_pump_started"], 1)
+
+
+class BinaryProvenanceTests(unittest.TestCase):
+    def test_provenance_shape(self) -> None:
+        from run_plan458_sam_product import router_binary_provenance
+        provenance = router_binary_provenance()
+        self.assertEqual(
+            set(provenance),
+            {"bin_mtime", "bin_size", "git_head", "git_dirty_files"},
+        )
+        self.assertIsInstance(provenance["bin_size"], int)
+        self.assertIsInstance(provenance["git_dirty_files"], int)
+        # Read-only against the real tree: HEAD resolves, binary stat
+        # succeeds when the lane's binary exists.
+        self.assertNotEqual(provenance["git_head"], "unknown")
 
     def test_missing_keys_do_not_create_receipts(self) -> None:
         parsed = parse_attempt_receipt_lines([
