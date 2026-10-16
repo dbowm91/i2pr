@@ -1171,7 +1171,8 @@ impl SamServiceState {
     /// INFO `session_teardown` line with a numeric cause code and
     /// two 0/1 flags (`session_live` proves a live registry entry
     /// was removed; `driver_live` proves a driver entry was still
-    /// installed). Unconditional by design — like the torn-down
+    /// installed in EITHER the SAM or the service map — the sweep
+    /// driver lives in exactly one per product mode). Unconditional by design — like the torn-down
     /// close rows, the flags tell a real death (`session_live =
     /// 1`) apart from a redundant call or a never-live rollback
     /// (`session_live = 0`). Counts only; no session ids,
@@ -1187,7 +1188,7 @@ impl SamServiceState {
         for child_id in self.session_registry.subsession_ids(session_id) {
             self.remove_subsession(session_id, &child_id);
         }
-        let driver_live = if let Ok(mut drivers) = self.destination_drivers.lock()
+        let sam_driver_live = if let Ok(mut drivers) = self.destination_drivers.lock()
             && let Some(driver) = drivers.remove(&destination_id)
         {
             let _ = driver.cancel(i2pr_core::CancellationReason::ParentScope);
@@ -1211,14 +1212,24 @@ impl SamServiceState {
             bridges.remove(destination_id);
         }
         self.drop_destination_signals(destination_id);
+        // Plan 478 two-recorder union: the sweep driver lives in the
+        // SAM map only in local-only mode and in the service map in
+        // router-network mode, so liveness is presence in EITHER
+        // map. Reading only the SAM map vacuous-zeros the gauge in
+        // production lanes.
+        let mut service_driver_live = 0u64;
         if let Ok(manager) = self.router_network_manager.lock()
             && let Some(manager) = manager.as_ref()
         {
+            if manager.destination_driver_live(destination_id) {
+                service_driver_live = 1;
+            }
             let _ = manager.request_router_network_sam_retirement(destination_id);
         }
         if let Ok(mut counters) = self.delivery_counters.lock() {
             counters.remove(&destination_id);
         }
+        let driver_live = sam_driver_live.max(service_driver_live);
         info!(
             cause_code = cause.code(),
             session_live = session_live,
@@ -3710,11 +3721,50 @@ fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64
     manager.inbound_owner_miss_taxonomy_totals()
 }
 
+/// Plan 478 send-side attribution: reads the SERVICE manager's
+/// cumulative delivery-sweep counters for one destination. Counts
+/// only; no identities, keys, or payload material. Reads fail
+/// closed to zeros when no router-network manager is attached
+/// (local-only states never report remote sends).
+fn service_delivery_counters(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> DeliverySweepCounters {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return DeliverySweepCounters::default();
+    };
+    let Some(manager) = slot.as_ref() else {
+        return DeliverySweepCounters::default();
+    };
+    manager.delivery_counters(destination_id)
+}
+
+/// Plan 478 two-recorder union: fieldwise saturating sum of the SAM
+/// and service delivery-sweep snapshots. Exactly one side records
+/// per product mode — the SAM driver runs only in local-only
+/// self-composition (its spawn lives in the non-router-network
+/// create path) while the service driver owns sweeps in
+/// router-network mode — so the union is complete in both modes
+/// with no double-counting. The split-subset property holds by
+/// construction: SAM splits sum to the SAM aggregate and service
+/// splits stay zero, so the union split sum never exceeds the
+/// union aggregate.
+fn union_delivery_counters(
+    sam: DeliverySweepCounters,
+    service: DeliverySweepCounters,
+) -> DeliverySweepCounters {
+    let mut union = sam;
+    union.saturating_add_assign(service);
+    union
+}
+
 /// Plan 478 send-side attribution: reads the destination's
 /// cumulative delivery-sweep counters as `(delivered,
 /// unknown_peer, missing_factory, factory_exhausted,
 /// delivery_failed, failed_ls2_missing, failed_ls2_invalid,
-/// failed_ls2_install, failed_bridge, sweeps)`. Counts only; no
+/// failed_ls2_install, failed_bridge, sweeps)`. The SAM and service
+/// recorders are unioned (see [`union_delivery_counters`]) so the
+/// columns stay live in both product modes. Counts only; no
 /// identities, keys, or payload material. Reads fail closed to
 /// zeros when the entry is absent (torn-down sessions never
 /// report sends).
@@ -3723,7 +3773,10 @@ fn delivery_send_totals(
     state: &SamServiceState,
     destination_id: DestinationId,
 ) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) {
-    let counters = state.delivery_counters(destination_id);
+    let counters = union_delivery_counters(
+        state.delivery_counters(destination_id),
+        service_delivery_counters(state, destination_id),
+    );
     let widen = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
     (
         widen(counters.delivered),
@@ -5025,6 +5078,57 @@ mod tests {
             delivery_send_totals(&state, destination_id),
             (8, 1, 2, 3, 5, 1, 1, 1, 2, 7),
             "send totals must map each counter field in order"
+        );
+    }
+
+    #[test]
+    fn combined_delivery_totals_union_both_recorders() {
+        use crate::sam::fabric::{DeliverySweepCounters, SendFailureCause};
+
+        // SAM side: split-classified failures plus sweeps.
+        let mut sam = DeliverySweepCounters {
+            delivered: 8,
+            sweeps: 100,
+            ..DeliverySweepCounters::default()
+        };
+        sam.note_split_failure(SendFailureCause::Bridge);
+        // Service side: aggregate-only outcomes plus sweeps (its
+        // split fields stay zero by seam design).
+        let service = DeliverySweepCounters {
+            delivered: 4,
+            delivery_failed: 3,
+            unknown_peer: 1,
+            sweeps: 50,
+            ..DeliverySweepCounters::default()
+        };
+        let union = union_delivery_counters(sam, service);
+        assert_eq!(union.delivered, 12);
+        assert_eq!(union.delivery_failed, 4);
+        assert_eq!(union.unknown_peer, 1);
+        assert_eq!(union.delivery_failed_bridge, 1);
+        assert_eq!(union.sweeps, 150);
+        assert_eq!(union.split_failure_sum(), 1);
+        assert!(
+            union.split_failure_sum() <= union.delivery_failed,
+            "union split sum must never exceed the union aggregate"
+        );
+    }
+
+    #[test]
+    fn service_delivery_counters_absent_manager_reads_zero() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([14_u8; 32]));
+        assert_eq!(
+            service_delivery_counters(&state, destination_id),
+            DeliverySweepCounters::default(),
+            "absent router manager must read zero service counters"
         );
     }
 

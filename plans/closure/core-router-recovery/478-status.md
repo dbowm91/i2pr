@@ -1421,3 +1421,73 @@ ownership on multi-leg runs. No further lane without
 a new change. 478 stays active; reverse DATA, §6
 live recovery, product close-out open; 433/439 gates
 unchanged.
+
+## 2026-10-16 correction: the send columns read the wrong map — union fix + lane `tnm6su4j`
+
+Code-proof correction (do not re-derive without
+re-reading the spawn sites): the SAM per-destination
+driver is spawned ONLY in `execute_session_create`
+(the non-router-network path); production lanes run
+`execute_router_network_session_create`, which never
+spawns it. Sweep work there belongs to the SERVICE
+manager's driver (spawned at provisioning, same
+`destination_id` key, delivery REQUIRED or
+provisioning fails). SAM's `delivery_counters` map is
+therefore ALWAYS EMPTY in production lanes — every
+`send_*` column in every 25/28-key receipt has read
+zero for that reason, not because nothing was sent.
+Proven from existing evidence: `sy7cqc9a`'s
+"delivered=8" came from the service
+`delivery_sweep_activity` INFO, and `7r7te3fb`'s
+stdout shows service-side delivered=2+4+1+1 while
+SAM columns read zero.
+
+Withdrawn readings (explicit): (a) `xeewsj_6`
+"never-sent SYN class" — wrong-map zeros, unfounded;
+(b) `98nph0lj` "sweeps=0 = driver never ran" —
+unfounded as stated (queue 1→0 STANDS: the bridge
+gauge is mode-independent, now re-read as
+service-side drain or teardown drop); (c) `7r7te3fb`
+"driver exited mid-session" — the SAM gauge is
+vacuous in this mode (cause-3 session death STANDS:
+registry + finish path are mode-independent, and the
+forward echo proves service-side delivery). The
+planned driver-exit INFO is SUPERSEDED (no SAM
+driver exists to instrument in this mode).
+
+Fix (same seams, no behavior change):
+`delivery_send_totals` now reports the saturating
+fieldwise union of the SAM and service snapshots
+(exactly one side records per mode, so no
+double-counting); teardown `driver_live` is presence
+in EITHER driver map. Split invariant relaxes from
+== to <= (SAM splits sum to the SAM aggregate;
+service failures are aggregate-only), which holds by
+construction. Tests: pure-union test (incl.
+split-subset), service-absent fail-closed,
+service-shape parses / exceeding refuses. Both
+probes kill (broken union; restored `!=`) and are
+reverted. Battery: daemon lib 793, tunnel-unit 44,
+sam-composed 4, offline 66, planning 51, clippy/fmt
+clean.
+
+Lane `tnm6su4j` (verified-fresh binary, bin size
+295700568, HEAD `5251811e`): same frontier shape as
+`7r7te3fb` (forward echo OK, reverse stall, 99 s
+stock hang, 30 s grace unfound, pump 0, no
+close/ACCEPT-SYN rows) — with the union gauge
+reading `driver_live = 1` on the cause-3 live
+teardown (service driver present, as corrected),
+then the redundant cause-2 row at 0/0. Service
+sweeps delivered 2+4+1 on this run. The forward
+finish killing the lane-needed session (standalone
+last-stream cleanup) remains the sharpest product
+question; whether that ownership is correct is now
+answerable, not attributable. Snap:
+`tnm6su4j-union-gauge-frontier-run`.
+
+**Disposition.** Wrong-map readings corrected on the
+record; union columns + gauge live-proven. No
+further lane without a new change. 478 stays active;
+reverse DATA, §6 live recovery, product close-out
+open; 433/439 gates unchanged.

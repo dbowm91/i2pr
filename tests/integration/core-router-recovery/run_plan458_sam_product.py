@@ -222,15 +222,20 @@ def parse_attempt_receipt_lines(lines):
                 if classes != receipt["garlic_owner_misses"]:
                     continue
                 # Plan 478 send-side split: the four LS2/bridge
-                # causes must sum to the send-failure aggregate; a
-                # line violating it is malformed, not evidence.
+                # causes must never exceed the send-failure aggregate;
+                # a line violating it is malformed, not evidence. The
+                # check is <=, not ==, because two recorders feed the
+                # union: SAM splits sum to the SAM aggregate, but the
+                # service recorder reports aggregate-only failures
+                # (its splits stay zero), so a service-shaped line
+                # with splits below the aggregate is well-formed.
                 split = (
                     receipt["send_failed_ls2_missing"]
                     + receipt["send_failed_ls2_invalid"]
                     + receipt["send_failed_ls2_install"]
                     + receipt["send_failed_bridge"]
                 )
-                if split != receipt["send_delivery_failed"]:
+                if split > receipt["send_delivery_failed"]:
                     continue
                 stream_connect_handshake_wait_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?stream_accept_data_phase_closed', line):

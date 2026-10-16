@@ -60,8 +60,8 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
             + receipt["miss_unknown"],
             receipt["garlic_owner_misses"],
         )
-        # The send split always sums to the send-failure aggregate.
-        self.assertEqual(
+        # The send split never exceeds the send-failure aggregate.
+        self.assertLessEqual(
             receipt["send_failed_ls2_missing"]
             + receipt["send_failed_ls2_invalid"]
             + receipt["send_failed_ls2_install"]
@@ -69,13 +69,25 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
             receipt["send_delivery_failed"],
         )
 
+    def test_service_aggregate_without_split_parses(self) -> None:
+        # Service-recorder shape: aggregate failures with zero
+        # splits (the service seam reports no LS2/bridge causes).
+        # Well-formed under the two-recorder union.
+        line = FULL_LINE.replace("send_delivery_failed=1", "send_delivery_failed=2")
+        line = line.replace("send_failed_bridge=1", "send_failed_bridge=0")
+        parsed = parse_attempt_receipt_lines([line])
+        self.assertEqual(len(parsed["stream_connect_handshake_wait_receipts"]), 1)
+        receipt = parsed["stream_connect_handshake_wait_receipts"][0]
+        self.assertEqual(receipt["send_delivery_failed"], 2)
+        self.assertEqual(receipt["send_failed_bridge"], 0)
+
     def test_class_sum_mismatch_refuses_receipt(self) -> None:
         bad = FULL_LINE.replace("garlic_owner_misses=4", "garlic_owner_misses=9")
         parsed = parse_attempt_receipt_lines([bad])
         self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])
 
-    def test_send_split_sum_mismatch_refuses_receipt(self) -> None:
-        bad = FULL_LINE.replace("send_failed_bridge=1", "send_failed_bridge=0")
+    def test_send_split_exceeding_aggregate_refuses_receipt(self) -> None:
+        bad = FULL_LINE.replace("send_failed_bridge=1", "send_failed_bridge=2")
         parsed = parse_attempt_receipt_lines([bad])
         self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])
 
