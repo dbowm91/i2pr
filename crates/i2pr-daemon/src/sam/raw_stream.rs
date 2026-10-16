@@ -573,7 +573,19 @@ impl SamServiceState {
         let _ = self
             .stream_registry()
             .release_attachment(&session_id, attachment_id);
+        // Plan 485: a finished stream reaps its session only when no
+        // SAM control socket owns it anymore. The zero-attachment gap
+        // between sequential streams is ordinary session idle: a still-
+        // open control socket (the normal lane shape: session commands
+        // on the session socket, streams on fresh sockets) keeps the
+        // session, bridge, driver entries, and counters alive for the
+        // next stream. A session whose socket went raw (the Plan 149
+        // same-socket path) or closed has no control socket left, so
+        // the historical last-stream cleanup still applies to it. 3.3
+        // children stay exempt via the parent check below exactly as
+        // before.
         if self.stream_registry().attachment_count_for(&session_id) == 0
+            && !self.control_socket_live(&session_id)
             && let Some(entry) = self.session_registry().get(&session_id)
             && entry.parent_session_id().is_none()
             && !self
@@ -583,12 +595,6 @@ impl SamServiceState {
                     matches!(mode, i2pr_api::sam::streams::InboundMode::Forwarding { .. })
                 })
         {
-            // Standalone SAM sessions retain the existing last-stream cleanup
-            // behavior. A SAM 3.3 child is different: it does not own the
-            // shared Destination, so closing its last stream must leave the
-            // child and siblings alive until SESSION REMOVE or PRIMARY close.
-            // If the child was already removed, that explicit teardown owns
-            // the cleanup and this path does nothing.
             self.teardown_session(
                 &session_id,
                 destination_id,

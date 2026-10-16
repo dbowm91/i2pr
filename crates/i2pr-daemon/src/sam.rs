@@ -21,7 +21,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
@@ -320,6 +320,18 @@ pub struct SamServiceState {
     /// One explicit cancellation capability per live destination driver.
     /// Session teardown cancels it before removing the bridge.
     destination_drivers: Arc<Mutex<HashMap<DestinationId, CancellationToken>>>,
+    /// Plan 485: sessions with a live SAM control socket. A socket
+    /// enters the set when its connection state advances to
+    /// `SessionControl` and leaves it when the connection task ends
+    /// (close, error, or raw transition — a raw socket can never
+    /// issue control commands again). The standalone
+    /// last-stream cleanup in `finish_raw_stream` must not reap a
+    /// session whose control socket is still open: the
+    /// zero-attachment gap between sequential streams is ordinary
+    /// session idle, not session end. Leaf mutex: guarded only for
+    /// insert/remove/contains, never held across other locks.
+    /// Counts only; session ids never leave the process in logs.
+    session_control_sockets: Arc<Mutex<HashSet<SamSessionId>>>,
     /// Latest bounded delivery accounting for each live destination.
     delivery_counters: Arc<Mutex<HashMap<DestinationId, DeliverySweepCounters>>>,
     /// Plan 151 §8 deterministic pre-start delivery fault profile.
@@ -399,6 +411,7 @@ impl SamServiceState {
         let destination_drivers = Arc::new(Mutex::new(HashMap::new()));
         let delivery_counters = Arc::new(Mutex::new(HashMap::new()));
         let fault_profile = Arc::new(Mutex::new(SamDeliveryFaultProfile::disabled()));
+        let session_control_sockets = Arc::new(Mutex::new(HashSet::new()));
         let connection_permits = Arc::new(tokio::sync::Semaphore::new(usize::from(
             config.limits.max_clients,
         )));
@@ -424,6 +437,7 @@ impl SamServiceState {
             destination_drivers,
             delivery_counters,
             fault_profile,
+            session_control_sockets,
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
     }
@@ -1163,6 +1177,37 @@ impl SessionTeardownCause {
 }
 
 impl SamServiceState {
+    /// Records a live SAM control socket for its session (Plan
+    /// 485). Called when a connection state advances to
+    /// `SessionControl`; idempotent (a second SESSION CREATE on the
+    /// same socket is rejected by the state machine, so one socket
+    /// owns at most one session). Counts only; no logging.
+    pub(crate) fn note_control_socket(&self, session_id: &SamSessionId) {
+        if let Ok(mut live) = self.session_control_sockets.lock() {
+            live.insert(session_id.clone());
+        }
+    }
+
+    /// Drops control-socket tracking for a session (Plan 485).
+    /// Called when the owning connection task ends or the state
+    /// leaves `SessionControl`; idempotent. Counts only.
+    pub(crate) fn forget_control_socket(&self, session_id: &SamSessionId) {
+        if let Ok(mut live) = self.session_control_sockets.lock() {
+            live.remove(session_id);
+        }
+    }
+
+    /// Whether the session still owns a live SAM control socket
+    /// (Plan 485). Fail-closed `false` on lock failure. Read by the
+    /// standalone last-stream cleanup so sessions with an open
+    /// control socket survive zero-attachment gaps.
+    pub(crate) fn control_socket_live(&self, session_id: &SamSessionId) -> bool {
+        self.session_control_sockets
+            .lock()
+            .map(|live| live.contains(session_id))
+            .unwrap_or(false)
+    }
+
     /// Tears a session down exactly once. Called from the
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
@@ -2339,6 +2384,7 @@ async fn handle_connection(
                 )
                 .await?;
                 apply_disposition(
+                    &state,
                     disposition,
                     &mut connection_state,
                     &mut pending_raw,
@@ -2377,6 +2423,7 @@ async fn handle_connection(
                     )
                     .await?;
                     apply_disposition(
+                        &state,
                         disposition,
                         &mut connection_state,
                         &mut pending_raw,
@@ -2405,6 +2452,13 @@ async fn handle_connection(
     // Calling `teardown_session` here would `bridges.remove(...)`
     // and orphan the runtime driver, dropping every queued SYN
     // response before it ever reaches the peer.
+    // Plan 485: the owning control socket is gone here in every
+    // case (close, error, or raw transition — a raw socket can
+    // never issue control commands again), so release tracking
+    // before the teardown guard below reads session state.
+    if let ServerConnectionState::SessionControl { session_id, .. } = &connection_state {
+        state.forget_control_socket(session_id);
+    }
     if let ServerConnectionState::SessionControl {
         session_id,
         destination_id,
@@ -2492,13 +2546,21 @@ async fn handle_connection(
 }
 
 /// Plan 147 §8: applies one `ConnectionDisposition` produced by
-/// `dispatch_command` to the per-connection loop state.
+/// `dispatch_command` to the per-connection loop state. Plan 485
+/// also tracks live SAM control sockets per session here: entering
+/// `SessionControl` registers the socket, leaving it releases the
+/// registration, so a closed control socket never pins its session.
 fn apply_disposition(
+    state: &SamServiceState,
     disposition: ConnectionDisposition,
     connection_state: &mut ServerConnectionState,
     pending_raw: &mut Option<RawTransitionPayload>,
 ) -> Result<(), ConnectionFailure> {
-    match disposition {
+    let prior_control = match &*connection_state {
+        ServerConnectionState::SessionControl { session_id, .. } => Some(session_id.clone()),
+        _ => None,
+    };
+    let outcome = match disposition {
         ConnectionDisposition::Continue { next_state } => {
             *connection_state = next_state;
             Ok(())
@@ -2511,7 +2573,21 @@ fn apply_disposition(
             *pending_raw = Some(payload);
             Ok(())
         }
+    };
+    // A raw transition keeps `SessionControl` (release happens at
+    // connection exit, where a raw socket can no longer command);
+    // any other departure from it releases immediately.
+    match &*connection_state {
+        ServerConnectionState::SessionControl { session_id, .. } => {
+            state.note_control_socket(session_id);
+        }
+        _ => {
+            if let Some(prior) = prior_control {
+                state.forget_control_socket(&prior);
+            }
+        }
     }
+    outcome
 }
 
 async fn receive_command(
@@ -5155,6 +5231,29 @@ mod tests {
             0,
             "absent bridge must read zero backlog depth"
         );
+    }
+
+    #[test]
+    fn control_socket_tracking_is_idempotent_and_fail_closed() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let session_id = SamSessionId::new("control-track-probe").expect("session id");
+        // Unknown session has no control socket (fail-closed false).
+        assert!(!state.control_socket_live(&session_id));
+        // Noting is idempotent; forgetting an absent id is a no-op.
+        state.note_control_socket(&session_id);
+        state.note_control_socket(&session_id);
+        assert!(state.control_socket_live(&session_id));
+        state.forget_control_socket(&session_id);
+        assert!(!state.control_socket_live(&session_id));
+        state.forget_control_socket(&session_id);
+        assert!(!state.control_socket_live(&session_id));
     }
 
     #[test]
