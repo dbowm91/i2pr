@@ -220,6 +220,14 @@ Carried forward from Plan 478's 7r7te3fb/tnm6su4j two-row teardown readings: `fi
 | --- | --- | --- | --- |
 | **485** | **passed: control-socket-gated session teardown; sequential reuse proven** | [SAM session lifetime for sequential stream reuse](implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md) | Predecessor `closure/core-router-recovery/478-status.md` (cause-3-live teardown rows; union-gauge correction). Acceptance per plan: cause-3-live rows absent on sequential reuse, fail-before/pass-after deterministic tests, reworked baselines green, one exact-pin lane read in order. |
 
+### SAM inbound-SYN routing corrective — Plan 486 (registered 2026-10-16)
+
+Carried forward from Plan 478's lane `m8v2xk5q` 10-key ACCEPT-SYN receipt: inbound SYNs authenticate and dispatch to the bridge canonical manager (`GenericClient` profile), which holds no listener, while `STREAM ACCEPT` binds wildcard-0 and polls backlog on the receiver mirror — so the waiter can never succeed and stock retries 10× then terminates. One coherent routing pass: waiter-scoped SYN routing to the mirror, stale-backlog age eviction, per-instance receipt split, silent-drop invariant. Considered and rejected: always-feed-mirror type-split (forward-leg blast radius), canonical bind (pump re-thread audit surface), server-kind flip (server-machinery enrollment, new loopback surface), timeout lengthening, transit hunting. No support/capability/advertisement change; no stock patching.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **486** | **registered: waiter-scoped inbound-SYN routing to parked ACCEPT; mirror/canonical instance mismatch** | [SAM inbound-SYN routing to the parked ACCEPT instance](implementation/core-router-recovery/486-sam-inbound-syn-routing-to-parked-accept.md) | Predecessor `closure/core-router-recovery/478-status.md` (m8v2xk5q instance-mismatch chain). Acceptance per plan: fail-before/pass-after dispatch-matrix tests, forward-leg guard green, per-instance receipt split parsed, silent-drop negative held, one exact-pin lane read in order. |
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
