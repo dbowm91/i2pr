@@ -212,6 +212,14 @@ values. No silent default change, no lowered wire minimum, no live lane.
 | --- | --- | --- | --- |
 | **484** | **passed: burst default 72_819 fits NTCP2 frame, explicit-small stays fail-closed** | [Bandwidth default burst vs NTCP2 wire-frame minimum](implementation/core-router-recovery/484-bandwidth-burst-default-vs-ntcp2-minimum.md) | `closure/core-router-recovery/484-status.md`: WP1 branch (a) landed with drift + explicit-small guards (both inversion-probed), 454 baseline green unchanged; 437/438/433/436 unaffected, nothing promoted. |
 
+### SAM session lifetime corrective — Plan 485 (registered 2026-10-16)
+
+Carried forward from Plan 478's 7r7te3fb/tnm6su4j two-row teardown readings: `finish_raw_stream`'s standalone last-stream cleanup tears down live sessions, so sequential stream reuse on one session ID fails fast at lookup while concurrent streams pass. One coherent ownership pass: sessions die only on control-socket close, SESSION REMOVE (children), or create rollback; lifecycle baselines move to explicit control-close semantics. No support/capability/advertisement change; no stock patching.
+
+| Plan | State | Implementation handoff | Dependency / executable acceptance |
+| --- | --- | --- | --- |
+| **485** | **registered-ready: SAM session lifetime for sequential stream reuse** | [SAM session lifetime for sequential stream reuse](implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md) | Predecessor `closure/core-router-recovery/478-status.md` (cause-3-live teardown rows; union-gauge correction). Acceptance per plan: cause-3-live rows absent on sequential reuse, fail-before/pass-after deterministic tests, reworked baselines green, one exact-pin lane read in order. |
+
 ## Active subsystem roadmaps
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
