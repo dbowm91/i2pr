@@ -89,6 +89,7 @@ def parse_attempt_receipt_lines(lines):
     stream_connect_handshake_wait_receipts = []
     stream_accept_data_phase_close_receipts = []
     stream_accept_syn_wait_receipts = []
+    session_teardown_receipts = []
     accept_pump_started = 0
     delivery_admitted_cells = []
     for raw_line in lines:
@@ -283,6 +284,26 @@ def parse_attempt_receipt_lines(lines):
                 if receipt["syn_accepted"] + receipt["syn_rejected"] != receipt["syn_observed"]:
                     continue
                 stream_accept_syn_wait_receipts.append(receipt)
+        if re.search(r'transition\s*=\s*"?session_teardown', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "cause_code", "session_live", "driver_live",
+                )
+            }
+            if all(match for match in values.values()):
+                receipt = {key: int(match.group(1)) for key, match in values.items()}
+                # Both flags are 0/1 and the cause code is drawn
+                # from the documented 1..=3 mapping; anything else
+                # is malformed, not evidence (same shape as the
+                # bridge_present gate on close receipts).
+                if receipt["session_live"] not in (0, 1):
+                    continue
+                if receipt["driver_live"] not in (0, 1):
+                    continue
+                if receipt["cause_code"] not in (1, 2, 3):
+                    continue
+                session_teardown_receipts.append(receipt)
         # Plan 478 pump lifecycle: each inbound raw-pump start is one
         # INFO line with no build_attempt_id, so it is counted
         # explicitly (never a stage count). Together with the close
@@ -325,6 +346,7 @@ def parse_attempt_receipt_lines(lines):
         "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
         "stream_accept_data_phase_close_receipts": stream_accept_data_phase_close_receipts,
         "stream_accept_syn_wait_receipts": stream_accept_syn_wait_receipts,
+        "session_teardown_receipts": session_teardown_receipts,
         "accept_pump_started": accept_pump_started,
     }
 

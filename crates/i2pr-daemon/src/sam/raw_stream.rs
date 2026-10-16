@@ -589,7 +589,11 @@ impl SamServiceState {
             // child and siblings alive until SESSION REMOVE or PRIMARY close.
             // If the child was already removed, that explicit teardown owns
             // the cleanup and this path does nothing.
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                crate::sam::SessionTeardownCause::RawStreamFinished,
+            );
         }
     }
 

@@ -813,14 +813,22 @@ impl SamServiceState {
             Ok(mut pools) => pools.install(destination_id),
             Err(_) => {
                 drop(product);
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(SessionCreateError::StreamingPoolsLocked);
             }
         };
         if pool_install.is_err() {
             drop(pool_install);
             drop(product);
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -830,7 +838,11 @@ impl SamServiceState {
         {
             drop(error);
             drop(product);
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -852,7 +864,11 @@ impl SamServiceState {
         let bridge_handle = match self.sam_destinations.lock() {
             Ok(mut destinations) => destinations.install(destination_id, bridge),
             Err(_) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(SessionCreateError::SamDestinationsLocked);
             }
         };
@@ -862,7 +878,11 @@ impl SamServiceState {
         // failure rolls the bridge and stream state back so we never
         // leave a destination with a bridge but no driver.
         if let Err(_error) = self.spawn_destination_driver(destination_id, children, cancellation) {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             return Err(SessionCreateError::I2pError);
         }
 
@@ -874,7 +894,11 @@ impl SamServiceState {
         {
             Ok(entry) => entry,
             Err(error) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(map_registry_error(error));
             }
         };
@@ -1043,7 +1067,11 @@ impl SamServiceState {
             })
             .is_err()
         {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         }
@@ -1053,19 +1081,31 @@ impl SamServiceState {
                 .register_session(session_id.clone())
                 .is_err()
         {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         }
         let Some(bridge_handle) = manager.router_network_sam_bridge(destination_id) else {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::I2pError);
         };
         if let Ok(mut destinations) = self.sam_destinations.lock() {
             destinations.install_handle(destination_id, bridge_handle);
         } else {
-            self.teardown_session(&session_id, destination_id);
+            self.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::CreateRollback,
+            );
             self.session_registry.rollback_reservation(&reservation);
             return Err(SessionCreateError::SamDestinationsLocked);
         }
@@ -1076,7 +1116,11 @@ impl SamServiceState {
         {
             Ok(entry) => entry,
             Err(error) => {
-                self.teardown_session(&session_id, destination_id);
+                self.teardown_session(
+                    &session_id,
+                    destination_id,
+                    SessionTeardownCause::CreateRollback,
+                );
                 return Err(map_registry_error(error));
             }
         };
@@ -1088,21 +1132,74 @@ impl SamServiceState {
             style,
         })
     }
+}
 
+/// Typed cause for a SAM session teardown. Counts only; the
+/// INFO line reports the numeric [`SessionTeardownCause::code`],
+/// never session ids, identities, keys, or payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SessionTeardownCause {
+    /// Session provisioning failed and rolled back. Emits with
+    /// `session_live = 0` unless a live entry already existed
+    /// (e.g. a duplicate-create clobber).
+    CreateRollback,
+    /// The session control socket closed.
+    ControlSocketClosed,
+    /// The last raw stream finished on a standalone session.
+    RawStreamFinished,
+}
+
+impl SessionTeardownCause {
+    /// Stable numeric code for the attribution line: 1 =
+    /// create-rollback, 2 = control-socket-closed, 3 =
+    /// raw-stream-finished.
+    pub const fn code(self) -> u64 {
+        match self {
+            SessionTeardownCause::CreateRollback => 1,
+            SessionTeardownCause::ControlSocketClosed => 2,
+            SessionTeardownCause::RawStreamFinished => 3,
+        }
+    }
+}
+
+impl SamServiceState {
     /// Tears a session down exactly once. Called from the
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
-    pub fn teardown_session(&self, session_id: &SamSessionId, destination_id: DestinationId) {
+    ///
+    /// Plan 478 session-lifecycle attribution: every call emits one
+    /// INFO `session_teardown` line with a numeric cause code and
+    /// two 0/1 flags (`session_live` proves a live registry entry
+    /// was removed; `driver_live` proves a driver entry was still
+    /// installed). Unconditional by design — like the torn-down
+    /// close rows, the flags tell a real death (`session_live =
+    /// 1`) apart from a redundant call or a never-live rollback
+    /// (`session_live = 0`). Counts only; no session ids,
+    /// identities, keys, or payload material.
+    ///
+    /// Returns whether a live session entry was removed.
+    pub fn teardown_session(
+        &self,
+        session_id: &SamSessionId,
+        destination_id: DestinationId,
+        cause: SessionTeardownCause,
+    ) -> bool {
         for child_id in self.session_registry.subsession_ids(session_id) {
             self.remove_subsession(session_id, &child_id);
         }
-        if let Ok(mut drivers) = self.destination_drivers.lock()
+        let driver_live = if let Ok(mut drivers) = self.destination_drivers.lock()
             && let Some(driver) = drivers.remove(&destination_id)
         {
             let _ = driver.cancel(i2pr_core::CancellationReason::ParentScope);
-        }
+            1u64
+        } else {
+            0u64
+        };
         self.teardown_forwards_for_session(session_id);
-        let _ = self.session_registry.remove_by_session(session_id);
+        let session_live = match self.session_registry.remove_by_session(session_id) {
+            Ok(Some(_)) => 1u64,
+            _ => 0u64,
+        };
         self.teardown_subsession_streams(session_id, destination_id);
         if let Ok(mut destinations) = self.destination_registry.lock() {
             destinations.remove(&destination_id);
@@ -1122,6 +1219,14 @@ impl SamServiceState {
         if let Ok(mut counters) = self.delivery_counters.lock() {
             counters.remove(&destination_id);
         }
+        info!(
+            cause_code = cause.code(),
+            session_live = session_live,
+            driver_live = driver_live,
+            transition = "session_teardown",
+            "SAM session torn down (counts only)",
+        );
+        session_live == 1
     }
 
     /// Registers a child session on a live PRIMARY without creating another
@@ -2296,7 +2401,11 @@ async fn handle_connection(
     } = &connection_state
         && pending_raw.is_none()
     {
-        state.teardown_session(session_id, *destination_id);
+        state.teardown_session(
+            session_id,
+            *destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
     }
 
     // Plan 147 §8: on `ConnectionDisposition::RawTransition` the
@@ -4944,6 +5053,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_teardown_cause_codes_are_stable() {
+        // The lane matches cause codes numerically; the mapping
+        // must not shift silently.
+        assert_eq!(SessionTeardownCause::CreateRollback.code(), 1);
+        assert_eq!(SessionTeardownCause::ControlSocketClosed.code(), 2);
+        assert_eq!(SessionTeardownCause::RawStreamFinished.code(), 3);
+    }
+
+    #[test]
+    fn teardown_unknown_session_reports_not_live() {
+        let state = SamServiceState::new_local_only(SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            udp_port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        })
+        .expect("state");
+        let session_id = SamSessionId::new("teardown-probe").expect("session id");
+        let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([13_u8; 32]));
+        // No live entry exists: teardown reports not-live and leaves
+        // every registry empty (idempotent, no half-state).
+        assert!(
+            !state.teardown_session(
+                &session_id,
+                destination_id,
+                SessionTeardownCause::ControlSocketClosed,
+            ),
+            "unknown session must report not-live"
+        );
+        assert!(!state.session_registry.contains(&session_id));
+        assert!(
+            state
+                .destination_drivers
+                .lock()
+                .map(|drivers| drivers.is_empty())
+                .unwrap_or(false)
+        );
+    }
+
     async fn read_sam_line(stream: &mut tokio::net::TcpStream) -> String {
         use tokio::io::AsyncReadExt;
         let mut line = Vec::new();
@@ -5683,7 +5833,11 @@ mod tests {
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)), 7655),
         );
         assert_eq!(rejected, Err("non-loopback UDP source"));
-        state.teardown_session(&primary, applied.destination_id);
+        state.teardown_session(
+            &primary,
+            applied.destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
         parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
         let _ = children.shutdown().await;
     }
@@ -6070,7 +6224,11 @@ mod tests {
         drop(private_client);
         private_driver.await.expect("private datagram driver join");
 
-        state.teardown_session(&primary_id, primary.destination_id);
+        state.teardown_session(
+            &primary_id,
+            primary.destination_id,
+            SessionTeardownCause::ControlSocketClosed,
+        );
         assert!(state.session_registry.session_count() == 0);
         assert!(state.destination_registry.lock().unwrap().is_empty());
         owner.cancel(i2pr_core::CancellationReason::OperatorRequest);

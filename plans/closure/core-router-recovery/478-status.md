@@ -1353,3 +1353,71 @@ the new frontier edge. No further lane without a new
 change. 478 stays active; reverse DATA, §6 live
 recovery, product close-out open; 433/439 gates
 unchanged.
+
+## 2026-10-16 follow-up: teardown INFO fires live — forward finish kills the session
+
+Instrument (same seam, no behavior change): every
+`teardown_session` call now emits one INFO
+`session_teardown` line (`cause_code` 1/2/3 =
+create-rollback / control-socket-closed /
+raw-stream-finished; `session_live` and `driver_live`
+0/1 flags) and returns whether a live entry was
+removed. Unconditional by the `bridge_present`
+precedent — the flags, not a gate, tell real deaths
+from redundant calls. 16 call sites classified;
+tests: stable codes + unknown-session-not-live.
+Parser: `session_teardown_receipts` (flags 0/1,
+code 1..=3, else refuse) + 6 offline tests. Both
+probes kill (inverted gate; dropped key → KeyError)
+and are reverted. Battery: daemon lib 791,
+tunnel-unit 44, sam-composed 4, offline 65, planning
+51, clippy/fmt clean.
+
+Two bounded lanes (verified-fresh binary both runs):
+
+- `zwzvlxax`: pre-STREAM variance stop
+  (`inbound-build`, 1/4 matched, orphans 8→15 with
+  zero message matches, only 3 SSU2 families). No
+  sessions created → `session_teardown_receipts: []`,
+  which is the correct empty reading. Not our
+  regression (build/match path untouched; same shape
+  as `0h6f38y_` on an earlier tree).
+- `7r7te3fb`: teardown instrument FIRES with a
+  decisive two-row reading —
+  `[{cause 3, session_live 1, driver_live 0},
+  {cause 2, session_live 0, driver_live 0}]`.
+  Forward echo completed, then the forward stream's
+  finish tore down the LIVE session via the
+  standalone last-stream cleanup (cause 3) — so the
+  reverse ACCEPT ran against a dead session (fast
+  InvalidId into the swallowed `failure[]`, stock
+  hung 99 s, short-read from stock's side), and the
+  lane-end socket close logged the redundant cause-2
+  row with `session_live = 0`, exactly as designed.
+  Same run: 4/4 builds+installs, owners 2/2, no
+  handshake/ACCEPT-SYN/close receipts, pump 0, 30 s
+  grace unfound.
+
+Two sharp edges remain, both below prior questions:
+(a) the forward finish killing the session is
+standalone-cleanup behavior firing on a session the
+lane still needs — whether that ownership is correct
+is a product question, not attribution; (b) at the
+cause-3 teardown NO driver entry was installed, yet
+the forward SYN was necessarily swept — so the
+driver task exited mid-session (its loop breaks only
+on its two cancellation tokens; panic would have
+left the entry behind). Next bounded change: name
+WHICH token ends the driver (INFO on driver exit
+with the firing source) plus which scope owns the
+spawn — the `SessionCreateExecution.children /
+cancellation` lineage is now the exact seam.
+Snaps: `zwzvlxax-inbound-build-variance-stop-run`,
+`7r7te3fb-teardown-fires-frontier-run`.
+
+**Disposition.** Teardown attribution live-proven;
+the frontier is now driver-ownership + session
+ownership on multi-leg runs. No further lane without
+a new change. 478 stays active; reverse DATA, §6
+live recovery, product close-out open; 433/439 gates
+unchanged.
