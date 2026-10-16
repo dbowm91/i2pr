@@ -284,7 +284,6 @@ impl StreamingConfig {
     }
 
     /// Returns a balanced experimental default.
-
     pub fn balanced() -> Self {
         Self::try_new(
             64,

@@ -3739,6 +3739,61 @@ fn syn_ingress_snapshot(
     ]
 }
 
+/// Plan 486 — renders the STREAM ACCEPT SYN-wait expiry message
+/// from the per-instance ingress deltas. The 18 `key=value` pairs
+/// are the lane parser's contract
+/// (`tests/integration/core-router-recovery/run_plan458_sam_product.py`
+/// requires every one; the offline receipt tests pin the shape):
+/// `syn_*` reads the receiver mirror, `canon_syn_*` the canonical
+/// manager. Extracted pure so a unit test can pin the key set
+/// mechanically — the `warn!` attribution line above the call site
+/// must carry the same keys.
+fn accept_syn_wait_expiry_message(
+    deadline: Duration,
+    mirror: [u64; 8],
+    canon: [u64; 8],
+    backlog_start: u64,
+    backlog_end: u64,
+) -> String {
+    format!(
+        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?} \
+         syn_observed={} \
+         syn_accepted={} \
+         syn_rejected={} \
+         syn_rejected_decode={} \
+         syn_rejected_validation={} \
+         syn_rejected_signature={} \
+         syn_rejected_no_listener={} \
+         syn_rejected_backlog_full={} \
+         canon_syn_observed={} \
+         canon_syn_accepted={} \
+         canon_syn_rejected={} \
+         canon_syn_rejected_decode={} \
+         canon_syn_rejected_validation={} \
+         canon_syn_rejected_signature={} \
+         canon_syn_rejected_no_listener={} \
+         canon_syn_rejected_backlog_full={} \
+         accept_backlog_start={backlog_start} \
+         accept_backlog_end={backlog_end}",
+        mirror[0],
+        mirror[1],
+        mirror[2],
+        mirror[3],
+        mirror[4],
+        mirror[5],
+        mirror[6],
+        mirror[7],
+        canon[0],
+        canon[1],
+        canon[2],
+        canon[3],
+        canon[4],
+        canon[5],
+        canon[6],
+        canon[7],
+    )
+}
+
 /// Plan 486 — sweeps the destination bridge's receiver-mirror
 /// listener backlogs for age-evicted entries. Counts only (the
 /// manager's `backlog_evicted` counter observes it); fail-closed
@@ -4342,6 +4397,10 @@ async fn execute_stream_accept(
                 };
                 let mirror = delta(mirror_after, mirror_before);
                 let canon = delta(canon_after, canon_before);
+                // Named bindings for the `warn!` attribution line;
+                // the TIMEOUT message renders from the same arrays
+                // via `accept_syn_wait_expiry_message` (key sets must
+                // stay identical).
                 let syn_observed = mirror[0];
                 let syn_accepted = mirror[1];
                 let syn_rejected = mirror[2];
@@ -4383,26 +4442,12 @@ async fn execute_stream_accept(
                 );
                 return Err(StreamAcceptFailed {
                     result: ReplyResult::Timeout,
-                    message: format!(
-                        "STREAM ACCEPT did not observe an inbound SYN within {deadline:?} \
-                         syn_observed={syn_observed} \
-                         syn_accepted={syn_accepted} \
-                         syn_rejected={syn_rejected} \
-                         syn_rejected_decode={syn_rejected_decode} \
-                         syn_rejected_validation={syn_rejected_validation} \
-                         syn_rejected_signature={syn_rejected_signature} \
-                         syn_rejected_no_listener={syn_rejected_no_listener} \
-                         syn_rejected_backlog_full={syn_rejected_backlog_full} \
-                         canon_syn_observed={canon_syn_observed} \
-                         canon_syn_accepted={canon_syn_accepted} \
-                         canon_syn_rejected={canon_syn_rejected} \
-                         canon_syn_rejected_decode={canon_syn_rejected_decode} \
-                         canon_syn_rejected_validation={canon_syn_rejected_validation} \
-                         canon_syn_rejected_signature={canon_syn_rejected_signature} \
-                         canon_syn_rejected_no_listener={canon_syn_rejected_no_listener} \
-                         canon_syn_rejected_backlog_full={canon_syn_rejected_backlog_full} \
-                         accept_backlog_start={backlog_start} \
-                         accept_backlog_end={backlog_end}"
+                    message: accept_syn_wait_expiry_message(
+                        deadline,
+                        mirror,
+                        canon,
+                        backlog_start,
+                        backlog_end,
                     ),
                 });
             }
@@ -5330,6 +5375,44 @@ mod tests {
             0,
             "absent bridge must read zero backlog depth"
         );
+    }
+
+    #[test]
+    fn accept_syn_wait_expiry_message_carries_all_parser_keys() {
+        // Plan 486 daemon↔parser contract: the TIMEOUT message must
+        // carry exactly the 18 keys the lane parser requires (mirror
+        // `syn_*` + canonical `canon_syn_*` + backlog pair), with
+        // values rendered in column order. The offline receipt tests
+        // pin the parser side; this pins the daemon side.
+        let message = accept_syn_wait_expiry_message(
+            Duration::from_secs(20),
+            [1, 1, 0, 0, 0, 0, 0, 0],
+            [2, 0, 2, 0, 0, 0, 2, 0],
+            0,
+            1,
+        );
+        for key in [
+            "syn_observed=1",
+            "syn_accepted=1",
+            "syn_rejected=0",
+            "syn_rejected_decode=0",
+            "syn_rejected_validation=0",
+            "syn_rejected_signature=0",
+            "syn_rejected_no_listener=0",
+            "syn_rejected_backlog_full=0",
+            "canon_syn_observed=2",
+            "canon_syn_accepted=0",
+            "canon_syn_rejected=2",
+            "canon_syn_rejected_decode=0",
+            "canon_syn_rejected_validation=0",
+            "canon_syn_rejected_signature=0",
+            "canon_syn_rejected_no_listener=2",
+            "canon_syn_rejected_backlog_full=0",
+            "accept_backlog_start=0",
+            "accept_backlog_end=1",
+        ] {
+            assert!(message.contains(key), "expiry message must carry {key}");
+        }
     }
 
     #[test]

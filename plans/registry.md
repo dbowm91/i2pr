@@ -226,7 +226,7 @@ Carried forward from Plan 478's lane `m8v2xk5q` 10-key ACCEPT-SYN receipt: inbou
 
 | Plan | State | Implementation handoff | Dependency / executable acceptance |
 | --- | --- | --- | --- |
-| **486** | **registered: waiter-scoped inbound-SYN routing to parked ACCEPT; mirror/canonical instance mismatch** | [SAM inbound-SYN routing to the parked ACCEPT instance](implementation/core-router-recovery/486-sam-inbound-syn-routing-to-parked-accept.md) | Predecessor `closure/core-router-recovery/478-status.md` (m8v2xk5q instance-mismatch chain). Acceptance per plan: fail-before/pass-after dispatch-matrix tests, forward-leg guard green, per-instance receipt split parsed, silent-drop negative held, one exact-pin lane read in order. |
+| **486** | **passed: waiter-scoped inbound-SYN routing to parked ACCEPT; reverse handshake proven live** | [SAM inbound-SYN routing to the parked ACCEPT instance](implementation/core-router-recovery/486-sam-inbound-syn-routing-to-parked-accept.md) | Predecessor `closure/core-router-recovery/478-status.md` (m8v2xk5q instance-mismatch chain). Acceptance per plan: fail-before/pass-after dispatch-matrix tests, forward-leg guard green, per-instance receipt split parsed, silent-drop negative held, one exact-pin lane read in order. Closure `closure/core-router-recovery/486-status.md`: lane `q3w7m9z2` shows zero ACCEPT expiries, pump started, stock SYN answered (DATA stall retained by 478). |
 
 ## Active subsystem roadmaps
 
