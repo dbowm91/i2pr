@@ -206,6 +206,7 @@ def parse_attempt_receipt_lines(lines):
                     "send_delivery_failed",
                     "send_failed_ls2_missing", "send_failed_ls2_invalid",
                     "send_failed_ls2_install", "send_failed_bridge",
+                    "send_sweeps", "send_queue_start", "send_queue_end",
                 )
             }
             if all(match for match in values.values()):

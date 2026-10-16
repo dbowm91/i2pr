@@ -190,6 +190,7 @@ class BinaryProvenanceTests(unittest.TestCase):
             'send_factory_exhausted=0 send_delivery_failed=0 '
             'send_failed_ls2_missing=0 send_failed_ls2_invalid=0 '
             'send_failed_ls2_install=0 send_failed_bridge=0 '
+            'send_sweeps=900 send_queue_start=0 send_queue_end=0 '
             'transition="stream_connect_handshake_wait_expired" x',
             FULL_LINE,
         ])

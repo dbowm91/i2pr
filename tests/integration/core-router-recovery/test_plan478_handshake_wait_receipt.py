@@ -19,13 +19,14 @@ FULL_LINE = (
     'send_delivered=8 send_unknown_peer=0 send_missing_factory=0 '
     'send_factory_exhausted=0 send_delivery_failed=1 send_failed_ls2_missing=0 '
     'send_failed_ls2_invalid=0 send_failed_ls2_install=0 send_failed_bridge=1 '
+    'send_sweeps=1240 send_queue_start=1 send_queue_end=0 '
     'transition="stream_connect_handshake_wait_expired" '
     'STREAM CONNECT wait ended without Established'
 )
 
 
 class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
-    def test_full_attribution_line_parses_all_twenty_five_counts(self) -> None:
+    def test_full_attribution_line_parses_all_twenty_eight_counts(self) -> None:
         parsed = parse_attempt_receipt_lines([FULL_LINE])
         # The daemon TIMEOUT warn carries no build_attempt_id, so it
         # contributes no stage count; the receipts list is the evidence.
@@ -46,6 +47,8 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
                 "send_delivery_failed": 1,
                 "send_failed_ls2_missing": 0, "send_failed_ls2_invalid": 0,
                 "send_failed_ls2_install": 0, "send_failed_bridge": 1,
+                "send_sweeps": 1240, "send_queue_start": 1,
+                "send_queue_end": 0,
             }],
         )
         # The class counts always sum to the aggregate miss count.
@@ -76,8 +79,7 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
         parsed = parse_attempt_receipt_lines([bad])
         self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])
 
-    def test_sixteen_key_legacy_line_no_longer_parses(self) -> None:
-        # Pre-split daemon lines lack the send keys; fail-closed
+    def test_sixteen_key_legacy_line_no_longer_parses(self) -> None:        # Pre-split daemon lines lack the send keys; fail-closed
         # refusal (same shape as the 12->15->16 transitions).
         legacy = (
             'WARN synack_observed=0 synack_accepted=0 synack_rejected=0 '
@@ -88,6 +90,15 @@ class Plan478HandshakeWaitReceiptTests(unittest.TestCase):
             'miss_service_unowned=1 miss_exploratory_known=1 '
             'miss_retired_service=2 miss_unknown=0 '
             'transition="stream_connect_handshake_wait_expired"'
+        )
+        parsed = parse_attempt_receipt_lines([legacy])
+        self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])
+
+    def test_twenty_five_key_pre_sweep_line_no_longer_parses(self) -> None:
+        # Pre-sweep daemon lines lack send_sweeps/send_queue_*;
+        # fail-closed refusal (same shape as the 16->25 transition).
+        legacy = FULL_LINE.replace(
+            " send_sweeps=1240 send_queue_start=1 send_queue_end=0", "",
         )
         parsed = parse_attempt_receipt_lines([legacy])
         self.assertEqual(parsed["stream_connect_handshake_wait_receipts"], [])

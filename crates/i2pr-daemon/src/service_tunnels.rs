@@ -2776,7 +2776,7 @@ impl ServiceTunnelManager {
             let destinations = destinations_arc.lock().expect("sam destinations poisoned");
             match destinations.get(destination_id) {
                 Some(bridge) => bridge,
-                None => return DeliverySweepCounters::default(),
+                None => return DeliverySweepCounters::one_sweep(),
             }
         };
         let requests: Vec<i2pr_client::streaming::transport::TransportSendRequest> =
@@ -2789,7 +2789,7 @@ impl ServiceTunnelManager {
                 all
             });
         if requests.is_empty() {
-            return DeliverySweepCounters::default();
+            return DeliverySweepCounters::one_sweep();
         }
         let mut counters = DeliverySweepCounters {
             delivered: 0,
@@ -2804,6 +2804,7 @@ impl ServiceTunnelManager {
             delivery_failed_ls2_invalid: 0,
             delivery_failed_ls2_install: 0,
             delivery_failed_bridge: 0,
+            sweeps: 1,
         };
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
         let outbound_hop1_hash = i2pr_proto::Hash::from_bytes([0xA2; 32]);

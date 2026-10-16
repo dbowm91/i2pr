@@ -3293,6 +3293,7 @@ async fn execute_stream_connect(
     let arrival_before = product_inbound_arrival_totals(&state);
     let miss_taxonomy_before = product_owner_miss_taxonomy_totals(&state);
     let send_before = delivery_send_totals(&state, destination_id);
+    let send_queue_start = delivery_queue_depth(&state, destination_id);
     let established = wait_for_established(
         state.clone(),
         destination_id,
@@ -3364,6 +3365,14 @@ async fn execute_stream_connect(
         let send_failed_ls2_invalid = send_after.6.saturating_sub(send_before.6);
         let send_failed_ls2_install = send_after.7.saturating_sub(send_before.7);
         let send_failed_bridge = send_after.8.saturating_sub(send_before.8);
+        // Plan 478 never-sent split: the sweep-activity delta over
+        // the same wait plus the queue-depth gauge at both ends.
+        // `send_sweeps == 0` means the driver never ran;
+        // `sweeps > 0` with zero delivered/failed and nonzero queue
+        // depth means queued but undrained; `sweeps > 0` with zero
+        // depth means nothing was ever queued.
+        let send_sweeps = send_after.9.saturating_sub(send_before.9);
+        let send_queue_end = delivery_queue_depth(&state, destination_id);
         warn!(
             synack_observed = synack_observed,
             synack_accepted = synack_accepted,
@@ -3390,6 +3399,9 @@ async fn execute_stream_connect(
             send_failed_ls2_invalid = send_failed_ls2_invalid,
             send_failed_ls2_install = send_failed_ls2_install,
             send_failed_bridge = send_failed_bridge,
+            send_sweeps = send_sweeps,
+            send_queue_start = send_queue_start,
+            send_queue_end = send_queue_end,
             transition = "stream_connect_handshake_wait_expired",
             "STREAM CONNECT wait ended without Established; SYN-ACK ingress attribution (counts only)",
         );
@@ -3422,7 +3434,10 @@ async fn execute_stream_connect(
                   send_failed_ls2_missing={send_failed_ls2_missing} \
                   send_failed_ls2_invalid={send_failed_ls2_invalid} \
                   send_failed_ls2_install={send_failed_ls2_install} \
-                  send_failed_bridge={send_failed_bridge}"
+                  send_failed_bridge={send_failed_bridge} \
+                  send_sweeps={send_sweeps} \
+                  send_queue_start={send_queue_start} \
+                  send_queue_end={send_queue_end}"
             ),
         });
     }
@@ -3540,7 +3555,7 @@ fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64
 /// cumulative delivery-sweep counters as `(delivered,
 /// unknown_peer, missing_factory, factory_exhausted,
 /// delivery_failed, failed_ls2_missing, failed_ls2_invalid,
-/// failed_ls2_install, failed_bridge)`. Counts only; no
+/// failed_ls2_install, failed_bridge, sweeps)`. Counts only; no
 /// identities, keys, or payload material. Reads fail closed to
 /// zeros when the entry is absent (torn-down sessions never
 /// report sends).
@@ -3548,7 +3563,7 @@ fn product_owner_miss_taxonomy_totals(state: &SamServiceState) -> (u64, u64, u64
 fn delivery_send_totals(
     state: &SamServiceState,
     destination_id: DestinationId,
-) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) {
     let counters = state.delivery_counters(destination_id);
     let widen = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
     (
@@ -3561,7 +3576,34 @@ fn delivery_send_totals(
         widen(counters.delivery_failed_ls2_invalid),
         widen(counters.delivery_failed_ls2_install),
         widen(counters.delivery_failed_bridge),
+        widen(counters.sweeps),
     )
+}
+
+/// Plan 478 never-sent split: the live outbound queue depth of one
+/// destination (canonical + receiver-mirror streaming queues plus
+/// the datagram queue) as a gauge snapshot. Counts only; no
+/// identities, keys, or payload material. Fail-closed zero when
+/// the bridge is absent. Read at wait start and wait end: a
+/// nonzero depth with zero delivered/failed deltas is "queued but
+/// undrained"; zero depth with `sweeps > 0` is "nothing ever
+/// queued".
+fn delivery_queue_depth(state: &SamServiceState, destination_id: DestinationId) -> u64 {
+    let destinations_arc = state.sam_destinations();
+    let Ok(destinations) = destinations_arc.lock() else {
+        return 0;
+    };
+    let Some(handle) = destinations.get(destination_id) else {
+        return 0;
+    };
+    handle.with(|bridge| {
+        let depth = bridge
+            .streaming()
+            .outbound_queue_len()
+            .saturating_add(bridge.receiver_streaming().outbound_queue_len())
+            .saturating_add(bridge.datagrams().outbound_queue_len());
+        u64::try_from(depth).unwrap_or(u64::MAX)
+    })
 }
 
 /// Plan 478 ACCEPT data-phase baseline: snapshots the destination
@@ -4771,14 +4813,20 @@ mod tests {
         // Unknown destination fails closed to all zeros.
         assert_eq!(
             delivery_send_totals(&state, destination_id),
-            (0, 0, 0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             "absent delivery entry must read zero"
+        );
+        assert_eq!(
+            delivery_queue_depth(&state, destination_id),
+            0,
+            "absent bridge must read zero queue depth"
         );
         let mut seeded = DeliverySweepCounters {
             delivered: 8,
             unknown_peer: 1,
             missing_factory: 2,
             factory_exhausted: 3,
+            sweeps: 7,
             ..DeliverySweepCounters::default()
         };
         seeded.note_split_failure(SendFailureCause::Ls2Missing);
@@ -4789,7 +4837,7 @@ mod tests {
         state.record_delivery_counters(destination_id, seeded);
         assert_eq!(
             delivery_send_totals(&state, destination_id),
-            (8, 1, 2, 3, 5, 1, 1, 1, 2),
+            (8, 1, 2, 3, 5, 1, 1, 1, 2, 7),
             "send totals must map each counter field in order"
         );
     }

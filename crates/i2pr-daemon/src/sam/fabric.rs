@@ -427,6 +427,15 @@ pub struct DeliverySweepCounters {
     pub delivery_failed_ls2_install: usize,
     /// Split of `delivery_failed`: the `bridge_to_peer` seam failed.
     pub delivery_failed_bridge: usize,
+    /// Number of `deliver_outbound` invocations folded into this
+    /// snapshot. Every return path of both sweep seams counts
+    /// exactly one sweep — including empty sweeps and
+    /// bridge-missing sweeps — so a zero `sweeps` delta over a
+    /// wait proves the per-destination driver never ran, while
+    /// `sweeps > 0` with all outcome counters zero proves it
+    /// swept but found nothing queued. Activity, not degradation:
+    /// excluded from [`DeliverySweepCounters::clean`].
+    pub sweeps: usize,
 }
 
 /// Typed send-side failure cause for the `delivery_failed` split.
@@ -444,6 +453,17 @@ pub enum SendFailureCause {
 }
 
 impl DeliverySweepCounters {
+    /// One executed sweep with no outcomes: the canonical return
+    /// for bridge-missing and empty-queue paths. Keeps the driver
+    /// liveness signal (`sweeps`) moving even when there was
+    /// nothing to deliver.
+    pub fn one_sweep() -> Self {
+        Self {
+            sweeps: 1,
+            ..Self::default()
+        }
+    }
+
     /// Records one typed send-side failure: increments the
     /// aggregate and exactly the matching split field, with
     /// saturating arithmetic. Every `delivery_failed` site must go
@@ -500,10 +520,12 @@ impl DeliverySweepCounters {
         self.delivery_failed_bridge = self
             .delivery_failed_bridge
             .saturating_add(other.delivery_failed_bridge);
+        self.sweeps = self.sweeps.saturating_add(other.sweeps);
     }
 
     /// `true` when every successful delivery happened with no
-    /// typed degradation.
+    /// typed degradation. `sweeps` is activity, not degradation,
+    /// and is deliberately excluded: an empty sweep stays clean.
     pub const fn clean(&self) -> bool {
         self.missing_factory == 0
             && self.factory_exhausted == 0
@@ -591,5 +613,25 @@ mod tests {
         assert_eq!(first.split_failure_sum(), first.delivery_failed);
         assert!(!first.clean());
         assert!(DeliverySweepCounters::default().clean());
+    }
+
+    #[test]
+    fn sweeps_count_invocations_and_stay_clean() {
+        let empty = DeliverySweepCounters::one_sweep();
+        assert_eq!(empty.sweeps, 1);
+        assert!(
+            empty.clean(),
+            "an empty sweep is activity without degradation"
+        );
+        assert_eq!(empty.split_failure_sum(), 0);
+        let mut merged = DeliverySweepCounters::default();
+        assert_eq!(merged.sweeps, 0, "no sweep ran yet");
+        merged.saturating_add_assign(empty);
+        merged.saturating_add_assign(DeliverySweepCounters::one_sweep());
+        assert_eq!(merged.sweeps, 2);
+        assert!(merged.clean(), "sweeps alone must not read dirty");
+        merged.note_split_failure(SendFailureCause::Bridge);
+        assert_eq!(merged.sweeps, 2, "failures must not move sweeps");
+        assert!(!merged.clean());
     }
 }

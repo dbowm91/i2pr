@@ -720,7 +720,9 @@ impl SamServiceState {
             let destinations = destinations_arc.lock().expect("sam destinations poisoned");
             match destinations.get(destination_id) {
                 Some(bridge) => bridge,
-                None => return Ok(Default::default()),
+                None => {
+                    return Ok(crate::sam::fabric::DeliverySweepCounters::one_sweep());
+                }
             }
         };
         // Step 1: drain canonical + receiver outbound queues.
@@ -740,7 +742,7 @@ impl SamServiceState {
             .len()
             .saturating_add(datagram_requests.len());
         if request_count == 0 {
-            return Ok(Default::default());
+            return Ok(crate::sam::fabric::DeliverySweepCounters::one_sweep());
         }
         debug!(
             destination = ?destination_id,
@@ -757,6 +759,7 @@ impl SamServiceState {
             delivery_failed_ls2_invalid: 0,
             delivery_failed_ls2_install: 0,
             delivery_failed_bridge: 0,
+            sweeps: 1,
         };
         // Step 2: deliver each request.
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);

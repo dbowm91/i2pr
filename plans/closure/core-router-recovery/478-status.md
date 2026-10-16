@@ -1229,3 +1229,52 @@ further lane this turn. 478 stays active; reverse
 DATA, §6 live recovery, and product close-out remain
 open; no dependent capability unblocked; 433/439
 gates unchanged.
+
+## 2026-10-16 follow-up: never-sent split implemented, lane `iqzyeons` returns to the frontier
+
+The well-posed question got its instrument (same seam,
+no behavior change):
+
+- `DeliverySweepCounters.sweeps` + `one_sweep()`: every
+  `deliver_outbound` return path (SAM `raw_stream.rs` and
+  service `service_tunnels.rs` — bridge-missing,
+  empty-queue, and working returns) counts exactly one
+  sweep. `saturating_add_assign` merges; `clean()`
+  deliberately excludes sweeps (activity, not
+  degradation — an empty sweep stays clean).
+- TIMEOUT receipt 25 → 28 keys: `send_sweeps` (10th
+  totals element) plus the queue-depth gauge
+  `send_queue_start`/`send_queue_end` (canonical +
+  receiver + datagram queues, fail-closed 0) via
+  `delivery_queue_depth()`.
+- Decision rows: sweeps=0 ⇒ driver never ran; sweeps>0
+  + nonzero queue + zero outcomes ⇒ queued but
+  undrained; sweeps>0 + zero queue ⇒ never queued.
+- Tests: fabric sweeps/clean unit, seeded 10-tuple,
+  queue fail-closed-0, 28-key FULL line, 25-key legacy
+  refusal. Both probes (sweeps:0, dropped key) kill and
+  are reverted. Daemon lib 788, offline 54, planning
+  51, clippy/fmt clean.
+
+Lane `iqzyeons` (verified-fresh binary, bin size
+296119448, HEAD `388e2ac0`): forward CONNECT
+ESTABLISHED (no handshake receipts — the 28-key format
+is unit/probe-proven but still awaits a live
+forward-TIMEOUT exercise), then reverse stall
+(`short stream read (0/2328)`, 99 s), grace consumed
+the full 30 s unfound, `accept_pump_started = 0`, no
+close receipts. Djv2qtdv-class frontier — with a
+sharper edge than before: pump 0 on a reverse stall
+means our ACCEPT data pump never started, and with
+`zcye0ms5` (stock reverse SYN unanswered, no SYN-ACK
+line) the unfired decision now sits BELOW the pump:
+ACCEPT-side SYN→SYN-ACK, not the data path. Next
+bounded change (not this turn): snapshot our
+destination's SYN ingress / accept posture during the
+reverse wait. Snap: `iqzyeons-frontier-reverse-stall-run`.
+
+**Disposition.** Instrument landed + licensed lane run;
+frontier unchanged (reverse DATA still unfired). No
+further lane without a new change. 478 stays active;
+reverse DATA, §6 live recovery, product close-out
+open; 433/439 gates unchanged.
