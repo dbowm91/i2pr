@@ -218,7 +218,7 @@ Carried forward from Plan 478's 7r7te3fb/tnm6su4j two-row teardown readings: `fi
 
 | Plan | State | Implementation handoff | Dependency / executable acceptance |
 | --- | --- | --- | --- |
-| **485** | **active: SAM session lifetime for sequential stream reuse** | [SAM session lifetime for sequential stream reuse](implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md) | Predecessor `closure/core-router-recovery/478-status.md` (cause-3-live teardown rows; union-gauge correction). Acceptance per plan: cause-3-live rows absent on sequential reuse, fail-before/pass-after deterministic tests, reworked baselines green, one exact-pin lane read in order. |
+| **485** | **passed: control-socket-gated session teardown; sequential reuse proven** | [SAM session lifetime for sequential stream reuse](implementation/core-router-recovery/485-sam-session-lifetime-for-sequential-stream-reuse.md) | Predecessor `closure/core-router-recovery/478-status.md` (cause-3-live teardown rows; union-gauge correction). Acceptance per plan: cause-3-live rows absent on sequential reuse, fail-before/pass-after deterministic tests, reworked baselines green, one exact-pin lane read in order. |
 
 ## Active subsystem roadmaps
 
