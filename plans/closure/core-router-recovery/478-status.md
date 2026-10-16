@@ -1491,3 +1491,66 @@ record; union columns + gauge live-proven. No
 further lane without a new change. 478 stays active;
 reverse DATA, §6 live recovery, product close-out
 open; 433/439 gates unchanged.
+
+## 2026-10-16 design: standalone last-stream cleanup vs sequential multi-stream sessions (no code)
+
+Question: should `finish_raw_stream`'s standalone
+cleanup (cause 3) tear down a session the lane still
+needs? Mechanics verified from source (no
+speculation):
+
+- Per-command sockets (CONNECT/ACCEPT) stay
+  `UtilityReady`; closing them never tears down
+  (the 2408 guard matches `SessionControl` only).
+  Session deaths are exactly: control-socket close
+  (cause 2), last-attachment finish on a primary
+  non-forwarding session (cause 3), create rollback
+  (cause 1). `SESSION REMOVE` removes only 3.3
+  children — no explicit destroy exists for
+  standalone sessions.
+- Frontier timeline re-derived (7r7te3fb/tnm6su4j
+  class): forward finish → cause-3-live-1 (+driver 1
+  post-union) → reverse ACCEPT fast-InvalidId at
+  session lookup (BEFORE waiter registration, so no
+  20 s wait rows — matches their absence) → stock
+  99 s hang → lane-end cause-2-live-0. The reverse
+  ACCEPT never parks; it is refused at lookup.
+- Self-composed suites pass because their streams
+  are CONCURRENT (attachment count never hits 0
+  mid-test). What dies is SEQUENTIAL reuse with a
+  zero-attachment gap — which is SAM's normal
+  multi-stream use and exactly the lane's shape.
+
+Decision: NO further counts-only attribution
+narrows this. Cause-3-live-1 already states it
+exactly; waiter-gating cannot save sequential legs
+(no waiter is parked at finish — the reverse ACCEPT
+starts after); backlog-gating is irrelevant on a
+fast-InvalidId. The fix is behavior change and
+belongs to its own plan-of-record, proposed:
+
+- **Proposal**: remove/conditionalize the standalone
+  last-stream teardown so sessions die only on
+  control-socket close, SESSION REMOVE (children),
+  or create rollback.
+- **Scope inputs for the plan**: (1) 6 baseline
+  assertions depend on cause-3
+  (`sam_stream_final_acceptance.rs`
+  618/999/1135/1364/1447/1528-9, plus
+  `sam_plan146_reference.rs:663` to audit) — they
+  encode the current lifecycle contract and need
+  rework to explicit control-close semantics;
+  (2) resource retention: idle standalone sessions
+  would hold bridges/drivers/pools until control
+  close — bound against `max_sessions`, and note
+  the 60 s default `command_timeout`
+  (`DEFAULT_SAM_COMMAND_TIMEOUT_MS`) already caps
+  control-socket idleness; (3) the 60 s-timeout vs
+  60 s-CONNECT-wait race as a bounded hypothesis
+  for the `98nph0lj` mid-wait session death
+  (teardown INFO settles it on rerun; `xeewsj_6`
+  surviving two waits is a recorded counterexample
+  — do not conclude).
+- No code, no lane this turn by the bounded policy
+  (design-only outcome). 478 stays active; the plan
+  proposal above is the next act, not this turn.
