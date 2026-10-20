@@ -1,7 +1,21 @@
-# Plan 478 status — inbound service route and external SAM product remain open
+# Plan 478 status — closed: both external SAM STREAM directions, the §6 lifecycle recovery, and the product close-out are live-proven
 
-**Status token:** `in-progress-outbound-tunnel-route-wired-product-qualification-open`
-**Disposition:** Service build composition now supports router-directed TunnelData through an activated outbound role. Startup creates at most one initial direct outbound bootstrap per daemon, then routes inbound, replacement, and additional outbound service builds through an existing outbound role. No network product qualification has run against this change. Plan 478 is not closed.
+**Status token:** `passed-forward-and-reverse-sam-stream-and-lifecycle-recovery-proven`
+**Disposition:** **Closed** on 2026-10-20 with Plan 487
+(`plans/closure/core-router-recovery/487-status.md`); the closing entry is the
+last section of this record and carries the gates, the evidence matrix, and the
+unblock audit. The normal outbound-backed build route, genuine signed LS2 with
+complete owner generation, and the forward external SAM STREAM leg (i2pr→stock,
+digest-matched) were live-proven against exact-pinned i2pd 2.61.0; Plan 486's
+lane `q3w7m9z2` proved the reverse handshake live (the SYN is accepted at the
+parked ACCEPT mirror, the SYN-ACK is answered, the pump starts, zero ACCEPT
+expiries); Plan 487 proved the reverse DATA phase in **both** directions
+(digest-matched, with no retransmission exhaustion at the stock peer) and
+qualified the §6 live lifecycle recovery (the destination's lease rotation and
+the daemon restart). The entries below are the plan's own history and are left
+exactly as they were written: the earlier lanes, the forensics, and the earlier
+failures are not rewritten. No support-inventory, conformance, capability, or
+advertisement change; the Plan 433/439 gates are untouched.
 
 ## 2026-10-14 bounded-retry + send-path attribution (commits `d58b29b`, `0ece629`, `a4fee2a`, `6fddcd3`, `35972c9`)
 
@@ -1633,3 +1647,319 @@ Lane `m8v2xk5q-syn-reject-split-run` (exact pins,
 
 478 stays active; §6 reverse stall remains the
 blocker.
+
+## 2026-10-19 record reconciliation: absorb Plan 485/486, advance the status token
+
+**Records-only turn. No code, no lane, no new plan number.** This entry
+closes the record gap identified on 2026-10-19: this closure record's last
+entry was the 2026-10-16 SYN reject-cause split (lane `m8v2xk5q`, commit
+`17fe537f`), so the two corrective passes closed against this plan's
+frontier — Plan 485 (`571eabd7`) and Plan 486 (`f7403432`) — were never
+absorbed here, and the registry row still carried the superseded
+"design done — standalone cleanup vs sequential sessions needs own plan"
+state. The authority for those two plans is their own closure records
+(`plans/closure/core-router-recovery/485-status.md`,
+`.../486-status.md`); nothing below re-derives or restates their evidence,
+it records their effect on this plan's gates.
+
+**What the two correctives changed for this plan:**
+
+- **Plan 485** (control-socket-gated teardown) removed the cause-3
+  standalone last-stream teardown. The 2026-10-16 design turn that proposed
+  this as a separate plan-of-record is therefore discharged, not pending.
+  Lane `zgcd_jsn`: forward echo completes with no cause-3 row, reverse
+  ACCEPT parks.
+- **Plan 486** (waiter-scoped inbound-SYN routing to the parked ACCEPT
+  instance) removed the reverse-ACCEPT instance mismatch. Lane `q3w7m9z2`:
+  forward `install_committed` 4/4, `response_matched` 4/4, `ssu2:4`;
+  reverse `stream_accept_syn_wait_expired` count **0** (was 1 with
+  `no_listener=2` on `m8v2xk5q`), `accept_pump_started` 1. The stock SYN is
+  answered. **The reverse handshake is now live-proven**; the earlier
+  `no_listener`/`instance-mismatch` reading on `m8v2xk5q` is superseded for
+  this plan's purposes, not rewritten above.
+
+**Current frontier — the reverse DATA phase.** On `q3w7m9z2` the driver
+leg `i2pd-to-i2pr` still fails at `short stream read (0/2328)` after 90.3 s.
+The stock log shows no SYN retry-exhaustion: the two `packet was not ACKed
+after 10 attempts, terminate` rows carry **established-phase** stream ids,
+so they are DATA-phase, not handshake-phase. The data-phase close is the
+all-zero torn-down shape (`bridge_present=0`). Teardown is a single cause-2
+(`ControlSocketClosed`) with `session_live=1, driver_live=1` — the union
+gauge holds and no cause-3 recurred. The forward leg remains green
+(`zgcd_jsn` and `q3w7m9z2`).
+
+**Gates still open on this plan** (the 2026-10-15 closure checklist at
+`## Closure checklist` above is refreshed by this entry). All three are
+**carried by Plan 487** (`plans/implementation/core-router-recovery/487-reverse-data-ack-contract-and-lifecycle-recovery.md`,
+registered 2026-10-19), which is a corrective recovery pass over this plan's
+remaining frontier. This plan stays the **active parent** and closes after
+487 passes; 487 does not supersede or renumber it.
+
+1. **Reverse external SAM STREAM DATA phase** — handshake complete, DATA
+   does not flow. Product-significant. Carried by 487 WP2/WP3.
+2. **§6 lifecycle recovery live proof** — tunnel expiry/replenishment or
+   controlled peer loss plus daemon restart. Deterministic rotation/retry/
+   replenishment-order tests remain green; the live proof is gated behind a
+   working return leg. Carried by 487 WP4.
+3. **Product close-out** — full AGENTS.md floor on the closing tree, this
+   record's final form, the registry transition, the roadmap §7 disposition,
+   and the unblock audit. Carried by 487 WP7.
+
+Plan 487 additionally owns two defects this line introduced or inherited:
+the receiver-ACK contract divergence found in the 2026-10-19 research, and
+the ELS2 Plan 393 publication-intent cancellation gap that this plan's own
+change `5b874e86` opened. It also reviews and applies the rustls advisory
+bump, which this record previously classified as externally owned.
+
+**Floor reds re-verified on this tree (2026-10-19) — both now closed by
+Plan 487, which this plan's own record had classified as externally owned:**
+
+- `bash scripts/check-els2-live-lane-evidence.sh` → was `FAIL: Plan 393:
+  compose, request-construction, and delivery failures must cancel
+  publication intent` (needed 3 `.cancel_ls2_publication(request_id)` sites;
+  the tree had 1). Bisected to committed 478 change `5b874e86` (direct-short
+  LS2 publication). **Closed by Plan 487 WP5**, and closed by making the
+  *semantic property* true rather than by weakening the script: the
+  publication intent is now reserved **before** the record is composed
+  (`reserve_ls2_publication` / `attach_ls2_publication`), and the compose,
+  request-construction, and delivery failure classes each release it at their
+  own site with an individually attributable `PublicationFailureClass`. The
+  checker is green with no duplicated call site and no script change.
+- `cargo deny check advisories` → was FAILED on rustls 0.23.45 (via
+  tokio-rustls 0.26.6): RUSTSEC-2026-0346, RUSTSEC-2026-0347, and
+  **RUSTSEC-2026-0348**. **Closed by Plan 487 WP6** with `rustls 0.23.46`
+  (lockfile-only, inside the existing caret range, no manifest or feature
+  change). The live advisory set had also moved since this entry was written:
+  RUSTSEC-2026-0349 (rustls) and RUSTSEC-2026-0367/0368/0369 (`zip 8.6.0`)
+  are now also in scope. The `zip` fix is `>= 9.0.0`, a **major** version
+  bump, so the manifest moved (`zip = "9"`) and the API change was applied
+  (`ZipFile::name()` is now fallible; `FileOptions` gained a second lifetime
+  parameter). The bump was chosen over a `cargo deny` ignore because it
+  removes the advisory rather than suppressing it. The review (purpose,
+  transitive impact, `unsafe` exposure, features, licence) is recorded in
+  `plans/closure/core-router-recovery/487-status.md`; `nix 0.31.3` and
+  `cfg_aliases 0.2.2` enter the lockfile but are **not activated** at the
+  enabled feature set. The exact reference pins did not move.
+
+## 2026-10-19 Plan 487 execution: ACK contract corrected, routing defect fixed, reverse DATA still open
+
+Plan 487 (`plans/closure/core-router-recovery/487-status.md`) executed against
+this plan's three remaining gates. Two are closed, one is not.
+
+**Closed — the receiver-ACK contract.** Our acknowledgement emission was
+coupled to local application drain: a standalone ACK was snoozed while the
+connection held more undrained bytes than its cap, and a piggybacked DATA
+carried `FLAG_NO_ACK`. Neither pinned reference does that. Read at the exact
+pins, i2pd 2.61.0 acknowledges on receipt and **still** calls `SendQuickAck()`
+when it drops an overflow packet (`libi2pd/Streaming.cpp:256-269`, `:289-300`),
+and I2P Java 2.13.0 schedules the acknowledgement on a new in-sequence packet
+and calls `ackImmediately()` on inbound-buffer overflow
+(`.../impl/ConnectionPacketHandler.java:145-161`, `:180-236`). Plan 487 removes
+the three gates and preserves the bound by the reference's own shape: an
+in-order payload that would exceed the cap is not admitted to the receive
+window (the acknowledgement ceiling does not advance, so the peer retransmits)
+and the peer is choked with the reference's `DELAY_REQUESTED` vocabulary. The
+delivered-byte accounting is retained as the application-visible backpressure
+signal; the runtime audit found no caller that relied on the acknowledgement
+being withheld.
+
+**Closed — a routing defect this line introduced.** Plan 486's waiter-scoped
+rule moved only the inbound **SYN** to the receiver mirror and kept profile
+routing for every other inbound packet. The STREAM ACCEPT waiter is satisfied
+by the handshake, so it is no longer parked by the time the peer sends DATA —
+and the inbound DATA of an accepted connection was therefore routed to the
+**canonical** manager, where no application reads it. The payload was never
+delivered, the connection was never acknowledged, and the stock peer exhausted
+its ten retransmissions and terminated the stream. Established-phase inbound
+payloads are now routed to the manager that **owns** the connection, resolved
+from the packet's own local receive stream id — the id the peer uses to address
+us. The waiter-scoped rule remains the rule for packets that belong to no
+connection yet.
+
+**Closed — the §6 governing semantics.** They were an unresolved open decision
+(`specs/protocols/07-streaming.md:132`), and a recovery proof judged against
+undefined semantics is not evidence. `docs/adr/0040-stream-recovery-across-tunnel-rebuild-and-router-restart.md`
+and the spec's new "Settled decisions / S5" section now fix them: a stream
+survives a destination tunnel-pool rebuild with **no** client-observable event,
+and a router restart closes the SAM connection while the destination remains
+reachable at the same hash (no stream resumption is claimed).
+
+**Still open — the reverse DATA phase and the §6 live proof.** The live
+four-stage attribution is landed, and the lane shows the peer's DATA never
+reaching the owning manager. The §6 live lease publish-and-acknowledge proof
+and the two recovery cases of ADR 0040 are unproven. This plan therefore
+**stays open**, and Plan 487 stays open with it; 487 does not close on
+attribution alone.
+
+**Next executable step.** The reverse DATA stall. Per the bounded-execution
+policy, the next lane run requires a material change first — no
+unchanged-topology retry. The leading lead from `q3w7m9z2` is the
+all-zero torn-down shape with `bridge_present=0`: if the inbound bridge is
+gone by the data phase, DATA is dropped even if it arrives. The owned-layer
+arrival mirrors (manager TunnelData/cell/owner/direct counters) were never
+exercised on a DATA-reaching run, so the first move is DATA-phase
+attribution — did the DATA cells reach our inbound gateway, and did we
+emit the ACK — followed by one bounded exact-pin lane. A reverse DATA leg
+that stays red must not be closed by attribution alone: the gate is a
+digest-matched payload, not a counter.
+
+**External reference research (2026-10-19) narrows this frontier.** See
+`plans/diagnostics/2026-10-19-external-reference-streaming-ack-and-lease-lifecycle.md`
+for the full report, read against the exact pinned i2pd 2.61.0 and Java I2P
+2.13.0 sources. Two results bear directly on this plan:
+
+- **The reference receiver-ACK contract is transport-state, not
+  application-drain.** Both i2pd and Java schedule the acknowledgement on a
+  newly received in-sequence packet; i2pd still ACKs when it *drops* an
+  overflow packet. Our Plan 152 D1 gating (`manager.rs:807-809`, `:1648`,
+  `:1799-1804`, `:2189-2192`) suppresses and snoozes acknowledgements while
+  the application has not drained — a real divergence from that contract. It
+  is **not** the cause of this stall (the failing transfer is one 2328-byte
+  payload against a 128-packet cap), so it is a separate repair, still owed
+  inside Plan 478, and not to be conflated with the lane's cause.
+- **Three candidate causes remain, cleanly separable by one bounded lane:**
+  (a) the DATA never reached the streaming manager; (b) the DATA arrived and
+  the ACK was generated but never sent; (c) the DATA was delivered into
+  `pending_delivered` but never reached the SAM socket — `drain_delivered()`
+  is the only path to an application, so a bridge that does not call it for
+  an accepted stream produces exactly the observed `short stream read
+  (0/2328)` while the ACK path stays healthy. The lane must record gateway
+  arrival, manager arrival, the generated ACK's `ackThrough`/`NO_ACK` state,
+  and the ACK egress send. That is the material change the next run needs.
+
+The same report records the §6 reference lifecycle (10-minute tunnel
+lifetime, ~11-minute LeaseSet2 ceiling, publish acknowledgement by
+`DeliveryStatus` correlated on the Reply Token arriving on an **inbound**
+tunnel, `published` advanced by ≥1 s and oldest lease expiration by ≥1 ms on
+republish), notes that `specs/protocols/07-streaming.md:132` still lists
+"stream persistence/recovery semantics across destination tunnel-pool rebuilds
+and router restart" as an **open decision** directly under §6, and records the
+Emissary assessment (no Streaming/ministreaming module at all, so not a usable
+peer or a third reference for this line; its LeaseSet2 publish-and-verify
+state machine is a legitimate design reference for a router-owned publish
+loop).
+
+**Unblock audit.** No registered plan lists 478 as a hard or interface
+dependency in a way that this record refresh promotes; 433/439, 437/438,
+and Plan 433/476 gates are unchanged. No row moves to ready. Nothing is
+promoted: no support/capability/advertisement change, `specs/support.toml`
+untouched.
+
+**Roadmap disposition:** 478 stays active. Roadmap §7 row 478 refreshed to
+match this entry; the registry 478 row advanced from the superseded
+design-turn state.
+
+## 2026-10-20 Plan 487 closed the three remaining gates; Plan 478 closes
+
+Plan 478's three remaining gates — the reverse external SAM STREAM DATA
+phase, the §6 live lifecycle recovery, and the product close-out — were
+carried by Plan 487
+(`plans/implementation/core-router-recovery/487-reverse-data-ack-contract-and-lifecycle-recovery.md`,
+closure record `plans/closure/core-router-recovery/487-status.md`). Plan 487
+is closed; this record closes Plan 478 with it. Plan 478's own earlier
+entries are left exactly as they were written: the history of the lane, the
+forensics, and the earlier failures are not rewritten.
+
+**The reverse external SAM STREAM DATA phase is closed.** The pinned lane
+(`tests/integration/core-router-recovery/run_plan487_lifecycle_recovery.py`,
+exact-pinned i2pd 2.61.0 `635b013a612ff47278ef02acf8580a28e10e26c5`) carries
+both directions in one qualification: `i2pr-to-i2pd` 1816 bytes
+`sha256:e6426bb5…` and `i2pd-to-i2pr` 2328 bytes `sha256:fbabac14…`, both
+digest-matched, with zero `packet was not ACKed after 10 attempts` in the
+stock peer. The cause was the daemon's inbound routing peek reading the
+wrong wire field; Plan 487 corrected it to `send_stream_id`, which is the
+field the manager resolves an established-phase packet on.
+
+**The §6 live lifecycle recovery is closed.** Both ADR 0040 cases are
+qualified live in the same run, with the router's own receipts as the
+evidence:
+
+- *Case 1 — the destination's lease rotation.* `rotated: true`; the
+  republished record's `published` advanced by 540 s and its oldest-lease
+  expiry by 420 000 ms; the rotated record was acknowledged by a correlated
+  `DeliveryStatus` **on an inbound tunnel** (4 acknowledgements, 4 on an
+  inbound tunnel); the live stream survived the rotation with the same
+  2328-byte payload digest before and after; and the router's services
+  stayed up (`service_failures: {}`).
+- *Case 2 — the daemon restart.* The SAM connection closed with the
+  daemon, the persisted identity was unchanged, the exported router **hash**
+  was unchanged, the mesh settled, and a **fresh** session and destination
+  were reachable again on the first attempt, with the same payload digest.
+
+**The product close-out is done.** ADR 0040 settles the §6 semantics,
+`specs/protocols/07-streaming.md` records the settled decision, and the
+route the product takes — publish, acknowledge, replenish, recover — is
+implemented, proven, and bounded. Three findings are recorded rather than
+fixed, in Plan 487's record: the session's control-socket bound (F2), a
+controlled transit-peer loss (F3), and the accept socket's single
+bidirectional channel, which the pinned reference shares (F6).
+
+**Unblock audit.** No registered plan lists 478 as a hard or interface
+dependency in a way that this closure promotes: 433/439, 437/438, and the
+Plan 433/476 gates are unchanged. Plan 433's external client-router gate
+remains the next step on this line, and it is not promoted by this closure.
+No row moves to ready on the strength of this closure.
+
+**Roadmap disposition:** 478 is closed. The core-router-recovery roadmap §7
+rows for 478 and 487 are advanced to match this entry and Plan 487's
+closure record; the registry rows for 478 and 487 are closed.
+
+**Implementation commits (branch `work/plans-477-480-router-recovery`).**
+`c343d2e5` carries the Plan 487 implementation, its lane, and its offline
+controls — the three gates this plan's close-out rests on. The closure commit
+carries Plan 487's closure record, this entry, the registry and roadmap
+transitions, the two plan documents' status lines, and the research input; it
+carries no production change. The predecessor commits already on the branch
+are `f7403432` (Plan 486 closure), `d255a1ff` (Plan 486 implementation), and
+the earlier 477/479/480/481/482/484/485 records.
+
+**Requirement-to-evidence matrix.** Plan 478's gates and their evidence:
+
+| Plan 478 gate | Requirement | Evidence |
+| --- | --- | --- |
+| Normal outbound-backed service inbound build | A real, non-test short build of the destination's inbound tunnels | Plan 478's own lane records (normal outbound-backed build route, genuine signed LS2, complete owner generation: 3 installs, 4/4 replies, owners 2/2) |
+| Genuine signed LeaseSet2 with complete owner generation | A real signed LS2, not a test fixture | Same lane records, plus Plan 487's F1 fix (multi-floodfill publication) |
+| Forward external SAM STREAM leg | i2pr → stock peer payload, digest-matched | Plan 478's lane records (digest-matched) |
+| Reverse external SAM STREAM handshake | The stock peer reaches the parked ACCEPT instance and the pump starts | Plan 486's closure record, lane `q3w7m9z2` (zero ACCEPT expiries, pump started) |
+| Reverse external SAM STREAM **DATA** phase | i2pr → stock **and** stock → i2pr payloads, digest-matched, with no retransmission exhaustion at the peer | Plan 487's closure record: `i2pr-to-i2pd` 1816 B `sha256:e6426bb5…`, `i2pd-to-i2pr` 2328 B `sha256:fbabac14…`, zero `packet was not ACKed after 10 attempts`; the cause was the daemon's inbound routing peek reading `receive_stream_id` where the manager resolves on `send_stream_id` |
+| §6 live lifecycle recovery | ADR 0040 case 1 (the destination's lease rotation) and case 2 (the daemon restart) | Plan 487's closure record, §6 section: rotation `rotated: true`, `published` +540 s, oldest-lease expiry +420 000 ms, the rotated record acknowledged by a correlated `DeliveryStatus` **on an inbound tunnel**, the same payload digest before and after, `service_failures: {}`; restart with the persisted identity and the router **hash** unchanged, the mesh settled, a fresh destination reachable on the first attempt |
+| Product close-out | The route the product takes — publish, acknowledge, replenish, recover — implemented, proven, and bounded | ADR 0040, `specs/protocols/07-streaming.md` S5, and Plan 487's work packages WP1–WP7 |
+
+**Tests and guards run (local; CI not run this turn).** The full
+`AGENTS.md` routine floor, executed on this closing tree, is **65 steps, 65
+PASS, 0 FAIL**, and is tabulated step by step in Plan 487's closure record
+(`## Verification`), together with the lane run and the 108 offline lane
+controls
+(`python3 -m unittest discover -s tests/integration/core-router-recovery -p 'test_*.py'`).
+CI (macOS lane, Java fleet) was **not** run this turn; that is labelled
+truthfully and no claim depends on it.
+
+**Migration / compatibility.** The wire protocol is unchanged in shape; the
+SAM/I2CP surface gains no command and no reply vocabulary; no configuration
+key is added, changed, or deprecated; `specs/support.toml` and the
+advertisement rules are untouched; the Plan 433/439 gates are unchanged.
+
+**Security and contention.** The lock order is **bridge → coordinator**,
+never inverted, with no lock held across an `.await` that can block on
+another lock holder (reviewed in Plan 487's record). The publication ledger
+and the LeaseSet2 fan-out are bounded; the reply token rides on one copy
+only. No secret, identity, key, port, stream id, token, or payload material
+appears in any receipt, log line, or evidence file.
+
+**Documentation / operational.** ADR 0040, the `specs/protocols/07-streaming.md`
+settled-decision entry, `docs/architecture/i2pr-client.md`, and Plan 487's
+closure record. No operator action: no new key, listener, port, or service.
+
+**Known limitations.** The §6 evidence is a controlled four-peer loopback
+mesh with one destination, not a public-network proof; the reverse DATA phase
+is proven for the lane's payload sizes (1816 B and 2328 B); a payload that
+straddles a rotation mid-transfer is not covered; F2, F3, and F6 remain open
+properties of the router's own behaviour.
+
+**Findings by severity.** Critical: none. High: none. Medium: F2 (the
+session's control-socket bound), F3 (a controlled transit-peer loss), and F6
+(the accept socket's single bidirectional channel, which the pinned reference
+shares) — all recorded, not fixed, in Plan 487's record. Low: the routing
+peek's wire-field misread, the rotation's re-sign of an unchanged lease set,
+the dead four-stage attribution in router-network mode, and the seven
+lane-harness defects — all fixed in this line, with offline controls.

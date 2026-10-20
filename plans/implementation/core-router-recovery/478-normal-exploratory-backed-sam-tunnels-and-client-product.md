@@ -1,6 +1,15 @@
 # Plan 478 — Normal exploratory-backed destination tunnel construction and SAM product recovery
 
-**Status:** registered / dependency-ready after Plan 477 contract, P0 client-functionality owner (2026-10-13). **Baseline:** PR #45 head 846c0e2b69f5379aaa0d8bb98ff0ffa7c15a3bfa. **Owner:** normal i2pr run composition, ServiceProduct, ExploratoryBuildCoordinator, ServiceTunnelManager, router delivery/tunnel data-plane, SAM network bridge. **Historical authority:** Plans 451/458/471/474 and latest Plan 474 attempt-scoped closure; Plan 461 controlled NTCP2/SSU2 shared product owner and Plan 475 Java NTCP2 are already passed at their narrow tiers. **Hard interface:** Plan 477 message-ID/build-return contract must be implemented or explicitly reviewed stable; independently authorized physical LAN / Plan 476 is NOT required for the controlled app product.
+> **Closed 2026-10-20, with Plan 487.** The authoritative outcome is
+> `plans/closure/core-router-recovery/478-status.md` (status `passed`), and the
+> three gates this plan could not close — the reverse external SAM STREAM DATA
+> phase, the §6 live lifecycle recovery, and the product close-out — are closed
+> in `plans/closure/core-router-recovery/487-status.md`. This document is the
+> plan **as registered**; the body below is left as written and is not the
+> current state. No support-inventory, conformance, capability, or
+> advertisement change; the Plan 433/439 gates are untouched.
+
+**Status:** passed (closure `plans/closure/core-router-recovery/478-status.md`, 2026-10-20, with Plan 487). **Baseline:** PR #45 head 846c0e2b69f5379aaa0d8bb98ff0ffa7c15a3bfa. **Owner:** normal i2pr run composition, ServiceProduct, ExploratoryBuildCoordinator, ServiceTunnelManager, router delivery/tunnel data-plane, SAM network bridge. **Historical authority:** Plans 451/458/471/474 and latest Plan 474 attempt-scoped closure; Plan 461 controlled NTCP2/SSU2 shared product owner and Plan 475 Java NTCP2 are already passed at their narrow tiers. **Hard interface:** Plan 477 message-ID/build-return contract must be implemented or explicitly reviewed stable; independently authorized physical LAN / Plan 476 is NOT required for the controlled app product.
 
 ## Problem and architectural decision
 
@@ -41,3 +50,19 @@ The authoritative `plans/closure/core-router-recovery/478-status.md` is `in-prog
 **New source finding:** `provision_all_service_router_material` still invokes `ensure_selected_peer_session` for both the outbound first hop and the selected inbound gateway. `rebuild_destination_tunnel` likewise dials the chosen first hop without first separating whether it is a direct outbound route target or the router-delivery target behind an outbound path. The service's new *message* route does not alone prove router/Destination linkability policy. Distinct Plan **482** now owns a reusable dial-intent/authority contract across startup, replacement and NTCP2 fallback. Do not reimplement that cross-owner policy as a private one-off in this Plan 478, but consume and test it before Plan 478 can close.
 
 Plan **481** owns producer-side source-confirmed writer receipts for each outbound TunnelData cell. Plan **477** consumes that receipt and retains strict terminal reply correlation. After both stable interface handoffs, Plan 478 continues within this same active plan: verify normal outbound role transit and inbound endpoint receipt; genuine LS2 N/N leases and owner generation; exact binary two-way external SAM STREAM; expiry/replacement/restart and cancellation. A successful local build composer test, early UDP admission, or direct stock aggregate transit count is not enough. Use one exact-pinned unmodified i2pd attempt after deterministic regressions reveal a changed causal path. Do not claim controlled local privacy proof equals external I2P anonymity.
+
+## Current status pointer (2026-10-19)
+
+The authoritative `plans/closure/core-router-recovery/478-status.md` token has
+advanced past the 2026-10-13 `in-progress-outbound-tunnel-route-wired-product-qualification-open`
+state quoted above. It is now
+`in-progress-forward-and-reverse-handshake-proven-reverse-data-and-lifecycle-recovery-open`.
+
+The 2026-10-13 handoff above is retained as written. What changed since it:
+the outbound-backed route, genuine signed LS2 with complete owner generation,
+and the forward external SAM STREAM leg are live-proven; Plan 485 discharged
+the standalone-teardown question it left open; Plan 486 discharged the
+reverse-ACCEPT instance mismatch and proved the reverse handshake live. The
+open gates are the reverse DATA phase, §6 live lifecycle recovery, and the
+product close-out. Read the closure record, not this section, for the current
+value.
