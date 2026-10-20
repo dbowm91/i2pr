@@ -287,6 +287,12 @@ const IBGW_NEXT: u32 = 0x9682;
 
 /// Default bounded dial deadline for the controlled lane SSU2 session.
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Plan 487 WP4 — the minimum interval between two replenishment
+/// notices for the same destination. The notices make the replenishment
+/// decision visible; the interval keeps a permanently failing
+/// destination from flooding the log.
+const REPLENISHMENT_NOTICE_INTERVAL_MS: u64 = 30_000;
 /// Default bounded inbound poll interval.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Default bounded wait for one exploratory build to install.
@@ -984,6 +990,46 @@ enum ServicePublicationError {
         rejection: PublicationBeginRejection,
         pending: usize,
     },
+    /// Plan 487 WP5 (Plan 393): a publication attempt failed in one of
+    /// the three classes that release the coordinator's publication
+    /// intent. The class is the failure's *stage*, not its cause, and
+    /// it is individually attributable.
+    Stage {
+        class: PublicationFailureClass,
+        /// The underlying product error, when the class carries one
+        /// (the compose class). Never error contents: the redaction
+        /// taxonomy classifies it.
+        product: Option<ServiceProductError>,
+        pending: usize,
+    },
+}
+
+/// Plan 487 WP5 (Plan 393): the publication attempt's failure classes.
+///
+/// Every class releases exactly one coordinator publication slot
+/// through `cancel_ls2_publication`, and the intent is reserved
+/// *before* the record is composed so that the first two classes have
+/// an intent to release.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationFailureClass {
+    /// The signed store record could not be obtained or composed.
+    Compose,
+    /// The outbound publication request could not be constructed: no
+    /// eligible floodfill, or a rejected record attachment.
+    RequestConstruction,
+    /// The composed publication could not be delivered.
+    Delivery,
+}
+
+impl PublicationFailureClass {
+    /// The redacted stage label used in the failure taxonomy.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compose => "publication-compose",
+            Self::RequestConstruction => "publication-request-construction",
+            Self::Delivery => "publication-delivery",
+        }
+    }
 }
 
 impl From<ServiceProductError> for ServicePublicationError {
@@ -1024,6 +1070,11 @@ struct ProductInner {
     sam_destination_slots: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>>,
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
+    /// Plan 487 WP4 — destinations whose last lease-set refresh failed.
+    /// The entry is the last failure reason; it is removed as soon as a
+    /// later refresh succeeds. The map is bounded by the number of
+    /// destinations the product owns.
+    lease_refresh_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
     destination_build_progress:
         std::collections::HashMap<i2pr_client::DestinationId, DestinationBuildProgress>,
@@ -1229,6 +1280,11 @@ pub struct LeasePublicationSnapshot {
     pub begin_rejected_invalid_record: u64,
     pub begin_rejected_other: u64,
     pub coordinator_pending_publications: usize,
+    /// Plan 487 WP4 — destinations whose last lease-set refresh failed.
+    /// A refresh failure is destination-scoped: it degrades that
+    /// destination and is retried on the next tick. It never fails the
+    /// router's SSU2 service.
+    pub lease_refresh_failures: usize,
 }
 
 /// Saturating transaction-boundary counters for the inbound SSU2 →
@@ -1530,6 +1586,15 @@ struct DestinationBuildProgress {
     post_activation_bridge_state_missing: u64,
     post_activation_bridge_duplicate_receive: u64,
     post_activation_inbound_installed: u64,
+    /// Wall-clock millisecond of the last replenishment notice emitted
+    /// for this destination. Plan 487 WP4 — a destination build
+    /// submission that fails is a *visible* receipt, not a silent
+    /// counter: the live qualification could not tell "nothing was due"
+    /// from "the replacement was due and could not be submitted"
+    /// without it. The notice is rate-limited to one per 30 s per
+    /// destination so a permanently failing destination cannot flood
+    /// the log.
+    last_replenishment_notice_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2207,6 +2272,7 @@ impl ServiceProduct {
                 sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
+                lease_refresh_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
                 destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
@@ -2439,6 +2505,7 @@ impl ServiceProduct {
                 sam_destination_slots: std::collections::HashMap::new(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
+                lease_refresh_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
                 destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
@@ -2626,6 +2693,7 @@ impl ServiceProduct {
             begin_rejected_invalid_record: self.inner.publication_begin_rejected_invalid_record,
             begin_rejected_other: self.inner.publication_begin_rejected_other,
             coordinator_pending_publications: self.inner.publication_coordinator_pending,
+            lease_refresh_failures: self.inner.lease_refresh_failures.len(),
         }
     }
 
@@ -2960,6 +3028,11 @@ impl ServiceProduct {
                             ServicePublicationError::Product(inner) => {
                                 classify_publication_failure(inner).label()
                             }
+                            ServicePublicationError::Stage {
+                                product: Some(inner),
+                                ..
+                            } => classify_publication_failure(inner).label(),
+                            ServicePublicationError::Stage { class, .. } => class.label(),
                         };
                         tracing::warn!(
                             publication_failure_stage,
@@ -3254,6 +3327,7 @@ impl ServiceProduct {
                     .retain(|current| *current != destination_id);
                 self.inner.publication_pending.remove(&destination_id);
                 self.inner.publication_retry_after.remove(&destination_id);
+                self.inner.lease_refresh_failures.remove(&destination_id);
                 continue;
             };
             let (
@@ -3265,9 +3339,51 @@ impl ServiceProduct {
                 minimum,
                 current_lease_set,
             ) = snapshot;
-            let progress = progress.map_err(|error| {
-                ServiceProductError::Provisioning(format!("group pool advance: {error}"))
-            })?;
+            let progress = match progress {
+                Ok(progress) => progress,
+                Err(error) => {
+                    // Plan 487 WP4 — a destination-scoped lease-set
+                    // failure must not tear down the router's SSU2
+                    // service. The live qualification showed the
+                    // opposite: one destination's lease refresh rejected
+                    // the rotation, the error propagated out of the
+                    // group advance, and the `ssu2-router` service was
+                    // failed mid-stream — a single destination's
+                    // lifecycle hiccup took the whole router's
+                    // transport down.
+                    //
+                    // The destination keeps its previous record, the
+                    // replenishment continues on the next tick, and the
+                    // failure is reported rather than swallowed.
+                    tracing::warn!(
+                        reason = %error,
+                        transition = "destination_group_pool_advancement_failed",
+                        "destination-group pool advancement failed for one destination"
+                    );
+                    self.inner
+                        .lease_refresh_failures
+                        .insert(destination_id, error.to_string());
+                    // The pool's tunnel building does not depend on the
+                    // lease set: keep replenishing so the destination's
+                    // tunnels are still replaced while its lease refresh
+                    // is failing. The publication of the refreshed lease
+                    // set follows the next successful refresh.
+                    if let Err(replenish_error) = self
+                        .replenish_group_destination(destination_id, now_seconds)
+                        .await
+                    {
+                        tracing::warn!(
+                            reason = %replenish_error,
+                            transition = "destination_group_replenishment_failed",
+                            "destination-group replenishment failed for one destination"
+                        );
+                    }
+                    continue;
+                }
+            };
+            // The refresh succeeded: the destination is no longer
+            // degraded.
+            self.inner.lease_refresh_failures.remove(&destination_id);
             let evicted_slots: std::collections::HashSet<_> =
                 progress.evicted_slots.iter().copied().collect();
             for slot in evicted_slots.iter().copied() {
@@ -3367,7 +3483,8 @@ impl ServiceProduct {
             let lease_changed = current_bridge.0 != current_lease_set;
             let owners_changed = current_bridge.1 != inbound_receive_ids;
             if !lease_changed && !owners_changed {
-                self.replenish_group_destination(destination_id).await?;
+                self.replenish_group_destination(destination_id, now_seconds)
+                    .await?;
                 continue;
             }
             if lease_changed && self.inner.server_destination_ids.contains(&destination_id) {
@@ -3412,7 +3529,33 @@ impl ServiceProduct {
                     now_ms,
                 )
                 .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-            self.replenish_group_destination(destination_id).await?;
+            self.replenish_group_destination(destination_id, now_seconds)
+                .await?;
+        }
+        // Plan 487 WP4 — reap publications whose correlated
+        // `DeliveryStatus` never arrived. A publication the network
+        // did not confirm is a publication that must be retried, and
+        // the coordinator's bounded capacity must not leak.
+        {
+            let reaped = self
+                .inner
+                .destination_tunnels
+                .lock()
+                .await
+                .reap_unacknowledged_ls2_publications(now_ms);
+            if !reaped.is_empty() {
+                tracing::warn!(
+                    reaped_publications = reaped.len(),
+                    transition = "ls2_publication_unacknowledged",
+                    "LS2 publications reaped without a correlated DeliveryStatus (counts only)",
+                );
+                // The publication was never confirmed by the network:
+                // mark the destination for republication so the driver
+                // retries it on the ordinary bounded schedule.
+                for destination_id in reaped {
+                    self.inner.publication_pending.insert(destination_id);
+                }
+            }
         }
         let publication_ids: Vec<_> = self
             .inner
@@ -3457,6 +3600,24 @@ impl ServiceProduct {
                                 ),
                                 Some(rejection),
                             )
+                        }
+                        // Plan 487 WP5: a staged failure released the
+                        // publication intent, so the coordinator has no
+                        // pending publication left; the class is
+                        // recorded as the failure stage.
+                        ServicePublicationError::Stage {
+                            class,
+                            product,
+                            pending,
+                        } => {
+                            self.inner.publication_coordinator_pending = pending;
+                            let error = product.unwrap_or_else(|| {
+                                ServiceProductError::Provisioning(format!(
+                                    "publication failed at {}",
+                                    class.label()
+                                ))
+                            });
+                            (error, None)
                         }
                     };
                     if let Some(rejection) = begin_rejection {
@@ -3555,6 +3716,7 @@ impl ServiceProduct {
     async fn replenish_group_destination(
         &mut self,
         destination_id: i2pr_client::DestinationId,
+        now_seconds: u64,
     ) -> Result<(), ServiceProductError> {
         let Some(local_router_hash) = self.inner.local_router_hash else {
             return Ok(());
@@ -3573,8 +3735,17 @@ impl ServiceProduct {
             .with_destination_runtime(destination_id, |destination| {
                 let config = destination.config();
                 (
-                    usize::from(config.inbound_target())
-                        .saturating_sub(destination.inbound_registrations().len())
+                    // Plan 487 WP4 — the inbound deficit counts the
+                    // tunnels whose advertised lease still outlives the
+                    // rotation horizon, not the raw registration count. A
+                    // tunnel inside the rotation window can no longer
+                    // carry the lease the destination advertises, so its
+                    // replacement must be built while that tunnel is
+                    // still alive; counting the registration instead
+                    // left the advertised lease to die before the
+                    // replacement existed.
+                    destination
+                        .inbound_replenishment_deficit(now_seconds)
                         .saturating_sub(self.inner.coordinator.pending_destination_direction_len(
                             destination_id,
                             BuildDirection::Inbound,
@@ -3606,7 +3777,21 @@ impl ServiceProduct {
         for direction in
             destination_replenishment_order(inbound_deficit, outbound_deficit, submit_limit)
         {
-            if submit_destination_replacement(
+            // Plan 487 WP4 — the replenishment decision and its outcome
+            // are visible receipts. The live qualification could not
+            // tell "no replacement was due" from "the replacement was
+            // due and could not be submitted" without them: the
+            // submission failure was counted and never logged.
+            let notice_due = self.destination_replenishment_notice_due(destination_id);
+            if notice_due && direction == BuildDirection::Inbound && inbound_deficit > 0 {
+                tracing::info!(
+                    inbound_deficit,
+                    outbound_deficit,
+                    transition = "destination_inbound_replenishment_due",
+                    "destination inbound replacement is due"
+                );
+            }
+            let submission = submit_destination_replacement(
                 &mut self.inner.coordinator,
                 &self.inner.destination_tunnels,
                 &self.inner.ssu2_handle,
@@ -3619,10 +3804,16 @@ impl ServiceProduct {
                 self.inner.options.ssu2_qualification_profile,
                 &self.token,
             )
-            .await
-            .is_err()
-            {
+            .await;
+            if let Err(error) = submission {
                 self.record_destination_submission_failure(destination_id, direction);
+                if notice_due {
+                    tracing::warn!(
+                        reason = %error,
+                        transition = "destination_build_submission_failed",
+                        "destination build submission failed"
+                    );
+                }
                 let _ = self
                     .manager
                     .with_destination_runtime(destination_id, |runtime| {
@@ -3633,6 +3824,29 @@ impl ServiceProduct {
             self.record_destination_build_submission(destination_id, direction);
         }
         Ok(())
+    }
+
+    /// Whether the destination's replenishment notice window has
+    /// elapsed. Plan 487 WP4 — at most one notice per destination per
+    /// [`REPLENISHMENT_NOTICE_INTERVAL_MS`], so a permanently failing
+    /// destination cannot flood the log.
+    fn destination_replenishment_notice_due(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+    ) -> bool {
+        let now_ms = wall_ms();
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let due = progress.last_replenishment_notice_ms == 0
+            || now_ms.saturating_sub(progress.last_replenishment_notice_ms)
+                >= REPLENISHMENT_NOTICE_INTERVAL_MS;
+        if due {
+            progress.last_replenishment_notice_ms = now_ms;
+        }
+        due
     }
 
     /// Consumes the product handle, cancels the child scope, and
@@ -4361,10 +4575,47 @@ impl ServiceProduct {
                     capability.note_inbound_dispatched().await;
                 }
             }
-            I2npBody::DeliveryStatus(_) => {
-                // Plan 188 §6.3 — DeliveryStatus cells are silently
-                // consumed by the local M2 data plane; the inbound
-                // dispatch is a no-op for this body kind.
+            I2npBody::DeliveryStatus(status) => {
+                // Plan 487 WP4 — a `DeliveryStatus` that carries a
+                // publication's reply token is the network's
+                // acknowledgement that the record was stored. It
+                // arrives on the inbound tunnel the publication named
+                // as its reply route, so the acknowledgement is
+                // attributed to that tunnel.
+                //
+                // A `DeliveryStatus` with no matching publication is
+                // not an error: the local M2 data plane consumes other
+                // status cells (Plan 188 §6.3), and a publication that
+                // was already reaped must not be resurrected.
+                let token = status.message_id;
+                if token == 0 {
+                    return;
+                }
+                let correlated = self
+                    .inner
+                    .destination_tunnels
+                    .lock()
+                    .await
+                    .correlate_ls2_publication_status(token, receive_tunnel_id);
+                match correlated {
+                    Ok(acknowledgement) => {
+                        tracing::info!(
+                            publication_reply_token = acknowledgement.reply_token,
+                            inbound_tunnel_id = acknowledgement.inbound_tunnel_id,
+                            published_seconds = acknowledgement.published_seconds,
+                            elapsed_ms = acknowledgement
+                                .acknowledged_at_ms
+                                .saturating_sub(acknowledgement.published_at_ms),
+                            transition = "ls2_publication_acknowledged",
+                            "LS2 publication acknowledged by a correlated DeliveryStatus on an inbound tunnel (counts only)",
+                        );
+                    }
+                    Err(_) => {
+                        // No matching publication: the status belongs to
+                        // another protocol path. Nothing is counted and
+                        // no state changes.
+                    }
+                }
             }
             _ => {}
         }
@@ -6123,6 +6374,29 @@ mod inbound_retry_tests {
 /// publication set.
 const CREATOR_RI_PUBLICATION_FLOODFILLS: usize = 3;
 
+/// How many nearest floodfills receive a destination's LeaseSet2.
+///
+/// A stock peer resolves a LeaseSet2 by asking the floodfills it
+/// selects for the routing key, and it fails the lookup outright when
+/// none of the floodfills it asked holds the record. One copy is
+/// therefore not enough for the destination to be resolvable: the
+/// store has to reach the floodfills a peer will actually ask.
+const LS2_PUBLICATION_FLOODFILLS: usize = 3;
+
+/// The bounded floodfill fan-out for a LeaseSet2 publication.
+///
+/// The candidates arrive ordered by routing-key distance, so the
+/// fan-out keeps the nearest ones. The bound is a hard ceiling: the
+/// publication never grows an unbounded recipient list.
+fn bounded_publication_floodfills(
+    candidates: Vec<i2pr_netdb::RouterHash>,
+) -> Vec<i2pr_netdb::RouterHash> {
+    candidates
+        .into_iter()
+        .take(LS2_PUBLICATION_FLOODFILLS)
+        .collect()
+}
+
 /// Composes the fire-and-forget `DatabaseStore` carrying our creator
 /// RouterInfo. Pure constructor for deterministic coverage; the bytes
 /// are the same public record future handshakes emit, never key
@@ -6275,6 +6549,38 @@ async fn publish_creator_router_info(
         transition = "creator_ri_publication",
         "creator RouterInfo floodfill publication",
     );
+}
+
+#[cfg(test)]
+mod ls2_publication_fanout_tests {
+    use super::{LS2_PUBLICATION_FLOODFILLS, bounded_publication_floodfills};
+
+    fn candidate(seed: u8) -> i2pr_netdb::RouterHash {
+        i2pr_netdb::RouterHash::from_bytes([seed; 32])
+    }
+
+    #[test]
+    fn the_fan_out_keeps_the_nearest_candidates_in_order() {
+        let candidates = vec![candidate(1), candidate(2), candidate(3)];
+        let selected = bounded_publication_floodfills(candidates);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0], candidate(1));
+        assert_eq!(selected[1], candidate(2));
+        assert_eq!(selected[2], candidate(3));
+    }
+
+    #[test]
+    fn the_fan_out_never_exceeds_its_bound() {
+        let candidates: Vec<i2pr_netdb::RouterHash> = (0u8..12).map(candidate).collect();
+        let selected = bounded_publication_floodfills(candidates);
+        assert_eq!(selected.len(), LS2_PUBLICATION_FLOODFILLS);
+        assert_eq!(selected[0], candidate(0));
+    }
+
+    #[test]
+    fn an_empty_candidate_list_stays_empty() {
+        assert!(bounded_publication_floodfills(Vec::new()).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -7710,22 +8016,37 @@ const ELS2_PUBLICATION_WINDOW_SECONDS: u32 = 600;
 /// The rng seed mixes the destination hash so two services publishing in
 /// the same second do not reuse an ElGamal nonce stream; it is a
 /// publication nonce seed, not key material.
+///
+/// Plan 487 WP4 — the store carries the publication's **reply token**
+/// and the reply route (inbound tunnel id plus that tunnel's gateway).
+/// The floodfill answers a store with a nonzero reply token by sending a
+/// `DeliveryStatus` whose message id is the token, addressed to the
+/// supplied gateway and tunnel — so the acknowledgement returns through
+/// one of **our own inbound tunnels**. That is what makes the
+/// acknowledgement a proof that the network stored the record, rather
+/// than a proof that a socket accepted bytes.
 fn service_publication_store(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     service_destination: i2pr_client::DestinationId,
     lease_set2: i2pr_proto::LeaseSet2,
     now_seconds: u64,
+    reply_token: u32,
+    reply_route: Option<(u32, i2pr_proto::Hash)>,
 ) -> Result<i2pr_proto::DatabaseStoreMessage, ServiceProductError> {
     let destination_hash =
         lease_set2.header().destination().hash().map_err(|_| {
             ServiceProductError::Provisioning("LS2 destination hash failed".to_owned())
         })?;
+    let (reply_tunnel_id, reply_gateway) = match reply_route {
+        Some((tunnel_id, gateway)) => (Some(tunnel_id), Some(gateway)),
+        None => (None, None),
+    };
     let Some(material) = manager.els2_material_for_destination(service_destination) else {
         return Ok(i2pr_proto::DatabaseStoreMessage {
             key: destination_hash,
-            reply_token: 0,
-            reply_tunnel_id: None,
-            reply_gateway: None,
+            reply_token,
+            reply_tunnel_id,
+            reply_gateway,
             data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(lease_set2)),
         });
     };
@@ -7735,11 +8056,17 @@ fn service_publication_store(
     let mut rng = ChaCha8Rng::seed_from_u64(
         now_seconds.wrapping_add(u64::from(destination_hash.as_bytes()[0] as u32)),
     );
-    let (_key, message) = material
+    let (_key, mut message) = material
         .build_database_store(&lease_set2, now_seconds_u32, expires_seconds, &mut rng)
         .map_err(|error| {
             ServiceProductError::Provisioning(format!("type-5 record construction failed: {error}"))
         })?;
+    // The encrypted record carries the same reply route: the token and
+    // the inbound tunnel are properties of the publication, not of the
+    // record's encoding.
+    message.reply_token = reply_token;
+    message.reply_tunnel_id = reply_tunnel_id;
+    message.reply_gateway = reply_gateway;
     Ok(message)
 }
 
@@ -7758,16 +8085,9 @@ async fn direct_ls2_store_to_floodfill(
     floodfill: i2pr_netdb::RouterHash,
     options: &ServiceProductOptions,
     cancellation: &CancellationToken,
+    message_id: u32,
 ) -> Result<(), ServicePublicationError> {
     let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
-    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-        ServiceProductError::Provisioning(
-            "operating-system randomness unavailable for publication".to_owned(),
-        )
-    })?;
-    let message_id = fresh_message_id(&mut rng, &[]).map_err(|error| {
-        ServiceProductError::Provisioning(format!("publication message id: {error}"))
-    })?;
     let wire = crate::outbound_lookup::encode_store_envelope_short(
         store_message,
         message_id,
@@ -7846,46 +8166,212 @@ async fn publish_service_ls2_for_service(
     options: ServiceProductOptions,
     cancellation: &CancellationToken,
 ) -> Result<(), ServicePublicationError> {
-    // Fetch the real signed LS2 from the router-backed state
-    // through the dedicated bridge accessor that clones the public
-    // LS2 only (never secret material, never diagnostics).
-    let lease_set2 = manager
-        .with_destination_bridge(service_destination, |bridge| {
-            bridge.router_ls2_for_publication()
-        })
-        .flatten();
-    let Some(lease_set2) = lease_set2 else {
-        return Err(ServiceProductError::RouterState(
-            "router-backed LS2 missing for publication".to_owned(),
-        )
-        .into());
+    // Plan 487 WP5 (Plan 393): the publication intent is reserved
+    // **before** the record is composed. The compose and
+    // request-construction failure classes therefore have an intent to
+    // release, and every failure path releases exactly one
+    // coordinator slot. Each class has its own release site and its
+    // own error classification below.
+    let request_id = {
+        let mut coord_guard = destination_tunnels.lock().await;
+        coord_guard.reserve_ls2_publication().map_err(|error| {
+            let rejection = match error {
+                crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
+                    PublicationBeginRejection::Capacity
+                }
+                _ => PublicationBeginRejection::Other,
+            };
+            ServicePublicationError::Begin {
+                rejection,
+                pending: coord_guard.publications_len(),
+            }
+        })?
     };
-    // Plan 337: the store key is the record's **own** storage key — the
-    // day's blinded key for an encrypted service, the destination hash
-    // otherwise — and the floodfill below is selected for whichever it is.
-    let store_message =
-        service_publication_store(manager, service_destination, lease_set2, wall_secs())?;
+
+    // ---- Failure class 1: compose ---------------------------------
+    // The signed store record could not be obtained or composed. The
+    // reserved intent is released here.
+    //
+    // Plan 487 WP4 — the publication's metadata (reply route,
+    // `published` second, oldest lease expiry, reply token) is
+    // derived here and carried into the delivery phase, so the
+    // acknowledgement can be correlated back to exactly this
+    // publication.
+    let (store_message, reply_token, published_seconds, oldest_lease_expiry_ms) = {
+        // Fetch the real signed LS2 from the router-backed state
+        // through the dedicated bridge accessor that clones the public
+        // LS2 only (never secret material, never diagnostics).
+        let lease_set2 = manager
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_ls2_for_publication()
+            })
+            .flatten();
+        let Some(lease_set2) = lease_set2 else {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::Compose,
+                product: Some(ServiceProductError::RouterState(
+                    "router-backed LS2 missing for publication".to_owned(),
+                )),
+                pending,
+            });
+        };
+        // Plan 487 WP4 — the reply route is one of **our own** inbound
+        // tunnels, taken from the record we are about to publish. The
+        // floodfill answers the store with a `DeliveryStatus` addressed
+        // to that tunnel, so the acknowledgement returns through our
+        // inbound path and proves the network stored the record.
+        let reply_route = lease_set2
+            .leases()
+            .first()
+            .map(|lease| (lease.tunnel_id(), lease.tunnel_gateway()));
+        let published_seconds = lease_set2.published_seconds();
+        let oldest_lease_expiry_ms = lease_set2
+            .leases()
+            .iter()
+            .map(|lease| u64::from(lease.end_date().as_seconds()).saturating_mul(1000))
+            .min()
+            .unwrap_or(0);
+        // Plan 487 WP4 — the publication bounds are checked **before**
+        // the record is composed, so a rate-limited or non-monotonic
+        // publication never reaches the wire.
+        {
+            let mut coord_guard = destination_tunnels.lock().await;
+            if let Err(error) = coord_guard.admit_ls2_publication(
+                service_destination,
+                published_seconds,
+                oldest_lease_expiry_ms,
+                wall_ms(),
+            ) {
+                drop(coord_guard);
+                let pending = destination_tunnels.lock().await.publications_len();
+                let _ = destination_tunnels
+                    .lock()
+                    .await
+                    .cancel_ls2_publication(request_id);
+                return Err(ServicePublicationError::Stage {
+                    class: PublicationFailureClass::Compose,
+                    product: Some(ServiceProductError::Provisioning(format!(
+                        "publication not admitted: {error}"
+                    ))),
+                    pending,
+                });
+            }
+        }
+        // Plan 487 WP4 — the publication's message id doubles as the
+        // store's reply token, so the floodfill's `DeliveryStatus`
+        // correlates back to exactly this publication.
+        //
+        // A nonzero reply token **requires** a reply route: the store
+        // encoder rejects a token without a tunnel id and gateway, and
+        // the reference only answers a store that names where the
+        // status goes. A record with no usable lease has no inbound
+        // tunnel to answer on, so it is published without a token.
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning(
+                "operating-system randomness unavailable for publication".to_owned(),
+            )
+        })?;
+        let reply_token = if reply_route.is_some() {
+            fresh_message_id(&mut rng, &[]).map_err(|error| {
+                ServiceProductError::Provisioning(format!("publication message id: {error}"))
+            })?
+        } else {
+            0
+        };
+        if reply_token == u32::MAX {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::Compose,
+                product: Some(ServiceProductError::Provisioning(
+                    "publication reply token is not usable".to_owned(),
+                )),
+                pending,
+            });
+        }
+        // Plan 337: the store key is the record's **own** storage key — the
+        // day's blinded key for an encrypted service, the destination hash
+        // otherwise — and the floodfill below is selected for whichever it is.
+        match service_publication_store(
+            manager,
+            service_destination,
+            lease_set2,
+            wall_secs(),
+            reply_token,
+            reply_route,
+        ) {
+            Ok(message) => (
+                message,
+                reply_token,
+                published_seconds,
+                oldest_lease_expiry_ms,
+            ),
+            Err(error) => {
+                let pending = destination_tunnels.lock().await.publications_len();
+                let _ = destination_tunnels
+                    .lock()
+                    .await
+                    .cancel_ls2_publication(request_id);
+                return Err(ServicePublicationError::Stage {
+                    class: PublicationFailureClass::Compose,
+                    product: Some(error),
+                    pending,
+                });
+            }
+        }
+    };
+
+    // ---- Failure class 2: request construction --------------------
     // The publication state machine requires a floodfill peer. The
-    // controlled lane provisions the reference as floodfill; pick
-    // the first floodfill candidate for the record's routing key from
-    // the authoritative store. When no floodfill is known, fail
-    // closed (no direct transport, no synthetic publication).
-    let floodfill = {
+    // controlled lane provisions the reference as floodfill; pick the
+    // floodfill candidates for the record's routing key from the
+    // authoritative store. When no floodfill is known, fail closed (no
+    // direct transport, no synthetic publication). The reserved intent
+    // is released here.
+    //
+    // The store goes to the **nearest** candidates, not to one of them.
+    // A stock peer resolves a LeaseSet2 by asking the floodfills it
+    // selects for the routing key, and it fails the lookup outright
+    // when none of the floodfills it asked holds the record. Publishing
+    // to a single floodfill therefore leaves the destination
+    // unresolvable for every peer that asks a different one — the
+    // creator-RouterInfo publication already uses the same multi-
+    // floodfill shape for the same reason.
+    let floodfills = {
         let coord_guard = destination_tunnels.lock().await;
         let target = DestinationHash::from_hash(store_message.key);
         let routing_key = i2pr_netdb::router_hash_from_destination(target);
-        coord_guard
-            .candidate_hashes(&target, &routing_key)
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                ServiceProductError::Provisioning("no floodfill for publication".to_owned())
-            })?
+        let mut candidates = coord_guard.candidate_hashes(&target, &routing_key);
+        candidates = bounded_publication_floodfills(candidates);
+        candidates
     };
-    let request_id = {
+    let floodfill = match floodfills.first().copied() {
+        Some(floodfill) => floodfill,
+        None => {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::RequestConstruction,
+                product: None,
+                pending,
+            });
+        }
+    };
+    {
         let mut coord_guard = destination_tunnels.lock().await;
-        coord_guard
-            .begin_ls2_publication(store_message.clone(), floodfill)
+        let attached = coord_guard
+            .attach_ls2_publication(request_id, store_message.clone(), floodfill)
             .map_err(|error| {
                 let rejection = match error {
                     crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
@@ -7903,8 +8389,19 @@ async fn publish_service_ls2_for_service(
                     rejection,
                     pending: coord_guard.publications_len(),
                 }
-            })?
-    };
+            });
+        if let Err(error) = attached {
+            // The request-construction class: the reserved intent is
+            // released here, so a rejected record attachment never
+            // leaks coordinator capacity.
+            drop(coord_guard);
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(error);
+        }
+    }
     // Controlled direct short store delivery to the selected
     // floodfill. The tunneled composition path is retained for
     // future re-hardening, but its cells die silently past the
@@ -7916,22 +8413,115 @@ async fn publish_service_ls2_for_service(
     // own plan once the tunnel death is attributed.
     //
     // The coordinator publication entry above guards capacity and
-    // record validity; the wire below bypasses tunnel composition
-    // and is released here so no dangling entry leaks.
-    let direct_result = direct_ls2_store_to_floodfill(
-        ssu2_handle,
-        destination_tunnels,
-        &store_message,
-        floodfill,
-        &options,
-        cancellation,
-    )
-    .await;
-    let _ = destination_tunnels
-        .lock()
-        .await
-        .cancel_ls2_publication(request_id);
-    direct_result?;
+    // record validity; the wire below bypasses tunnel composition.
+    //
+    // The same store — same record — is sent to every selected
+    // floodfill, so whichever one a peer asks holds the record. The
+    // **nearest** candidate is required; the rest are best-effort,
+    // because one delivered copy is enough for the record to exist in
+    // the network.
+    //
+    // Only the primary copy carries the reply token and the reply
+    // route. A floodfill answers a store that carries a nonzero token
+    // with a `DeliveryStatus`, so a token on every copy would make one
+    // publication produce one acknowledgement per recipient, and the
+    // surplus statuses would arrive as unmatched inbound messages.
+    let mut direct_result: Result<(), ServicePublicationError> = Ok(());
+    let mut stores_accepted = 0usize;
+    for (index, candidate) in floodfills.iter().copied().enumerate() {
+        let mut record = store_message.clone();
+        let mut message_id = reply_token;
+        if index > 0 {
+            record.reply_token = 0;
+            record.reply_tunnel_id = None;
+            record.reply_gateway = None;
+            message_id = 0;
+        }
+        let outcome = direct_ls2_store_to_floodfill(
+            ssu2_handle,
+            destination_tunnels,
+            &record,
+            candidate,
+            &options,
+            cancellation,
+            message_id,
+        )
+        .await;
+        match outcome {
+            Ok(()) => stores_accepted = stores_accepted.saturating_add(1),
+            Err(error) => {
+                if index == 0 {
+                    direct_result = Err(error);
+                } else {
+                    tracing::warn!(
+                        transition = "ls2_publication_extra_floodfill_rejected",
+                        "LS2 publication store rejected by an additional floodfill",
+                    );
+                }
+            }
+        }
+    }
+    if direct_result.is_ok() && stores_accepted == 0 {
+        direct_result = Err(ServiceProductError::Provisioning(
+            "publication transport rejected".to_owned(),
+        )
+        .into());
+    }
+    tracing::info!(
+        floodfills_targeted = floodfills.len(),
+        stores_accepted,
+        transition = "ls2_publication_floodfills",
+        "LS2 publication floodfill fan-out (counts only)",
+    );
+
+    // ---- Failure class 3: delivery --------------------------------
+    // The composed publication could not be delivered. The intent is
+    // released here; the delivery outcome is classified so the two
+    // release reasons stay distinguishable.
+    if let Err(error) = direct_result {
+        let pending = destination_tunnels.lock().await.publications_len();
+        let _ = destination_tunnels
+            .lock()
+            .await
+            .cancel_ls2_publication(request_id);
+        // The delivery failure keeps its own product classification.
+        // No error contents cross: the redaction taxonomy owns the
+        // reason.
+        let product = match error {
+            ServicePublicationError::Product(inner) => Some(inner),
+            _ => Some(ServiceProductError::Provisioning(
+                "publication delivery failed".to_owned(),
+            )),
+        };
+        return Err(ServicePublicationError::Stage {
+            class: PublicationFailureClass::Delivery,
+            product,
+            pending,
+        });
+    }
+    // Plan 487 WP4 — the store reached the wire. The coordinator entry
+    // is **kept**: it now carries the reply token, and the floodfill's
+    // `DeliveryStatus` correlates back to it. The entry is released
+    // when the acknowledgement arrives, or reaped by the bounded
+    // reaper when no acknowledgement arrives within the deadline.
+    {
+        let mut coord_guard = destination_tunnels.lock().await;
+        let _ = coord_guard.note_ls2_publication_sent(
+            request_id,
+            service_destination,
+            reply_token,
+            published_seconds,
+            oldest_lease_expiry_ms,
+            wall_ms(),
+        );
+    }
+    tracing::info!(
+        publication_reply_token = reply_token,
+        published_seconds = published_seconds,
+        oldest_lease_expiry_ms = oldest_lease_expiry_ms,
+        transition = "ls2_publication_awaiting_acknowledgement",
+        "LS2 publication emitted; awaiting the correlated DeliveryStatus",
+    );
     Ok(())
 }
 
@@ -8177,9 +8767,20 @@ mod plan337_publication {
             i2pr_client::DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xA1; 32])),
             inner,
             u64::from(NOW),
+            0x0bad_f00d,
+            Some((0x0BAD, i2pr_proto::Hash::from_bytes([0x0B; 32]))),
         )
         .expect("ordinary store builds");
         assert_eq!(store.key, destination_hash);
+        // Plan 487 WP4 — the store carries the reply token and the
+        // inbound reply route, so the floodfill's `DeliveryStatus`
+        // returns through one of our own inbound tunnels.
+        assert_eq!(store.reply_token, 0x0bad_f00d);
+        assert_eq!(store.reply_tunnel_id, Some(0x0BAD));
+        assert_eq!(
+            store.reply_gateway,
+            Some(i2pr_proto::Hash::from_bytes([0x0B; 32]))
+        );
         assert!(matches!(
             store.data,
             i2pr_proto::DatabaseStoreData::LeaseSet2(_)

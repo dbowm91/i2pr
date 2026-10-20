@@ -1253,6 +1253,14 @@ impl SamServiceState {
         if let Ok(mut pools) = self.streaming_pools.lock() {
             pools.remove(&destination_id);
         }
+        // Plan 487 WP3: classify the data phase that just ended,
+        // BEFORE the destination bridge is removed. Once the bridge is
+        // gone every stage counter reads zero by construction, so the
+        // four-stage attribution would be vacuous. The window-based
+        // live receipt cannot cover this case: a stalled data phase
+        // usually ends before the window elapses, and the teardown is
+        // exactly what removes the bridge.
+        self.emit_terminal_data_phase_stall_attribution(destination_id);
         if let Ok(mut bridges) = self.sam_destinations.lock() {
             bridges.remove(destination_id);
         }
@@ -3989,6 +3997,85 @@ fn delivery_queue_depth(state: &SamServiceState, destination_id: DestinationId) 
     })
 }
 
+impl SamServiceState {
+    /// Plan 487 WP3 — emits the live DATA-phase stall attribution for
+    /// one destination, once, while the bridge is still installed.
+    ///
+    /// The receipt separates the three candidate causes of a reverse
+    /// DATA stall:
+    ///
+    /// - `mirror_arrived == 0` and `canonical_arrived == 0` with
+    ///   `canonical_observed == 0`: the DATA never reached any
+    ///   manager (arrival loss).
+    /// - `canonical_arrived > 0` and `mirror_arrived == 0`: the DATA
+    ///   reached a manager, but not the one that owns the connection
+    ///   (routing loss).
+    /// - `mirror_arrived > 0` and `mirror_ack_generated == 0`: the
+    ///   DATA reached the owning manager but produced no
+    ///   acknowledgement.
+    /// - `mirror_ack_generated > 0` and `ack_egress_sent == 0`: the
+    ///   acknowledgement was produced but never left the router.
+    ///
+    /// Counts only; no identities, keys, ports, stream ids, or payload
+    /// material.
+    pub(crate) fn emit_data_phase_stall_attribution(
+        &self,
+        destination_id: DestinationId,
+        now_ms: u64,
+    ) {
+        let Ok(slot) = self.router_network_manager.lock() else {
+            return;
+        };
+        let Some(manager) = slot.as_ref() else {
+            return;
+        };
+        let ack_egress = manager.ack_egress_totals();
+        let destinations = self.sam_destinations();
+        let Ok(destinations) = destinations.lock() else {
+            return;
+        };
+        let Some(handle) = destinations.get(destination_id) else {
+            return;
+        };
+        let Some(snapshot) =
+            handle.with(|bridge| bridge.data_phase_stall_snapshot(now_ms, ack_egress))
+        else {
+            return;
+        };
+        crate::sam::streams::log_data_phase_stall_attribution(&snapshot, false);
+    }
+
+    /// Plan 487 WP3 — emits the terminal four-stage DATA-phase
+    /// attribution when a data phase ends with no DATA at either
+    /// manager.
+    ///
+    /// Called from the session teardown **before** the destination
+    /// bridge is removed, so the stage counters still carry the
+    /// phase that just ended. The receipt is the same shape as the
+    /// window-based live receipt and shares its one-shot latch, so a
+    /// destination emits at most one stall receipt.
+    ///
+    /// Counts only; no identities, keys, ports, stream ids, or payload
+    /// material.
+    pub(crate) fn emit_terminal_data_phase_stall_attribution(&self, destination_id: DestinationId) {
+        let ack_egress = product_ack_egress_totals(self);
+        let destinations = self.sam_destinations();
+        let Ok(destinations) = destinations.lock() else {
+            return;
+        };
+        let Some(handle) = destinations.get(destination_id) else {
+            return;
+        };
+        let now_ms = streaming_now_ms();
+        let Some(snapshot) =
+            handle.with(|bridge| bridge.terminal_data_phase_stall_snapshot(now_ms, ack_egress))
+        else {
+            return;
+        };
+        crate::sam::streams::log_data_phase_stall_attribution(&snapshot, true);
+    }
+}
+
 /// Plan 478 ACCEPT data-phase baseline: snapshots the destination
 /// bridge ingress counters at the moment an inbound stream enters
 /// its data phase. Fail-closed zeros when no bridge is installed
@@ -3999,12 +4086,16 @@ fn accept_data_phase_baseline(
     destination_id: DestinationId,
 ) -> AcceptDataPhaseBaseline {
     let garlic = bridge_garlic_totals(state, destination_id);
+    let ack_egress = product_ack_egress_totals(state);
     let destinations_arc = state.sam_destinations();
     let Ok(destinations) = destinations_arc.lock() else {
         return AcceptDataPhaseBaseline {
             garlic,
             mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
             canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            mirror_ack_generation: i2pr_client::streaming::AckGenerationAccounting::default(),
+            canonical_ack_generation: i2pr_client::streaming::AckGenerationAccounting::default(),
+            ack_egress,
         };
     };
     let Some(handle) = destinations.get(destination_id) else {
@@ -4012,13 +4103,33 @@ fn accept_data_phase_baseline(
             garlic,
             mirror_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
             canonical_data: i2pr_client::streaming::DataPacketIngressAccounting::default(),
+            mirror_ack_generation: i2pr_client::streaming::AckGenerationAccounting::default(),
+            canonical_ack_generation: i2pr_client::streaming::AckGenerationAccounting::default(),
+            ack_egress,
         };
     };
     handle.with(|bridge| AcceptDataPhaseBaseline {
         garlic,
         mirror_data: bridge.receiver_streaming().data_packet_ingress(),
         canonical_data: bridge.streaming().data_packet_ingress(),
+        mirror_ack_generation: bridge.receiver_streaming().ack_generation(),
+        canonical_ack_generation: bridge.streaming().ack_generation(),
+        ack_egress,
     })
+}
+
+/// Plan 487 WP2 **ACK-egress** stage mirror: reads the attached
+/// router-network manager's `(sent, dropped)` acknowledgement egress
+/// counters. Counts only; fails closed to zeros when no manager is
+/// attached.
+fn product_ack_egress_totals(state: &SamServiceState) -> (u64, u64) {
+    let Ok(slot) = state.router_network_manager.lock() else {
+        return (0, 0);
+    };
+    let Some(manager) = slot.as_ref() else {
+        return (0, 0);
+    };
+    manager.ack_egress_totals()
 }
 
 /// Plan 478 ACCEPT data-phase close receipt: the
@@ -4042,6 +4153,35 @@ pub(crate) struct AcceptDataPhaseCloseReceipt {
     pub undrained_bytes: u64,
     pub reset: bool,
     pub bridge_present: bool,
+    // ---- Plan 487 WP2 four-stage DATA-phase attribution ----
+    //
+    // Each stage is counted by its own counter. No stage is inferred
+    // from another stage's count.
+    //
+    /// Stage 1 — **manager arrival**: inbound DATA packets that
+    /// reached the owning manager's application receive window as new
+    /// data. Zero means the DATA never reached the manager
+    /// (arrival loss).
+    pub manager_arrived: u64,
+    /// Stage 2 — **ACK generated**: acknowledgements the owning
+    /// manager produced (armed) in response to received DATA.
+    pub ack_generated: u64,
+    /// Stage 2 — **ACK transmitted**: acknowledgements the owning
+    /// manager turned into packets. A non-zero `ack_generated` with a
+    /// zero `ack_transmitted` means the acknowledgement was produced
+    /// but never became a packet.
+    pub ack_transmitted: u64,
+    /// Stage 2 negative control: acknowledgements the manager
+    /// *suppressed* by emitting `FLAG_NO_ACK`. Plan 487 WP1 removed
+    /// the suppression, so this must be zero; a non-zero value means
+    /// the receiver-ACK contract regressed.
+    pub ack_no_ack_emitted: u64,
+    /// Stage 3 — **ACK egress sent**: acknowledgements that reached
+    /// the transport send path and were accepted for delivery.
+    pub ack_egress_sent: u64,
+    /// Stage 3 — **ACK egress dropped**: acknowledgements dropped
+    /// before the transport send path.
+    pub ack_egress_dropped: u64,
 }
 
 impl AcceptDataPhaseCloseReceipt {
@@ -4058,6 +4198,12 @@ impl AcceptDataPhaseCloseReceipt {
             undrained_bytes: 0,
             reset,
             bridge_present: false,
+            manager_arrived: 0,
+            ack_generated: 0,
+            ack_transmitted: 0,
+            ack_no_ack_emitted: 0,
+            ack_egress_sent: 0,
+            ack_egress_dropped: 0,
         }
     }
 }
@@ -4104,14 +4250,14 @@ impl SamServiceState {
             return Some(AcceptDataPhaseCloseReceipt::torn_down(reset));
         };
         Some(handle.with(|bridge| {
-            let (manager, mirror) = match cleanup.direction {
+            let (manager, is_mirror) = match cleanup.direction {
                 RawDirection::Inbound => (bridge.receiver_streaming(), true),
                 RawDirection::Outbound => (bridge.streaming(), false),
             };
             // The canonical snapshot is always the canonical
             // manager regardless of direction; the mirror
             // snapshot follows the stream's owning manager.
-            let (mirror_now, canonical_now) = if mirror {
+            let (mirror_now, canonical_now) = if is_mirror {
                 (
                     manager.data_packet_ingress(),
                     bridge.streaming().data_packet_ingress(),
@@ -4136,6 +4282,29 @@ impl SamServiceState {
                 u64::try_from(manager.pending_bytes_for(cleanup.connection_id)).unwrap_or(u64::MAX);
             let mirror = mirror_now.delta_since(baseline.mirror_data);
             let canonical = canonical_now.delta_since(baseline.canonical_data);
+            // Plan 487 WP2 four-stage attribution. Stage 1 (manager
+            // arrival) comes from the owning manager's ingress
+            // accounting; stage 2 (ACK generated) from its
+            // ACK-generation accounting; stage 3 (ACK egress) from
+            // the daemon's egress counters. Each is a delta against
+            // its own baseline; none is inferred from another.
+            let (mirror_ack_now, canonical_ack_now) = if is_mirror {
+                (
+                    manager.ack_generation(),
+                    bridge.streaming().ack_generation(),
+                )
+            } else {
+                (
+                    bridge.receiver_streaming().ack_generation(),
+                    manager.ack_generation(),
+                )
+            };
+            let owning_ack = if is_mirror {
+                mirror_ack_now.delta_since(baseline.mirror_ack_generation)
+            } else {
+                canonical_ack_now.delta_since(baseline.canonical_ack_generation)
+            };
+            let egress_now = product_ack_egress_totals(self);
             AcceptDataPhaseCloseReceipt {
                 mirror,
                 canonical,
@@ -4147,6 +4316,16 @@ impl SamServiceState {
                 undrained_bytes: undrained,
                 reset,
                 bridge_present: true,
+                manager_arrived: if is_mirror {
+                    mirror.data_arrived
+                } else {
+                    canonical.data_arrived
+                },
+                ack_generated: owning_ack.generated,
+                ack_transmitted: owning_ack.transmitted,
+                ack_no_ack_emitted: owning_ack.no_ack_emitted,
+                ack_egress_sent: egress_now.0.saturating_sub(baseline.ack_egress.0),
+                ack_egress_dropped: egress_now.1.saturating_sub(baseline.ack_egress.1),
             }
         }))
     }
@@ -4172,6 +4351,12 @@ impl SamServiceState {
             undrained_bytes = receipt.undrained_bytes,
             reset = u64::from(receipt.reset),
             bridge_present = u64::from(receipt.bridge_present),
+            manager_arrived = receipt.manager_arrived,
+            ack_generated = receipt.ack_generated,
+            ack_transmitted = receipt.ack_transmitted,
+            ack_no_ack_emitted = receipt.ack_no_ack_emitted,
+            ack_egress_sent = receipt.ack_egress_sent,
+            ack_egress_dropped = receipt.ack_egress_dropped,
             transition = "stream_accept_data_phase_closed",
             "STREAM ACCEPT data phase closed; per-accepted-stream ingress attribution (counts only)",
         );
@@ -4630,6 +4815,20 @@ async fn wait_for_accept_established(
                 final_state,
                 Some(i2pr_client::streaming::connection::ConnectionState::Established)
             ) {
+                // Plan 487 WP2 — the accept is the moment the inbound
+                // connection reaches the established state, so it is
+                // the moment the DATA-phase stall window opens.
+                // Recording the marker here — where the transition
+                // happens — keeps the four-stage attribution alive in
+                // every mode: a driver poll can only observe a
+                // transition it is still watching, and the
+                // router-network mode's own driver does not watch
+                // the accept path.
+                if let Some(handle) = destinations.get(destination_id) {
+                    handle.with(|bridge| {
+                        bridge.note_established_at(streaming_now_ms());
+                    });
+                }
                 return Some((cid, peer, peer_destination_b64));
             }
         }
@@ -5032,7 +5231,22 @@ async fn run_destination_driver(
         }
         if bridge_established_now {
             established_notify.notify_one();
+            // Plan 487 WP3: bound the live stall window from the moment
+            // the connection reached the established state.
+            let destinations = state.sam_destinations();
+            if let Ok(destinations) = destinations.lock()
+                && let Some(handle) = destinations.get(destination_id)
+            {
+                handle.with(|bridge| bridge.note_established_at(now_ms));
+            }
         }
+        // Plan 487 WP3: the live DATA-phase stall attribution. The
+        // close receipt cannot serve this purpose — by the time the
+        // pump finishes, the session teardown has already removed the
+        // destination bridge, so every delta reads zero by
+        // construction. This receipt is emitted while the state is
+        // still readable, at most once per destination.
+        state.emit_data_phase_stall_attribution(destination_id, now_ms);
         // Yield to the runtime so other tasks (raw stream drivers,
         // outbound notifications, established waits) get a fair
         // share of the single-threaded scheduler.

@@ -618,6 +618,37 @@ impl DestinationRuntime {
         self.pool.inbound_lease_sources(now_seconds)
     }
 
+    /// Number of inbound tunnels whose advertised lease still outlives the
+    /// rotation horizon at `now_seconds`.
+    ///
+    /// Plan 487 WP4: the replenishment counts these, not the raw
+    /// registration count. A tunnel whose advertised lease ends inside the
+    /// rotation window can no longer carry the lease the destination keeps
+    /// advertising, so its replacement must be built **while that tunnel is
+    /// still alive** — otherwise the advertised lease dies before the
+    /// replacement exists and the destination is unresolvable for the gap.
+    pub fn inbound_lease_covering_count(&self, now_seconds: u64) -> usize {
+        self.pool.inbound_lease_covering_count(now_seconds)
+    }
+
+    /// How many inbound tunnels must still be built for the destination to
+    /// hold its configured inbound target at `now_seconds`.
+    ///
+    /// The count is the tunnels whose advertised lease still covers the
+    /// rotation horizon (Plan 487 WP4), not the number of live
+    /// registrations: a tunnel inside the rotation window cannot carry
+    /// the lease the destination keeps advertising, so its replacement is
+    /// owed while that tunnel is still alive.
+    ///
+    /// The result is bounded by the pool's free inbound capacity: a build
+    /// the pool would reject as "pool full" is a wasted tunnel build.
+    pub fn inbound_replenishment_deficit(&self, now_seconds: u64) -> usize {
+        let target = usize::from(self.config.inbound_target());
+        let covering = self.pool.inbound_lease_covering_count(now_seconds);
+        let wanted = target.saturating_sub(covering);
+        wanted.min(self.pool.inbound_free_capacity())
+    }
+
     /// Returns the remote inbound registrations retained by this
     /// destination's pool. Registrations key on the creator tunnel
     /// id; use [`Self::inbound_local_receive`] for the data-plane
@@ -1059,6 +1090,52 @@ mod tests {
             .expect("outbound");
         runtime.refresh_lease_set(now).expect("refresh");
         runtime
+    }
+
+    #[test]
+    fn the_inbound_deficit_opens_when_the_lease_enters_the_rotation_window() {
+        // Plan 487 WP4 regression: the destination owes a replacement
+        // inbound tunnel once its advertised lease enters the rotation
+        // window — while the tunnel is still alive, so the advertised
+        // lease never dies before the replacement exists. Counting the
+        // live registrations instead kept the deficit at zero, and the
+        // rotation then had no replacement to publish.
+        let mut runtime = runtime(4_871);
+        runtime
+            .admit_inbound(established_inbound(4_872), 0)
+            .expect("inbound");
+        runtime
+            .admit_outbound(established_outbound(4_873), 0)
+            .expect("outbound");
+        let config = DestinationConfig::balanced();
+        let lifetime = u64::from(config.tunnel_lifetime_seconds());
+        let publication = u64::from(config.lease_publication_margin_seconds());
+        let rotation = u64::from(config.lease_rotation_margin_seconds());
+        let target = usize::from(config.inbound_target());
+
+        assert_eq!(
+            runtime.inbound_replenishment_deficit(0),
+            target.saturating_sub(1),
+            "one tunnel is missing at the start"
+        );
+        // The advertised lease ends at `lifetime - publication`; the
+        // tunnel leaves the rotation window `rotation` seconds earlier.
+        let window = lifetime - publication - rotation;
+        assert_eq!(
+            runtime.inbound_replenishment_deficit(window - 1),
+            target.saturating_sub(1),
+            "the tunnel still covers the horizon before the window"
+        );
+        assert_eq!(
+            runtime.inbound_replenishment_deficit(window),
+            target,
+            "the tunnel inside the rotation window is owed a replacement"
+        );
+        assert_eq!(
+            runtime.inbound_replenishment_deficit(window + 1),
+            target,
+            "the tunnel inside the rotation window is owed a replacement"
+        );
     }
 
     #[test]

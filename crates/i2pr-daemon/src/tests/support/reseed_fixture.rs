@@ -38,7 +38,9 @@ pub fn signed_reseed_fixture(now_seconds: u64, signer_id: &str, seed: u64) -> (V
     {
         let cursor = std::io::Cursor::new(&mut archive);
         let mut zip = zip::ZipWriter::new(cursor);
-        let options: zip::write::FileOptions<'_, ()> =
+        // Plan 487 WP6 (zip 9): `FileOptions` gained a second lifetime
+        // parameter (the name borrow).
+        let options: zip::write::FileOptions<'_, '_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file(entry_name, options)
             .expect("start RouterInfo entry");

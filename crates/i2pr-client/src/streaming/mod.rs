@@ -57,8 +57,8 @@ pub use connection::{
 pub use errors::StreamingError;
 #[allow(unused_imports)]
 pub use events::{
-    AckObservation, DataPacketIngressAccounting, InboundStreamEvent, OutboundStreamEvent,
-    SynIngressAccounting, SynIngressRejectCause, SynResponseIngressAccounting,
+    AckGenerationAccounting, AckObservation, DataPacketIngressAccounting, InboundStreamEvent,
+    OutboundStreamEvent, SynIngressAccounting, SynIngressRejectCause, SynResponseIngressAccounting,
     WirePacketObservation,
 };
 #[allow(unused_imports)]
@@ -76,7 +76,9 @@ pub use retransmit::{
 };
 #[allow(unused_imports)]
 pub use send_window::{SendWindowConfig, SendWindowDecision, SendWindowPolicy};
-pub use transport::{StreamingTransport, TransportError, TransportOutcome, TransportSendRequest};
+pub use transport::{
+    OutboundPacketKind, StreamingTransport, TransportError, TransportOutcome, TransportSendRequest,
+};
 
 #[cfg(test)]
 pub(crate) mod testing;

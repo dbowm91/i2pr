@@ -3765,10 +3765,18 @@ fn register_ssu2_service(
                                         ),
                                     }
                                 }
-                                if owner.process_group_inbound(&inbound, outcome, message).await.is_err() {
+                                if let Err(error) =
+                                    owner.process_group_inbound(&inbound, outcome, message).await
+                                {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "destination_group_pool_advancement_failed",
+                                        "destination-group pool advancement failed"
+                                    );
                                     owner.shutdown().await;
-                                    let detail = i2pr_core::HealthDetail::new(
-                                        "Destination-group pool advancement failed",
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "Destination-group pool advancement failed: {error}"
+                                    ),
                                     )
                                     .ok();
                                     return i2pr_runtime::ServiceResult::Failed(
@@ -3827,10 +3835,16 @@ fn register_ssu2_service(
                                 }
                             }
                             _ = group_tick.tick() => {
-                                if owner.advance_groups().await.is_err() {
+                                if let Err(error) = owner.advance_groups().await {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "destination_group_pool_advancement_failed",
+                                        "destination-group pool advancement failed"
+                                    );
                                     owner.shutdown().await;
-                                    let detail = i2pr_core::HealthDetail::new(
-                                        "Destination-group pool advancement failed",
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "Destination-group pool advancement failed: {error}"
+                                    ),
                                     )
                                     .ok();
                                     return i2pr_runtime::ServiceResult::Failed(

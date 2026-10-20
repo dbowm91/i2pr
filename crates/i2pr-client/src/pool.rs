@@ -551,6 +551,59 @@ impl DestinationTunnelPool {
         sources
     }
 
+    /// Number of inbound tunnels whose advertised lease still outlives the
+    /// rotation horizon at `now_seconds`.
+    ///
+    /// A tunnel whose advertised lease ends inside the rotation window
+    /// cannot carry the lease the destination keeps advertising for the
+    /// next cycle: the advertised lease would die before the replacement
+    /// exists. The replenishment counts only the tunnels that still
+    /// cover the rotation horizon, so the replacement is built while the
+    /// old tunnel is still alive and the destination never has an
+    /// unresolvable gap (Plan 487 WP4).
+    ///
+    /// The count is bounded by the pool's own inbound registrations; the
+    /// zero-hop local route counts when its own advertised lease covers
+    /// the horizon.
+    pub fn inbound_lease_covering_count(&self, now_seconds: u64) -> usize {
+        let lifetime = u64::from(self.config.tunnel_lifetime_seconds());
+        let margin = u64::from(self.config.lease_publication_margin_seconds());
+        let horizon =
+            now_seconds.saturating_add(u64::from(self.config.lease_rotation_margin_seconds()));
+        let mut covering = 0usize;
+        for registration in self.inner.inbound_registrations() {
+            if registration.state() != TunnelState::Established {
+                continue;
+            }
+            let tunnel_expires = registration.created_at_seconds().saturating_add(lifetime);
+            if tunnel_expires.saturating_sub(margin) > horizon {
+                covering = covering.saturating_add(1);
+            }
+        }
+        if let Some((_, entry)) = &self.zero_hop_inbound
+            && entry.is_usable(now_seconds)
+            && entry.expires_seconds().saturating_sub(margin) > horizon
+        {
+            covering = covering.saturating_add(1);
+        }
+        covering
+    }
+
+    /// How many more inbound tunnels the pool can still admit.
+    ///
+    /// The replenishment is bounded by this: a build whose registration
+    /// the pool must reject as "pool full" is a wasted tunnel build.
+    pub fn inbound_free_capacity(&self) -> usize {
+        let capacity = usize::from(self.config.pool_inbound_capacity());
+        let established = self
+            .inner
+            .inbound_registrations()
+            .iter()
+            .filter(|registration| registration.state() == TunnelState::Established)
+            .count();
+        capacity.saturating_sub(established)
+    }
+
     /// Returns the active remote outbound registrations in stable slot order.
     pub fn outbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
         self.inner.outbound_registrations()
@@ -735,6 +788,49 @@ mod tests {
     }
 
     #[test]
+    fn inbound_covering_count_withdraws_a_tunnel_inside_the_rotation_window() {
+        // Plan 487 WP4 regression: the replenishment must count the
+        // tunnels whose advertised lease still outlives the rotation
+        // horizon, so the replacement is built while the old tunnel is
+        // still alive. Counting the raw registration instead left the
+        // advertised lease to die before the replacement existed, and the
+        // rotation had nothing better to publish.
+        let mut pool = pool();
+        pool.register_inbound(established_inbound(31), 0)
+            .expect("register");
+        let lifetime = u64::from(DestinationConfig::balanced().tunnel_lifetime_seconds());
+        let publication =
+            u64::from(DestinationConfig::balanced().lease_publication_margin_seconds());
+        let rotation = u64::from(DestinationConfig::balanced().lease_rotation_margin_seconds());
+        // The advertised lease ends at `lifetime - publication`. The
+        // tunnel stops covering the horizon `rotation` seconds earlier.
+        assert_eq!(pool.inbound_lease_covering_count(0), 1);
+        let horizon_start = lifetime - publication - rotation;
+        assert_eq!(pool.inbound_lease_covering_count(horizon_start - 1), 1);
+        assert_eq!(
+            pool.inbound_lease_covering_count(horizon_start),
+            0,
+            "a tunnel inside the rotation window no longer covers the target"
+        );
+        assert_eq!(pool.inbound_lease_covering_count(horizon_start + 1), 0);
+        // The tunnel is still registered and still usable while its
+        // advertised lease lives: the withdrawal is a *replenishment*
+        // signal, not an eviction.
+        assert_eq!(pool.inbound_registrations().len(), 1);
+        assert_eq!(pool.inbound_lease_sources(horizon_start).len(), 1);
+    }
+
+    #[test]
+    fn inbound_covering_count_ignores_withdrawn_and_failed_tunnels() {
+        let mut pool = pool();
+        pool.register_inbound(established_inbound(32), 0)
+            .expect("register");
+        let slot = pool.inbound_lease_sources(0)[0].slot();
+        assert!(pool.mark_failed(slot));
+        assert_eq!(pool.inbound_lease_covering_count(0), 0);
+    }
+
+    #[test]
     fn direction_mismatch_is_rejected() {
         let mut pool = pool();
         let error = pool
@@ -799,7 +895,10 @@ mod tests {
         // Plan 296: base target 2 plus backup 2 holds two standby
         // inbound tunnels; failing base tunnels promotes standby
         // (usability on the base target preserved) while failures
-        // still count toward the replacement threshold.
+        // still count toward the replacement threshold. Plan 487 WP4
+        // adds one replacement headroom slot past base plus backup: the
+        // tunnel that replaces an expiring lease has to be admissible
+        // while that lease's tunnel is still alive.
         let config =
             DestinationConfig::try_new(2, 2, 1, 2, 2, 0, false, 600, 2, 8, 64, 1024, 60, 120)
                 .expect("config");
@@ -816,11 +915,16 @@ mod tests {
         assert_eq!(pool.standby_outbound(), 0);
         assert_eq!(pool.standby_promotions(), 0);
         assert!(pool.is_usable(0));
-        // The effective target bounds registration: a fifth
-        // inbound tunnel has nowhere to stand by.
+        // The effective target plus the Plan 487 WP4 replacement headroom
+        // bounds registration: one more inbound tunnel stands by, and
+        // the next has nowhere to stand by.
         assert!(
-            pool.register_inbound(established_inbound(37), 0).is_err(),
-            "registration past base plus backup must fail"
+            pool.register_inbound(established_inbound(37), 0).is_ok(),
+            "the replacement headroom admits one tunnel past base plus backup"
+        );
+        assert!(
+            pool.register_inbound(established_inbound(38), 0).is_err(),
+            "registration past base plus backup plus the replacement headroom must fail"
         );
         // Fail two base tunnels: both promote, usability holds,
         // and both failures count toward the threshold.
@@ -829,17 +933,18 @@ mod tests {
             assert!(pool.mark_failed(slot));
         }
         assert_eq!(pool.standby_promotions(), 2);
-        assert_eq!(pool.standby_inbound(), 0);
+        assert_eq!(pool.standby_inbound(), 1);
         assert!(pool.is_usable(0));
         assert_eq!(pool.consecutive_failures(), 2);
         assert!(!pool.replacement_paused());
-        // Fail the remaining base tunnels: no standby left, so no
-        // further promotion and usability is lost.
-        for _ in 0..2 {
+        // Fail the remaining inbound tunnels: no standby left, so no
+        // further promotion beyond the one the headroom slot still
+        // covered, and usability is lost.
+        while !pool.inbound_lease_sources(0).is_empty() {
             let slot = pool.inbound_lease_sources(0)[0].slot();
             assert!(pool.mark_failed(slot));
         }
-        assert_eq!(pool.standby_promotions(), 2);
+        assert_eq!(pool.standby_promotions(), 3);
         assert!(!pool.is_usable(0));
     }
 
@@ -910,14 +1015,22 @@ mod tests {
         assert_eq!(pool.outbound_registrations().len(), 2);
         assert_eq!(pool.inbound_lease_sources(0).len(), 2);
 
-        assert!(pool.register_inbound(established_inbound(99), 0).is_err());
+        // Plan 487 WP4: the inbound pool carries one replacement headroom
+        // so the tunnel that replaces an expiring lease can be admitted
+        // while that tunnel is still alive. The outbound pool keeps its
+        // plain target bound.
+        assert!(pool.register_inbound(established_inbound(99), 0).is_ok());
+        assert!(
+            pool.register_inbound(established_inbound(98), 0).is_err(),
+            "the replacement headroom admits exactly one tunnel"
+        );
         assert!(
             pool.register_outbound(established_outbound(100), 0)
                 .is_err()
         );
 
         let evicted = pool.advance_time(u64::from(pool.config().tunnel_lifetime_seconds()));
-        assert_eq!(evicted.len(), 4);
+        assert_eq!(evicted.len(), 5);
         assert!(pool.inbound_registrations().is_empty());
         assert!(pool.outbound_registrations().is_empty());
         assert!(pool.inbound_lease_sources(u64::MAX).is_empty());

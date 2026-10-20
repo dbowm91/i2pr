@@ -415,6 +415,7 @@ fn plan143_bridge_records_outbound_dispatch() {
         sequence: 7,
         send_stream_id: 0x10,
         receive_stream_id: 0x20,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
     };
     handle.with(|bridge| bridge.record_outbound_dispatch(request.clone()));
     let queue_len = handle.with(|bridge| bridge.diagnostics().outbound_queue_len());

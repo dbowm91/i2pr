@@ -1479,6 +1479,7 @@ fn plan_129_non_protocol_six_client_payload_never_reaches_streaming() {
         sequence: 0,
         send_stream_id: 0,
         receive_stream_id: 0,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Datagram,
     };
     let connections_before = side_b.streaming.connection_count();
     let (_, outcome) = pipe(&mut side_a, &mut side_b, &request, 0x1290_7100, clock);
@@ -1519,6 +1520,7 @@ fn plan_129_outbound_adapter_bounds_the_encoded_client_payload_not_the_mtu() {
         sequence: 0,
         send_stream_id: 0,
         receive_stream_id: 0,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Datagram,
     };
 
     // Empty payload rejected.

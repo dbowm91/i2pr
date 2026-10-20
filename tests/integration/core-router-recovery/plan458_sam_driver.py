@@ -86,6 +86,10 @@ def session_create_failure_category(message):
         ("destination registry mutex poisoned", "destination-registry-poisoned"),
         ("duplicate destination", "duplicate-destination"),
         ("I2P error", "i2p-error"),
+        (
+            "router-backed SAM destination product is unavailable",
+            "router-network-product-unavailable",
+        ),
     )
     for prefix, category in static_prefixes:
         if message.startswith(prefix):
@@ -131,10 +135,11 @@ def create_session(endpoint, session_id, timeout, crypto_type=None):
     if not created.startswith("SESSION STATUS RESULT=OK"):
         sam.close()
         message = re.search(r'MESSAGE="([^"\\]*)', created)
-        category = session_create_failure_category(message.group(1) if message else "")
+        text = message.group(1) if message else ""
+        category = session_create_failure_category(text)
         raise RuntimeError(
             "SAM SESSION CREATE failed: status=I2P_ERROR "
-            f"failure_category={category}"
+            f"failure_category={category} message={text[:160]!r}"
         )
     sam.send_line("NAMING LOOKUP NAME=ME")
     named = sam.line()
@@ -143,6 +148,59 @@ def create_session(endpoint, session_id, timeout, crypto_type=None):
         sam.close()
         raise RuntimeError("SAM local destination lookup failed")
     return sam, public
+
+
+def create_session_with_recovery(
+    endpoint, session_id, timeout, crypto_type=None, attempts=5
+):
+    """Create one SAM session, retrying a documented build-churn failure.
+
+    The controlled four-peer mesh churns its own transit pools: the
+    Plan 478 record documents that a destination build can be emitted
+    and then answered by nobody, because the reply was lost in the
+    mesh rather than refused by the router. The daemon already owns
+    that failure with its current-accounted `bootstrap_retry` /
+    `inbound_retry` receipts; this helper is the harness-side mirror
+    of the lane's existing fresh-handshake recovery shape.
+
+    Only the documented build classes are retried, and the recovery
+    is reported. Every other failure class is raised unchanged, so a
+    real product defect is never masked. The budget is bounded: five
+    attempts, each a fresh session and a fresh destination build. The
+    budget is sized for the churn the record documents — three
+    consecutive `outbound-build` failures were observed in one lane
+    run — and it is reported per run, never silently widened.
+
+    `router-network-product-unavailable` is also retried: the daemon
+    models it as a typed state ("the production SAM service has no
+    live router-backed destination product attached yet"), so it is a
+    startup race between the listener binding and the product
+    attaching, not a defect. The bounded budget still fails the run if
+    the product never attaches.
+    """
+    last = None
+    for attempt in range(attempts):
+        try:
+            return create_session(endpoint, session_id, timeout, crypto_type)
+        except RuntimeError as exc:
+            last = exc
+            message = str(exc)
+            if attempt + 1 >= attempts or not any(
+                marker in message
+                for marker in (
+                    "failure_category=outbound-build",
+                    "failure_category=inbound-build",
+                    "failure_category=router-network-product-unavailable",
+                )
+            ):
+                raise
+            print(
+                f"session {session_id} provisioning hit the documented build churn; "
+                f"a fresh attempt ({attempt + 2}/{attempts})",
+                flush=True,
+            )
+            time.sleep(5.0)
+    raise last  # pragma: no cover - the loop either returns or raises
 
 
 def open_stream(endpoint, command, timeout, wait_for_peer_line=False):
@@ -293,8 +351,10 @@ def main():
     parser.add_argument("--stock-control", action="store_true")
     args = parser.parse_args()
 
-    i2pr_session, i2pr_public = create_session(args.i2pr_sam, "p458router", args.timeout)
-    i2pd_session, i2pd_public = create_session(
+    i2pr_session, i2pr_public = create_session_with_recovery(
+        args.i2pr_sam, "p458router", args.timeout
+    )
+    i2pd_session, i2pd_public = create_session_with_recovery(
         args.i2pd_sam, "p458peer", args.timeout, crypto_type="4"
     )
     # Peer identities are public (published in NetDb); record shapes

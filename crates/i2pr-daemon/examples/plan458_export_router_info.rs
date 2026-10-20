@@ -20,5 +20,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .load_or_generate(*router_hash.as_bytes(), &mut OsRng)?;
     let identity = generate_controlled_identity_with_keys(&bundle, "127.0.0.1", port, &transport)?;
     std::fs::write(output, identity.router_info)?;
+    // The router hash is the identity the peers see. The RouterInfo
+    // bytes carry a fresh publication timestamp on every export, so
+    // only the hash is comparable across two exports of the same
+    // persisted identity.
+    let mut encoded = String::with_capacity(64);
+    for byte in router_hash.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    println!("router_hash={encoded}");
     Ok(())
 }

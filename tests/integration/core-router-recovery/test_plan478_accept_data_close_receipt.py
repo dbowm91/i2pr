@@ -25,6 +25,9 @@ FULL_LINE = (
     'garlic_authenticated=12 garlic_rejected=0 payloads_dequeued=12 '
     'streaming_accepted=2 '
     'connection_state_code=1 undrained_bytes=0 reset=0 bridge_present=1 '
+    'manager_arrived=1 ack_generated=2 ack_transmitted=2 '
+    'ack_no_ack_emitted=0 '
+    'ack_egress_sent=2 ack_egress_dropped=0 '
     'transition="stream_accept_data_phase_closed" '
     'STREAM ACCEPT data phase closed'
 )
@@ -37,6 +40,9 @@ TORN_DOWN_LINE = (
     'garlic_authenticated=0 garlic_rejected=0 payloads_dequeued=0 '
     'streaming_accepted=0 '
     'connection_state_code=0 undrained_bytes=0 reset=1 bridge_present=0 '
+    'manager_arrived=0 ack_generated=0 ack_transmitted=0 '
+    'ack_no_ack_emitted=0 '
+    'ack_egress_sent=0 ack_egress_dropped=0 '
     'transition="stream_accept_data_phase_closed" '
     'STREAM ACCEPT data phase closed'
 )
@@ -50,6 +56,9 @@ EXPECTED = {
     "payloads_dequeued": 12, "streaming_accepted": 2,
     "connection_state_code": 1, "undrained_bytes": 0, "reset": 0,
     "bridge_present": 1,
+    "manager_arrived": 1, "ack_generated": 2, "ack_transmitted": 2,
+    "ack_no_ack_emitted": 0,
+    "ack_egress_sent": 2, "ack_egress_dropped": 0,
 }
 
 
@@ -91,6 +100,10 @@ class Plan478AcceptDataCloseReceiptTests(unittest.TestCase):
                 "payloads_dequeued": 0, "streaming_accepted": 0,
                 "connection_state_code": 0, "undrained_bytes": 0,
                 "reset": 1, "bridge_present": 0,
+                "manager_arrived": 0, "ack_generated": 0,
+                "ack_transmitted": 0, "ack_no_ack_emitted": 0,
+                "ack_egress_sent": 0,
+                "ack_egress_dropped": 0,
             }],
         )
 
@@ -196,6 +209,40 @@ class BinaryProvenanceTests(unittest.TestCase):
         ])
         self.assertEqual(len(parsed["stream_connect_handshake_wait_receipts"]), 1)
         self.assertEqual(len(parsed["stream_accept_data_phase_close_receipts"]), 1)
+
+
+class Plan487AckSuppressionControlTests(unittest.TestCase):
+    def test_a_receipt_reporting_a_suppressed_ack_is_malformed(self) -> None:
+        # Plan 487 WP1 removed the drain-coupled `NO_ACK`
+        # suppression. A receipt that reports one is malformed, not
+        # evidence: the parser must drop the line entirely rather
+        # than record it.
+        line = FULL_LINE.replace("ack_no_ack_emitted=0", "ack_no_ack_emitted=1")
+        parsed = parse_attempt_receipt_lines([line])
+        self.assertEqual(parsed["stream_accept_data_phase_close_receipts"], [])
+
+    def test_the_four_stages_are_distinct_fields(self) -> None:
+        parsed = parse_attempt_receipt_lines([FULL_LINE])
+        receipts = parsed["stream_accept_data_phase_close_receipts"]
+        self.assertEqual(len(receipts), 1)
+        receipt = receipts[0]
+        for field in (
+            "manager_arrived",
+            "ack_generated",
+            "ack_transmitted",
+            "ack_no_ack_emitted",
+            "ack_egress_sent",
+            "ack_egress_dropped",
+        ):
+            self.assertIn(field, receipt)
+        # Stage 1 (manager arrival) and stage 2 (ACK generated) are
+        # counted independently: one arrived DATA produced two
+        # acknowledgements.
+        self.assertEqual(receipt["manager_arrived"], 1)
+        self.assertEqual(receipt["ack_generated"], 2)
+        self.assertEqual(receipt["ack_no_ack_emitted"], 0)
+        self.assertEqual(receipt["ack_egress_sent"], 2)
+        self.assertEqual(receipt["ack_egress_dropped"], 0)
 
 
 class DriverLegFailureSidecarTests(unittest.TestCase):

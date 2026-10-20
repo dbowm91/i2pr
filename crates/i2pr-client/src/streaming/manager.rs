@@ -44,8 +44,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
-    CLOSE_FLAGS, ClientPayload, FLAG_NO_ACK, INITIAL_SYN_FLAGS, MAX_STREAMING_PACKET_BYTES,
-    RESET_FLAGS, SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags,
+    CLOSE_FLAGS, ClientPayload, DELAY_CHOKE, FLAG_DELAY_REQUESTED, FLAG_NO_ACK, INITIAL_SYN_FLAGS,
+    MAX_STREAMING_PACKET_BYTES, RESET_FLAGS, SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags,
     StreamingOptionDecodeContext, StreamingOptions, StreamingPacket, StreamingPacketBuilder,
     StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
     decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
@@ -61,11 +61,11 @@ use crate::streaming::connection::{
 };
 use crate::streaming::errors::StreamingError;
 use crate::streaming::events::{
-    DataPacketIngressAccounting, SynIngressAccounting, SynIngressRejectCause,
-    SynResponseIngressAccounting, WirePacketObservation,
+    AckGenerationAccounting, DataPacketIngressAccounting, SynIngressAccounting,
+    SynIngressRejectCause, SynResponseIngressAccounting, WirePacketObservation,
 };
 use crate::streaming::send_window::SendWindowDecision;
-use crate::streaming::transport::TransportSendRequest;
+use crate::streaming::transport::{OutboundPacketKind, TransportSendRequest};
 
 /// Hard ceiling on the number of streams per local destination.
 pub const MAX_STREAMS_PER_DESTINATION: usize =
@@ -313,13 +313,25 @@ pub struct StreamingManager {
     /// packets, awaiting the runtime drain.
     pending_delivered: VecDeque<DeliveredApplicationBytes>,
     /// Undrained delivered bytes per connection. Plan 152 D1 owns
-    /// receive-side backpressure on this accounting: while a
-    /// connection holds more than
-    /// [`Self::delivered_cap_bytes`] undrained bytes, its
-    /// acknowledgements are gated (standalone ACKs snoozed,
-    /// piggybacked views sent with `NO_ACK`) so the peer's send
-    /// window fills and memory stays bounded at every layer.
+    /// receive-side backpressure on this accounting. Plan 487 WP1
+    /// replaces Plan 152 D1's *acknowledgement gate* with the
+    /// reference's own bound: a connection holding more than
+    /// [`Self::delivered_cap_bytes`] undrained bytes has its
+    /// in-order inbound data **dropped** (never delivered to the
+    /// application) and the peer is **choked** with the reference's
+    /// `DELAY_REQUESTED` / choke vocabulary, while acknowledgements
+    /// keep flowing on transport state. The accounting itself is
+    /// retained as the application-visible backpressure signal.
     pending_bytes_by_connection: BTreeMap<ConnectionId, usize>,
+    /// Connections whose peer is currently choked (Plan 487 WP1).
+    ///
+    /// A choke is asserted when the connection's inbound buffer is
+    /// full and an inbound payload had to be dropped, and is carried
+    /// by the next outbound packet for that connection, exactly as
+    /// i2pd carries `m_IsChoking3` on its next `SendQuickAck`
+    /// (`libi2pd/Streaming.cpp:256-269`, `:1265-1292`). Bounded by the
+    /// connection count; purged with the connection.
+    choking_connections: BTreeSet<ConnectionId>,
     /// Initial application bytes carried by inbound SYNs, retained until
     /// the application accepts the pending connection.
     pending_syn_payloads: BTreeMap<ConnectionId, Vec<u8>>,
@@ -341,6 +353,8 @@ pub struct StreamingManager {
     /// (`rejected > 0`) and "only control arrived"
     /// (`payload_bytes_admitted == 0`).
     data_packet_ingress: DataPacketIngressAccounting,
+    /// Plan 487 WP2 **ACK-generated** stage counters.
+    ack_generation: AckGenerationAccounting,
 }
 
 impl StreamingManager {
@@ -361,11 +375,13 @@ impl StreamingManager {
             next_inbound_stream_id: 0x8000_0000,
             pending_delivered: VecDeque::new(),
             pending_bytes_by_connection: BTreeMap::new(),
+            choking_connections: BTreeSet::new(),
             pending_syn_payloads: BTreeMap::new(),
             syn_response_ingress: SynResponseIngressAccounting::default(),
             syn_ingress: SynIngressAccounting::default(),
             backlog_evicted: 0,
             data_packet_ingress: DataPacketIngressAccounting::default(),
+            ack_generation: AckGenerationAccounting::default(),
         }
     }
 
@@ -433,6 +449,33 @@ impl StreamingManager {
         self.data_packet_ingress
     }
 
+    /// Returns the Plan 487 WP2 ACK-generation accounting snapshot
+    /// (counts only).
+    pub fn ack_generation(&self) -> AckGenerationAccounting {
+        self.ack_generation
+    }
+
+    /// Plan 487 WP2: an acknowledgement was **produced** (armed) in
+    /// response to received DATA.
+    fn note_ack_generated(&mut self) {
+        self.ack_generation.generated = self.ack_generation.generated.saturating_add(1);
+    }
+
+    /// Plan 487 WP2: an acknowledgement was **transmitted** (turned
+    /// into a packet).
+    fn note_ack_transmitted(&mut self) {
+        self.ack_generation.transmitted = self.ack_generation.transmitted.saturating_add(1);
+    }
+
+    fn note_ack_generated_after_drop(&mut self) {
+        self.ack_generation.generated_after_drop =
+            self.ack_generation.generated_after_drop.saturating_add(1);
+    }
+
+    fn note_no_ack_emitted(&mut self) {
+        self.ack_generation.no_ack_emitted = self.ack_generation.no_ack_emitted.saturating_add(1);
+    }
+
     fn note_data_observed(&mut self) {
         self.data_packet_ingress.observed = self.data_packet_ingress.observed.saturating_add(1);
     }
@@ -443,6 +486,14 @@ impl StreamingManager {
 
     fn note_data_rejected(&mut self) {
         self.data_packet_ingress.rejected = self.data_packet_ingress.rejected.saturating_add(1);
+    }
+
+    /// Plan 487 WP2: the **manager-arrival** stage. Incremented once
+    /// per inbound packet that reached the application receive window
+    /// as new data.
+    fn note_data_arrived(&mut self) {
+        self.data_packet_ingress.data_arrived =
+            self.data_packet_ingress.data_arrived.saturating_add(1);
     }
 
     fn note_data_payload_admitted(&mut self, bytes: u64) {
@@ -603,6 +654,7 @@ impl StreamingManager {
     /// already equals the canonical preimage) and the real signature
     /// is patched into place.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn build_signed_packet(
         &self,
         local_dest: &DestinationIdentity,
@@ -617,6 +669,7 @@ impl StreamingManager {
         local_port: u16,
         remote_port: u16,
         payload: &[u8],
+        kind: OutboundPacketKind,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
         let flags = StreamingFlags::new(flags_bits)?;
         let signature_length = local_dest
@@ -678,6 +731,7 @@ impl StreamingManager {
             sequence: sequence_num,
             send_stream_id,
             receive_stream_id,
+            kind,
         })
     }
 
@@ -719,6 +773,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             initial_payload,
+            OutboundPacketKind::Syn,
         )
     }
 
@@ -760,6 +815,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             &[],
+            OutboundPacketKind::SynAck,
         )
     }
 
@@ -783,10 +839,19 @@ impl StreamingManager {
     }
 
     /// Maximum undrained delivered bytes tolerated per connection
-    /// before acknowledgement gating engages (Plan 152 D1). Derived
-    /// from the configured receive window so the bound scales with
-    /// the negotiated profile; no new configuration surface and no
-    /// wire change.
+    /// before the inbound buffer is considered full (Plan 152 D1,
+    /// re-shaped by Plan 487 WP1). Derived from the configured
+    /// receive window so the bound scales with the negotiated profile;
+    /// no new configuration surface and no wire change.
+    ///
+    /// Plan 487 WP1: reaching this cap no longer gates the
+    /// acknowledgement. It is the bound on the *inbound buffer*: an
+    /// in-order payload that would exceed it is dropped, the peer is
+    /// choked, and the acknowledgement keeps flowing. This matches the
+    /// reference contract, where the acknowledgement is a function of
+    /// transport state and backpressure is expressed by dropping data
+    /// and choking the peer (i2pd `libi2pd/Streaming.cpp:256-269`; I2P
+    /// Java `.../impl/ConnectionPacketHandler.java:145-161`).
     pub fn delivered_cap_bytes(&self) -> usize {
         self.config.max_recv_window_packets as usize
             * crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES
@@ -801,11 +866,21 @@ impl StreamingManager {
             .unwrap_or(0)
     }
 
-    /// Returns whether acknowledgement gating engages for
-    /// `connection_id`: its undrained delivered bytes reached the
-    /// per-connection cap.
+    /// Returns whether the connection's inbound buffer is full: its
+    /// undrained delivered bytes reached the per-connection cap.
+    ///
+    /// Plan 487 WP1: this is the *drop* bound, not an acknowledgement
+    /// gate. The acknowledgement is emitted regardless; the bound
+    /// decides whether an in-order inbound payload is admitted to the
+    /// application and whether the peer is choked.
     pub fn delivered_over_cap(&self, connection_id: ConnectionId) -> bool {
         self.pending_bytes_for(connection_id) >= self.delivered_cap_bytes()
+    }
+
+    /// Returns whether the peer of `connection_id` is currently
+    /// choked (Plan 487 WP1). Read-only non-secret diagnostic.
+    pub fn is_choking(&self, connection_id: ConnectionId) -> bool {
+        self.choking_connections.contains(&connection_id)
     }
 
     fn note_delivered_bytes(&mut self, connection_id: ConnectionId, bytes: usize) {
@@ -1501,6 +1576,13 @@ impl StreamingManager {
             })?;
         }
 
+        // Plan 487 WP1: the inbound-buffer bound is evaluated before
+        // the connection borrow so the acknowledgement contract stays
+        // independent of it. The bound is a *drop* bound, never an
+        // acknowledgement gate.
+        let delivered_cap = self.delivered_cap_bytes();
+        let undrained_bytes = self.pending_bytes_for(connection_id);
+
         let conn = self
             .connections
             .get_mut(&connection_id)
@@ -1569,12 +1651,32 @@ impl StreamingManager {
         // an ACK-of-ACK loop).
         let plain_ack_form = packet.sequence_num == 0 && !packet.flags.synchronize();
         let mut decision_opt = None;
+        // Plan 487 WP1: an in-order payload that would push the
+        // connection's inbound buffer past its cap is **dropped**
+        // rather than admitted, and the peer is choked. The packet is
+        // not admitted to the receive window, so the acknowledgement
+        // ceiling does not advance and the peer will retransmit once
+        // the application drains — exactly the reference behaviour
+        // (i2pd deletes the overflow packet and still calls
+        // `SendQuickAck()`, `libi2pd/Streaming.cpp:256-269`; I2P Java
+        // drops it and calls `ackImmediately()`,
+        // `.../impl/ConnectionPacketHandler.java:145-161`).
+        //
+        // Out-of-order packets are unaffected: they enter the bounded
+        // reorder buffer, which carries its own bound.
+        let mut dropped_over_cap = false;
         if !terminated && !plain_ack_form {
-            let payload = packet.payload.clone();
-            let decision = conn
-                .receive_packet(packet.sequence_num, payload, now_ms)
-                .map_err(StreamingManagerError::Streaming)?;
-            decision_opt = Some(decision);
+            let would_deliver_in_order = packet.sequence_num == conn.recv_window().next_expected();
+            let inbound_full = undrained_bytes.saturating_add(packet.payload.len()) > delivered_cap;
+            if would_deliver_in_order && inbound_full {
+                dropped_over_cap = true;
+            } else {
+                let payload = packet.payload.clone();
+                let decision = conn
+                    .receive_packet(packet.sequence_num, payload, now_ms)
+                    .map_err(StreamingManagerError::Streaming)?;
+                decision_opt = Some(decision);
+            }
         }
 
         let state = conn.state();
@@ -1622,6 +1724,9 @@ impl StreamingManager {
         // the lane can split "payload arrived" from "only control
         // arrived" without touching payload material.
         if received_new_data {
+            // Plan 487 WP2: the **manager-arrival** stage. The packet
+            // reached the application receive window as new data.
+            self.note_data_arrived();
             self.note_data_payload_admitted(packet.payload.len() as u64);
         }
 
@@ -1630,22 +1735,55 @@ impl StreamingManager {
         }
 
         if received_duplicate && connection_active && !terminated {
+            // Plan 487 WP2: a duplicate re-arms the acknowledgement, so
+            // it counts as a produced acknowledgement too.
+            self.note_ack_generated();
             self.pending_acks
                 .entry(connection_id)
                 .and_modify(|deadline| *deadline = (*deadline).min(now_ms))
                 .or_insert(now_ms);
         }
 
+        // Plan 487 WP1: the dropped-payload path asserts the choke and
+        // still acknowledges. The reference implementations send an
+        // acknowledgement when they drop an overflow packet; neither
+        // withholds one because the local application has not drained.
+        // i2pd calls `SendQuickAck()` on the drop path
+        // (`libi2pd/Streaming.cpp:256-269`); I2P Java calls
+        // `ackImmediately()` (`.../impl/ConnectionPacketHandler.java:145-161`).
+        if dropped_over_cap && connection_active && !terminated {
+            self.choking_connections.insert(connection_id);
+            if !self.pending_acks.contains_key(&connection_id)
+                && let Some(request) = self.build_simple_ack_request(connection_id)
+            {
+                self.outbound_queue.push_back(request);
+                self.note_ack_generated_after_drop();
+            }
+        }
+
         if received_new_data && connection_active {
             // An explicit zero-delay request from the peer is honored
             // immediately (specification: delay value 0 requests an
             // immediate ack); otherwise the reference default delayed-
-            // ACK deadline applies. Plan 152 D1: while the connection
-            // holds more undrained bytes than its cap, even an
-            // immediate request only snoozes the coalesced deadline —
-            // emitting it would slide the peer window and grow the
-            // backlog without bound.
-            if delay_requested_now && !self.delivered_over_cap(connection_id) {
+            // ACK deadline applies.
+            //
+            // Plan 487 WP1: the acknowledgement is a function of
+            // transport state, never of local application drain. The
+            // Plan 152 D1 condition that suppressed an immediate
+            // request while the connection held more undrained bytes
+            // than its cap is removed: the reference implementations
+            // acknowledge on receipt even when their inbound buffer is
+            // full (i2pd still calls `SendQuickAck()` when it drops an
+            // overflow packet, `libi2pd/Streaming.cpp:256-269`; I2P
+            // Java calls `ackImmediately()`, `.../impl/
+            // ConnectionPacketHandler.java:145-161`). The bound itself
+            // is preserved by dropping the overflowing payload and
+            // choking the peer, never by withholding the
+            // acknowledgement.
+            if delay_requested_now {
+                // Plan 487 WP2: the acknowledgement was **produced**
+                // (armed) in response to the received DATA.
+                self.note_ack_generated();
                 let request = self.build_simple_ack_request(connection_id);
                 if let Some(request) = request {
                     self.outbound_queue.push_back(request);
@@ -1656,6 +1794,11 @@ impl StreamingManager {
                 } else {
                     now_ms.saturating_add(self.config.delayed_ack_ms)
                 };
+                // Plan 487 WP2: the acknowledgement was **produced**
+                // (armed) in response to the received DATA. The peer
+                // is now owed an acknowledgement; whether it becomes a
+                // packet is the next stage.
+                self.note_ack_generated();
                 self.pending_acks
                     .entry(connection_id)
                     .and_modify(|current| *current = (*current).min(deadline))
@@ -1789,19 +1932,28 @@ impl StreamingManager {
         // highest received sequence, plus any bounded
         // missing-sequence NACKs).
         //
-        // Plan 152 D1: while this connection holds more undrained
-        // bytes than its cap, the packet carries NO_ACK instead of a
-        // fresh view. A fresh piggyback would slide the peer window
-        // and grow the backlog without bound; NO_ACK is existing
-        // wire semantics the receiver already honors by skipping ACK
-        // processing. The piggybacked view also satisfies any pending
-        // standalone ACK, so a NO_ACK packet must not clear it.
-        let gated = self.delivered_over_cap(connection_id);
-        let flags = if gated {
-            StreamingFlags::new(FLAG_NO_ACK).expect("no-ack flags")
-        } else {
-            StreamingFlags::new(0).expect("empty flags")
-        };
+        // Plan 487 WP1: the piggyback is never suppressed. Plan 152 D1
+        // replaced it with `FLAG_NO_ACK` while the connection held
+        // more undrained bytes than its cap, which coupled the
+        // acknowledgement to local application drain and diverged
+        // from the reference contract. A conforming peer does not
+        // depend on the acknowledgement being withheld, and the
+        // reference implementations never withhold it. The bound is
+        // preserved by the drop-and-choke path on the receive side.
+        //
+        // Plan 487 WP1: a congested connection's peer is choked with
+        // the reference's `DELAY_REQUESTED` vocabulary on this packet
+        // instead of the piggybacked acknowledgement being withheld.
+        let (flags, option_bytes) = self.build_choke_option(connection_id);
+        // Plan 487 WP2: the **ACK-generated** stage, and its negative
+        // control. A data packet always piggybacks the real
+        // acknowledgement view; it must never carry `NO_ACK`.
+        if ack_through > 0 || !ack_nacks.is_empty() {
+            self.note_ack_transmitted();
+        }
+        if flags.bits() & FLAG_NO_ACK != 0 {
+            self.note_no_ack_emitted();
+        }
         let builder = StreamingPacketBuilder {
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
@@ -1810,7 +1962,7 @@ impl StreamingManager {
             nacks: ack_nacks,
             resend_delay: 0,
             flags,
-            option_bytes: Vec::new(),
+            option_bytes,
             payload: payload.to_vec(),
         };
         let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default())
@@ -1833,7 +1985,12 @@ impl StreamingManager {
             sequence: planned_sequence,
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
+            kind: OutboundPacketKind::Data,
         };
+        // The choke has now been carried on a successfully encoded
+        // packet; release it so the peer is not choked again until the
+        // next overflow.
+        self.release_choke(connection_id);
 
         // ---- Phase 3: protocol-state commit (single fallible mutation) --------
         // Every commit point below must be infallible or have an
@@ -1866,12 +2023,11 @@ impl StreamingManager {
             .or_default()
             .insert(sequence, outbound);
         self.outbound_queue.push_back(request.clone());
-        // The piggybacked acknowledgement state satisfies any
-        // pending standalone ACK — unless the packet carried NO_ACK
-        // under Plan 152 gating, in which case the deadline stays.
-        if !gated {
-            self.pending_acks.remove(&connection_id);
-        }
+        // The piggybacked acknowledgement state always satisfies any
+        // pending standalone ACK. Plan 487 WP1: the Plan 152 D1
+        // exception (a `NO_ACK` packet under drain gating left the
+        // deadline in place) is gone with the gate itself.
+        self.pending_acks.remove(&connection_id);
 
         let _ = local_dest;
         let _ = remote;
@@ -1976,6 +2132,7 @@ impl StreamingManager {
             wire_local_port,
             wire_remote_port,
             &[],
+            OutboundPacketKind::Close,
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -2079,6 +2236,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             &[],
+            OutboundPacketKind::Reset,
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -2112,13 +2270,49 @@ impl StreamingManager {
     ///
     /// Returns `None` when the connection vanished between the
     /// deadline scan and this build.
+    /// Builds the outbound flag set and option region for a packet
+    /// that may carry a congestion choke (Plan 487 WP1).
+    ///
+    /// While a connection's inbound buffer is full the peer is choked
+    /// with the reference's own vocabulary — the `DELAY_REQUESTED`
+    /// flag plus the `DELAY_CHOKE` value — instead of the
+    /// acknowledgement being withheld. The choke rides on the next
+    /// outbound packet for that connection and is then released,
+    /// exactly as i2pd carries `m_IsChoking3` on its next
+    /// `SendQuickAck` (`libi2pd/Streaming.cpp:256-269`, `:1265-1292`)
+    /// and I2P Java carries `_isChoking` on its next outbound packet
+    /// (`.../impl/Connection.java:396-400`).
+    fn build_choke_option(&self, connection_id: ConnectionId) -> (StreamingFlags, Vec<u8>) {
+        if self.choking_connections.contains(&connection_id) {
+            (
+                StreamingFlags::new(FLAG_DELAY_REQUESTED).expect("delay-requested flags"),
+                DELAY_CHOKE.to_be_bytes().to_vec(),
+            )
+        } else {
+            (StreamingFlags::new(0).expect("empty flags"), Vec::new())
+        }
+    }
+
+    /// Releases a pending choke after the packet that carried it was
+    /// built (Plan 487 WP1).
+    fn release_choke(&mut self, connection_id: ConnectionId) {
+        self.choking_connections.remove(&connection_id);
+    }
+
     fn build_simple_ack_request(
         &mut self,
         connection_id: ConnectionId,
     ) -> Option<TransportSendRequest> {
+        let (flags, option_bytes) = self.build_choke_option(connection_id);
+        // Plan 487 WP2: the **ACK-transmitted** stage, and its
+        // negative control. A standalone ACK must never carry
+        // `NO_ACK`.
+        self.note_ack_transmitted();
+        if flags.bits() & FLAG_NO_ACK != 0 {
+            self.note_no_ack_emitted();
+        }
         let conn = self.connections.get(&connection_id)?;
         let (ack_through, nacks) = conn.recv_window().ack_view();
-        let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
             send_stream_id: conn.remote_stream_id(),
             receive_stream_id: conn.local_stream_id(),
@@ -2127,7 +2321,7 @@ impl StreamingManager {
             nacks,
             resend_delay: 0,
             flags,
-            option_bytes: Vec::new(),
+            option_bytes,
             payload: Vec::new(),
         };
         let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default()).ok()?;
@@ -2140,7 +2334,7 @@ impl StreamingManager {
         let application_bytes = encode_client_payload(&envelope)
             .map_err(StreamingManagerError::OutboundEnvelope)
             .ok()?;
-        Some(TransportSendRequest {
+        let request = TransportSendRequest {
             destination_hash: *conn.peer_destination_hash(),
             source_port: conn.local_port(),
             destination_port: conn.remote_port(),
@@ -2148,7 +2342,12 @@ impl StreamingManager {
             sequence: 0,
             send_stream_id: conn.remote_stream_id(),
             receive_stream_id: conn.local_stream_id(),
-        })
+            kind: OutboundPacketKind::Ack,
+        };
+        // The choke has now been carried; release it so the peer is not
+        // choked again until the next overflow.
+        self.release_choke(connection_id);
+        Some(request)
     }
 
     /// Emits every due standalone delayed ACK (Plan 130 §7 D3). The
@@ -2160,12 +2359,13 @@ impl StreamingManager {
     /// is bounded by the pending-ACK (connection) count. Terminated
     /// or vanished connections are pruned without emitting.
     ///
-    /// Plan 152 D1: a connection holding more undrained bytes than
-    /// its cap is skipped and its deadline snoozed by one delayed-
-    /// ACK interval instead. Emitting would slide the peer window
-    /// and grow the backlog without bound; snoozing is timer-driven
-    /// (no busy loop), and the catch-up ACK fires within one
-    /// interval after the pump drains below cap.
+    /// Plan 487 WP1: a connection holding more undrained bytes than
+    /// its cap is **not** skipped. Plan 152 D1 snoozed its deadline
+    /// instead of emitting, which coupled the acknowledgement to
+    /// local application drain; the reference contract acknowledges on
+    /// transport state regardless of the local buffer. The bound is
+    /// preserved on the receive side by dropping the overflowing
+    /// payload and choking the peer.
     pub fn poll_acks(&mut self, now_ms: u64) -> Vec<TransportSendRequest> {
         let mut out = Vec::new();
         while let Some((&connection_id, _)) = self
@@ -2184,11 +2384,6 @@ impl StreamingManager {
                 )
             });
             if !emit {
-                continue;
-            }
-            if self.delivered_over_cap(connection_id) {
-                let snooze = now_ms.saturating_add(self.config.delayed_ack_ms);
-                self.pending_acks.insert(connection_id, snooze);
                 continue;
             }
             if let Some(request) = self.build_simple_ack_request(connection_id) {
@@ -2371,6 +2566,9 @@ impl StreamingManager {
         // purged with it rather than lingering in the map.
         self.pending_acks.remove(&id);
         self.pending_bytes_by_connection.remove(&id);
+        // Plan 487 WP1: a removed connection can never carry the
+        // choke, so its choke state is purged with it.
+        self.choking_connections.remove(&id);
         self.pending_delivered
             .retain(|delivered| delivered.connection_id != id);
         removed
@@ -3633,6 +3831,7 @@ mod tests {
                 accepted: 0,
                 rejected: 1,
                 payload_bytes_admitted: 0,
+                data_arrived: 0,
             }
         );
     }
@@ -3767,12 +3966,14 @@ mod tests {
             accepted: 7,
             rejected: 3,
             payload_bytes_admitted: 2328,
+            data_arrived: 7,
         };
         let earlier = DataPacketIngressAccounting {
             observed: 4,
             accepted: 4,
             rejected: 0,
             payload_bytes_admitted: 1000,
+            data_arrived: 4,
         };
         assert_eq!(
             later.delta_since(earlier),
@@ -3781,6 +3982,7 @@ mod tests {
                 accepted: 3,
                 rejected: 3,
                 payload_bytes_admitted: 1328,
+                data_arrived: 3,
             }
         );
         assert_eq!(
@@ -3899,18 +4101,57 @@ mod tests {
         assert_eq!(manager.pending_ack_count(), 0);
     }
 
-    #[test]
-    fn over_cap_connection_snoozes_standalone_ack_and_recovers_on_drain() {
-        // Plan 152 D1: while undrained bytes reach the cap, no
-        // standalone ACK is emitted; after the drain the snoozed
-        // deadline fires and the ACK goes out. A full receive window
-        // of maximum-size packets reaches the cap with real traffic.
-        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
-        let cap = manager.delivered_cap_bytes();
-        assert!(cap > 0);
-        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
+    fn raw_ack_only_packet(send_stream_id: u32, receive_stream_id: u32) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::empty(),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("ack-only packet encoding")
+    }
+
+    fn raw_data_packet_with_immediate_ack_request(
+        send_stream_id: u32,
+        receive_stream_id: u32,
+        sequence: u32,
+    ) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: sequence,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_DELAY_REQUESTED)
+                    .expect("delay-requested flags"),
+                option_bytes: 0_u16.to_be_bytes().to_vec(),
+                payload: vec![sequence as u8],
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("data packet encoding")
+    }
+
+    /// Fills a connection's inbound buffer up to its cap with
+    /// maximum-size in-order payloads and returns the number of
+    /// packets it took.
+    fn fill_inbound_buffer_to_cap(
+        manager: &mut StreamingManager,
+        local: &DestinationIdentity,
+        receive_stream_id: u32,
+    ) -> (usize, usize) {
         let window = manager.config().max_recv_window_packets as usize;
-        assert_eq!(cap, window * per_packet);
+        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
         for sequence in 1..=(window as u32) {
             let packet = raw_data_packet_with_payload(
                 receive_stream_id,
@@ -3922,55 +4163,92 @@ mod tests {
                 .process_inbound_packet(
                     &packet,
                     &[0_u8; 32],
-                    &local,
+                    local,
                     REMOTE_PORT,
                     LOCAL_PORT,
                     NOW_MS,
                 )
                 .expect("in-order delivery");
         }
+        (window, per_packet)
+    }
+
+    #[test]
+    fn ack_is_emitted_while_the_application_has_not_drained() {
+        // Plan 487 WP1 (fail-before test): the receiver-ACK contract is
+        // transport-state based, never application-drain based. A
+        // connection whose inbound buffer is at its cap must still
+        // acknowledge the data it received.
+        //
+        // Reference contract, read at the exact pins: i2pd 2.61.0
+        // schedules the acknowledgement when a packet is received and
+        // still calls `SendQuickAck()` when it *drops* an overflow
+        // packet (`libi2pd/Streaming.cpp:256-269`, `:289-300`); I2P
+        // Java 2.13.0 schedules the acknowledgement when
+        // `messageReceived` reports a new in-sequence packet and calls
+        // `ackImmediately()` on inbound-buffer overflow
+        // (`.../impl/ConnectionPacketHandler.java:145-161`, `:180-236`).
+        // Neither withholds an acknowledgement because the local
+        // application has not read the bytes.
+        //
+        // Before Plan 487 this test fails: `poll_acks` snoozed the
+        // deadline while the connection was over cap.
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        assert!(cap > 0);
+        let (window, per_packet) =
+            fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(cap, window * per_packet);
         assert_eq!(manager.pending_bytes_for(connection_id), cap);
         assert!(manager.delivered_over_cap(connection_id));
-        // A fresh deadline is snoozed, never emitted while capped.
-        assert!(manager.poll_acks(NOW_MS + 60_000).is_empty());
-        assert_eq!(manager.pending_ack_count(), 1);
-        // Draining below cap lets the snoozed deadline fire.
+        // The application has not drained a single byte.
+        assert_eq!(manager.pending_delivered_len(), window);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+
+        // The acknowledgement is emitted anyway.
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(
+            acks.len(),
+            1,
+            "an ACK must be emitted while the application has not drained"
+        );
+        assert_eq!(manager.pending_ack_count(), 0);
+    }
+
+    #[test]
+    fn over_cap_connection_still_emits_the_standalone_ack() {
+        // Plan 487 WP1: the Plan 152 D1 snooze is gone. The standalone
+        // ACK deadline fires on schedule regardless of the local
+        // inbound buffer, and the drain is not what releases it.
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        let (window, _) = fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+        assert!(manager.delivered_over_cap(connection_id));
+
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(acks.len(), 1, "the standalone ACK must not be snoozed");
+        assert_eq!(manager.pending_ack_count(), 0);
+
+        // Draining is still the application-visible backpressure
+        // signal, and it is what re-opens the inbound buffer.
         let drained = manager.drain_delivered();
         assert_eq!(drained.len(), window);
         assert_eq!(manager.pending_bytes_for(connection_id), 0);
         assert!(!manager.delivered_over_cap(connection_id));
-        let acks = manager.poll_acks(NOW_MS + 60_000 + 60_000);
-        assert_eq!(acks.len(), 1, "catch-up ACK must fire after drain");
     }
 
     #[test]
-    fn gated_send_data_carries_no_ack_and_keeps_deadline() {
-        // Plan 152 D1: piggybacked views from an over-cap connection
-        // use NO_ACK so the peer window cannot slide; the pending
-        // standalone deadline is preserved rather than cleared.
+    fn send_data_piggybacks_the_real_ack_while_over_cap() {
+        // Plan 487 WP1: the piggybacked acknowledgement is never
+        // replaced by `NO_ACK`. Plan 152 D1 suppressed it while the
+        // connection held more undrained bytes than its cap, coupling
+        // the acknowledgement to local application drain.
         use i2pr_proto::streaming::FLAG_NO_ACK;
 
         let (mut manager, local, remote, connection_id, receive_stream_id) = established_pair();
         let window = manager.config().max_recv_window_packets as usize;
-        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
-        for sequence in 1..=(window as u32) {
-            let packet = raw_data_packet_with_payload(
-                receive_stream_id,
-                REMOTE_STREAM_ID,
-                sequence,
-                per_packet,
-            );
-            manager
-                .process_inbound_packet(
-                    &packet,
-                    &[0_u8; 32],
-                    &local,
-                    REMOTE_PORT,
-                    LOCAL_PORT,
-                    NOW_MS,
-                )
-                .expect("in-order delivery");
-        }
+        let (_, _) = fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
         assert!(manager.delivered_over_cap(connection_id));
         let request = manager
             .send_data(
@@ -3982,7 +4260,7 @@ mod tests {
                 b"reply",
                 NOW_MS + 5,
             )
-            .expect("send while gated");
+            .expect("send while the inbound buffer is full");
         let envelope = decode_client_payload(
             &request.application_payload,
             i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
@@ -3994,15 +4272,239 @@ mod tests {
             i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
         )
         .expect("streaming packet");
-        assert_ne!(
+        assert_eq!(
             packet.flags.bits() & FLAG_NO_ACK,
             0,
-            "gated DATA must carry NO_ACK"
+            "the piggybacked acknowledgement must never be suppressed"
+        );
+        assert_eq!(
+            packet.ack_through, window as u32,
+            "the piggyback must carry the real acknowledgement ceiling"
         );
         assert_eq!(
             manager.pending_ack_count(),
+            0,
+            "the piggyback satisfies any pending standalone ACK"
+        );
+    }
+
+    #[test]
+    fn over_cap_inbound_payload_is_dropped_and_the_peer_is_choked() {
+        // Plan 487 WP1: the inbound-buffer bound is a *drop* bound. The
+        // payload that would exceed it is not admitted to the receive
+        // window (so the acknowledgement ceiling does not advance and
+        // the peer will retransmit), and the peer is choked with the
+        // reference's own `DELAY_REQUESTED` vocabulary.
+        //
+        // Reference contract: i2pd deletes the overflow packet, sets
+        // `m_IsChoking3`, and still calls `SendQuickAck()`
+        // (`libi2pd/Streaming.cpp:256-269`); I2P Java drops the packet
+        // and calls `setChoking(true)`, which calls `ackImmediately()`
+        // (`.../impl/ConnectionPacketHandler.java:145-161`).
+        use i2pr_proto::streaming::{DELAY_CHOKE, FLAG_DELAY_REQUESTED};
+
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        let (window, per_packet) =
+            fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+        let delivered_before = manager.pending_delivered_len();
+        assert_eq!(delivered_before, window);
+
+        // The next in-order payload does not fit.
+        let overflow = raw_data_packet_with_payload(
+            receive_stream_id,
+            REMOTE_STREAM_ID,
+            window as u32 + 1,
+            per_packet,
+        );
+        manager
+            .process_inbound_packet(
+                &overflow,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("overflow observation");
+
+        // The payload was dropped: it reached neither the application
+        // nor the delivered-byte accounting.
+        assert_eq!(
+            manager.pending_delivered_len(),
+            delivered_before,
+            "the over-cap payload must not reach the application"
+        );
+        assert_eq!(
+            manager.pending_bytes_for(connection_id),
+            cap,
+            "the over-cap payload must not be accounted as delivered"
+        );
+        // The peer is choked.
+        assert!(
+            manager.is_choking(connection_id),
+            "the peer must be choked while the inbound buffer is full"
+        );
+
+        // The next outbound packet for the connection carries the
+        // reference's choke vocabulary.
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(acks.len(), 1, "the ACK is still emitted after a drop");
+        let envelope = decode_client_payload(
+            &acks[0].application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("client payload");
+        let (packet, _) = decode_streaming_packet(
+            &envelope.payload,
+            i2pr_proto::streaming::StreamingReceiveLimit::default(),
+            i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("streaming packet");
+        assert_ne!(
+            packet.flags.bits() & FLAG_DELAY_REQUESTED,
+            0,
+            "the choke must ride on the outbound packet"
+        );
+        assert_eq!(
+            packet.options.delay_requested,
+            Some(DELAY_CHOKE),
+            "the choke must use the reference's choke delay"
+        );
+        // The choke is released once it has been carried.
+        assert!(!manager.is_choking(connection_id));
+    }
+
+    #[test]
+    fn immediate_ack_request_is_honoured() {
+        // Plan 487 WP1 regression matrix: an explicit immediate-ACK
+        // request (delay value 0) is honoured on the reference's
+        // schedule — it is emitted at once, not deferred to the
+        // delayed-ACK deadline.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let packet =
+            raw_data_packet_with_immediate_ack_request(receive_stream_id, REMOTE_STREAM_ID, 1);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("immediate-ack delivery");
+        let queued = manager.drain_outbound();
+        assert_eq!(
+            queued.len(),
             1,
-            "NO_ACK piggyback must not clear the standalone deadline"
+            "an immediate-ACK request must be answered at once"
+        );
+        assert_eq!(
+            queued[0].sequence, 0,
+            "the immediate ACK is an ACK-only packet"
+        );
+        assert_eq!(
+            manager.pending_ack_count(),
+            0,
+            "the immediate ACK must not also arm the delayed deadline"
+        );
+    }
+
+    #[test]
+    fn ack_only_packet_never_schedules_an_ack() {
+        // Plan 487 WP1 regression matrix: no ACK-of-ACK loop. The
+        // plain-ACK control form (sequence 0 without SYNCHRONIZE)
+        // never enters the application receive window and never
+        // schedules an acknowledgement.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let packet = raw_ack_only_packet(receive_stream_id, REMOTE_STREAM_ID);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("ack-only observation");
+        assert_eq!(manager.pending_ack_count(), 0);
+        assert!(manager.drain_outbound().is_empty());
+        assert!(manager.poll_acks(NOW_MS + 60_000).is_empty());
+    }
+
+    #[test]
+    fn plan487_four_stage_attribution_counts_each_stage_independently() {
+        // Plan 487 WP2: the four DATA-phase stages are counted by their
+        // own counters and none is inferred from another.
+        //
+        // Stage 1 (manager arrival): inbound DATA that reached the
+        // application receive window as new data.
+        // Stage 2 (ACK generated): acknowledgements the manager
+        // produced, with `no_ack_emitted` as a permanent negative
+        // control.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let before_ingress = manager.data_packet_ingress();
+        let before_ack = manager.ack_generation();
+
+        let packet = raw_data_packet_with_payload(
+            receive_stream_id,
+            REMOTE_STREAM_ID,
+            1,
+            crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES,
+        );
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("in-order delivery");
+
+        let ingress = manager.data_packet_ingress().delta_since(before_ingress);
+        assert_eq!(ingress.observed, 1);
+        assert_eq!(ingress.accepted, 1);
+        assert_eq!(ingress.rejected, 0);
+        assert_eq!(
+            ingress.data_arrived, 1,
+            "stage 1 (manager arrival) must count the new DATA"
+        );
+        assert_eq!(ingress.payload_bytes_admitted, 2048);
+
+        let ack = manager.ack_generation().delta_since(before_ack);
+        assert_eq!(
+            ack.generated, 1,
+            "stage 2 (ACK generated) must count the produced acknowledgement"
+        );
+        assert_eq!(
+            ack.no_ack_emitted, 0,
+            "Plan 487 WP1 removed the NO_ACK suppression; the control must stay zero"
+        );
+        assert_eq!(ack.generated_after_drop, 0);
+
+        // A control packet is accepted but is not a manager arrival.
+        let before_ingress = manager.data_packet_ingress();
+        let control = raw_ack_only_packet(receive_stream_id, REMOTE_STREAM_ID);
+        manager
+            .process_inbound_packet(
+                &control,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("control observation");
+        let ingress = manager.data_packet_ingress().delta_since(before_ingress);
+        assert_eq!(ingress.accepted, 1);
+        assert_eq!(
+            ingress.data_arrived, 0,
+            "a control packet is not a manager arrival"
         );
     }
 

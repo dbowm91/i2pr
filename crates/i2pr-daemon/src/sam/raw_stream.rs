@@ -41,9 +41,9 @@ use std::sync::Arc;
 
 use i2pr_api::sam::session::SamSessionId;
 use i2pr_client::DestinationId;
-use i2pr_client::streaming::DataPacketIngressAccounting;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
+use i2pr_client::streaming::{AckGenerationAccounting, DataPacketIngressAccounting};
 use i2pr_runtime::CancellationToken;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, warn};
@@ -211,6 +211,15 @@ pub(crate) struct AcceptDataPhaseBaseline {
     /// (unexpected-path detector: ACCEPT-side data must not land
     /// here).
     pub(crate) canonical_data: DataPacketIngressAccounting,
+    /// Plan 487 WP2 **ACK-generated** stage baseline for the
+    /// receiver mirror (the manager that owns ACCEPT-side
+    /// connections).
+    pub(crate) mirror_ack_generation: AckGenerationAccounting,
+    /// Plan 487 WP2 **ACK-generated** stage baseline for the
+    /// canonical manager.
+    pub(crate) canonical_ack_generation: AckGenerationAccounting,
+    /// Plan 487 WP2 **ACK-egress** stage baseline: `(sent, dropped)`.
+    pub(crate) ack_egress: (u64, u64),
 }
 
 /// SAM narrow capability adapting one Streaming connection to the
@@ -297,11 +306,20 @@ impl StreamPumpEndpoint for SamPumpEndpoint {
             return Vec::new();
         };
         bridge
-            .with(|b| match self.direction {
-                RawDirection::Outbound => b.streaming_mut().drain_delivered_for(self.connection_id),
-                RawDirection::Inbound => b
-                    .receiver_streaming_mut()
-                    .drain_delivered_for(self.connection_id),
+            .with(|b| {
+                let drained = match self.direction {
+                    RawDirection::Outbound => {
+                        b.streaming_mut().drain_delivered_for(self.connection_id)
+                    }
+                    RawDirection::Inbound => b
+                        .receiver_streaming_mut()
+                        .drain_delivered_for(self.connection_id),
+                };
+                // Plan 487 WP3: the delivery stage's own counter — the
+                // bytes the application actually received.
+                let bytes: usize = drained.iter().map(|entry| entry.bytes.len()).sum();
+                b.note_app_bytes_drained(bytes);
+                drained
             })
             .into_iter()
             .filter_map(|delivered| {
@@ -455,6 +473,32 @@ pub async fn run_raw_stream(
 }
 
 impl SamServiceState {
+    /// Plan 487 WP2 **ACK-egress** stage: records one acknowledgement
+    /// request against the attached router-network manager.
+    ///
+    /// The request kind is producer-owned (set by the streaming
+    /// manager when it built the packet), so no stage count is ever
+    /// inferred from the wire bytes. Fails closed to a no-op when no
+    /// router-network manager is attached, matching the other
+    /// attribution mirrors.
+    fn note_ack_egress(
+        &self,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+        sent: bool,
+    ) {
+        let Ok(slot) = self.router_network_manager.lock() else {
+            return;
+        };
+        let Some(manager) = slot.as_ref() else {
+            return;
+        };
+        if sent {
+            manager.note_ack_egress_sent(request);
+        } else {
+            manager.note_ack_egress_dropped(request);
+        }
+    }
+
     /// Removes the local Streaming connection associated with a request
     /// whose local delivery could not be completed. This makes a typed
     /// delivery degradation terminal for the affected raw stream, so a
@@ -465,6 +509,10 @@ impl SamServiceState {
         destination_id: DestinationId,
         request: &i2pr_client::streaming::transport::TransportSendRequest,
     ) {
+        // Plan 487 WP2: the ACK-egress dropped count. Every
+        // drop-before-send on the SAM sweep funnels through this
+        // seam, so the count is exact.
+        self.note_ack_egress(request, false);
         let destinations_arc = self.sam_destinations();
         let Ok(destinations) = destinations_arc.lock() else {
             return;
@@ -903,6 +951,7 @@ impl SamServiceState {
             );
             if delivery.is_ok() {
                 counters.delivered = counters.delivered.saturating_add(1);
+                self.note_ack_egress(&request, true);
             } else {
                 // Plan 149 §8: surface bridge_to_peer failures via
                 // the same sweep counters so the driver can wake

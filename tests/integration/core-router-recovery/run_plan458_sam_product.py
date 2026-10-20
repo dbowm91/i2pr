@@ -88,6 +88,12 @@ def parse_attempt_receipt_lines(lines):
     inbound_build_wait_receipts = []
     stream_connect_handshake_wait_receipts = []
     stream_accept_data_phase_close_receipts = []
+    # Plan 487 WP3: the LIVE data-phase stall attribution. The close
+    # receipt cannot classify the stall: the session teardown removes
+    # the destination bridge before the pump finishes, so every delta
+    # reads zero by construction. The live receipt is emitted while
+    # the state is still readable.
+    stream_accept_data_phase_stall_receipts = []
     stream_accept_syn_wait_receipts = []
     session_teardown_receipts = []
     accept_pump_started = 0
@@ -250,6 +256,11 @@ def parse_attempt_receipt_lines(lines):
                     "payloads_dequeued", "streaming_accepted",
                     "connection_state_code", "undrained_bytes", "reset",
                     "bridge_present",
+                    # Plan 487 WP2 four-stage DATA-phase attribution.
+                    # Each stage is counted by its own counter; none
+                    # is inferred from another stage's count.
+                    "manager_arrived", "ack_generated", "ack_transmitted",
+                    "ack_no_ack_emitted", "ack_egress_sent", "ack_egress_dropped",
                 )
             }
             if all(match for match in values.values()):
@@ -272,7 +283,45 @@ def parse_attempt_receipt_lines(lines):
                 # construction); anything else is malformed.
                 if receipt["bridge_present"] not in (0, 1):
                     continue
+                # Plan 487 WP2: the ACK-suppression negative control.
+                # Plan 487 WP1 removed the drain-coupled `NO_ACK`
+                # suppression, so a receipt reporting one is
+                # malformed, not evidence.
+                if receipt["ack_no_ack_emitted"] != 0:
+                    continue
                 stream_accept_data_phase_close_receipts.append(receipt)
+        if re.search(r'transition\s*=\s*"?stream_accept_data_phase_stalled', line):
+            values = {
+                key: re.search(rf"{key}\s*=\s*(\d+)", line)
+                for key in (
+                    "app_bytes_drained",
+                    "mirror_observed", "mirror_accepted", "mirror_rejected",
+                    "mirror_payload_bytes", "mirror_arrived",
+                    "canonical_observed", "canonical_accepted",
+                    "canonical_rejected", "canonical_payload_bytes",
+                    "canonical_arrived",
+                    "mirror_ack_generated", "mirror_ack_transmitted",
+                    "mirror_ack_no_ack_emitted",
+                    "canonical_ack_generated", "canonical_ack_transmitted",
+                    "ack_egress_sent", "ack_egress_dropped",
+                )
+            }
+            if all(match for match in values.values()):
+                receipt = {key: int(match.group(1)) for key, match in values.items()}
+                # The ingress invariant holds per manager by
+                # construction; a line violating it is malformed, not
+                # evidence.
+                if (receipt["mirror_accepted"] + receipt["mirror_rejected"]
+                        != receipt["mirror_observed"]):
+                    continue
+                if (receipt["canonical_accepted"] + receipt["canonical_rejected"]
+                        != receipt["canonical_observed"]):
+                    continue
+                # Plan 487 WP1 removed the drain-coupled `NO_ACK`
+                # suppression, so a receipt reporting one is malformed.
+                if receipt["mirror_ack_no_ack_emitted"] != 0:
+                    continue
+                stream_accept_data_phase_stall_receipts.append(receipt)
         if re.search(r'transition\s*=\s*"?stream_accept_syn_wait_expired', line):
             # Plan 486 per-instance split: `syn_*` reads the
             # receiver mirror (the instance STREAM ACCEPT drains);
@@ -387,6 +436,7 @@ def parse_attempt_receipt_lines(lines):
         "inbound_build_wait_receipts": inbound_build_wait_receipts,
         "stream_connect_handshake_wait_receipts": stream_connect_handshake_wait_receipts,
         "stream_accept_data_phase_close_receipts": stream_accept_data_phase_close_receipts,
+        "stream_accept_data_phase_stall_receipts": stream_accept_data_phase_stall_receipts,
         "stream_accept_syn_wait_receipts": stream_accept_syn_wait_receipts,
         "session_teardown_receipts": session_teardown_receipts,
         "accept_pump_started": accept_pump_started,

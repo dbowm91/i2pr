@@ -484,6 +484,13 @@ pub struct ServiceTunnelManager {
     inbound_tunnel_data_cells_accepted: AtomicUsize,
     inbound_garlic_owner_matches: AtomicUsize,
     inbound_garlic_owner_misses: AtomicUsize,
+    /// Plan 487 WP2 **ACK-egress** stage: acknowledgement requests that
+    /// reached the transport send path and were accepted for delivery.
+    ack_egress_sent: AtomicUsize,
+    /// Plan 487 WP2 **ACK-egress** stage: acknowledgement requests that
+    /// were dropped before the transport send path (a failed or
+    /// unresolvable delivery).
+    ack_egress_dropped: AtomicUsize,
     /// Plan 478 owner-miss taxonomy: one counter per
     /// [`InboundOwnerMissClass`] arm, so a CONNECT timeout can tell
     /// service-but-unowned divergence, own-exploratory traffic,
@@ -973,6 +980,8 @@ impl ServiceTunnelManager {
             inbound_tunnel_data_cells_accepted: AtomicUsize::new(0),
             inbound_garlic_owner_matches: AtomicUsize::new(0),
             inbound_garlic_owner_misses: AtomicUsize::new(0),
+            ack_egress_sent: AtomicUsize::new(0),
+            ack_egress_dropped: AtomicUsize::new(0),
             inbound_owner_miss_service_unowned: AtomicUsize::new(0),
             inbound_owner_miss_exploratory: AtomicUsize::new(0),
             inbound_owner_miss_retired: AtomicUsize::new(0),
@@ -2894,6 +2903,7 @@ impl ServiceTunnelManager {
                     {
                         Ok(true) => {
                             counters.delivered = counters.delivered.saturating_add(1);
+                            self.note_ack_egress_sent(request);
                         }
                         Ok(false) => {
                             counters.unknown_peer = counters.unknown_peer.saturating_add(1);
@@ -3010,6 +3020,7 @@ impl ServiceTunnelManager {
             );
             if delivery.is_ok() {
                 counters.delivered = counters.delivered.saturating_add(1);
+                self.note_ack_egress_sent(request);
             } else {
                 counters.delivery_failed = counters.delivery_failed.saturating_add(1);
                 self.terminate_failed_delivery(destination_id, request);
@@ -3128,6 +3139,7 @@ impl ServiceTunnelManager {
             BatchedAttempt::Bundled(report) => {
                 for index in &report.delivered {
                     counters.delivered = counters.delivered.saturating_add(1);
+                    self.note_ack_egress_sent(&group[*index]);
                     handled[group_start + index] = true;
                 }
                 for index in &report.failed {
@@ -3154,6 +3166,9 @@ impl ServiceTunnelManager {
         destination_id: DestinationId,
         request: &i2pr_client::streaming::transport::TransportSendRequest,
     ) {
+        // Plan 487 WP2: every drop-before-send funnels through this
+        // seam, so the ACK-egress dropped count is exact.
+        self.note_ack_egress_dropped(request);
         let destinations = self
             .sam_destinations
             .lock()
@@ -3507,6 +3522,76 @@ impl ServiceTunnelManager {
             .inbound_tunnel_data_cells_accepted
             .fetch_add(1, Ordering::AcqRel);
         previous.saturating_add(1)
+    }
+
+    /// Plan 487 WP2 **ACK-egress** stage — records one acknowledgement
+    /// request that reached the transport send path and was accepted
+    /// for delivery. Only requests the producer marked as
+    /// acknowledgements are counted; the kind is producer-owned, never
+    /// re-derived from the wire bytes. Returns the total since manager
+    /// construction.
+    pub fn note_ack_egress_sent(
+        &self,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+    ) -> usize {
+        if request.kind != i2pr_client::streaming::transport::OutboundPacketKind::Ack {
+            return 0;
+        }
+        let previous = self.ack_egress_sent.fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 487 WP2 **ACK-egress** stage — records one acknowledgement
+    /// request that was dropped before the transport send path.
+    /// Returns the total since manager construction.
+    pub fn note_ack_egress_dropped(
+        &self,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+    ) -> usize {
+        if request.kind != i2pr_client::streaming::transport::OutboundPacketKind::Ack {
+            return 0;
+        }
+        let previous = self.ack_egress_dropped.fetch_add(1, Ordering::AcqRel);
+        previous.saturating_add(1)
+    }
+
+    /// Plan 487 WP2 **ACK-egress** stage — returns
+    /// `(sent, dropped)` acknowledgement egress totals.
+    pub fn ack_egress_totals(&self) -> (u64, u64) {
+        (
+            self.ack_egress_sent.load(Ordering::Acquire) as u64,
+            self.ack_egress_dropped.load(Ordering::Acquire) as u64,
+        )
+    }
+
+    /// Plan 487 WP2 — emits the live four-stage DATA-phase stall
+    /// attribution for one router-network destination.
+    ///
+    /// The SAM-side emitter reads the destination bridge from the
+    /// local-only map and only runs in local-only mode. In
+    /// router-network mode this manager owns the destination, so the
+    /// attribution has to be emitted here: an instrument that only
+    /// one mode can produce is dead in the other mode, and a dead
+    /// attribution cannot classify a stall.
+    ///
+    /// The receipt separates the candidate causes of a reverse DATA
+    /// stall — arrival loss, routing loss, a missing
+    /// acknowledgement, and a dropped acknowledgement egress — by
+    /// reading each stage from the counter that owns it.
+    ///
+    /// Counts only; no identities, keys, ports, stream ids, or payload
+    /// material.
+    pub fn emit_data_phase_stall_attribution(&self, destination_id: DestinationId, now_ms: u64) {
+        let ack_egress = self.ack_egress_totals();
+        let Some(snapshot) = self
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.data_phase_stall_snapshot(now_ms, ack_egress)
+            })
+            .flatten()
+        else {
+            return;
+        };
+        crate::sam::streams::log_data_phase_stall_attribution(&snapshot, false);
     }
 
     /// Plan 478 §6 — records one recovered Garlic envelope whose
@@ -6053,9 +6138,24 @@ async fn run_service_delivery_driver(
         }
         let now_ms = service_streaming_now_ms();
         let mut sweep = manager.deliver_outbound(destination_id).await;
-        manager.with_destination_bridge(destination_id, |bridge| {
-            bridge.poll_streaming_timers(now_ms);
-        });
+        // Plan 487 WP2 — this driver owns the destination's streaming
+        // state in router-network mode, so it also owns the
+        // established marker that bounds the live stall window. The
+        // SAM-side driver records the same marker in local-only mode;
+        // a mode that owns the destination but never records the
+        // marker leaves the four-stage attribution dead, and a dead
+        // attribution cannot classify a stall.
+        let established_now = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.poll_streaming_timers(now_ms);
+                bridge.has_established_connection()
+            })
+            .unwrap_or(false);
+        if established_now {
+            manager.with_destination_bridge(destination_id, |bridge| {
+                bridge.note_established_at(now_ms);
+            });
+        }
         let second_sweep = manager.deliver_outbound(destination_id).await;
         sweep.saturating_add_assign(second_sweep);
         manager.record_delivery_counters(destination_id, sweep);
@@ -6090,6 +6190,12 @@ async fn run_service_delivery_driver(
                 "service delivery driver observed typed local-delivery degradation"
             );
         }
+        // Plan 487 WP2 — the live four-stage DATA-phase stall
+        // attribution, in the mode that owns the destination. The
+        // SAM-side emitter only runs in local-only mode, so without
+        // this call the attribution is dead in router-network mode —
+        // the mode the production lane exercises.
+        manager.emit_data_phase_stall_attribution(destination_id, now_ms);
         tokio::task::yield_now().await;
     }
     if let Ok(mut drivers) = manager.destination_drivers.lock() {
@@ -8898,6 +9004,7 @@ mod plan206_remote_composition_tests {
             sequence: 0,
             send_stream_id: 2,
             receive_stream_id: 1,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         let outcome = manager
             .route_outbound_remote_request(
@@ -9187,6 +9294,7 @@ mod plan208_remote_route_integration_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         // Use a dummy destination id; the helper refuses on the
         // first typed gate (`NotInstalled` for missing bridge) so
@@ -9292,6 +9400,7 @@ mod plan208_remote_route_integration_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         let _ = manager
             .route_outbound_remote_request(server_dest, &request, 0)
@@ -9725,6 +9834,7 @@ mod plan210_real_service_destination_material_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         let _ = manager
             .route_outbound_remote_request(
@@ -9774,6 +9884,7 @@ mod plan210_real_service_destination_material_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         let outcome = manager
             .route_outbound_remote_request(
@@ -10757,6 +10868,7 @@ mod plan212_router_backed_service_destination_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         let outcome = manager.with_destination_bridge(destination_id, |bridge| {
             bridge.compose_router_send(&request, 1_700_000_000, test_now_ms())
@@ -10795,6 +10907,7 @@ mod plan212_router_backed_service_destination_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         };
         // No remote LS2 installed in router routing, so the adapter
         // rejects with a lease/selection error — but NOT with the
@@ -11827,6 +11940,7 @@ mod plan296_sweep_policy_tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         }
     }
 

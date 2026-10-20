@@ -459,6 +459,24 @@ pub struct SamDestinationBridge {
     /// and fail closed when it is missing or expired; it must never
     /// fall back to the local fabric.
     router_network: Option<RouterDestinationNetworkState>,
+    /// Plan 487 WP3 — one-shot latch for the live DATA-phase stall
+    /// attribution. The close receipt cannot serve that purpose: by the
+    /// time the pump finishes, the session teardown has already
+    /// removed the destination bridge, so every delta reads zero by
+    /// construction. The live receipt is emitted at most once per
+    /// destination, while the state is still readable.
+    data_phase_stall_reported: bool,
+    /// Plan 487 WP3 — the monotonic time at which this destination's
+    /// streaming connection first reached the established state, used
+    /// to bound the stall window before the live attribution fires.
+    established_since_ms: Option<u64>,
+    /// Plan 487 WP3 — the number of application payload bytes the
+    /// ACCEPT-side pump has actually handed to the application.
+    ///
+    /// This is the **delivery** stage's own counter: it separates "the
+    /// DATA never reached a manager" from "the DATA reached the owning
+    /// manager but the application never received it". Counts only.
+    app_bytes_drained: u64,
 }
 
 impl std::fmt::Debug for SamDestinationBridge {
@@ -577,6 +595,9 @@ impl SamDestinationBridge {
             diagnostics: BridgeDiagnostics::new(),
             inbound_tunnel_factory: None,
             router_network: None,
+            data_phase_stall_reported: false,
+            established_since_ms: None,
+            app_bytes_drained: 0,
         }
     }
 
@@ -664,6 +685,138 @@ impl SamDestinationBridge {
         let _ = self.streaming.poll_acks(now_ms);
         let _ = self.receiver_streaming.poll_retransmits(now_ms);
         let _ = self.receiver_streaming.poll_acks(now_ms);
+    }
+
+    /// Plan 487 WP3 — records application payload bytes handed to the
+    /// application by the pump.
+    pub(crate) fn note_app_bytes_drained(&mut self, bytes: usize) {
+        self.app_bytes_drained = self.app_bytes_drained.saturating_add(bytes as u64);
+    }
+
+    /// Plan 487 WP3 — records the monotonic time at which this
+    /// destination's streaming connection first reached the
+    /// established state. The first observation wins; a later
+    /// re-establishment does not reset the window.
+    pub(crate) fn note_established_at(&mut self, now_ms: u64) {
+        if self.established_since_ms.is_none() {
+            self.established_since_ms = Some(now_ms);
+        }
+    }
+
+    /// Plan 487 WP3 — the live DATA-phase stall snapshot for one
+    /// destination, or `None` when the destination is not stalled.
+    ///
+    /// A destination is *stalled* when the receiver mirror owns an
+    /// established (ACCEPT-side) connection but **no DATA has ever
+    /// reached that manager**. The snapshot is one-shot per
+    /// destination: it is emitted at most once, while the bridge is
+    /// still installed, so the four stages can be read.
+    ///
+    /// The stage counts are per-destination (each destination owns its
+    /// own two managers), and each stage is read from its own counter.
+    /// No stage is inferred from another.
+    pub(crate) fn data_phase_stall_snapshot(
+        &mut self,
+        now_ms: u64,
+        ack_egress: (u64, u64),
+    ) -> Option<DataPhaseStallSnapshot> {
+        if self.data_phase_stall_reported {
+            return None;
+        }
+        // The handshake must have completed, and the data phase must
+        // have had a bounded window in which to deliver.
+        let established_since_ms = self.established_since_ms?;
+        if now_ms.saturating_sub(established_since_ms) < DATA_PHASE_STALL_WINDOW_MS {
+            return None;
+        }
+        if self.app_bytes_drained != 0 {
+            // The application received payload bytes: the data phase
+            // is not stalled, whatever else is true.
+            return None;
+        }
+        self.data_phase_stall_reported = true;
+        Some(self.build_data_phase_stall_snapshot(now_ms, ack_egress))
+    }
+
+    /// Plan 487 WP3 — the **terminal** live DATA-phase stall snapshot:
+    /// the same four stages, read at the moment the data phase ends
+    /// instead of after a bounded window.
+    ///
+    /// The window-based snapshot can only fire while the destination
+    /// is still alive. A stalled data phase frequently ends sooner
+    /// than the window (the session tears down, the peer gives up),
+    /// and the session teardown removes the destination bridge — after
+    /// which every counter reads zero by construction. This snapshot
+    /// is therefore taken **before** the bridge is removed, and it
+    /// classifies the phase that just ended:
+    ///
+    /// - an established connection existed, and
+    /// - the application received no payload bytes, and
+    /// - no DATA packet reached either manager.
+    ///
+    /// That is a stall by definition — the peer sent data, the data
+    /// phase ended, and nothing arrived. One-shot per destination, the
+    /// same latch as the window-based snapshot.
+    pub(crate) fn terminal_data_phase_stall_snapshot(
+        &mut self,
+        now_ms: u64,
+        ack_egress: (u64, u64),
+    ) -> Option<DataPhaseStallSnapshot> {
+        if self.data_phase_stall_reported {
+            return None;
+        }
+        // The handshake must have completed: a destination that never
+        // reached the established state never had a data phase.
+        self.established_since_ms?;
+        if self.app_bytes_drained != 0 {
+            // The application received payload bytes: the data phase
+            // was not stalled, whatever else is true.
+            return None;
+        }
+        let mirror = self.receiver_streaming.data_packet_ingress();
+        let canonical = self.streaming.data_packet_ingress();
+        if mirror.data_arrived != 0 || canonical.data_arrived != 0 {
+            // A DATA packet did reach a manager: the data phase was
+            // not an arrival loss, so this is not a stall.
+            return None;
+        }
+        self.data_phase_stall_reported = true;
+        Some(self.build_data_phase_stall_snapshot(now_ms, ack_egress))
+    }
+
+    /// Plan 487 WP3 — reads the four DATA-phase stages from their own
+    /// counters. Every stage is read from the counter that owns it; no
+    /// stage is inferred from another.
+    fn build_data_phase_stall_snapshot(
+        &self,
+        now_ms: u64,
+        ack_egress: (u64, u64),
+    ) -> DataPhaseStallSnapshot {
+        let canonical = self.streaming.data_packet_ingress();
+        let mirror_ack = self.receiver_streaming.ack_generation();
+        let canonical_ack = self.streaming.ack_generation();
+        let mirror = self.receiver_streaming.data_packet_ingress();
+        DataPhaseStallSnapshot {
+            now_ms,
+            app_bytes_drained: self.app_bytes_drained,
+            mirror_observed: mirror.observed,
+            mirror_accepted: mirror.accepted,
+            mirror_rejected: mirror.rejected,
+            mirror_payload_bytes: mirror.payload_bytes_admitted,
+            mirror_arrived: mirror.data_arrived,
+            canonical_observed: canonical.observed,
+            canonical_accepted: canonical.accepted,
+            canonical_rejected: canonical.rejected,
+            canonical_payload_bytes: canonical.payload_bytes_admitted,
+            canonical_arrived: canonical.data_arrived,
+            mirror_ack_generated: mirror_ack.generated,
+            mirror_ack_transmitted: mirror_ack.transmitted,
+            mirror_ack_no_ack_emitted: mirror_ack.no_ack_emitted,
+            canonical_ack_generated: canonical_ack.generated,
+            canonical_ack_transmitted: canonical_ack.transmitted,
+            ack_egress_sent: ack_egress.0,
+            ack_egress_dropped: ack_egress.1,
+        }
     }
 
     /// Returns whether either manager currently owns an established
@@ -1291,45 +1444,165 @@ pub(crate) fn classify_inbound_streaming_target(
     if !mirror_accept_parked {
         return InboundStreamingTarget::Canonical;
     }
-    if is_inbound_syn_shape(payload_bytes) {
+    if matches!(
+        inbound_payload_shape(payload_bytes),
+        InboundPayloadShape::OriginatorSyn
+    ) {
         InboundStreamingTarget::Mirror
     } else {
         InboundStreamingTarget::Canonical
     }
 }
 
-/// Plan 486 — bounded inbound-SYN shape peek. Unwraps the already
-/// garlic-authenticated inner I2NP short-transport message, requires
-/// the I2NP Data body and the I2CP streaming-protocol envelope, and
+/// Plan 487 WP3 — the bounded window after the streaming connection
+/// reaches the established state before the live stall attribution is
+/// emitted. The window must be long enough for a healthy data phase
+/// to deliver, and short enough that the receipt is still inside the
+/// driver's read timeout.
+pub(crate) const DATA_PHASE_STALL_WINDOW_MS: u64 = 20_000;
+
+/// Plan 487 WP3 — the live DATA-phase stall snapshot: the four
+/// stages, each read from its own counter, plus the per-manager
+/// ingress split that separates "the DATA never arrived" from "the
+/// DATA arrived in the wrong manager".
+///
+/// Counts only; no identities, keys, ports, stream ids, or payload
+/// material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DataPhaseStallSnapshot {
+    pub(crate) now_ms: u64,
+    /// Application payload bytes actually handed to the application.
+    pub(crate) app_bytes_drained: u64,
+    pub(crate) mirror_observed: u64,
+    pub(crate) mirror_accepted: u64,
+    pub(crate) mirror_rejected: u64,
+    pub(crate) mirror_payload_bytes: u64,
+    pub(crate) mirror_arrived: u64,
+    pub(crate) canonical_observed: u64,
+    pub(crate) canonical_accepted: u64,
+    pub(crate) canonical_rejected: u64,
+    pub(crate) canonical_payload_bytes: u64,
+    pub(crate) canonical_arrived: u64,
+    pub(crate) mirror_ack_generated: u64,
+    pub(crate) mirror_ack_transmitted: u64,
+    pub(crate) mirror_ack_no_ack_emitted: u64,
+    pub(crate) canonical_ack_generated: u64,
+    pub(crate) canonical_ack_transmitted: u64,
+    pub(crate) ack_egress_sent: u64,
+    pub(crate) ack_egress_dropped: u64,
+}
+
+/// Plan 487 WP2 — logs one four-stage DATA-phase attribution receipt.
+///
+/// The local-only (SAM-side) and the router-network (service-side)
+/// driver each own a destination's streaming state in their own mode,
+/// so the receipt is written once here and called from both. A
+/// receipt that only one mode can produce is a receipt that is dead
+/// in the other mode, and a dead attribution cannot classify a stall.
+///
+/// `terminal` selects the wording of the live (window-based) receipt
+/// against the terminal (end-of-data-phase) receipt. The field set is
+/// identical: every stage is read from the counter that owns it, and
+/// no stage is inferred from another stage's count.
+///
+/// Counts only; no identities, keys, ports, stream ids, or payload
+/// material.
+pub(crate) fn log_data_phase_stall_attribution(snapshot: &DataPhaseStallSnapshot, terminal: bool) {
+    let message = if terminal {
+        "STREAM ACCEPT data phase ended with no DATA at the owning manager; terminal four-stage attribution (counts only)"
+    } else {
+        "STREAM ACCEPT data phase stalled with no DATA at the owning manager; live four-stage attribution (counts only)"
+    };
+    tracing::warn!(
+        app_bytes_drained = snapshot.app_bytes_drained,
+        mirror_observed = snapshot.mirror_observed,
+        mirror_accepted = snapshot.mirror_accepted,
+        mirror_rejected = snapshot.mirror_rejected,
+        mirror_payload_bytes = snapshot.mirror_payload_bytes,
+        mirror_arrived = snapshot.mirror_arrived,
+        canonical_observed = snapshot.canonical_observed,
+        canonical_accepted = snapshot.canonical_accepted,
+        canonical_rejected = snapshot.canonical_rejected,
+        canonical_payload_bytes = snapshot.canonical_payload_bytes,
+        canonical_arrived = snapshot.canonical_arrived,
+        mirror_ack_generated = snapshot.mirror_ack_generated,
+        mirror_ack_transmitted = snapshot.mirror_ack_transmitted,
+        mirror_ack_no_ack_emitted = snapshot.mirror_ack_no_ack_emitted,
+        canonical_ack_generated = snapshot.canonical_ack_generated,
+        canonical_ack_transmitted = snapshot.canonical_ack_transmitted,
+        ack_egress_sent = snapshot.ack_egress_sent,
+        ack_egress_dropped = snapshot.ack_egress_dropped,
+        transition = "stream_accept_data_phase_stalled",
+        "{message}",
+    );
+}
+
+/// Plan 487 WP3 — the shape of one already garlic-authenticated
+/// inbound payload, as a single bounded peek.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InboundPayloadShape {
+    /// An originator SYN: SYNCHRONIZE set, `send_stream_id == 0`,
+    /// `receive_stream_id != 0`.
+    OriginatorSyn,
+    /// An established-phase packet (DATA, ACK, CLOSE, RESET, or a
+    /// SYN-ACK): its `send_stream_id` is the **local** stream id
+    /// the peer uses to address us.
+    Established {
+        /// The local receive stream id the peer addresses us by.
+        local_receive_stream_id: u32,
+    },
+    /// Not a streaming packet, or not decodable.
+    Other,
+}
+
+/// Plan 487 WP3 — bounded shape peek over an already garlic
+/// authenticated inner I2NP short-transport message. Requires the
+/// I2NP Data body and the I2CP streaming-protocol envelope, and
 /// applies the manager's own originator-SYN rule (SYNCHRONIZE set,
 /// `send_stream_id == 0`, `receive_stream_id != 0`) through the same
 /// header peek the manager routes on. Pure bounded decodes over
 /// authenticated bytes: the garlic/auth path is untouched and the
-/// adapter still performs its own full decode downstream. Any
-/// failure reports "not a SYN" so the caller keeps profile routing.
-fn is_inbound_syn_shape(payload_bytes: &[u8]) -> bool {
-    let message = match I2npMessage::decode_short_transport(payload_bytes, MAX_I2NP_PAYLOAD_SIZE) {
-        Ok(message) => message,
-        Err(_) => return false,
+/// adapter still performs its own full decode downstream. Any failure
+/// reports `Other` so the caller keeps profile routing.
+///
+/// The established-phase branch reports the packet's **`send_stream_id`**
+/// as the local receive stream id. That is the id the peer uses to
+/// address us: a peer sends `sendStreamId = <our receive id>` and
+/// `receiveStreamId = <the peer's own id>`, which is exactly how the
+/// manager resolves an established-phase packet — it looks the
+/// connection up in `inbound_by_stream` / `outbound_by_stream`, and
+/// both tables are keyed by `local_receive_stream_id`. Reading the
+/// `receive_stream_id` field instead would report the *peer's* id,
+/// which is never a key in either table, so every owner lookup would
+/// miss and every established-phase packet would fall back to profile
+/// routing.
+fn inbound_payload_shape(payload_bytes: &[u8]) -> InboundPayloadShape {
+    let Ok(message) = I2npMessage::decode_short_transport(payload_bytes, MAX_I2NP_PAYLOAD_SIZE)
+    else {
+        return InboundPayloadShape::Other;
     };
-    let data_payload = match message.body() {
-        I2npBody::Data(body) => body.payload.as_bytes(),
-        _ => return false,
+    let I2npBody::Data(body) = message.body() else {
+        return InboundPayloadShape::Other;
     };
-    let envelope = match decode_i2cp_data_body(data_payload) {
-        Ok(envelope) => envelope,
-        Err(_) => return false,
+    let Ok(envelope) = decode_i2cp_data_body(body.payload.as_bytes()) else {
+        return InboundPayloadShape::Other;
     };
     if envelope.protocol != PROTOCOL_TYPE_STREAMING {
-        return false;
+        return InboundPayloadShape::Other;
     }
-    let peek = match peek_streaming_header(&envelope.payload) {
-        Ok(peek) => peek,
-        Err(_) => return false,
+    let Ok(peek) = peek_streaming_header(&envelope.payload) else {
+        return InboundPayloadShape::Other;
     };
-    peek.flags_bits & FLAG_SYNCHRONIZE != 0
+    if peek.flags_bits & FLAG_SYNCHRONIZE != 0
         && peek.send_stream_id == 0
         && peek.receive_stream_id != 0
+    {
+        InboundPayloadShape::OriginatorSyn
+    } else {
+        InboundPayloadShape::Established {
+            local_receive_stream_id: peek.send_stream_id,
+        }
+    }
 }
 
 impl SamDestinationBridge {
@@ -1340,6 +1613,65 @@ impl SamDestinationBridge {
     /// from the drain loop so the routing decision is unit-testable
     /// without ECIES/garlic material; the loop only attributes the
     /// returned outcome.
+    /// Plan 487 WP3 — the manager that owns one local receive stream
+    /// id.
+    ///
+    /// An accepted (inbound) connection lives in the receiver mirror;
+    /// an opened (outbound) connection lives in the canonical manager.
+    /// The lookup is by the **local receive stream id** — the id the
+    /// peer uses to address us — and never by the waiter's state.
+    fn established_phase_owner(
+        &self,
+        local_receive_stream_id: u32,
+    ) -> Option<InboundStreamingTarget> {
+        if self
+            .receiver_streaming()
+            .lookup_inbound(local_receive_stream_id)
+            .is_some()
+        {
+            return Some(InboundStreamingTarget::Mirror);
+        }
+        if self
+            .streaming()
+            .lookup_outbound(local_receive_stream_id)
+            .is_some()
+        {
+            return Some(InboundStreamingTarget::Canonical);
+        }
+        None
+    }
+
+    /// Plan 487 WP3 — resolves the manager that owns one inbound
+    /// payload.
+    ///
+    /// An established-phase packet (DATA, ACK, CLOSE, RESET, SYN-ACK)
+    /// belongs to a connection that already exists, so it is routed to
+    /// that connection's owner.
+    ///
+    /// Plan 486's waiter-scoped rule moved only the inbound SYN to the
+    /// mirror and kept profile routing for every other packet. That
+    /// mis-routed the inbound DATA of an accepted connection to the
+    /// canonical manager, where no application reads it: the payload
+    /// was never delivered, the connection was never acknowledged, and
+    /// the peer eventually abandoned it. The owner is resolved from the
+    /// packet's own stream ids, so the routing no longer depends on
+    /// whether a STREAM ACCEPT waiter is still parked.
+    fn classify_inbound_target(
+        &self,
+        payload_bytes: &[u8],
+        is_server: bool,
+        mirror_accept_parked: bool,
+    ) -> InboundStreamingTarget {
+        if let InboundPayloadShape::Established {
+            local_receive_stream_id,
+        } = inbound_payload_shape(payload_bytes)
+            && let Some(owner) = self.established_phase_owner(local_receive_stream_id)
+        {
+            return owner;
+        }
+        classify_inbound_streaming_target(payload_bytes, is_server, mirror_accept_parked)
+    }
+
     fn receive_dequeued_payload(
         &mut self,
         payload_bytes: &[u8],
@@ -1348,8 +1680,7 @@ impl SamDestinationBridge {
         is_server: bool,
         mirror_accept_parked: bool,
     ) -> DequeuedPayloadOutcome {
-        let target =
-            classify_inbound_streaming_target(payload_bytes, is_server, mirror_accept_parked);
+        let target = self.classify_inbound_target(payload_bytes, is_server, mirror_accept_parked);
         let receive_outcome = match target {
             InboundStreamingTarget::Mirror => StreamingDestinationAdapter::receive(
                 payload_bytes,
@@ -2510,6 +2841,7 @@ mod router_network_bridge_tests {
         assert_eq!(diagnostics.inbound_observations(), 0);
     }
 
+    use i2pr_client::streaming::connection::ConnectionId;
     use i2pr_client::streaming::manager::{
         ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, RemoteDestination,
     };
@@ -2806,6 +3138,256 @@ mod router_network_bridge_tests {
         // The canonical manager peeked a non-SYN (garbage fails the
         // header peek before any SYN accounting starts).
         assert_eq!(bridge.streaming().syn_ingress().observed, 0);
+    }
+
+    /// Plan 487 WP3 — builds the inner-I2NP bytes a peer would send
+    /// for one established-phase DATA packet on `local_receive_stream_id`.
+    fn plan487_inner_i2np_data_bytes(
+        local_receive_stream_id: u32,
+        remote_stream_id: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        // The peer addresses us with `sendStreamId = <our receive id>`
+        // and `receiveStreamId = <the peer's own id>`. This is the
+        // same field assignment the manager's established-phase arm
+        // resolves on, so the packet must be built exactly that way.
+        let builder = i2pr_proto::streaming::StreamingPacketBuilder {
+            send_stream_id: local_receive_stream_id,
+            receive_stream_id: remote_stream_id,
+            sequence_num: 1,
+            ack_through: 0,
+            nacks: Vec::new(),
+            resend_delay: 0,
+            flags: i2pr_proto::streaming::StreamingFlags::empty(),
+            option_bytes: Vec::new(),
+            payload: payload.to_vec(),
+        };
+        let wire = i2pr_proto::streaming::encode_streaming_packet(
+            &builder,
+            i2pr_proto::streaming::StreamingSendLimit::default(),
+        )
+        .expect("streaming data packet");
+        let envelope =
+            i2pr_proto::streaming::encode_client_payload(&i2pr_proto::streaming::ClientPayload {
+                protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+                source_port: 0,
+                destination_port: 0,
+                payload: wire,
+            })
+            .expect("client payload");
+        plan486_inner_i2np_bytes(&envelope)
+    }
+
+    #[test]
+    fn established_phase_data_reaches_the_manager_that_owns_the_connection() {
+        // Plan 487 WP3: an accepted (inbound) connection lives in the
+        // receiver mirror. Its DATA must be routed there by the
+        // connection's owner, **not** by whether a STREAM ACCEPT
+        // waiter is still parked: the waiter is satisfied by the
+        // handshake, so a waiter-scoped rule mis-routed every
+        // subsequent DATA of an accepted connection to the canonical
+        // manager, where no application reads it.
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4870_0001);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        // Burn one originator stream id first. Both the originator's
+        // SYN and the mirror's inbound connection allocate from the
+        // same `0x8000_0000` seed, so without this the two ids would
+        // coincide and a swapped field assignment would pass by
+        // accident. A real peer's id is independent of ours.
+        let _ = plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4870_0009);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4870_0002);
+        // The waiter is parked: the SYN reaches the mirror.
+        let outcome =
+            bridge.receive_dequeued_payload(&syn, &[0x22_u8; 32], PLAN486_NOW_MS, false, true);
+        assert!(matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted));
+        // The application accepts the connection; the waiter is now
+        // satisfied and no longer parked.
+        let connection_id = bridge
+            .receiver_streaming_mut()
+            .accept(0, PLAN486_NOW_MS)
+            .expect("accepted connection");
+        let local_receive_stream_id = bridge
+            .receiver_streaming()
+            .get_connection(connection_id)
+            .expect("connection")
+            .local_stream_id();
+        let remote_stream_id = bridge
+            .receiver_streaming()
+            .get_connection(connection_id)
+            .expect("connection")
+            .remote_stream_id();
+        assert_ne!(
+            local_receive_stream_id, remote_stream_id,
+            "the local and peer stream ids must differ, otherwise this test \
+             cannot tell the two wire fields apart"
+        );
+        assert!(
+            bridge
+                .receiver_streaming()
+                .lookup_inbound(local_receive_stream_id)
+                .is_some()
+        );
+
+        // The peer's DATA, with no waiter parked.
+        let data =
+            plan487_inner_i2np_data_bytes(local_receive_stream_id, remote_stream_id, b"payload");
+        let before_mirror = bridge.receiver_streaming().data_packet_ingress();
+        let before_canonical = bridge.streaming().data_packet_ingress();
+        let outcome =
+            bridge.receive_dequeued_payload(&data, &[0x22_u8; 32], PLAN486_NOW_MS, false, false);
+        assert!(matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted));
+        let after_mirror = bridge.receiver_streaming().data_packet_ingress();
+        let after_canonical = bridge.streaming().data_packet_ingress();
+        assert_eq!(
+            after_mirror.delta_since(before_mirror).data_arrived,
+            1,
+            "the DATA must reach the mirror that owns the accepted connection"
+        );
+        assert_eq!(
+            after_canonical.delta_since(before_canonical).data_arrived,
+            0,
+            "the DATA must not be routed to the canonical manager"
+        );
+        // The bytes are readable by the application through the
+        // mirror — the delivery path the ACCEPT-side pump drains.
+        let drained = bridge
+            .receiver_streaming_mut()
+            .drain_delivered_for(connection_id);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].bytes, b"payload".to_vec());
+    }
+
+    #[test]
+    fn established_phase_shape_reports_the_send_stream_id() {
+        // Plan 487 WP3: the shape peek must report the packet's
+        // `send_stream_id` as the local receive stream id. A peer
+        // addresses us with `sendStreamId = <our receive id>` and
+        // `receiveStreamId = <the peer's own id>`; the manager
+        // resolves an established-phase packet on the send field, so
+        // the peek has to read the same field. Reading the receive
+        // field instead reports the peer's id, which is never a key
+        // in `inbound_by_stream` / `outbound_by_stream`.
+        let bytes = plan487_inner_i2np_data_bytes(0x1111_2222, 0x3333_4444, b"payload");
+        assert_eq!(
+            inbound_payload_shape(&bytes),
+            InboundPayloadShape::Established {
+                local_receive_stream_id: 0x1111_2222,
+            }
+        );
+    }
+
+    #[test]
+    fn originator_syn_shape_is_unchanged_by_the_field_contract() {
+        // The originator SYN keeps its own rule: `send_stream_id == 0`
+        // and `receive_stream_id != 0`. The established-phase branch
+        // must not swallow it.
+        let (recipient, _) = plan486_bridge();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4870_0005);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4870_0006);
+        assert_eq!(
+            inbound_payload_shape(&syn),
+            InboundPayloadShape::OriginatorSyn
+        );
+    }
+
+    /// Plan 487 WP3 — drives one accepted (inbound) connection to the
+    /// established state and returns the bridge plus the connection's
+    /// two stream ids. The originator burns one stream id first so the
+    /// peer's id and ours differ, exactly as they do with a real peer.
+    fn plan487_established_bridge() -> (SamDestinationBridge, ConnectionId, u32, u32) {
+        let (recipient, mut bridge) = plan486_bridge();
+        bridge
+            .receiver_streaming_mut()
+            .listen(0)
+            .expect("mirror wildcard listen");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4870_000b);
+        let originator = DestinationIdentity::generate(&mut rng).expect("originator");
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let recipient_remote = plan486_remote(&recipient);
+        let _ = plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4870_000c);
+        let syn =
+            plan486_stock_shaped_syn(&mut sender, &originator, &recipient_remote, 0x4870_000d);
+        let outcome =
+            bridge.receive_dequeued_payload(&syn, &[0x22_u8; 32], PLAN486_NOW_MS, false, true);
+        assert!(matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted));
+        let connection_id = bridge
+            .receiver_streaming_mut()
+            .accept(0, PLAN486_NOW_MS)
+            .expect("accepted connection");
+        let local_receive_stream_id = bridge
+            .receiver_streaming()
+            .get_connection(connection_id)
+            .expect("connection")
+            .local_stream_id();
+        let remote_stream_id = bridge
+            .receiver_streaming()
+            .get_connection(connection_id)
+            .expect("connection")
+            .remote_stream_id();
+        assert_ne!(local_receive_stream_id, remote_stream_id);
+        bridge.note_established_at(PLAN486_NOW_MS);
+        (
+            bridge,
+            connection_id,
+            local_receive_stream_id,
+            remote_stream_id,
+        )
+    }
+
+    #[test]
+    fn terminal_stall_snapshot_classifies_a_data_phase_that_never_arrived() {
+        // Plan 487 WP3: the data phase ends with no DATA at either
+        // manager. The terminal snapshot must fire (the window-based
+        // live receipt cannot cover a phase that ends early) and it
+        // must read every stage from its own counter.
+        let (mut bridge, _connection_id, _local, _remote) = plan487_established_bridge();
+        let snapshot = bridge
+            .terminal_data_phase_stall_snapshot(PLAN486_NOW_MS, (0, 0))
+            .expect("terminal stall snapshot");
+        assert_eq!(snapshot.app_bytes_drained, 0);
+        assert_eq!(snapshot.mirror_observed, 0);
+        assert_eq!(snapshot.mirror_arrived, 0);
+        assert_eq!(snapshot.canonical_observed, 0);
+        assert_eq!(snapshot.canonical_arrived, 0);
+        assert_eq!(snapshot.mirror_ack_generated, 0);
+        assert_eq!(snapshot.canonical_ack_generated, 0);
+        assert_eq!(snapshot.ack_egress_sent, 0);
+        assert_eq!(snapshot.ack_egress_dropped, 0);
+        // One-shot per destination: the second read is silent.
+        assert!(
+            bridge
+                .terminal_data_phase_stall_snapshot(PLAN486_NOW_MS, (0, 0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn terminal_stall_snapshot_is_silent_when_data_arrived() {
+        // The data phase delivered: nothing was stalled, so no receipt
+        // may be emitted even though the application has not drained
+        // the bytes yet.
+        let (mut bridge, _connection_id, local, remote) = plan487_established_bridge();
+        let data = plan487_inner_i2np_data_bytes(local, remote, b"payload");
+        let outcome =
+            bridge.receive_dequeued_payload(&data, &[0x22_u8; 32], PLAN486_NOW_MS, false, false);
+        assert!(matches!(outcome, DequeuedPayloadOutcome::StreamingAccepted));
+        assert!(
+            bridge
+                .terminal_data_phase_stall_snapshot(PLAN486_NOW_MS, (0, 0))
+                .is_none()
+        );
     }
 
     #[test]

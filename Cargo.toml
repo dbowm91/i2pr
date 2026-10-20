@@ -92,8 +92,8 @@ webpki-roots = { version = "1.0.9", default-features = false }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 x509-cert = { version = "0.2", features = ["builder", "pem"] }
 x509-parser = { version = "0.18", default-features = false, features = ["verify"] }
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
-zip-stored = { package = "zip", version = "8.6", default-features = false }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+zip-stored = { package = "zip", version = "9", default-features = false }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]

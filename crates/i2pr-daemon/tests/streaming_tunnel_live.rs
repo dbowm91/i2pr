@@ -1038,6 +1038,7 @@ fn port_tuple_mismatch_rejected_after_streaming_delivery() {
         sequence: 0,
         send_stream_id: 0,
         receive_stream_id: 0,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
     };
     let outcome_err = deliver_streaming_request(
         &mut side_a,

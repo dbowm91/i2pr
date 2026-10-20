@@ -1546,6 +1546,7 @@ fn plan130_plain_ack_is_never_application_data_and_never_schedules_an_ack() {
         sequence: 0,
         send_stream_id: 0x0102_0304,
         receive_stream_id: 0x0506_0708,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
     };
     let (_, hostile_outcome) = pipe(
         &mut side_a,
