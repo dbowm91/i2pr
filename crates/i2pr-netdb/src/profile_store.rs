@@ -1547,6 +1547,57 @@ mod tests {
         );
     }
 
+    /// Adoption classifies every retained peer and keeps the adopted
+    /// store's own record and byte ceilings.
+    #[test]
+    fn adoption_classifies_every_retained_peer() {
+        let mut source = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        let high = bundle(0x930);
+        let standard = bundle(0x931);
+        source.insert(validate_with_options(&high, 1, caps_options("Nf")));
+        source.insert(validate_with_options(&standard, 1, caps_options("L")));
+
+        let adopted = ProfileStore::adopt(ProfileStoreConfig::default(), source, 5);
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(adopted.peers().len(), 2);
+        assert_eq!(
+            adopted.peers().config(),
+            RouterInfoStoreConfig::default(),
+            "adoption keeps the adopted store's ceilings"
+        );
+
+        let high_key = validate_with_options(&high, 1, caps_options("Nf")).key();
+        let high_profile = adopted.profile(&high_key).expect("profile");
+        assert_eq!(high_profile.tier(), ProfileTier::HighCapacity);
+        assert!(high_profile.advertises_floodfill());
+
+        let standard_key = validate_with_options(&standard, 1, caps_options("L")).key();
+        let standard_profile = adopted.profile(&standard_key).expect("profile");
+        assert_eq!(standard_profile.tier(), ProfileTier::Standard);
+        assert!(!standard_profile.advertises_floodfill());
+    }
+
+    /// A strictly newer record replaces the old one and re-classifies the
+    /// peer, but the peer's observed state survives: the peer is the same
+    /// identity, so what was learned about it still holds.
+    #[test]
+    fn a_replacement_reclassifies_the_peer_and_keeps_its_observed_state() {
+        let mut store = ProfileStore::default();
+        let signer = bundle(0x932);
+        store.insert(validate_with_options(&signer, 1, caps_options("L")), 1);
+        let key = validate_with_options(&signer, 1, caps_options("L")).key();
+        store.observe_answered(&key, 2);
+        let outcome = store.insert(validate_with_options(&signer, 100, caps_options("Nf")), 100);
+        assert_eq!(outcome, ProfileInsertOutcome::Replaced);
+        let profile = store.profile(&key).expect("profile");
+        assert_eq!(profile.tier(), ProfileTier::HighCapacity);
+        assert_eq!(
+            profile.state(),
+            ProfileState::Answered,
+            "the observed state survives a replacement"
+        );
+    }
+
     /// Invariant 7: the same store contents produce the same bytes, not
     /// merely the same selection.
     #[test]

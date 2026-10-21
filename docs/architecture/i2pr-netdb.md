@@ -68,7 +68,7 @@ It must **not** own:
 ## Module layout
 
 `crates/i2pr-netdb/src/` holds 27 modules plus `lib.rs`
-(20 553 lines total; line counts from `wc -l`).
+(20 593 lines total; line counts from `wc -l`).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
@@ -86,8 +86,8 @@ It must **not** own:
 | `lookup_engine` | `lookup_engine.rs` | 1364 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 357 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
 | `lookup_policy` | `lookup_policy.rs` | 468 | Bounded lookup budgets and nearest-N floodfill candidate selection | `LookupPolicy`, `LookupPolicyError`, `FloodfillSelection`, `select_floodfill_candidates`, `MAX_SUGGESTED_HASH_LIMIT`, `DEFAULT_*` budget constants |
-| `profile` | `profile.rs` | 826 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, and the capacity-class parser | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
-| `profile_store` | `profile_store.rs` | 1 575 | Plan 488 tiered bounded profile store over the Plan 103 validated-RouterInfo store: classification, failure model, maintenance pass, and the bounded sanitized projection | `ProfileStore`, `ProfileStoreConfig`, `ProfileStoreStats`, `ProfileInsertOutcome`, `ObserveOutcome`, `MaintenanceReport`, `ProfileProjection`, `ProfileProjectionRecord`, `ProfileProjectionError`, `RestoreReport` |
+| `profile` | `profile.rs` | 832 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, and the capacity-class parser | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
+| `profile_store` | `profile_store.rs` | 1 619 | Plan 488 tiered bounded profile store over the Plan 103 validated-RouterInfo store: classification, failure model, maintenance pass, and the bounded sanitized projection | `ProfileStore`, `ProfileStoreConfig`, `ProfileStoreStats`, `ProfileInsertOutcome`, `ObserveOutcome`, `MaintenanceReport`, `ProfileProjection`, `ProfileProjectionRecord`, `ProfileProjectionError`, `RestoreReport` |
 | `provenance` | `provenance.rs` | 476 | Plan 271 bounded privacy-safe provenance metadata and the pure namespace/disclosure eligibility policy | `ProvenanceIndex`, `RecordProvenance`, `RecordId`, `NetDbNamespace`, `ClientNamespaceId`, `InboundProvenance`, `StorePurpose`, `ProvenanceLimits`, `Eligibility` (re-exported as `ProvenanceEligibility`) |
 | `publication` | `publication.rs` | 696 | Local RouterInfo publication coordinator emitting one bounded `DatabaseStore` per nearest floodfill | `PublicationCoordinator`, `PublicationAttempt`, `PublicationAttemptRecord`, `PublicationAttemptState`, `PublicationCorrelation`, `PublicationSnapshot`, `PublicationError`, `MAX_PUBLICATION_ATTEMPTS` |
 | `replication` | `replication.rs` | 308 | Plan 275 bounded source-excluding direct DatabaseStore action planning over current/next daily routing keys | `ReplicationPlanner`, `ReplicationPolicy`, `ReplicationPlan`, `ReplicationStats`, `ReplicationError`, `DirectFloodAction`, `FloodfillPeerView`, `RoutingKeyClass`, `nearest_peers` |
@@ -95,7 +95,7 @@ It must **not** own:
 | `resource` | `resource.rs` | 154 | Plan 276 shared floodfill admission budgets with drop-released leases | `FloodfillResourceBudget`, `FloodfillResourcePolicy`, `FloodfillResourceSnapshot`, `ResourceKind`, `ResourceLease` |
 | `router_info` | `router_info.rs` | 598 | RouterInfo validation, `RouterHash` derivation, and the validated boundary | `ValidatedRouterInfo`, `RouterHash`, `router_hash`, `RouterInfoValidationPolicy` (also re-exported as `ValidationPolicy`), `ValidationContext`, `RouterInfoValidationError` |
 | `routing` | `routing.rs` | 384 | XOR distance, daily routing-key derivation, `NearestSelection` ordering | `xor_distance`, `daily_routing_key`, `format_daily_key`, `NearestSelection`, `RoutingKeyError` |
-| `selection` | `selection.rs` | 591 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `select_candidates`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
+| `selection` | `selection.rs` | 581 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `select_candidates`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
 | `server_store` | `server_store.rs` | 731 | Plan 272 main-router-only, explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters | `ServerNetDb`, `ServerNetDbConfig`, `ValidatedNetDbRecord`, `ServerInsertOutcome`, `MaintenanceBatch`, `daily_rollover_due` |
 | `store` | `store.rs` | 584 | Bounded in-memory `RouterInfoStore` with checked arithmetic and deterministic replacement semantics | `RouterInfoStore`, `RouterInfoStoreConfig`, `RouterInfoStoreStats`, `InsertOutcome` |
 | `store_message` | `store_message.rs` | 318 | Plan 105 bounded ingestion handler for `DatabaseStore` arriving outside an active lookup | `handle_unsolicited_databasestore`, `UnsolicitedStorePolicy`, `UnsolicitedStoreOutcome`, `UnsolicitedStoreError` |
@@ -922,21 +922,21 @@ What is **not** claimed, stated explicitly:
 | `MAX_TRACKED_SOURCES` | 1 024 (module-private) | `floodfill_service.rs:24` |
 | `MAX_TRACKED_KEYS` | 2 048 (module-private) | `floodfill_service.rs:25` |
 | `DAY_MS` / `RI_ROLLOVER_MS` / `LS_ROLLOVER_MS` / `NEXT_KEY_TARGETS` | 86 400 000 / 45 min / 10 min / 2 | `replication.rs:12-15` |
-| `MAX_PROFILE_SCORE` / `MIN_PROFILE_SCORE` | 1 000 / 0 | `profile.rs:22,26` |
-| `SCORE_BASE` | 100 | `profile.rs:50` |
-| `SCORE_CREDIT_ANSWERED` / `_ANSWERED_EMPTY` / `_REFUSED` | 400 / 150 / 25 | `profile.rs:54,62,68` |
-| `SCORE_PENALTY_UNANSWERED` / `_UNREACHABLE` / `_MISBEHAVING` | 50 / 75 / 300 | `profile.rs:74,80,89` |
-| `MAX_CONSECUTIVE_FAILURES` / `MAX_TOTAL_FAILURES` / `MAX_ANSWERED_COUNT` | 32 / 1 000 / 1 000 | `profile.rs:95,98,101` |
-| `TIER_BONUS_HIGH_CAPACITY` / `_STANDARD` / `_UNTRACKED` | 120 / 40 / 0 | `profile.rs:107,112,118` |
-| `DEFAULT_MAX_PROFILES` | 4 096 | `profile_store.rs:36` |
-| `DEFAULT_MAX_HIGH_CAPACITY_PROFILES` / `_STANDARD_` / `_UNTRACKED_` | 1 024 / 2 048 / 1 024 | `profile_store.rs:39,42,45` |
-| `DEFAULT_MAX_PROJECTION_BYTES` | 256 KiB | `profile_store.rs:48` |
-| `DEFAULT_DEMOTE_AFTER_MS` / `DEFAULT_DROP_AFTER_MS` | 15 min / 60 min | `profile_store.rs:51,54` |
-| `DEFAULT_MAINTENANCE_INTERVAL_MS` | 60 s | `profile_store.rs:57` |
-| `PROFILE_PROJECTION_VERSION` | 1 | `profile_store.rs:60` |
-| `MAX_SELECTION_COUNT` | 64 | `selection.rs:19` |
-| `MAX_PARTICIPATION_TRACKED_PEERS` | 4 096 | `selection.rs:22` |
-| `DEFAULT_MAX_PARTICIPATION` | 8 | `selection.rs:25` |
+| `MAX_PROFILE_SCORE` / `MIN_PROFILE_SCORE` | 1 000 / 0 | `profile.rs:26,29` |
+| `SCORE_BASE` | 100 | `profile.rs:36` |
+| `SCORE_CREDIT_ANSWERED` / `_ANSWERED_EMPTY` / `_REFUSED` | 400 / 150 / 25 | `profile.rs:39,47,50` |
+| `SCORE_PENALTY_UNANSWERED` / `_UNREACHABLE` / `_MISBEHAVING` | 50 / 75 / 300 | `profile.rs:53,56,62` |
+| `MAX_CONSECUTIVE_FAILURES` / `MAX_TOTAL_FAILURES` / `MAX_ANSWERED_COUNT` | 32 / 1 000 / 1 000 | `profile.rs:65,68,71` |
+| `TIER_BONUS_HIGH_CAPACITY` / `_STANDARD` / `_UNTRACKED` | 120 / 40 / 0 | `profile.rs:74,77,84` |
+| `DEFAULT_MAX_PROFILES` | 4 096 | `profile_store.rs:38` |
+| `DEFAULT_MAX_HIGH_CAPACITY_PROFILES` / `_STANDARD_` / `_UNTRACKED_` | 1 024 / 2 048 / 1 024 | `profile_store.rs:41,44,47` |
+| `DEFAULT_MAX_PROJECTION_BYTES` | 256 KiB | `profile_store.rs:50` |
+| `DEFAULT_DEMOTE_AFTER_MS` / `DEFAULT_DROP_AFTER_MS` | 15 min / 60 min | `profile_store.rs:53,56` |
+| `DEFAULT_MAINTENANCE_INTERVAL_MS` | 60 s | `profile_store.rs:59` |
+| `PROFILE_PROJECTION_VERSION` | 1 | `profile_store.rs:62` |
+| `MAX_SELECTION_COUNT` | 64 | `selection.rs:33` |
+| `MAX_PARTICIPATION_TRACKED_PEERS` | 4 096 | `selection.rs:36` |
+| `DEFAULT_MAX_PARTICIPATION` | 8 | `selection.rs:39` |
 
 ## Dependencies
 
@@ -986,12 +986,12 @@ synchronous, bounded, and drop-released.
 
 ## Tests
 
-345 tests, all local, all deterministic; no root, namespaces, Java I2P,
+347 tests, all local, all deterministic; no root, namespaces, Java I2P,
 i2pd, or Internet connection. `cargo test --locked -p i2pr-netdb
---all-targets -- --test-threads=1` passes: **237 in-crate unit tests,
+--all-targets -- --test-threads=1` passes: **239 in-crate unit tests,
 108 integration tests, 0 failed, 0 ignored.**
 
-Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 088 lines):
+Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 097 lines):
 
 | File | Lines | Tests | Coverage |
 | --- | ---: | ---: | --- |
@@ -1001,10 +1001,10 @@ Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 088 lines):
 | `lease_set2_integration.rs` | 201 | 8 | `DestinationHash` indexing, the Plan 119 signature path, typed rejection of an invalid signature, a wrong expected key, and an expired LS2, deterministic replacement idempotency, swap on different bytes, capacity isolation from `RouterInfoStore`, `LeaseSet2StoreStats` contract |
 | `els2_type11_profile.rs` | 769 | 18 | Plan 346 ELS2 type-11 deployed signature-profile classification and verification |
 | `floodfill_type5_serve.rs` | 834 | 13 | Plan 332/346 floodfill store-and-serve of encrypted LeaseSet2 records |
-| `profile_boundary.rs` | 297 | 4 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
+| `profile_boundary.rs` | 306 | 4 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
 
-In-crate `#[cfg(test)]` modules (237 tests) are distributed as:
-`profile_store` 23, `local` 19, `profile` 18, `floodfill_service` 16,
+In-crate `#[cfg(test)]` modules (239 tests) are distributed as:
+`profile_store` 25, `local` 19, `profile` 18, `floodfill_service` 16,
 `lease_set2` 14, `lookup_policy` 14, `selection` 14, `routing` 13,
 `lookup_engine` 13, `store` 12, `router_info` 11, `publication` 11,
 `base64` 9, `lookup_action` 9, `reseed` 9, `lookup_id` 8,

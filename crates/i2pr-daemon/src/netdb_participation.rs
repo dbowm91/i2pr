@@ -26,9 +26,8 @@ use std::time::Duration;
 
 use i2pr_netdb::{
     Candidate, MaintenanceReport, ObserveOutcome, ParticipationLedger, ProfileInsertOutcome,
-    ProfileProjection, ProfileProjectionError, ProfileState, ProfileStore, ProfileStoreConfig,
-    ProfileStoreStats, ProfileTier, RouterHash, RouterInfoStore, SelectionConstraints,
-    ValidatedRouterInfo, select_candidates,
+    ProfileProjection, ProfileProjectionError, ProfileStore, ProfileStoreConfig, ProfileStoreStats,
+    RouterHash, RouterInfoStore, SelectionConstraints, ValidatedRouterInfo, select_candidates,
 };
 use i2pr_proto::Hash;
 
@@ -92,6 +91,25 @@ impl ParticipationReceipt {
             ParticipationReceiptKind::Projection => "projection",
         }
     }
+}
+
+/// The summary of a batch learn.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LearnSummary {
+    /// Peers newly inserted.
+    pub inserted: usize,
+    /// Peers whose record was byte-identical to the retained one.
+    pub idempotent: usize,
+    /// Peers whose strictly newer record replaced the retained one.
+    pub replaced: usize,
+    /// Peers whose record conflicted with the retained one.
+    pub conflict: usize,
+    /// Peers whose strictly older record was rejected.
+    pub stale: usize,
+    /// Peers refused because the underlying store was at capacity.
+    pub capacity_exceeded: usize,
+    /// Peers refused because the profile tier was at capacity.
+    pub profile_capacity_exceeded: usize,
 }
 
 /// The outcome of loading a persisted projection.
@@ -205,6 +223,33 @@ impl PeerParticipationDriver {
         let outcome = self.store.insert(validated, self.clock_ms);
         self.emit_receipt(ParticipationReceiptKind::Learned, 0);
         outcome
+    }
+
+    /// Learns a batch of validated peers and records **one** receipt for the
+    /// batch.
+    ///
+    /// A bulk import would otherwise churn the bounded receipt log with one
+    /// aggregate receipt per peer.
+    pub fn learn_all(
+        &mut self,
+        records: impl IntoIterator<Item = ValidatedRouterInfo>,
+    ) -> LearnSummary {
+        let mut summary = LearnSummary::default();
+        for validated in records {
+            match self.store.insert(validated, self.clock_ms) {
+                ProfileInsertOutcome::Inserted => summary.inserted += 1,
+                ProfileInsertOutcome::Idempotent => summary.idempotent += 1,
+                ProfileInsertOutcome::Replaced => summary.replaced += 1,
+                ProfileInsertOutcome::Conflict => summary.conflict += 1,
+                ProfileInsertOutcome::StaleReplacement => summary.stale += 1,
+                ProfileInsertOutcome::CapacityExceeded => summary.capacity_exceeded += 1,
+                ProfileInsertOutcome::ProfileCapacityExceeded => {
+                    summary.profile_capacity_exceeded += 1;
+                }
+            }
+        }
+        self.emit_receipt(ParticipationReceiptKind::Learned, 0);
+        summary
     }
 
     /// Records that a peer answered with the requested data.
@@ -461,21 +506,11 @@ fn receipt_digest(stats: &ProfileStoreStats, selected_count: u32) -> [u8; 32] {
     digest
 }
 
-/// Returns the stable label of a state, for receipts and evidence files.
-pub const fn state_label(state: ProfileState) -> &'static str {
-    state.label()
-}
-
-/// Returns the stable label of a tier, for receipts and evidence files.
-pub const fn tier_label(tier: ProfileTier) -> &'static str {
-    tier.label()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use i2pr_crypto::RouterIdentityBundle;
-    use i2pr_netdb::{ValidationContext, router_hash};
+    use i2pr_netdb::{RouterInfoStoreConfig, ValidationContext, router_hash};
     use i2pr_proto::{Date, Mapping};
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
@@ -522,6 +557,45 @@ mod tests {
             !rendered.contains(&format!("{:?}", key_of(&signer))),
             "a receipt must not name a peer"
         );
+    }
+
+    #[test]
+    fn a_batch_learn_emits_one_receipt_and_summarises_the_outcomes() {
+        let mut driver = PeerParticipationDriver::new(ProfileStoreConfig::default());
+        driver.advance_time(1);
+        let signer = bundle(0xC04);
+        let summary = driver.learn_all([validate(&signer, 1), validate(&signer, 1)]);
+        assert_eq!(summary.inserted, 1);
+        assert_eq!(summary.idempotent, 1);
+        assert_eq!(driver.receipt_count(), 1);
+        assert_eq!(driver.receipts()[0].kind, ParticipationReceiptKind::Learned);
+    }
+
+    #[test]
+    fn the_driver_adopts_an_existing_store() {
+        let mut source = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        let signer = bundle(0xC05);
+        source.insert(validate(&signer, 1));
+        let mut driver = PeerParticipationDriver::adopt(ProfileStoreConfig::default(), source, 10);
+        driver.advance_time(10);
+        assert_eq!(driver.store().len(), 1);
+        assert_eq!(driver.stats().profile_count, 1);
+    }
+
+    #[test]
+    fn the_shared_handle_applies_a_closure_to_the_driver() {
+        let mut driver = PeerParticipationDriver::new(ProfileStoreConfig::default());
+        driver.advance_time(1);
+        let signer = bundle(0xC06);
+        driver.learn(validate(&signer, 1));
+        let handle = PeerParticipationHandle::new(driver);
+        let count = handle.with(|driver| driver.store().len());
+        assert_eq!(count, Some(1));
+        let learned = handle.with(|driver| {
+            let signer = bundle(0xC07);
+            driver.learn(validate(&signer, 1))
+        });
+        assert_eq!(learned, Some(ProfileInsertOutcome::Inserted));
     }
 
     #[test]
