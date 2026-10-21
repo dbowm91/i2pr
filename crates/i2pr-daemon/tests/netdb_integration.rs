@@ -87,6 +87,12 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             max_encoded_bytes: 1024 * 1024,
             min_router_infos: 5,
             min_floodfill_advertisers: 2,
+            routing_table_enabled: false,
+            routing_table_max_entries: 1_024,
+            routing_table_max_bucket_size: 8,
+            exploration_enabled: false,
+            exploration_max_peers: 8,
+            exploration_deadline_ms: 30_000,
         },
         reseed: ReseedConfig {
             enabled: false,

@@ -17,10 +17,12 @@
 #![forbid(unsafe_code)]
 
 mod base64;
+mod bucket_set;
 mod databaselookup;
 mod els2;
 mod els2_auth;
 mod els2_transcript;
+mod exploration;
 pub use els2_auth::{
     AuthBlock, AuthClientEntry, AuthClientMaterial, AuthClientPublicKey, AuthCookie, ClientName,
     ELS2_AUTH_CLIENT_ID_LENGTH, ELS2_AUTH_COOKIE_LENGTH, ELS2_AUTH_OKM_LENGTH,
@@ -39,6 +41,7 @@ mod lookup_action;
 mod lookup_engine;
 mod lookup_id;
 mod lookup_policy;
+mod optimized_lookup;
 mod profile;
 mod profile_store;
 mod provenance;
@@ -55,6 +58,13 @@ mod store_message;
 
 pub use base64::{
     I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix, encode_router_info,
+};
+pub use bucket_set::{
+    BUCKET_COUNT, BucketSet, BucketSetConfig, BucketSetConfigError, FloodfillEvidence,
+    MAX_BUCKET_SIZE, MAX_BUCKET_SIZE_LIMIT, MAX_PROJECTION_BYTES, MAX_TABLE_SIZE,
+    MAX_TABLE_SIZE_LIMIT, MIN_BUCKET_SIZE, ROUTING_TABLE_PROJECTION_MAGIC,
+    ROUTING_TABLE_PROJECTION_VERSION, RotationReport, RoutingTableProjectionError, TableCandidate,
+    TableEntry, TableInsertOutcome,
 };
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
 pub use els2::{
@@ -112,6 +122,13 @@ pub use lookup_engine::{
     handle_search_reply, handle_searchreply_message,
 };
 
+pub use exploration::{
+    DEFAULT_EXPLORATION_DEADLINE_MS, DEFAULT_EXPLORATION_MAX_PEERS, ExplorationBudget,
+    ExplorationBudgetError, ExplorationJob, ExplorationPolicy, ExplorationReplyOutcome,
+    ExplorationReport, ExplorationStop, MAX_EXPLORATION_DEADLINE_MS_LIMIT,
+    MAX_EXPLORATION_OUTSTANDING, MAX_EXPLORATION_PEERS_LIMIT, MAX_EXPLORATION_SUGGESTIONS,
+    MIN_EXPLORATION_DEADLINE_MS,
+};
 pub use lookup_id::{
     CoalescedTargets, LookupId, LookupKind, MAX_COALESCED_LOOKUPS, MAX_WAITERS_PER_LOOKUP,
     ReplyPath, ReplyPathError, ReplyPathProvider, WaiterSet, router_hash_from_destination,
@@ -122,6 +139,10 @@ pub use lookup_policy::{
     DEFAULT_PER_ATTEMPT_DEADLINE_MS, DEFAULT_SUGGESTED_HASH_LIMIT, DEFAULT_TOTAL_DEADLINE_MS,
     FloodfillSelection, LookupPolicy, LookupPolicyError, MAX_SUGGESTED_HASH_LIMIT,
     select_floodfill_candidates,
+};
+pub use optimized_lookup::{
+    MAX_OPTIMIZED_PENDING, MAX_OPTIMIZED_PENDING_LIMIT, MAX_OPTIMIZED_QUERYABLE,
+    MAX_OPTIMIZED_QUERYABLE_LIMIT, OptimizedCandidate, OptimizedPlan, plan_optimized_lookup,
 };
 pub use profile::{
     MAX_ANSWERED_COUNT, MAX_CONSECUTIVE_FAILURES, MAX_PROFILE_SCORE, MAX_TOTAL_FAILURES,

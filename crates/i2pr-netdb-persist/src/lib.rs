@@ -15,6 +15,9 @@
 //!   Plan 103 validator into a `RouterInfoStore`.
 //! - [`floodfill_records`] provides a versioned/checksummed durable envelope; every restored
 //!   payload must be decoded and revalidated, and restored provenance narrows to replica.
+//! - [`routing_table`] persists the Plan 489 floodfill-indexed routing table as a bounded,
+//!   sanitized, digest-framed projection. The table is derived state: a missing, corrupt or
+//!   expired projection is discarded and the router rebuilds the table through exploration.
 //!
 //! This crate is the canonical composition owner for Plan 104; Plan 105
 //! and Plan 106 consume its typed APIs without reaching into the
@@ -25,6 +28,7 @@
 pub mod cache_loader;
 pub mod floodfill_records;
 pub mod reseed_ingest;
+pub mod routing_table;
 
 pub use cache_loader::{
     CacheLoader, CacheLoaderLimits, CacheLoaderReport, CacheLoaderScanBudget, LoadedCacheRecord,
@@ -36,4 +40,8 @@ pub use floodfill_records::{
 pub use i2pr_netdb::ReseedEntryReport;
 pub use reseed_ingest::{
     ReseedBundleReport, ReseedIngestLimits, ReseedIngestor, ReseedInsertCounts, ReseedSummary,
+};
+pub use routing_table::{
+    MAX_ROUTING_TABLE_BYTES, ROUTING_TABLE_CACHE_NAME, RoutingTableLoad, RoutingTablePersistError,
+    RoutingTableStore,
 };

@@ -25,6 +25,18 @@ const MAX_ALLOWED_NETDB_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ALLOWED_RESEED_SOURCES: usize = 16;
 const MAX_ALLOWED_RESEED_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ALLOWED_BOOTSTRAP_RECORDS: u64 = 65_536;
+/// Plan 489: the largest routing table the daemon accepts.
+const MAX_ALLOWED_ROUTING_TABLE_ENTRIES: u64 = 16_384;
+/// Plan 489: the largest routing-table bucket the daemon accepts.
+const MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE: u64 = 64;
+/// Plan 489: the largest exploration peer budget the daemon accepts.
+const MAX_ALLOWED_EXPLORATION_PEERS: u64 = 64;
+/// Plan 489: the longest exploration the daemon accepts, in
+/// milliseconds.
+const MAX_ALLOWED_EXPLORATION_DEADLINE_MS: u64 = 3_600_000;
+/// Plan 489: the shortest exploration the daemon accepts, in
+/// milliseconds.
+const MIN_EXPLORATION_DEADLINE_MS: u64 = 1_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -206,6 +218,26 @@ struct RawNetDbConfig {
     min_router_infos: u64,
     #[serde(default = "default_netdb_min_floodfill_advertisers")]
     min_floodfill_advertisers: u64,
+    /// Plan 489: whether the floodfill-indexed routing table is active.
+    #[serde(default = "default_netdb_routing_table_enabled")]
+    routing_table_enabled: bool,
+    /// Plan 489: the maximum number of peers the routing table holds.
+    #[serde(default = "default_netdb_routing_table_max_entries")]
+    routing_table_max_entries: u64,
+    /// Plan 489: the maximum number of peers one routing-table bucket
+    /// holds.
+    #[serde(default = "default_netdb_routing_table_max_bucket_size")]
+    routing_table_max_bucket_size: u64,
+    /// Plan 489: whether the router runs exploratory lookups.
+    #[serde(default = "default_netdb_exploration_enabled")]
+    exploration_enabled: bool,
+    /// Plan 489: the maximum number of peers one exploration may query.
+    #[serde(default = "default_netdb_exploration_max_peers")]
+    exploration_max_peers: u64,
+    /// Plan 489: the maximum lifetime of one exploration, in
+    /// milliseconds.
+    #[serde(default = "default_netdb_exploration_deadline_ms")]
+    exploration_deadline_ms: u64,
 }
 
 impl Default for RawNetDbConfig {
@@ -216,6 +248,12 @@ impl Default for RawNetDbConfig {
             max_encoded_bytes: default_netdb_max_encoded_bytes(),
             min_router_infos: default_netdb_min_router_infos(),
             min_floodfill_advertisers: default_netdb_min_floodfill_advertisers(),
+            routing_table_enabled: default_netdb_routing_table_enabled(),
+            routing_table_max_entries: default_netdb_routing_table_max_entries(),
+            routing_table_max_bucket_size: default_netdb_routing_table_max_bucket_size(),
+            exploration_enabled: default_netdb_exploration_enabled(),
+            exploration_max_peers: default_netdb_exploration_max_peers(),
+            exploration_deadline_ms: default_netdb_exploration_deadline_ms(),
         }
     }
 }
@@ -997,6 +1035,30 @@ const fn default_netdb_min_floodfill_advertisers() -> u64 {
     5
 }
 
+const fn default_netdb_routing_table_enabled() -> bool {
+    false
+}
+
+const fn default_netdb_routing_table_max_entries() -> u64 {
+    1_024
+}
+
+const fn default_netdb_routing_table_max_bucket_size() -> u64 {
+    8
+}
+
+const fn default_netdb_exploration_enabled() -> bool {
+    false
+}
+
+const fn default_netdb_exploration_max_peers() -> u64 {
+    8
+}
+
+const fn default_netdb_exploration_deadline_ms() -> u64 {
+    30_000
+}
+
 const fn default_reseed_enabled() -> bool {
     false
 }
@@ -1591,6 +1653,28 @@ pub struct NetDbConfig {
     /// Minimum floodfill advertiser count required for the
     /// `ready-for-network-integration` state.
     pub min_floodfill_advertisers: usize,
+    /// Plan 489: whether the floodfill-indexed routing table is active.
+    ///
+    /// The table is **off by default**. Plan 489 delivers the table and
+    /// the policy that draws from it; the participation phases that
+    /// follow wire it into the router.
+    pub routing_table_enabled: bool,
+    /// Plan 489: the maximum number of peers the routing table holds.
+    pub routing_table_max_entries: usize,
+    /// Plan 489: the maximum number of peers one routing-table bucket
+    /// holds.
+    pub routing_table_max_bucket_size: usize,
+    /// Plan 489: whether the router runs exploratory lookups.
+    ///
+    /// Exploration is **off by default**, and it cannot be enabled
+    /// while the routing table is off: an exploration with nowhere to
+    /// put the peers it discovers is refused at parse time.
+    pub exploration_enabled: bool,
+    /// Plan 489: the maximum number of peers one exploration may query.
+    pub exploration_max_peers: usize,
+    /// Plan 489: the maximum lifetime of one exploration, in
+    /// milliseconds.
+    pub exploration_deadline_ms: u64,
 }
 
 /// Normalized reseed configuration.
@@ -3369,12 +3453,72 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
             reason: "must not exceed netdb.min_router_infos",
         });
     }
+    if raw.routing_table_max_entries == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_entries",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.routing_table_max_entries > MAX_ALLOWED_ROUTING_TABLE_ENTRIES {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_entries",
+            reason: "exceeds the routing table safety limit",
+        });
+    }
+    if raw.routing_table_max_bucket_size == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_bucket_size",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.routing_table_max_bucket_size > MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_bucket_size",
+            reason: "exceeds the routing table safety limit",
+        });
+    }
+    if raw.exploration_max_peers == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_max_peers",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.exploration_max_peers > MAX_ALLOWED_EXPLORATION_PEERS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_max_peers",
+            reason: "exceeds the exploration safety limit",
+        });
+    }
+    if raw.exploration_deadline_ms < MIN_EXPLORATION_DEADLINE_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_deadline_ms",
+            reason: "must be at least one second",
+        });
+    }
+    if raw.exploration_deadline_ms > MAX_ALLOWED_EXPLORATION_DEADLINE_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_deadline_ms",
+            reason: "exceeds the exploration safety limit",
+        });
+    }
+    if raw.exploration_enabled && !raw.routing_table_enabled {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_enabled",
+            reason: "cannot be enabled while netdb.routing_table_enabled is false",
+        });
+    }
     Ok(NetDbConfig {
         enabled: raw.enabled,
         max_records: raw.max_records as usize,
         max_encoded_bytes: raw.max_encoded_bytes as usize,
         min_router_infos: raw.min_router_infos as usize,
         min_floodfill_advertisers: raw.min_floodfill_advertisers as usize,
+        routing_table_enabled: raw.routing_table_enabled,
+        routing_table_max_entries: raw.routing_table_max_entries as usize,
+        routing_table_max_bucket_size: raw.routing_table_max_bucket_size as usize,
+        exploration_enabled: raw.exploration_enabled,
+        exploration_max_peers: raw.exploration_max_peers as usize,
+        exploration_deadline_ms: raw.exploration_deadline_ms,
     })
 }
 
@@ -4698,6 +4842,94 @@ data_dir = "./state"
         assert_eq!(config.netdb.max_encoded_bytes, 4 * 1024 * 1024);
         assert_eq!(config.netdb.min_router_infos, 50);
         assert_eq!(config.netdb.min_floodfill_advertisers, 5);
+        // Plan 489: the routing table and the exploration are off by
+        // default. Plan 489 delivers the table and the policy; the
+        // participation phases that follow wire it in.
+        assert!(!config.netdb.routing_table_enabled);
+        assert_eq!(config.netdb.routing_table_max_entries, 1_024);
+        assert_eq!(config.netdb.routing_table_max_bucket_size, 8);
+        assert!(!config.netdb.exploration_enabled);
+        assert_eq!(config.netdb.exploration_max_peers, 8);
+        assert_eq!(config.netdb.exploration_deadline_ms, 30_000);
+    }
+
+    #[test]
+    fn the_routing_table_and_the_exploration_can_be_enabled() {
+        let text = format!(
+            "{}\n[netdb]\nrouting_table_enabled = true\nexploration_enabled = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert!(config.netdb.routing_table_enabled);
+        assert!(config.netdb.exploration_enabled);
+    }
+
+    #[test]
+    fn the_exploration_needs_the_routing_table() {
+        let text = format!("{}\n[netdb]\nexploration_enabled = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_routing_table_bounds_are_enforced() {
+        let zero = format!("{}\n[netdb]\nrouting_table_max_entries = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&zero),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_entries",
+                ..
+            })
+        ));
+        let huge = format!(
+            "{}\n[netdb]\nrouting_table_max_entries = {}\n",
+            MINIMAL,
+            MAX_ALLOWED_ROUTING_TABLE_ENTRIES + 1
+        );
+        assert!(matches!(
+            Config::parse(&huge),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_entries",
+                ..
+            })
+        ));
+        let bucket = format!("{}\n[netdb]\nrouting_table_max_bucket_size = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&bucket),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_bucket_size",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_exploration_bounds_are_enforced() {
+        let peers = format!("{}\n[netdb]\nexploration_max_peers = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&peers),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_max_peers",
+                ..
+            })
+        ));
+        let deadline = format!(
+            "{}\n[netdb]\nexploration_deadline_ms = {}\n",
+            MINIMAL,
+            MIN_EXPLORATION_DEADLINE_MS - 1
+        );
+        assert!(matches!(
+            Config::parse(&deadline),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_deadline_ms",
+                ..
+            })
+        ));
     }
 
     #[test]

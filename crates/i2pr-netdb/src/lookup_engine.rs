@@ -154,6 +154,11 @@ pub struct ActiveLookup {
     suggestions: Vec<RouterHash>,
     attempts: usize,
     suggestions_merged: usize,
+    /// Plan 489: the ordered candidate list the caller supplied for
+    /// this lookup. When present, the state machine draws its
+    /// candidates from this list instead of re-selecting against the
+    /// flat store.
+    pinned: Option<Vec<RouterHash>>,
 }
 
 impl ActiveLookup {
@@ -173,6 +178,7 @@ impl ActiveLookup {
             suggestions: Vec::with_capacity(policy_max_suggested_hashes),
             attempts: 0,
             suggestions_merged: 0,
+            pinned: None,
         }
     }
 
@@ -198,6 +204,7 @@ impl ActiveLookup {
             suggestions: Vec::with_capacity(policy_max_suggested_hashes),
             attempts: 0,
             suggestions_merged: 0,
+            pinned: None,
         }
     }
 
@@ -208,6 +215,11 @@ impl ActiveLookup {
         }
     }
 }
+
+/// Plan 489: the maximum number of pinned candidates a lookup may
+/// carry. The list is a bounded view of the routing table, never an
+/// unbounded channel.
+pub const MAX_PINNED_CANDIDATES: usize = 64;
 
 /// Outcome emitted by [`RouterInfoLookup::start`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -279,7 +291,48 @@ impl RouterInfoLookup {
             &state.excluded,
             &self.policy,
         );
-        let result = self.advance_attempt(state, selection);
+        let result = self.advance_attempt(state, &selection.hashes());
+        self.handle_start_outcome(result, lookup_id)
+    }
+
+    /// Plan 489: starts a lookup whose candidates come from an
+    /// explicit, ordered list rather than from the flat store.
+    ///
+    /// The optimized routing table supplies the list: the peers it
+    /// knows, closest to the requested routing key first. The list is
+    /// truncated to [`MAX_PINNED_CANDIDATES`], so a caller cannot turn
+    /// the lookup into an unbounded fan-out.
+    ///
+    /// The routing key is deliberately not a parameter: the pinned
+    /// list already encodes the distance order the routing table
+    /// computed, and the state machine never re-sorts it.
+    ///
+    /// Everything else about the lookup is unchanged: the deadline,
+    /// the peer budget, the duplicate coalescing, the suggestion
+    /// merging and the fail-closed terminal states all behave exactly
+    /// as they do for [`Self::start`]. A lookup that used to fail
+    /// closed still fails closed.
+    pub fn start_with_candidates(
+        &mut self,
+        lookup_id: LookupId,
+        candidates: &[RouterHash],
+    ) -> StartOutcome {
+        if self.active.is_some() {
+            return StartOutcome::Terminal(Box::new(LookupResult::Failure {
+                lookup_id,
+                final_state: LookupFinalState::Cancelled,
+                diagnostics: LookupDiagnostics::default(),
+            }));
+        }
+        self.active_request_id = Some(lookup_id.request_id());
+        let mut state = ActiveLookup::new(lookup_id, self.policy.max_suggested_hashes());
+        let pinned: Vec<RouterHash> = candidates
+            .iter()
+            .copied()
+            .take(MAX_PINNED_CANDIDATES)
+            .collect();
+        state.pinned = Some(pinned.clone());
+        let result = self.advance_attempt(state, &pinned);
         self.handle_start_outcome(result, lookup_id)
     }
 
@@ -382,6 +435,23 @@ impl RouterInfoLookup {
         self.advance_active(store, routing_key)
     }
 
+    /// Plan 489: advances the active lookup after one attempt was
+    /// **answered**.
+    ///
+    /// An answered attempt is not a failure, but the lookup still has
+    /// to move on: the next candidate is the one the state machine has
+    /// not queried yet. The behaviour is identical to
+    /// [`Self::advance_after_attempt_timeout`] — same budget, same
+    /// duplicate coalescing, same fail-closed terminal states — and
+    /// exists so the caller can name the transition honestly.
+    pub fn advance_after_reply(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> StartOutcome {
+        self.advance_active(store, routing_key)
+    }
+
     /// Shared body of [`Self::handle_pending_after_path`] and
     /// [`Self::advance_after_attempt_timeout`]: re-selects against
     /// the authoritative store and emits the next unqueried
@@ -421,14 +491,25 @@ impl RouterInfoLookup {
                 lookup_id: active_id,
             });
         }
-        let selection = crate::lookup_policy::select_floodfill_candidates(
-            store,
-            &state.target,
-            routing_key,
-            &state.excluded,
-            &self.policy,
-        );
-        let outcome = self.advance_attempt(state, selection);
+        // Plan 489: a lookup that was started with an explicit
+        // candidate list keeps drawing from that list. The list is
+        // already ordered closest-first by the routing table, so the
+        // state machine never re-sorts it and never consults the flat
+        // store behind the caller's back.
+        let candidates: Vec<RouterHash> = match &state.pinned {
+            Some(pinned) => pinned.clone(),
+            None => {
+                let selection = crate::lookup_policy::select_floodfill_candidates(
+                    store,
+                    &state.target,
+                    routing_key,
+                    &state.excluded,
+                    &self.policy,
+                );
+                selection.hashes()
+            }
+        };
+        let outcome = self.advance_attempt(state, &candidates);
         self.handle_start_outcome(outcome, active_id)
     }
 
@@ -478,15 +559,14 @@ impl RouterInfoLookup {
     fn advance_attempt(
         &mut self,
         mut state: ActiveLookup,
-        selection: crate::lookup_policy::FloodfillSelection,
+        candidates: &[RouterHash],
     ) -> AdvanceOutcome {
         // Pick the next candidate that has not yet been queried or
         // excluded. The state machine does not record `queried`
         // bookkeeping until we actually emit an attempt; if the
         // reply path is missing, we preserve the active state and
         // return without consuming a candidate.
-        for entry in selection.entries() {
-            let key = entry.key;
+        for &key in candidates {
             if state.queried.contains(&key) || state.excluded.contains(&key) {
                 continue;
             }
@@ -574,6 +654,15 @@ pub fn handle_database_store(
             actual: lookup_id,
             expected: active_id,
         });
+    }
+    if active.kind == LookupKind::Exploratory {
+        // Plan 489: an exploratory lookup is answered by a
+        // `DatabaseSearchReply`, never by a stored record. A
+        // `DatabaseStore` that happens to name the random search key
+        // must not complete the lookup: the exploration's answer is
+        // the peer list, and the peer list is the only thing the
+        // exploration job consumes.
+        return Ok(ResponseOutcome::Continue);
     }
     let target = active.target;
     let key = RouterHash::from_hash(store_message.key);
