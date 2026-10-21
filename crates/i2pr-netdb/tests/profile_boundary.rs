@@ -1,8 +1,14 @@
-//! Plan 488 static boundary guard for the `i2pr-netdb` crate.
+//! Plan 488/489 static boundary guard for the `i2pr-netdb` crate.
 //!
 //! Plan 488's first invariant is that the crate stays runtime-neutral: it
 //! gains no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no
 //! task ownership, and no unchecked RouterInfo insertion path.
+//!
+//! Plan 489 adds a second, sharper invariant to the same guard: the
+//! routing table, the exploration job and the optimized lookup plan must
+//! not read a clock. Every time input they use — the publication date,
+//! the day boundary, the exploration deadline — is supplied by the
+//! caller, so the table's contents are reproducible.
 //!
 //! `scripts/check-runtime-boundaries.sh` has **no `i2pr-netdb` section**,
 //! so nothing in the routine floor enforces that invariant today. This
@@ -37,6 +43,14 @@ const FORBIDDEN: &[(&str, &str)] = &[
     (
         "insert_unchecked",
         "the Plan 103 unchecked-insertion prohibition stands",
+    ),
+    (
+        "std::time::Instant",
+        "the Plan 489 table and job must not read a monotonic clock",
+    ),
+    (
+        "std::time::SystemTime",
+        "the Plan 489 table and job must not read a wall clock",
     ),
 ];
 
@@ -241,6 +255,51 @@ fn the_crate_sources_carry_no_forbidden_construct() {
         failures.is_empty(),
         "the crate must stay runtime-neutral:\n{}",
         failures.join("\n")
+    );
+}
+
+/// The Plan 489 modules the guard must cover.
+const PLAN_489_MODULES: &[&str] = &["bucket_set.rs", "exploration.rs", "optimized_lookup.rs"];
+
+#[test]
+fn the_guard_scans_the_plan_489_modules() {
+    // The guard scans the whole `src/` directory, so a new module is
+    // covered by construction. This test makes that coverage explicit:
+    // if a Plan 489 module were renamed or dropped, the guard would
+    // notice instead of silently scanning less.
+    let root = crate_source();
+    let mut scanned: Vec<String> = fs::read_dir(&root)
+        .expect("read the crate source directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .collect();
+    scanned.sort();
+    for module in PLAN_489_MODULES {
+        assert!(
+            scanned.iter().any(|name| name == module),
+            "the guard must scan {module}; it scanned {scanned:?}"
+        );
+    }
+}
+
+#[test]
+fn the_guard_reports_a_clock_read() {
+    // The inverted probe for the Plan 489 invariant: a source that
+    // reads a clock must be reported, in the same way a source that
+    // owns a task is.
+    let violating = "fn now() -> std::time::Instant { std::time::Instant::now() }";
+    let found = violations(violating);
+    assert!(
+        found
+            .iter()
+            .any(|(token, _, _)| token == "std::time::Instant"),
+        "a clock read must be reported: {found:?}"
     );
 }
 

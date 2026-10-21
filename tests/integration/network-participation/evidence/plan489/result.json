@@ -1,0 +1,26 @@
+{
+  "exploration": {
+    "indexed": 1,
+    "refused": 0,
+    "suggested": 1,
+    "wire_lookup_type": 3
+  },
+  "lookup": {
+    "answered": 1,
+    "pending": 1,
+    "queryable": 1,
+    "wire_lookup_type": 2
+  },
+  "mesh": {
+    "occupied_buckets": 2,
+    "peer_count": 6,
+    "table_members": 2
+  },
+  "plan": 489,
+  "receipt_digests": {
+    "discovered": "068484a9fa9331863a6563c96d16693b2eae8660c3a0d3b17456435a542f0a9b",
+    "explored": "d52515695e18fefb6c81770060ed17f0556c4e5b032411d9fa155d1140447ef2",
+    "looked_up": "ec58059fe1ebdcec3151d405b42c2850f7b9fe7d7a71b29bd3b719798ddd3b03"
+  },
+  "schema": "i2pr-netdb-routing-table-mesh-v1"
+}
