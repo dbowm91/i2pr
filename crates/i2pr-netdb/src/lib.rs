@@ -39,6 +39,8 @@ mod lookup_action;
 mod lookup_engine;
 mod lookup_id;
 mod lookup_policy;
+mod profile;
+mod profile_store;
 mod provenance;
 mod publication;
 mod replication;
@@ -46,6 +48,7 @@ mod reseed;
 mod resource;
 mod router_info;
 mod routing;
+mod selection;
 mod server_store;
 mod store;
 mod store_message;
@@ -120,6 +123,21 @@ pub use lookup_policy::{
     FloodfillSelection, LookupPolicy, LookupPolicyError, MAX_SUGGESTED_HASH_LIMIT,
     select_floodfill_candidates,
 };
+pub use profile::{
+    MAX_ANSWERED_COUNT, MAX_CONSECUTIVE_FAILURES, MAX_PROFILE_SCORE, MAX_TOTAL_FAILURES,
+    MIN_PROFILE_SCORE, PeerCapacityClass, Profile, ProfileError, ProfileScore, ProfileState,
+    ProfileTier, SCORE_CREDIT_ANSWERED, SCORE_CREDIT_ANSWERED_EMPTY, SCORE_CREDIT_REFUSED,
+    SCORE_PENALTY_MISBEHAVING, SCORE_PENALTY_UNANSWERED, SCORE_PENALTY_UNREACHABLE,
+    TIER_BONUS_HIGH_CAPACITY, TIER_BONUS_STANDARD, TIER_BONUS_UNTRACKED, network_prefix16,
+};
+pub use profile_store::{
+    DEFAULT_DEMOTE_AFTER_MS, DEFAULT_DROP_AFTER_MS, DEFAULT_MAINTENANCE_INTERVAL_MS,
+    DEFAULT_MAX_HIGH_CAPACITY_PROFILES, DEFAULT_MAX_PROFILES, DEFAULT_MAX_PROJECTION_BYTES,
+    DEFAULT_MAX_STANDARD_PROFILES, DEFAULT_MAX_UNTRACKED_PROFILES, MaintenanceReport,
+    ObserveOutcome, PROFILE_PROJECTION_MAGIC, PROFILE_PROJECTION_VERSION, ProfileInsertOutcome,
+    ProfileProjection, ProfileProjectionError, ProfileProjectionRecord, ProfileStore,
+    ProfileStoreConfig, ProfileStoreStats, RestoreReport,
+};
 pub use provenance::{
     ClientNamespaceId, Eligibility as ProvenanceEligibility, InboundProvenance, NetDbNamespace,
     ProvenanceIndex, ProvenanceLimits, RecordId, RecordProvenance, StorePurpose,
@@ -151,6 +169,10 @@ pub use router_info::{
 };
 pub use routing::{
     NearestSelection, RoutingKeyError, daily_routing_key, format_daily_key, xor_distance,
+};
+pub use selection::{
+    Candidate, DEFAULT_MAX_PARTICIPATION, MAX_PARTICIPATION_TRACKED_PEERS, MAX_SELECTION_COUNT,
+    ParticipationLedger, SelectionConstraints, select_candidates,
 };
 pub use server_store::{
     MaintenanceBatch, ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord,

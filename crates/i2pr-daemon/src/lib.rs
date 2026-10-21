@@ -33,6 +33,7 @@ pub mod i2pcontrol_dispatch;
 pub mod i2pcontrol_inspection;
 pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
+pub mod netdb_participation;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
 mod news;

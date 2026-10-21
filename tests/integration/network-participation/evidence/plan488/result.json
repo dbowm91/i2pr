@@ -1,0 +1,65 @@
+{
+  "maintenance": {
+    "demoted": 2,
+    "dropped": 2,
+    "remaining_peers": 1
+  },
+  "mesh": {
+    "distinct_prefix16": 3,
+    "peer_count": 3
+  },
+  "plan": 488,
+  "projection": {
+    "discarded": 1,
+    "restored": 1
+  },
+  "receipt_digests": {
+    "learned": "4165a29c8374c8b60fc82983a248eed605d6011ef60cd789c659ac25a9bc2c57",
+    "maintained": "4053145e74ddbbaca445dc52d2ad36b1f5507669956d3256fea229bc58a476a1",
+    "observed": "cb186d701694595e4eedc63236973e09ae839409577962270e272db8b2fee51c"
+  },
+  "receipt_state_counts": {
+    "learned": {
+      "answered": 0,
+      "answered-empty": 0,
+      "misbehaving": 0,
+      "never-tried": 3,
+      "refused": 0,
+      "unanswered": 0,
+      "unreachable": 0
+    },
+    "maintained": {
+      "answered": 1,
+      "answered-empty": 0,
+      "misbehaving": 0,
+      "never-tried": 0,
+      "refused": 0,
+      "unanswered": 0,
+      "unreachable": 0
+    },
+    "observed": {
+      "answered": 2,
+      "answered-empty": 0,
+      "misbehaving": 1,
+      "never-tried": 0,
+      "refused": 0,
+      "unanswered": 0,
+      "unreachable": 0
+    }
+  },
+  "schema": "i2pr-netdb-participation-mesh-v1",
+  "selection": {
+    "requested": 3,
+    "responsive_peer_preferred": true,
+    "selected": 1
+  },
+  "states": {
+    "answered": 1,
+    "answered-empty": 0,
+    "misbehaving": 0,
+    "never-tried": 0,
+    "refused": 0,
+    "unanswered": 0,
+    "unreachable": 0
+  }
+}

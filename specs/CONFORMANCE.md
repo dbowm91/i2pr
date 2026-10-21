@@ -610,6 +610,60 @@ What is claimed, and what is not:
   unreadable counter, or a missing denominator fails the whole request closed
   with the field and owning plan named, and never returns a partial RouterInfo.
 
+## NetDb peer profile store (Plan 488)
+
+Plan 488 layered a **peer profile** over the flat Plan 103 validated-RouterInfo
+store. The profile is internal state: a capacity tier, a reachability state,
+bounded counters, and a bounded score per peer, plus a pure selection policy
+that draws diverse candidate sets from it.
+
+What is claimed, and what is not:
+
+- **The claim is a bounded, tiered, honest peer store — not a participation
+  capability.** Plan 488 adds no network role. The router still cannot be
+  found by a peer, still enters the network only through a reseed, and still
+  carries no other router's traffic. The later phases of the
+  [network-participation roadmap](../plans/subsystems/network-participation-roadmap.md)
+  (Plans 489–494) own those roles, and the advertisement comes last.
+- **Nothing is advertised.** The plan changes no `router.version`, no `caps`,
+  no published RouterInfo, and no transport address. The capacity tier is
+  derived from a peer's *signed* `caps` option, which is self-asserted data;
+  it is treated as a selection hint and never as trust. A peer that declares
+  no capacity class is `Untracked` — an honest *unknown*, never a downgrade.
+- **The failure model distinguishes "never tried" from "did not answer".**
+  `ProfileState` keeps `NeverTried`, `Answered`, `AnsweredEmpty`, `Refused`,
+  `Misbehaving`, `Unanswered`, and `Unreachable` apart, and the maintenance
+  pass demotes an aged failure one tier at a time and then drops it with a
+  counted transition. A peer is never silently forgotten.
+- **The score is bounded and explainable.** It is the sum of named credits
+  and penalties inside `[0, 1000]`, and the ordering rule is a requirement
+  rather than an implementation detail: *a peer that answered a lookup
+  without holding the record ranks above a peer that did not answer at all.*
+- **The selection policy is pure and deterministic.** The same store
+  contents and the same constraints produce the same candidate set, byte
+  for byte. The /16 diversity rule is never violated to reach the requested
+  count: a selection that cannot satisfy the rule returns fewer candidates.
+- **Receipts and evidence carry counts and digests only.** A receipt never
+  names a peer: no hash, no address, no key material, no session state, no
+  payload. The private-mesh lane asserts this against the rendered
+  receipts and against the evidence file.
+- **A corrupt or oversized persisted projection is discarded with a count**,
+  never a startup failure. The projection carries a SHA-256 body digest, so
+  truncation or mutation is detected rather than silently applied.
+- **The selection policy is not wired into the router's tunnel building.**
+  Plan 488 delivers the policy and its inputs; the wiring is the consumer's
+  change and belongs to the participation phases that follow. No existing
+  tunnel-building behaviour changed.
+
+Evidence: `crates/i2pr-netdb/src/profile.rs`,
+`crates/i2pr-netdb/src/profile_store.rs`,
+`crates/i2pr-netdb/src/selection.rs`,
+`crates/i2pr-netdb/tests/profile_boundary.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/tests/netdb_participation_mesh.rs`, and the sanitized
+lane artifact `tests/integration/network-participation/evidence/plan488/result.json`.
+The closure record is `plans/closure/network-participation/488-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

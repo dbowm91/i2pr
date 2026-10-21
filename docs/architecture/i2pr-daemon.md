@@ -167,6 +167,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
+| `src/netdb_participation.rs` | 656 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance` |
 | `src/netdb_seam.rs` | 1 206 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
 | `src/netdb_tunnels.rs` | 887 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
@@ -418,7 +419,8 @@ under Key contracts for the lifecycle detail.
 `encrypted_service_resolver`, `error`, `exploratory_build`, `floodfill`,
 `i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
 `i2pcontrol_inspection`,
-`i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
+`i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_participation`,
+`netdb_seam`, `netdb_tunnels`,
 `outbound_lookup`, `outbound_secret`, `outproxy_options`, `outproxy_route`,
 `peer_test`, `router_i2np`,
 `sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
@@ -430,6 +432,7 @@ under Key contracts for the lifecycle detail.
 
 `console` and `i2pcontrol_dispatch` were added by Plans 356–358;
 `app_gateway`, `app_manager_bridge` by Plan 368 and `app_runtime` by Plan 369.
+`netdb_participation` was added by Plan 488.
 
 Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`,
 `mod app_runtime_qualification` (the Plan 369 WP5 `#[cfg(test)]` black-box
@@ -728,6 +731,41 @@ Plan 122 adds a **separate** LeaseSet2 reply-path provider so Plan 117 router-si
 exploration is not consulted for destination lookups: `begin_lease_set2_lookup`,
 `advance_lease_set2_after_path`, `ingest_lease_set2_response`, `ingest_lease_set2_store`,
 `lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, `active_lease_set2_lookup`.
+
+### Peer participation driver (`src/netdb_participation.rs`)
+
+Plan 488's daemon-side owner of the `i2pr-netdb` peer profile store. It
+does three things and nothing else:
+
+- **feeds** the store with the outcomes the router observes — answered,
+  answered without the record, refused, a reply that does not match the
+  requested key, not answered, unreachable;
+- **runs the maintenance pass** on the daemon's clock, so an aged failure is
+  demoted and then dropped instead of lingering forever;
+- **emits receipts** that make the observed state visible without disclosing
+  anything about a peer.
+
+The driver keeps an **explicit clock**: `advance_time(now_ms)` and
+`tick(now_ms)` are the only ways time enters it, so every observation,
+maintenance pass and selection is reproducible. `run_profile_maintenance`
+is the owned periodic future the daemon's service graph runs under the
+runtime's child scope; it owns its cancellation, refuses a maintenance
+period outside `[1 ms, 1 h]`, and returns a typed exit reason. There is no
+ownerless spawn.
+
+`ParticipationReceipt` carries counts, stable tier and state labels, and a
+SHA-256 digest over those counts. It never carries a peer's hash, address,
+key material, session state, or payload — the private-mesh lane asserts
+that a receipt rendered in full carries no peer hash.
+
+`ProjectionLoadOutcome` is the persistence contract: a projection that
+round-trips is `Restored { restored, orphaned, fresh }`; a corrupt or
+oversized projection is `Discarded { reason }` and is **counted**, never a
+startup failure.
+
+**The selection policy is not wired into the router's tunnel building in
+this phase.** Plan 488 delivers the policy and its inputs; the wiring is the
+consumer's change and belongs to the participation phases that follow.
 
 ### Outbound/inbound composition roles
 

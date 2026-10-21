@@ -451,6 +451,9 @@ plan_284_closure = "plans/closure/floodfill/278-status.md"
 plan_285_status = "retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence"
 plan_285_plan_of_record = "plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md"
 plan_285_closure = "plans/closure/floodfill/285-status.md"
+plan_488_plan_of_record = "plans/implementation/network-participation/488-peer-profile-store.md"
+plan_488_closure = "plans/closure/network-participation/488-status.md"
+plan_488_status = "passed-peer-profile-store"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -851,6 +854,26 @@ evidence = [
     "crates/i2pr-netdb/src/local.rs",
     "crates/i2pr-netdb/src/lib.rs",
     "plans/closure/netdb/103-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.peer-profile-store"
+protocol = "reseed-netdb"
+structure = "tiered-bounded-peer-profiles-with-failure-model-score-and-selection-policy"
+scope = "required"
+status = "experimental"
+notes = "Plan 488 layered a peer profile over the Plan 103 validated-RouterInfo store: a capacity tier derived from the peer's signed `caps` option (self-asserted data, treated as a hint and never as trust; an undeclared class is an honest `Untracked`, not a downgrade), a reachability state that distinguishes a peer that was never tried from a peer that was tried and did not answer, a bounded explainable score whose ordering rule ranks a peer that answered without holding the record above a peer that did not answer, a maintenance pass that demotes an aged failure and then drops it with a count, a bounded sanitized persisted projection that is discarded rather than fatal when corrupt or oversized, and a pure selection policy with a seeded shuffle, a /16 diversity rule and a bounded per-peer participation cap. The store is internal and non-advertised: nothing here changes `router.version`, `caps`, the published RouterInfo, or any advertisement. Plan 488 adds NO participation capability: the router is still not a participant until the later phases of the network-participation roadmap land."
+evidence = [
+    "crates/i2pr-netdb/src/profile.rs",
+    "crates/i2pr-netdb/src/profile_store.rs",
+    "crates/i2pr-netdb/src/selection.rs",
+    "crates/i2pr-netdb/tests/profile_boundary.rs",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/tests/netdb_participation_mesh.rs",
+    "tests/integration/network-participation/evidence/plan488/result.json",
+    "plans/implementation/network-participation/488-peer-profile-store.md",
+    "plans/closure/network-participation/488-status.md",
 ]
 advertised = false
 
