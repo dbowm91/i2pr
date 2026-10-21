@@ -371,10 +371,32 @@ mod tests {
         assert_eq!(constraints.bounded_count(), MAX_SELECTION_COUNT);
     }
 
+    /// Capacity 1: a store holding exactly one peer yields exactly one
+    /// candidate.
+    #[test]
+    fn a_capacity_of_one_selects_the_single_peer() {
+        let (store, keys) = store_with_distinct_prefixes(1);
+        let constraints = SelectionConstraints::new(1, 11);
+        let selected = select_candidates(&store, &constraints);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].key, keys[0]);
+    }
+
+    /// Exact load: a store holding exactly N peers yields exactly N
+    /// candidates.
     #[test]
     fn an_exact_load_returns_the_requested_count() {
         let (store, _keys) = store_with_distinct_prefixes(4);
         let constraints = SelectionConstraints::new(4, 11);
+        assert_eq!(select_candidates(&store, &constraints).len(), 4);
+    }
+
+    /// Max+1: a store holding exactly N peers yields N candidates for an
+    /// N+1 request, and never N+1.
+    #[test]
+    fn a_max_plus_one_request_returns_what_the_store_holds() {
+        let (store, _keys) = store_with_distinct_prefixes(4);
+        let constraints = SelectionConstraints::new(5, 11);
         assert_eq!(select_candidates(&store, &constraints).len(), 4);
     }
 

@@ -68,7 +68,7 @@ It must **not** own:
 ## Module layout
 
 `crates/i2pr-netdb/src/` holds 27 modules plus `lib.rs`
-(20 593 lines total; line counts from `wc -l`).
+(20 615 lines total; line counts from `wc -l`).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
@@ -95,7 +95,7 @@ It must **not** own:
 | `resource` | `resource.rs` | 154 | Plan 276 shared floodfill admission budgets with drop-released leases | `FloodfillResourceBudget`, `FloodfillResourcePolicy`, `FloodfillResourceSnapshot`, `ResourceKind`, `ResourceLease` |
 | `router_info` | `router_info.rs` | 598 | RouterInfo validation, `RouterHash` derivation, and the validated boundary | `ValidatedRouterInfo`, `RouterHash`, `router_hash`, `RouterInfoValidationPolicy` (also re-exported as `ValidationPolicy`), `ValidationContext`, `RouterInfoValidationError` |
 | `routing` | `routing.rs` | 384 | XOR distance, daily routing-key derivation, `NearestSelection` ordering | `xor_distance`, `daily_routing_key`, `format_daily_key`, `NearestSelection`, `RoutingKeyError` |
-| `selection` | `selection.rs` | 581 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `select_candidates`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
+| `selection` | `selection.rs` | 615 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `select_candidates`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
 | `server_store` | `server_store.rs` | 731 | Plan 272 main-router-only, explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters | `ServerNetDb`, `ServerNetDbConfig`, `ValidatedNetDbRecord`, `ServerInsertOutcome`, `MaintenanceBatch`, `daily_rollover_due` |
 | `store` | `store.rs` | 584 | Bounded in-memory `RouterInfoStore` with checked arithmetic and deterministic replacement semantics | `RouterInfoStore`, `RouterInfoStoreConfig`, `RouterInfoStoreStats`, `InsertOutcome` |
 | `store_message` | `store_message.rs` | 318 | Plan 105 bounded ingestion handler for `DatabaseStore` arriving outside an active lookup | `handle_unsolicited_databasestore`, `UnsolicitedStorePolicy`, `UnsolicitedStoreOutcome`, `UnsolicitedStoreError` |
@@ -986,9 +986,9 @@ synchronous, bounded, and drop-released.
 
 ## Tests
 
-347 tests, all local, all deterministic; no root, namespaces, Java I2P,
+349 tests, all local, all deterministic; no root, namespaces, Java I2P,
 i2pd, or Internet connection. `cargo test --locked -p i2pr-netdb
---all-targets -- --test-threads=1` passes: **239 in-crate unit tests,
+--all-targets -- --test-threads=1` passes: **241 in-crate unit tests,
 108 integration tests, 0 failed, 0 ignored.**
 
 Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 097 lines):
@@ -1003,9 +1003,9 @@ Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 097 lines):
 | `floodfill_type5_serve.rs` | 834 | 13 | Plan 332/346 floodfill store-and-serve of encrypted LeaseSet2 records |
 | `profile_boundary.rs` | 306 | 4 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
 
-In-crate `#[cfg(test)]` modules (239 tests) are distributed as:
+In-crate `#[cfg(test)]` modules (241 tests) are distributed as:
 `profile_store` 25, `local` 19, `profile` 18, `floodfill_service` 16,
-`lease_set2` 14, `lookup_policy` 14, `selection` 14, `routing` 13,
+`lease_set2` 14, `lookup_policy` 14, `selection` 17, `routing` 13,
 `lookup_engine` 13, `store` 12, `router_info` 11, `publication` 11,
 `base64` 9, `lookup_action` 9, `reseed` 9, `lookup_id` 8,
 `store_message` 5, `databaselookup` 4, `replication` 3, `provenance` 3,
