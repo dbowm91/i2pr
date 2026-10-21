@@ -218,7 +218,7 @@ Layering rules that each phase must respect:
 ## 6. Dependency graph
 
 ```text
-487 (passed) -> 488 peer profile store
+487 (passed) -> 488 peer profile store (passed)
                    -> 489 floodfill-indexed routing table + exploration
                         -> 490 SSU2 introducer (relay) role
                              -> 491 API-version floors + peer eligibility
@@ -250,7 +250,7 @@ Filenames keep global i2pr numbers.
 
 | Plan | State | i2pr token | Implementation | Closure |
 |---|---|---|---|---|
-| 488 | ready | registered-peer-profile-store | `plans/implementation/network-participation/488-peer-profile-store.md` | — |
+| 488 | closed | passed-peer-profile-store | `plans/implementation/network-participation/488-peer-profile-store.md` | `plans/closure/network-participation/488-status.md` (implementation `c796bb0f`) |
 | 489 | ready | registered-floodfill-indexed-routing-table-and-exploration | `plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md` | — |
 | 490 | ready | registered-ssu2-introducer-relay-role | `plans/implementation/network-participation/490-ssu2-introducer-relay-role.md` | — |
 | 491 | ready | registered-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | — |

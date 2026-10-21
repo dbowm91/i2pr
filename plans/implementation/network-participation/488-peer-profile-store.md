@@ -1,7 +1,8 @@
 # Plan 488 — Peer profile store: capacity tiers, failure detection, and the bounded selection policy
 
-**Status:** registered, ready to execute (phase 1 of
-[network participation](../../subsystems/network-participation-roadmap.md))
+**Status:** **closed as `passed-peer-profile-store`** — see
+`plans/closure/network-participation/488-status.md` (implementation
+`c796bb0f`). The body below is preserved as registered.
 **Owner:** `i2pr-netdb` (the store, the tiers, the failure model, the
 selection policy), `i2pr-daemon` (the driver and the receipts)
 **Baseline:** `work/plans-477-480-router-recovery@c43f3404`

@@ -380,7 +380,13 @@ transport-neutral lookup/publication/replication machines
 `PublicationCoordinator`, `ValidatedLeaseSet2` + `LeaseSet2Store`,
 `server_store`/`store_message` surfaces, provenance and routing
 helpers, and local signed RouterInfo construction under the
-non-advertisement guard. Detail: [i2pr-netdb.md](i2pr-netdb.md).
+non-advertisement guard. Since Plan 488 it also owns the **peer profile
+store**: capacity tiers derived from a peer's signed `caps` option, a
+reachability state that separates "never tried" from "did not answer", a
+bounded explainable score, a demote-then-drop maintenance pass, a bounded
+sanitized persisted projection, and the pure /16-diverse selection policy
+with a per-peer participation cap. The store is internal and
+non-advertised. Detail: [i2pr-netdb.md](i2pr-netdb.md).
 
 ### 4.10 `i2pr-netdb-persist` — cache, reseed, and floodfill records
 
@@ -518,7 +524,9 @@ Parses CLI, loads/validates TOML under `deny_unknown_fields` with
 stable exit codes, runs `bootstrap_daemon` (identity → local
 RouterInfo → cache → optional bounded SU3 reseed → store), builds
 the `ServiceGraph`, and supervises shutdown. Owns: `[netdb]`/`[reseed]`
-pipeline (`NetDbSeam`), exploratory build coordinator + tunnel
+pipeline (`NetDbSeam`), the Plan 488 peer participation driver and its
+sanitized receipts (`netdb_participation.rs`), exploratory build
+coordinator + tunnel
 liveness, NetDB-over-tunnels coordinator, destination coordinators,
 `OutboundGatewayRole` lookup/store composition,
 `LocalInboundEndpointRole` dispatch (`outbound_lookup.rs`,
