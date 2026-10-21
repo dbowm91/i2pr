@@ -386,7 +386,14 @@ reachability state that separates "never tried" from "did not answer", a
 bounded explainable score, a demote-then-drop maintenance pass, a bounded
 sanitized persisted projection, and the pure /16-diverse selection policy
 with a per-peer participation cap. The store is internal and
-non-advertised. Detail: [i2pr-netdb.md](i2pr-netdb.md).
+non-advertised. Since Plan 489 it also owns the **floodfill-indexed
+routing table**: a bounded, day-keyed Kademlia structure over the
+floodfill set only, with deterministic furthest-first eviction, a
+bounded exploration job, a pure optimized lookup plan that splits the
+table's peers into queryable and pending, and a bounded sanitized
+projection that carries its day so a restart never resurrects an
+expired table. The table reads no clock and takes every time input from
+the caller. Detail: [i2pr-netdb.md](i2pr-netdb.md).
 
 ### 4.10 `i2pr-netdb-persist` — cache, reseed, and floodfill records
 
@@ -525,7 +532,9 @@ stable exit codes, runs `bootstrap_daemon` (identity → local
 RouterInfo → cache → optional bounded SU3 reseed → store), builds
 the `ServiceGraph`, and supervises shutdown. Owns: `[netdb]`/`[reseed]`
 pipeline (`NetDbSeam`), the Plan 488 peer participation driver and its
-sanitized receipts (`netdb_participation.rs`), exploratory build
+sanitized receipts, and the Plan 489 routing-table driver — the
+exploration job, the optimized lookup and their receipts
+(`netdb_participation.rs`), exploratory build
 coordinator + tunnel
 liveness, NetDB-over-tunnels coordinator, destination coordinators,
 `OutboundGatewayRole` lookup/store composition,

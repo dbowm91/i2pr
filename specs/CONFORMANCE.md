@@ -664,6 +664,71 @@ Evidence: `crates/i2pr-netdb/src/profile.rs`,
 lane artifact `tests/integration/network-participation/evidence/plan488/result.json`.
 The closure record is `plans/closure/network-participation/488-status.md`.
 
+## NetDb floodfill-indexed routing table (Plan 489)
+
+Plan 489 replaced the flat, undifferentiated peer map with a **bounded,
+day-keyed Kademlia routing table over the floodfill set only**, plus a bounded
+exploration job and a pure optimized lookup plan that draws its candidates from
+that table.
+
+What is claimed, and what is not:
+
+- **The claim is a routing table and a selection policy — not a participation
+  capability.** Plan 489 adds no network role. The router is still not found
+  by a peer, still enters the network only through a reseed, and still carries
+  no other router's traffic. The table and the optimized lookup are **not
+  wired into the router's tunnel building**; the wiring belongs to the
+  participation phases that follow. The `[netdb]` keys that expose them
+  (`routing_table_enabled`, `exploration_enabled`) default to **off**, and the
+  exploration cannot be enabled while the routing table is off.
+- **Nothing is advertised.** The plan changes no `router.version`, no `caps`,
+  no published RouterInfo, and no transport address.
+- **Only floodfills are indexed.** A peer whose own signed `RouterInfo` does
+  not advertise the `f` capability is refused and counted, however well
+  connected it is. A peer named by a *verified* floodfill enters the table with
+  weaker "suggested" evidence — a peer that is not itself a verified
+  floodfill can never introduce another peer — and is promoted to signed
+  evidence the moment its own record is resolved. A peer whose resolved record
+  shows it is *not* a floodfill is evicted.
+- **The keyspace is date-keyed.** A peer's position is
+  `SHA256(router_hash || UTC_yyyyMMdd)`, the same daily key the lookup path
+  already uses, and the partition rotates with the UTC day. The persisted
+  projection carries the day it was built for, so **a restart never
+  resurrects an expired table**.
+- **Selection is target-relative and closest-first.** The anchor decides the
+  partition and which peer is evicted first; it never decides which peer a
+  lookup prefers. The plan splits the table's peers into *queryable* — the
+  router holds the peer's `RouterInfo`, so it can be asked — and *pending* —
+  the table knows the peer but its `RouterInfo` is unresolved, so it cannot be
+  asked yet. A peer without an address is never asked.
+- **The exploration job is bounded and cancel-safe.** A peer budget, a
+  deadline, and an outstanding-request table with a hard ceiling. A timeout
+  releases the outstanding slot but the query still counts against the
+  budget; cancelling releases every slot and consumes the budget.
+- **The table is runtime-neutral and reproducible.** It reads no clock, opens
+  no socket and touches no file; every time input is supplied by the caller.
+  The crate-local static guard enforces this, including a clock read as a
+  forbidden construct, with its own inverted probe.
+- **Receipts and evidence carry counts and digests only.** A receipt never
+  names a peer: no hash, no address, no key material, no session state, no
+  payload. The private-mesh lane asserts this against the rendered receipts
+  and against the evidence file, and it asserts that the peer the lookup asks
+  is a member of the routing table — the discriminator that distinguishes a
+  table-driven lookup from a hand-supplied peer.
+- **A corrupt, oversized or expired persisted projection is discarded with a
+  count**, never a startup failure. The projection carries a SHA-256 body
+  digest, so truncation or mutation is detected rather than silently applied.
+
+Evidence: `crates/i2pr-netdb/src/bucket_set.rs`,
+`crates/i2pr-netdb/src/exploration.rs`,
+`crates/i2pr-netdb/src/optimized_lookup.rs`,
+`crates/i2pr-netdb/tests/profile_boundary.rs`,
+`crates/i2pr-netdb-persist/src/routing_table.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/tests/netdb_routing_mesh.rs`, and the sanitized lane
+artifact `tests/integration/network-participation/evidence/plan489/result.json`.
+The closure record is `plans/closure/network-participation/489-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

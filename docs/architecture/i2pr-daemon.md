@@ -167,7 +167,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/netdb_participation.rs` | 720 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance` |
+| `src/netdb_participation.rs` | 1 946 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome` |
 | `src/netdb_seam.rs` | 1 206 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
 | `src/netdb_tunnels.rs` | 887 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
@@ -576,6 +576,12 @@ path** — operator intent is always explicit.
 | `netdb.max_encoded_bytes` | `4 MiB` | (770) |
 | `netdb.min_router_infos` | `50` | (774) |
 | `netdb.min_floodfill_advertisers` | `5` | (778) |
+| `netdb.routing_table_enabled` | `false` | Plan 489; `default_netdb_routing_table_enabled` |
+| `netdb.routing_table_max_entries` | `1_024` | Plan 489; `default_netdb_routing_table_max_entries` |
+| `netdb.routing_table_max_bucket_size` | `8` | Plan 489; `default_netdb_routing_table_max_bucket_size` |
+| `netdb.exploration_enabled` | `false` | Plan 489; `default_netdb_exploration_enabled` |
+| `netdb.exploration_max_peers` | `8` | Plan 489; `default_netdb_exploration_max_peers` |
+| `netdb.exploration_deadline_ms` | `30_000` | Plan 489; `default_netdb_exploration_deadline_ms` |
 | `reseed.enabled` | `false` | `default_reseed_enabled` (782) |
 | `reseed.max_sources` | `4` | (786) |
 | `reseed.max_su3_bytes` | `8 MiB` | (790) |
@@ -621,7 +627,12 @@ non-loopback bind is rejected fail-closed.
 `MAX_ALLOWED_DURATION_SECS = 3_600`, `MAX_ALLOWED_PREFIX_IPV4 = 32`,
 `MAX_ALLOWED_PREFIX_IPV6 = 128`, `MAX_ALLOWED_NETDB_RECORDS = 65_536`,
 `MAX_ALLOWED_NETDB_ENCODED_BYTES = 64 MiB`, `MAX_ALLOWED_RESEED_SOURCES = 16`,
-`MAX_ALLOWED_RESEED_BYTES = 16 MiB`, `MAX_ALLOWED_BOOTSTRAP_RECORDS = 65_536`.
+`MAX_ALLOWED_RESEED_BYTES = 16 MiB`, `MAX_ALLOWED_BOOTSTRAP_RECORDS = 65_536`,
+`MAX_ALLOWED_ROUTING_TABLE_ENTRIES = 16_384`,
+`MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE = 64`,
+`MAX_ALLOWED_EXPLORATION_PEERS = 64`,
+`MAX_ALLOWED_EXPLORATION_DEADLINE_MS = 3_600_000`,
+`MIN_EXPLORATION_DEADLINE_MS = 1_000` (Plan 489).
 
 ### Stable exit codes (`src/error.rs`)
 
@@ -766,6 +777,61 @@ startup failure.
 **The selection policy is not wired into the router's tunnel building in
 this phase.** Plan 488 delivers the policy and its inputs; the wiring is the
 consumer's change and belongs to the participation phases that follow.
+
+### Routing table driver (Plan 489, `src/netdb_participation.rs`)
+
+Plan 489's daemon-side owner of the `i2pr-netdb` floodfill-indexed routing
+table. It extends the Plan 488 module rather than adding a second one, so the
+two drivers share one explicit-clock convention and one receipt discipline.
+
+It does four things and nothing else:
+
+- **indexes** the floodfills the router learns about. A peer whose own signed
+  `RouterInfo` does not advertise `f` is refused and counted;
+- **runs the exploration job**: it issues an exploratory `DatabaseLookup` —
+  wire lookup type `3` — with a random search key, and the peers the answer
+  names enter the table on a verified floodfill's evidence;
+- **drives the optimized lookup**: the candidates come from the routing table,
+  closest to the requested routing key first, split into the peers the router
+  may ask directly (*queryable*) and the peers whose `RouterInfo` must be
+  resolved first (*pending*);
+- **emits receipts** that make the table's state visible without disclosing
+  anything about a peer.
+
+The table is anchored at the router's own position in today's keyspace
+(`daily_routing_key(local_router_hash, date)`), so the partition rotates with
+the UTC day. The driver keeps an **explicit clock** like its Plan 488 sibling:
+`advance_time(now_ms)` is the only way time enters it, so every exploration,
+rotation and lookup is reproducible.
+
+A lookup without a reply path is **not dispatchable**: `begin_lookup` and
+`begin_exploration` return `NeedsReplyPath` until the runtime supplies a
+`ReplyPath`. A direct peer link is not a reply path, and the state machine
+refuses to emit a `DatabaseLookup` without one.
+
+A peer the table knows but whose `RouterInfo` is unresolved is **never asked**:
+`begin_lookup` returns `NeedsPeerResolution { pending }` instead, because a
+peer without an address cannot be reached.
+
+`RoutingReceipt` carries counts — the table size, the occupied buckets, the
+signed and suggested evidence counts, the queryable/pending/refused split — and
+a SHA-256 digest over them. It never carries a peer's hash, address, key
+material, session state, or payload; the private-mesh lane asserts that a
+receipt rendered in full carries no peer hash.
+
+`RoutingProjectionOutcome` is the persistence contract: a projection that
+round-trips is `Restored { peers }`; a corrupt, oversized or expired
+projection is `Discarded { reason }` and is **counted**, never a startup
+failure.
+
+**The routing table and the optimized lookup are not wired into the router's
+tunnel building in this phase.** Plan 489 delivers the table and the policy
+that draws from it; the wiring is the consumer's change and belongs to the
+participation phases that follow. The `[netdb]` configuration section exposes
+the routing-table and exploration keys, and **both default to off**; the
+exploration cannot be enabled while the routing table is off, because an
+exploration with nowhere to put the peers it discovers is refused at parse
+time.
 
 ### Outbound/inbound composition roles
 

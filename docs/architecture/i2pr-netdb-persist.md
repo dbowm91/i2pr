@@ -26,6 +26,11 @@ here:
 3. **Floodfill durable records** (`floodfill_records`) — encode/decode the
    versioned, SHA-256-checksummed `I2FF` envelope and revalidate every
    restored payload before it re-enters the NetDB.
+4. **Routing-table persistence** (`routing_table`, Plan 489) — persist the
+   Plan 489 floodfill-indexed routing table as a bounded, sanitized,
+   digest-framed projection. The table is *derived* state: a missing, corrupt
+   or expired projection is discarded and the router rebuilds the table
+   through exploration.
 
 What it must **not** own, and where that work actually lives:
 
@@ -58,6 +63,7 @@ Flat module layout; no `benches/`, no `fixtures/`, no `tests/` directory.
 | `src/cache_loader.rs` | 379 (1–316 production, 318–379 `#[cfg(test)]`) | Plan 104 bounded persistent RouterInfo cache loader: scan budget, per-file isolation, revalidate-then-insert | `CacheLoader`, `CacheLoaderError`, `CacheLoaderLimits`, `CacheLoaderScanBudget`, `CacheLoaderReport`, `LoadedCacheRecord`, `LoadedCacheState` |
 | `src/floodfill_records.rs` | 525 (1–291 production, 293–525 `#[cfg(test)]`) | Plan 276 versioned, checksummed durable envelope; mandatory decode+revalidate on restore; provenance narrowing | `FLOODFILL_ENVELOPE_VERSION`, `FloodfillRecordEnvelope`, `FloodfillRecordStore`, `PersistError`, `PersistedIngress`, `PersistedPurpose` |
 | `src/reseed_ingest.rs` | 347 (1–285 production, 287–347 `#[cfg(test)]`) | Plan 104 SU3/reseed ingest composition: trust-set dispatch, optional cache mirror, typed counts | `ReseedBundleReport`, `ReseedIngestError`, `ReseedIngestLimits`, `ReseedIngestor`, `ReseedInsertCounts`, `ReseedSummary`, `ReseedEntryReportAlias`, `ReseedEntryReportAliasLocal` |
+| `src/routing_table.rs` | 271 (1–170 production, 172–271 `#[cfg(test)]`) | Plan 489 optional persistence of the floodfill-indexed routing table as a bounded, sanitized, digest-framed projection | `RoutingTableStore`, `RoutingTableLoad`, `RoutingTablePersistError`, `ROUTING_TABLE_CACHE_NAME`, `MAX_ROUTING_TABLE_BYTES` |
 
 ## Public surface
 
@@ -315,6 +321,30 @@ are independent and neither migrates the other.
 `i2pr-daemon` or `i2pr-runtime`; that is by design per Plan 282/283 ("nothing
 in this plan ships a production floodfill path — the owner and the controlled
 composition have no production caller by design").
+
+### 4. `routing_table` — optional persistence of the Plan 489 routing table
+
+The routing table is **derived state**: the router rebuilds it from the
+floodfills it knows, and its keyspace rotates with the UTC day. Its
+persistence is therefore optional — a router that cannot read the projection
+starts with an empty table and rebuilds it through exploration.
+
+- The persisted artifact is the same bounded, sanitized projection the
+  `i2pr-netdb` routing table encodes: the UTC day the table was built for, the
+  peers' `RouterHash`es and their floodfill evidence labels, under a SHA-256
+  digest over the body. No address, no key material, no payload.
+- The projection is bounded (`MAX_ROUTING_TABLE_BYTES`, 128 KiB) **before** it
+  reaches the byte cache, so a table that grew past its ceiling is refused
+  rather than written.
+- The cache filename is a fixed 64-character lowercase hex value — the SHA-256
+  of `i2pr-netdb-routing-table-v1` — because the byte cache accepts only that
+  shape. The name is stable, opaque, and carries no operator-supplied data.
+- A missing projection is `RoutingTableLoad::Absent`; a corrupt, oversized or
+  malformed projection is `RoutingTableLoad::Discarded { reason }`. Neither is
+  an error, and neither fails the router's startup.
+- The anchor — the router's own position in today's keyspace — is the
+  **caller's** input, not the store's: the anchor is the router's identity,
+  not the table's.
 
 ## Dependencies
 

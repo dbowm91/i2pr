@@ -454,6 +454,9 @@ plan_285_closure = "plans/closure/floodfill/285-status.md"
 plan_488_plan_of_record = "plans/implementation/network-participation/488-peer-profile-store.md"
 plan_488_closure = "plans/closure/network-participation/488-status.md"
 plan_488_status = "passed-peer-profile-store"
+plan_489_plan_of_record = "plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md"
+plan_489_closure = "plans/closure/network-participation/489-status.md"
+plan_489_status = "passed-floodfill-indexed-routing-table"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -854,6 +857,28 @@ evidence = [
     "crates/i2pr-netdb/src/local.rs",
     "crates/i2pr-netdb/src/lib.rs",
     "plans/closure/netdb/103-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.floodfill-indexed-routing-table"
+protocol = "reseed-netdb"
+structure = "day-keyed-bounded-kademlia-table-over-the-floodfill-set-with-exploration-job-and-optimized-lookup-plan"
+scope = "required"
+status = "experimental"
+notes = "Plan 489 replaced the flat peer map with a bounded, day-keyed Kademlia routing table over the floodfill set only, plus a bounded exploration job and a pure optimized lookup plan that draws its candidates from that table. A peer whose own signed RouterInfo does not advertise the `f` capability is refused and counted; a peer named by a verified floodfill enters with weaker 'suggested' evidence and is promoted once its own record is resolved. The keyspace is date-keyed (`SHA256(router_hash || UTC_yyyyMMdd)`), so the partition rotates with the UTC day, and the persisted projection carries its day so a restart never resurrects an expired table. Selection is target-relative and closest-first, split into peers the router may ask directly and peers whose RouterInfo must be resolved first. The table is internal and non-advertised: nothing here changes `router.version`, `caps`, the published RouterInfo, or any advertisement. Plan 489 adds NO participation capability: the table and the optimized lookup are not wired into the router's tunnel building, and the `[netdb]` keys that expose them default to off."
+evidence = [
+    "crates/i2pr-netdb/src/bucket_set.rs",
+    "crates/i2pr-netdb/src/exploration.rs",
+    "crates/i2pr-netdb/src/optimized_lookup.rs",
+    "crates/i2pr-netdb/src/lookup_engine.rs",
+    "crates/i2pr-netdb/tests/profile_boundary.rs",
+    "crates/i2pr-netdb-persist/src/routing_table.rs",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/tests/netdb_routing_mesh.rs",
+    "tests/integration/network-participation/evidence/plan489/result.json",
+    "plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md",
+    "plans/closure/network-participation/489-status.md",
 ]
 advertised = false
 
