@@ -461,7 +461,23 @@ impl Ssu2IntroducerService {
         // receipt can never leak one.
         if self.sources.len() >= MAX_INTRODUCER_RATE_SOURCES && !self.sources.contains_key(&source)
         {
-            self.sources.clear();
+            // Evict the oldest window rather than clearing the table: a
+            // flood that cycles many peers must not reset everyone
+            // else's allowance. The eviction is deterministic — the
+            // oldest window start wins, and the lower peer hash breaks
+            // a tie.
+            let oldest = self
+                .sources
+                .iter()
+                .min_by(|(left_hash, left), (right_hash, right)| {
+                    left.window_start_ms
+                        .cmp(&right.window_start_ms)
+                        .then_with(|| left_hash.cmp(right_hash))
+                })
+                .map(|(hash, _)| *hash);
+            if let Some(hash) = oldest {
+                self.sources.remove(&hash);
+            }
         }
         let window = self.sources.entry(source).or_default();
         if now_ms.saturating_sub(window.window_start_ms) >= INTRODUCER_RATE_WINDOW_MS {
@@ -494,9 +510,14 @@ fn map_relay_error(error: RelayError) -> Ssu2IntroducerRefusal {
             Ssu2IntroducerRefusal::InvalidSignature
         }
         RelayError::StaleTimestamp => Ssu2IntroducerRefusal::StaleTimestamp,
-        RelayError::TooManyRequests => Ssu2IntroducerRefusal::BudgetExhausted,
+        RelayError::DuplicateCorrelation => Ssu2IntroducerRefusal::DuplicateRequest,
+        RelayError::UnknownCorrelation => Ssu2IntroducerRefusal::UnknownCorrelation,
         RelayError::WrongRole => Ssu2IntroducerRefusal::NotOurRole,
         RelayError::SenderMismatch => Ssu2IntroducerRefusal::SenderMismatch,
+        RelayError::TooManyRequests
+        | RelayError::PeerQuotaExceeded
+        | RelayError::TooManyTags
+        | RelayError::TagQuotaExceeded => Ssu2IntroducerRefusal::BudgetExhausted,
         _ => Ssu2IntroducerRefusal::TransportRefused,
     }
 }
@@ -798,6 +819,97 @@ mod tests {
             }
         );
         assert_eq!(owner.receipt().refusals.get("rate_limited"), Some(&1));
+    }
+
+    #[test]
+    fn the_rate_limiter_releases_its_state_on_expiry() {
+        let (mut owner, bob) = owner(true);
+        issue_tag(&mut owner, TARGET_HASH, 7);
+        let mut config = Ssu2IntroducerConfig {
+            enabled: true,
+            max_requests_per_minute: 1,
+            max_tracked_requests: MAX_INTRODUCER_TRACKED_REQUESTS,
+        };
+        config.max_requests_per_minute = 1;
+        let mut limited = Ssu2IntroducerService::new(config, owner.runtime.clone(), bob);
+        let event = inbound(
+            REQUESTER_HASH,
+            Ssu2RelayEvent::Request(request(&bob, 51, 7, NOW_SECS as u32, &key(0x11))),
+        );
+        assert!(matches!(
+            limited.on_relay_event(&event, &signers(), NOW_MS, NOW_SECS),
+            Ssu2IntroducerOutcome::IntroRequired { .. }
+        ));
+        let event = inbound(
+            REQUESTER_HASH,
+            Ssu2RelayEvent::Request(request(&bob, 52, 7, NOW_SECS as u32, &key(0x11))),
+        );
+        assert_eq!(
+            limited.on_relay_event(&event, &signers(), NOW_MS, NOW_SECS),
+            Ssu2IntroducerOutcome::Refused {
+                reason: Ssu2IntroducerRefusal::RateLimited
+            }
+        );
+        // The window rolls over: the same source is admitted again.
+        let later = NOW_MS + INTRODUCER_RATE_WINDOW_MS;
+        let event = inbound(
+            REQUESTER_HASH,
+            Ssu2RelayEvent::Request(request(&bob, 53, 7, NOW_SECS as u32, &key(0x11))),
+        );
+        assert!(
+            matches!(
+                limited.on_relay_event(&event, &signers(), later, NOW_SECS),
+                Ssu2IntroducerOutcome::IntroRequired { .. }
+            ),
+            "the rate window must release on expiry"
+        );
+    }
+
+    #[test]
+    fn the_rate_table_evicts_the_oldest_window_without_resetting_the_others() {
+        let (mut owner, bob) = owner(true);
+        issue_tag(&mut owner, TARGET_HASH, 7);
+        let mut limited = Ssu2IntroducerService::new(
+            Ssu2IntroducerConfig {
+                enabled: true,
+                max_requests_per_minute: 1,
+                max_tracked_requests: MAX_INTRODUCER_TRACKED_REQUESTS,
+            },
+            owner.runtime.clone(),
+            bob,
+        );
+        // Fill the source table with distinct peers, one request each.
+        for index in 0..MAX_INTRODUCER_RATE_SOURCES as u32 {
+            let peer = [index as u8 + 1; 32];
+            let mut signers = signers();
+            signers
+                .keys
+                .insert(peer, key(index as u8 + 1).public_key().expect("signer"));
+            let event = inbound(
+                peer,
+                Ssu2RelayEvent::Request(request(
+                    &bob,
+                    60 + index,
+                    7,
+                    NOW_SECS as u32,
+                    &key(index as u8 + 1),
+                )),
+            );
+            limited.on_relay_event(&event, &signers, NOW_MS, NOW_SECS);
+        }
+        assert_eq!(limited.sources.len(), MAX_INTRODUCER_RATE_SOURCES);
+        // A new peer evicts one window instead of clearing the table.
+        let fresh = [0xEE; 32];
+        let mut signers = signers();
+        signers
+            .keys
+            .insert(fresh, key(0xEE).public_key().expect("signer"));
+        let event = inbound(
+            fresh,
+            Ssu2RelayEvent::Request(request(&bob, 200, 7, NOW_SECS as u32, &key(0xEE))),
+        );
+        limited.on_relay_event(&event, &signers, NOW_MS, NOW_SECS);
+        assert_eq!(limited.sources.len(), MAX_INTRODUCER_RATE_SOURCES);
     }
 
     #[test]
