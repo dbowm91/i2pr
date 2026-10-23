@@ -186,6 +186,8 @@ pub enum Ssu2LimitKind {
     OutboundBytes,
     /// Inbound authenticated I2NP messages awaiting dispatch.
     InboundI2np,
+    /// Inbound authenticated relay blocks awaiting the role owner.
+    InboundRelay,
 }
 
 /// Runtime resource limits for SSU2 services.
@@ -209,6 +211,9 @@ pub struct Ssu2RuntimeLimits {
     pub max_outbound_bytes: usize,
     /// Maximum inbound authenticated I2NP messages awaiting dispatch.
     pub max_inbound_i2np_queue: usize,
+    /// Maximum inbound authenticated relay blocks awaiting the role
+    /// owner (Plan 490).
+    pub max_inbound_relay_queue: usize,
 }
 
 impl Default for Ssu2RuntimeLimits {
@@ -223,6 +228,7 @@ impl Default for Ssu2RuntimeLimits {
             max_outbound_datagrams: 256,
             max_outbound_bytes: 1024 * 1024,
             max_inbound_i2np_queue: 64,
+            max_inbound_relay_queue: 16,
         }
     }
 }
@@ -246,6 +252,7 @@ impl Ssu2RuntimeLimits {
             ),
             (Ssu2LimitKind::OutboundBytes, self.max_outbound_bytes),
             (Ssu2LimitKind::InboundI2np, self.max_inbound_i2np_queue),
+            (Ssu2LimitKind::InboundRelay, self.max_inbound_relay_queue),
         ];
         for (kind, value) in values {
             if value == 0 {
@@ -276,6 +283,11 @@ impl Ssu2RuntimeLimits {
             (
                 Ssu2LimitKind::InboundI2np,
                 self.max_inbound_i2np_queue,
+                MAX_SSU2_INBOUND_QUEUE_CEILING,
+            ),
+            (
+                Ssu2LimitKind::InboundRelay,
+                self.max_inbound_relay_queue,
                 MAX_SSU2_INBOUND_QUEUE_CEILING,
             ),
         ];
@@ -392,6 +404,15 @@ pub struct Ssu2RuntimeConfig {
     /// Enables bounded, in-memory source receipts for an explicitly selected
     /// private qualification profile. Disabled for ordinary router operation.
     pub qualification_observer: bool,
+    /// Enables the introducer (Bob) role inside the peer/relay
+    /// coordinator (Plan 490).
+    ///
+    /// When false (default) the runtime owns a disabled introducer: every
+    /// inbound Relay Request is refused with `ServiceDisabled` and no
+    /// relay-tag or request state exists. When true, the role's state
+    /// machine is live; the daemon's `ssu2.introducer_service` key
+    /// (default off) is the only production gate.
+    pub introducer_service: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -781,6 +802,42 @@ pub struct Ssu2InboundI2np {
     pub bytes: Vec<u8>,
 }
 
+/// One authenticated inbound SSU2 relay block at the transport-neutral
+/// handoff (Plan 490).
+///
+/// The runtime decodes and authenticates the block; it never interprets
+/// the relay role. The daemon's role owner owns the disposition.
+#[derive(Debug)]
+pub struct Ssu2InboundRelay {
+    /// Exact link the block arrived on.
+    pub link_id: LinkId,
+    /// Authenticated peer reference.
+    pub peer: PeerId,
+    /// The decoded relay block and the role it belongs to.
+    pub event: Ssu2RelayEvent,
+}
+
+/// The bounded set of relay blocks the runtime can hand off.
+#[derive(Debug)]
+pub enum Ssu2RelayEvent {
+    /// A Relay Request (Alice to Bob).
+    Request(i2pr_transport_ssu2::RelayRequestBlock),
+    /// A Relay Intro (Bob to Charlie).
+    Intro(i2pr_transport_ssu2::RelayIntroBlock),
+    /// A Relay Response (Charlie to Bob).
+    Response(i2pr_transport_ssu2::RelayResponseBlock),
+}
+
+/// One batch of runtime handoff events produced by a datagram or a
+/// scheduler tick.
+#[derive(Debug, Default)]
+pub struct Ssu2InboundBatch {
+    /// Authenticated inbound I2NP messages.
+    pub i2np: Vec<Ssu2InboundI2np>,
+    /// Authenticated inbound relay blocks.
+    pub relay: Vec<Ssu2InboundRelay>,
+}
+
 /// Privacy-safe SSU2 service counters (counts only, no payloads, keys,
 /// tokens, or endpoint histories).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -874,6 +931,9 @@ pub enum Ssu2PublicationUnavailable {
     ReachabilityUnqualified,
     /// The bound endpoint or generated protocol address was invalid.
     InvalidPublication,
+    /// No validated introducer is live, so the introducer-only address
+    /// form cannot be built (Plan 490).
+    NoIntroducers,
 }
 
 /// Test-only deterministic pre-send datagram fault policy.
@@ -1293,6 +1353,7 @@ impl Ssu2NetworkCondition {
 pub struct Ssu2ServiceHandle {
     service: Ssu2RuntimeService,
     inbound: mpsc::Receiver<Ssu2InboundI2np>,
+    relay: mpsc::Receiver<Ssu2InboundRelay>,
     local_v4: Option<SocketAddr>,
     local_v6: Option<SocketAddr>,
 }
@@ -1312,11 +1373,16 @@ impl Ssu2ServiceHandle {
     pub const fn service(&self) -> &Ssu2RuntimeService {
         &self.service
     }
-
     /// Receives the next authenticated inbound I2NP message, or `None`
     /// after service shutdown drains the handoff queue.
     pub async fn next_inbound(&mut self) -> Option<Ssu2InboundI2np> {
         self.inbound.recv().await
+    }
+
+    /// Receives the next authenticated inbound relay block, or `None`
+    /// after service shutdown drains the handoff queue (Plan 490).
+    pub async fn next_relay_event(&mut self) -> Option<Ssu2InboundRelay> {
+        self.relay.recv().await
     }
 
     /// Returns the bound IPv4 socket address, if any.
@@ -1450,8 +1516,10 @@ impl Ssu2RuntimeService {
         };
         let reachability = ReachabilityTracker::new(reachability_policy)
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
-        let peer_relay = Ssu2PeerRelayService::new(Ssu2PeerRelayConfig::default())
-            .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
+        let peer_relay = Ssu2PeerRelayService::new(Ssu2PeerRelayConfig {
+            introducer_enabled: config.introducer_service,
+        })
+        .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         let qualification_observer = if config.qualification_observer {
             Some(
                 crate::ssu2_qualification_observer::Ssu2QualificationObserver::new()
@@ -1634,6 +1702,7 @@ impl Ssu2RuntimeService {
         }
         let (inbound_tx, inbound_rx) =
             mpsc::channel(self.shared.config.limits.max_inbound_i2np_queue);
+        let (relay_tx, relay_rx) = mpsc::channel(self.shared.config.limits.max_inbound_relay_queue);
         {
             let mut guard = self
                 .shared
@@ -1666,9 +1735,12 @@ impl Ssu2RuntimeService {
         if let Some((socket, _)) = bound_v4 {
             let service = self.clone();
             let inbound_tx = inbound_tx.clone();
+            let relay_tx = relay_tx.clone();
             scope
                 .spawn(move |child| async move {
-                    service.run_loop(child, socket, inbound_tx, true).await
+                    service
+                        .run_loop(child, socket, inbound_tx, relay_tx, true)
+                        .await
                 })
                 .map_err(|_| Ssu2BindError::Scope)?;
         }
@@ -1677,7 +1749,7 @@ impl Ssu2RuntimeService {
             scope
                 .spawn(move |child| async move {
                     service
-                        .run_loop(child, socket, inbound_tx.clone(), false)
+                        .run_loop(child, socket, inbound_tx.clone(), relay_tx.clone(), false)
                         .await
                 })
                 .map_err(|_| Ssu2BindError::Scope)?;
@@ -1693,6 +1765,7 @@ impl Ssu2RuntimeService {
         Ok(Ssu2ServiceHandle {
             service: self.clone(),
             inbound: inbound_rx,
+            relay: relay_rx,
             local_v4,
             local_v6,
         })
@@ -1845,6 +1918,156 @@ impl Ssu2RuntimeService {
         self.shared
             .local_router_info_generation
             .load(Ordering::Relaxed)
+    }
+
+    // -------------------------------------------------------------------
+    // Plan 490 — the introducer (Bob) role, driven by the daemon's role
+    // owner. The runtime owns the bounded tables and the socket; the
+    // daemon owns the policy and the receipts.
+    // -------------------------------------------------------------------
+
+    /// Returns whether the introducer (Bob) role is enabled.
+    pub fn introducer_service_enabled(&self) -> bool {
+        self.shared.peer_relay.introducer_enabled()
+    }
+
+    /// Issues one relay tag that identifies `target_hash`.
+    ///
+    /// The specification binds a relay tag to the introduction target:
+    /// the target asks the introducer for a tag and publishes it, and a
+    /// requester presents that tag to name the target. The tag value
+    /// comes from the caller (production: the OS CSPRNG).
+    pub fn issue_relay_tag(
+        &self,
+        tag: u32,
+        target_hash: &[u8; 32],
+        now_secs: u64,
+    ) -> Result<(), i2pr_transport_ssu2::RelayError> {
+        self.shared
+            .peer_relay
+            .issue_introducer_tag(tag, target_hash, now_secs)
+    }
+
+    /// Resolves the peer a live relay tag identifies.
+    ///
+    /// `None` means the tag is unknown or expired; no state is created.
+    pub fn relay_tag_owner(&self, tag: u32, now_secs: u64) -> Option<[u8; 32]> {
+        self.shared.peer_relay.introducer_tag_owner(tag, now_secs)
+    }
+
+    /// Handles one authenticated inbound Relay Request (Bob).
+    ///
+    /// `target_hash` is the peer the request's relay tag identifies; the
+    /// requester's signature is verified over the specification's
+    /// preimage, which binds that target. `requester_signer` is the
+    /// requester's own signing key, resolved by the daemon's role owner
+    /// from a validated RouterInfo.
+    pub fn on_relay_request(
+        &self,
+        block: &i2pr_transport_ssu2::RelayRequestBlock,
+        requester_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_hash: &[u8; 32],
+        requester_signer: &i2pr_proto::SigningPublicKey,
+        request_bytes: usize,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        self.shared.peer_relay.on_relay_request_for_target(
+            block,
+            requester_hash,
+            bob_hash,
+            target_hash,
+            requester_signer,
+            request_bytes,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Handles one authenticated inbound Relay Response (Bob).
+    pub fn on_introducer_relay_response(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<i2pr_transport_ssu2::IntroducerResponseOutcome, i2pr_transport_ssu2::RelayError>
+    {
+        self.shared.peer_relay.on_introducer_relay_response(
+            block,
+            sender_hash,
+            bob_hash,
+            target_signer,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Builds the specification's introducer-only publication material
+    /// from the validated introducer set (Plan 490).
+    ///
+    /// The form omits host/port, publishes the introducer groups and the
+    /// family capability the specification demands alongside them, and
+    /// lists at most three introducers in the table's deterministic
+    /// order. The router's own publication remains refused by
+    /// `ssu2.advertise`; this API only proves the address form.
+    pub fn introducer_publication_material(
+        &self,
+        now_secs: u64,
+    ) -> Result<Ssu2PublicationMaterial, Ssu2PublicationUnavailable> {
+        let introducers = self.shared.peer_relay.select_introducers(now_secs);
+        if introducers.is_empty() {
+            return Err(Ssu2PublicationUnavailable::NoIntroducers);
+        }
+        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse("4")
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let snapshot = i2pr_transport_ssu2::publication::build_publication_snapshot(
+            i2pr_transport_ssu2::publication::PublicationRequest {
+                policy: i2pr_transport_ssu2::publication::PublicationPolicy::new(false, true),
+                static_public: X25519PrivateKey::from_bytes(self.shared.local_static)
+                    .public_bytes(),
+                intro_public: *self.shared.local_intro.as_bytes(),
+                endpoint: None,
+                reachability: i2pr_transport::ReachabilitySnapshot {
+                    state: i2pr_transport::ReachabilityState::Firewalled,
+                    corroboration: 0,
+                    expires_at: std::time::Duration::from_secs(0),
+                    family: i2pr_transport::AddressFamily::Ipv4,
+                },
+                mtu: self.shared.local_mtu,
+                caps: &capabilities,
+                introducers: &introducers,
+                now_secs,
+                evidence_expires_secs: now_secs,
+            },
+        )
+        .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let i2pr_transport_ssu2::publication::PublicationOutcome::IntroducerOnly(snapshot) =
+            snapshot
+        else {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        };
+        let entries = snapshot.option_entries().to_vec();
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let address = RouterAddress::new(
+            10,
+            Date::from_millis(now_secs.saturating_mul(1000)),
+            "SSU2".to_owned(),
+            options,
+        )
+        .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        i2pr_transport_ssu2::publication::parse_snapshot(&snapshot)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        Ok(Ssu2PublicationMaterial {
+            address,
+            evidence_expires_at: std::time::Duration::from_secs(0),
+            reachability: i2pr_transport::ReachabilityState::Firewalled,
+            bound_family: i2pr_transport::AddressFamily::Ipv4,
+        })
     }
 
     /// Builds direct SSU2 publication material only from the actual live bound endpoint and
@@ -5295,6 +5518,7 @@ impl Ssu2RuntimeService {
         now_ms: u64,
         now_secs: u64,
         inbound: &mut Vec<Ssu2InboundI2np>,
+        relay: &mut Vec<Ssu2InboundRelay>,
     ) {
         let mut remove = None;
         let outcome = match state.active.get_mut(&link_id) {
@@ -5417,6 +5641,31 @@ impl Ssu2RuntimeService {
                         state, &link_id, source, &block, now_secs, now_ms,
                     );
                 }
+                // Plan 490: the relay blocks are authenticated by the
+                // session before they surface here. The runtime never
+                // interprets the role; the daemon's role owner owns the
+                // disposition.
+                SessionEvent::RelayRequest(block) => {
+                    relay.push(Ssu2InboundRelay {
+                        link_id,
+                        peer,
+                        event: Ssu2RelayEvent::Request(block),
+                    });
+                }
+                SessionEvent::RelayIntro(block) => {
+                    relay.push(Ssu2InboundRelay {
+                        link_id,
+                        peer,
+                        event: Ssu2RelayEvent::Intro(block),
+                    });
+                }
+                SessionEvent::RelayResponse(block) => {
+                    relay.push(Ssu2InboundRelay {
+                        link_id,
+                        peer,
+                        event: Ssu2RelayEvent::Response(block),
+                    });
+                }
                 _ => {}
             }
         }
@@ -5518,8 +5767,8 @@ impl Ssu2RuntimeService {
         source: SocketAddr,
         is_v4: bool,
         local_addr: Option<SocketAddr>,
-    ) -> Vec<Ssu2InboundI2np> {
-        let mut inbound = Vec::new();
+    ) -> Ssu2InboundBatch {
+        let mut batch = Ssu2InboundBatch::default();
         let max_len = if is_v4 {
             constants::MAX_DATAGRAM_IPV4_LENGTH
         } else {
@@ -5530,7 +5779,7 @@ impl Ssu2RuntimeService {
                 .counters
                 .cheap_drops
                 .fetch_add(1, Ordering::Relaxed);
-            return inbound;
+            return batch;
         }
         let now_ms = self.now_ms();
         let now_secs = wall_secs();
@@ -5539,7 +5788,7 @@ impl Ssu2RuntimeService {
                 .counters
                 .cheap_drops
                 .fetch_add(1, Ordering::Relaxed);
-            return inbound;
+            return batch;
         };
         // Active sessions first: side-effect-free trial match.
         let matched: Option<LinkId> = state
@@ -5555,9 +5804,10 @@ impl Ssu2RuntimeService {
                 bytes,
                 now_ms,
                 now_secs,
-                &mut inbound,
+                &mut batch.i2np,
+                &mut batch.relay,
             );
-            return inbound;
+            return batch;
         }
         // Endpoint-scoped data fallback: the independent peer never
         // updates its initiator destination ID from SessionCreated, so
@@ -5586,9 +5836,10 @@ impl Ssu2RuntimeService {
                 bytes,
                 now_ms,
                 now_secs,
-                &mut inbound,
+                &mut batch.i2np,
+                &mut batch.relay,
             );
-            return inbound;
+            return batch;
         }
         // Pending outbound dials toward this source (single-flight).
         let outbound_key = state
@@ -5606,11 +5857,11 @@ impl Ssu2RuntimeService {
                 now_secs,
             )
         {
-            return inbound;
+            return batch;
         }
         // Pending inbound handshakes awaiting SessionConfirmed.
         if self.drive_pending_confirmed(&mut state, bytes.to_vec(), source, now_ms, now_secs) {
-            return inbound;
+            return batch;
         }
         // New-handshake classification with intro-key prevalidation.
         let mut token_probe = bytes.to_vec();
@@ -5630,7 +5881,7 @@ impl Ssu2RuntimeService {
                 now_secs,
                 local_addr,
             );
-            return inbound;
+            return batch;
         }
         let mut request_probe = bytes.to_vec();
         if parse_session_request(&mut request_probe, &self.shared.local_intro).is_ok() {
@@ -5642,7 +5893,7 @@ impl Ssu2RuntimeService {
                 now_secs,
                 local_addr,
             );
-            return inbound;
+            return batch;
         }
         // Controlled peer-test out-of-session ingress (Plan 283): only
         // when permitted. Parse-only with the local intro key; wrong
@@ -5654,21 +5905,21 @@ impl Ssu2RuntimeService {
                     .counters
                     .cheap_drops
                     .fetch_add(1, Ordering::Relaxed);
-                return inbound;
+                return batch;
             }
             let mut peer_probe = bytes.to_vec();
             if let Ok((_, block)) =
                 parse_out_of_session_peer_test(&mut peer_probe, &self.shared.local_intro)
             {
                 self.ingest_controlled_out_of_session(&mut state, source, &block, now_secs, now_ms);
-                return inbound;
+                return batch;
             }
         }
         self.shared
             .counters
             .cheap_drops
             .fetch_add(1, Ordering::Relaxed);
-        inbound
+        batch
     }
 }
 
@@ -5815,8 +6066,8 @@ impl Ssu2RuntimeService {
     /// and backstops, cached-token fallback, session polls, Confirmed
     /// resends, and token-table expiry. Returns handoff messages for
     /// delivery after the lock releases.
-    fn drive_timeouts_locked(&self, state: &mut ServiceState) -> Vec<Ssu2InboundI2np> {
-        let inbound = Vec::new();
+    fn drive_timeouts_locked(&self, state: &mut ServiceState) -> Ssu2InboundBatch {
+        let batch = Ssu2InboundBatch::default();
         let now_ms = monotonic_ms(&self.shared.started_at);
         let now_secs = wall_secs();
         let expired_receipts = state
@@ -6080,7 +6331,7 @@ impl Ssu2RuntimeService {
         }
         state.token_store.expire(now_secs);
         let _ = now_ms;
-        inbound
+        batch
     }
 
     /// Computes how long the loop may sleep before the earliest armed
@@ -6519,6 +6770,7 @@ impl Ssu2RuntimeService {
         child: CancellationToken,
         socket: Arc<UdpSocket>,
         inbound_tx: mpsc::Sender<Ssu2InboundI2np>,
+        relay_tx: mpsc::Sender<Ssu2InboundRelay>,
         is_v4: bool,
     ) -> Result<(), ChildTaskFailure> {
         let mut buffer = vec![0_u8; 2048];
@@ -6543,7 +6795,7 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx);
+                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
                 result = socket.recv_from(&mut buffer) => {
@@ -6567,7 +6819,7 @@ impl Ssu2RuntimeService {
                                 continue;
                             }
                             let inbound = self.handle_datagram(&buffer[..len], source, is_v4, local_addr);
-                            self.deliver_inbound(inbound, &inbound_tx);
+                            self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
                             self.flush_staged(&socket, is_v4, &child).await;
                         }
                         Err(_) => {
@@ -6582,7 +6834,7 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx);
+                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
             }
@@ -6591,11 +6843,20 @@ impl Ssu2RuntimeService {
 
     fn deliver_inbound(
         &self,
-        inbound: Vec<Ssu2InboundI2np>,
+        inbound: Ssu2InboundBatch,
         inbound_tx: &mpsc::Sender<Ssu2InboundI2np>,
+        relay_tx: &mpsc::Sender<Ssu2InboundRelay>,
     ) {
-        for message in inbound {
+        for message in inbound.i2np {
             if inbound_tx.try_send(message).is_err() {
+                self.shared
+                    .counters
+                    .inbound_queue_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        for event in inbound.relay {
+            if relay_tx.try_send(event).is_err() {
                 self.shared
                     .counters
                     .inbound_queue_drops

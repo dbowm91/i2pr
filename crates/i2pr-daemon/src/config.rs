@@ -1867,7 +1867,10 @@ pub struct Ssu2Config {
     pub port: u16,
     /// Whether this router advertises an SSU2 address (always false).
     pub advertise: bool,
-    /// Whether introducer service is offered (always false).
+    /// Whether introducer service is offered (default false).
+    ///
+    /// Plan 490 makes the role available behind this explicit opt-in.
+    /// It never grants advertisement and it never runs by default.
     pub introducer_service: bool,
     /// Explicit socket profile. `PrivateLan` does not authorize publication.
     pub qualification_profile: Ssu2QualificationProfile,
@@ -1892,6 +1895,32 @@ pub struct Ssu2Config {
     /// Upper bound for one central-scheduler sleep.
     pub scheduler_poll_max: Duration,
 }
+
+impl Ssu2Config {
+    /// Returns the truthful status of the introducer (Bob) role.
+    ///
+    /// Plan 490: the role is *available* but opt-in, so the disabled
+    /// path says "available but not enabled" rather than the older
+    /// "unavailable in this milestone", which would be false. The
+    /// message names no secret and no peer.
+    pub const fn introducer_service_status(&self) -> &'static str {
+        if self.introducer_service {
+            SSU2_INTRODUCER_ENABLED_REASON
+        } else {
+            SSU2_INTRODUCER_DISABLED_REASON
+        }
+    }
+}
+
+/// The truthful message for a router whose introducer role is switched
+/// off. The role exists; it is simply not enabled.
+pub const SSU2_INTRODUCER_DISABLED_REASON: &str =
+    "the SSU2 introducer service is available but not enabled (ssu2.introducer_service = false)";
+
+/// The truthful message for a router whose introducer role is switched
+/// on. The role is opt-in and non-advertised.
+pub const SSU2_INTRODUCER_ENABLED_REASON: &str =
+    "the SSU2 introducer service is enabled (opt-in, non-advertised)";
 
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3158,10 +3187,13 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "SSU2 address publication is unavailable in this milestone",
         });
     }
-    if raw.introducer_service {
+    // Plan 490: the introducer role is available behind an explicit
+    // opt-in. It still requires the SSU2 service itself to run, and it
+    // never grants advertisement.
+    if raw.introducer_service && !raw.enabled {
         return Err(ConfigError::Semantic {
             field: "ssu2.introducer_service",
-            reason: "SSU2 introducer service is unavailable in this milestone",
+            reason: "the SSU2 introducer service requires ssu2.enabled = true",
         });
     }
     let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false, private_lan)?;
@@ -5198,12 +5230,13 @@ data_dir = "./state"
 
     #[test]
     fn ssu2_enabled_true_rejects_broad_exposure() {
-        // advertise/introducer stay rejected even under the controlled
-        // profile; no wildcard/non-loopback bind is reachable because
-        // `parse_ssu2_bind` rejects it fail-closed.
+        // advertise stays rejected under the controlled profile, and no
+        // wildcard/non-loopback bind is reachable because
+        // `parse_ssu2_bind` rejects it fail-closed. Plan 490 makes the
+        // introducer role available behind an explicit opt-in, so it is
+        // no longer in this list.
         for extra in [
             "advertise = true",
-            "introducer_service = true",
             "bind_ipv4 = \"0.0.0.0\"",
             "bind_ipv4 = \"192.0.2.1\"",
         ] {
@@ -5375,6 +5408,8 @@ data_dir = "./state"
                 ..
             })
         ));
+        // Plan 490: the introducer role is available behind an explicit
+        // opt-in, but it needs the SSU2 service itself to run.
         let text = format!("{}\n[ssu2]\nintroducer_service = true\n", MINIMAL);
         assert!(matches!(
             Config::parse(&text),
@@ -5383,6 +5418,33 @@ data_dir = "./state"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ssu2_introducer_service_is_available_and_default_off() {
+        // The key is accepted, default off, and the disabled message is
+        // truthful: the role exists, it is simply not enabled.
+        let config = Config::parse(MINIMAL).expect("minimal config");
+        assert!(!config.ssu2.introducer_service);
+        assert_eq!(
+            config.ssu2.introducer_service_status(),
+            crate::config::SSU2_INTRODUCER_DISABLED_REASON
+        );
+        assert!(
+            crate::config::SSU2_INTRODUCER_DISABLED_REASON.contains("available but not enabled"),
+            "the disabled message must not claim the role is unavailable"
+        );
+        // The opt-in parses when the SSU2 service itself runs.
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nintroducer_service = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("introducer opt-in");
+        assert!(config.ssu2.introducer_service);
+        assert_eq!(
+            config.ssu2.introducer_service_status(),
+            crate::config::SSU2_INTRODUCER_ENABLED_REASON
+        );
     }
 
     #[test]

@@ -156,7 +156,9 @@ impl std::fmt::Debug for Ssu2PeerRelayService {
 
 impl Ssu2PeerRelayService {
     /// Creates a coordinator. Introducer service is disabled unless
-    /// `config.introducer_enabled` opts in (controlled tests only).
+    /// `config.introducer_enabled` opts in. Plan 490 makes the opt-in
+    /// reachable in production: the daemon's `ssu2.introducer_service`
+    /// key (default off) is the only gate.
     pub fn new(config: Ssu2PeerRelayConfig) -> Result<Self, &'static str> {
         let reachability =
             ReachabilityTracker::new(ReachabilityPolicy::default()).map_err(|_| "policy")?;
@@ -165,7 +167,7 @@ impl Ssu2PeerRelayService {
             peer_tests: Mutex::new(PeerTestTable::new()),
             requester: Mutex::new(RelayRequester::new()),
             introducer: Mutex::new(if config.introducer_enabled {
-                RelayIntroducer::enabled_for_tests()
+                RelayIntroducer::enabled()
             } else {
                 RelayIntroducer::disabled()
             }),
@@ -643,6 +645,10 @@ impl Ssu2PeerRelayService {
     }
 
     /// Issues one introducer tag bound to `alice_hash` (Bob, enabled only).
+    ///
+    /// The bound peer is the peer the tag *identifies* — in the SSU2
+    /// relay process, the introduction target. The parameter name is
+    /// historical.
     pub fn issue_relay_tag(
         &self,
         tag: u32,
@@ -655,8 +661,31 @@ impl Ssu2PeerRelayService {
             .issue_tag(tag, alice_hash, now_secs)
     }
 
+    /// Issues one introducer tag that identifies `target_hash` (Bob).
+    pub fn issue_introducer_tag(
+        &self,
+        tag: u32,
+        target_hash: &[u8; 32],
+        now_secs: u64,
+    ) -> Result<(), i2pr_transport_ssu2::RelayError> {
+        self.issue_relay_tag(tag, *target_hash, now_secs)
+    }
+
+    /// Resolves the peer a live introducer tag identifies.
+    pub fn introducer_tag_owner(&self, tag: u32, now_secs: u64) -> Option<[u8; 32]> {
+        self.introducer
+            .lock()
+            .ok()
+            .and_then(|introducer| introducer.tag_owner(tag, now_secs))
+    }
+
     /// Handles one authenticated RelayRequest (Bob, enabled only).
     /// `request_bytes` enforces the response-size budget before crypto.
+    ///
+    /// This is the requester-shaped entry point: the relay tag belongs
+    /// to the requesting peer. Plan 490 adds
+    /// [`Self::on_relay_request_for_target`] for the specification's
+    /// shape, where the tag identifies the introduction target.
     #[allow(clippy::too_many_arguments)]
     pub fn on_relay_request(
         &self,
@@ -664,6 +693,76 @@ impl Ssu2PeerRelayService {
         alice_hash: &[u8; 32],
         bob_hash: &[u8; 32],
         charlie_hash: &[u8; 32],
+        request_bytes: usize,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        let signer = {
+            let signers = self
+                .signers
+                .lock()
+                .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?;
+            signers.get(alice_hash).cloned()
+        };
+        let Some(signer) = signer else {
+            self.count_signature_rejection();
+            return Err(i2pr_transport_ssu2::RelayError::InvalidSignature);
+        };
+        self.on_relay_request_with_signer(
+            block,
+            alice_hash,
+            bob_hash,
+            charlie_hash,
+            &signer,
+            request_bytes,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Handles one authenticated RelayRequest in the specification's
+    /// shape (Bob, enabled only).
+    ///
+    /// The relay tag identifies the introduction *target*: the target
+    /// asks the introducer for a tag and publishes it, and a requester
+    /// presents that tag to name the target. `target_hash` is therefore
+    /// the peer the tag identifies and the hash the requester's
+    /// signature binds; `requester_signer` is the requester's own key.
+    /// `request_bytes` enforces the response-size budget before crypto.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_relay_request_for_target(
+        &self,
+        block: &i2pr_transport_ssu2::RelayRequestBlock,
+        _requester_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_hash: &[u8; 32],
+        requester_signer: &i2pr_proto::SigningPublicKey,
+        request_bytes: usize,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        // The tag identifies the target, so the transport's tag binding
+        // and the requester's signature preimage both name it.
+        self.on_relay_request_with_signer(
+            block,
+            target_hash,
+            bob_hash,
+            target_hash,
+            requester_signer,
+            request_bytes,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_relay_request_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayRequestBlock,
+        tag_owner: &[u8; 32],
+        bob_hash: &[u8; 32],
+        preimage_hash: &[u8; 32],
+        signer: &i2pr_proto::SigningPublicKey,
         request_bytes: usize,
         now_secs: u64,
         now_ms: u64,
@@ -676,29 +775,16 @@ impl Ssu2PeerRelayService {
             }
             return Err(RelayError::InvalidSignature);
         }
-        let signer = {
-            let signers = self
-                .signers
-                .lock()
-                .map_err(|_| RelayError::TooManyRequests)?;
-            signers.get(alice_hash).cloned()
-        };
-        let Some(signer) = signer else {
-            if let Ok(mut counters) = self.counters.lock() {
-                counters.signature_rejections = counters.signature_rejections.saturating_add(1);
-            }
-            return Err(RelayError::InvalidSignature);
-        };
         let emit = self
             .introducer
             .lock()
             .map_err(|_| RelayError::TooManyRequests)?
             .on_request(
                 block,
-                alice_hash,
+                tag_owner,
                 bob_hash,
-                charlie_hash,
-                &signer,
+                preimage_hash,
+                signer,
                 request_bytes,
                 now_secs,
                 now_ms,
@@ -710,6 +796,52 @@ impl Ssu2PeerRelayService {
             counters.relay_intros = counters.relay_intros.saturating_add(1);
         }
         Ok(emit)
+    }
+
+    fn count_signature_rejection(&self) {
+        if let Ok(mut counters) = self.counters.lock() {
+            counters.signature_rejections = counters.signature_rejections.saturating_add(1);
+        }
+    }
+
+    /// Handles one authenticated RelayResponse from Charlie (Bob).
+    ///
+    /// The response is correlated against the live request table; only a
+    /// response whose sender is the Charlie the request named, and whose
+    /// signature verifies, is forwarded to the requester. Every refusal
+    /// is typed and leaves no state behind (Plan 490).
+    pub fn on_introducer_relay_response(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<i2pr_transport_ssu2::IntroducerResponseOutcome, i2pr_transport_ssu2::RelayError>
+    {
+        use i2pr_transport_ssu2::RelayError;
+        let outcome = self
+            .introducer
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .on_response(
+                block,
+                sender_hash,
+                bob_hash,
+                target_signer,
+                now_secs,
+                now_ms,
+            )?;
+        if let Ok(mut counters) = self.counters.lock()
+            && matches!(
+                outcome,
+                i2pr_transport_ssu2::IntroducerResponseOutcome::Forwarded { .. }
+            )
+        {
+            counters.relay_responses = counters.relay_responses.saturating_add(1);
+        }
+        Ok(outcome)
     }
 
     /// Handles one authenticated RelayIntro (Charlie).

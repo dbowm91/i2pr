@@ -1474,6 +1474,8 @@ pub fn ssu2_runtime_config_from(
             max_outbound_datagrams: config.max_datagram_queue_items,
             max_outbound_bytes: config.max_datagram_queue_bytes,
             max_inbound_i2np_queue: config.max_inbound_i2np_queue,
+            // Plan 490: the relay handoff is a separate bounded queue.
+            max_inbound_relay_queue: default_limits.max_inbound_relay_queue,
         },
         deadlines: Ssu2RuntimeDeadlines {
             handshake: config.handshake_timeout,
@@ -1498,6 +1500,10 @@ pub fn ssu2_runtime_config_from(
         // qualification modes; ordinary/default-off startup never constructs
         // this runtime observer.
         qualification_observer: true,
+        // Plan 490: the introducer (Bob) role runs only behind the
+        // explicit `ssu2.introducer_service` opt-in. It stays
+        // non-advertised and default-off.
+        introducer_service: config.introducer_service,
     };
     runtime
         .validate()
@@ -1523,9 +1529,11 @@ pub fn ssu2_socket_config_from(config: &Ssu2Config) -> Result<Ssu2SocketConfig, 
             "SSU2 service requires enabled = true".to_owned(),
         ));
     }
-    if config.advertise || config.introducer_service {
+    // Plan 490: the introducer role is available behind an explicit
+    // opt-in; advertisement stays forbidden.
+    if config.advertise {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "SSU2 controlled profile forbids advertise/introducer".to_owned(),
+            "SSU2 controlled profile forbids advertise".to_owned(),
         ));
     }
     if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -1986,9 +1994,11 @@ impl Ssu2DaemonService {
                 "SSU2 service requires enabled = true".to_owned(),
             ));
         }
-        if config.advertise || config.introducer_service {
+        // Plan 490: the introducer role is available behind an explicit
+        // opt-in; advertisement stays forbidden.
+        if config.advertise {
             return Err(Ssu2ServiceError::ControlledProfile(
-                "SSU2 controlled profile forbids advertise/introducer".to_owned(),
+                "SSU2 controlled profile forbids advertise".to_owned(),
             ));
         }
         if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -2134,6 +2144,26 @@ impl Ssu2DaemonHandle {
     ) -> Option<Result<RouterI2npOutcome, RouterI2npError>> {
         let inbound = self.handle.next_inbound().await?;
         Some(dispatch_router_i2np(&inbound, now_ms))
+    }
+
+    /// Receives the next authenticated inbound relay block and delivers
+    /// it to the introducer (Bob) role owner (Plan 490).
+    ///
+    /// The dispatch order is **service first, transit second, unknown
+    /// fail-closed**: the service owner (the introducer) sees a Relay
+    /// Request or a Relay Response; a Relay Intro belongs to the target
+    /// (transit) role and is refused by the service owner; the runtime
+    /// never surfaces a block it could not classify. Returns `None`
+    /// after shutdown drains the queue.
+    pub async fn next_relay_dispatched(
+        &mut self,
+        introducer: &mut crate::ssu2_introducer::Ssu2IntroducerService,
+        signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
+        now_ms: u64,
+        now_secs: u64,
+    ) -> Option<crate::ssu2_introducer::Ssu2IntroducerOutcome> {
+        let event = self.handle.next_relay_event().await?;
+        Some(introducer.on_relay_event(&event, signers, now_ms, now_secs))
     }
 
     /// Dials one validated SSU2 target to an authenticated session.

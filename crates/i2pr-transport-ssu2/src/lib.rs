@@ -91,13 +91,13 @@ pub use publication::{
     Ssu2PublicationSnapshot, WithholdReason, build_publication_snapshot, parse_snapshot,
 };
 pub use relay::{
-    HolePunchMessage, MAX_HOLE_PUNCH_PAYLOAD_BYTES, MAX_RELAY_REQUESTS_GLOBAL,
-    MAX_RELAY_REQUESTS_PER_PEER, MAX_RELAY_TAGS_GLOBAL, MAX_RELAY_TAGS_PER_PEER,
-    RELAY_MAX_CLOCK_SKEW_SECONDS, RELAY_REQUEST_PROLOGUE, RELAY_REQUEST_TIMEOUT_MS,
-    RELAY_RESPONSE_PROLOGUE, RELAY_TAG_LIFETIME_SECS, RelayCounters, RelayError, RelayIntroducer,
-    RelayRequester, RelayTarget, build_hole_punch, check_relay_freshness, hole_punch_conn_ids,
-    parse_hole_punch, relay_request_preimage, relay_response_budget, relay_response_preimage,
-    verify_relay_request, verify_relay_response,
+    HolePunchMessage, IntroducerResponseOutcome, MAX_HOLE_PUNCH_PAYLOAD_BYTES,
+    MAX_RELAY_REQUESTS_GLOBAL, MAX_RELAY_REQUESTS_PER_PEER, MAX_RELAY_TAGS_GLOBAL,
+    MAX_RELAY_TAGS_PER_PEER, RELAY_MAX_CLOCK_SKEW_SECONDS, RELAY_REQUEST_PROLOGUE,
+    RELAY_REQUEST_TIMEOUT_MS, RELAY_RESPONSE_PROLOGUE, RELAY_TAG_LIFETIME_SECS, RelayCounters,
+    RelayError, RelayIntroducer, RelayRequester, RelayTarget, build_hole_punch,
+    check_relay_freshness, hole_punch_conn_ids, parse_hole_punch, relay_request_preimage,
+    relay_response_budget, relay_response_preimage, verify_relay_request, verify_relay_response,
 };
 pub use session::{
     DropReason, ReceiveOutcome, SessionAction, SessionConfig, SessionCounters, SessionError,
