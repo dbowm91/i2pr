@@ -27,10 +27,11 @@ use i2pr_transport_ssu2::{
     IntroKey, IntroducerProvenance, IntroducerRecord, IntroducerTable, PeerTestBlock,
     PeerTestOutcome, PeerTestRole, PeerTestTable, PublicationPolicy, PublicationRequest,
     RelayIntroBlock, RelayIntroducer, RelayRequestBlock, RelayRequester, RelayResponseBlock,
-    RelayTarget, Role, SessionConfig, SessionEvent, Ssu2Capabilities, Ssu2Endpoint, Ssu2PublicKey,
-    Ssu2Session, Ssu2SplitKeys, Ssu2Transcript, build_hole_punch, build_out_of_session_peer_test,
-    hole_punch_conn_ids, parse_hole_punch, parse_out_of_session_peer_test, peer_test_conn_ids,
-    peer_test_preimage, relay_request_preimage, relay_response_preimage,
+    RelayTarget, Role, SessionConfig, SessionEvent, Ssu2AddressClass, Ssu2Capabilities,
+    Ssu2Endpoint, Ssu2PublicKey, Ssu2Session, Ssu2SplitKeys, Ssu2Transcript, build_hole_punch,
+    build_out_of_session_peer_test, hole_punch_conn_ids, parse_hole_punch,
+    parse_out_of_session_peer_test, peer_test_conn_ids, peer_test_preimage, relay_request_preimage,
+    relay_response_preimage,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -622,8 +623,10 @@ fn introducer_records_feed_publication_and_expire_cleanly() {
         .expect("insert");
     let validated = table.validated_introducers(NOW_SECS);
     assert_eq!(validated.len(), 1);
-    // Publication with validated introducers renders the
-    // direct-with-introducers form; without opt-in it fails closed.
+    // Publication with validated introducers renders the introducer-only
+    // form (Plan 490): an address that publishes introducers omits
+    // host/port and carries the family capability the specification
+    // demands alongside them. Without opt-in it fails closed.
     let caps = Ssu2Capabilities::empty();
     let request = |allow_introducers: bool| PublicationRequest {
         policy: PublicationPolicy::new(true, allow_introducers),
@@ -642,10 +645,21 @@ fn introducer_records_feed_publication_and_expire_cleanly() {
         now_secs: NOW_SECS,
         evidence_expires_secs: NOW_SECS + 600,
     };
-    assert!(matches!(
-        i2pr_transport_ssu2::build_publication_snapshot(request(true)),
-        Ok(i2pr_transport_ssu2::PublicationOutcome::Direct(_))
-    ));
+    let Ok(i2pr_transport_ssu2::PublicationOutcome::IntroducerOnly(snapshot)) =
+        i2pr_transport_ssu2::build_publication_snapshot(request(true))
+    else {
+        panic!("validated introducers must render the introducer-only form");
+    };
+    assert_eq!(snapshot.address_class(), Ssu2AddressClass::IntroducerOnly);
+    let keys: Vec<&str> = snapshot
+        .option_entries()
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert!(!keys.contains(&"host"));
+    assert!(!keys.contains(&"port"));
+    assert!(keys.contains(&"ihost0"));
+    assert!(keys.contains(&"itag0"));
     assert!(i2pr_transport_ssu2::build_publication_snapshot(request(false)).is_err());
     // Expiry withdraws: past the lifetime nothing validates.
     assert!(table.validated_introducers(NOW_SECS + 601).is_empty());
