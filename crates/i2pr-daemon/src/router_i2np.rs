@@ -3230,6 +3230,32 @@ mod tests {
     }
 
     #[test]
+    fn socket_config_refuses_advertisement_even_with_the_introducer_role_on() {
+        // Plan 490: the introducer role is available, but the SSU2 service
+        // still refuses to start when advertisement is permitted. The role
+        // lives inside that service, so this refusal is the control that
+        // keeps the introducer unreachable in any advertising
+        // configuration. The config parser refuses `advertise = true` on
+        // its own; this is the second, independent gate.
+        let mut config = crate::config::Config::parse(
+            "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"\"\nbind_ipv6 = \"::1\"\nintroducer_service = true\n",
+        )
+        .expect("introducer profile")
+        .ssu2;
+        assert!(config.introducer_service);
+        assert!(!config.advertise);
+        config.advertise = true;
+        let Err(Ssu2ServiceError::ControlledProfile(reason)) = ssu2_socket_config_from(&config)
+        else {
+            panic!("an advertising configuration must never produce SSU2 sockets");
+        };
+        assert!(
+            reason.contains("advertise"),
+            "the refusal must name the advertisement it forbids: {reason}"
+        );
+    }
+
+    #[test]
     fn controlled_identity_rejects_non_loopback_and_zero_port() {
         use i2pr_crypto::RouterIdentityBundle;
         use rand_core::OsRng;

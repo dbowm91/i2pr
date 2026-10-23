@@ -17,6 +17,7 @@ SOURCE_FILES = {
     "ntcp2_runtime": "crates/i2pr-runtime/src/ntcp2_runtime.rs",
     "ntcp2_link": "crates/i2pr-runtime/src/ntcp2_link.rs",
     "daemon": "crates/i2pr-daemon/src/lib.rs",
+    "router_i2np": "crates/i2pr-daemon/src/router_i2np.rs",
     "floodfill": "crates/i2pr-daemon/src/floodfill.rs",
 }
 
@@ -37,7 +38,15 @@ def violations(sources: dict[str, str]) -> list[str]:
     errors = [message for message, needle in checks.items() if needle not in sources["readiness"]]
     source_controls = {
         "ssu2 advertisement must remain rejected": ("config", "if raw.advertise {"),
-        "introducer publication must remain rejected": ("config", "if raw.introducer_service {"),
+        # Plan 490 made the introducer role available behind an explicit
+        # opt-in, so the config key is no longer an unconditional refusal.
+        # The invariant this control protects — the router never publishes
+        # an introducer address — now lives where it is enforced: the
+        # SSU2 service refuses to start when advertisement is permitted,
+        # and the introducer role runs inside that service.
+        "introducer publication must remain rejected": ("router_i2np", "SSU2 controlled profile forbids advertise"),
+        "introducer publication refusal test must remain": ("router_i2np", "fn socket_config_refuses_advertisement_even_with_the_introducer_role_on()"),
+        "introducer role must remain rejected unless the SSU2 service runs": ("config", "if raw.introducer_service && !raw.enabled {"),
         "SSU2 publication config negative test must remain": ("config", "fn ssu2_advertise_and_introducer_are_rejected()"),
         "SSU2 non-loopback bind must require the named private profile and RFC1918 IPv4": ("config", "if !private_lan || !is_private_ipv4 {"),
         "SSU2 non-loopback config negative test must remain": ("config", "fn ssu2_bind_fields_reject_non_loopback_and_wrong_family()"),
@@ -108,7 +117,9 @@ def self_test(sources: dict[str, str]) -> None:
         (name, needle)
         for message, (name, needle) in {
             "ssu2 advertisement must remain rejected": ("config", "if raw.advertise {"),
-            "introducer publication must remain rejected": ("config", "if raw.introducer_service {"),
+            "introducer publication must remain rejected": ("router_i2np", "SSU2 controlled profile forbids advertise"),
+            "introducer publication refusal test must remain": ("router_i2np", "fn socket_config_refuses_advertisement_even_with_the_introducer_role_on()"),
+            "introducer role must remain rejected unless the SSU2 service runs": ("config", "if raw.introducer_service && !raw.enabled {"),
             "SSU2 publication config negative test must remain": ("config", "fn ssu2_advertise_and_introducer_are_rejected()"),
             "SSU2 non-loopback bind must require the named private profile and RFC1918 IPv4": ("config", "if !private_lan || !is_private_ipv4 {"),
             "SSU2 non-loopback config negative test must remain": ("config", "fn ssu2_bind_fields_reject_non_loopback_and_wrong_family()"),

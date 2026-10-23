@@ -1962,6 +1962,10 @@ impl Ssu2RuntimeService {
     /// preimage, which binds that target. `requester_signer` is the
     /// requester's own signing key, resolved by the daemon's role owner
     /// from a validated RouterInfo.
+    // The relay vocabulary is inherently a tuple (block, the three peer
+    // hashes, the signer's key, the size budget, and the two clocks); the
+    // peer-relay service it forwards to carries the same shape.
+    #[allow(clippy::too_many_arguments)]
     pub fn on_relay_request(
         &self,
         block: &i2pr_transport_ssu2::RelayRequestBlock,

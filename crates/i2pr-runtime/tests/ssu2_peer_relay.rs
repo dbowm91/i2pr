@@ -1257,10 +1257,22 @@ async fn publication_integration_and_privacy_over_real_udp() {
         evidence_expires_secs: now + 600,
     })
     .expect("publication");
-    assert!(matches!(
-        outcome,
-        i2pr_transport_ssu2::PublicationOutcome::Firewalled(_)
-    ));
+    // Plan 490: an address that publishes introducers omits host/port and
+    // takes the specification's introducer-only form. A firewalled peer
+    // with a validated introducer never renders a fabricated direct
+    // address, and it never drops the introducer it proved either.
+    let i2pr_transport_ssu2::PublicationOutcome::IntroducerOnly(published) = outcome else {
+        panic!("a firewalled address with introducers must publish the introducer-only form");
+    };
+    let keys: Vec<&str> = published
+        .option_entries()
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert!(!keys.contains(&"host"));
+    assert!(!keys.contains(&"port"));
+    assert!(keys.contains(&"ihost0"));
+    assert!(keys.contains(&"itag0"));
     // Privacy: snapshot and service Debug expose no secrets, even after
     // real-UDP traffic moved through the mapper above.
     let socket = bind_raw().await;

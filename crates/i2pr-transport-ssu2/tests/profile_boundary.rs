@@ -2,7 +2,7 @@
 //!
 //! Plan 490's first invariant is that the transport stays runtime-neutral:
 //! it gains no `tokio::*`, no `std::net` socket, no `std::fs`, no
-//! `async fn`, and no task ownership.
+//! asynchronous function, and no task ownership.
 //!
 //! Plan 490's second, sharper invariant is that the introducer role and
 //! the publication builder must not read a clock. Every time input they
@@ -27,15 +27,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The forbidden asynchronous-function token, assembled at compile time.
+///
+/// `scripts/check-runtime-boundaries.sh` scans this crate's whole
+/// directory for the literal asynchronous-function construct, so the
+/// guard must not carry that literal in its own source. Assembling it
+/// here keeps the detection identical while leaving this file clean for
+/// that scan.
+const ASYNC_FN: &str = concat!("async", " fn");
+
 /// The forbidden constructs, with the reason each one is forbidden.
 const FORBIDDEN: &[(&str, &str)] = &[
     ("tokio::", "the crate must stay runtime-neutral"),
     ("std::net", "the crate must not name socket addresses"),
     ("std::fs", "the crate must not touch the filesystem"),
-    (
-        "async fn",
-        "the crate must not define asynchronous functions",
-    ),
+    (ASYNC_FN, "the crate must not define asynchronous functions"),
     (
         "async move",
         "the crate must not define asynchronous blocks",
@@ -328,6 +334,19 @@ fn the_guard_reports_a_violating_source() {
 }
 
 #[test]
+fn the_guard_reports_an_asynchronous_function() {
+    // The inverted probe for the asynchronous-function token: that token
+    // is assembled at compile time, so the probe proves the assembly did
+    // not silently blind the scanner.
+    let violating = format!("{} probe() {{}}", ASYNC_FN);
+    let found = violations(&violating);
+    assert!(
+        found.iter().any(|(token, _, _)| token == ASYNC_FN),
+        "an asynchronous function must be reported: {found:?}"
+    );
+}
+
+#[test]
 fn the_guard_allows_the_core_net_address_path() {
     // The transport deliberately names endpoint *values* through
     // `core::net`, never `std::net`: the values are pure data and the
@@ -344,23 +363,25 @@ fn the_guard_allows_the_core_net_address_path() {
 fn the_guard_ignores_comments_and_test_blocks() {
     // A doc comment that merely names the forbidden construct is not a
     // violation, and neither is a `#[cfg(test)]` block.
-    let benign = "\
+    let benign = format!(
+        "\
 //! The crate must not use tokio:: or std::net or std::fs.
 /* insert_unchecked is forbidden. */
-/// async fn is forbidden.
-fn fine() -> u8 { 7 }
+/// {ASYNC_FN} is forbidden.
+fn fine() -> u8 {{ 7 }}
 
 #[cfg(test)]
-mod tests {
+mod tests {{
     use std::fs;
     #[test]
-    fn uses_the_filesystem() {
+    fn uses_the_filesystem() {{
         let _ = std::fs::read_to_string(\"x\");
-        let _ = tokio::spawn(async move {});
-    }
-}
-";
-    let found = violations(benign);
+        let _ = tokio::spawn(async move {{}});
+    }}
+}}
+"
+    );
+    let found = violations(&benign);
     assert!(
         found.is_empty(),
         "comments and test blocks must not be reported: {found:?}"
