@@ -117,7 +117,7 @@ pub use lookup_action::{
 };
 pub use lookup_engine::{
     CoalescedRouterInfoLookup, DeliveryOutcome, LookupDiagnostics, LookupEngineError, LookupResult,
-    ResponseOutcome, RouterInfoLookup, StartOutcome, handle_database_store,
+    MAX_PINNED_CANDIDATES, ResponseOutcome, RouterInfoLookup, StartOutcome, handle_database_store,
     handle_database_store_lease_set2, handle_databasestore_message, handle_delivery_outcome,
     handle_search_reply, handle_searchreply_message,
 };
