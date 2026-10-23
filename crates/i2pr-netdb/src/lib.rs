@@ -55,6 +55,7 @@ mod selection;
 mod server_store;
 mod store;
 mod store_message;
+mod version;
 
 pub use base64::{
     I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix, encode_router_info,
@@ -164,9 +165,9 @@ pub use provenance::{
     ProvenanceIndex, ProvenanceLimits, RecordId, RecordProvenance, StorePurpose,
 };
 pub use publication::{
-    MAX_PUBLICATION_ATTEMPTS, PublicationAttempt, PublicationAttemptRecord,
-    PublicationAttemptState, PublicationCoordinator, PublicationCorrelation, PublicationError,
-    PublicationSnapshot,
+    FloodfillTargetSelection, MAX_PUBLICATION_ATTEMPTS, PublicationAttempt,
+    PublicationAttemptRecord, PublicationAttemptState, PublicationCoordinator,
+    PublicationCorrelation, PublicationError, PublicationSnapshot,
 };
 pub use replication::{
     DirectFloodAction, FloodfillPeerView, ReplicationError, ReplicationPlan, ReplicationPlanner,
@@ -193,7 +194,8 @@ pub use routing::{
 };
 pub use selection::{
     Candidate, DEFAULT_MAX_PARTICIPATION, MAX_PARTICIPATION_TRACKED_PEERS, MAX_SELECTION_COUNT,
-    ParticipationLedger, SelectionConstraints, select_candidates,
+    ParticipationLedger, SelectionConstraints, VersionGate, VersionGatedSelection,
+    select_candidates, select_candidates_with_report,
 };
 pub use server_store::{
     MaintenanceBatch, ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord,
@@ -203,4 +205,9 @@ pub use store::{InsertOutcome, RouterInfoStore, RouterInfoStoreConfig, RouterInf
 pub use store_message::{
     UnsolicitedStoreError, UnsolicitedStoreOutcome, UnsolicitedStorePolicy,
     handle_unsolicited_databasestore,
+};
+pub use version::{
+    CONTROLLED_API_VERSION, CONTROLLED_VERSION_FLOORS, MIN_FLOODFILL_VERSION_FOR_DSM,
+    MIN_PEER_VERSION_FOR_TUNNEL_BUILD, ROUTER_VERSION_PROPERTY, SPECIFICATION_RELEASE,
+    VersionRefusalCounts, dsm_target_eligibility, published_version_of, tunnel_peer_eligibility,
 };

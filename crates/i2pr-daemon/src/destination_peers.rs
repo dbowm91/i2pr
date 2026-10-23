@@ -9,8 +9,10 @@
 
 use std::net::IpAddr;
 
-use i2pr_netdb::{RouterInfoStore, ValidatedRouterInfo};
-use i2pr_proto::Hash;
+use i2pr_netdb::{
+    RouterInfoStore, ValidatedRouterInfo, published_version_of, tunnel_peer_eligibility,
+};
+use i2pr_proto::{Hash, VersionEligibility};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use rand_core::{CryptoRng, RngCore};
@@ -29,6 +31,54 @@ pub struct CandidateProjectionSummary {
     pub scanned: usize,
     /// Records rejected because build/diversity metadata was incomplete.
     pub unqualified: usize,
+    /// Records rejected because the peer publishes no API version at all.
+    pub refused_unknown_version: usize,
+    /// Records rejected because the peer publishes an uncomparable API
+    /// version.
+    pub refused_uncomparable_version: usize,
+    /// Records rejected because the peer publishes an API version below the
+    /// tunnel-build floor.
+    pub refused_below_version_floor: usize,
+}
+
+impl CandidateProjectionSummary {
+    /// The number of records the tunnel-build API version floor refused.
+    pub const fn version_refusals(&self) -> usize {
+        self.refused_unknown_version
+            .saturating_add(self.refused_uncomparable_version)
+            .saturating_add(self.refused_below_version_floor)
+    }
+}
+
+/// The typed reason a validated record is not usable as a build peer.
+///
+/// The version reasons are Plan 491's: the specification's API-version table
+/// attaches a minimum-peer obligation to the level this router declares, and
+/// a peer that publishes no comparable version cannot satisfy it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum CandidateRefusal {
+    /// The peer publishes no API version, so it cannot be compared against
+    /// the floor.
+    #[error("the peer publishes no API version")]
+    UnknownVersion,
+    /// The peer publishes an API version that cannot be compared.
+    #[error("the peer publishes an uncomparable API version")]
+    UncomparableVersion,
+    /// The peer publishes an API version below the tunnel-build floor.
+    #[error("the peer publishes an API version below the tunnel-build floor")]
+    BelowVersionFloor,
+    /// The record lacks the build/diversity metadata this profile requires.
+    #[error("the record lacks the build metadata for this profile")]
+    Unqualified,
+}
+
+fn version_refusal(eligibility: VersionEligibility) -> Option<CandidateRefusal> {
+    match eligibility {
+        VersionEligibility::Eligible => None,
+        VersionEligibility::UnknownVersion => Some(CandidateRefusal::UnknownVersion),
+        VersionEligibility::UncomparableVersion => Some(CandidateRefusal::UncomparableVersion),
+        VersionEligibility::BelowFloor { .. } => Some(CandidateRefusal::BelowVersionFloor),
+    }
 }
 
 /// Candidate facts extracted only from a validated RouterInfo.
@@ -56,21 +106,35 @@ impl DestinationPeerCandidate {
     /// Projects a candidate from a validated NetDB record. Missing family,
     /// supported public-key material, or address/port facts make the record
     /// unqualified for this profile.
-    pub fn from_validated(record: &ValidatedRouterInfo) -> Option<Self> {
+    ///
+    /// Plan 491: a record whose published API version is unknown,
+    /// uncomparable, or below the tunnel-build floor is refused with the
+    /// matching [`CandidateRefusal`] before any other fact is considered. The
+    /// refusal is typed, so the caller can count it rather than skip it
+    /// silently.
+    pub fn from_validated(record: &ValidatedRouterInfo) -> Result<Self, CandidateRefusal> {
+        let eligibility = tunnel_peer_eligibility(published_version_of(record));
+        if let Some(refusal) = version_refusal(eligibility) {
+            return Err(refusal);
+        }
         let info = record.router_info();
-        let family = info.options().get("family")?;
+        let Some(family) = info.options().get("family") else {
+            return Err(CandidateRefusal::Unqualified);
+        };
         if family.is_empty()
             || family.len() > 64
             || !family
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
         {
-            return None;
+            return Err(CandidateRefusal::Unqualified);
         }
         let public = info.router_identity().public_key().as_bytes();
-        let static_encryption_key: [u8; 32] = public.try_into().ok()?;
+        let Ok(static_encryption_key) = <[u8; 32]>::try_from(public) else {
+            return Err(CandidateRefusal::Unqualified);
+        };
         if static_encryption_key.iter().all(|byte| *byte == 0) {
-            return None;
+            return Err(CandidateRefusal::Unqualified);
         }
         let mut endpoints = Vec::new();
         for address in info.addresses() {
@@ -92,9 +156,9 @@ impl DestinationPeerCandidate {
             endpoints.push(EndpointBucket::new(ip, port));
         }
         if endpoints.is_empty() {
-            return None;
+            return Err(CandidateRefusal::Unqualified);
         }
-        Some(Self {
+        Ok(Self {
             router_hash: Hash::from_bytes(*record.key().as_bytes()),
             static_encryption_key,
             family: family.to_ascii_lowercase(),
@@ -147,6 +211,10 @@ pub enum DestinationSelectionError {
     /// No candidates survived validated projection.
     #[error("no qualified Destination build candidates")]
     NoCandidates,
+    /// Every scanned record was refused by the tunnel-build API version
+    /// floor.
+    #[error("no Destination build candidate meets the tunnel-build API version floor")]
+    NoEligibleVersionPeers,
     /// Fewer than three mutually diverse peers could be selected.
     #[error("insufficient diverse Destination build candidates")]
     InsufficientDiversity,
@@ -169,10 +237,14 @@ pub fn project_validated_store(
     let mut summary = CandidateProjectionSummary::default();
     for (_, record) in store.iter().take(MAX_DESTINATION_CANDIDATES) {
         summary.scanned += 1;
-        if let Some(candidate) = DestinationPeerCandidate::from_validated(record) {
-            candidates.push(candidate);
-        } else {
-            summary.unqualified += 1;
+        match DestinationPeerCandidate::from_validated(record) {
+            Ok(candidate) => candidates.push(candidate),
+            Err(CandidateRefusal::UnknownVersion) => summary.refused_unknown_version += 1,
+            Err(CandidateRefusal::UncomparableVersion) => {
+                summary.refused_uncomparable_version += 1;
+            }
+            Err(CandidateRefusal::BelowVersionFloor) => summary.refused_below_version_floor += 1,
+            Err(CandidateRefusal::Unqualified) => summary.unqualified += 1,
         }
     }
     (candidates, summary)
@@ -187,6 +259,56 @@ pub(crate) fn test_candidate(
 ) -> DestinationPeerCandidate {
     let validated = test_validated_record(seed, Some(family), Some((host, port)));
     DestinationPeerCandidate::from_validated(&validated).expect("projected candidate")
+}
+
+#[cfg(test)]
+pub(crate) fn test_validated_record_with_version(
+    seed: u64,
+    family: Option<&str>,
+    endpoint: Option<(&str, u16)>,
+    version: Option<&str>,
+) -> ValidatedRouterInfo {
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_netdb::ValidationContext;
+    use i2pr_proto::{Date, Mapping, RouterAddress};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+    let mut options = Mapping::builder();
+    if let Some(family) = family {
+        options
+            .insert("family".to_owned(), family.to_owned())
+            .expect("family");
+    }
+    if let Some(version) = version {
+        options
+            .insert("router.version".to_owned(), version.to_owned())
+            .expect("router.version");
+    }
+    let addresses = endpoint
+        .map(|(host, port)| {
+            let address_options = Mapping::from_entries(vec![
+                ("host".to_owned(), host.to_owned()),
+                ("port".to_owned(), port.to_string()),
+            ])
+            .expect("address options");
+            RouterAddress::new(1, Date::from_millis(0), "SSU2".to_owned(), address_options)
+                .expect("address")
+        })
+        .into_iter()
+        .collect();
+    let info = bundle
+        .sign_router_info(
+            Date::from_millis(0),
+            addresses,
+            Vec::new(),
+            options.build().expect("options"),
+        )
+        .expect("signed info");
+    ValidatedRouterInfo::from_router_info(info, None, ValidationContext::new(Date::from_millis(0)))
+        .expect("validated info")
 }
 
 #[cfg(test)]
@@ -209,6 +331,14 @@ pub(crate) fn test_validated_record(
             .insert("family".to_owned(), family.to_owned())
             .expect("family");
     }
+    // Plan 491: a build peer must publish a comparable API version at or
+    // above the tunnel-build minimum-version floor.
+    options
+        .insert(
+            "router.version".to_owned(),
+            i2pr_netdb::CONTROLLED_ROUTER_VERSION.to_owned(),
+        )
+        .expect("router.version");
     let addresses = endpoint
         .map(|(host, port)| {
             let address_options = Mapping::from_entries(vec![
@@ -273,6 +403,40 @@ pub fn select_destination_path_os(
     let mut rng =
         ChaCha8Rng::try_from_os_rng().map_err(|_| DestinationSelectionError::EntropyUnavailable)?;
     select_destination_path(candidates, &mut rng)
+}
+
+/// Selects exactly three build peers from a bounded projection, failing closed
+/// with the reason the projection is empty.
+///
+/// When the projection refused every scanned record by the tunnel-build API
+/// version floor, the terminal is
+/// [`DestinationSelectionError::NoEligibleVersionPeers`] rather than a bare
+/// "no candidates": the operator can see that the floor, not the store, was
+/// the reason. The build is refused either way — the selector never loops
+/// looking for a peer that is not allowed.
+pub fn select_projected_destination_path<R: CryptoRng + RngCore>(
+    candidates: &[DestinationPeerCandidate],
+    summary: &CandidateProjectionSummary,
+    rng: &mut R,
+) -> Result<Vec<DestinationPeerCandidate>, DestinationSelectionError> {
+    if candidates.is_empty() {
+        return Err(if summary.version_refusals() > 0 {
+            DestinationSelectionError::NoEligibleVersionPeers
+        } else {
+            DestinationSelectionError::NoCandidates
+        });
+    }
+    select_destination_path(candidates, rng)
+}
+
+/// Production constructor for [`select_projected_destination_path`].
+pub fn select_projected_destination_path_os(
+    candidates: &[DestinationPeerCandidate],
+    summary: &CandidateProjectionSummary,
+) -> Result<Vec<DestinationPeerCandidate>, DestinationSelectionError> {
+    let mut rng =
+        ChaCha8Rng::try_from_os_rng().map_err(|_| DestinationSelectionError::EntropyUnavailable)?;
+    select_projected_destination_path(candidates, summary, &mut rng)
 }
 
 fn search_path(
@@ -474,5 +638,44 @@ mod tests {
         assert_eq!(summary.scanned, MAX_DESTINATION_CANDIDATES);
         assert_eq!(candidates.len(), MAX_DESTINATION_CANDIDATES);
         assert_eq!(summary.unqualified, 0);
+    }
+
+    /// Plan 491: a peer below the tunnel-build floor is refused with the
+    /// matching typed reason, and the projection counts it.
+    #[test]
+    fn a_peer_below_the_tunnel_build_floor_is_refused_and_counted() {
+        let mut store = RouterInfoStore::default();
+        let below = test_validated_record_with_version(
+            0xD001,
+            Some("family-x"),
+            Some(("10.0.0.1", 9_999)),
+            Some("0.9.61"),
+        );
+        store.insert(below);
+        let (candidates, summary) = project_validated_store(&store);
+        assert!(candidates.is_empty(), "{candidates:?}");
+        assert_eq!(summary.refused_below_version_floor, 1);
+        assert_eq!(summary.version_refusals(), 1);
+        assert_eq!(summary.unqualified, 0);
+
+        // The selection fails closed with the reason, not a bare "no
+        // candidates", and it never loops looking for another peer.
+        let error = select_projected_destination_path_os(&candidates, &summary)
+            .expect_err("must fail closed");
+        assert_eq!(error, DestinationSelectionError::NoEligibleVersionPeers);
+    }
+
+    /// Plan 491: a peer that publishes no comparable API version is refused
+    /// before any other fact about it is considered.
+    #[test]
+    fn a_peer_without_a_comparable_version_is_refused() {
+        let below = test_validated_record_with_version(
+            0xD002,
+            Some("family-y"),
+            Some(("10.0.0.2", 9_998)),
+            None,
+        );
+        let error = DestinationPeerCandidate::from_validated(&below).expect_err("must be refused");
+        assert_eq!(error, CandidateRefusal::UnknownVersion);
     }
 }

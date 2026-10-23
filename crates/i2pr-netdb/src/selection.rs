@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use crate::profile::{ProfileState, ProfileTier, network_prefix16};
 use crate::profile_store::ProfileStore;
 use crate::router_info::RouterHash;
+use crate::version::{VersionRefusalCounts, dsm_target_eligibility, tunnel_peer_eligibility};
 
 /// The largest number of candidates one selection may return.
 pub const MAX_SELECTION_COUNT: usize = 64;
@@ -55,6 +56,41 @@ pub struct Candidate {
     pub prefix16: u16,
 }
 
+/// The peer-eligibility gate one selection honours.
+///
+/// Plan 491. The gate names the *purpose*; the floor itself is policy, owned
+/// by [`crate::version`], so a selection never carries its own copy of the
+/// specification's table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionGate {
+    /// The minimum-peer floor for peers a tunnel is built through.
+    TunnelBuildPeer,
+    /// The minimum-floodfill floor for peers a DSM is sent to.
+    DsmTarget,
+}
+
+impl VersionGate {
+    /// A stable, non-sensitive label for receipts.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::TunnelBuildPeer => "tunnel-build-peer",
+            Self::DsmTarget => "dsm-target",
+        }
+    }
+}
+
+/// The outcome of one version-gated selection.
+///
+/// The refusals are counted by reason: a peer that was skipped is never a
+/// silent skip.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VersionGatedSelection {
+    /// The eligible candidates, in the selection's order.
+    pub candidates: Vec<Candidate>,
+    /// The counted refusals by reason.
+    pub refusals: VersionRefusalCounts,
+}
+
 /// The constraints one selection honours.
 #[derive(Clone, Debug)]
 pub struct SelectionConstraints<'a> {
@@ -78,6 +114,9 @@ pub struct SelectionConstraints<'a> {
     pub max_per_prefix16: usize,
     /// The seed of the deterministic shuffle.
     pub seed: u64,
+    /// The peer-eligibility gate this selection honours. `None` applies no
+    /// version floor.
+    pub version_gate: Option<VersionGate>,
 }
 
 /// The shared empty participation counter table.
@@ -95,6 +134,7 @@ impl Default for SelectionConstraints<'_> {
             max_participation: DEFAULT_MAX_PARTICIPATION,
             max_per_prefix16: 1,
             seed: 0,
+            version_gate: None,
         }
     }
 }
@@ -196,13 +236,36 @@ impl ParticipationLedger {
 ///
 /// The function is pure: the same store contents and the same constraints
 /// produce the same candidates, byte for byte, on every run.
+///
+/// Plan 491: when the constraints name a [`VersionGate`], a peer whose
+/// published API version is unknown, uncomparable, or below the gate's floor
+/// is not eligible. Use [`select_candidates_with_report`] when the refusals
+/// must be counted.
 pub fn select_candidates(
     store: &ProfileStore,
     constraints: &SelectionConstraints<'_>,
 ) -> Vec<Candidate> {
+    select_candidates_with_report(store, constraints).candidates
+}
+
+/// Selects a bounded, diverse candidate set and reports the counted
+/// version-floor refusals.
+///
+/// The function is pure: the same store contents and the same constraints
+/// produce the same candidates and the same refusal counts, byte for byte, on
+/// every run. A peer skipped by the version gate is counted by reason; it is
+/// never a silent skip.
+pub fn select_candidates_with_report(
+    store: &ProfileStore,
+    constraints: &SelectionConstraints<'_>,
+) -> VersionGatedSelection {
     let wanted = constraints.bounded_count();
+    let mut refusals = VersionRefusalCounts::default();
     if wanted == 0 {
-        return Vec::new();
+        return VersionGatedSelection {
+            candidates: Vec::new(),
+            refusals,
+        };
     }
 
     let mut eligible: Vec<Candidate> = Vec::new();
@@ -228,6 +291,18 @@ pub fn select_candidates(
         {
             continue;
         }
+        if let Some(gate) = constraints.version_gate {
+            let eligibility = match gate {
+                VersionGate::TunnelBuildPeer => {
+                    tunnel_peer_eligibility(profile.published_version())
+                }
+                VersionGate::DsmTarget => dsm_target_eligibility(profile.published_version()),
+            };
+            if !eligibility.is_eligible() {
+                refusals.record(eligibility);
+                continue;
+            }
+        }
         eligible.push(Candidate {
             key: *key,
             tier: profile.tier(),
@@ -239,7 +314,10 @@ pub fn select_candidates(
     }
 
     if eligible.is_empty() {
-        return Vec::new();
+        return VersionGatedSelection {
+            candidates: Vec::new(),
+            refusals,
+        };
     }
 
     // Deterministic base order: rank descending, RouterHash ascending.
@@ -278,7 +356,10 @@ pub fn select_candidates(
             .cmp(&left.rank)
             .then_with(|| left.key.cmp(&right.key))
     });
-    selected
+    VersionGatedSelection {
+        candidates: selected,
+        refusals,
+    }
 }
 
 /// Applies a deterministic Fisher–Yates shuffle.
@@ -599,5 +680,68 @@ mod tests {
         };
         let selected = select_candidates(&store, &constraints);
         assert_eq!(selected.len(), 1);
+    }
+
+    /// Plan 491: the version gate refuses peers below the floor, and every
+    /// refusal is counted by reason.
+    #[test]
+    fn the_version_gate_refuses_peers_below_the_floor_and_counts_them() {
+        let mut store = ProfileStore::default();
+        let mut eligible_key = None;
+        let mut below_key = None;
+        for (index, version) in [Some("0.9.62"), Some("0.9.61")].iter().enumerate() {
+            let signer = bundle(0xB10 + index as u64);
+            let mut options = Mapping::builder();
+            if let Some(version) = version {
+                options
+                    .insert("router.version".to_owned(), (*version).to_owned())
+                    .unwrap();
+            }
+            let validated = crate::router_info::ValidatedRouterInfo::from_router_info(
+                signer
+                    .sign_router_info(
+                        Date::from_millis(1),
+                        Vec::new(),
+                        Vec::new(),
+                        options.build().unwrap(),
+                    )
+                    .expect("sign"),
+                None,
+                ValidationContext::new(Date::from_millis(1)),
+            )
+            .expect("validate");
+            if index == 0 {
+                eligible_key = Some(validated.key());
+            } else {
+                below_key = Some(validated.key());
+            }
+            store.insert(validated, 1);
+        }
+
+        let constraints = SelectionConstraints {
+            version_gate: Some(VersionGate::TunnelBuildPeer),
+            ..SelectionConstraints::new(4, 1)
+        };
+        let selection = select_candidates_with_report(&store, &constraints);
+        assert_eq!(selection.candidates.len(), 1, "{:?}", selection.candidates);
+        assert_eq!(
+            selection.candidates[0].key,
+            eligible_key.expect("eligible key")
+        );
+        assert_eq!(selection.refusals.below_floor, 1);
+        assert_eq!(selection.refusals.total(), 1);
+        assert!(
+            !selection
+                .candidates
+                .iter()
+                .any(|candidate| candidate.key == below_key.expect("below key"))
+        );
+
+        // Without the gate the same store yields both peers: the gate, not
+        // the store, is what refused the below-floor peer.
+        let ungated = SelectionConstraints::new(4, 1);
+        let selection = select_candidates_with_report(&store, &ungated);
+        assert_eq!(selection.candidates.len(), 2, "{:?}", selection.candidates);
+        assert_eq!(selection.refusals.total(), 0);
     }
 }

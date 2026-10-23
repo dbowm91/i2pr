@@ -20,6 +20,8 @@
 //! This module is runtime-neutral: it owns no socket, no timer, no file, and
 //! no task. It is pure vocabulary plus pure transitions.
 
+use i2pr_proto::PublishedVersion;
+
 use crate::router_info::RouterHash;
 
 /// The largest score a peer profile may carry.
@@ -397,6 +399,7 @@ pub struct Profile {
     pub(crate) answered_count: u32,
     pub(crate) floodfill: bool,
     pub(crate) capacity_evidence: bool,
+    pub(crate) api_version: PublishedVersion,
     pub(crate) last_observed_ms: u64,
     pub(crate) last_answered_ms: Option<u64>,
 }
@@ -416,6 +419,7 @@ impl Profile {
             answered_count: 0,
             floodfill: false,
             capacity_evidence: false,
+            api_version: PublishedVersion::Unknown,
             last_observed_ms: now_ms,
             last_answered_ms: None,
         }
@@ -454,6 +458,27 @@ impl Profile {
     /// Returns whether the peer advertises the `f` capability.
     pub const fn advertises_floodfill(&self) -> bool {
         self.floodfill
+    }
+
+    /// Returns the API version the peer published, with the
+    /// non-comparable states kept explicit.
+    ///
+    /// A peer that published no version reads as
+    /// [`PublishedVersion::Unknown`] and a peer that published a malformed
+    /// value as [`PublishedVersion::Uncomparable`]. Neither is ever treated
+    /// as "newest"; the eligibility decision refuses both.
+    pub const fn published_version(&self) -> PublishedVersion {
+        self.api_version
+    }
+
+    /// Records the API version the peer published.
+    ///
+    /// The evidence is refreshed from the peer's signed RouterInfo every time
+    /// the record is (re-)inserted or adopted, so a peer that upgrades its
+    /// declared version is re-evaluated rather than kept at its first
+    /// observation.
+    pub fn set_published_version(&mut self, version: PublishedVersion) {
+        self.api_version = version;
     }
 
     /// Returns the millisecond timestamp of the most recent observation.

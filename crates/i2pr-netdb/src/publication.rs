@@ -17,11 +17,46 @@ use crate::lookup_policy::{
 };
 use crate::router_info::RouterHash;
 use crate::store::RouterInfoStore;
+use crate::version::{VersionRefusalCounts, dsm_target_eligibility, published_version_of};
 
 /// Maximum number of concurrent publication attempts the coordinator
 /// will track. The bound is intentionally small to keep runtime
 /// ownership tight.
 pub const MAX_PUBLICATION_ATTEMPTS: usize = 32;
+
+/// The eligible DSM publication targets and the counted API-version refusals.
+///
+/// Plan 491. The targets are the floodfills that satisfy the DSM
+/// minimum-version floor; the refusals count the floodfills that did not,
+/// by reason. No peer hash, address, key, or payload is retained here beyond
+/// the target set the coordinator must already hold.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FloodfillTargetSelection {
+    targets: Vec<RouterHash>,
+    refusals: VersionRefusalCounts,
+}
+
+impl FloodfillTargetSelection {
+    /// The eligible publication targets, in nearest order.
+    pub fn targets(&self) -> &[RouterHash] {
+        &self.targets
+    }
+
+    /// The counted API-version refusals.
+    pub const fn refusals(&self) -> &VersionRefusalCounts {
+        &self.refusals
+    }
+
+    /// Whether no eligible target remains.
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    /// The number of eligible targets.
+    pub fn len(&self) -> usize {
+        self.targets.len()
+    }
+}
 
 /// Diagnostic failures for the publication coordinator.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -151,9 +186,25 @@ impl PublicationCoordinator {
     /// Returns the closest eligible floodfill set for the local
     /// RouterHash. The selector uses the policy's
     /// `max_candidates_considered` ceiling.
+    ///
+    /// Plan 491: the returned set contains only floodfills that satisfy the
+    /// DSM minimum-version floor. A floodfill that publishes no comparable
+    /// API version, or one below the floor, is never a publication target.
     pub fn nearest_floodfills(&self, store: &RouterInfoStore) -> Vec<RouterHash> {
+        self.nearest_eligible_floodfills(store).targets
+    }
+
+    /// Returns the eligible floodfill publication targets together with the
+    /// counted API-version refusals.
+    ///
+    /// The specification's API-version table attaches "minimum floodfill
+    /// peers will send DSM to" to the level this router declares. A floodfill
+    /// that publishes an unknown, uncomparable, or below-floor API version is
+    /// refused, counted by reason, and excluded from the target set. The
+    /// refusal is never a silent skip.
+    pub fn nearest_eligible_floodfills(&self, store: &RouterInfoStore) -> FloodfillTargetSelection {
         let Some(local) = self.local_snapshot.as_ref() else {
-            return Vec::new();
+            return FloodfillTargetSelection::default();
         };
         let local_key = local.router_hash();
         let selection = crate::lookup_policy::select_floodfill_candidates(
@@ -163,7 +214,20 @@ impl PublicationCoordinator {
             &[local_key],
             &self.policy,
         );
-        selection.hashes()
+        let mut targets = Vec::new();
+        let mut refusals = VersionRefusalCounts::default();
+        for entry in selection.entries() {
+            let Some(record) = store.get(&entry.key) else {
+                continue;
+            };
+            let eligibility = dsm_target_eligibility(published_version_of(record));
+            if eligibility.is_eligible() {
+                targets.push(entry.key);
+            } else {
+                refusals.record(eligibility);
+            }
+        }
+        FloodfillTargetSelection { targets, refusals }
     }
 
     /// Builds the `DatabaseStore` I2NP body for one publication
@@ -642,6 +706,35 @@ mod tests {
         assert!(!hashes.contains(&router_hash(plain.identity()).unwrap()));
     }
 
+    /// Plan 491: a floodfill below the DSM floor, or one that publishes no
+    /// comparable version, is never a publication target — and every refusal
+    /// is counted by reason.
+    #[test]
+    fn a_floodfill_below_the_dsm_floor_is_refused_and_counted() {
+        let signer = bundle(0x780);
+        let eligible = bundle(0x781);
+        let below_floor = bundle(0x782);
+        let unknown_version = bundle(0x783);
+        let uncomparable = bundle(0x784);
+        let mut store = RouterInfoStore::default();
+        store.insert(floodfill_helper(&eligible));
+        store.insert(floodfill_helper_with_version(&below_floor, "0.9.61"));
+        store.insert(floodfill_helper_without_version(&unknown_version));
+        store.insert(floodfill_helper_with_version(&uncomparable, "0.9.62."));
+        let local = local_router_info(&signer);
+        let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
+        coordinator.register_local(local);
+        let selection = coordinator.nearest_eligible_floodfills(&store);
+        assert_eq!(
+            selection.targets(),
+            &[router_hash(eligible.identity()).unwrap()]
+        );
+        assert_eq!(selection.refusals().below_floor, 1);
+        assert_eq!(selection.refusals().unknown_version, 1);
+        assert_eq!(selection.refusals().uncomparable_version, 1);
+        assert_eq!(selection.refusals().total(), 3);
+    }
+
     #[test]
     fn unknown_peer_token_returns_unknown_request() {
         let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
@@ -676,8 +769,42 @@ mod tests {
     }
 
     fn floodfill_helper(b: &RouterIdentityBundle) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, Some(crate::local::CONTROLLED_ROUTER_VERSION))
+    }
+
+    /// A floodfill record that publishes an explicit API version.
+    ///
+    /// Plan 491: a publication target must publish a comparable API version
+    /// at or above the DSM floor, so the fixture states one explicitly.
+    fn floodfill_helper_with_version(
+        b: &RouterIdentityBundle,
+        version: &str,
+    ) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, Some(version))
+    }
+
+    /// A floodfill record that publishes no API version at all.
+    ///
+    /// The `router.version` option is absent rather than empty: the signed
+    /// RouterInfo validation rejects an empty value, so "no version" and
+    /// "malformed version" are the only two non-comparable cases.
+    fn floodfill_helper_without_version(
+        b: &RouterIdentityBundle,
+    ) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, None)
+    }
+
+    fn floodfill_helper_with_optional_version(
+        b: &RouterIdentityBundle,
+        version: Option<&str>,
+    ) -> crate::router_info::ValidatedRouterInfo {
         let mut options = i2pr_proto::Mapping::builder();
         options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+        if let Some(version) = version {
+            options
+                .insert("router.version".to_owned(), version.to_owned())
+                .unwrap();
+        }
         let info = b
             .sign_router_info(
                 Date::from_millis(1),

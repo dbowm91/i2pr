@@ -77,7 +77,9 @@ use rand_core::{RngCore, SeedableRng};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::destination_peers::{DestinationPeerCandidate, select_destination_path_os};
+use crate::destination_peers::{
+    DestinationPeerCandidate, select_destination_path_os, select_projected_destination_path_os,
+};
 use crate::destination_tunnels::{
     DestinationTunnelCoordinator, LeaseStoreIngestOutcome, reply_path_for_inbound_route,
 };
@@ -5457,11 +5459,11 @@ async fn submit_destination_replacement(
     qualification_profile: crate::config::Ssu2QualificationProfile,
     cancellation: &CancellationToken,
 ) -> Result<(), ServiceProductError> {
-    let (candidates, _) = {
+    let (candidates, projection_summary) = {
         let guard = destination_tunnels.lock().await;
         guard.destination_peer_candidates()
     };
-    let selected = select_destination_path_os(&candidates)?;
+    let selected = select_projected_destination_path_os(&candidates, &projection_summary)?;
     let outbound_slot = coordinator
         .usable_outbound_role_slots()
         .into_iter()
@@ -6656,7 +6658,7 @@ async fn provision_all_service_router_material(
         // Project from the authoritative validated RouterInfo store and
         // select independently randomized, exact-three paths. A sparse or
         // metadata-incomplete store fails closed before any build submission.
-        let (candidates, _projection_summary) = {
+        let (candidates, projection_summary) = {
             let guard = destination_tunnels.lock().await;
             guard.destination_peer_candidates()
         };
@@ -6686,12 +6688,18 @@ async fn provision_all_service_router_material(
         for build_index in 0..inbound_target.max(outbound_target) {
             let need_inbound = build_index < inbound_target;
             let outbound_candidates = if build_index < outbound_target {
-                Some(select_destination_path_os(&candidates)?)
+                Some(select_projected_destination_path_os(
+                    &candidates,
+                    &projection_summary,
+                )?)
             } else {
                 None
             };
             let mut inbound_candidates = if build_index < inbound_target {
-                Some(select_destination_path_os(&candidates)?)
+                Some(select_projected_destination_path_os(
+                    &candidates,
+                    &projection_summary,
+                )?)
             } else {
                 None
             };

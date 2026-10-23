@@ -54,9 +54,10 @@
 use std::collections::BTreeMap;
 
 use i2pr_netdb::{
-    LookupAction, LookupId, LookupPolicy, PublicationAttemptRecord, PublicationCoordinator,
-    ReplyPath, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
-    ValidationContext, select_floodfill_candidates,
+    FloodfillTargetSelection, LookupAction, LookupId, LookupPolicy, PublicationAttemptRecord,
+    PublicationCoordinator, ReplyPath, ResponseOutcome, RouterHash, RouterInfoStore,
+    RouterInfoStoreConfig, ValidationContext, dsm_target_eligibility, published_version_of,
+    select_floodfill_candidates,
 };
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE,
@@ -90,6 +91,14 @@ pub enum NetDbTunnelError {
     /// No eligible floodfill candidate exists in the authoritative store.
     #[error("no eligible floodfill candidate")]
     NoEligibleCandidates,
+    /// The floodfill target is refused by the DSM minimum-version floor.
+    ///
+    /// Plan 491. The specification's API-version table attaches "minimum
+    /// floodfill peers will send DSM to" to the level this router declares.
+    /// The reason label names which case occurred: `unknown-version`,
+    /// `uncomparable-version`, or `below-floor`.
+    #[error("floodfill target refused by the DSM API version floor ({0})")]
+    FloodfillRefusedByVersionFloor(&'static str),
     /// The lookup identifier is unknown.
     #[error("unknown NetDB lookup")]
     UnknownLookup,
@@ -141,6 +150,9 @@ pub struct NetDbTunnelCounters {
     pub publications_started: u64,
     /// Publications acknowledged via protocol-derived evidence.
     pub publications_acked: u64,
+    /// Publications refused because the floodfill target does not satisfy the
+    /// DSM minimum-version floor.
+    pub publications_refused_by_version_floor: u64,
     /// Search-reply suggestions merged (bounded).
     pub search_replies_merged: u64,
     /// Mismatched key/store responses rejected.
@@ -710,15 +722,44 @@ impl NetDbTunnelCoordinator {
         self.publication.nearest_floodfills(&self.store)
     }
 
+    /// Returns the eligible DSM publication targets and the counted
+    /// API-version refusals.
+    ///
+    /// Plan 491. A floodfill whose published API version is unknown,
+    /// uncomparable, or below the DSM floor is never a publication target,
+    /// and each refusal is counted by reason.
+    pub fn nearest_eligible_floodfills(&self) -> FloodfillTargetSelection {
+        self.publication.nearest_eligible_floodfills(&self.store)
+    }
+
     /// Begins one publication attempt against the supplied floodfill
     /// peer. The peer must be an eligible floodfill in the
     /// authoritative store.
+    ///
+    /// Plan 491: the peer must also satisfy the DSM minimum-version floor.
+    /// A peer that publishes no comparable API version, or one below the
+    /// floor, is refused with
+    /// [`NetDbTunnelError::FloodfillRefusedByVersionFloor`]; the DSM is
+    /// never sent to it.
     pub fn begin_publication(
         &mut self,
         peer: RouterHash,
     ) -> Result<PublicationAttemptRecord, NetDbTunnelError> {
         if !self.is_floodfill(&peer) {
             return Err(NetDbTunnelError::NoEligibleCandidates);
+        }
+        let Some(record) = self.store.get(&peer) else {
+            return Err(NetDbTunnelError::NoEligibleCandidates);
+        };
+        let eligibility = dsm_target_eligibility(published_version_of(record));
+        if !eligibility.is_eligible() {
+            self.counters.publications_refused_by_version_floor = self
+                .counters
+                .publications_refused_by_version_floor
+                .saturating_add(1);
+            return Err(NetDbTunnelError::FloodfillRefusedByVersionFloor(
+                eligibility.reason_label(),
+            ));
         }
         let record = self
             .publication
@@ -872,6 +913,61 @@ mod tests {
         assert_eq!(coord.store().len(), 0);
         assert_eq!(coord.floodfill_count(), 0);
         assert_eq!(coord.pending_len(), 0);
+    }
+
+    /// Plan 491: a floodfill below the DSM minimum-version floor is refused
+    /// with the matching typed reason, and the refusal is counted.
+    #[test]
+    fn a_floodfill_below_the_dsm_floor_is_refused() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::{Date, Mapping};
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(0xE001);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+        options
+            .insert("router.version".to_owned(), "0.9.61".to_owned())
+            .unwrap();
+        let info = signer
+            .sign_router_info(
+                Date::from_millis(60_000),
+                Vec::new(),
+                Vec::new(),
+                options.build().expect("options"),
+            )
+            .expect("sign");
+        let bytes = info
+            .encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+            .expect("encode");
+
+        let mut coord =
+            NetDbTunnelCoordinator::new(LookupPolicy::default(), RouterInfoStoreConfig::default());
+        let key = coord
+            .bootstrap_reference_router_info(&bytes, Date::from_millis(60_000))
+            .expect("bootstrap");
+        assert!(coord.is_floodfill(&key));
+
+        // The DSM is never sent to a floodfill below the floor.
+        let error = coord.begin_publication(key).expect_err("must refuse");
+        assert_eq!(
+            error,
+            NetDbTunnelError::FloodfillRefusedByVersionFloor("below-floor")
+        );
+        assert_eq!(coord.counters().publications_refused_by_version_floor, 1);
+        assert_eq!(coord.counters().publications_started, 0);
+
+        // The floodfill is also not a publication target.
+        let local_signer = RouterIdentityBundle::generate(&mut rng).expect("local identity");
+        let local = i2pr_netdb::LocalRouterInfoBuilder::new(&local_signer)
+            .build_default(Date::from_millis(60_000))
+            .expect("local");
+        coord.register_local(local);
+        let selection = coord.nearest_eligible_floodfills();
+        assert!(selection.is_empty(), "{:?}", selection.targets());
+        assert_eq!(selection.refusals().below_floor, 1);
     }
 
     #[test]

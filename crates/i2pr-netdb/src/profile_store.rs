@@ -1063,6 +1063,10 @@ impl ProfileStore {
 }
 
 fn classify(profile: &mut Profile, record: &ValidatedRouterInfo) {
+    // Plan 491: the published API version is evidence, refreshed from the
+    // peer's signed RouterInfo on every insert and adoption. A peer whose
+    // stored RouterInfo is gone keeps no version and is therefore refused.
+    profile.set_published_version(crate::version::published_version_of(record));
     let caps = match record.router_info().capabilities() {
         Ok(Some(caps)) => caps,
         _ => {
@@ -1615,5 +1619,68 @@ mod tests {
         let mut other = ProfileStore::default();
         other.insert(validate(&bundle(0x924), 1), 1);
         assert_ne!(other.encode_projection().expect("encode"), first);
+    }
+
+    /// Plan 491: the profile carries the peer's published API version, and
+    /// the evidence is refreshed when the peer's record is replaced.
+    #[test]
+    fn the_profile_carries_the_published_api_version() {
+        let signer = bundle(0xC01);
+        let mut options = Mapping::builder();
+        options
+            .insert("router.version".to_owned(), "0.9.62".to_owned())
+            .unwrap();
+        let validated = validate_with_options(&signer, 1, options.build().unwrap());
+        let key = validated.key();
+        let mut store = ProfileStore::default();
+        store.insert(validated, 1);
+        let profile = store.profile(&key).expect("profile");
+        assert_eq!(
+            profile.published_version(),
+            i2pr_proto::PublishedVersion::Known(i2pr_proto::ApiVersion::new(0, 9, 62))
+        );
+
+        // A peer that publishes no version at all is *unknown*, never
+        // "newest".
+        let other = bundle(0xC02);
+        let other_validated = validate(&other, 1);
+        let other_key = other_validated.key();
+        store.insert(other_validated, 1);
+        assert_eq!(
+            store
+                .profile(&other_key)
+                .expect("profile")
+                .published_version(),
+            i2pr_proto::PublishedVersion::Unknown
+        );
+    }
+
+    /// Plan 491: the version evidence follows the peer's *latest* record.
+    #[test]
+    fn the_version_evidence_is_refreshed_when_the_record_is_replaced() {
+        let signer = bundle(0xC03);
+        let mut options = Mapping::builder();
+        options
+            .insert("router.version".to_owned(), "0.9.61".to_owned())
+            .unwrap();
+        let validated = validate_with_options(&signer, 1, options.build().unwrap());
+        let key = validated.key();
+        let mut store = ProfileStore::default();
+        store.insert(validated, 1);
+        assert!(matches!(
+            store.profile(&key).expect("profile").published_version(),
+            i2pr_proto::PublishedVersion::Known(_)
+        ));
+
+        let mut upgraded_options = Mapping::builder();
+        upgraded_options
+            .insert("router.version".to_owned(), "0.9.62".to_owned())
+            .unwrap();
+        let upgraded = validate_with_options(&signer, 2, upgraded_options.build().unwrap());
+        assert_eq!(store.insert(upgraded, 2), ProfileInsertOutcome::Replaced);
+        assert_eq!(
+            store.profile(&key).expect("profile").published_version(),
+            i2pr_proto::PublishedVersion::Known(i2pr_proto::ApiVersion::new(0, 9, 62))
+        );
     }
 }
