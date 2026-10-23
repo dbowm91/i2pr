@@ -1,7 +1,8 @@
 # Plan 489 — Floodfill-indexed Kademlia routing table, exploration, and the optimized lookup
 
-**Status:** registered, ready to execute (phase 2 of
-[network participation](../../subsystems/network-participation-roadmap.md))
+**Status:** **closed as `passed-floodfill-indexed-routing-table`** — see
+`plans/closure/network-participation/489-status.md` (implementation
+`40a15a87`). The body below is preserved as registered.
 **Owner:** `i2pr-netdb` (the bucket set, the exploration vocabulary, the
 optimized lookup), `i2pr-daemon` (the exploration driver, the lookup
 composition, the receipts)

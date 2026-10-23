@@ -68,17 +68,17 @@ It must **not** own:
 ## Module layout
 
 `crates/i2pr-netdb/src/` holds 30 modules plus `lib.rs`
-(22 964 lines total; line counts from `wc -l`).
+(23 094 lines total; line counts from `wc -l`).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
 | `base64` | `base64.rs` | 315 | Strict bounded I2P Base64 alphabet codec (`-`/`~` in the `+`/`/` slots, `=` padding) for reseed filenames | `I2pBase64Error`, `MAX_DECODED_LEN`, `encode`, `decode`, `encode_filename_prefix` |
-| `bucket_set` | `bucket_set.rs` | 1 307 | Plan 489 floodfill-only, day-keyed Kademlia routing table: distance-bucketed partition, deterministic furthest-first eviction, closest-first selection, and the bounded sanitized projection | `BucketSet`, `BucketSetConfig`, `BucketSetConfigError`, `TableEntry`, `TableCandidate`, `TableInsertOutcome`, `FloodfillEvidence`, `RotationReport`, `RoutingTableProjectionError`, `BUCKET_COUNT`, `MAX_BUCKET_SIZE`, `MAX_TABLE_SIZE`, `MAX_PROJECTION_BYTES`, `ROUTING_TABLE_PROJECTION_VERSION` |
+| `bucket_set` | `bucket_set.rs` | 1 401 | Plan 489 floodfill-only, day-keyed Kademlia routing table: distance-bucketed partition, deterministic furthest-first eviction, closest-first selection, and the bounded sanitized projection | `BucketSet`, `BucketSetConfig`, `BucketSetConfigError`, `TableEntry`, `TableCandidate`, `TableInsertOutcome`, `FloodfillEvidence`, `RotationReport`, `RoutingTableProjectionError`, `BUCKET_COUNT`, `MAX_BUCKET_SIZE`, `MAX_TABLE_SIZE`, `MAX_PROJECTION_BYTES`, `ROUTING_TABLE_PROJECTION_VERSION` |
 | `databaselookup` | `databaselookup.rs` | 188 | Standards-conformant `DatabaseLookupMessage` builder | `DatabaseLookupBuildError`, `build_databaselookup` |
 | `els2` | `els2.rs` | 1868 | Plan 332 type-5 credential/subcredential derivation, two layer key derivations and ChaCha20 layers, encrypt/decrypt, signature/freshness/key-binding validation, bounded `Els2Store`, per-UTC-day `BlindingSchedule` | `ValidatedEncryptedLeaseSet2`, `Els2Store`, `Els2StoreConfig`, `Els2StoreStats`, `Els2InsertOutcome`, `BlindedStorageKey`, `BlindingIdentity`, `BlindingSchedule`, `DailyBlinding`, `OwnerBlinding`, `Els2Credentials`, `DecryptedEls2`, `Layer1Authorization`, `Els2ValidationPolicy` / `Els2ValidationContext` / `Els2ValidationError`, `Els2Error` |
 | `els2_auth` | `els2_auth.rs` | 1125 | Plan 333 per-client ELS2 authorization: PSK and X25519 derivations, bounded `AuthBlock` codec, constant-time `recover_auth_cookie`, `Els2AuthorizationServerConfig`, `Els2ClientAuthSecret` lifecycle | `AuthBlock`, `AuthClientEntry`, `AuthClientMaterial`, `AuthClientPublicKey`, `AuthCookie`, `ClientName`, `PskClientKey`, `Els2ClientAuth`, `Els2AuthScheme`, `Els2AuthSecretRole`, `Els2ClientAuthSecret`, `Els2AuthorizationServerConfig`, `Els2AuthError` |
 | `els2_transcript` | `els2_transcript.rs` | 188 | Plan 346 ELS2 type-11 deployed signature-profile classification and verification | `Els2RecordSignatureProfile`, `Els2Type11Profile`, `classify_type11`, `sign_type11_deployed`, `verify_type11` |
-| `exploration` | `exploration.rs` | 613 | Plan 489 bounded exploration job: peer budget, deadline, outstanding-request table, cancel-safe release and the reply's suggestion accounting | `ExplorationJob`, `ExplorationBudget`, `ExplorationBudgetError`, `ExplorationPolicy`, `ExplorationReplyOutcome`, `ExplorationReport`, `ExplorationStop`, `DEFAULT_EXPLORATION_MAX_PEERS`, `DEFAULT_EXPLORATION_DEADLINE_MS`, `MAX_EXPLORATION_OUTSTANDING`, `MAX_EXPLORATION_SUGGESTIONS` |
+| `exploration` | `exploration.rs` | 649 | Plan 489 bounded exploration job: peer budget, deadline, outstanding-request table, cancel-safe release and the reply's suggestion accounting | `ExplorationJob`, `ExplorationBudget`, `ExplorationBudgetError`, `ExplorationPolicy`, `ExplorationReplyOutcome`, `ExplorationReport`, `ExplorationStop`, `DEFAULT_EXPLORATION_MAX_PEERS`, `DEFAULT_EXPLORATION_DEADLINE_MS`, `MAX_EXPLORATION_OUTSTANDING`, `MAX_EXPLORATION_SUGGESTIONS` |
 | `floodfill_role` | `floodfill_role.rs` | 301 | Daemon-owned floodfill eligibility and advertisement-authority vocabulary; qualified-SSU2 address predicate | `FloodfillRoleController`, `FloodfillRoleState`, `FloodfillRoleEffect`, `FloodfillEligibilitySnapshot`, `FloodfillAdvertisementPermit`, `LoopbackReachabilityProof`, `is_qualified_ssu2_address` |
 | `floodfill_service` | `floodfill_service.rs` | 1601 | Plan 273/274 synchronous bounded DatabaseStore admission plus DatabaseLookup selection and one-shot supplied-key ECIES reply effects | `FloodfillStoreService`, `FloodfillStorePolicy`, `FloodfillStoreStats`, `FloodfillStoreEffect`, `FloodfillAck`, `FloodfillIngress`, `FloodfillLookupEffect`, `FloodfillReplyIntent`, `FloodfillRole`, `FloodfillTime`, `ReplyProtection`, `LookupFailure`, `ReplicationCandidate` |
 | `lease_set` | `lease_set.rs` | 574 | Plan 272 validated classic LeaseSet and MetaLeaseSet plus their bounded stores | `ValidatedLeaseSet`, `ValidatedMetaLeaseSet`, `LeaseSetValidationContext`, `LeaseSetValidationError`, `LeaseSetStore`, `LeaseSetStoreConfig`, `LeaseSetInsertOutcome`, `MetaLeaseSetStore`, `MetaLeaseSetStoreConfig`, `MetaLeaseSetInsertOutcome` |
@@ -1110,9 +1110,9 @@ synchronous, bounded, and drop-released.
 
 ## Tests
 
-388 tests, all local, all deterministic; no root, namespaces, Java I2P,
+395 tests, all local, all deterministic; no root, namespaces, Java I2P,
 i2pd, or Internet connection. `cargo test --locked -p i2pr-netdb
---all-targets -- --test-threads=1` passes: **278 in-crate unit tests,
+--all-targets -- --test-threads=1` passes: **285 in-crate unit tests,
 110 integration tests, 0 failed, 0 ignored.**
 
 Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 156 lines):
@@ -1127,11 +1127,11 @@ Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 156 lines):
 | `floodfill_type5_serve.rs` | 834 | 13 | Plan 332/346 floodfill store-and-serve of encrypted LeaseSet2 records |
 | `profile_boundary.rs` | 306 | 4 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
 
-In-crate `#[cfg(test)]` modules (278 tests) are distributed as:
-`profile_store` 25, `bucket_set` 20, `local` 19, `profile` 18,
+In-crate `#[cfg(test)]` modules (285 tests) are distributed as:
+`profile_store` 25, `bucket_set` 25, `local` 19, `profile` 18,
 `selection` 16, `floodfill_service` 16, `lease_set2` 14,
 `lookup_policy` 14, `routing` 13, `lookup_engine` 13, `store` 12,
-`router_info` 11, `publication` 11, `exploration` 11, `reseed` 9,
+`router_info` 11, `publication` 11, `exploration` 13, `reseed` 9,
 `lookup_action` 9, `base64` 9, `lookup_id` 8, `optimized_lookup` 6,
 `store_message` 5, `databaselookup` 4, `replication` 3, `provenance` 3,
 `lease_set` 3, `els2` 3, and 1 each in `server_store`, `resource`, and

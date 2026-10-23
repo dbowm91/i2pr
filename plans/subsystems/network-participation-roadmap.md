@@ -219,7 +219,7 @@ Layering rules that each phase must respect:
 
 ```text
 487 (passed) -> 488 peer profile store (passed)
-                   -> 489 floodfill-indexed routing table + exploration
+                   -> 489 floodfill-indexed routing table + exploration (passed)
                         -> 490 SSU2 introducer (relay) role
                              -> 491 API-version floors + peer eligibility
                                   -> 492 transit participation posture
@@ -251,7 +251,7 @@ Filenames keep global i2pr numbers.
 | Plan | State | i2pr token | Implementation | Closure |
 |---|---|---|---|---|
 | 488 | closed | passed-peer-profile-store | `plans/implementation/network-participation/488-peer-profile-store.md` | `plans/closure/network-participation/488-status.md` (implementation `c796bb0f`) |
-| 489 | ready | registered-floodfill-indexed-routing-table-and-exploration | `plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md` | — |
+| 489 | closed | passed-floodfill-indexed-routing-table | `plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md` | `plans/closure/network-participation/489-status.md` (implementation `40a15a87`) |
 | 490 | ready | registered-ssu2-introducer-relay-role | `plans/implementation/network-participation/490-ssu2-introducer-relay-role.md` | — |
 | 491 | ready | registered-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | — |
 | 492 | ready | registered-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | — |
@@ -383,8 +383,8 @@ exactly that.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: **Plan 488 is the next
-actionable phase**; Plans 489–492 follow it in order; Plans 493–494 are
-registered and blocked. The roadmap is registered with no plan executed.
-The prior axis — Plans 477–480 and 485–487 — is closed and is not reopened
-here.
+Full row history is §7. Current authority: **Plan 490 is the next
+actionable phase**; Plan 488 is closed (`passed-peer-profile-store`) and
+Plan 489 is closed (`passed-floodfill-indexed-routing-table`); Plans 491–492
+follow in order; Plans 493–494 are registered and blocked. The prior axis —
+Plans 477–480 and 485–487 — is closed and is not reopened here.
