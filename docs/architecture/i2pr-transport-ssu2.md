@@ -871,7 +871,7 @@ banned literal in the crate's own source.
 
 ## Tests
 
-**211 tests in the crate**, all passing
+**212 tests in the crate**, all passing
 (`cargo test -p i2pr-transport-ssu2 --all-targets`):
 
 | Target | Count |
@@ -881,7 +881,7 @@ banned literal in the crate's own source.
 | `tests/data_phase.rs` | 19 |
 | `tests/path_validation.rs` | 9 |
 | `tests/peer_relay.rs` | 8 |
-| `tests/profile_boundary.rs` (Plan 490 static guard) | 8 |
+| `tests/profile_boundary.rs` (Plan 490 static guard) | 9 |
 
 Inline unit-test distribution by module: `address.rs` 27,
 `path.rs` 13, `session.rs` 13, `peer_test.rs` 12, `handshake.rs` 11,
@@ -898,9 +898,12 @@ the publication builder use is supplied by the caller, so the same
 inputs always produce the same decision. The `core::net` address path
 is deliberately allowed (pure endpoint values, never a socket). The
 guard carries inverted probes: a synthetic socket use, a synthetic
-clock read, and a synthetic task owner must all be reported, and a
-source that only *mentions* a forbidden construct in a comment or in a
-`#[cfg(test)]` block must not be.
+clock read, a synthetic task owner and a synthetic asynchronous function
+must all be reported, and a source that only *mentions* a forbidden
+construct in a comment or in a `#[cfg(test)]` block must not. The
+asynchronous-function token is assembled at compile time, so the guard's
+own source stays clean for the repository's whole-directory transport
+scan; the probe proves the assembly did not blind the scanner.
 
 **Committed vector corpus.** 13 fixtures (13 `.hex` files; the
 directory also holds `README.md` and `manifest.tsv`) under
