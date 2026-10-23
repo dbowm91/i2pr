@@ -167,12 +167,12 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/netdb_participation.rs` | 2 023 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome` |
+| `src/netdb_participation.rs` | 2 215 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome` |
 | `src/netdb_seam.rs` | 1 206 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
-| `src/netdb_tunnels.rs` | 887 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
+| `src/netdb_tunnels.rs` | 983 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss; **Plan 491** refuses a DSM whose floodfill target is below the DSM API-version floor | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
 | `src/inbound_dispatch.rs` | 290 | Plan 117 §9 inbound exploratory `TunnelData` dispatch; Plan 187 `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE = MAX_I2NP_PAYLOAD_SIZE` |
-| `src/destination_peers.rs` | 478 | Bounded projection and selection of validated Destination build peers from the validated RouterInfo store | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os` |
+| `src/destination_peers.rs` | 681 | Bounded projection and selection of validated Destination build peers from the validated RouterInfo store; **Plan 491** refuses a build peer below the tunnel-build API-version floor and fails closed with the reason | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateRefusal`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os`, `select_projected_destination_path`, `select_projected_destination_path_os` |
 | `src/peer_test.rs` | 417 | Plan 285 bounded I2NP peer testing: echo a `(message id, timestamp)` unchanged, match the echo against an outstanding probe, derive RTT from the supplied timestamp | `PeerTestTracker`, `PeerTestEcho`, `PeerTestOutcome`, `PeerTestError`, `MAX_OUTSTANDING_PEER_TESTS = 32`, `DEFAULT_PEER_TEST_TIMEOUT_MS = 10_000` |
 
 ### Tunnels, transit, and floodfill
@@ -888,6 +888,51 @@ available behind an explicit switch and defaults to off. When it is off the
 role does not start and the configuration status says so truthfully
 (`SSU2_INTRODUCER_DISABLED_REASON` — "available but not enabled", not the
 older and now false "unavailable in this milestone").
+
+### API-version floors and peer eligibility (Plan 491)
+
+Plan 491 gives the daemon two **typed refusal** points and the receipts that
+record them.
+
+**The tunnel-build enforcement point** (`src/destination_peers.rs`).
+`DestinationPeerCandidate::from_validated` now returns
+`Result<Self, CandidateRefusal>` instead of an `Option`. The refusal
+vocabulary is closed: `UnknownVersion` (the peer published no API version),
+`UncomparableVersion` (it published one that cannot be compared),
+`BelowVersionFloor` (it published one below the tunnel-build floor), and
+`Unqualified` (it lacks the build metadata this profile requires). The
+version decision is taken **before** any other fact about the record, so a
+peer that cannot be compared is refused without being inspected further.
+
+`CandidateProjectionSummary` counts each refusal by reason.
+`select_projected_destination_path` turns an empty projection into the
+*reason* it is empty: when the floor refused every scanned record the
+terminal is `DestinationSelectionError::NoEligibleVersionPeers`, not a bare
+`NoCandidates`. The build fails closed either way — the selector never loops
+looking for a peer that is not allowed.
+
+**The DSM enforcement point** (`src/netdb_tunnels.rs`).
+`NetDbTunnelCoordinator::begin_publication` refuses a floodfill that does
+not satisfy the DSM minimum-version floor, with
+`NetDbTunnelError::FloodfillRefusedByVersionFloor(reason)`; the reason is
+one of the stable labels `unknown-version`, `uncomparable-version`, or
+`below-floor`. The refusal is counted in
+`NetDbTunnelCounters::publications_refused_by_version_floor`, and the
+publication *target* selection (`nearest_eligible_floodfills`) excludes the
+same peers and reports the same counts.
+
+**The receipts** (`src/netdb_participation.rs`).
+`VersionEligibilityReceipt` is a separate, bounded log from the Plan 488
+participation receipts, because it describes a *decision* rather than the
+store's observed state. It carries the gate, the examined population, the
+accepted count, the refusal counts by reason, and a digest over those
+counts — and **no peer identity of any kind**. The two driver methods
+`select_tunnel_build_peers` and `select_dsm_targets` make the decisions and
+record them, so a refusal is never a silent skip.
+
+The driver is still **not** wired into the router's tunnel-building loop;
+Plan 488's gap is unchanged. The live product path reaches the same floors
+through the two enforcement points above, which refuse at the point of use.
 
 ### `router_i2np.rs` — the controlled `ssu2-router` service
 

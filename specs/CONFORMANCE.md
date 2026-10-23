@@ -791,6 +791,69 @@ Evidence: `crates/i2pr-transport-ssu2/src/relay.rs`,
 artifact `tests/integration/network-participation/evidence/plan490/result.json`.
 The closure record is `plans/closure/network-participation/490-status.md`.
 
+## API-version floors and peer eligibility (Plan 491)
+
+Plan 491 makes the router **honor the minimum-peer obligations that its own
+published `router.version` attaches**. The specification's API-version table
+attaches two duties to the `0.9.62` row — the level this router declares:
+
+```text
+minimum peers will build tunnels through, as of 0.9.68
+minimum floodfill peers will send DSM to, as of 0.9.68
+```
+
+What is claimed, and what is not:
+
+- **The claim is compliance with a level the router already declares — not a
+  new capability.** `CONTROLLED_ROUTER_VERSION` is unchanged at `0.9.62`,
+  its Plan 285 pinning test still passes, and the plan changes no
+  `caps`, no published RouterInfo, no `router.version`, and nothing is
+  advertised. There is **no new participation capability**.
+- **The comparator is total and typed.** Every published `router.version`
+  string maps to a comparable value or to an explicit `Unknown` (no version
+  published) or `Uncomparable` (a value that cannot be compared) state. A
+  malformed or absent version never panics and never compares as "newest".
+- **The comparison is the specification's numeric rule.** `0.9.13` is at
+  least `0.9.12`; `0.9.9` is *not* at least `0.9.10`; the `0.7.9 or lower`
+  catch-all line is handled by the catch-all rule rather than by a
+  lexicographic comparison.
+- **The floors are derived, not hand-maintained.** The obligation rows are
+  data in the comparator; the floors are derived from those rows and from
+  the declared level. A literal copy of the floor in the policy module is a
+  static-guarded violation.
+- **The floors are specification constants, not operator knobs.** No
+  configuration key can lower them. An operator cannot put the router below
+  the level it declares.
+- **Both enforcement points fail closed.** A peer whose version is unknown,
+  uncomparable, or below the floor is never used as a tunnel-build peer and
+  is never sent a DSM. When every candidate is refused, the build fails
+  closed with the *reason* (`NoEligibleVersionPeers`), never a bare "no
+  candidates" and never a loop.
+- **Every refusal is counted and explainable.** A peer that was skipped is
+  never a silent skip: the reason is one of `unknown-version`,
+  `uncomparable-version`, or `below-floor`. The receipts carry counts and
+  stable reason labels only — no peer hash, no address, no key, no version
+  string, no payload.
+- **The declared version is never edited to dodge a floor.** A peer that
+  refuses the declaration is a finding, not a licence to edit it.
+
+The two reference implementations are the behavioral oracles: Java I2P
+2.13.0 applies `0.9.62` in `net.i2p.router.tunnel.pool.TunnelPeerSelector`,
+and i2pd 2.61.0 applies `0.9.62` in `libi2pd/NetDb.hpp`
+(`NETDB_MIN_HIGHBANDWIDTH_VERSION`, `NETDB_MIN_FLOODFILL_VERSION`).
+
+Evidence: `crates/i2pr-proto/src/common/version.rs`,
+`crates/i2pr-netdb/src/version.rs`, `crates/i2pr-netdb/src/profile.rs`,
+`crates/i2pr-netdb/src/profile_store.rs`, `crates/i2pr-netdb/src/selection.rs`,
+`crates/i2pr-netdb/src/publication.rs`,
+`crates/i2pr-daemon/src/destination_peers.rs`,
+`crates/i2pr-daemon/src/netdb_tunnels.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/tests/version_eligibility_mesh.rs`,
+`crates/i2pr-daemon/tests/version_floor_boundary.rs`, and the sanitized lane
+artifact `tests/integration/network-participation/evidence/plan491/result.json`.
+The closure record is `plans/closure/network-participation/491-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

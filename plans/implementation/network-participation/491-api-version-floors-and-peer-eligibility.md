@@ -1,10 +1,13 @@
 # Plan 491 — API-version floors and peer eligibility: honoring the obligations of the published `router.version`
 
-**Status:** registered, ready to execute (phase 4 of
-[network participation](../../subsystems/network-participation-roadmap.md))
-**Owner:** `i2pr-proto` (the version comparator and the floor constants),
-`i2pr-netdb` (the per-peer version evidence), `i2pr-client`/`i2pr-daemon`
-(the two enforcement points)
+**Status:** closed as `passed-api-version-floors-and-peer-eligibility` (phase 4 of
+[network participation](../../subsystems/network-participation-roadmap.md));
+the closure record is
+`plans/closure/network-participation/491-status.md`
+**Owner:** `i2pr-proto` (the version comparator and the specification's
+obligation table), `i2pr-netdb` (the derived floor constants, the per-peer
+version evidence, and the selection gate), `i2pr-daemon` (the two
+enforcement points and the receipts)
 **Baseline:** `work/plans-477-480-router-recovery@c43f3404`
 **Authoritative predecessor:** `plans/closure/netdb/285-status.md` (the
 `router.version` declaration pinned to the implemented I2NP surface),
@@ -141,16 +144,29 @@ Missing today:
 
 - **`crates/i2pr-proto/src/common/version.rs`** (new): `ApiVersion` — the
   typed comparator over published version strings, with `Unknown` and
-  `Uncomparable` as first-class states, and the floor constants
-  (`MIN_PEER_VERSION_FOR_TUNNEL_BUILD`,
-  `MIN_FLOODFILL_VERSION_FOR_DSM`) derived from the specification's table
-  and pinned by a test.
+  `Uncomparable` as first-class states — plus the specification's
+  minimum-peer obligation rows and the derivation of the floors from them.
+- **`crates/i2pr-netdb/src/version.rs`** (new): the floor constants
+  (`MIN_PEER_VERSION_FOR_TUNNEL_BUILD`, `MIN_FLOODFILL_VERSION_FOR_DSM`),
+  derived from that table and from the level this router declares. The
+  constants live here rather than in `i2pr-proto` because the derivation is
+  keyed on `CONTROLLED_ROUTER_VERSION`, which `i2pr-netdb` owns; keeping the
+  derivation and the declaration in one crate is what stops the floors from
+  becoming a second, hand-maintained copy of the truth.
 - **`crates/i2pr-netdb/src/profile.rs`** (extended from Plan 488): the
   per-peer published version and its comparability state.
-- **`crates/i2pr-client/src/pool.rs` (or the tunnel-build peer
-  selection)**: the first enforcement point, with a typed refusal.
-- **`crates/i2pr-daemon/src/service_product.rs` (or the publication
-  target selection)**: the second enforcement point, with a typed refusal.
+- **`crates/i2pr-netdb/src/selection.rs`**: the version gate in the pure
+  selection policy, with the counted refusals.
+- **`crates/i2pr-daemon/src/destination_peers.rs`** (the tunnel-build peer
+  selection): the first enforcement point, with a typed refusal. The plan
+  offered `i2pr-client/src/pool.rs` "or the tunnel-build peer selection";
+  the live selection is the daemon's, because `i2pr-client`'s pool manages
+  tunnel lifecycles and consumes peers chosen upstream.
+- **`crates/i2pr-netdb/src/publication.rs`** and
+  **`crates/i2pr-daemon/src/netdb_tunnels.rs`** (the publication target
+  selection): the second enforcement point, with a typed refusal. The plan
+  offered `crates/i2pr-daemon/src/service_product.rs` "or the publication
+  target selection".
 - **`crates/i2pr-daemon/src/netdb_participation.rs`**: the receipts that
   record both decisions with counts and reasons.
 

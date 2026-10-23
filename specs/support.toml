@@ -460,6 +460,9 @@ plan_489_status = "passed-floodfill-indexed-routing-table"
 plan_490_plan_of_record = "plans/implementation/network-participation/490-ssu2-introducer-relay-role.md"
 plan_490_closure = "plans/closure/network-participation/490-status.md"
 plan_490_status = "passed-ssu2-introducer-relay-role"
+plan_491_plan_of_record = "plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md"
+plan_491_closure = "plans/closure/network-participation/491-status.md"
+plan_491_status = "passed-api-version-floors-and-peer-eligibility"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -882,6 +885,31 @@ evidence = [
     "tests/integration/network-participation/evidence/plan489/result.json",
     "plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md",
     "plans/closure/network-participation/489-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.api-version-floors"
+protocol = "reseed-netdb"
+structure = "typed-published-version-comparator-derived-minimum-peer-floors-and-typed-peer-refusals"
+scope = "required"
+status = "experimental"
+notes = "Plan 491 made the router honor the minimum-peer obligations that its own published `router.version` attaches. The specification's API-version table attaches two duties to the 0.9.62 row -- the level this router declares -- namely *minimum peers will build tunnels through, as of 0.9.68* and *minimum floodfill peers will send DSM to, as of 0.9.68*. The comparator is total and typed: every published version string maps to a comparable value or to an explicit Unknown (no version published) or Uncomparable (not comparable) state, and a malformed or absent version never compares as 'newest'. The comparison is the specification's numeric rule (0.9.13 implies 0.9.12; 0.9.9 is not at least 0.9.10), never a lexicographic one, and the 0.7.9-or-lower catch-all line is handled by the catch-all rule. The floors are *derived* from the specification's obligation rows and the declared level, never hand-maintained; they are specification constants and no configuration key can lower them. Two enforcement points fail closed: a peer whose version is unknown, uncomparable, or below the floor is never used as a tunnel-build peer and is never sent a DSM, and when every candidate is refused the build fails closed with the reason rather than looping. Every refusal is counted by reason (unknown-version, uncomparable-version, below-floor) and the receipts carry counts and stable labels only -- no peer hash, no address, no key, no version string. The declared `router.version` is unchanged and its Plan 285 pinning test still passes. The surface is internal and non-advertised: nothing here changes `caps`, the published RouterInfo, or any advertisement. Plan 491 adds NO participation capability; it makes the router compliant with the level it already claims."
+evidence = [
+    "crates/i2pr-proto/src/common/version.rs",
+    "crates/i2pr-netdb/src/version.rs",
+    "crates/i2pr-netdb/src/profile.rs",
+    "crates/i2pr-netdb/src/profile_store.rs",
+    "crates/i2pr-netdb/src/selection.rs",
+    "crates/i2pr-netdb/src/publication.rs",
+    "crates/i2pr-daemon/src/destination_peers.rs",
+    "crates/i2pr-daemon/src/netdb_tunnels.rs",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/tests/version_eligibility_mesh.rs",
+    "crates/i2pr-daemon/tests/version_floor_boundary.rs",
+    "tests/integration/network-participation/evidence/plan491/result.json",
+    "plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md",
+    "plans/closure/network-participation/491-status.md",
 ]
 advertised = false
 

@@ -88,19 +88,20 @@ It must **not** own:
 | `lookup_engine` | `lookup_engine.rs` | 1364 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 366 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
 | `lookup_policy` | `lookup_policy.rs` | 468 | Bounded lookup budgets and nearest-N floodfill candidate selection | `LookupPolicy`, `LookupPolicyError`, `FloodfillSelection`, `select_floodfill_candidates`, `MAX_SUGGESTED_HASH_LIMIT`, `DEFAULT_*` budget constants |
-| `profile` | `profile.rs` | 832 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, and the capacity-class parser | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
-| `profile_store` | `profile_store.rs` | 1 619 | Plan 488 tiered bounded profile store over the Plan 103 validated-RouterInfo store: classification, failure model, maintenance pass, and the bounded sanitized projection | `ProfileStore`, `ProfileStoreConfig`, `ProfileStoreStats`, `ProfileInsertOutcome`, `ObserveOutcome`, `MaintenanceReport`, `ProfileProjection`, `ProfileProjectionRecord`, `ProfileProjectionError`, `RestoreReport` |
+| `profile` | `profile.rs` | 857 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, the capacity-class parser, and Plan 491's per-peer published API version evidence | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
+| `profile_store` | `profile_store.rs` | 1 686 | Plan 488 tiered bounded profile store over the Plan 103 validated-RouterInfo store: classification, failure model, maintenance pass, and the bounded sanitized projection | `ProfileStore`, `ProfileStoreConfig`, `ProfileStoreStats`, `ProfileInsertOutcome`, `ObserveOutcome`, `MaintenanceReport`, `ProfileProjection`, `ProfileProjectionRecord`, `ProfileProjectionError`, `RestoreReport` |
 | `optimized_lookup` | `optimized_lookup.rs` | 310 | Plan 489 pure optimized lookup plan: closest-first candidates from the routing table, split into queryable and pending peers | `OptimizedPlan`, `OptimizedCandidate`, `plan_optimized_lookup`, `MAX_OPTIMIZED_QUERYABLE`, `MAX_OPTIMIZED_PENDING` |
 | `provenance` | `provenance.rs` | 476 | Plan 271 bounded privacy-safe provenance metadata and the pure namespace/disclosure eligibility policy | `ProvenanceIndex`, `RecordProvenance`, `RecordId`, `NetDbNamespace`, `ClientNamespaceId`, `InboundProvenance`, `StorePurpose`, `ProvenanceLimits`, `Eligibility` (re-exported as `ProvenanceEligibility`) |
-| `publication` | `publication.rs` | 696 | Local RouterInfo publication coordinator emitting one bounded `DatabaseStore` per nearest floodfill | `PublicationCoordinator`, `PublicationAttempt`, `PublicationAttemptRecord`, `PublicationAttemptState`, `PublicationCorrelation`, `PublicationSnapshot`, `PublicationError`, `MAX_PUBLICATION_ATTEMPTS` |
+| `publication` | `publication.rs` | 823 | Local RouterInfo publication coordinator emitting one bounded `DatabaseStore` per nearest floodfill; Plan 491 refuses a floodfill below the DSM API-version floor and counts the refusal | `PublicationCoordinator`, `PublicationAttempt`, `PublicationAttemptRecord`, `PublicationAttemptState`, `PublicationCorrelation`, `PublicationSnapshot`, `PublicationError`, `FloodfillTargetSelection`, `MAX_PUBLICATION_ATTEMPTS` |
 | `replication` | `replication.rs` | 308 | Plan 275 bounded source-excluding direct DatabaseStore action planning over current/next daily routing keys | `ReplicationPlanner`, `ReplicationPolicy`, `ReplicationPlan`, `ReplicationStats`, `ReplicationError`, `DirectFloodAction`, `FloodfillPeerView`, `RoutingKeyClass`, `nearest_peers` |
 | `reseed` | `reseed.rs` | 1547 | SU3 framing, signer trust, RSA-SHA512-4096 verification, bounded ZIP ingestion, per-entry RouterInfo validation | `parse_su3`, `verify_su3`, `verify_su3_with_signers`, `verify_su3_archive`, `trust_signer_from_certificate`, `ReseedSignerTrustSet`, `TrustedSigner`, `ReseedSignerId`, `ReseedLimits`, `ReseedSignatureType`, `ReseedVerifyReport`, `ReseedVerifyOutcome`, `ReseedEntryReport`, `ReseedEntryState`, `ReseedVerifiedBundle`, `ReseedParseError`, `ReseedTrustError`, `ReseedEntryError`, `MAX_*` scan budgets |
 | `resource` | `resource.rs` | 154 | Plan 276 shared floodfill admission budgets with drop-released leases | `FloodfillResourceBudget`, `FloodfillResourcePolicy`, `FloodfillResourceSnapshot`, `ResourceKind`, `ResourceLease` |
 | `router_info` | `router_info.rs` | 598 | RouterInfo validation, `RouterHash` derivation, and the validated boundary | `ValidatedRouterInfo`, `RouterHash`, `router_hash`, `RouterInfoValidationPolicy` (also re-exported as `ValidationPolicy`), `ValidationContext`, `RouterInfoValidationError` |
 | `routing` | `routing.rs` | 384 | XOR distance, daily routing-key derivation, `NearestSelection` ordering | `xor_distance`, `daily_routing_key`, `format_daily_key`, `NearestSelection`, `RoutingKeyError` |
-| `selection` | `selection.rs` | 615 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `select_candidates`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
+| `selection` | `selection.rs` | 747 | Plan 488 pure peer selection policy: eligibility, deterministic order, seeded shuffle, /16 diversity, participation cap; Plan 491 adds the API-version gate and its counted refusals | `Candidate`, `SelectionConstraints`, `ParticipationLedger`, `VersionGate`, `VersionGatedSelection`, `select_candidates`, `select_candidates_with_report`, `MAX_SELECTION_COUNT`, `MAX_PARTICIPATION_TRACKED_PEERS` |
 | `server_store` | `server_store.rs` | 731 | Plan 272 main-router-only, explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters | `ServerNetDb`, `ServerNetDbConfig`, `ValidatedNetDbRecord`, `ServerInsertOutcome`, `MaintenanceBatch`, `daily_rollover_due` |
 | `store` | `store.rs` | 584 | Bounded in-memory `RouterInfoStore` with checked arithmetic and deterministic replacement semantics | `RouterInfoStore`, `RouterInfoStoreConfig`, `RouterInfoStoreStats`, `InsertOutcome` |
+| `version` | `version.rs` | 247 | Plan 491 the router's peer-eligibility policy: the declared level parsed once, the two minimum-version floors derived from the specification's table, the typed eligibility decisions, and the counted refusal vocabulary | `CONTROLLED_API_VERSION`, `CONTROLLED_VERSION_FLOORS`, `MIN_PEER_VERSION_FOR_TUNNEL_BUILD`, `MIN_FLOODFILL_VERSION_FOR_DSM`, `SPECIFICATION_RELEASE`, `ROUTER_VERSION_PROPERTY`, `VersionRefusalCounts`, `published_version_of`, `tunnel_peer_eligibility`, `dsm_target_eligibility` |
 | `store_message` | `store_message.rs` | 318 | Plan 105 bounded ingestion handler for `DatabaseStore` arriving outside an active lookup | `handle_unsolicited_databasestore`, `UnsolicitedStorePolicy`, `UnsolicitedStoreOutcome`, `UnsolicitedStoreError` |
 | *(root)* | `lib.rs` | 206 | `#![forbid(unsafe_code)]`, 30 private module declarations, and the crate's whole public surface | — (re-exports only) |
 
@@ -510,6 +511,32 @@ is internal and **non-advertised**; nothing here changes `router.version`,
   caller can see that a responsive peer was preferred. The participation
   ledger (`ParticipationLedger`) is bounded in size and evicts its oldest
   tracked peer rather than growing without limit.
+
+### Peer eligibility and the minimum-version floors (`version.rs`)
+
+Plan 491 binds the specification's obligation rows to **this** router. The
+declared level (`CONTROLLED_ROUTER_VERSION`, owned by `local.rs`) is parsed
+once into `CONTROLLED_API_VERSION`; `CONTROLLED_VERSION_FLOORS` derives the
+two floors from the table; `MIN_PEER_VERSION_FOR_TUNNEL_BUILD` and
+`MIN_FLOODFILL_VERSION_FOR_DSM` are the derived constants. A compilation
+failure — not a runtime fallback — is what happens if the table stops
+imposing a floor at the declared level.
+
+The two constants live here rather than in `i2pr-proto` because the
+derivation is keyed on the declaration `i2pr-netdb` owns. Keeping the
+derivation and the declaration in one crate is what stops the floors from
+becoming a second, hand-maintained copy of the truth.
+
+`published_version_of` reads a validated record's `router.version` and
+returns the three-state `PublishedVersion`. `tunnel_peer_eligibility` and
+`dsm_target_eligibility` turn that into a typed `VersionEligibility`:
+`Eligible`, `UnknownVersion`, `UncomparableVersion`, or `BelowFloor`. The
+decision is *fail-closed*: an unknown or uncomparable version is refused
+whatever the floor is.
+
+`VersionRefusalCounts` is the counted vocabulary. It holds three counters
+and nothing else — no peer hash, no address, no key, no version string — so
+a refusal can be reported without disclosing who was refused.
 
 ### The floodfill-indexed routing table, the exploration job, and the optimized lookup (`bucket_set.rs`, `exploration.rs`, `optimized_lookup.rs`)
 
