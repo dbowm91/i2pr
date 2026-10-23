@@ -1,0 +1,16 @@
+{
+  "mesh": {
+    "dsm_eligible": 2,
+    "eligible": 2,
+    "peers": 5,
+    "refused_below_floor": 1,
+    "refused_uncomparable_version": 1,
+    "refused_unknown_version": 1
+  },
+  "plan": 491,
+  "receipt_digests": {
+    "dsm_target": "c7ec77f63b4fbf96b289350e3c9f58f6339b2cacd5940a383821ba2f5929ff71",
+    "tunnel_build_peer": "3c0d3d4ad221931976faa8811e2c8b3a72a9f3e1706ccaa430e6fdf8a90a8040"
+  },
+  "schema": "i2pr-version-floor-mesh-v1"
+}
