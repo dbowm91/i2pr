@@ -221,7 +221,7 @@ Layering rules that each phase must respect:
 487 (passed) -> 488 peer profile store (passed)
                    -> 489 floodfill-indexed routing table + exploration (passed)
                         -> 490 SSU2 introducer (relay) role (passed)
-                             -> 491 API-version floors + peer eligibility
+                             -> 491 API-version floors + peer eligibility (passed)
                                   -> 492 transit participation posture
                                        -> 493 two-family public qualification
                                             -> 494 floodfill role + caps=f
@@ -253,7 +253,7 @@ Filenames keep global i2pr numbers.
 | 488 | closed | passed-peer-profile-store | `plans/implementation/network-participation/488-peer-profile-store.md` | `plans/closure/network-participation/488-status.md` (implementation `c796bb0f`) |
 | 489 | closed | passed-floodfill-indexed-routing-table | `plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md` | `plans/closure/network-participation/489-status.md` (implementation `40a15a87`) |
 | 490 | closed | passed-ssu2-introducer-relay-role | `plans/implementation/network-participation/490-ssu2-introducer-relay-role.md` | `plans/closure/network-participation/490-status.md` (implementation `8a170ae4`; floor-caught fixes `0f5ba473` and `431ece6e` committed separately) |
-| 491 | ready | registered-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | — |
+| 491 | closed | passed-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | `plans/closure/network-participation/491-status.md` (implementation `dc36e2d7`; floor-caught fixes `c195f363` and `27c20b9c` committed separately) |
 | 492 | ready | registered-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | — |
 | 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | — |
 | 494 | blocked | registered-floodfill-role-and-caps-f-advertisement | `plans/implementation/network-participation/494-floodfill-role-and-caps-f-advertisement.md` | — |
@@ -383,9 +383,10 @@ exactly that.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: **Plan 491 is the next
+Full row history is §7. Current authority: **Plan 492 is the next
 actionable phase**; Plan 488 is closed (`passed-peer-profile-store`), Plan 489
-is closed (`passed-floodfill-indexed-routing-table`), and Plan 490 is closed
-(`passed-ssu2-introducer-relay-role`); Plan 492 follows in order; Plans
-493–494 are registered and blocked. The prior axis — Plans 477–480 and
+is closed (`passed-floodfill-indexed-routing-table`), Plan 490 is closed
+(`passed-ssu2-introducer-relay-role`), and Plan 491 is closed
+(`passed-api-version-floors-and-peer-eligibility`); Plans 493–494 are
+registered and blocked. The prior axis — Plans 477–480 and
 485–487 — is closed and is not reopened here.
