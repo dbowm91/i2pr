@@ -46,7 +46,7 @@ pub const SPECIFICATION_RELEASE: ApiVersion = match ApiVersion::parse(SPECIFICAT
 /// The floors in force for the level this router declares.
 ///
 /// Derived from the specification's table; see
-/// [`i2pr_proto::common::floors_in_force`].
+/// [`i2pr_proto::floors_in_force`].
 pub const CONTROLLED_VERSION_FLOORS: VersionFloors =
     floors_in_force(CONTROLLED_API_VERSION, SPECIFICATION_RELEASE);
 

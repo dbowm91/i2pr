@@ -59,7 +59,7 @@ pub struct Candidate {
 /// The peer-eligibility gate one selection honours.
 ///
 /// Plan 491. The gate names the *purpose*; the floor itself is policy, owned
-/// by [`crate::version`], so a selection never carries its own copy of the
+/// by the `version` policy module, so a selection never carries its own copy of the
 /// specification's table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VersionGate {
