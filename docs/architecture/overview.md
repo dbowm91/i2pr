@@ -395,6 +395,16 @@ projection that carries its day so a restart never resurrects an
 expired table. The table reads no clock and takes every time input from
 the caller. Detail: [i2pr-netdb.md](i2pr-netdb.md).
 
+Since Plan 490 the daemon also owns the **SSU2 introducer (Bob) role**
+(`ssu2_introducer.rs`): the specification's NAT-traversal helper. A
+firewalled peer asks this router for a relay tag and publishes it; a
+requester presents that tag to name the target; the router forwards a
+Relay Intro to the target and answers the requester with a Relay
+Response. The tag identifies the target, the requester's key comes from a
+validated RouterInfo, admission precedes crypto, every refusal is typed
+and counted, and the receipt carries counts only. The role is opt-in
+(`ssu2.introducer_service`, default off) and non-advertised.
+
 ### 4.10 `i2pr-netdb-persist` — cache, reseed, and floodfill records
 
 Sits above validation and below the daemon: `CacheLoader` reads raw
@@ -534,7 +544,9 @@ the `ServiceGraph`, and supervises shutdown. Owns: `[netdb]`/`[reseed]`
 pipeline (`NetDbSeam`), the Plan 488 peer participation driver and its
 sanitized receipts, and the Plan 489 routing-table driver — the
 exploration job, the optimized lookup and their receipts
-(`netdb_participation.rs`), exploratory build
+(`netdb_participation.rs`), the Plan 490 SSU2 introducer role owner
+with its typed refusals and counts-only receipt (`ssu2_introducer.rs`),
+exploratory build
 coordinator + tunnel
 liveness, NetDB-over-tunnels coordinator, destination coordinators,
 `OutboundGatewayRole` lookup/store composition,

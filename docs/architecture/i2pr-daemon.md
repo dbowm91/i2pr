@@ -187,6 +187,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
+| `src/ssu2_introducer.rs` | 890 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver` |
 
 ### Destinations and the shared streaming pump
 
@@ -603,6 +604,7 @@ path** — operator intent is always explicit.
 | `ssu2.enabled` | `false` | (941) |
 | `ssu2.bind_ipv4` | `"127.0.0.1"` | (955) |
 | `ssu2.bind_ipv6` | `""` (unset) | (961) |
+| `ssu2.introducer_service` | `false` | (961) |
 | `i2cp.enabled` | `false` | (874) |
 | `i2cp.bind_address` | `"127.0.0.1"` | (876) |
 | `i2pcontrol.enabled` | `false` | (916) |
@@ -845,6 +847,47 @@ short-transport I2NP messages addressed to the outbound first hop;
 standard I2NP envelope exactly once through `i2pr-proto`, and supports only `DatabaseStore`,
 `DatabaseSearchReply`, and `DeliveryStatus` bodies. Unknown tunnel ids fail closed without
 allocating role state.
+
+### SSU2 introducer role owner (Plan 490, `src/ssu2_introducer.rs`)
+
+Plan 490's daemon-side owner of the SSU2 **introducer (Bob) role**. The
+runtime owns the socket and the bounded tables; the daemon owns the policy
+and the receipts.
+
+The role is what the specification calls a NAT-traversal helper: a firewalled
+peer (Charlie) asks this router for a relay tag and publishes it, and a
+requester (Alice) that can reach this router presents that tag to name the
+target. The role owner:
+
+- **issues** the relay tag that identifies the target;
+- **admits** an inbound Relay Request: the per-source rate limit comes
+  first, then the tag is resolved to the target, then the requester's own
+  signing key (resolved from a *validated* RouterInfo through the
+  `IntroducerSignerResolver` trait) is used to verify the requester's
+  signature over the specification's preimage;
+- **answers** with a Relay Intro addressed to the target, and forwards the
+  target's Relay Response to the requester once the target's signature
+  verifies;
+- **refuses** every other path with a typed reason
+  (`Ssu2IntroducerRefusal`), counted in the receipt, leaving no state
+  behind.
+
+The dispatch order is **service first, transit second, unknown fail-closed**:
+`Ssu2DaemonHandle::next_relay_dispatched` hands the decoded block to the
+service owner; a Relay Intro belongs to the target (transit) role and is
+refused by the service owner; the runtime never surfaces a block it could not
+classify.
+
+The receipt carries **counts only** — `requests_admitted`, `intros_produced`,
+`responses_forwarded`, `tags_issued`, and refusals by typed reason. It never
+carries a peer hash, an address, a tag value, a key, or a payload; the
+in-crate test asserts that.
+
+The role is **opt-in and non-advertised**: `ssu2.introducer_service` is
+available behind an explicit switch and defaults to off. When it is off the
+role does not start and the configuration status says so truthfully
+(`SSU2_INTRODUCER_DISABLED_REASON` — "available but not enabled", not the
+older and now false "unavailable in this milestone").
 
 ### `router_i2np.rs` — the controlled `ssu2-router` service
 

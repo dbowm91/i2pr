@@ -457,6 +457,9 @@ plan_488_status = "passed-peer-profile-store"
 plan_489_plan_of_record = "plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md"
 plan_489_closure = "plans/closure/network-participation/489-status.md"
 plan_489_status = "passed-floodfill-indexed-routing-table"
+plan_490_plan_of_record = "plans/implementation/network-participation/490-ssu2-introducer-relay-role.md"
+plan_490_closure = "plans/closure/network-participation/490-status.md"
+plan_490_status = "passed-ssu2-introducer-relay-role"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -879,6 +882,27 @@ evidence = [
     "tests/integration/network-participation/evidence/plan489/result.json",
     "plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md",
     "plans/closure/network-participation/489-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.introducer-relay-role"
+protocol = "ssu2"
+structure = "opt-in-introducer-bob-role-with-relay-tag-target-binding-and-typed-refusals"
+scope = "required"
+status = "experimental"
+notes = "Plan 490 gave the router an opt-in SSU2 introducer (Bob) role: a firewalled peer asks this router for a relay tag and publishes it, and a requester presents that tag to name the target; the router forwards a Relay Intro to the target and answers the requester with a Relay Response. The relay tag identifies the *target*, and the target's hash is what the requester's signature binds, so the role owner resolves the target through the tag before any signature work. The requester's signing key comes from a validated RouterInfo through the IntroducerSignerResolver seam, never from the wire. Admission precedes crypto (the per-source rate limit runs first, and the transport's 3x response budget is enforced before its own crypto); every refusal is a typed, counted reason that leaves no state behind; every table (rate windows, tracked introductions, relay tags, relay requests, the runtime handoff queue) has a fixed ceiling. The role is opt-in and default-off: `ssu2.introducer_service` is available, and when it is off the configuration status says the role is *available but not enabled*, not *unavailable in this milestone*. The role is internal and non-advertised: nothing here changes `router.version`, `caps`, the published RouterInfo, or any advertisement. The publication builder gained the specification's introducer-only address form (no host/port, the `4`/`6` family capability alongside the introducer groups, at most three introducers in the deterministic order); the router's own address publication stays refused by `ssu2.advertise`. Plan 490 adds NO public-network participation claim: the role is exercised against a private controlled mesh, and the live RouterInfo still carries no introducer options."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/relay.rs",
+    "crates/i2pr-transport-ssu2/src/publication.rs",
+    "crates/i2pr-transport-ssu2/tests/profile_boundary.rs",
+    "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-daemon/src/ssu2_introducer.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_mesh.rs",
+    "tests/integration/network-participation/evidence/plan490/result.json",
+    "plans/implementation/network-participation/490-ssu2-introducer-relay-role.md",
+    "plans/closure/network-participation/490-status.md",
 ]
 advertised = false
 

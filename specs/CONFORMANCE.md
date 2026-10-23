@@ -729,6 +729,68 @@ Evidence: `crates/i2pr-netdb/src/bucket_set.rs`,
 artifact `tests/integration/network-participation/evidence/plan489/result.json`.
 The closure record is `plans/closure/network-participation/489-status.md`.
 
+## SSU2 introducer (Bob) relay role (Plan 490)
+
+Plan 490 gave the router an **opt-in SSU2 introducer role**: the
+specification's NAT-traversal helper. A firewalled peer (Charlie) asks this
+router for a relay tag and publishes it; a requester (Alice) that can reach
+this router presents that tag to name the target; the router forwards a
+Relay Intro to the target and answers Alice with a Relay Response.
+
+What is claimed, and what is not:
+
+- **The claim is a role behind an explicit switch — not a public-network
+  participation claim.** `ssu2.introducer_service` is **available** and
+  **default off**. When it is off the role does not start, and the
+  configuration status says so truthfully: the role is *available but not
+  enabled*, not *unavailable in this milestone*. The plan changes no
+  `router.version`, no `caps`, no published RouterInfo, and nothing is
+  advertised.
+- **The relay tag identifies the target, and the target's hash is what the
+  requester's signature binds.** The role owner resolves the target through
+  the tag before it verifies anything, so a request that names a target this
+  router never issued a tag for is refused as an unknown tag.
+- **The requester's key comes from a validated RouterInfo, never from the
+  wire.** The role owner resolves it through the `IntroducerSignerResolver`
+  seam; an unknown requester is refused and counted.
+- **Every refusal is typed, counted, and leaves no state behind.** The
+  reasons are a closed vocabulary (`disabled`, `not_our_role`,
+  `rate_limited`, `unknown_tag`, `expired_tag`, `unknown_requester`,
+  `target_unknown`, `invalid_signature`, `stale_timestamp`,
+  `duplicate_request`, `budget_exhausted`, `transport_refused`,
+  `unknown_correlation`, `sender_mismatch`, `service_disabled`).
+- **Admission precedes crypto.** The per-source rate limit is applied
+  before the tag resolution and before any signature work, and the
+  transport's 3× response budget is enforced before its own crypto.
+- **Everything is bounded.** The per-source rate window, the tracked
+  introductions (≤ 64), the retained rate sources (≤ 64), the transport's
+  relay-tag and request tables, and the runtime's relay handoff queue
+  (≤ 16) all have fixed ceilings.
+- **The published introducer-only address form follows the specification.**
+  An address that publishes introducers omits `host`/`port` and carries the
+  `4`/`6` family capability alongside the introducer groups, at most three
+  introducers in the deterministic order. The builder adds only the family
+  flag implied by the reachability snapshot; it never invents a role
+  capability and never publishes `caps=f`.
+- **Receipts and evidence carry counts only.** A relay receipt never names
+  a peer: no hash, no address, no tag value, no key, no payload. The private
+  controlled-mesh lane asserts this against the rendered receipt and
+  against the evidence file.
+- **The transport stays runtime-neutral and clock-free.** The role and the
+  publication builder take every time input from the caller. The crate-local
+  static guard enforces this, with inverted probes for a socket use, a clock
+  read, and a task owner.
+
+Evidence: `crates/i2pr-transport-ssu2/src/relay.rs`,
+`crates/i2pr-transport-ssu2/src/publication.rs`,
+`crates/i2pr-transport-ssu2/tests/profile_boundary.rs`,
+`crates/i2pr-runtime/src/ssu2_peer_relay.rs`,
+`crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-daemon/src/ssu2_introducer.rs`,
+`crates/i2pr-daemon/tests/ssu2_introducer_mesh.rs`, and the sanitized lane
+artifact `tests/integration/network-participation/evidence/plan490/result.json`.
+The closure record is `plans/closure/network-participation/490-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

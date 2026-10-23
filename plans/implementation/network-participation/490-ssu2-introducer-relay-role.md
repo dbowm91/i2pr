@@ -1,11 +1,14 @@
-# Plan 489 — SSU2 introducer (relay) role: running the introducer side of the relay sub-protocol
+# Plan 490 — SSU2 introducer (relay) role: running the introducer side of the relay sub-protocol
 
-**Status:** registered, ready to execute (phase 3 of
-[network participation](../../subsystems/network-participation-roadmap.md))
+**Status:** closed as `passed-ssu2-introducer-relay-role` (phase 3 of
+[network participation](../../subsystems/network-participation-roadmap.md));
+the closure record is
+`plans/closure/network-participation/490-status.md`
 **Owner:** `i2pr-daemon` (the role owner and its configuration),
 `i2pr-runtime` (the socket-level integration of the existing state
 machines), `i2pr-transport-ssu2` (the codecs, unchanged)
-**Baseline:** `work/plans-477-480-router-recovery@c43f3404`
+**Baseline:** `work/plans-477-480-router-recovery@55fa39c4` (the Plan 489
+closing tree)
 **Authoritative predecessor:** `plans/closure/ssu2/161-status.md` (the SSU2
 acceptance authority) and `plans/closure/core-router-recovery/487-status.md`
 **Research input:** the SSU2 specification's Relay section and Published
@@ -326,7 +329,7 @@ Stop and record a `stopped-*` closure when:
 
 ## Closure evidence required
 
-- `plans/closure/network-participation/489-status.md` with the full closure
+- `plans/closure/network-participation/490-status.md` with the full closure
   content the repository requires (commits, requirement-to-evidence matrix,
   command outcomes, invariant/failure/migration/security reviews,
   documentation updates, limitations, findings by severity, roadmap

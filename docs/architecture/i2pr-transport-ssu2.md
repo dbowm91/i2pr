@@ -614,13 +614,24 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
 ### Publication snapshots (`publication.rs`)
 
 - `build_publication_snapshot(PublicationRequest)` — deterministic
-  `Direct` / `Firewalled` / `Withheld` decision from public keys only
-  (zero keys rejected; private material is never an input).
+  `Direct` / `IntroducerOnly` / `Firewalled` / `Withheld` decision from
+  public keys only (zero keys rejected; private material is never an
+  input).
 - Direct host/port requires `Reachable` *plus* explicit
   `allow_direct`; anything weaker yields the unpublished static-only
   firewalled form (no fabricated address). Non-empty introducers
   without `allow_introducers` fail closed
   (`IntroducersUnvalidated`). `TooManyIntroducers` bounds the set.
+- **Plan 490 — the introducer-only form.** An address that publishes
+  introducers omits `host`/`port` entirely and carries the `4`/`6`
+  family capability the specification demands alongside the introducer
+  groups (`ihostN`/`iportN`/`ikeyN`/`itagN`), the local intro and static
+  keys, the MTU, and the version. The builder adds only the family flag
+  implied by the reachability snapshot; it never invents a role
+  capability (`B`, `C`) and never drops a flag the caller asked for.
+  The `DirectWithIntroducers` class stays a *parser*-accepted shape for
+  other routers but is no longer produced by this builder — a change
+  mandated by Plan 490's invariant 5 and acceptance criterion 4.
 - Output options are canonical (sorted); `Ssu2PublicationSnapshot`
   carries `evidence_expires_secs`, and `is_expired(now)` marks
   withdrawal. `parse_snapshot` round-trips through the strict
@@ -675,6 +686,23 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   enforced before crypto, replay idempotency (no second intro
   emission), deterministic `RELAY_REQUEST_TIMEOUT_MS` = 10,000 expiry,
   and `shutdown` clearing all state.
+- **Plan 490 — the Bob-side response path.** `RelayIntroducer::on_response`
+  correlates Charlie's Relay Response against the live request table by
+  nonce, requires the sender to be the peer the request named, refuses a
+  Bob-coded rejection (Charlie never sends one), verifies Charlie's
+  signature over the `RelayAgreementOK` preimage, and **consumes** the
+  tracked request so a replay is refused as an unknown correlation. The
+  outcome is typed: `IntroducerResponseOutcome::Forwarded { alice_hash,
+  code }` or `UnknownRequest`.
+- **Plan 490 — the tag identifies the target.** `RelayIntroducer::tag_owner`
+  is a read-only accessor that resolves the peer a live relay tag names.
+  In the specification the target asks the introducer for a tag and
+  publishes it, and a requester presents that tag to name the target; the
+  tag is therefore the only in-band link between the requester and the
+  target. `issue_tag`'s bound peer is that target (the parameter name is
+  historical). No preimage, block format, or codec changed.
+- `RelayIntroducer::enabled()` is the production constructor;
+  `enabled_for_tests()` is retained as an alias.
 - `RelayTarget` (Charlie) — introducer-context validation of
   `RelayIntro` (Alice's forwarded signature under the
   `RelayRequestData` preimage), single HolePunch emission per intro
@@ -843,22 +871,36 @@ banned literal in the crate's own source.
 
 ## Tests
 
-**189 tests in the crate**, all passing
+**211 tests in the crate**, all passing
 (`cargo test -p i2pr-transport-ssu2 --all-targets`):
 
 | Target | Count |
 | --- | --- |
-| `src/lib.rs` inline unit tests (133 total across 15 modules) | 133 |
+| `src/lib.rs` inline unit tests (145 total across 15 modules) | 145 |
 | `tests/handshake.rs` | 22 |
-| `tests/data_phase.rs` | 17 |
+| `tests/data_phase.rs` | 19 |
 | `tests/path_validation.rs` | 9 |
 | `tests/peer_relay.rs` | 8 |
+| `tests/profile_boundary.rs` (Plan 490 static guard) | 8 |
 
 Inline unit-test distribution by module: `address.rs` 27,
 `path.rs` 13, `session.rs` 13, `peer_test.rs` 12, `handshake.rs` 11,
-`crypto.rs` 10, `token.rs` 9, `publication.rs` 8, `relay.rs` 7,
+`crypto.rs` 10, `token.rs` 9, `publication.rs` 14, `relay.rs` 13,
 `block.rs` 6, `header.rs` 6, `introducer.rs` 4, `constants.rs` 3,
 `packet.rs` 3, `state_machine.rs` 1, `lib.rs` 0.
+
+**Plan 490 static boundary guard** (`tests/profile_boundary.rs`): the
+crate's own production sources carry no `tokio::`, no `std::net`, no
+`std::fs`, no `async fn`, no `JoinHandle`, no `std::process`, no
+`std::thread`, and — the Plan 490 invariant — no `std::time::Instant`
+or `std::time::SystemTime` clock read. Every time input the role and
+the publication builder use is supplied by the caller, so the same
+inputs always produce the same decision. The `core::net` address path
+is deliberately allowed (pure endpoint values, never a socket). The
+guard carries inverted probes: a synthetic socket use, a synthetic
+clock read, and a synthetic task owner must all be reported, and a
+source that only *mentions* a forbidden construct in a comment or in a
+`#[cfg(test)]` block must not be.
 
 **Committed vector corpus.** 13 fixtures (13 `.hex` files; the
 directory also holds `README.md` and `manifest.tsv`) under

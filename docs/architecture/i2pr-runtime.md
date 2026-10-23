@@ -517,6 +517,21 @@ exactly `CandidateReachable`; `publication_material` still requires above-floor
 boundary by design (Plan 282 stopped; Plan 283 owns the third-class strategy and
 activation).
 
+**Plan 490 — the relay handoff.** The runtime decodes and authenticates the
+relay blocks; it never interprets the role. `handle_datagram` and
+`drive_timeouts_locked` now return an `Ssu2InboundBatch { i2np, relay }`: the
+I2NP handoff is unchanged, and the relay blocks (a Relay Request, a Relay
+Intro, a Relay Response) travel on a **second bounded channel**
+(`max_inbound_relay_queue`, default 16, ceiling
+`MAX_SSU2_INBOUND_QUEUE_CEILING`). `Ssu2ServiceHandle::next_relay_event()`
+hands them to the daemon; the channel is bounded, and a full queue counts an
+`inbound_queue_drops` rather than growing. The runtime also exposes the
+daemon-facing role API — `introducer_service_enabled`, `issue_relay_tag`,
+`relay_tag_owner`, `on_relay_request`, `on_introducer_relay_response` — and
+`introducer_publication_material(now_secs)`, which builds the specification's
+introducer-only address form from the validated introducer set
+(`Ssu2PublicationUnavailable::NoIntroducers` when the set is empty).
+
 ### `Ssu2PeerRelayService` (`ssu2_peer_relay.rs`, Plan 160)
 
 `Ssu2PeerRelayService::new(config)` owns the five Plan 160 tables
@@ -530,6 +545,28 @@ private signing keys** — outgoing blocks are signed by caller-supplied keys.
 `issue_relay_tag` and `on_relay_request` refuse unless it is explicitly enabled
 (controlled tests opt in; `introducer_stays_disabled_by_default` pins it). The
 3× response budget is enforced before crypto.
+
+**Plan 490 — the introducer role is reachable in production.**
+`Ssu2RuntimeConfig { pub introducer_service: bool }` (default `false`) is the
+single gate; the daemon's `ssu2.introducer_service` key (default off) is the
+only production switch. The runtime owns the socket and the bounded tables;
+the daemon's role owner owns the policy and the receipts.
+
+Two request shapes reach the same transport state machine:
+
+- `Ssu2PeerRelayService::on_relay_request` — the **requester**-shaped
+  entry point: the relay tag belongs to the requesting peer, and the
+  transport's tag binding and the requester's signature preimage name
+  different peers.
+- `Ssu2PeerRelayService::on_relay_request_for_target` — the
+  **specification's** shape (Plan 490): the relay tag identifies the
+  introduction *target*, so the tag binding and the requester's signature
+  preimage both name that target, and the requester's own signing key is
+  supplied by the caller (the daemon resolves it from a validated
+  RouterInfo). `on_introducer_relay_response` is the matching Bob-side
+  response path: it correlates by nonce, requires the sender to be the
+  target, verifies the target's signature, and consumes the tracked
+  request so a replay is refused.
 
 Per-source rate limits: `PEER_RELAY_RATE_SOURCES = 1024` tracked sources,
 `PEER_RELAY_DATAGRAMS_PER_SECOND = 8`, cheap-drop **before** parsing.
