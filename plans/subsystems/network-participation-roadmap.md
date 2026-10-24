@@ -255,7 +255,7 @@ Filenames keep global i2pr numbers.
 | 490 | closed | passed-ssu2-introducer-relay-role | `plans/implementation/network-participation/490-ssu2-introducer-relay-role.md` | `plans/closure/network-participation/490-status.md` (implementation `8a170ae4`; floor-caught fixes `0f5ba473` and `431ece6e` committed separately) |
 | 491 | closed | passed-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | `plans/closure/network-participation/491-status.md` (implementation `dc36e2d7`; floor-caught fixes `c195f363` and `27c20b9c` committed separately) |
 | 492 | closed | passed-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | `plans/closure/network-participation/492-status.md` (implementation `d287635e`; floor-caught fixes `279f6ae4` and `f0e44798` committed separately) |
-| 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | — |
+| 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | `plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md` (the peer-eligibility gate and the first-failure-owner outcome taxonomy) |
 | 494 | blocked | registered-floodfill-role-and-caps-f-advertisement | `plans/implementation/network-participation/494-floodfill-role-and-caps-f-advertisement.md` | — |
 
 ### Predecessor and dependency plans owned elsewhere
@@ -393,3 +393,14 @@ participation qualification) is the line's next phase and is registered
 blocked** on the authorized two-host topology, and Plan 494 is blocked on
 493. The prior axis — Plans 477–480 and
 485–487 — is closed and is not reopened here.
+
+**The qualification gate is itself a plan-of-record.** Plan 495
+(`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`,
+core-router recovery owner) repairs the external lanes before they run: the
+stock peer's admission and selection become **preconditions checked offline
+before any process launch**, every outcome names its **failure owner**, and a
+family that declines to select us is `peer-selection-refused` — a result about
+that family's selection state, not an `i2pr` defect and not a pass. Plan 493
+binds to it; the model is
+`docs/operations/ssu2-private-lan-qualification.md` and it is bound from
+`specs/CONFORMANCE.md`.

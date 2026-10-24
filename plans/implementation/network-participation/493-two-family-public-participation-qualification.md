@@ -15,6 +15,17 @@ the pinned i2pd 2.61.0 and Java I2P 2.13.0 reference behaviors
 **Predecessor lineage:** 431 (topology) → 435 (transport activation) →
 488 → 489 → 490 → 491 → 492 → **493**
 
+**Gate binding (Plan 495, 2026-10-24).** This plan's matrix runs under the
+peer-eligibility gate in
+[`docs/operations/ssu2-private-lan-qualification.md`](../../../docs/operations/ssu2-private-lan-qualification.md)
+and Plan 495 (`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`).
+Every leg below presumes the stock peer will select and dial `i2pr`; the gate
+makes that presumption an explicit, checked precondition and makes the
+lane's outcome say **which side owns a failure**. A family that admits our
+RouterInfo but declines to select us is `peer-selection-refused` — a result
+about that family's selection state, not an `i2pr` defect, and never a pass.
+The attempt-budget rule in invariant 6 is reconciled with the gate below.
+
 ## Objective
 
 Produce the **two-family interoperability evidence** for `i2pr`'s
@@ -94,6 +105,16 @@ Missing today:
    hashes reach the evidence file.
 6. **Bounded execution.** A lane run must be licensed by a recorded
    material change; an unchanged-topology retry is not a new attempt.
+   **Reconciled by Plan 495:** a *peer-state* change is a material change.
+   A peer's ban expiry, a reset peer profile store, or a corrected peer
+   configuration licenses a controlled rerun inside this plan, exactly as the
+   canonical bounded-execution policy requires ("an *identified cause*
+   (including reference fixture/env mistakes…) permits a correction… and
+   rerun **inside the still-active plan**… no rule fixes a global attempt
+   count of one"). A run classified `peer-state-poisoned` does not consume
+   the attempt budget. A run classified `peer-selection-refused` records the
+   family's own exclusion reason so the next attempt can fix it rather than
+   re-run blind.
 7. **No advertisement beyond the evidence.** Whatever this plan proves, the
    support inventory states exactly that and no more.
 
@@ -135,13 +156,40 @@ Missing today:
 
 1. **WP1 — the lane shape.** The environment contract, the pinned
    checkouts, the peer selection, the sanitized extraction, and the
-   fail-closed behavior when the environment is missing.
+   fail-closed behavior when the environment is missing. **Amended by Plan
+   495:** before any process launches, each family's **peer-eligibility
+   preflight** runs — the family's RouterInfo admission gates and its own
+   selection predicates, derived from the pinned source and evaluated
+   offline against our lab RouterInfo. Each predicate is recorded as
+   `satisfied`, `deliberately-unsatisfied` or `unknown`; an `unknown`
+   predicate fails the lane closed. The lab RouterInfo profile is the one
+   the gate document states, including the per-family differences: i2pd
+   selects us when we advertise the floodfill capability and it learns our
+   RouterInfo in-band, while Java's `heardAbout()` additionally requires `R`
+   plus an acceptable bandwidth and congestion class.
 2. **WP2 — the DHT leg.** Exploration and a lookup against each family.
+   **Amended by Plan 495:** each leg records the gate's claim-tier ladder
+   and exactly one outcome class, so a family that never selected us is
+   `peer-selection-refused` and not a failed DHT leg.
 3. **WP3 — the introducer leg.** A Relay Request answered as the introducer
-   against each family.
+   against each family. **Amended by Plan 495:** as WP2, and the tier that
+   matters here is `T5` — the family initiating a fresh session to us — which
+   is the tier that proves the family can *choose* us.
 4. **WP4 — the transit leg.** Relayed transit traffic against each family.
+   **Amended by Plan 495:** the reference peer for this leg must be
+   **transit-capable**. The controlled transport lane runs its peer with
+   `notransit = true`, which cannot satisfy this leg; changing that is a
+   different peer configuration with a different profile and ban surface,
+   and it gets its own attempt, its own peer-state hygiene, and its own
+   evidence.
 5. **WP5 — the matrix and the checker.** The evidence file's shape, the
    matrix's completeness rule, and the checker's negative controls.
+   **Amended by Plan 495:** the matrix carries the tier outcomes and the
+   outcome class per cell, so a cell reads `peer-selection-refused` rather
+   than an unqualified "failed". The checker's negative controls include
+   the deliberate-withholding case, which must classify as
+   `peer-selection-refused` with the family's own reason and never as
+   `i2pr-defect` and never as a pass.
 6. **WP6 — the inventory and the conformance updates.** Exactly what the
    evidence earns, and nothing more.
 
@@ -151,11 +199,23 @@ Missing today:
   what is missing; it never degrades to a skip.
 - **A family that cannot be reached** is recorded as `not-reached` with the
   reason; the matrix distinguishes "failed" from "not attempted".
+- **Amended by Plan 495:** every cell additionally carries one of the gate's
+  outcome classes — `pass`, `i2pr-defect`, `peer-admission-refused`,
+  `peer-selection-refused`, `peer-state-poisoned`, `environment-unavailable`
+  or `timeout`. Only `i2pr-defect` and `pass` are statements about `i2pr`.
+  A family that admits our RouterInfo but declines to select us is
+  `peer-selection-refused` with that family's own exclusion reason, and is
+  **not** a failed leg.
 - **A partial run** leaves no partial evidence file; the evidence file is
   written atomically at the end.
 - **A changed topology** (a different address, a different pin) invalidates
   the previous run and must be recorded as a new attempt with the causal
   delta.
+- **Peer-state hygiene** applies per attempt and per family: a fresh peer
+  data directory and a fresh peer process, no stale peer profiles, no
+  mismatched static key on the live port, and the advertised endpoint equal
+  to the bound socket. A peer-side ban or cooldown is `peer-state-poisoned`
+  and does not consume the attempt budget.
 
 ## Compatibility and migration
 
@@ -176,6 +236,9 @@ Missing today:
 bash tests/integration/network-participation/run-two-family.sh
 bash scripts/check-network-participation-evidence.sh
 bash scripts/check-network-participation-evidence.sh --self-test
+# Plan 495's gate checker and its evidence-shape validator, once that plan has
+# landed them. They do not exist yet; this plan's matrix cannot run before them.
+python3 scripts/plan495-peer-eligibility.py --self-test
 cargo test --locked --workspace --all-targets -- --test-threads=1
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
@@ -198,14 +261,21 @@ python3 -m unittest discover -s tests/planning -p 'test_*.py'
    the environment is missing.
 2. All three participant legs are exercised against **both** families, or
    the matrix records precisely which leg failed against which family and
-   why.
+   why. **Amended by Plan 495:** each cell records the gate's outcome class
+   and its tier ladder, so a family that declined to select us reads
+   `peer-selection-refused` with that family's own reason and is never
+   recorded as a failed leg or as an `i2pr` defect.
 3. The evidence file contains only sanitized counts and hashes, and the
    checker enforces that.
 4. The checker's negative controls all fail as expected.
 5. The support inventory and the conformance record state exactly what the
    evidence proves, and no capability, version, or advertisement exceeds
    it.
-6. The routine floor is green on the closing tree.
+6. **Amended by Plan 495:** the deliberate-withholding control classifies as
+   `peer-selection-refused` with the family's own reason, and never as
+   `i2pr-defect` and never as a pass; and a `peer-state-poisoned` outcome
+   does not consume the attempt budget.
+7. The routine floor is green on the closing tree.
 
 ## Stop conditions
 
@@ -214,6 +284,12 @@ Stop and record a `stopped-*` closure when:
 - the authorized topology is unavailable again — this is the expected
   outcome while Plan 431 remains stopped, and it must be recorded as
   `stopped`, not retried against an unchanged topology;
+- **amended by Plan 495:** a family consistently declines to select us
+  (`peer-selection-refused`) across every attempt that a peer-state reset
+  could rescue. That is a **recorded outcome about the family's selection
+  state**, and it is the honest end of the lane for that family — it is not
+  a reason to retry unchanged, and it is not an `i2pr` defect. The closure
+  records it as such;
 - a family's behavior would require a production wire change to pass;
 - the lane would need the reference routers patched or vendored;
 - any step would require weakening a boundary script, changing a pin, or

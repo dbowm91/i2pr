@@ -39,6 +39,49 @@ Exact-pinned i2pd Plan 193 satisfies M6 experimental mixed-router progression. T
 full-router lane remains compatibility debt at Plan 247. Full two-family M6 router
 conformance remains not claimed.
 
+### External qualification gates: the first failure owner (Plan 495)
+
+An external lane runs against a **stock peer that has its own admission and
+selection state**. That is a second, independent source of failure, and a gate
+that cannot tell the two apart is not a gate. The governing model is
+[`docs/operations/ssu2-private-lan-qualification.md`](../docs/operations/ssu2-private-lan-qualification.md);
+Plan 495 owns its enforcement.
+
+Three rules bind every external lane:
+
+1. **The peer's admission and selection are preconditions, not assumptions.**
+   Before a process launches, the lane determines from the pinned reference's
+   own source whether the peer *could* admit our RouterInfo and *could* select
+   us — its ingest gates and its selection filters. A stock peer will not dial
+   an arbitrary peer: it may require a specific RouterInfo admission
+   (a version above its floor, a present and matching network id, a valid
+   signature), a specific eligibility predicate, or a reason to explore us at
+   all. A predicate that cannot be determined offline **fails closed**; it is
+   never treated as satisfied. This is the concrete form of
+   `plans/README.md`'s bounded-execution rule 2 and of the external-router
+   handoff rule that *"a randomized peer selector cannot guarantee one named
+   candidate unless its actual admission and selection are verified."*
+2. **Every outcome names its failure owner.** A lane result is exactly one
+   of: `pass`, `i2pr-defect`, `peer-admission-refused`,
+   `peer-selection-refused`, `peer-state-poisoned`, `environment-unavailable`,
+   `timeout`. Only `i2pr-defect` and `pass` are statements about `i2pr`. A peer
+   that admits our RouterInfo and then declines to select us is
+   `peer-selection-refused` — a result about that peer's selection state,
+   never an `i2pr` defect and never a pass. The claim tiers are recorded
+   independently, so a higher tier's failure never retracts a lower tier's
+   pass.
+3. **An isolated-topology result is not a live-network verdict.** In an
+   isolated topology the peer has no alternative peers, so one bad
+   interaction is the whole topology, and the peer's own state — profile
+   store, selection filters, ban, cooldown — can dominate the outcome. A
+   failure there is not evidence of a live-network failure, and a success
+   there is not evidence of public reachability. Peer state is a first-class
+   cause: a peer-side ban or cooldown does not consume an attempt budget,
+   because a cooldown expiring is a material change.
+
+A gate that cannot separate these is not evidence, and its result must not be
+cited for or against `i2pr`.
+
 M11 transit remains retained/unclaimed and `advertised=false`. Plans 255-258 retain their
 documented infrastructure/corrections, including Plan 258's externally proven canonical
 multicell IBGW emission. Plan 259's transit-endpoint topology inventory is retained but its
