@@ -57,7 +57,7 @@ source** and carries that source's file and line. The pins are frozen:
 i2pd `2.61.0` (`635b013a612ff47278ef02acf8580a28e10e26c5`) and Java I2P
 `2.13.0` (`9134f808337b401e8e53c73734c81fab04280c9d`).
 
-Four rules bind every external lane:
+Five rules bind every external lane:
 
 1. **The peer's admission and selection are preconditions, not assumptions.**
    Before a process launches, the lane determines from the pinned reference's
@@ -101,9 +101,50 @@ Four rules bind every external lane:
    selection predicate deliberately withheld, the verdict is
    `peer-selection-refused` with the cause `intentional-withholding` and the
    peer's own reason — never `i2pr-defect`, never a pass.
+5. **A lane's own readout is not a claim.** A per-host receipt is a
+   **private local readout**: phase labels and counts only, never a key,
+   RouterInfo, address, endpoint, payload, or transient message ID. Its
+   `live_qualification` field is always `"not-run"`, because a local
+   observation is not a two-host result. Only a reconciled lane evidence
+   document can carry the two-host claim, and only after an authorized pair
+   has actually run.
 
 A gate that cannot separate these is not evidence, and its result must not be
 cited for or against `i2pr`.
+
+Plan 476 supplies the **guarded per-host process/session executor** for the
+authorized two-host private-LAN lane,
+[`tests/integration/ssu2/plan476_live_executor.py`](../tests/integration/ssu2/plan476_live_executor.py).
+Its `run` mode is a strict, ordered, fail-closed state machine — **authorization
+→ gate → withholding control → hygiene → spawn → collect → emit** — and it
+launches nothing until the Plan 495 gate says `lane-ready`, the
+deliberate-withholding control behaves, and the peer-state hygiene record is
+clean. Its `reconcile` mode joins two owner-exchanged host receipts into the
+`i2pr-plan495-lane-evidence-v1` document; it refuses a mismatched run epoch,
+a duplicate role, or a missing peer receipt, and it **never** emits
+`i2pr-defect` — that outcome is a reviewed human judgement, and only the
+cause `i2pr-implementation` may accompany it. The tier ladder is not
+restated here; it is canonical in
+[`specs/QUALIFICATION-GATES.md`](QUALIFICATION-GATES.md) §5. In this lane T7
+(a tunnel was built) and T8 (external SAM/Streaming acceptance) are out of
+scope and are always `not-attempted`.
+
+The daemon side of that lane is the sanitized, count-only local receipt
+export,
+[`crates/i2pr-daemon/src/ssu2_qualification_export.rs`](../crates/i2pr-daemon/src/ssu2_qualification_export.rs).
+It is enabled only by the `[ssu2] qualification_receipt_path` key, which is
+**absent by default** and is honoured only with `ssu2.enabled = true` and an
+absolute path; the parent directory must already exist and the file is
+created mode `0600`. The operator procedure is
+[`docs/operations/ssu2-private-lan-qualification.md`](../docs/operations/ssu2-private-lan-qualification.md).
+Current plan state is in `plans/registry.md`.
+
+**The live two-host lane is still environment-blocked.** The Plan 476
+executor and its offline simulator are complete and source-verified, but no
+authorized two-host pair has been executed, so **no live two-host SSU2
+result may be claimed**. The lane is infrastructure-complete, not
+capability-complete: until an authorized pair runs, this section supports
+the *shape* of a result, never a result.
 
 M11 transit remains retained/unclaimed and `advertised=false`. Plans 255-258 retain their
 documented infrastructure/corrections, including Plan 258's externally proven canonical

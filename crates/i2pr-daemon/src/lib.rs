@@ -60,6 +60,7 @@ pub mod service_tunnels_socks_irc;
 pub mod service_tunnels_streamr;
 pub mod service_tunnels_tls;
 pub mod ssu2_introducer;
+pub mod ssu2_qualification_export;
 pub mod ssu2_qualification_receipts;
 pub mod transit_compose;
 pub mod transit_owner;
@@ -3412,6 +3413,50 @@ fn register_ssu2_service(
                             ),
                         );
                     }
+                    // Plan 476: the sanitized local receipt export is
+                    // opt-in through an operator-designated destination
+                    // under an explicit qualification profile. It is a
+                    // private local readout for the guarded per-host
+                    // executor; it never listens, never advertises, and
+                    // carries no key, address, or payload.
+                    let mut receipt_exporter = match ssu2_config.qualification_receipt_path.clone() {
+                        None => None,
+                        Some(destination) => {
+                            let profile = match ssu2_config.qualification_profile {
+                                crate::config::Ssu2QualificationProfile::ControlledLoopback => {
+                                    crate::ssu2_qualification_receipts::LocalQualificationProfile::ControlledLoopback
+                                }
+                                crate::config::Ssu2QualificationProfile::PrivateLan => {
+                                    crate::ssu2_qualification_receipts::LocalQualificationProfile::PrivateLan
+                                }
+                            };
+                            match crate::ssu2_qualification_export::LocalReceiptExporter::new(
+                                crate::ssu2_qualification_receipts::LocalQualificationPermit {
+                                    profile,
+                                    consent: true,
+                                },
+                                destination,
+                            ) {
+                                Ok(exporter) => Some(exporter),
+                                Err(reason) => {
+                                    owner.shutdown().await;
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "SSU2 local receipt export refused: {reason}"
+                                    ))
+                                    .ok();
+                                    return i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::InvalidState,
+                                            detail,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    let mut receipt_export_tick = tokio::time::interval(Duration::from_millis(500));
+                    receipt_export_tick
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     if request_driven_lookup_probe_enabled {
                         tracing::info!("controlled request-driven NTCP2 lookup worker scheduled");
                         spawn_controlled_request_driven_lookup(
@@ -3835,6 +3880,19 @@ fn register_ssu2_service(
                                         &token,
                                     )
                                     .await;
+                                }
+                            }
+                            _ = receipt_export_tick.tick() => {
+                                if let Some(exporter) = receipt_exporter.as_mut() {
+                                    if let Some(observer) = owner.qualification_observer()
+                                        && let Err(error) = exporter.export(&observer)
+                                    {
+                                        tracing::warn!(
+                                            reason = %error,
+                                            transition = "ssu2_local_receipt_export_failed",
+                                            "SSU2 local receipt export failed"
+                                        );
+                                    }
                                 }
                             }
                             _ = group_tick.tick() => {

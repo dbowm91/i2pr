@@ -165,6 +165,8 @@ python3 scripts/check-core-router-recovery-contract.py
 python3 scripts/check-core-router-recovery-contract.py --self-test
 python3 scripts/plan449-ssu2-preflight.py --self-test
 python3 scripts/plan495-peer-eligibility.py --self-test
+python3 scripts/check-plan476-gate-binding.py
+python3 scripts/check-plan476-gate-binding.py --self-test
 python3 scripts/check-managed-app-package-boundary.py
 python3 scripts/check-managed-app-package-boundary.py --self-test
 python3 scripts/check-managed-app-policy-boundary.py

@@ -25,8 +25,15 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 #: Must stay a superset of the Rust export in
 #: `crates/i2pr-daemon/src/ssu2_qualification_receipts.rs::LOCAL_PHASES`.
 LOCAL_PHASES = (
-    "permit_checked", "router_started", "peer_authenticated",
-    "request_received", "product_effect_observed", "router_stopped",
+    "permit_checked",
+    "router_started",
+    "peer_session_accepted",
+    "peer_session_initiated",
+    "peer_authenticated",
+    "request_sent",
+    "request_received",
+    "product_effect_observed",
+    "router_stopped",
 )
 REQUIRED_LOCAL_PHASES = ("permit_checked", "peer_authenticated", "request_received")
 

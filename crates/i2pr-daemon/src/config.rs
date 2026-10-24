@@ -613,6 +613,11 @@ struct RawSsu2Config {
     introducer_service: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
+    /// Optional destination for the Plan 476 sanitized local receipt
+    /// export. Absent by default: no export, no file, no observer
+    /// readout. Honoured only under an explicit qualification profile.
+    #[serde(default)]
+    qualification_receipt_path: Option<String>,
     #[serde(default = "default_ssu2_max_pending_handshakes")]
     max_pending_handshakes: usize,
     #[serde(default = "default_ssu2_max_active_sessions")]
@@ -645,6 +650,7 @@ impl Default for RawSsu2Config {
             advertise: default_ssu2_advertise(),
             introducer_service: default_ssu2_introducer_service(),
             qualification_profile: default_ssu2_qualification_profile(),
+            qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
             max_active_sessions: default_ssu2_max_active_sessions(),
             max_pending_per_ip: default_ssu2_max_pending_per_ip(),
@@ -1924,6 +1930,9 @@ pub struct Ssu2Config {
     pub introducer_service: bool,
     /// Explicit socket profile. `PrivateLan` does not authorize publication.
     pub qualification_profile: Ssu2QualificationProfile,
+    /// Optional destination for the Plan 476 sanitized local receipt
+    /// export. `None` means no export at all.
+    pub qualification_receipt_path: Option<PathBuf>,
     /// Maximum pending (unauthenticated) handshakes.
     pub max_pending_handshakes: usize,
     /// Maximum active (authenticated) sessions.
@@ -3376,6 +3385,30 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "must be within 10..=1000",
         });
     }
+    // Plan 476: the sanitized local receipt export is opt-in and is
+    // only meaningful under an explicit qualification profile. It is
+    // a private local readout for the guarded per-host executor; it is
+    // never a listener and never a publication permit.
+    let qualification_receipt_path = match raw.qualification_receipt_path.as_deref() {
+        None => None,
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => {
+            if !raw.enabled {
+                return Err(ConfigError::Semantic {
+                    field: "ssu2.qualification_receipt_path",
+                    reason: "the local receipt export requires ssu2.enabled = true",
+                });
+            }
+            let path = PathBuf::from(value);
+            if !path.is_absolute() {
+                return Err(ConfigError::Semantic {
+                    field: "ssu2.qualification_receipt_path",
+                    reason: "must be an absolute path",
+                });
+            }
+            Some(path)
+        }
+    };
     Ok(Ssu2Config {
         enabled: raw.enabled,
         bind_ipv4,
@@ -3388,6 +3421,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         } else {
             Ssu2QualificationProfile::ControlledLoopback
         },
+        qualification_receipt_path,
         max_pending_handshakes: raw.max_pending_handshakes,
         max_active_sessions: raw.max_active_sessions,
         max_pending_per_ip: raw.max_pending_per_ip,
@@ -5809,6 +5843,51 @@ data_dir = "./state"
     fn unknown_ssu2_fields_are_rejected() {
         let text = format!("{}\n[ssu2]\nunknown = true\n", MINIMAL);
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    // --- Plan 476 local receipt export ---
+
+    #[test]
+    fn ssu2_local_receipt_export_is_absent_by_default() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(config.ssu2.qualification_receipt_path.is_none());
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_requires_an_absolute_path() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\nqualification_receipt_path = \"relative/receipt.json\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { field, .. }) if field == "ssu2.qualification_receipt_path"
+        ));
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_requires_the_transport_to_be_enabled() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = false\nqualification_receipt_path = \"/tmp/i2pr-receipt.json\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { field, .. }) if field == "ssu2.qualification_receipt_path"
+        ));
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_accepts_an_absolute_path() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\nqualification_receipt_path = \"/tmp/i2pr-receipt.json\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("valid export configuration");
+        assert_eq!(
+            config.ssu2.qualification_receipt_path,
+            Some(PathBuf::from("/tmp/i2pr-receipt.json"))
+        );
     }
 
     // --- Plan 174 service-tunnel foundation ---

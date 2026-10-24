@@ -21,10 +21,10 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 69 | 64 `check-*`, `fuzz-smoke.sh`, `plan449-ssu2-preflight.py`, `plan495-peer-eligibility.py`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
+| Top-level `scripts/` files | 70 | 65 `check-*`, `fuzz-smoke.sh`, `plan449-ssu2-preflight.py`, `plan495-peer-eligibility.py`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 67 | 64 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 42 | 40 distinct `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 68 | 65 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 43 | 41 distinct `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-63 `check-*` files exist on disk in `scripts/` (66 counting `scripts/interop/`),
+65 `check-*` files exist on disk in `scripts/` (68 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -61,6 +61,7 @@ counting method both numbers come from.
 | `scripts/check-managed-app-package-boundary.py` | Plan 382 package trust-zone guard: confines package code to the app protocol contract and rejects router/runtime, network, process execution, and launch-authority seams. `--self-test` proves each source/dependency rule with in-memory mutations and positive controls. | yes | yes |
 | `scripts/check-managed-app-policy-boundary.py` | Plan 383 policy/CLI/appd guard: constrains the app-state/appctl dependencies and keeps `LaunchAuthority` construction in appd, verifies persistent-catalog wiring, and checks the daemon's state-root handoff. `--self-test` proves the seam rules with source mutations. | yes | yes |
 | `scripts/check-managed-app-secured-sandbox.py` | Plan 407 guard for static ELF refusal, hard resource ceilings, Landlock ABI v3 hard enforcement, no-new-privileges, seccomp default-kill policy, and sandbox-before-ready-before-exec ordering. `--self-test` requires six enforcement-bypass mutations to fail. | yes | yes |
+| `scripts/check-plan476-gate-binding.py` | Plan 476 guard that the guarded per-host executor stays bound to the Plan 495 gate: compares the Rust export's phase vocabulary with the Python receipt contract element by element, requires the executor to **call** the gate entry points rather than import them, requires the simulator test module to be unable to open a socket or start a process, requires the conformance binding and the operator procedure to name the executor, and requires the routine floor to run this checker. `--self-test` proves each rule fires on a broken subject. | yes | yes |
 | `scripts/check-portable-service-tunnel-api.py` | Reviewed source declaration snapshot for the reusable service-tunnel public API; signature and semver review remains required for changes. | yes | yes |
 | `scripts/check-license-metadata.py` | Plan 379 repository license-metadata drift guard. Asserts the MIT `LICENSE` shape, the root `[workspace.package] license`, and that **every** member manifest inherits or names MIT — then cross-checks the resolved `cargo metadata` values, so a `[workspace.package]` key nobody inherits cannot read as a declaration again. Also rejects any member `license-file` (a second, disagreeing source of truth) and keeps the README's clean-room/provenance clause. Regex-parsed rather than `tomllib` so it runs on macOS system Python; `--self-test` gives every rule a rejected mutation plus accepted controls for the strict direction. | yes | yes |
 | `scripts/check-portable-service-tunnel-consumer.sh` | Plan 351 standalone Git-pinned consumer proof: compiles/tests the public-only fixture outside the workspace and checks its resolved dependency graph. | yes | yes |
@@ -295,10 +296,10 @@ Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 54 | 51 rows marked `Floor: yes` |
-| Total routine-floor steps | 66 | — |
-| Checkers executed by `ci.yml` | 40 | 43 rows marked `CI: yes` |
-| `check-*` files on disk | 64 (67 with `scripts/interop/`) | 67 checker rows |
+| Floor steps invoking a checker | 56 | 52 rows marked `Floor: yes` |
+| Total routine-floor steps | 68 | — |
+| Checkers executed by `ci.yml` | 41 | 44 rows marked `CI: yes` |
+| `check-*` files on disk | 65 (68 with `scripts/interop/`) | 68 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.

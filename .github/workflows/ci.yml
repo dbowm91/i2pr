@@ -211,6 +211,15 @@ jobs:
         run: |
           python3 scripts/plan495-peer-eligibility.py --self-test
           python3 scripts/plan495-peer-eligibility.py --profile-drift
+      # Plan 476. The guarded per-host executor must stay bound to the Plan
+      # 495 gate: the Rust export's phase vocabulary and the Python receipt
+      # contract are compared element by element, the executor must really
+      # call the gate rather than import it, and the simulator must be
+      # unable to connect. The checker runs the executor's own controls.
+      - name: Check Plan 476 gate binding
+        run: |
+          python3 scripts/check-plan476-gate-binding.py
+          python3 scripts/check-plan476-gate-binding.py --self-test
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh
