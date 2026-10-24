@@ -478,8 +478,27 @@ otherwise have had to guess about.
   consume the attempt budget**, because a cooldown expiring is a material
   change in the peer's state.
 
+Between the hygiene stage and the spawn there is one more refusal point:
+
+- **pre-spawn checks.** The declared local data directory must be absent or
+  exactly `0700`; the local interface, address and route are checked against
+  the peer host; and on the peer role the pinned i2pd 2.61.0 source revision,
+  the cleanliness of its tracked tree, its reported version and the binary's
+  SHA-256 are all verified. A missing, unpinned, patched or mismatched
+  reference is refused before any socket is opened.
+
 Only then does the executor spawn the router, collect the receipt, and emit
 the host receipt.
+
+- **spawn.** Only the declared local router is started, in its own process
+  group. `SIGINT` or `SIGTERM` cancels the attempt: the child is terminated,
+  then killed if it does not exit, and always reaped.
+- **collect.** The daemon's exported receipt is read until it carries an
+  authenticated session. The file merely existing is not readiness — the daemon
+  writes it on its first export tick, before any peer has been contacted — so
+  a receipt with no session is not an observation.
+- **emit.** The host receipt is written mode `0600`, through an atomic
+  replacement.
 
 ### 9.2 One command per host
 
