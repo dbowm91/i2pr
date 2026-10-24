@@ -39,6 +39,9 @@ pub const MAX_PARTICIPATION_TRACKED_PEERS: usize = 4_096;
 /// The default maximum number of selections a peer may accumulate.
 pub const DEFAULT_MAX_PARTICIPATION: u32 = 8;
 
+/// The default maximum number of peers from one /16 prefix in one selection.
+pub const DEFAULT_MAX_PER_PREFIX16: usize = 1;
+
 /// One selected peer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Candidate {
@@ -132,7 +135,7 @@ impl Default for SelectionConstraints<'_> {
             excluded: &[],
             participation: &EMPTY_PARTICIPATION,
             max_participation: DEFAULT_MAX_PARTICIPATION,
-            max_per_prefix16: 1,
+            max_per_prefix16: DEFAULT_MAX_PER_PREFIX16,
             seed: 0,
             version_gate: None,
         }

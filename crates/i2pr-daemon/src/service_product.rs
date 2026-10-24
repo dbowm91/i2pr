@@ -5464,6 +5464,7 @@ async fn submit_destination_replacement(
         guard.destination_peer_candidates()
     };
     let selected = select_projected_destination_path_os(&candidates, &projection_summary)?;
+    record_hop_selection(destination_tunnels, &selected).await;
     let outbound_slot = coordinator
         .usable_outbound_role_slots()
         .into_iter()
@@ -5910,6 +5911,28 @@ mod session_terminal_reselection_tests {
         let result = reselect_inbound_with_session_predicate(&[], |_| true);
         assert!(result.is_err());
     }
+}
+
+/// Records one build-hop selection against the bounded per-peer
+/// participation ledger.
+///
+/// Plan 492: the per-peer participation cap is measured against this
+/// ledger, so a selection that is never recorded would leave the cap
+/// advisory. The coordinator lock is taken and released around the update
+/// only; no lock is held across the caller's `.await`.
+async fn record_hop_selection(
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    selected: &[crate::destination_peers::DestinationPeerCandidate],
+) {
+    if selected.is_empty() {
+        return;
+    }
+    let hashes: Vec<i2pr_proto::Hash> = selected
+        .iter()
+        .map(crate::destination_peers::DestinationPeerCandidate::router_hash)
+        .collect();
+    let mut guard = destination_tunnels.lock().await;
+    guard.record_hop_selection(&hashes);
 }
 
 /// Ensures the normal SSU2 owner has an authenticated direct session to the
@@ -6688,18 +6711,18 @@ async fn provision_all_service_router_material(
         for build_index in 0..inbound_target.max(outbound_target) {
             let need_inbound = build_index < inbound_target;
             let outbound_candidates = if build_index < outbound_target {
-                Some(select_projected_destination_path_os(
-                    &candidates,
-                    &projection_summary,
-                )?)
+                let selected =
+                    select_projected_destination_path_os(&candidates, &projection_summary)?;
+                record_hop_selection(destination_tunnels, &selected).await;
+                Some(selected)
             } else {
                 None
             };
             let mut inbound_candidates = if build_index < inbound_target {
-                Some(select_projected_destination_path_os(
-                    &candidates,
-                    &projection_summary,
-                )?)
+                let selected =
+                    select_projected_destination_path_os(&candidates, &projection_summary)?;
+                record_hop_selection(destination_tunnels, &selected).await;
+                Some(selected)
             } else {
                 None
             };

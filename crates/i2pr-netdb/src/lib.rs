@@ -193,9 +193,10 @@ pub use routing::{
     NearestSelection, RoutingKeyError, daily_routing_key, format_daily_key, xor_distance,
 };
 pub use selection::{
-    Candidate, DEFAULT_MAX_PARTICIPATION, MAX_PARTICIPATION_TRACKED_PEERS, MAX_SELECTION_COUNT,
-    ParticipationLedger, SelectionConstraints, VersionGate, VersionGatedSelection,
-    select_candidates, select_candidates_with_report,
+    Candidate, DEFAULT_MAX_PARTICIPATION, DEFAULT_MAX_PER_PREFIX16,
+    MAX_PARTICIPATION_TRACKED_PEERS, MAX_SELECTION_COUNT, ParticipationLedger,
+    SelectionConstraints, VersionGate, VersionGatedSelection, select_candidates,
+    select_candidates_with_report,
 };
 pub use server_store::{
     MaintenanceBatch, ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord,

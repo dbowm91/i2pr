@@ -835,6 +835,17 @@ impl TransitBuildService {
         self.registry.len()
     }
 
+    /// Returns the number of active registrations held by one authenticated
+    /// peer.
+    ///
+    /// Plan 492: the participation posture's per-peer cap is measured
+    /// against this number, so the count is the data plane's own and never a
+    /// second, diverging ledger.
+    pub fn active_for_peer(&self, peer: &PeerId) -> u16 {
+        self.registry
+            .active_per_peer_count(TunnelPeer::from_hash(peer_to_hash(*peer)))
+    }
+
     /// Returns the admission pending count for diagnostics.
     pub const fn pending_count(&self) -> u16 {
         self.admission.pending()

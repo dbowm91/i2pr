@@ -628,6 +628,12 @@ pub struct DestinationTunnelCoordinator {
     publication_ledger: BTreeMap<i2pr_client::DestinationId, PublicationLedgerEntry>,
     /// Plan 487 WP4 — the bounded record of acknowledged publications.
     publication_acks: VecDeque<PublicationAcknowledgement>,
+    /// Plan 492 — the bounded per-peer participation ledger for the
+    /// router's own build-hop selection.
+    hop_participation: i2pr_netdb::ParticipationLedger,
+    /// Plan 492 — the Plan 488 diversity rules the ordinary build-hop
+    /// selection honours.
+    hop_diversity: crate::destination_peers::HopDiversityPolicy,
     next_request_id: u64,
     now_ms: u64,
     counters: DestinationTunnelCounters,
@@ -647,6 +653,11 @@ impl DestinationTunnelCoordinator {
             publications: BTreeMap::new(),
             publication_ledger: BTreeMap::new(),
             publication_acks: VecDeque::new(),
+            hop_participation: i2pr_netdb::ParticipationLedger::new(
+                crate::destination_peers::HopDiversityPolicy::default().max_participation,
+                i2pr_netdb::MAX_PARTICIPATION_TRACKED_PEERS,
+            ),
+            hop_diversity: crate::destination_peers::HopDiversityPolicy::default(),
             next_request_id: INITIAL_DESTINATION_REQUEST_ID,
             now_ms: 0,
             counters: DestinationTunnelCounters::default(),
@@ -671,13 +682,41 @@ impl DestinationTunnelCoordinator {
 
     /// Returns the bounded, privacy-safe build-candidate projection of the
     /// authoritative validated RouterInfo store.
+    ///
+    /// Plan 492: the projection applies the per-peer participation cap, so
+    /// a peer that already accumulated its share of build-hop selections is
+    /// not offered again. The refusal is counted in the summary.
     pub fn destination_peer_candidates(
         &self,
     ) -> (
         Vec<crate::destination_peers::DestinationPeerCandidate>,
         crate::destination_peers::CandidateProjectionSummary,
     ) {
-        crate::destination_peers::project_validated_store(&self.store)
+        crate::destination_peers::project_validated_store(
+            &self.store,
+            self.hop_participation.counts(),
+            &self.hop_diversity,
+        )
+    }
+
+    /// Records one build-hop selection against the bounded per-peer
+    /// participation ledger.
+    ///
+    /// Plan 492: the ledger is what the per-peer participation cap is
+    /// measured against, so a selection that is never recorded would make
+    /// the cap advisory. The ledger saturates at the policy's cap and
+    /// evicts the least recently recorded peer when its own bound is
+    /// reached.
+    pub fn record_hop_selection(&mut self, peers: &[i2pr_proto::Hash]) {
+        for peer in peers {
+            self.hop_participation
+                .record(&i2pr_netdb::RouterHash::from_hash(*peer));
+        }
+    }
+
+    /// Returns the bounded participation ledger's tracked counters.
+    pub fn hop_participation_counts(&self) -> &std::collections::BTreeMap<i2pr_netdb::RouterHash, u32> {
+        self.hop_participation.counts()
     }
 
     /// Returns the validated remote LeaseSet2 cache.

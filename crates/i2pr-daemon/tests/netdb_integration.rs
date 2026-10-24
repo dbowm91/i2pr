@@ -206,6 +206,12 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             max_pending_requests: 1024,
             max_pending_per_peer: 1,
         },
+        transit: i2pr_daemon::config::TransitConfig {
+            participation: false,
+            share_limit: i2pr_daemon::config::DEFAULT_TRANSIT_SHARE_LIMIT,
+            participating_tunnels: i2pr_daemon::config::DEFAULT_TRANSIT_PARTICIPATING_TUNNELS,
+            peer_participation_cap: i2pr_daemon::config::DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP,
+        },
         source_path: None,
     }
 }

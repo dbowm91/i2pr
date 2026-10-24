@@ -51,6 +51,9 @@ use crate::transit_compose::{
     SelfReplyOtbrmArgs, TransitBuildService, TransitDispatch, TransitDispatchRole,
     TransitIngressGate, TransitLiveStateSnapshot, TransitServiceError, TransitTunnelDataDispatch,
 };
+use crate::transit_participation::{
+    TransitParticipationBinding, TransitRefusalReason,
+};
 
 /// Live transit owner errors.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -186,6 +189,9 @@ pub enum TransitDataDisposition {
     CreatorOwned,
     /// Transit was disabled; the caller keeps its existing path.
     Disabled,
+    /// Plan 492: the participation posture refused the relay. The cell was
+    /// dropped closed: the share limit is enforced, not advisory.
+    ParticipationRefused(TransitRefusalReason),
     /// Transit forwarded one cell; the value carries the bounded
     /// routing facts the forward used plus the terminal delivery
     /// outcome observed on the router seam.
@@ -292,6 +298,10 @@ pub enum LiveBuildOutcome {
     /// Creator correlation precedes transit; the existing
     /// coordinator behavior is preserved.
     CreatorBypass,
+    /// Plan 492: the participation posture refused the request. The
+    /// refusal is typed and counted by the participation owner; the
+    /// request never reached the transit data plane.
+    ParticipationRefused(TransitRefusalReason),
     /// Transit dispatch completed; the value is the terminal
     /// delivery outcome plus the non-secret typed build evidence
     /// observed on the router seam.
@@ -523,6 +533,9 @@ pub struct TransitLiveOwner<R> {
     creator_data: BTreeSet<u32>,
     creator_gateways: BTreeSet<u32>,
     local_sink: Option<TransitLocalSink>,
+    /// Plan 492: the operator-opted participation posture the transit path
+    /// is admitted against.
+    participation: TransitParticipationBinding,
 }
 
 impl<R: TryCryptoRng + Send> fmt::Debug for TransitLiveOwner<R> {
@@ -534,6 +547,7 @@ impl<R: TryCryptoRng + Send> fmt::Debug for TransitLiveOwner<R> {
             .field("creator_data", &self.creator_data.len())
             .field("creator_gateways", &self.creator_gateways.len())
             .field("has_local_sink", &self.local_sink.is_some())
+            .field("participation", &self.participation)
             .finish_non_exhaustive()
     }
 }
@@ -560,15 +574,38 @@ where
             creator_data: BTreeSet::new(),
             creator_gateways: BTreeSet::new(),
             local_sink: None,
+            participation: TransitParticipationBinding::disabled(),
         }
     }
 
-    /// Installs the controlled transit service. Explicit opt-in for
-    /// tests/qualification only.
-    pub fn enable(&mut self, service: TransitBuildService) {
+    /// Installs the controlled transit service **and** the participation
+    /// posture it is admitted against.
+    ///
+    /// Plan 492: there is exactly one way for the transit path to admit
+    /// work, and it is through the participation posture. A disabled
+    /// posture refuses every request with a typed reason, so installing the
+    /// transit machinery without a posture cannot relay anything.
+    pub fn enable(
+        &mut self,
+        service: TransitBuildService,
+        participation: TransitParticipationBinding,
+    ) {
         let mut gate = TransitIngressGate::disabled();
         gate.enable(service);
         self.owner.gate = gate;
+        self.participation = participation;
+    }
+
+    /// Returns the participation posture the transit path is admitted
+    /// against.
+    pub const fn participation(&self) -> &TransitParticipationBinding {
+        &self.participation
+    }
+
+    /// Returns the participation posture for mutation, so an operator
+    /// posture change can be applied to an installed owner.
+    pub fn participation_mut(&mut self) -> &mut TransitParticipationBinding {
+        &mut self.participation
     }
 
     /// Returns whether controlled transit is enabled.
@@ -908,6 +945,16 @@ where
                 LiveBuildOutcome::DisabledReserved,
             ));
         }
+        // Plan 492: the participation posture is consulted **after** the
+        // creator correlation check and **before** the transit dispatch, so
+        // the documented order (creator/service first, transit second,
+        // unknown fail-closed) is unchanged and a refused request never
+        // allocates a registration.
+        if let Some(reason) = self.refuse_unless_participating(peer, now_seconds) {
+            return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::ParticipationRefused(
+                reason,
+            )));
+        }
         let dispatch = {
             let (owner, rng) = (&mut self.owner, &mut self.rng);
             let gate = &mut owner.gate;
@@ -918,6 +965,45 @@ where
             dispatch
         };
         self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
+    }
+
+    /// Revalidates the participation posture and asks it to admit one
+    /// transit request.
+    ///
+    /// Returns the typed refusal reason when the request must not be
+    /// admitted. The counts handed to the posture are the transit
+    /// service's own registration counts, so the router-wide limit and the
+    /// per-peer cap are measured against the data plane rather than a
+    /// second ledger.
+    fn refuse_unless_participating(
+        &mut self,
+        peer: &PeerId,
+        now_seconds: u64,
+    ) -> Option<TransitRefusalReason> {
+        if !self.participation.revalidate() {
+            let reason = self
+                .participation
+                .owner()
+                .current_refusal()
+                .unwrap_or(TransitRefusalReason::Revoked);
+            // The revalidation itself refused; the refusal is still counted,
+            // so a revoked posture is never a silent skip.
+            self.participation.owner_mut().record_refusal(reason);
+            return Some(reason);
+        }
+        let (active_tunnels, active_for_peer) = {
+            let Some(service) = self.owner.gate.service_mut() else {
+                return Some(TransitRefusalReason::ParticipationDisabled);
+            };
+            (
+                service.active_count(),
+                usize::from(service.active_for_peer(peer)),
+            )
+        };
+        let owner = self.participation.owner_mut();
+        owner
+            .admit(&peer.hash(), active_tunnels, active_for_peer, now_seconds)
+            .err()
     }
 
     fn handle_tunnel_data_inner(
@@ -959,6 +1045,31 @@ where
             } => {
                 if self.cancellation.is_cancelled() {
                     return Ok(LiveInboundOutcome::Data(TransitDataDisposition::Dropped));
+                }
+                // Plan 492: the share is charged **before** the cell leaves
+                // this router. A cell the posture cannot pay for is dropped
+                // closed: the share limit is enforced, not advisory, and it
+                // never grows past the limit.
+                if !self.participation.revalidate() {
+                    let reason = self
+                        .participation
+                        .owner()
+                        .current_refusal()
+                        .unwrap_or(TransitRefusalReason::Revoked);
+                    self.participation.owner_mut().record_refusal(reason);
+                    return Ok(LiveInboundOutcome::Data(
+                        TransitDataDisposition::ParticipationRefused(reason),
+                    ));
+                }
+                let relayed_bytes = u64::try_from(next_cell.data.len()).unwrap_or(u64::MAX);
+                if let Err(reason) = self
+                    .participation
+                    .owner_mut()
+                    .charge_relay(relayed_bytes, now_ms / 1_000)
+                {
+                    return Ok(LiveInboundOutcome::Data(
+                        TransitDataDisposition::ParticipationRefused(reason),
+                    ));
                 }
                 let service = self
                     .owner

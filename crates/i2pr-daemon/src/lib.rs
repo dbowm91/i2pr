@@ -63,6 +63,7 @@ pub mod ssu2_introducer;
 pub mod ssu2_qualification_receipts;
 pub mod transit_compose;
 pub mod transit_owner;
+pub mod transit_participation;
 pub mod transit_volume;
 pub mod tunnel_liveness;
 

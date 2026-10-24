@@ -77,6 +77,8 @@ struct RawConfig {
     floodfill: RawFloodfillConfig,
     #[serde(default)]
     bandwidth: RawBandwidthConfig,
+    #[serde(default)]
+    transit: RawTransitConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -903,6 +905,54 @@ impl Default for RawFloodfillConfig {
             send_initiator_lookup_probe: false,
         }
     }
+}
+
+/// The operator-controlled transit participation posture (Plan 492).
+///
+/// The section is a **posture**, not an advertisement: it never publishes the
+/// transit role, never lowers a protocol floor, and never reaches the
+/// network on its own. `participation` is the single switch and it is
+/// **off by default**; a router that has never set it does not relay another
+/// router's tunnel traffic.
+///
+/// The three limits are bounded by named constants
+/// ([`MAX_TRANSIT_SHARE_LIMIT_PERCENT`], [`MAX_TRANSIT_PARTICIPATING_TUNNELS`],
+/// [`MAX_TRANSIT_PEER_PARTICIPATION_CAP`]) and validated before any
+/// listener or owner is constructed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTransitConfig {
+    #[serde(default)]
+    participation: bool,
+    #[serde(default = "default_transit_share_limit")]
+    share_limit: u8,
+    #[serde(default = "default_transit_participating_tunnels")]
+    participating_tunnels: usize,
+    #[serde(default = "default_transit_peer_participation_cap")]
+    peer_participation_cap: usize,
+}
+
+impl Default for RawTransitConfig {
+    fn default() -> Self {
+        Self {
+            participation: false,
+            share_limit: default_transit_share_limit(),
+            participating_tunnels: default_transit_participating_tunnels(),
+            peer_participation_cap: default_transit_peer_participation_cap(),
+        }
+    }
+}
+
+fn default_transit_share_limit() -> u8 {
+    DEFAULT_TRANSIT_SHARE_LIMIT
+}
+
+fn default_transit_participating_tunnels() -> usize {
+    DEFAULT_TRANSIT_PARTICIPATING_TUNNELS
+}
+
+fn default_transit_peer_participation_cap() -> usize {
+    DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP
 }
 
 fn default_profile() -> String {
@@ -1975,6 +2025,9 @@ pub struct Config {
     pub floodfill: FloodfillConfig,
     /// Explicit global transport capacity and bandwidth-class policy.
     pub bandwidth: BandwidthConfig,
+    /// Operator-controlled transit participation posture (Plan 492; default
+    /// off, never advertised).
+    pub transit: TransitConfig,
 }
 
 /// Product backend used for normal-daemon SAM-created destinations.
@@ -2044,6 +2097,44 @@ pub struct BandwidthConfig {
     pub max_pending_requests: usize,
     /// Maximum queued byte reservations for one peer.
     pub max_pending_per_peer: usize,
+}
+
+/// The default percentage of the enforced share the transit posture may use.
+pub const DEFAULT_TRANSIT_SHARE_LIMIT: u8 = 25;
+/// The default number of tunnels this router participates in.
+pub const DEFAULT_TRANSIT_PARTICIPATING_TUNNELS: usize = 4;
+/// The default number of tunnels one peer may participate in.
+pub const DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP: usize = 2;
+/// The largest percentage of the enforced share the transit posture may use.
+pub const MAX_TRANSIT_SHARE_LIMIT_PERCENT: u8 = 100;
+/// The largest number of tunnels this router may participate in.
+pub const MAX_TRANSIT_PARTICIPATING_TUNNELS: usize = 32;
+/// The largest number of tunnels one peer may participate in.
+pub const MAX_TRANSIT_PEER_PARTICIPATION_CAP: usize = 8;
+
+/// The operator-controlled transit participation posture (Plan 492).
+///
+/// The posture is **off by default**. Enabling it is an explicit operator
+/// decision that says how much of the router's enforced bandwidth share may
+/// be spent relaying other routers' tunnel traffic, how many tunnels this
+/// router participates in, and how many of those tunnels one peer may hold.
+///
+/// The posture never advertises the transit role: the published capability
+/// string is unchanged by this surface, and the role stays non-advertised
+/// until the evidence that justifies an advertisement exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitConfig {
+    /// Whether the operator opted this router into transit participation.
+    pub participation: bool,
+    /// The percentage of the enforced bandwidth share the transit posture
+    /// may consume. `1..=`[`MAX_TRANSIT_SHARE_LIMIT_PERCENT`].
+    pub share_limit: u8,
+    /// The maximum number of tunnels this router participates in.
+    /// `1..=`[`MAX_TRANSIT_PARTICIPATING_TUNNELS`].
+    pub participating_tunnels: usize,
+    /// The maximum number of participating tunnels one peer may hold.
+    /// `1..=`[`MAX_TRANSIT_PEER_PARTICIPATION_CAP`].
+    pub peer_participation_cap: usize,
 }
 
 /// Normalized service-tunnel configuration.
@@ -2190,6 +2281,7 @@ impl Config {
         let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
         let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &ntcp2, &netdb)?;
         let bandwidth = normalize_bandwidth(&raw.bandwidth, &ssu2)?;
+        let transit = normalize_transit(&raw.transit, &bandwidth)?;
 
         Ok(Self {
             source_path: None,
@@ -2223,6 +2315,7 @@ impl Config {
             addressbook,
             floodfill,
             bandwidth,
+            transit,
         })
     }
 }
@@ -3735,6 +3828,63 @@ fn normalize_bandwidth(
     })
 }
 
+/// Normalizes the transit participation posture (Plan 492).
+///
+/// The posture is validated **before** any owner or listener is constructed,
+/// and every bound is a named constant:
+///
+/// - `share_limit` is a percentage of the enforced bandwidth share, so it is
+///   `1..=`[`MAX_TRANSIT_SHARE_LIMIT_PERCENT`];
+/// - `participating_tunnels` is `1..=`[`MAX_TRANSIT_PARTICIPATING_TUNNELS`];
+/// - `peer_participation_cap` is `1..=`[`MAX_TRANSIT_PEER_PARTICIPATION_CAP`]
+///   and may not exceed `participating_tunnels`, because a per-peer cap
+///   larger than the router-wide cap is a contradiction rather than a
+///   looser policy;
+/// - `participation = true` requires an **enabled** bandwidth policy. The
+///   share limit is enforced against the governor's permitted share; without
+///   a governor the limit could not be enforced and would be advisory, which
+///   the plan forbids. That is a configuration error, not a silent no-op.
+fn normalize_transit(
+    raw: &RawTransitConfig,
+    bandwidth: &BandwidthConfig,
+) -> Result<TransitConfig, ConfigError> {
+    if raw.share_limit == 0 || raw.share_limit > MAX_TRANSIT_SHARE_LIMIT_PERCENT {
+        return Err(ConfigError::Semantic {
+            field: "transit.share_limit",
+            reason: "must be between 1 and 100 percent of the enforced share",
+        });
+    }
+    if raw.participating_tunnels == 0
+        || raw.participating_tunnels > MAX_TRANSIT_PARTICIPATING_TUNNELS
+    {
+        return Err(ConfigError::Semantic {
+            field: "transit.participating_tunnels",
+            reason: "must be between 1 and the bounded participating-tunnel ceiling",
+        });
+    }
+    if raw.peer_participation_cap == 0
+        || raw.peer_participation_cap > MAX_TRANSIT_PEER_PARTICIPATION_CAP
+        || raw.peer_participation_cap > raw.participating_tunnels
+    {
+        return Err(ConfigError::Semantic {
+            field: "transit.peer_participation_cap",
+            reason: "must be between 1, the bounded per-peer ceiling, and the participating-tunnel count",
+        });
+    }
+    if raw.participation && !bandwidth.enabled {
+        return Err(ConfigError::Semantic {
+            field: "transit.participation",
+            reason: "requires an enabled bandwidth policy: the share limit is enforced against the governor's permitted share and would otherwise be advisory",
+        });
+    }
+    Ok(TransitConfig {
+        participation: raw.participation,
+        share_limit: raw.share_limit,
+        participating_tunnels: raw.participating_tunnels,
+        peer_participation_cap: raw.peer_participation_cap,
+    })
+}
+
 fn normalize_reseed(
     raw: &RawReseedConfig,
     netdb: &NetDbConfig,
@@ -4400,6 +4550,131 @@ data_dir = "./state"
                 ..
             })
         ));
+    }
+
+    /// Plan 492 WP1: the default posture does not participate, and the
+    /// defaults are the documented bounded ones.
+    #[test]
+    fn transit_participation_is_disabled_by_default_with_bounded_defaults() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.transit.participation);
+        assert_eq!(default.transit.share_limit, DEFAULT_TRANSIT_SHARE_LIMIT);
+        assert_eq!(
+            default.transit.participating_tunnels,
+            DEFAULT_TRANSIT_PARTICIPATING_TUNNELS
+        );
+        assert_eq!(
+            default.transit.peer_participation_cap,
+            DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP
+        );
+    }
+
+    /// Plan 492 WP1: an explicit opt-in is accepted and normalized.
+    #[test]
+    fn transit_participation_accepts_an_explicit_bounded_opt_in() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n[transit]\nparticipation = true\nshare_limit = 25\nparticipating_tunnels = 4\npeer_participation_cap = 2\n"
+        );
+        let parsed = Config::parse(&configured).expect("valid transit posture");
+        assert!(parsed.transit.participation);
+        assert_eq!(parsed.transit.share_limit, 25);
+        assert_eq!(parsed.transit.participating_tunnels, 4);
+        assert_eq!(parsed.transit.peer_participation_cap, 2);
+    }
+
+    /// Plan 492 WP1: an opt-in without an enforced bandwidth policy is a
+    /// configuration error, because the share limit could not be enforced.
+    #[test]
+    fn transit_participation_requires_an_enabled_bandwidth_policy() {
+        let without_governor = format!("{MINIMAL}\n[transit]\nparticipation = true\n");
+        assert!(matches!(
+            Config::parse(&without_governor),
+            Err(ConfigError::Semantic {
+                field: "transit.participation",
+                ..
+            })
+        ));
+
+        let disabled_governor = format!(
+            "{MINIMAL}\n[bandwidth]\nenabled = false\n[transit]\nparticipation = true\n"
+        );
+        assert!(matches!(
+            Config::parse(&disabled_governor),
+            Err(ConfigError::Semantic {
+                field: "transit.participation",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 492 WP1: every limit is bounded, and the per-peer cap may not
+    /// exceed the router-wide cap.
+    #[test]
+    fn transit_participation_rejects_unbounded_or_contradictory_limits() {
+        let base = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\noutbound_bytes_per_second = 1024\nshare_percent = 10\n"
+        );
+        let zero_share = format!("{base}[transit]\nshare_limit = 0\n");
+        assert!(matches!(
+            Config::parse(&zero_share),
+            Err(ConfigError::Semantic {
+                field: "transit.share_limit",
+                ..
+            })
+        ));
+
+        let excessive_share = format!("{base}[transit]\nshare_limit = 101\n");
+        assert!(matches!(
+            Config::parse(&excessive_share),
+            Err(ConfigError::Semantic {
+                field: "transit.share_limit",
+                ..
+            })
+        ));
+
+        let zero_tunnels = format!("{base}[transit]\nparticipating_tunnels = 0\n");
+        assert!(matches!(
+            Config::parse(&zero_tunnels),
+            Err(ConfigError::Semantic {
+                field: "transit.participating_tunnels",
+                ..
+            })
+        ));
+
+        let excessive_tunnels = format!("{base}[transit]\nparticipating_tunnels = 33\n");
+        assert!(matches!(
+            Config::parse(&excessive_tunnels),
+            Err(ConfigError::Semantic {
+                field: "transit.participating_tunnels",
+                ..
+            })
+        ));
+
+        let excessive_peer_cap = format!("{base}[transit]\npeer_participation_cap = 9\n");
+        assert!(matches!(
+            Config::parse(&excessive_peer_cap),
+            Err(ConfigError::Semantic {
+                field: "transit.peer_participation_cap",
+                ..
+            })
+        ));
+
+        let contradictory_peer_cap =
+            format!("{base}[transit]\nparticipating_tunnels = 2\npeer_participation_cap = 3\n");
+        assert!(matches!(
+            Config::parse(&contradictory_peer_cap),
+            Err(ConfigError::Semantic {
+                field: "transit.peer_participation_cap",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 492 WP1: the section is strict like every other section.
+    #[test]
+    fn transit_section_rejects_unknown_keys() {
+        let unknown = format!("{MINIMAL}\n[transit]\nadvertise = true\n");
+        assert!(matches!(Config::parse(&unknown), Err(ConfigError::Parse(_))));
     }
 
     #[test]
