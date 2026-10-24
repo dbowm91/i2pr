@@ -92,7 +92,7 @@ deliverable**; it is the baseline this plan implements and corrects.
 | R8 | **The lab profile is a checked artifact, and drift between the documented profile and the checked profile fails a static guard.** | `LAB_PROFILE_ROWS` in the checker and §4 of `specs/QUALIFICATION-GATES.md`; `profile_drift()` compares them field by field; `--profile-drift`; the self-test case `lab-profile-drift` plus an inverted probe that mutates the documented value and requires the guard to fire; the mode runs in `ci.yml` as well as in the floor. | Held. |
 | R9 | **The peer-state hygiene protocol is an executable precondition.** | `validate_hygiene()` — five conditions plus a stale-file count; the fixtures `hygiene-fresh.json` and `hygiene-poisoned.json`; a failed condition yields the outcome class `peer-state-poisoned` naming each failed condition. | Held. |
 | R10 | **Every outcome names its failure owner.** | The two-axis model: the outcome class says *where* the run ended; the `cause` says *whose artifact* was responsible (`i2pr-lab-profile`, `i2pr-implementation`, `peer-state`, `intentional-withholding`, `unattributed`). `classify()` sets the cause; `validate_evidence()` enforces the pairing — only `i2pr-implementation` may accompany `i2pr-defect`, and a peer-side outcome may never name the implementation; §1 and §5 of the canonical model state it; `specs/CONFORMANCE.md` rule 4 binds it. | Held. |
-| R11 | **Plans 449, 476 and 493 bind to the gate, and Plan 493's attempt-budget rule is reconciled with the canonical causal-corrective policy.** | The three plans' gate-binding paragraphs name the canonical model, the operator procedure and the checker; their verification blocks no longer say the checker "does not exist yet" and now name the four checker modes; Plan 493's attempt-budget reconciliation (a peer-state change *is* a material change) stands as amended. | Held. |
+| R11 | **Plans 449, 476 and 493 bind to the gate, and Plan 493's attempt-budget rule is reconciled with the canonical causal-corrective policy.** | The three plans' gate-binding paragraphs name the canonical model, the operator procedure and the checker; their verification blocks no longer say the checker "does not exist yet" and now name the four checker modes; Plan 493's attempt-budget reconciliation (a peer-state change *is* a material change) stands as amended. Plan 476's Tier A was re-worded so it **carries** the delivered gate rather than re-delivering it, which would have duplicated closed work; Plan 493's WP1 was corrected to the source-derived mechanism (F1, F7). | Held. |
 | R12 | **No support inventory, conformance, advertisement or capability claim changes, and the routine floor is green on the closing tree.** | `specs/support.toml` unchanged; `router.version` unchanged; no `crates/**` diff at all; the floor table in §7.4. | Held. |
 | R13 | **The gate is enforced routinely, not only on request.** | The checker's `--self-test` and `--profile-drift` are steps in `AGENTS.md`'s routine floor and in the `quality` job of `.github/workflows/ci.yml`; `docs/architecture/tooling.md` records the script, the floor step count and the top-level script count. | Held. |
 
@@ -211,8 +211,8 @@ concurrency problem.
 | `specs/CONFORMANCE.md` | The binding section now names the canonical model, the operator procedure, the checker and the frozen pins, and carries **four** binding rules — the fourth adds the two-axis failure owner. |
 | `docs/operations/ssu2-private-lan-qualification.md` | Binds the canonical model; corrects the floodfill claim (F1) and the version row; adds the Java ban surface; replaces "record which predicates" with the four checker invocations. |
 | `plans/implementation/core-router-recovery/449-*.md` | Gate binding names the canonical model and the checker; the verification block no longer says the checker does not exist and names the four modes. |
-| `plans/implementation/core-router-recovery/476-*.md` | Gate binding names the canonical model and the checker. |
-| `plans/implementation/network-participation/493-*.md` | Gate binding names the canonical model and the checker; the verification block is updated the same way. |
+| `plans/implementation/core-router-recovery/476-*.md` | Gate binding names the canonical model and the checker, and **re-scopes Tier A to carry** the delivered gate rather than to re-deliver it. |
+| `plans/implementation/network-participation/493-*.md` | Gate binding names the canonical model and the checker; the verification block is updated the same way; **WP1's mechanism claim is corrected** to the source-derived one (the floodfill cap alone is not sufficient; Java's predicate is `shouldCreate`). |
 | `plans/implementation/core-router-recovery/495-*.md` | The status line is authoritative and points at this closure record; the body is the plan as written before implementation and is not rewritten. |
 | `docs/architecture/tooling.md` | The new script is documented; the top-level script count and the routine-floor step count are recomputed; the SSU2 lane row names the fixtures and the checker. |
 | `AGENTS.md`, `.github/workflows/ci.yml` | The checker's self-test and profile-drift modes are routine floor steps and a CI step. |
@@ -431,8 +431,8 @@ key; below that floor the RouterInfo is never filed and an exploratory
 request can never target it. A lab profile below 0.9.62 can still be
 *dialled* (the generic dial path needs only the dial predicates), but it can
 never be *explored*. **Corrected** in `docs/operations/ssu2-private-lan-qualification.md`
-§2.2 and §3, in `specs/QUALIFICATION-GATES.md` §3.1, and in the SSU2
-roadmap's gate-repair note.
+§2.2 and §3, in `specs/QUALIFICATION-GATES.md` §3.1, in Plan 493's WP1,
+and in the SSU2 roadmap's gate-repair note.
 
 **F2 — Java I2P bans a peer on an exact `(caps, version)` pair, and the
 profile-creation predicate needs `R`.** The pinned Java source's NTCP2
@@ -482,8 +482,8 @@ bytes.
 **F7 — the operator procedure named the wrong Java symbol.** It cited
 `heardAbout()` as the profile-creation predicate; the pinned source names it
 `ProfileManagerImpl.shouldCreate(caps)`, and `heardAbout` is the caller.
-Corrected in the operator procedure and recorded correctly in
-`specs/QUALIFICATION-GATES.md` §3.2.
+Corrected in the operator procedure and in Plan 493's WP1, and recorded
+correctly in `specs/QUALIFICATION-GATES.md` §3.2.
 
 ---
 

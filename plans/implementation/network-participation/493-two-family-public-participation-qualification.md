@@ -167,9 +167,16 @@ Missing today:
    `satisfied`, `deliberately-unsatisfied` or `unknown`; an `unknown`
    predicate fails the lane closed. The lab RouterInfo profile is the one
    the gate document states, including the per-family differences: i2pd
-   selects us when we advertise the floodfill capability and it learns our
-   RouterInfo in-band, while Java's `heardAbout()` additionally requires `R`
-   plus an acceptable bandwidth and congestion class.
+   files us as a floodfill — the target of its exploratory requests — only
+   when we advertise the floodfill capability **and** clear its floodfill
+   floor (`router.version >= 0.9.62`) **and** publish a non-introducer IPv4
+   address, and it learns our RouterInfo in-band; below that floor it files
+   us nowhere and falls back to its generic dial path, so the dial floor and
+   the peer-test floor are separate conditions and neither is implied by the
+   floodfill cap. Java's profile-creation predicate
+   (`ProfileManagerImpl.shouldCreate(caps)`, which `heardAbout()` calls)
+   requires `R` plus either `f` or an acceptable bandwidth and congestion
+   class.
 2. **WP2 — the DHT leg.** Exploration and a lookup against each family.
    **Amended by Plan 495:** each leg records the gate's claim-tier ladder
    and exactly one outcome class, so a family that never selected us is
