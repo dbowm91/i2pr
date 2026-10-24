@@ -222,7 +222,7 @@ Layering rules that each phase must respect:
                    -> 489 floodfill-indexed routing table + exploration (passed)
                         -> 490 SSU2 introducer (relay) role (passed)
                              -> 491 API-version floors + peer eligibility (passed)
-                                  -> 492 transit participation posture
+                                  -> 492 transit participation posture (passed)
                                        -> 493 two-family public qualification
                                             -> 494 floodfill role + caps=f
 
@@ -254,7 +254,7 @@ Filenames keep global i2pr numbers.
 | 489 | closed | passed-floodfill-indexed-routing-table | `plans/implementation/network-participation/489-floodfill-indexed-routing-table-and-exploration.md` | `plans/closure/network-participation/489-status.md` (implementation `40a15a87`) |
 | 490 | closed | passed-ssu2-introducer-relay-role | `plans/implementation/network-participation/490-ssu2-introducer-relay-role.md` | `plans/closure/network-participation/490-status.md` (implementation `8a170ae4`; floor-caught fixes `0f5ba473` and `431ece6e` committed separately) |
 | 491 | closed | passed-api-version-floors-and-peer-eligibility | `plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md` | `plans/closure/network-participation/491-status.md` (implementation `dc36e2d7`; floor-caught fixes `c195f363` and `27c20b9c` committed separately) |
-| 492 | ready | registered-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | — |
+| 492 | closed | passed-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | `plans/closure/network-participation/492-status.md` (implementation `d287635e`; floor-caught fixes `279f6ae4` and `f0e44798` committed separately) |
 | 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | — |
 | 494 | blocked | registered-floodfill-role-and-caps-f-advertisement | `plans/implementation/network-participation/494-floodfill-role-and-caps-f-advertisement.md` | — |
 
@@ -269,8 +269,8 @@ phases consume, and their records remain authoritative where they live.
 | 161, 162 (SSU2) | `ssu2` | the session owner Plan 489's introducer role runs on |
 | 268, 269 (M11 transit) | `transit-tunnels` | the passed one-family qualification Plan 491 turns into an opt-in posture |
 | 270–285 (M12 floodfill) | `floodfill` | the controlled floodfill service Plan 493 promotes to a role |
-| 431, 472, 476, 480, 449 | `core-router-recovery` | the authorized two-host topology Plan 492 needs; Plan 431 remains stopped |
-| 433, 435, 436, 437, 438, 439 | `core-router-recovery` | live composition, transport activation, selection and role classes Plan 492/493 consume |
+| 431, 472, 476, 480, 449 | `core-router-recovery` | the authorized two-host topology Plan 493 needs; Plan 431 remains stopped |
+| 433, 435, 436, 437, 438, 439 | `core-router-recovery` | live composition, transport activation, selection and role classes Plan 493/494 consume |
 | 454 | `core-router-recovery` | the enforced bandwidth governor Plan 491's share policy and Plan 493's tier derivation use |
 | 444 | `core-router-recovery` | the Java candidate-selection and store/lookup controls Plan 493's class matrix needs |
 | 161–166 (ELS2 / red25519) | `red25519-encrypted-leaseset` | the encrypted-publication path Plan 489 and 493 serve |
@@ -310,7 +310,7 @@ the closed lines use: a **private controlled mesh** first, then an
   every drop path; deterministic golden vectors; malformed, truncated,
   oversized and semantically invalid input tests; fail-closed assertions with
   inverted probes.
-- **Private mesh lane** (488–491): a controlled multi-router loopback mesh
+- **Private mesh lane** (488–492): a controlled multi-router loopback mesh
   where `i2pr` is a full participant alongside a stock peer, asserting
   *source-originated* receipts (not aggregate counters) for: table growth
   under exploration, a lookup answered by a peer, a Relay Request answered as the introducer, an eligibility decision taken from a peer's published version, and
@@ -318,7 +318,7 @@ the closed lines use: a **private controlled mesh** first, then an
 - **Exact-pinned single-family lane** (488–491): the pinned i2pd 2.61.0 as
   the peer, with a deterministic selection (no randomized peer choice), and
   only sanitized counts and hashes in evidence.
-- **Two-family matrix** (492–493): Java I2P 2.13.0 *and* i2pd 2.61.0, as
+- **Two-family matrix** (493–494): Java I2P 2.13.0 *and* i2pd 2.61.0, as
   `specs/CONFORMANCE.md` item 7 requires for a router-to-router claim.
   Missing environment must **fail**, never silently pass.
 - **Routine floor** on the closing tree of every phase, exactly as
@@ -329,9 +329,9 @@ the closed lines use: a **private controlled mesh** first, then an
 
 ## 10. Risks and decision points
 
-- **The topology gate may never open.** Plan 492 depends on an authorized,
+- **The topology gate may never open.** Plan 493 depends on an authorized,
   independently addressed two-host topology that Plan 431 stopped awaiting.
-  If it does not open, 492 and 493 stay blocked and the honest position is
+  If it does not open, 493 and 494 stay blocked and the honest position is
   "a participating router in a controlled mesh", not "a router on the public
   network". The roadmap must not degrade that claim to keep the sequence
   moving.
@@ -376,17 +376,20 @@ This roadmap is closed when all of the following hold:
 - `specs/support.toml` and `specs/CONFORMANCE.md` state the achieved
   position truthfully, and no advertisement exceeds the tested subset.
 
-A roadmap that reaches a *controlled-mesh* participant — with 488–491 passed
-and 492 blocked on the topology gate — is a legitimate intermediate closure
+A roadmap that reaches a *controlled-mesh* participant — with 488–492 passed
+and 493 blocked on the topology gate — is a legitimate intermediate closure
 under the same rules the rest of the repository uses, provided it is called
 exactly that.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: **Plan 492 is the next
-actionable phase**; Plan 488 is closed (`passed-peer-profile-store`), Plan 489
-is closed (`passed-floodfill-indexed-routing-table`), Plan 490 is closed
-(`passed-ssu2-introducer-relay-role`), and Plan 491 is closed
-(`passed-api-version-floors-and-peer-eligibility`); Plans 493–494 are
-registered and blocked. The prior axis — Plans 477–480 and
+Full row history is §7. Current authority: Plan 488 is closed
+(`passed-peer-profile-store`), Plan 489 is closed
+(`passed-floodfill-indexed-routing-table`), Plan 490 is closed
+(`passed-ssu2-introducer-relay-role`), Plan 491 is closed
+(`passed-api-version-floors-and-peer-eligibility`), and Plan 492 is closed
+(`passed-transit-participation-posture`); **Plan 493 (the two-family public
+participation qualification) is the line's next phase and is registered
+blocked** on the authorized two-host topology, and Plan 494 is blocked on
+493. The prior axis — Plans 477–480 and
 485–487 — is closed and is not reopened here.
