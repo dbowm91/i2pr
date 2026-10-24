@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use i2pr_runtime::Ssu2QualificationObserver;
@@ -54,6 +54,14 @@ pub struct LocalReceiptExporter {
     session_observed: bool,
     product_observed: bool,
     reply_correlated: bool,
+    /// A collector refusal seen at any point in this process's life.
+    ///
+    /// Sticky by construction: an overflowed epoch is untrustworthy for
+    /// the rest of the process lifetime, so a later successful drain
+    /// must not be able to make the export look clean again. The
+    /// consumer fails closed on a non-null `error`, so forgetting the
+    /// refusal here would silently turn an untrustworthy epoch into an
+    /// apparently healthy one.
     error: Option<&'static str>,
 }
 
@@ -106,17 +114,27 @@ impl LocalReceiptExporter {
     /// untrustworthy for the rest of the process lifetime, so the
     /// export keeps saying so.
     pub fn export(&mut self, observer: &Ssu2QualificationObserver) -> Result<(), String> {
-        match self.collector.collect(observer) {
-            Ok(receipt) => {
-                self.absorb(&receipt);
-                self.error = None;
-            }
+        let result = self.collector.collect(observer);
+        self.record(result);
+        self.write()
+    }
+
+    /// Folds one collector result into the running export.
+    ///
+    /// Split out from `export` so the stickiness of a refusal is
+    /// testable without an observer: the observer can only be
+    /// constructed inside the runtime crate, but the rule that a
+    /// refusal survives a later success must not depend on that.
+    fn record(&mut self, result: Result<LocalObservedReceipt, &'static str>) {
+        match result {
+            Ok(receipt) => self.absorb(&receipt),
             Err("receipt-empty") => {}
             Err(code) => {
+                // Sticky: the refusal is never cleared by a later
+                // successful drain.
                 self.error = Some(code);
             }
         }
-        self.write()
     }
 
     fn absorb(&mut self, receipt: &LocalObservedReceipt) {
@@ -189,15 +207,31 @@ impl LocalReceiptExporter {
 
     fn write(&self) -> Result<(), String> {
         let body = self.snapshot();
-        let temporary = self.destination.with_extension("tmp");
+        // A unique temporary name: two exporters writing different
+        // documents that happen to share a base name in one directory
+        // must not collide on a single `.tmp` path.
+        let temporary = self.destination.with_file_name(format!(
+            ".{}.{}.tmp",
+            self.destination
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "receipt".to_owned()),
+            std::process::id()
+        ));
         {
-            let mut file = fs::OpenOptions::new()
+            let file = fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
                 .open(&temporary)
                 .map_err(|error| format!("export-open-failed:{error}"))?;
+            // `mode` only applies when the file is created. A leftover
+            // temporary from an earlier run keeps its own permissions,
+            // so the mode is set explicitly rather than assumed.
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("export-permission-failed:{error}"))?;
+            let mut file = file;
             file.write_all(body.as_bytes())
                 .map_err(|error| format!("export-write-failed:{error}"))?;
             file.sync_all()
@@ -292,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_epoch_is_not_a_failure_but_a_sticky_error_is_reported() {
+    fn an_empty_epoch_is_not_a_failure_but_a_refusal_is_sticky() {
         let destination = temporary_destination("sticky");
         let _ = fs::remove_file(&destination);
         let mut exporter = LocalReceiptExporter::new(
@@ -300,9 +334,78 @@ mod tests {
             destination.clone(),
         )
         .expect("exporter");
-        exporter.error = Some("receipt-overflow");
-        let document = exporter.snapshot();
-        assert!(document.contains("\"error\": \"receipt-overflow\""));
+        // An empty epoch is not a refusal: it simply carried no events.
+        exporter.record(Err("receipt-empty"));
+        assert!(
+            exporter.error.is_none(),
+            "an empty epoch must not be a refusal"
+        );
+        // A refusal is recorded ...
+        exporter.record(Err("receipt-overflow"));
+        assert_eq!(exporter.error, Some("receipt-overflow"));
+        // ... and a later successful epoch must NOT clear it. An
+        // overflowed epoch is untrustworthy for the rest of the
+        // process lifetime; a consumer that fails closed on a
+        // non-null `error` must not be able to see the epoch heal.
+        exporter.record(Ok(LocalObservedReceipt {
+            phases: vec![("permit_checked", 1)],
+            session_observed: false,
+            product_observed: false,
+            reply_correlated: false,
+            live_qualification: "not-run",
+        }));
+        assert_eq!(
+            exporter.error,
+            Some("receipt-overflow"),
+            "a refusal must survive a later successful epoch"
+        );
+        assert!(
+            exporter
+                .snapshot()
+                .contains("\"error\": \"receipt-overflow\"")
+        );
+        let _ = fs::remove_file(&destination);
+    }
+
+    #[test]
+    fn the_exported_document_is_written_private_and_replaced_atomically() {
+        let destination = temporary_destination("mode");
+        let _ = fs::remove_file(&destination);
+        let exporter = LocalReceiptExporter::new(
+            permit(LocalQualificationProfile::PrivateLan, true),
+            destination.clone(),
+        )
+        .expect("exporter");
+        exporter.write().expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&destination)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "the exported receipt must be private");
+        }
+        // A second write replaces the document rather than appending,
+        // and leaves no temporary behind. Only this exporter's own
+        // temporary name is inspected: the temporary directory is
+        // shared with the rest of the host.
+        exporter.write().expect("rewrite");
+        let stem = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let siblings: Vec<String> = fs::read_dir(destination.parent().expect("parent"))
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(&stem) && name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            siblings.is_empty(),
+            "the export must not leave temporary files behind: {siblings:?}"
+        );
         let _ = fs::remove_file(&destination);
     }
 }

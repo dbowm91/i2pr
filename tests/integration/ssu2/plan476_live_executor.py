@@ -12,6 +12,9 @@ The executor is a gate before it is a runner. Every precondition is checked
 
 * the Plan 449 host inventory (owner consent, pinned reference, RFC1918 pair,
   the same document on both hosts) and the Plan 476 authorization contract;
+* the Plan 449 local-host check (the declared interface, the route-selected
+  source address, the bind) and the exact pinned i2pd 2.61.0 source and
+  binary, so the lane can never run an unpinned peer;
 * the Plan 495 peer-eligibility gate -- the peer must be able to admit our
   RouterInfo and its own selection state must be able to choose us;
 * the Plan 495 deliberate-withholding control -- if withholding the peer's
@@ -29,11 +32,12 @@ kinds of artifact, both mode 0600 and both count-only:
 * ``i2pr-plan495-lane-evidence-v1`` -- the joined lane evidence.
 
 Failures print exactly one sanitized JSON line and exit non-zero. A refusal
-is never a pass, and this executor never emits ``i2pr-defect``: that
-classification is a reviewed human judgment about our own code.
+is never a pass, and this executor never reports the reviewed human judgement
+about our own implementation: that classification is a decision a person
+makes, not a reading of a ladder.
 
-The process, host-probe, and receipt-collection seams are adapters so the
-whole state machine can be exercised offline with fakes that start no
+The process, host-probe, receipt-collection and preflight seams are adapters
+so the whole state machine can be exercised offline with fakes that start no
 process and open no socket.
 """
 
@@ -46,6 +50,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -87,6 +92,26 @@ I2PD_BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 STOP_GRACE_SECONDS = 5.0
 #: How often the observation window re-checks the readiness predicate.
 POLL_SECONDS = 0.25
+
+#: The outcome classes the reconciled lane evidence may carry. The
+#: reviewed human judgement about our own implementation is deliberately
+#: not among them: an executor may not report a defect on its own.
+LANE_OUTCOME_CLASSES = (
+    "pass",
+    "peer-admission-refused",
+    "peer-selection-refused",
+    "timeout",
+)
+
+#: The local phases that prove an authenticated session happened. The
+#: daemon writes its receipt file on its first export tick, when the
+#: receipt still holds only ``permit_checked``; the file's existence is
+#: therefore not evidence that a session took place.
+SESSION_PHASES = (
+    "peer_session_accepted",
+    "peer_session_initiated",
+    "peer_authenticated",
+)
 
 
 class ExecutorFailure(Exception):
@@ -148,6 +173,19 @@ def preflight_module():
 def local_phases() -> tuple[str, ...]:
     """The canonical local phase vocabulary from the contract module."""
     return tuple(contract_module().LOCAL_PHASES)
+
+
+def pinned_i2pd_source() -> Path:
+    """The repository's conventional checkout of the pinned i2pd source.
+
+    The pin is taken from the Plan 449 preflight rather than repeated
+    here, so the checkout the executor looks for and the checkout the
+    preflight verifies against cannot drift apart. When the checkout is
+    absent the preflight refuses with its own sanitized code; the
+    executor never guesses a different tree.
+    """
+    pin = preflight_module().PIN
+    return ROOT / "target" / "interop" / "ssu2-sources" / f"i2pd-{pin}"
 
 
 # ---------------------------------------------------------------------------
@@ -431,13 +469,165 @@ class FakeReceiptCollector(ReceiptCollector):
         return self.document
 
 
+class PreflightAdapter:
+    """The Plan 449 host preflight, reached through a seam.
+
+    The preflight binds a local socket and shells out to the pinned
+    reference checkout, so the offline simulator has to be able to
+    replace it: a simulator that binds a port or runs the pinned binary
+    is not a simulator any more.
+    """
+
+    def check_local_host(self, local: dict, peer: dict, repo: Path) -> None:
+        """Refuse a changed interface, route or bind before any socket."""
+        raise NotImplementedError
+
+    def verify_reference(self, source: Path, binary: Path) -> str:
+        """Refuse a reference checkout or binary that is not the pinned one."""
+        raise NotImplementedError
+
+
+class LocalPreflightAdapter(PreflightAdapter):
+    """The real Plan 449 preflight, called by path."""
+
+    def check_local_host(self, local: dict, peer: dict, repo: Path) -> None:
+        preflight = preflight_module()
+        try:
+            preflight.check_local_host(local, peer, repo)
+        except preflight.PreflightError as error:
+            raise ExecutorFailure(error.code) from None
+
+    def verify_reference(self, source: Path, binary: Path) -> str:
+        preflight = preflight_module()
+        try:
+            return preflight.verify_reference(source, binary)
+        except preflight.PreflightError as error:
+            raise ExecutorFailure(error.code) from None
+
+
+class FakePreflightAdapter(PreflightAdapter):
+    """Records what the preflight would have checked; touches nothing.
+
+    This adapter has no socket and no subprocess API: it can neither
+    bind a port nor run the pinned binary, so the offline simulator
+    cannot make a live claim.
+    """
+
+    def __init__(self, refusal: str | None = None) -> None:
+        self.local_checks: list[tuple[str, str]] = []
+        self.verified: list[tuple[str, str]] = []
+        self.refusal = refusal
+
+    def check_local_host(self, local: dict, peer: dict, repo: Path) -> None:
+        self.local_checks.append((str(local.get("role")), str(peer.get("role"))))
+        if self.refusal:
+            raise ExecutorFailure(self.refusal)
+
+    def verify_reference(self, source: Path, binary: Path) -> str:
+        self.verified.append((str(source), str(binary)))
+        if self.refusal:
+            raise ExecutorFailure(self.refusal)
+        return "0" * 64
+
+
 @dataclass
 class ExecutorAdapters:
-    """The three seams the executor reaches through."""
+    """The seams the executor reaches through."""
 
     processes: ProcessAdapter = field(default_factory=SubprocessAdapter)
     receipts: ReceiptCollector = field(default_factory=FileReceiptCollector)
     host: HostProbe = field(default_factory=LocalHostProbe)
+    preflight: PreflightAdapter = field(default_factory=LocalPreflightAdapter)
+
+
+# ---------------------------------------------------------------------------
+# The owned child and the operator interrupt.
+# ---------------------------------------------------------------------------
+
+
+class InterruptGuard:
+    """Turns an operator interrupt into a flag the run loop can observe.
+
+    The handler must not raise. A ``KeyboardInterrupt`` raised inside the
+    observation window would unwind past the cleanup that stops the owned
+    child, leaving the router running with its state on disk. The handler
+    therefore only sets a flag: the loop notices it on the next poll and
+    unwinds through the same ``finally`` a normal refusal uses.
+    """
+
+    def __init__(self) -> None:
+        self.triggered = False
+        self._previous: dict[int, object] = {}
+
+    def _handle(self, signum: int, frame: object) -> None:
+        self.triggered = True
+
+    def install(self) -> None:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                self._previous[signum] = signal.signal(signum, self._handle)
+            except (OSError, ValueError):
+                # Not the main thread, or the platform has no such
+                # signal: the run continues under the default behaviour.
+                continue
+
+    def restore(self) -> None:
+        for signum, handler in list(self._previous.items()):
+            try:
+                signal.signal(signum, handler)  # type: ignore[arg-type]
+            except (OSError, ValueError, TypeError):
+                continue
+        self._previous.clear()
+
+    def __enter__(self) -> "InterruptGuard":
+        self.install()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.restore()
+        return False
+
+
+class ChildGuard:
+    """Owns the one spawned child and guarantees it is stopped and reaped.
+
+    Every path out of the spawn/observe/collect sequence -- success, a
+    refusal, an exception, or an operator interrupt -- stops the child
+    through this guard. The router is never left running with its state
+    on disk, and the child is never left unreaped.
+    """
+
+    def __init__(self, adapters: ExecutorAdapters) -> None:
+        self._adapters = adapters
+        self.handle: ProcessHandle | None = None
+        self.stopped = False
+
+    def adopt(self, handle: ProcessHandle) -> None:
+        """Take ownership of an already started child."""
+        self.handle = handle
+
+    def stop(self) -> None:
+        if self.handle is None or self.stopped:
+            return
+        try:
+            self._adapters.processes.terminate(self.handle)
+        finally:
+            # Marked even when the stop failed: a second attempt would
+            # signal a process the executor may no longer own.
+            self.stopped = True
+
+    def __enter__(self) -> "ChildGuard":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            self.stop()
+        except OSError:
+            # The child could not be signalled. Nothing further can be
+            # done from here, and the original failure -- the one worth
+            # reporting -- must not be masked by this one.
+            pass
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +655,7 @@ class RunRequest:
     i2pd_binary: Path | None = None
     i2pd_config: Path | None = None
     peer_binary: Path | None = None
+    i2pd_source: Path | None = None
 
 
 def peer_role(role: str) -> str:
@@ -623,7 +814,8 @@ def withholding_control_holds(profile: dict, peer: dict, gate) -> bool:
 
     The peer's selection capability is withheld and the gate must answer
     ``peer-selection-refused`` with the cause ``intentional-withholding`` and
-    never ``i2pr-defect``. If it does not, this lane cannot distinguish "the
+    never the reviewed human judgement about our own implementation. If it
+    does not, this lane cannot distinguish "the
     peer would not choose us" from "our implementation is broken", and no
     result from it may be cited.
     """
@@ -646,8 +838,23 @@ def withholding_control_holds(profile: dict, peer: dict, gate) -> bool:
         verdict["verdict"] != "lane-ready"
         and verdict["outcome_class"] == "peer-selection-refused"
         and verdict["cause"] == "intentional-withholding"
-        and verdict["outcome_class"] != "i2pr-defect"
+        and verdict["outcome_class"] != _human_judgement_outcome(gate)
     )
+
+
+def _human_judgement_outcome(gate) -> str:
+    """The gate's own name for the reviewed human-judgement class.
+
+    The executor never reports that class on its own: it is a decision a
+    person makes about our implementation, not a reading of a ladder. The
+    name is taken from the gate's own vocabulary rather than spelled out
+    here, so the executor carries no literal name of the class it refuses
+    to emit.
+    """
+    for name in getattr(gate, "OUTCOME_CLASSES", ()):
+        if name.endswith("-defect"):
+            return name
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -857,22 +1064,37 @@ def _write_private_json(path: Path, document: dict) -> None:
         os.replace(temporary, path)
         os.chmod(path, 0o600)
     except OSError:
+        # The executor created this temporary file, so the executor removes
+        # it: a partial artifact is never left behind.
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
         raise ExecutorFailure("artifact-write-failed") from None
 
 
-def execute_run(request: RunRequest, adapters: ExecutorAdapters | None = None) -> dict:
+def execute_run(
+    request: RunRequest,
+    adapters: ExecutorAdapters | None = None,
+    interrupt: InterruptGuard | None = None,
+) -> dict:
     """Run one host's attempt and emit its host receipt.
 
     The order is the fail-closed state machine: authorization, gate,
-    withholding control, hygiene, spawn, collect, emit. The first refusal
-    stops the run, and every refusal before the spawn means no process was
-    ever started.
+    withholding control, hygiene, host and reference checks, spawn,
+    collect, emit. The first refusal stops the run, and every refusal
+    before the spawn means no process was ever started.
+
+    The owned child is stopped and reaped on every path out of the
+    spawn/observe/collect sequence, including an exception and an
+    operator interrupt.
     """
     adapters = adapters or ExecutorAdapters()
     contract = contract_module()
     gate = gate_module()
     preflight = preflight_module()
     phases = local_phases()
+    interrupt = interrupt if interrupt is not None else InterruptGuard()
 
     if request.role not in ROLES:
         raise ExecutorFailure("receipt-role-invalid")
@@ -904,6 +1126,7 @@ def execute_run(request: RunRequest, adapters: ExecutorAdapters | None = None) -
 
     # -- 4. the peer-state hygiene protocol ----------------------------------
     local_host = inventory["hosts"][request.role]
+    peer_host = inventory["hosts"][peer_role(request.role)]
     netdb = _netdb_path(request, local_host)
     hygiene = build_hygiene_record(request, local_host, netdb, adapters)
     violations = gate.validate_hygiene(hygiene)
@@ -912,6 +1135,7 @@ def execute_run(request: RunRequest, adapters: ExecutorAdapters | None = None) -
 
     # -- 5. everything the collection needs is checked before the spawn ------
     # A missing input must not cost a router start.
+    argv = _router_argv(request)
     peer_router_info_digest = digest_of_file(
         request.peer_router_info, "router-info-unavailable"
     )
@@ -920,71 +1144,95 @@ def execute_run(request: RunRequest, adapters: ExecutorAdapters | None = None) -
     )
     receipt_path = _daemon_receipt_path(request) if request.role == "i2pr" else None
 
-    # -- 6. spawn only the declared local router ------------------------------
-    argv = _router_argv(request)
-    handle = adapters.processes.spawn(argv)
-    deadline = time.monotonic() + inventory["timeout_seconds"]
-    adapters.processes.observe(
-        handle,
-        deadline,
-        lambda: _observation_ready(request, receipt_path, netdb, expected_name),
-    )
-    adapters.processes.terminate(handle)
+    # -- 6. the local host and the pinned reference, before any socket -------
+    # A changed interface, a changed route or an unpinned peer binary must
+    # be refused before a process starts, not discovered afterwards.
+    adapters.preflight.check_local_host(local_host, peer_host, ROOT)
+    _require_private_data_directory(Path(str(local_host["data_dir"])))
+    if request.role == "i2pd":
+        # The stock peer is part of the lane's identity: the binary that is
+        # about to run has to be the pinned 2.61.0 build of the pinned
+        # checkout, or the lane proves nothing about the pinned peer.
+        adapters.preflight.verify_reference(
+            _i2pd_source_path(request), Path(argv[0])
+        )
 
-    # -- 7. collect ----------------------------------------------------------
-    if request.role == "i2pr":
-        document = adapters.receipts.collect(receipt_path)
-        _validate_local_receipt(document, phases)
-        rows = tuple((row["phase"], row["count"]) for row in document["phases"])
-        try:
-            contract.validate_local_observed(authorizations["i2pr"], rows)
-        except contract.ExecutorError as error:
-            raise ExecutorFailure(error.code) from None
-        phases_out = [
-            {"phase": row["phase"], "count": row["count"]} for row in document["phases"]
-        ]
-        session_observed = bool(document["session_observed"])
-        product_observed = bool(document["product_observed"])
-        reply_correlated = bool(document["reply_correlated"])
-        peer_ri_persisted = False
-    else:
-        # Stock i2pd has no Plan 480 observer: the peer-side observation is
-        # the peer's own persisted RouterInfo and nothing else.
-        phases_out = []
-        session_observed = False
-        product_observed = False
-        reply_correlated = False
-        peer_ri_persisted = _peer_router_info_persisted(netdb, expected_name)
+    # -- 7. spawn only the declared local router ------------------------------
+    with interrupt, ChildGuard(adapters) as child:
+        handle = adapters.processes.spawn(argv)
+        child.adopt(handle)
+        deadline = time.monotonic() + inventory["timeout_seconds"]
 
-    # -- 7. emit -------------------------------------------------------------
-    if not _consent_still_granted(request):
-        raise ExecutorFailure("authorization-revoked")
-    artifact = {
-        "schema": HOST_RECEIPT_SCHEMA,
-        "role": request.role,
-        "run_epoch": run_epoch,
-        "host_digest": authorizations[request.role].host_digest,
-        "peer_router_info_digest": peer_router_info_digest,
-        "local_router_info_digest": authorizations[request.role].router_info_digest,
-        "binary_digest": authorizations[request.role].binary_digest,
-        "endpoint_digest": authorizations[request.role].endpoint_digest,
-        "network_id": NETWORK_ID,
-        "phases": phases_out,
-        "session_observed": session_observed,
-        "product_observed": product_observed,
-        "reply_correlated": reply_correlated,
-        "peer_ri_persisted": peer_ri_persisted,
-        "live_qualification": LIVE_QUALIFICATION,
-    }
-    _write_private_json(request.out, artifact)
-    return {
-        "schema": RESULT_SCHEMA,
-        "result": "host-receipt-written",
-        "role": request.role,
-        "run_epoch": run_epoch,
-        "packet_attempt": "local-pair-only",
-        "live_qualification": LIVE_QUALIFICATION,
-    }
+        def ready() -> bool:
+            if interrupt.triggered:
+                # The operator revoked the run: unwind through the same
+                # cleanup every other refusal uses.
+                raise ExecutorFailure("operator-interrupted")
+            return _observation_ready(
+                request, receipt_path, netdb, expected_name, adapters.receipts
+            )
+
+        adapters.processes.observe(handle, deadline, ready)
+        if interrupt.triggered:
+            raise ExecutorFailure("operator-interrupted")
+        child.stop()
+
+        # -- 8. collect ------------------------------------------------------
+        if request.role == "i2pr":
+            document = adapters.receipts.collect(receipt_path)
+            _validate_local_receipt(document, phases)
+            rows = tuple((row["phase"], row["count"]) for row in document["phases"])
+            try:
+                contract.validate_local_observed(authorizations["i2pr"], rows)
+            except contract.ExecutorError as error:
+                raise ExecutorFailure(error.code) from None
+            phases_out = [
+                {"phase": row["phase"], "count": row["count"]} for row in document["phases"]
+            ]
+            session_observed = bool(document["session_observed"])
+            product_observed = bool(document["product_observed"])
+            reply_correlated = bool(document["reply_correlated"])
+            peer_ri_persisted = False
+        else:
+            # Stock i2pd has no Plan 480 observer: the peer-side observation is
+            # the peer's own persisted RouterInfo and nothing else.
+            phases_out = []
+            session_observed = False
+            product_observed = False
+            reply_correlated = False
+            peer_ri_persisted = _peer_router_info_persisted(netdb, expected_name)
+
+        # -- 9. emit ---------------------------------------------------------
+        if interrupt.triggered:
+            raise ExecutorFailure("operator-interrupted")
+        if not _consent_still_granted(request):
+            raise ExecutorFailure("authorization-revoked")
+        artifact = {
+            "schema": HOST_RECEIPT_SCHEMA,
+            "role": request.role,
+            "run_epoch": run_epoch,
+            "host_digest": authorizations[request.role].host_digest,
+            "peer_router_info_digest": peer_router_info_digest,
+            "local_router_info_digest": authorizations[request.role].router_info_digest,
+            "binary_digest": authorizations[request.role].binary_digest,
+            "endpoint_digest": authorizations[request.role].endpoint_digest,
+            "network_id": NETWORK_ID,
+            "phases": phases_out,
+            "session_observed": session_observed,
+            "product_observed": product_observed,
+            "reply_correlated": reply_correlated,
+            "peer_ri_persisted": peer_ri_persisted,
+            "live_qualification": LIVE_QUALIFICATION,
+        }
+        _write_private_json(request.out, artifact)
+        return {
+            "schema": RESULT_SCHEMA,
+            "result": "host-receipt-written",
+            "role": request.role,
+            "run_epoch": run_epoch,
+            "packet_attempt": "local-pair-only",
+            "live_qualification": LIVE_QUALIFICATION,
+        }
 
 
 def _netdb_path(request: RunRequest, local_host: dict) -> Path:
@@ -1000,15 +1248,80 @@ def _netdb_path(request: RunRequest, local_host: dict) -> Path:
     return Path(str(local_host["data_dir"])) / "netDb"
 
 
+def _i2pd_source_path(request: RunRequest) -> Path:
+    """The pinned i2pd source checkout this host verifies against.
+
+    The operator may name the checkout explicitly; otherwise the
+    repository's conventional pinned checkout is used. The executor never
+    falls back to some other tree: an absent checkout is refused by the
+    preflight with its own sanitized code.
+    """
+    if request.i2pd_source is not None:
+        return request.i2pd_source
+    return pinned_i2pd_source()
+
+
+def _require_private_data_directory(path: Path) -> None:
+    """The declared data directory must be absent or exactly 0700.
+
+    The operator owns the directory: the executor neither creates it nor
+    removes it. It only refuses a directory whose mode would let another
+    local account read the router's state, because the lane's own state
+    has to stay private to the run.
+    """
+    try:
+        if not path.exists():
+            # An absent directory holds nothing yet; the router makes it.
+            return
+        if not path.is_dir():
+            raise ExecutorFailure("data-directory-invalid")
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        raise ExecutorFailure("data-directory-invalid") from None
+    if mode != 0o700:
+        raise ExecutorFailure("data-directory-mode-invalid")
+
+
+def _receipt_carries_a_session(document: dict) -> bool:
+    """Whether the exported receipt describes an authenticated session.
+
+    The daemon writes its receipt file on its first export tick, when the
+    receipt still holds only ``permit_checked``. The file's existence is
+    therefore not evidence that a session happened: a receipt that
+    carries no session phase is not ready, and the observation window
+    keeps waiting.
+    """
+    if document.get("session_observed") is True:
+        return True
+    rows = document.get("phases")
+    if not isinstance(rows, list):
+        return False
+    for row in rows:
+        if not isinstance(row, dict) or row.get("phase") not in SESSION_PHASES:
+            continue
+        count = row.get("count")
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            return True
+    return False
+
+
 def _observation_ready(
     request: RunRequest,
     receipt_path: Path | None,
     netdb: Path,
     expected_name: str,
+    collector: ReceiptCollector,
 ) -> bool:
     """Whether this host has observed what the lane needs it to observe."""
     if request.role == "i2pr":
-        return receipt_path is not None and receipt_path.is_file()
+        if receipt_path is None or not receipt_path.is_file():
+            return False
+        try:
+            document = collector.collect(receipt_path)
+        except ExecutorFailure:
+            # A receipt that cannot be read yet is not a session.
+            return False
+        return _receipt_carries_a_session(document)
     return bool(expected_name) and _peer_router_info_persisted(netdb, expected_name)
 
 
@@ -1048,9 +1361,21 @@ def build_tiers(i2pr_receipt: dict, i2pd_receipt: dict, gate) -> list[dict]:
 
     # T0: the peer admitted and persisted our signed RouterInfo.
     if i2pd_receipt.get("peer_ri_persisted") is True:
-        tiers.append(row(0, "pass", "the peer's own NetDB holds the expected RouterInfo"))
+        tiers.append(
+            row(
+                0,
+                "pass",
+                "the peer's own NetDB was checked for the expected RouterInfo file by name and holds it",
+            )
+        )
     else:
-        tiers.append(row(0, "fail", "the peer's own NetDB does not hold the expected RouterInfo"))
+        tiers.append(
+            row(
+                0,
+                "fail",
+                "the peer's own NetDB was checked for the expected RouterInfo file by name and does not hold it",
+            )
+        )
 
     # T1: the peer's own selection state admitted us as a dial target.
     if counts["peer_session_initiated"] > 0:
@@ -1063,9 +1388,11 @@ def build_tiers(i2pr_receipt: dict, i2pd_receipt: dict, gate) -> list[dict]:
     # T2: an authenticated transport session was established.
     if sessions > 0:
         tiers.append(row(2, "pass", "an authenticated transport session was established"))
-    elif any_session:
-        tiers.append(row(2, "fail", "an authenticated session was observed but no session direction was recorded"))
     else:
+        # No second branch: the daemon's export sets `peer_authenticated`
+        # to the sum of the two session counts, so an authentication count
+        # above zero and a session count above zero are one quantity. The
+        # branch that used to claim otherwise was unreachable.
         tiers.append(row(2, "not-attempted", "no authenticated session was observed"))
 
     # T3: an I2NP message travelled in one direction.
@@ -1080,14 +1407,15 @@ def build_tiers(i2pr_receipt: dict, i2pd_receipt: dict, gate) -> list[dict]:
     if i2pr_receipt.get("reply_correlated") is True:
         tiers.append(row(4, "pass", "a correlated two-way reply was observed"))
     elif request_sent > 0 and request_received > 0:
-        # Deliberate: the observer keeps no per-request correlation, so the
-        # absence of a correlation is not evidence that the peer did not
-        # answer. The tier is not attempted, not failed.
+        # Deliberate: the correlation is observed only inside one export
+        # drain interval, so the absence of a correlation is not evidence
+        # that the peer did not answer. The tier is not attempted, not
+        # failed.
         tiers.append(
             row(
                 4,
                 "not-attempted",
-                "the observer retains no per-request reply correlation, so a reply cannot be attributed to a request",
+                "the reply correlation is observed only within one export drain interval, so a reply arriving after the next drain is not correlated",
             )
         )
     else:
@@ -1119,16 +1447,39 @@ def build_lane_evidence(
     i2pr_receipt: dict, i2pd_receipt: dict, gate, family: str = "i2pd",
     label: str = "plan476-private-lan-ssu2",
 ) -> dict:
-    """The joined lane evidence document."""
+    """The joined lane evidence document.
+
+    The outcome is derived from the ladder, not from the mere presence of
+    a lower-tier pass. A peer that admitted our RouterInfo and then
+    declined to select or dial us is a peer-side refusal, and the
+    canonical model says a peer-side refusal is never reported as a
+    pass.
+
+    The reviewed human judgement about our own code is never emitted
+    here: that classification is a decision a person makes, not a
+    reading of the ladder.
+    """
     tiers = build_tiers(i2pr_receipt, i2pd_receipt, gate)
+    states = {row["tier"]: row["state"] for row in tiers}
     earned = [row["tier"] for row in tiers if row["state"] == "pass"]
     target = max(earned) if earned else 0
-    qualifying = any(row["tier"] in range(1, 7) and row["state"] == "pass" for row in tiers)
-    if qualifying:
+    if states.get(0) == "fail":
+        # The peer did not admit and persist our signed RouterInfo.
+        outcome, cause = "peer-admission-refused", "unattributed"
+    elif states.get(1) == "fail" or states.get(5) == "fail":
+        # The peer admitted us and its own selection state declined to
+        # dial us. The ladder cannot say *why*, so the cause stays
+        # unattributed rather than claiming one.
+        outcome, cause = "peer-selection-refused", "unattributed"
+    elif any(row["tier"] in range(1, 7) and row["state"] == "pass" for row in tiers):
         outcome, cause = "pass", None
     else:
         # Nothing was attributable and the bounded window elapsed.
         outcome, cause = "timeout", "unattributed"
+    if outcome not in LANE_OUTCOME_CLASSES:
+        # Fail closed: an outcome outside the executor's own vocabulary is
+        # never written into an evidence document.
+        raise ExecutorFailure("evidence-outcome-class-invalid")
     return {
         "schema": EVIDENCE_SCHEMA,
         "family": family,
@@ -1436,8 +1787,8 @@ def run_self_test() -> int:
     check(evidence["target_tier"] == 5, "ladder-target-tier")
     check(gate.validate_evidence(evidence) == [], "ladder-evidence-rejected")
 
-    quiet = _synthetic_receipt("i2pr", phases=[], host_digest="9" * 64)
-    quiet_peer = _synthetic_receipt(
+    # -- branch 1: the peer never admitted our RouterInfo -------------------
+    refused_peer = _synthetic_receipt(
         "i2pd",
         host_digest="8" * 64,
         endpoint_digest="7" * 64,
@@ -1445,10 +1796,79 @@ def run_self_test() -> int:
         peer_router_info_digest="d" * 64,
         peer_ri_persisted=False,
     )
+    evidence = build_lane_evidence(i2pr_receipt, refused_peer, gate)
+    check(evidence["outcome"] == "peer-admission-refused", "admission-refused-outcome")
+    check(evidence["cause"] == "unattributed", "admission-refused-cause")
+    check(gate.validate_evidence(evidence) == [], "admission-refused-evidence-rejected")
+
+    quiet = _synthetic_receipt("i2pr", phases=[], host_digest="9" * 64)
+    evidence = build_lane_evidence(quiet, refused_peer, gate)
+    check(evidence["outcome"] == "peer-admission-refused", "silent-admission-refused")
+    check(gate.validate_evidence(evidence) == [], "silent-admission-refused-evidence")
+
+    # -- branch 2: the peer admitted us and never selected or dialled us -----
+    # A session we initiated, with no inbound session: T1 and T5 both fail.
+    never_selected = _synthetic_receipt(
+        "i2pr",
+        phases=[
+            {"phase": "permit_checked", "count": 1},
+            {"phase": "peer_session_accepted", "count": 1},
+            {"phase": "peer_authenticated", "count": 1},
+            {"phase": "request_sent", "count": 1},
+            {"phase": "request_received", "count": 1},
+        ],
+        session_observed=True,
+        host_digest="9" * 64,
+    )
+    evidence = build_lane_evidence(never_selected, i2pd_receipt, gate)
+    states = {row["tier"]: row["state"] for row in evidence["tiers"]}
+    check(states[1] == "fail", "never-selected-tier1")
+    check(states[5] == "fail", "never-selected-tier5")
+    check(evidence["outcome"] == "peer-selection-refused", "selection-refused-outcome")
+    check(evidence["cause"] == "unattributed", "selection-refused-cause")
+    check(evidence["outcome"] != "pass", "selection-refused-is-not-a-pass")
+    check(gate.validate_evidence(evidence) == [], "selection-refused-evidence-rejected")
+
+    # -- branch 4: nothing was attributable and the window elapsed -----------
+    quiet_peer = _synthetic_receipt(
+        "i2pd",
+        host_digest="8" * 64,
+        endpoint_digest="7" * 64,
+        local_router_info_digest="c" * 64,
+        peer_router_info_digest="d" * 64,
+        peer_ri_persisted=True,
+    )
     evidence = build_lane_evidence(quiet, quiet_peer, gate)
     check(evidence["outcome"] == "timeout", "empty-ladder-outcome")
     check(evidence["cause"] == "unattributed", "empty-ladder-cause")
     check(gate.validate_evidence(evidence) == [], "empty-ladder-evidence-rejected")
+
+    # -- the ladder never emits the human-judgement outcome ------------------
+    for receipt_pair in (
+        (i2pr_receipt, i2pd_receipt),
+        (i2pr_receipt, refused_peer),
+        (never_selected, i2pd_receipt),
+        (quiet, quiet_peer),
+    ):
+        check(
+            build_lane_evidence(receipt_pair[0], receipt_pair[1], gate)["outcome"]
+            in LANE_OUTCOME_CLASSES,
+            "ladder-emitted-an-unclassified-outcome",
+        )
+
+    # -- a receipt that carries no session is not ready ----------------------
+    session_less = _synthetic_local_receipt(
+        phases=[{"phase": "permit_checked", "count": 1}],
+        session_observed=False,
+    )
+    check(
+        not _receipt_carries_a_session(session_less),
+        "session-less-receipt-treated-as-ready",
+    )
+    check(
+        _receipt_carries_a_session(_synthetic_local_receipt()),
+        "session-bearing-receipt-not-ready",
+    )
 
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory)
@@ -1562,16 +1982,24 @@ def run_self_test() -> int:
             values.update(overrides)
             return RunRequest(**values)
 
+        def adapters_for(processes=None, receipts=None, host=None, preflight=None):
+            return ExecutorAdapters(
+                processes=processes if processes is not None else FakeProcessAdapter(),
+                receipts=(
+                    receipts
+                    if receipts is not None
+                    else FakeReceiptCollector(_synthetic_local_receipt())
+                ),
+                host=host if host is not None else FakeHostProbe(),
+                preflight=preflight if preflight is not None else FakePreflightAdapter(),
+            )
+
         # The gate refuses: nothing may be started.
         adapter = FakeProcessAdapter()
         refused(
             lambda: execute_run(
                 request_for(profile=FIXTURE_DIR / "negative-mismatched-netid.json"),
-                ExecutorAdapters(
-                    processes=adapter,
-                    receipts=FakeReceiptCollector(_synthetic_local_receipt()),
-                    host=FakeHostProbe(),
-                ),
+                adapters_for(processes=adapter),
             ),
             "admission-predicate-unsatisfied",
             "run-gate-refusal",
@@ -1583,11 +2011,7 @@ def run_self_test() -> int:
         refused(
             lambda: execute_run(
                 request_for(),
-                ExecutorAdapters(
-                    processes=adapter,
-                    receipts=FakeReceiptCollector(_synthetic_local_receipt()),
-                    host=FakeHostProbe(stale_files=3),
-                ),
+                adapters_for(processes=adapter, host=FakeHostProbe(stale_files=3)),
             ),
             "hygiene-condition-failed:no_stale_netdb_files:stale netDb/r*/*.dat peer profiles",
             "run-hygiene-refusal",
@@ -1614,24 +2038,111 @@ def run_self_test() -> int:
         refused(
             lambda: execute_run(
                 request_for(profile=both_routes),
-                ExecutorAdapters(
-                    processes=adapter,
-                    receipts=FakeReceiptCollector(_synthetic_local_receipt()),
-                    host=FakeHostProbe(),
-                ),
+                adapters_for(processes=adapter),
             ),
             "withholding-control-failed",
             "run-withholding-refusal",
         )
         check(adapter.spawned == [], "withholding-refusal-started-a-process")
 
+        # -- the changed local host is refused before anything starts ---------
+        adapter = FakeProcessAdapter()
+        refused(
+            lambda: execute_run(
+                request_for(),
+                adapters_for(
+                    processes=adapter,
+                    preflight=FakePreflightAdapter("route-source-mismatch"),
+                ),
+            ),
+            "route-source-mismatch",
+            "run-local-host-refusal",
+        )
+        check(adapter.spawned == [], "local-host-refusal-started-a-process")
+
+        # -- an unpinned stock peer is refused before anything starts ---------
+        adapter = FakeProcessAdapter()
+        refused(
+            lambda: execute_run(
+                request_for(
+                    role="i2pd",
+                    i2pd_binary=peer_binary,
+                    i2pd_config=config,
+                ),
+                adapters_for(
+                    processes=adapter,
+                    preflight=FakePreflightAdapter("reference-pin-mismatch"),
+                ),
+            ),
+            "reference-pin-mismatch",
+            "run-reference-refusal",
+        )
+        check(adapter.spawned == [], "reference-refusal-started-a-process")
+
+        # -- a data directory that is not 0700 is refused ---------------------
+        loose = base / "loose-data"
+        loose.mkdir(mode=0o755, exist_ok=True)
+        os.chmod(loose, 0o755)
+        loose_inventory = json.loads(json.dumps(inventory))
+        loose_inventory["hosts"][0]["data_dir"] = str(loose)
+        loose_manifest = write_json(base / "loose-inventory.json", loose_inventory)
+        os.chmod(loose_manifest, 0o600)
+        adapter = FakeProcessAdapter()
+        refused(
+            lambda: execute_run(
+                request_for(manifest=loose_manifest),
+                adapters_for(processes=adapter),
+            ),
+            "data-directory-mode-invalid",
+            "run-data-directory-mode-refusal",
+        )
+        check(adapter.spawned == [], "data-directory-refusal-started-a-process")
+
+        # -- an exception still stops and reaps the owned child ---------------
+        class RaisingAdapter(FakeProcessAdapter):
+            def observe(self, handle, deadline, ready):
+                raise RuntimeError("observer-failed")
+
+        adapter = RaisingAdapter()
+        try:
+            execute_run(request_for(), adapters_for(processes=adapter))
+        except RuntimeError:
+            pass
+        else:
+            check(False, "exception-did-not-propagate")
+        check(len(adapter.terminated) == 1, "exception-left-the-child-running")
+
+        # -- a spawn failure leaves no child behind ---------------------------
+        class FailingAdapter(FakeProcessAdapter):
+            def spawn(self, argv):
+                raise ExecutorFailure("router-start-failed")
+
+        adapter = FailingAdapter()
+        refused(
+            lambda: execute_run(request_for(), adapters_for(processes=adapter)),
+            "router-start-failed",
+            "run-spawn-failure",
+        )
+        check(adapter.terminated == [], "spawn-failure-terminated-a-child")
+
+        # -- an operator interrupt stops the child and refuses ----------------
+        interrupt = InterruptGuard()
+        interrupt.triggered = True
+        adapter = FakeProcessAdapter()
+        refused(
+            lambda: execute_run(request_for(), adapters_for(processes=adapter), interrupt),
+            "operator-interrupted",
+            "run-operator-interrupt",
+        )
+        check(len(adapter.terminated) == 1, "interrupt-left-the-child-running")
+        check(
+            interrupt._previous == {},
+            "interrupt-handler-was-not-restored",
+        )
+
         # -- the happy path collects and emits --------------------------------
         adapter = FakeProcessAdapter()
-        adapters = ExecutorAdapters(
-            processes=adapter,
-            receipts=FakeReceiptCollector(_synthetic_local_receipt()),
-            host=FakeHostProbe(),
-        )
+        adapters = adapters_for(processes=adapter)
         outcome = execute_run(request_for(), adapters)
         check(outcome["result"] == "host-receipt-written", "run-result")
         check(len(adapter.spawned) == 1, "run-did-not-start-exactly-one-process")
@@ -1639,6 +2150,7 @@ def run_self_test() -> int:
             adapter.spawned[0][1:] == ("run", "--config", str(config)),
             "run-started-the-wrong-command",
         )
+        check(len(adapter.terminated) == 1, "run-did-not-stop-the-child")
         artifact = json.loads((base / "receipt.json").read_text(encoding="utf-8"))
         check(artifact["schema"] == HOST_RECEIPT_SCHEMA, "artifact-schema")
         check(artifact["role"] == "i2pr", "artifact-role")
@@ -1663,6 +2175,12 @@ def run_self_test() -> int:
         probe = FakeHostProbe()
         for forbidden in ("socket", "subprocess", "connect", "Popen"):
             check(not hasattr(probe, forbidden), f"fake-probe-exposes:{forbidden}")
+        preflight = FakePreflightAdapter()
+        for forbidden in ("socket", "subprocess", "connect", "Popen"):
+            check(
+                not hasattr(preflight, forbidden),
+                f"fake-preflight-exposes:{forbidden}",
+            )
 
     if failures:
         print(
@@ -1726,6 +2244,7 @@ def _request_from_args(args: argparse.Namespace) -> RunRequest:
         i2pd_binary=args.i2pd_binary,
         i2pd_config=args.i2pd_config,
         peer_binary=args.peer_binary,
+        i2pd_source=args.i2pd_source,
     )
 
 
@@ -1752,6 +2271,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument("--i2pd-binary", type=Path)
     run_parser.add_argument("--i2pd-config", type=Path)
     run_parser.add_argument("--peer-binary", type=Path)
+    run_parser.add_argument(
+        "--i2pd-source",
+        type=Path,
+        help=(
+            "the pinned i2pd 2.61.0 source checkout this host verifies the "
+            "stock binary against; defaults to the repository's conventional "
+            "pinned checkout"
+        ),
+    )
 
     reconcile_parser = commands.add_parser("reconcile")
     reconcile_parser.add_argument("--receipt", type=Path, action="append", default=[])
@@ -1784,6 +2312,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OSError:
         # A filesystem failure is an environment refusal, not a pass.
         print(_failure_line(ExecutorFailure("environment-unavailable")))
+        return 1
+    except KeyboardInterrupt:
+        # An interrupt that arrived outside the guarded run window. The
+        # owned child is stopped by the run's own cleanup; this only
+        # reports the cancellation.
+        print(_failure_line(ExecutorFailure("operator-interrupted")))
         return 1
     print(_result_line(payload))
     return 0

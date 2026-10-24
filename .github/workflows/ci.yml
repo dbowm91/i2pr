@@ -220,6 +220,8 @@ jobs:
         run: |
           python3 scripts/check-plan476-gate-binding.py
           python3 scripts/check-plan476-gate-binding.py --self-test
+          python3 tests/integration/ssu2/plan476_live_executor.py --self-test
+          python3 tests/integration/ssu2/test_plan476_live_executor.py
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh

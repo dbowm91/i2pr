@@ -162,13 +162,24 @@ class ExecutorTestCase(unittest.TestCase):
         values.update(overrides)
         return executor.RunRequest(**values)
 
-    def adapters(self, receipt: dict | None = None, host=None) -> "executor.ExecutorAdapters":
+    def adapters(
+        self,
+        receipt: dict | None = None,
+        host=None,
+        preflight=None,
+        processes=None,
+    ) -> "executor.ExecutorAdapters":
         return executor.ExecutorAdapters(
-            processes=executor.FakeProcessAdapter(),
+            processes=(
+                executor.FakeProcessAdapter() if processes is None else processes
+            ),
             receipts=executor.FakeReceiptCollector(
                 self.local_receipt() if receipt is None else receipt
             ),
             host=executor.FakeHostProbe() if host is None else host,
+            preflight=(
+                executor.FakePreflightAdapter() if preflight is None else preflight
+            ),
         )
 
     def host_receipt(self, role: str, **overrides) -> dict:
@@ -350,7 +361,10 @@ class RunTests(ExecutorTestCase):
         )
         adapters = self.adapters()
         executor.execute_run(self.request(daemon_receipt=None), adapters)
-        self.assertEqual(adapters.receipts.paths, [receipt])
+        # The receipt is read once to decide that the observation is
+        # ready and once to collect it.
+        self.assertTrue(adapters.receipts.paths)
+        self.assertEqual(set(adapters.receipts.paths), {receipt})
 
     def test_a_daemon_configuration_without_a_receipt_path_refuses(self) -> None:
         adapters = self.adapters()
@@ -465,7 +479,7 @@ class ReconcileTests(ExecutorTestCase):
         self.assertTrue(evidence["attempts"][0]["consumes_budget"])
         self.assertEqual(oct(out.stat().st_mode & 0o777), "0o600")
 
-    def test_a_silent_pair_is_a_timeout_and_not_a_pass(self) -> None:
+    def test_a_pair_the_peer_never_admitted_is_a_peer_admission_refusal(self) -> None:
         left = write_json(self.base / "left.json", self.host_receipt("i2pr"))
         right = write_json(
             self.base / "right.json",
@@ -479,10 +493,33 @@ class ReconcileTests(ExecutorTestCase):
         out = self.base / "evidence.json"
         executor.reconcile_receipts([left, right], out)
         evidence = json.loads(out.read_text(encoding="utf-8"))
-        self.assertEqual(evidence["outcome"], "timeout")
+        # The peer did not admit our RouterInfo: that is a peer-side
+        # refusal, and the canonical model never reports one as a pass.
+        self.assertEqual(evidence["outcome"], "peer-admission-refused")
         self.assertEqual(evidence["cause"], "unattributed")
         states = {row["tier"]: row["state"] for row in evidence["tiers"]}
         self.assertEqual(states[0], "fail")
+        self.assertEqual(states[1], "not-attempted")
+        self.assertEqual(gate.validate_evidence(evidence), [])
+
+    def test_a_silent_pair_with_an_admitted_peer_is_a_timeout_and_not_a_pass(self) -> None:
+        left = write_json(self.base / "left.json", self.host_receipt("i2pr"))
+        right = write_json(
+            self.base / "right.json",
+            self.host_receipt(
+                "i2pd",
+                peer_router_info_digest="d" * 64,
+                local_router_info_digest="c" * 64,
+                peer_ri_persisted=True,
+            ),
+        )
+        out = self.base / "evidence.json"
+        executor.reconcile_receipts([left, right], out)
+        evidence = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["outcome"], "timeout")
+        self.assertEqual(evidence["cause"], "unattributed")
+        states = {row["tier"]: row["state"] for row in evidence["tiers"]}
+        self.assertEqual(states[0], "pass")
         self.assertEqual(states[1], "not-attempted")
         self.assertEqual(gate.validate_evidence(evidence), [])
 
@@ -579,6 +616,334 @@ class ReconcileTests(ExecutorTestCase):
         self.assertFalse(out.exists())
 
 
+class LadderOutcomeTests(ExecutorTestCase):
+    """The outcome is derived from the ladder, never from a lower-tier pass."""
+
+    def ladder(self, i2pr_phases: list[dict], session: bool, peer_persisted: bool):
+        left = self.host_receipt(
+            "i2pr", phases=i2pr_phases, session_observed=session
+        )
+        right = self.host_receipt(
+            "i2pd",
+            peer_router_info_digest="d" * 64,
+            local_router_info_digest="c" * 64,
+            peer_ri_persisted=peer_persisted,
+        )
+        return executor.build_lane_evidence(left, right, gate)
+
+    def test_a_peer_that_never_admitted_us_is_a_peer_admission_refusal(self) -> None:
+        evidence = self.ladder(
+            [
+                {"phase": "permit_checked", "count": 1},
+                {"phase": "peer_session_initiated", "count": 1},
+                {"phase": "peer_authenticated", "count": 1},
+            ],
+            True,
+            False,
+        )
+        self.assertEqual(evidence["outcome"], "peer-admission-refused")
+        self.assertEqual(evidence["cause"], "unattributed")
+        self.assertNotEqual(evidence["outcome"], "pass")
+        self.assertEqual(gate.validate_evidence(evidence), [])
+
+    def test_a_peer_that_never_selected_us_is_a_peer_selection_refusal(self) -> None:
+        # The peer admitted our RouterInfo, but its own selection state
+        # never chose us: T1 and T5 both fail while T2 and T3 pass.
+        evidence = self.ladder(
+            [
+                {"phase": "permit_checked", "count": 1},
+                {"phase": "peer_session_accepted", "count": 1},
+                {"phase": "peer_authenticated", "count": 1},
+                {"phase": "request_sent", "count": 1},
+                {"phase": "request_received", "count": 1},
+            ],
+            True,
+            True,
+        )
+        states = {row["tier"]: row["state"] for row in evidence["tiers"]}
+        self.assertEqual(states[0], "pass")
+        self.assertEqual(states[1], "fail")
+        self.assertEqual(states[5], "fail")
+        self.assertEqual(evidence["outcome"], "peer-selection-refused")
+        self.assertEqual(evidence["cause"], "unattributed")
+        self.assertNotEqual(evidence["outcome"], "pass")
+        self.assertEqual(gate.validate_evidence(evidence), [])
+
+    def test_a_pair_that_reached_a_tier_is_a_pass(self) -> None:
+        evidence = self.ladder(
+            [
+                {"phase": "permit_checked", "count": 1},
+                {"phase": "peer_session_initiated", "count": 1},
+                {"phase": "peer_authenticated", "count": 1},
+                {"phase": "request_sent", "count": 1},
+                {"phase": "request_received", "count": 1},
+            ],
+            True,
+            True,
+        )
+        self.assertEqual(evidence["outcome"], "pass")
+        self.assertEqual(evidence["cause"], None)
+        self.assertEqual(gate.validate_evidence(evidence), [])
+
+    def test_a_pair_that_observed_nothing_is_a_timeout(self) -> None:
+        evidence = self.ladder([], False, True)
+        self.assertEqual(evidence["outcome"], "timeout")
+        self.assertEqual(evidence["cause"], "unattributed")
+        self.assertEqual(gate.validate_evidence(evidence), [])
+
+    def test_the_ladder_only_emits_the_four_classes_the_executor_owns(self) -> None:
+        for phases, session, persisted in (
+            ([], False, False),
+            ([], False, True),
+            ([{"phase": "peer_authenticated", "count": 1}], True, True),
+        ):
+            with self.subTest(phases=phases, persisted=persisted):
+                evidence = self.ladder(phases, session, persisted)
+                self.assertIn(evidence["outcome"], executor.LANE_OUTCOME_CLASSES)
+
+    def test_tier_four_stays_not_attempted_and_never_fails(self) -> None:
+        evidence = self.ladder(
+            [
+                {"phase": "peer_session_initiated", "count": 1},
+                {"phase": "peer_authenticated", "count": 1},
+                {"phase": "request_sent", "count": 1},
+                {"phase": "request_received", "count": 1},
+            ],
+            True,
+            True,
+        )
+        rows = {row["tier"]: row for row in evidence["tiers"]}
+        self.assertEqual(rows[4]["state"], "not-attempted")
+        self.assertNotEqual(rows[4]["state"], "fail")
+        self.assertIn("drain interval", rows[4]["reason"])
+
+    def test_tier_two_has_no_unreachable_second_branch(self) -> None:
+        # The daemon's export sets the authentication count to the sum of
+        # the two session counts, so the two are one quantity.
+        evidence = self.ladder(
+            [{"phase": "peer_session_accepted", "count": 1}],
+            True,
+            True,
+        )
+        rows = {row["tier"]: row for row in evidence["tiers"]}
+        self.assertEqual(rows[2]["state"], "pass")
+
+
+class ReadinessTests(ExecutorTestCase):
+    """A receipt that exists is not a receipt that carries a session."""
+
+    def test_a_receipt_without_a_session_is_not_ready(self) -> None:
+        receipt = self.local_receipt(
+            phases=[
+                {"phase": "permit_checked", "count": 1},
+                {"phase": "router_started", "count": 1},
+            ],
+            session_observed=False,
+        )
+        path = write_json(self.base / "daemon-receipt.json", receipt)
+        collector = executor.FakeReceiptCollector(receipt)
+        self.assertFalse(
+            executor._observation_ready(
+                self.request(), path, self.base / "netDb", "", collector
+            )
+        )
+
+    def test_a_session_bearing_receipt_is_ready(self) -> None:
+        receipt = self.local_receipt()
+        path = write_json(self.base / "daemon-receipt.json", receipt)
+        collector = executor.FakeReceiptCollector(receipt)
+        self.assertTrue(
+            executor._observation_ready(
+                self.request(), path, self.base / "netDb", "", collector
+            )
+        )
+
+    def test_a_missing_receipt_file_is_not_ready(self) -> None:
+        collector = executor.FakeReceiptCollector(self.local_receipt())
+        self.assertFalse(
+            executor._observation_ready(
+                self.request(),
+                self.base / "absent-receipt.json",
+                self.base / "netDb",
+                "",
+                collector,
+            )
+        )
+
+    def test_a_run_whose_receipt_never_carries_a_session_refuses(self) -> None:
+        receipt = self.local_receipt(
+            phases=[{"phase": "permit_checked", "count": 1}],
+            session_observed=False,
+        )
+        adapters = self.adapters(receipt=receipt)
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(self.request(), adapters)
+        self.assertEqual(caught.exception.code, "receipt-sequence-incomplete")
+        self.assertFalse((self.base / "receipt.json").exists())
+        self.assertEqual(len(adapters.processes.terminated), 1)
+
+
+class CleanupTests(ExecutorTestCase):
+    """The owned child is stopped and reaped on every path."""
+
+    def test_an_exception_still_stops_the_child(self) -> None:
+        class RaisingAdapter(executor.FakeProcessAdapter):
+            def observe(self, handle, deadline, ready):
+                raise RuntimeError("observer-failed")
+
+        adapter = RaisingAdapter()
+        with self.assertRaises(RuntimeError):
+            executor.execute_run(self.request(), self.adapters(processes=adapter))
+        self.assertEqual(len(adapter.spawned), 1)
+        self.assertEqual(len(adapter.terminated), 1)
+
+    def test_a_spawn_failure_leaves_no_child_behind(self) -> None:
+        class FailingAdapter(executor.FakeProcessAdapter):
+            def spawn(self, argv):
+                raise executor.ExecutorFailure("router-start-failed")
+
+        adapter = FailingAdapter()
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(self.request(), self.adapters(processes=adapter))
+        self.assertEqual(caught.exception.code, "router-start-failed")
+        self.assertEqual(adapter.spawned, [])
+        self.assertEqual(adapter.terminated, [])
+
+    def test_an_operator_interrupt_stops_the_child_and_refuses(self) -> None:
+        interrupt = executor.InterruptGuard()
+        interrupt.triggered = True
+        adapter = executor.FakeProcessAdapter()
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(
+                self.request(), self.adapters(processes=adapter), interrupt
+            )
+        self.assertEqual(caught.exception.code, "operator-interrupted")
+        self.assertEqual(caught.exception.outcome_class, "environment-unavailable")
+        self.assertEqual(len(adapter.terminated), 1)
+        self.assertFalse((self.base / "receipt.json").exists())
+
+    def test_the_interrupt_guard_restores_the_previous_handlers(self) -> None:
+        import signal
+
+        before_int = signal.getsignal(signal.SIGINT)
+        before_term = signal.getsignal(signal.SIGTERM)
+        guard = executor.InterruptGuard()
+        with guard:
+            self.assertEqual(signal.getsignal(signal.SIGINT), guard._handle)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), guard._handle)
+        self.assertEqual(signal.getsignal(signal.SIGINT), before_int)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before_term)
+
+    def test_the_interrupt_handler_only_sets_a_flag(self) -> None:
+        guard = executor.InterruptGuard()
+        guard._handle(2, None)
+        self.assertTrue(guard.triggered)
+
+
+class PreflightTests(ExecutorTestCase):
+    """The host, the reference and the state directory are checked first."""
+
+    def test_the_local_host_is_checked_before_anything_starts(self) -> None:
+        preflight = executor.FakePreflightAdapter()
+        adapters = self.adapters(preflight=preflight)
+        executor.execute_run(self.request(), adapters)
+        self.assertEqual(preflight.local_checks, [("i2pr", "i2pd")])
+        self.assertEqual(len(adapters.processes.spawned), 1)
+
+    def test_a_changed_local_host_refuses_before_anything_starts(self) -> None:
+        preflight = executor.FakePreflightAdapter("route-source-mismatch")
+        adapters = self.adapters(preflight=preflight)
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(self.request(), adapters)
+        self.assertEqual(caught.exception.code, "route-source-mismatch")
+        self.assertEqual(adapters.processes.spawned, [])
+
+    def test_the_stock_peer_binary_is_verified_against_the_pinned_source(self) -> None:
+        preflight = executor.FakePreflightAdapter()
+        adapters = self.adapters(preflight=preflight)
+        executor.execute_run(
+            self.request(
+                role="i2pd",
+                i2pd_binary=self.peer_binary,
+                i2pd_config=self.daemon_config,
+            ),
+            adapters,
+        )
+        self.assertEqual(len(preflight.verified), 1)
+        self.assertEqual(preflight.verified[0][1], str(self.peer_binary))
+
+    def test_our_own_daemon_is_not_verified_against_the_stock_pin(self) -> None:
+        preflight = executor.FakePreflightAdapter()
+        executor.execute_run(self.request(), self.adapters(preflight=preflight))
+        self.assertEqual(preflight.verified, [])
+
+    def test_a_missing_pinned_source_refuses_before_anything_starts(self) -> None:
+        class ReferenceCheckingPreflight(executor.FakePreflightAdapter):
+            """The fake local-host check with the real reference check."""
+
+            def verify_reference(self, source, binary):
+                return executor.LocalPreflightAdapter().verify_reference(source, binary)
+
+        adapters = self.adapters(
+            preflight=ReferenceCheckingPreflight(),
+        )
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(
+                self.request(
+                    role="i2pd",
+                    i2pd_binary=self.peer_binary,
+                    i2pd_config=self.daemon_config,
+                    i2pd_source=self.base / "absent-i2pd-source",
+                ),
+                adapters,
+            )
+        self.assertEqual(caught.exception.code, "reference-artifact-unavailable")
+        self.assertEqual(adapters.processes.spawned, [])
+
+    def test_the_default_pinned_source_is_the_repositories_conventional_checkout(
+        self,
+    ) -> None:
+        source = executor.pinned_i2pd_source()
+        self.assertEqual(source.parent.name, "ssu2-sources")
+        self.assertTrue(source.name.startswith("i2pd-"))
+
+    def test_a_data_directory_that_is_not_private_refuses(self) -> None:
+        loose = self.base / "loose-data"
+        loose.mkdir(mode=0o755, exist_ok=True)
+        loose.chmod(0o755)
+        inventory = self.inventory()
+        inventory["hosts"][0]["data_dir"] = str(loose)
+        write_json(self.manifest, inventory)
+        adapters = self.adapters()
+        with self.assertRaises(executor.ExecutorFailure) as caught:
+            executor.execute_run(self.request(), adapters)
+        self.assertEqual(caught.exception.code, "data-directory-mode-invalid")
+        self.assertEqual(adapters.processes.spawned, [])
+
+    def test_a_private_data_directory_is_accepted(self) -> None:
+        private = self.base / "private-data"
+        private.mkdir(mode=0o700, exist_ok=True)
+        private.chmod(0o700)
+        inventory = self.inventory()
+        inventory["hosts"][0]["data_dir"] = str(private)
+        write_json(self.manifest, inventory)
+        adapters = self.adapters()
+        outcome = executor.execute_run(self.request(), adapters)
+        self.assertEqual(outcome["result"], "host-receipt-written")
+        # The operator owns the directory: the executor never removes it.
+        self.assertTrue(private.exists())
+
+    def test_the_executor_removes_no_operator_state(self) -> None:
+        private = self.base / "private-data"
+        private.mkdir(mode=0o700, exist_ok=True)
+        private.chmod(0o700)
+        inventory = self.inventory()
+        inventory["hosts"][0]["data_dir"] = str(private)
+        write_json(self.manifest, inventory)
+        executor.execute_run(self.request(), self.adapters())
+        self.assertTrue(private.is_dir())
+
+
 class CommandLineTests(ExecutorTestCase):
     def run_cli(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -624,6 +989,39 @@ class CommandLineTests(ExecutorTestCase):
         self.assertEqual(code, 1)
         payload = json.loads(out)
         self.assertEqual(payload["reason"], "authorization-missing")
+
+    def test_the_run_command_accepts_the_pinned_source_flag(self) -> None:
+        code, out, _err = self.run_cli(
+            [
+                "run",
+                "--live",
+                "--role",
+                "i2pd",
+                "--manifest",
+                str(self.manifest),
+                "--profile",
+                str(FIXTURES / "lab-profile-i2pd.json"),
+                "--peer-config",
+                str(FIXTURES / "peer-config-i2pd.json"),
+                "--epoch",
+                "0" * 32,
+                "--out",
+                str(self.base / "receipt.json"),
+                "--i2pd-binary",
+                str(self.peer_binary),
+                "--i2pd-config",
+                str(self.daemon_config),
+                "--i2pd-source",
+                str(self.base / "i2pd-source"),
+            ]
+        )
+        # The flag parsed: an unknown option would exit 2 with a usage
+        # message. The run itself refuses for a missing input, sanitized.
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["result"], "environment-unavailable")
+        self.assertNotIn("usage:", _err)
+        self.assertNotIn(str(self.base), out)
 
     def test_the_reconcile_command_without_two_receipts_refuses(self) -> None:
         code, out, _err = self.run_cli(

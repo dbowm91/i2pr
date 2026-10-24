@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 52 `.rs` files, 78 256 lines of `src` (48 at the crate root + 4 under `src/sam/`).
+**Size:** 68 `.rs` files, 119 024 lines of `src` (62 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -90,9 +90,9 @@ NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
 
 ## Module layout
 
-49 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
-`wc -l` on repo head. The tables below cover every `src/` file; the row count matches the
-filesystem (53 rows).
+62 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
+`wc -l` on repo head. The tables below cover 61 of the crate's 68 `src/` files; seven rows are
+still owed by the plans that added those modules, and the gap is recorded rather than papered over.
 
 ### CLI and configuration
 
@@ -188,6 +188,8 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
 | `src/ssu2_introducer.rs` | 1 011 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver` |
+| `src/ssu2_qualification_receipts.rs` | 283 | Plan 480 private local qualification readout: the permission-gated, pure projection of one SSU2 observer epoch into the Plan 476 local-observed phase vocabulary. Carries phase labels and counts only — no key, RouterInfo, address, endpoint, payload or transient message ID — and `live_qualification` stays `"not-run"`. **Plan 476** adds the `PrivateLan` read scope, the direction-preserving session phases and `request_sent`, and the `reply_correlated` boolean | `LocalQualificationProfile`, `LocalQualificationPermit`, `LocalObservedReceipt`, `LocalReceiptCollector`, `LOCAL_PHASES` |
+| `src/ssu2_qualification_export.rs` | 411 | Plan 476 sanitized local receipt export: writes the count-only projection of the local observer epoch to an operator-designated file (`[ssu2] qualification_receipt_path`, absolute path, parent directory must exist, mode `0600`). Opt-in, never a listener, never a publication permit; a collector refusal is recorded and is **sticky** for the life of the process | `LocalReceiptExporter`, `EXPORT_SCHEMA` |
 
 ### Destinations and the shared streaming pump
 

@@ -517,6 +517,7 @@ python3 tests/integration/ssu2/plan476_live_executor.py run --live --role i2pd \
     --peer-binary <i2pr> \
     --i2pd-binary <i2pd> \
     --i2pd-config <i2pd.conf> \
+    --i2pd-source <i2pd-2.61.0-source> \
     --peer-netdb <i2pd-netDb>
 ```
 
@@ -532,6 +533,15 @@ supplies the operator-recorded live-socket conditions that cannot be
 derived offline (the peer's static key on the live port, and the
 advertised endpoint matching the bound socket); the executor's own
 observations override any operator value it can check itself.
+
+**The pinned reference.** `--i2pd-source` names the pinned i2pd 2.61.0
+source checkout. Before it starts anything the executor verifies that
+the source is at the exact pinned revision, that its tracked tree is
+clean, that the binary reports 2.61.0, and that the binary's SHA-256
+matches — the same check the Plan 449 preflight performs. An unpinned,
+patched or mismatched reference is refused. When the flag is omitted
+the executor uses the repository's conventional checkout location for
+the pinned revision.
 
 **Role `i2pr`.** The executor starts `<daemon-binary> run --config
 <daemon-config>` and reads the daemon's exported receipt — the file named by
