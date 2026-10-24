@@ -598,17 +598,21 @@ never as a pass.
 
 ### 9.4 Classification discipline
 
-**A peer-side refusal is reported as a peer-side refusal.** The executor
-classifies every outcome in the canonical vocabulary of
+**A peer-side refusal is reported as a peer-side refusal.** Every outcome the
+executor can reach is a class from the canonical vocabulary of
 [`specs/QUALIFICATION-GATES.md`](../../specs/QUALIFICATION-GATES.md) §1.1
 and §5.2 — outcome class plus cause — and it never invents a wording for
-"the peer would not have picked us".
+"the peer would not have picked us". The reconciled lane evidence can be
+`pass`, `peer-admission-refused`, `peer-selection-refused` or `timeout`; a
+refusal before the router starts can additionally be
+`environment-unavailable` or `peer-state-poisoned`.
 
 `reconcile` **never emits `i2pr-defect`**. That outcome is a reviewed human
 judgement about a stage we own, and only the cause `i2pr-implementation`
 may accompany it. A peer that admits our RouterInfo and then declines to
-select us is `peer-selection-refused`, carrying the peer's own reason: not
-an `i2pr` failure, and not a pass either.
+select us is `peer-selection-refused`: the *reason* is carried by the tier
+ladder, and the cause stays `unattributed` because the ladder cannot say
+*why* the peer declined. Not an `i2pr` failure, and not a pass either.
 
 Two consequences for the operator:
 

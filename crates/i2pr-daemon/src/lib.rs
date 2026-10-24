@@ -3883,16 +3883,15 @@ fn register_ssu2_service(
                                 }
                             }
                             _ = receipt_export_tick.tick() => {
-                                if let Some(exporter) = receipt_exporter.as_mut() {
-                                    if let Some(observer) = owner.qualification_observer()
-                                        && let Err(error) = exporter.export(&observer)
-                                    {
-                                        tracing::warn!(
-                                            reason = %error,
-                                            transition = "ssu2_local_receipt_export_failed",
-                                            "SSU2 local receipt export failed"
-                                        );
-                                    }
+                                if let Some(exporter) = receipt_exporter.as_mut()
+                                    && let Some(observer) = owner.qualification_observer()
+                                    && let Err(error) = exporter.export(&observer)
+                                {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "ssu2_local_receipt_export_failed",
+                                        "SSU2 local receipt export failed"
+                                    );
                                 }
                             }
                             _ = group_tick.tick() => {
