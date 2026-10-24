@@ -21,7 +21,7 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 67 | 64 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
+| Top-level `scripts/` files | 69 | 64 `check-*`, `fuzz-smoke.sh`, `plan449-ssu2-preflight.py`, `plan495-peer-eligibility.py`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
 | `check-*` on disk (all classes) | 67 | 64 top level + 3 under `scripts/interop/` |
 | Checker invocations in `ci.yml` | 42 | 40 distinct `check-*` + 2 `python3` test discoveries |
@@ -194,6 +194,16 @@ evidence key.
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of **all 25 fuzz targets** for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 | `scripts/run-java-source-lock-tests.sh` | Java source-lock test driver. Fails closed unless `I2PR_M6_JAVA_SOURCE_ROOT` names a Git checkout at the exact Java I2P 2.13.0 pin `9134f808337b401e8e53c73734c81fab04280c9d`. Driven by `scripts/check-java-source-lock-gating.sh`. |
 
+### Tracked non-`check-*` scripts
+
+These are guards in the routine floor and in `ci.yml`, but they are not named
+`check-*` and are therefore not counted by the `check-*` inventory rules.
+
+| Script | Posture |
+| --- | --- |
+| `scripts/plan449-ssu2-preflight.py` | Plan 449's offline host-inventory preflight for an authorized two-host SSU2 pair. Fails closed with a named reason; never starts a router and never prints host addresses, interface names, data paths or router identities. Floor: yes. CI: yes. |
+| `scripts/plan495-peer-eligibility.py` | Plan 495's external-qualification gate checker. Evaluates a candidate lab RouterInfo against the pinned i2pd and Java I2P admission, dial and selection predicates; validates the tier ladder, the outcome taxonomy and the peer-state hygiene record; runs the deliberate-withholding control; and proves over its own AST that it opens no socket and starts no process. Floor: yes. CI: yes. |
+
 ### Pruned / historical (not on disk)
 
 | Script | Status |
@@ -286,7 +296,7 @@ Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
 | Floor steps invoking a checker | 54 | 51 rows marked `Floor: yes` |
-| Total routine-floor steps | 65 | — |
+| Total routine-floor steps | 66 | — |
 | Checkers executed by `ci.yml` | 40 | 43 rows marked `CI: yes` |
 | `check-*` files on disk | 64 (67 with `scripts/interop/`) | 67 checker rows |
 
@@ -487,7 +497,7 @@ real driver scripts and its matching evidence checker.
 | `tests/integration/ntcp2/` | `manifest.toml` + Python `harness/` (23 modules, incl. `test_execution_lane.py`); subtrees `config/`, `evidence/`, `evidence-receipts/`, `mixed-scenarios/`, `qualification/`, `reference-drivers/`, `reference-observation-qualification/`, `reference-scenarios/`, `scenarios/` | `check-ntcp2-interoperability.sh`, `check-constrained-host-lane-boundary.sh`, `check-rootless-interop-boundary.sh`, `check-multipass-interop-boundary.sh`, `interop/check-p243-host-qualified.sh` | `ntcp2-interop-ubuntu.yml`, `ntcp2-interop-rootless.yml`, `ntcp2-interop-host-loopback-development.yml` |
 | `tests/integration/sam/` | `run-independent.sh`, `run-java-368.sh`, `run-i2pd-368-diagnostic.sh` (plus `clients/build.sh`, `reference/`, `clients/`, `evidence.md`, `README.md`) | `check-sam-acceptance-evidence.sh`, `check-sam368-java-evidence.sh`, `check-sam368-i2pd-evidence.sh` | `sam-external.yml` |
 | `tests/integration/service-tunnels/` | `run-independent.sh`, `run-plan213-generic.sh`, `run-plan214-applications.sh`, `test-plan215-tunnels-conf.sh`, `hold_sam_session.py` (plus `clients/`, `fixtures/`) | `check-service-tunnel-acceptance-evidence.sh`, `check-service-tunnel-boundaries.sh` | `service-tunnels-external.yml` |
-| `tests/integration/ssu2/` | `run-independent.sh`, `plan449-operator-preflight.md` | `check-ssu2-acceptance-evidence.sh`; root-level `scripts/plan449-ssu2-preflight.py --self-test` is a local-only host-inventory validator | `ssu2-external.yml` |
+| `tests/integration/ssu2/` | `run-independent.sh`, `plan449-operator-preflight.md`, `plan495-eligibility-fixtures/` (18 deterministic lab-RouterInfo, peer-config, evidence and hygiene fixtures) | `check-ssu2-acceptance-evidence.sh`; root-level `scripts/plan449-ssu2-preflight.py --self-test` is a local-only host-inventory validator; `scripts/plan495-peer-eligibility.py --self-test` is the Plan 495 peer-eligibility gate checker | `ssu2-external.yml` |
 
 `tests/integration/ntcp2/harness/test_execution_lane.py` is also run in
 routine CI (`ci.yml`, Linux) via

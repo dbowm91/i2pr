@@ -1,0 +1,33 @@
+{
+  "attempts": [
+    {
+      "cause": "i2pr-lab-profile",
+      "consumes_budget": true,
+      "outcome": "i2pr-defect"
+    }
+  ],
+  "attempts_consumed": 1,
+  "cause": "i2pr-lab-profile",
+  "family": "i2pd",
+  "label": "invalid-i2pr-defect-cause",
+  "outcome": "i2pr-defect",
+  "schema": "i2pr-plan495-lane-evidence-v1",
+  "target_tier": 2,
+  "tiers": [
+    {
+      "reason": "ri-persisted",
+      "state": "pass",
+      "tier": 0
+    },
+    {
+      "reason": "selected",
+      "state": "pass",
+      "tier": 1
+    },
+    {
+      "reason": "session-establishment-failed",
+      "state": "fail",
+      "tier": 2
+    }
+  ]
+}

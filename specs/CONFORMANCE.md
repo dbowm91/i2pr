@@ -44,10 +44,20 @@ conformance remains not claimed.
 An external lane runs against a **stock peer that has its own admission and
 selection state**. That is a second, independent source of failure, and a gate
 that cannot tell the two apart is not a gate. The governing model is
+[`specs/QUALIFICATION-GATES.md`](QUALIFICATION-GATES.md); the operator
+procedure is
 [`docs/operations/ssu2-private-lan-qualification.md`](../docs/operations/ssu2-private-lan-qualification.md);
-Plan 495 owns its enforcement.
+Plan 495 owns the enforcement, which is
+[`scripts/plan495-peer-eligibility.py`](../scripts/plan495-peer-eligibility.py)
+— an offline checker that opens no socket, starts no process and touches no
+network, and whose `--self-test` runs in the repository's routine floor.
 
-Three rules bind every external lane:
+Every predicate it evaluates is derived from the **pinned reference's own
+source** and carries that source's file and line. The pins are frozen:
+i2pd `2.61.0` (`635b013a612ff47278ef02acf8580a28e10e26c5`) and Java I2P
+`2.13.0` (`9134f808337b401e8e53c73734c81fab04280c9d`).
+
+Four rules bind every external lane:
 
 1. **The peer's admission and selection are preconditions, not assumptions.**
    Before a process launches, the lane determines from the pinned reference's
@@ -78,6 +88,19 @@ Three rules bind every external lane:
    there is not evidence of public reachability. Peer state is a first-class
    cause: a peer-side ban or cooldown does not consume an attempt budget,
    because a cooldown expiring is a material change.
+4. **The failure owner is named on two axes.** The outcome class says *where*
+   the run ended; a **cause** says *whose artifact* was responsible:
+   `i2pr-lab-profile` (the operator-facing lab profile the preflight
+   evaluates), `i2pr-implementation` (the daemon's own code path),
+   `peer-state`, `intentional-withholding` or `unattributed`. A missing
+   `netId` is refused by the peer, but the artifact at fault is ours — it is
+   reported as `peer-admission-refused` with the cause `i2pr-lab-profile`,
+   never as a peer-side condition and never as a pass. Only
+   `i2pr-implementation` may accompany `i2pr-defect`. The
+   deliberate-withholding control is the gate's own self-test: with a
+   selection predicate deliberately withheld, the verdict is
+   `peer-selection-refused` with the cause `intentional-withholding` and the
+   peer's own reason — never `i2pr-defect`, never a pass.
 
 A gate that cannot separate these is not evidence, and its result must not be
 cited for or against `i2pr`.

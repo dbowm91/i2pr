@@ -9,6 +9,13 @@ RouterInfo publication, or `R`/`f` capability claims. Plan 431 remains the
 authority for independent two-host interoperation; Plan 493 remains the
 authority for the two-family participation matrix.
 
+**The gate model is canonical in
+[`specs/QUALIFICATION-GATES.md`](../../specs/QUALIFICATION-GATES.md).**
+This document is the operator-facing procedure; that one is the model. Where
+they differ, the model governs. The model is enforced by
+`scripts/plan495-peer-eligibility.py`, whose `--self-test` runs in the
+repository's routine floor.
+
 ## 0. The one thing to understand before you run anything
 
 **A qualification lane has two independent sources of failure: our
@@ -90,6 +97,25 @@ may have no reason to dial us:
   `crates/i2pr-runtime/tests/ssu2_independent.rs:41` as the *"direction-B
   trigger"*. A peer that we did not initiate to, and that we do not advertise
   as floodfill, is simply not dialled.
+
+  **Advertising floodfill is necessary but not sufficient.** Read from the
+  pinned i2pd 2.61.0 source, the peer files us as a floodfill only when
+  `router.version` is at or above **0.9.62**
+  (`libi2pd/NetDb.hpp:55`, `NETDB_MIN_FLOODFILL_VERSION`) **and** we offer a
+  published IPv4 address and do not sign with DSA
+  (`libi2pd/RouterInfo.cpp`, `IsEligibleFloodfill`). Below that floor our
+  RouterInfo is *never* filed as a floodfill, so an exploratory request can
+  never target it, and the peer falls back to its **generic dial path**:
+  `Transports::PostMessages` will open a session to any router whose
+  RouterInfo is admissible, whose version clears **0.9.58** (or which
+  declares high bandwidth), which publishes a non-introducer address the
+  peer supports, and which is not banned
+  (`libi2pd/Transports.cpp:526-543`, `libi2pd/NetDb.hpp:58`).
+
+  Read "advertise floodfill" as **"advertise floodfill *and* clear the
+  floodfill floor"**. A lab profile below 0.9.62 can still be dialled; it can
+  never be *explored*, and T1 and T5 then rest on the generic dial path
+  alone.
 - **Java I2P 2.13.0.** The predicate is stricter still.
   `ProfileManagerImpl.heardAbout()` — the only route to a profile — is gated
   on the peer RouterInfo carrying `R` **plus** floodfill, bandwidth and
@@ -112,22 +138,48 @@ selection state never admitted us".
 ### 2.3 What the preflight must record
 
 For each family, record which predicates our lab RouterInfo satisfies, which
-it deliberately does not, and why:
+it deliberately does not, and why. The full, source-cited predicate set is in
+[`specs/QUALIFICATION-GATES.md`](../../specs/QUALIFICATION-GATES.md) §3;
+this table is the operator's summary of it.
 
 | Predicate | Where it comes from | If we fail it |
 | --- | --- | --- |
 | RouterInfo signature valid | the peer's ingest path | `peer-admission-refused` |
-| `router.version` above the peer's floor | peer ingest gate | `peer-admission-refused` |
+| `router.version` present and above the peer's **dial floor** (0.9.58) | peer ingest gate and dial path | `peer-admission-refused` / `peer-selection-refused` |
 | `netId` present and matching | peer ingest gate (silent) | `peer-admission-refused` |
+| at least one supported transport published | peer ingest gate | `peer-admission-refused` |
 | advertised endpoint equals the bound socket | `Plan 453` signed-RI path | `peer-admission-refused` |
-| selection target (floodfill cap for i2pd) | peer exploration filters | `peer-selection-refused` |
-| `R` present (Java only) | Java `heardAbout` predicate | `peer-selection-refused` |
+| no ban-surface `(caps, version)` pair (Java only) | peer's NTCP2 ban path | `peer-admission-refused` |
+| selection target: floodfill cap **and** `router.version >= 0.9.62` (i2pd) | peer exploration filters | `peer-selection-refused` |
+| `R` present (Java only) | Java `shouldCreate` predicate | `peer-selection-refused` |
 | bandwidth/congestion class accepted | Java class gate | `peer-selection-refused` |
 | peer profile store is fresh | peer state, §5 | `peer-state-poisoned` |
 
 A family that cannot satisfy a predicate is **not** a failed attempt. It is
 `environment-unavailable` or `peer-selection-refused`, and it must not be
 reported as an `i2pr` result in either direction.
+
+**Run the preflight; do not eyeball it.** Write the lab RouterInfo profile as
+a fixture under
+`tests/integration/ssu2/plan495-eligibility-fixtures/` and run:
+
+```text
+python3 scripts/plan495-peer-eligibility.py --preflight \
+  --profile tests/integration/ssu2/plan495-eligibility-fixtures/lab-profile-i2pd.json \
+  --peer-config tests/integration/ssu2/plan495-eligibility-fixtures/peer-config-i2pd.json
+```
+
+The checker reports each predicate's state, its requirement and the pinned
+source it was derived from, and it **refuses** a lane-ready verdict when a
+predicate is `unknown`. It opens no socket, starts no process and touches no
+network: the whole point is to decide this before spending an attempt.
+
+Note the **cause** the checker reports next to the outcome class. A missing
+`netId` is refused by the peer, but the artifact at fault is our profile —
+the cause is `i2pr-lab-profile`, and the lane must record it that way
+instead of filing a peer-side condition. `i2pr-implementation` is the only
+cause that may accompany `i2pr-defect`: it means the daemon's own code path
+is at fault, not the lab profile.
 
 ## 3. The lab RouterInfo profile
 
@@ -137,11 +189,16 @@ field is a decision, not a default.
 | Field | Lab value | Why |
 | --- | --- | --- |
 | `netId` | `2` | peer ingest gate; missing ⇒ silently unreachable, never persisted |
-| `router.version` | at or above the pinned peer's minimum-allowed floor | peer ingest gate |
-| `caps` | floodfill (`f`), plus the bits the family under test requires | makes us an exploration target so the peer dials back |
-| `R` | per family: **required** by Java's `heardAbout` predicate | Java selection predicate |
+| `router.version` | `0.9.62` | clears the peer's **dial floor** (0.9.58), its **floodfill floor** (0.9.62) and its **peer-test floor** (0.9.62) |
+| `caps` | floodfill (`f`) plus the bits the family under test requires | makes us an exploration target so the peer dials back — and, for Java, `R` is what creates a profile at all |
+| `R` | per family: **required** by Java's `shouldCreate` predicate | Java selection predicate |
 | bandwidth / congestion class | a class the peer accepts (Plan 230's C2) | Java selection predicate |
 | published address | the **actual** bound RFC1918 endpoint and port | honest reachability inside the lab |
+
+**The profile is canonical in
+[`specs/QUALIFICATION-GATES.md`](../../specs/QUALIFICATION-GATES.md) §4**,
+and the checker holds a copy of it: `--profile-drift` fails when the
+documented profile and the checked profile disagree.
 
 **`R` is never forged.** In an authorized lab where we genuinely bind and are
 genuinely reachable at that address, `R` is a true statement about the lab.
@@ -217,6 +274,22 @@ The peer's local state is the most common cause of a misleading result.
 - a `peer-selection-refused` outcome records the peer's own exclusion reason,
   so the next attempt can fix it rather than re-run blind.
 
+Record the hygiene state as a fixture and check it — a false condition is a
+`peer-state-poisoned` outcome naming the conditions that failed:
+
+```text
+python3 scripts/plan495-peer-eligibility.py --hygiene \
+  --hygiene tests/integration/ssu2/plan495-eligibility-fixtures/hygiene-fresh.json
+```
+
+The lane's evidence itself is validated the same way, against the tier
+ladder and the outcome taxonomy:
+
+```text
+python3 scripts/plan495-peer-eligibility.py --evidence \
+  --evidence <lane-evidence.json>
+```
+
 ## 6. Claim tiers
 
 Record each tier independently. **A failure at a higher tier never retracts a
@@ -279,6 +352,17 @@ This control is the gate's own self-test. It proves the lane can distinguish
 distinction the whole procedure exists to preserve. If the withholding run
 reports `i2pr-defect`, the lane's classification is wrong and no result from
 it may be cited.
+
+Express the withholding in the lab profile itself and run the control:
+
+```text
+python3 scripts/plan495-peer-eligibility.py --withholding \
+  --profile tests/integration/ssu2/plan495-eligibility-fixtures/withholding-no-floodfill.json \
+  --peer-config tests/integration/ssu2/plan495-eligibility-fixtures/peer-config-i2pd.json
+```
+
+The control passes only when the verdict is `peer-selection-refused` with the
+cause `intentional-withholding` — never `i2pr-defect`, never a pass.
 
 ## 9. Collect the evidence
 

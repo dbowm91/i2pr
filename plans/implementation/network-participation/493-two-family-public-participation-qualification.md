@@ -16,9 +16,12 @@ the pinned i2pd 2.61.0 and Java I2P 2.13.0 reference behaviors
 488 → 489 → 490 → 491 → 492 → **493**
 
 **Gate binding (Plan 495, 2026-10-24).** This plan's matrix runs under the
-peer-eligibility gate in
-[`docs/operations/ssu2-private-lan-qualification.md`](../../../docs/operations/ssu2-private-lan-qualification.md)
-and Plan 495 (`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`).
+peer-eligibility gate whose canonical model is
+[`specs/QUALIFICATION-GATES.md`](../../../specs/QUALIFICATION-GATES.md) and
+whose operator procedure is
+[`docs/operations/ssu2-private-lan-qualification.md`](../../../docs/operations/ssu2-private-lan-qualification.md),
+enforced by Plan 495 (`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`)
+through `scripts/plan495-peer-eligibility.py`.
 Every leg below presumes the stock peer will select and dial `i2pr`; the gate
 makes that presumption an explicit, checked precondition and makes the
 lane's outcome say **which side owns a failure**. A family that admits our
@@ -236,9 +239,13 @@ Missing today:
 bash tests/integration/network-participation/run-two-family.sh
 bash scripts/check-network-participation-evidence.sh
 bash scripts/check-network-participation-evidence.sh --self-test
-# Plan 495's gate checker and its evidence-shape validator, once that plan has
-# landed them. They do not exist yet; this plan's matrix cannot run before them.
+# Plan 495 landed the gate checker and its evidence-shape validator. This
+# plan's matrix cannot run before them, and they now run in the floor.
 python3 scripts/plan495-peer-eligibility.py --self-test
+# Per-leg artifacts are validated with:
+#   python3 scripts/plan495-peer-eligibility.py --preflight --profile <file>
+#   python3 scripts/plan495-peer-eligibility.py --evidence <file>
+#   python3 scripts/plan495-peer-eligibility.py --hygiene <file>
 cargo test --locked --workspace --all-targets -- --test-threads=1
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'

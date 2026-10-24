@@ -15,6 +15,15 @@ Research snapshot: **2026-07-14**.
 
 Start with [SOURCES.md](SOURCES.md), [IMPLEMENTATIONS.md](IMPLEMENTATIONS.md), and [CONFORMANCE.md](CONFORMANCE.md). Protocol implementation plans must cite the relevant dossier below and pin any newer upstream source they use.
 
+One document in this directory is **not** a protocol dossier:
+[QUALIFICATION-GATES.md](QUALIFICATION-GATES.md) is the canonical model of the
+external qualification gate — what must be known, before any protocol
+attempt, about whether a stock reference peer could admit and select `i2pr`,
+and how a lane must classify a failure. It is bound from
+[CONFORMANCE.md](CONFORMANCE.md) and enforced by
+`scripts/plan495-peer-eligibility.py`. Read it before designing or running
+any lane that talks to a reference router.
+
 ## Authority model
 
 The project uses this precedence order:

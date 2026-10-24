@@ -1,5 +1,19 @@
 # Plan 495 — Peer-eligibility preflight and the first-failure-owner gate
 
+**Status:** closed as `passed-peer-eligibility-gate-and-first-failure-owner`;
+closure record
+`plans/closure/core-router-recovery/495-status.md`
+**Owner:** no production crate — the deliverable is the gate's enforcement
+(`scripts/plan495-peer-eligibility.py`) and its canonical model
+(`specs/QUALIFICATION-GATES.md`)
+**Baseline:** `work/plans-477-480-router-recovery@dbc80596`
+**Authoritative predecessor:** the blocked closures of Plans 449, 476, 493
+and 434, and the Plan 230 mixed-router findings
+(`plans/closure/mixed-router-interop/230-status.md`)
+
+The plan body below is the plan-of-record as written before implementation.
+Its status line above is authoritative; the body is not rewritten.
+
 Status: registered / **ready**; no external environment required for the
 offline scope. This is a corrective successor to the blocked closures
 Plan 449 (`passed-portable-preflight-infrastructure-only`), Plan 476

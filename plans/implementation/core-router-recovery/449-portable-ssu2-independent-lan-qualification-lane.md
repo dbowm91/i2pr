@@ -2,7 +2,7 @@
 
 Status: **registered / ready for preflight/harness implementation; external proof environment-dependent**. Date: 2026-10-10. Core-router recovery owner; qualification successor to stopped Plan 431 and local-component-passed Plan 442 (`plans/closure/core-router-recovery/{431,442}-status.md`). Roadmaps core-router recovery and SSU2 transport.
 
-**Gate binding (Plan 495, 2026-10-24).** This plan's live column is governed by the peer-eligibility gate in [`docs/operations/ssu2-private-lan-qualification.md`](../../../docs/operations/ssu2-private-lan-qualification.md) and by Plan 495 (`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`). The live lane must run the peer-eligibility preflight before any process launch, record the claim-tier ladder, classify every outcome as exactly one of the gate's outcome classes, and never report a peer-side refusal as an `i2pr` defect. WP4, WP5 and WP6 below are amended by Plan 495; where this document says "stop on the first failed stage", Plan 495's tier ladder and outcome taxonomy govern instead.
+**Gate binding (Plan 495, 2026-10-24).** This plan's live column is governed by the peer-eligibility gate whose canonical model is [`specs/QUALIFICATION-GATES.md`](../../../specs/QUALIFICATION-GATES.md) and whose operator procedure is [`docs/operations/ssu2-private-lan-qualification.md`](../../../docs/operations/ssu2-private-lan-qualification.md), and by Plan 495 (`plans/implementation/core-router-recovery/495-peer-eligibility-preflight-and-first-failure-owner-gate.md`), which owns the enforcement (`scripts/plan495-peer-eligibility.py`, an offline checker that opens no socket and starts no process). The live lane must run the peer-eligibility preflight before any process launch, record the claim-tier ladder, classify every outcome as exactly one of the gate's outcome classes **with its cause**, and never report a peer-side refusal as an `i2pr` defect. WP4, WP5 and WP6 below are amended by Plan 495; where this document says "stop on the first failed stage", Plan 495's tier ladder and outcome taxonomy govern instead.
 
 ## Objective and rationale
 
@@ -36,8 +36,11 @@ cargo test --locked -p i2pr-runtime --test ssu2_local -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight -- --test-threads=1
 python3 scripts/check-core-router-recovery-contract.py --self-test
 python3 scripts/check-global-plan-number-uniqueness.py
-# Plan 495's gate checker, once that plan has landed it. It does not exist yet;
-# do not report this line as failed before Plan 495 is implemented.
+# Plan 495 landed the gate checker. This line now runs it, and the lane's
+# preflight, evidence and hygiene artifacts are validated with:
+#   python3 scripts/plan495-peer-eligibility.py --preflight --profile <file>
+#   python3 scripts/plan495-peer-eligibility.py --evidence <file>
+#   python3 scripts/plan495-peer-eligibility.py --hygiene <file>
 python3 scripts/plan495-peer-eligibility.py --self-test
 # exact two-host preflight and explicit opt-in qualification runner introduced
 # by the implementation pass, then full AGENTS.md floor
