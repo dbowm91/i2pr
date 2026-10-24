@@ -1015,6 +1015,101 @@ lane artifact
 `tests/integration/network-participation/evidence/plan492/result.json`. The
 closure record is `plans/closure/network-participation/492-status.md`.
 
+## NTCP2 private-LAN operator profile (Plan 496)
+
+Plan 101 refused every NTCP2 activation that was not the explicit
+controlled-loopback profile. Plan 496 keeps that refusal for every
+configuration the old guard rejected and adds **one** narrowly-scoped
+operator profile: a guarded, RFC1918-only, **non-public** private LAN. What is
+claimed, and what is not:
+
+- **The profile is opt-in and default-off.** The NTCP2 surface's
+  `qualification_profile` accepts `disabled`, `controlled_loopback`, and
+  `private_lan_qualification`. An **enabled** NTCP2 surface must name one
+  explicitly; there is no default that activates anything, and
+  `default_ntcp2_enabled()` remains `false`.
+- **The profile binds an operator-supplied RFC1918 IPv4 endpoint and nothing
+  else.** It requires `enabled = true`; exactly one RFC1918 IPv4
+  `bind_address` literal (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); an
+  explicit nonzero `listen_port` of at least 1024; a network id representable
+  by the handshake width; and **family coherence with SSU2** — the `[ssu2]`
+  surface must itself be in `private_lan_qualification` mode and bind an
+  RFC1918 IPv4 address, because one RouterInfo carries both transports'
+  endpoints.
+- **Every unauthorized shape is refused by name.** Loopback, the unspecified
+  address `0.0.0.0`, public IPv4, TEST-NET `192.0.2.0/24`, and every IPv6
+  literal are refused at parse time by `ConfigError::Semantic`, each naming
+  the offending field and stating the requirement. A public IPv4 literal and
+  TEST-NET share the "requires an RFC1918 IPv4 address (10.0.0.0/8,
+  172.16.0.0/12, or 192.168.0.0/16)" reason, because both fail the same
+  `is_private()` test; the loopback, unspecified, and IPv6 shapes each carry
+  their own reason.
+- **The activation gate is a pure function with a named refusal for each
+  shape.** `ntcp2_activation_scope(&Ntcp2Config)` returns either the address
+  scope the transport may dial or one of five typed refusals — `Disabled`,
+  `NoExplicitProfile`, `NonLoopbackBind`, `NonPrivateLanBind`,
+  `PrivilegedPort` — each with its own reason text. It is pure on purpose:
+  the configuration layer already refuses every shape the gate refuses, so an
+  in-closure gate branch could never be reached from a configuration file.
+  Extracting it makes every branch reachable by a unit test.
+- **The gate is called from two places, so there is one authority for the
+  decision.** The daemon composition root fails startup with the refusal's
+  reason, and the `ntcp2-router` service closure applies the same gate as
+  defense in depth. That service is registered with
+  `StartupRequirement::Optional`, so a refusal there degrades that one
+  service and the rest of the router keeps running. The gate never widens a
+  scope.
+- **The runtime's dial admission is scoped, and the scope is the caller's.**
+  `Ntcp2DialScope::Loopback` admits loopback addresses only — exactly the
+  historical clamp — and `Ntcp2DialScope::PrivateLan` admits RFC1918 IPv4
+  literals only; loopback, the unspecified address, public IPv4, and every
+  IPv6 form including ULA and IPv4-mapped literals are refused.
+  `dial_authenticated_peer_in_scope` applies the scope as
+  `if !scope.admits(endpoint.ip())`, and `dial_authenticated_loopback_peer`
+  delegates to it with `Ntcp2DialScope::Loopback`, so its behaviour is
+  unchanged. `DialOutcome::AddressOutOfScope` distinguishes "every advertised
+  address was out of scope" from a transport failure. The scope is never
+  widened inside the runtime.
+- **The signed dual-transport record is held locally and is never published.**
+  `generate_scoped_dual_transport_router_info` copies both transports'
+  endpoints from the live owners' validated configuration and identity-bound
+  stores and requires both to fall inside the scope; the controlled-loopback
+  and private-LAN forms delegate to it. The operator hands the record to a lab
+  peer **out of band**.
+- **It advertises nothing.** The profile adds no publication path, and the
+  record carries **no capability letter** — no `caps=f`. The NetDB publication
+  path still requires an `Active` floodfill role **and** an in-memory
+  `FloodfillAdvertisementPermit`, and neither is reachable from this profile.
+  `[ssu2] advertise = true` remains refused at parse time.
+- **It promotes no capability.** `specs/support.toml` is unchanged — 94
+  surfaces, 88 experimental, 5 deferred, 1 ready, and **0 advertised** —
+  `router.version` stays `0.9.62`, and the published RouterInfo capability set
+  is unchanged.
+- **It is not a public transport activation.** Public transport activation
+  remains unclaimed: it requires external two-family public evidence, which
+  needs an authorized two-host topology that this profile does not supply.
+  What this profile delivers is the source-side activation substrate, not an
+  activation.
+- **The two families do not share one link registry.** SSU2 owns a private
+  `i2pr_transport::TransportManager`; NTCP2 owns its own admission
+  structures. What they share is one delivery registry
+  (`Ntcp2RouterDeliveryRegistry`), one bandwidth governor, one authenticated
+  I2NP dispatcher, and one local-RouterInfo channel.
+
+Evidence: `crates/i2pr-daemon/src/ntcp2_activation.rs`,
+`crates/i2pr-daemon/src/config.rs`,
+`crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-runtime/src/ntcp2_runtime.rs`,
+`crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-daemon/tests/ntcp2_private_lan_profile.rs` (including the
+`#[ignore]`-gated row
+`private_lan_profile_binds_the_operator_endpoint_and_advertises_nothing`),
+and the operator procedure
+[`docs/operations/ntcp2-private-lan-qualification.md`](../docs/operations/ntcp2-private-lan-qualification.md).
+The plan of record and its current status are in
+[`plans/registry.md`](../plans/registry.md).
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

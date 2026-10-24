@@ -37,6 +37,7 @@ pub mod netdb_participation;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
 mod news;
+pub mod ntcp2_activation;
 pub mod outbound_lookup;
 pub mod outbound_secret;
 pub mod outproxy_options;
@@ -708,17 +709,22 @@ fn build_daemon_graph_inner(
             "enabled service tunnels require service_tunnels.enabled = true".to_owned(),
         ));
     }
+    // Plan 496: Plan 101's blanket "controlled-loopback only" refusal at the
+    // composition root is replaced by the same profile-aware gate the NTCP2
+    // service uses, so there is one authority for the decision. Every
+    // configuration the old guard rejected is still rejected, and the
+    // refusal now names its own reason.
     if config.transport.ntcp2.enabled
-        && config.transport.ntcp2.qualification_profile
-            != crate::config::Ntcp2QualificationProfile::ControlledLoopback
+        && let Err(refusal) =
+            crate::ntcp2_activation::ntcp2_activation_scope(&config.transport.ntcp2)
     {
         return Err(DaemonError::RuntimeSupervisorFailed(
-            "enabled NTCP2 requires the controlled-loopback qualification profile".to_string(),
+            refusal.reason().to_owned(),
         ));
     }
     if config.transport.ntcp2.enabled && config.network.network_id > u16::from(u8::MAX) {
         return Err(DaemonError::RuntimeSupervisorFailed(
-            "controlled NTCP2 network ID exceeds the handshake width".to_owned(),
+            "NTCP2 network ID exceeds the handshake width".to_owned(),
         ));
     }
 
@@ -2221,7 +2227,7 @@ fn register_ntcp2_service(
         Ntcp2RuntimeService,
     };
     use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore, Ssu2TransportIdentityStore};
-    use std::net::SocketAddr;
+    use std::net::{IpAddr, SocketAddr};
     use zeroize::Zeroizing;
 
     let config = config.clone();
@@ -2280,17 +2286,21 @@ fn register_ntcp2_service(
             let readiness = ctx.readiness();
             let outbound_dial_rx = Arc::clone(&outbound_dial_rx);
             Box::pin(async move {
-                if !config.enabled
-                    || config.qualification_profile
-                        != crate::config::Ntcp2QualificationProfile::ControlledLoopback
-                    || !config.bind_address.is_loopback()
-                    || config.listen_port < 1024
-                {
-                    return ntcp2_service_failure(
-                        i2pr_core::ServiceFailureCategory::InvalidState,
-                        "NTCP2 requires the explicit controlled-loopback profile",
-                    );
-                }
+                // Plan 496: Plan 101's blanket "controlled-loopback only"
+                // refusal is replaced by a profile-aware gate. Every
+                // combination outside the two explicitly authorized profiles
+                // is still refused, and each refusal now names its own
+                // reason instead of one generic message. The address scope
+                // is derived from the profile and is never widened.
+                let dial_scope = match crate::ntcp2_activation::ntcp2_activation_scope(&config) {
+                    Ok(scope) => scope,
+                    Err(refusal) => {
+                        return ntcp2_service_failure(
+                            i2pr_core::ServiceFailureCategory::InvalidState,
+                            refusal.reason(),
+                        );
+                    }
+                };
                 let runtime = match Ntcp2RuntimeService::new_with_bandwidth(
                     runtime_config,
                     bandwidth.clone(),
@@ -2352,7 +2362,51 @@ fn register_ntcp2_service(
                         );
                     }
                 };
-                let router_info_bytes = if controlled_dual_transport {
+                // Plan 496: the guarded operator profile composes one
+                // dual-transport record whose two endpoints are the
+                // operator's RFC1918 IPv4 private LAN. The record is held
+                // locally and is never published to the NetDB; the
+                // operator hands it to a lab peer out of band.
+                let private_lan_dual_transport = config.qualification_profile
+                    == crate::config::Ntcp2QualificationProfile::PrivateLanQualification;
+                let dual_transport = controlled_dual_transport || private_lan_dual_transport;
+                let router_info_bytes = if private_lan_dual_transport {
+                    let configured_ssu2 = ssu2_config
+                        .bind_ipv4
+                        .or(ssu2_config.bind_ipv6)
+                        .map(|address| SocketAddr::new(address, ssu2_config.port));
+                    let Some(ssu2_endpoint) = configured_ssu2.filter(|endpoint| {
+                        endpoint.port() >= 1024
+                            && matches!(endpoint.ip(), IpAddr::V4(ip) if ip.is_private())
+                            && endpoint.is_ipv4() == listener.local_addr().is_ipv4()
+                    }) else {
+                        listener.shutdown();
+                        return ntcp2_service_failure(
+                            i2pr_core::ServiceFailureCategory::InvalidState,
+                            "private-LAN dual-transport profile has no matching fixed SSU2 endpoint",
+                        );
+                    };
+                    let ssu2_transport = match Ssu2TransportIdentityStore::in_data_dir(&data_dir)
+                        .load_or_generate(router_hash, &mut i2pr_crypto::OsRng)
+                    {
+                        Ok(material) => material,
+                        Err(_) => {
+                            listener.shutdown();
+                            return ntcp2_service_failure(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                "private-LAN dual-transport SSU2 identity-bound keys are unavailable",
+                            );
+                        }
+                    };
+                    crate::router_i2np::generate_private_lan_dual_transport_router_info(
+                        &bundle,
+                        ssu2_endpoint,
+                        &ssu2_transport,
+                        listener.local_addr(),
+                        &transport,
+                        network_id,
+                    )
+                } else if controlled_dual_transport {
                     let configured_ssu2 = ssu2_config
                         .bind_ipv4
                         .or(ssu2_config.bind_ipv6)
@@ -2407,16 +2461,15 @@ fn register_ntcp2_service(
                         );
                     }
                 };
-                if controlled_dual_transport
-                    && local_router_info.send(Some(Arc::clone(&router_info))).is_err()
+                if dual_transport && local_router_info.send(Some(Arc::clone(&router_info))).is_err()
                 {
                     listener.shutdown();
                     return ntcp2_service_failure(
                         i2pr_core::ServiceFailureCategory::Internal,
-                        "controlled dual-transport RouterInfo has no live SSU2 publisher",
+                        "dual-transport RouterInfo has no live SSU2 publisher",
                     );
                 }
-                let _clear_dual_router_info = controlled_dual_transport.then(|| {
+                let _clear_dual_router_info = dual_transport.then(|| {
                     ClearDualRouterInfoOnDrop(local_router_info.clone())
                 });
                 let local_router_info_rx = local_router_info.subscribe();
@@ -2441,6 +2494,7 @@ fn register_ntcp2_service(
                     let outbound_send_timeout = ntcp2_send_timeout;
                     let outbound_controlled_floodfill = config.qualification_profile
                         == crate::config::Ntcp2QualificationProfile::ControlledLoopback;
+                    let outbound_dial_scope = dial_scope;
                     let _ = children.spawn(move |task_cancel| async move {
                         let mut cursor = 0usize;
                         let mut health_tick = tokio::time::interval(Duration::from_secs(15));
@@ -2529,7 +2583,8 @@ fn register_ntcp2_service(
                                 return Ok(());
                             };
                             let mut link = match outbound_runtime
-                                .dial_authenticated_loopback_peer(
+                                .dial_authenticated_peer_in_scope(
+                                    outbound_dial_scope,
                                     &outbound_scope,
                                     candidate.router_info(),
                                     *candidate.key().as_bytes(),
@@ -2545,7 +2600,8 @@ fn register_ntcp2_service(
                                 Err(error) => {
                                     tracing::info!(
                                         error = ?error,
-                                        "controlled NTCP2 outbound peer dial attempt did not authenticate"
+                                        dial_scope = outbound_dial_scope.name(),
+                                        "NTCP2 outbound peer dial attempt did not authenticate"
                                     );
                                     continue;
                                 }
@@ -2815,12 +2871,28 @@ fn register_ssu2_service(
     let request_driven_lookup_probe_enabled = config.floodfill.send_initiator_lookup_probe;
     let bandwidth_share_percent = config.bandwidth.share_percent;
     let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
-    let controlled_ntcp2_endpoint = controlled_floodfill.then(|| {
-        std::net::SocketAddr::new(
-            config.transport.ntcp2.bind_address,
-            config.transport.ntcp2.listen_port,
-        )
-    });
+    // Plan 496: the NTCP2 endpoint the local RouterInfo's NTCP2 address
+    // must match before the SSU2 owner will install it, and the address
+    // scope that endpoint is allowed to live in. The controlled floodfill
+    // profile keeps the loopback scope; the guarded operator profile
+    // carries the RFC1918 scope. The two are mutually exclusive: the
+    // controlled floodfill profile already requires the NTCP2
+    // controlled-loopback profile.
+    let ntcp2_endpoint_scope = match config.transport.ntcp2.qualification_profile {
+        crate::config::Ntcp2QualificationProfile::PrivateLanQualification => {
+            i2pr_runtime::Ntcp2DialScope::PrivateLan
+        }
+        _ => i2pr_runtime::Ntcp2DialScope::Loopback,
+    };
+    let controlled_ntcp2_endpoint = (controlled_floodfill
+        || config.transport.ntcp2.qualification_profile
+            == crate::config::Ntcp2QualificationProfile::PrivateLanQualification)
+        .then(|| {
+            std::net::SocketAddr::new(
+                config.transport.ntcp2.bind_address,
+                config.transport.ntcp2.listen_port,
+            )
+        });
     let floodfill_config_path = config.source_path.clone();
     let inspection = Arc::clone(inspection);
     let router_ingress = Arc::new(tokio::sync::Mutex::new(router_ingress));
@@ -2844,6 +2916,7 @@ fn register_ssu2_service(
                 let request_driven_lookup_probe_enabled = request_driven_lookup_probe_enabled;
                 let ntcp2_max_active_links = ntcp2_max_active_links;
                 let controlled_ntcp2_endpoint = controlled_ntcp2_endpoint;
+                let ntcp2_endpoint_scope = ntcp2_endpoint_scope;
                 let bandwidth = bandwidth.clone();
                 let bandwidth_share_percent = bandwidth_share_percent;
                 // Plan 479: reserved for the per-tick controlled
@@ -3491,10 +3564,11 @@ fn register_ssu2_service(
                                             .unwrap_or(0);
                                         let installed_result = match controlled_ntcp2_endpoint {
                                             Some(endpoint) => owner.handle()
-                                                .install_controlled_dual_router_info(
+                                                .install_scoped_dual_router_info(
                                                     info.as_ref().clone(),
                                                     now_ms,
                                                     endpoint,
+                                                    ntcp2_endpoint_scope,
                                                 ),
                                             None => owner.handle().service()
                                                 .install_local_router_info(

@@ -1738,14 +1738,62 @@ pub fn generate_controlled_dual_transport_router_info(
     ntcp2_transport: &Ntcp2TransportIdentityMaterial,
     network_id: u16,
 ) -> Result<Vec<u8>, Ssu2ServiceError> {
-    if !ssu2_endpoint.ip().is_loopback()
-        || !ntcp2_endpoint.ip().is_loopback()
+    generate_scoped_dual_transport_router_info(
+        bundle,
+        ssu2_endpoint,
+        ssu2_transport,
+        ntcp2_endpoint,
+        ntcp2_transport,
+        network_id,
+        i2pr_runtime::Ntcp2DialScope::Loopback,
+    )
+}
+
+/// Builds one signed RouterInfo for the guarded operator profile, whose two
+/// transports both live on the same RFC1918 IPv4 private LAN.
+///
+/// Plan 496. The record is held locally and is never published to the
+/// NetDB; the operator hands it to a lab peer out of band.
+pub fn generate_private_lan_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    generate_scoped_dual_transport_router_info(
+        bundle,
+        ssu2_endpoint,
+        ssu2_transport,
+        ntcp2_endpoint,
+        ntcp2_transport,
+        network_id,
+        i2pr_runtime::Ntcp2DialScope::PrivateLan,
+    )
+}
+
+/// Builds one signed RouterInfo for an explicit dual-transport qualification
+/// profile. Both endpoint/key tuples are copied from the live owners'
+/// validated configuration and identity-bound stores, and both endpoints must
+/// fall inside `scope`. No capability letters are added here.
+pub fn generate_scoped_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+    scope: i2pr_runtime::Ntcp2DialScope,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    if !scope.admits(ssu2_endpoint.ip())
+        || !scope.admits(ntcp2_endpoint.ip())
         || ssu2_endpoint.port() < 1024
         || ntcp2_endpoint.port() < 1024
         || ssu2_endpoint.is_ipv4() != ntcp2_endpoint.is_ipv4()
     {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "dual-transport qualification requires matching fixed loopback address families"
+            "dual-transport qualification requires matching fixed endpoints inside the permitted address scope"
                 .to_owned(),
         ));
     }
@@ -2046,6 +2094,23 @@ impl Ssu2DaemonService {
             .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
     }
 
+    /// Installs one dual-family record only when its NTCP2 endpoint matches
+    /// the separately configured live listener and falls inside `scope`.
+    ///
+    /// Plan 496: the controlled profile stays loopback-only; the guarded
+    /// operator profile admits an RFC1918 IPv4 endpoint. The scope is the
+    /// caller's and is never widened here.
+    pub fn install_scoped_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+        scope: i2pr_runtime::Ntcp2DialScope,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_scoped_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint, scope)
+    }
+
     /// Returns the narrow outbound delivery capability.
     pub fn delivery(&self) -> RouterDeliveryService {
         RouterDeliveryService::new(self.service.clone())
@@ -2102,6 +2167,23 @@ impl Ssu2DaemonHandle {
     ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
         self.service
             .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
+    }
+
+    /// Installs one dual-family record only when its NTCP2 endpoint matches
+    /// the separately configured live listener and falls inside `scope`.
+    ///
+    /// Plan 496: the controlled profile stays loopback-only; the guarded
+    /// operator profile admits an RFC1918 IPv4 endpoint. The scope is the
+    /// caller's and is never widened here.
+    pub fn install_scoped_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+        scope: i2pr_runtime::Ntcp2DialScope,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_scoped_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint, scope)
     }
 
     /// Returns publication material derived by the runtime from its live bind and reachability

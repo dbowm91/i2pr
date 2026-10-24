@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 68 `.rs` files, 119 024 lines of `src` (62 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
+**Size:** 69 `.rs` files, 119 860 lines of `src` (63 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -23,7 +23,7 @@ implementation.
 ### What the daemon owns
 
 - **CLI parsing** (`src/cli.rs`, 69 lines) via `clap` derives: subcommands, flags, `--help`.
-- **Configuration** (`src/config.rs`, 6 056 lines): strict versioned TOML, `deny_unknown_fields`
+- **Configuration** (`src/config.rs`, 6 786 lines): strict versioned TOML, `deny_unknown_fields`
   on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
@@ -81,17 +81,21 @@ Protocol semantics live in the runtime-neutral crates and stay there:
   Equally, `i2pr-console` reaches no router state and opens no socket: every value it
   renders arrives through its `ControlClient` trait.
 
-NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
-(`src/config.rs:718`), `build_daemon_graph` rejects `ntcp2.enabled = true`, and
-`ntcp2-transport` is never registered (Plan 101 guard). `i2pr-transport-ntcp2` and
+NTCP2 remains **DISABLED** by default: `default_ntcp2_enabled() == false`
+(`src/config.rs:1018`). It is not unconditionally enableable — an enabled
+NTCP2 surface must name an explicit qualification profile, and only the two
+authorized profiles (`controlled_loopback`, `private_lan_qualification`) are
+accepted; every other shape is refused by name. The `ntcp2-transport` service
+from the transport crate is still never registered: the daemon owns its own
+`ntcp2-router` service instead. `i2pr-transport-ntcp2` and
 `i2pr-transport-ssu2` are **not** direct daemon dependencies.
 
 ---
 
 ## Module layout
 
-62 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
-`wc -l` on repo head. The tables below cover 61 of the crate's 68 `src/` files; seven rows are
+63 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
+`wc -l` on repo head. The tables below cover 62 of the crate's 69 `src/` files; seven rows are
 still owed by the plans that added those modules, and the gap is recorded rather than papered over.
 
 ### CLI and configuration
@@ -149,8 +153,9 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | --- | --- | --- | --- |
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
-| `src/config.rs` | 6 056 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time) | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
-| `src/lib.rs` | 4 736 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`) | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/config.rs` | 6 786 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
+| `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
+| `src/lib.rs` | 4 868 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
@@ -179,7 +184,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/router_i2np.rs` | 3 598 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
+| `src/router_i2np.rs` | 3 680 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info` |
 | `src/exploratory_build.rs` | 2 201 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
@@ -414,30 +419,37 @@ under Key contracts for the lifecycle detail.
 
 ### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–62`)
 
-50 `pub mod` + 4 private modules + 4 `sam/` submodules:
+56 `pub mod` + 6 private modules + 5 `sam/` submodules:
 
 `pub mod` — `addressbook`, `app_gateway`, `app_manager_bridge`, `app_runtime`,
 `bootstrap`, `cli`, `config`, `console`, `control_sources`,
 `destination_peers`, `destination_streaming`, `destination_tunnels`,
-`encrypted_service_resolver`, `error`, `exploratory_build`, `floodfill`,
+`encrypted_service_resolver`, `encrypted_target_credential`, `error`,
+`exploratory_build`, `floodfill`,
 `i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
 `i2pcontrol_inspection`,
 `i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_participation`,
-`netdb_seam`, `netdb_tunnels`,
+`netdb_seam`, `netdb_tunnels`, `ntcp2_activation`,
 `outbound_lookup`, `outbound_secret`, `outproxy_options`, `outproxy_route`,
 `peer_test`, `router_i2np`,
 `sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
 `service_tunnels`, `service_tunnels_http`, `service_tunnels_http_bidir`,
 `service_tunnels_http_server`, `service_tunnels_irc_client`,
 `service_tunnels_irc_server`, `service_tunnels_socks5`, `service_tunnels_socks_irc`,
-`service_tunnels_streamr`, `service_tunnels_tls`, `transit_compose`, `transit_owner`,
-`transit_volume`, `tunnel_liveness`.
+`service_tunnels_streamr`, `service_tunnels_tls`, `ssu2_introducer`,
+`ssu2_qualification_export`, `ssu2_qualification_receipts`, `transit_compose`,
+`transit_owner`, `transit_participation`, `transit_volume`,
+`tunnel_liveness`.
 
 `console` and `i2pcontrol_dispatch` were added by Plans 356–358;
 `app_gateway`, `app_manager_bridge` by Plan 368 and `app_runtime` by Plan 369.
 `netdb_participation` was added by Plan 488.
+`ntcp2_activation` holds the profile-aware NTCP2 activation gate; it is a
+public module so that the gate's refusal vocabulary is nameable from outside
+the crate, and it holds **no** authority of its own.
 
-Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`,
+Private — `mod addressbook_fetch`, `mod bandwidth_eligibility`, `mod news`,
+`mod service_lifecycle`,
 `mod app_runtime_qualification` (the Plan 369 WP5 `#[cfg(test)]` black-box
 module; it compiles out of every real build, which is why it may name the
 fixture binaries freely), and `mod tests` (in-crate test module).
@@ -726,6 +738,115 @@ secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }
 `pub(crate)`, the normal-daemon adapter that reuses an already-running SSU2 owner. Build the
 one shared `ServiceTunnelManager` with `build_shared_service_manager` (Plan 337) and inject
 the same `Arc` into both the control state and the destination-group product.
+
+### NTCP2 qualification profiles and the activation gate
+
+`[transport.ntcp2].qualification_profile` selects one of three values. The
+key has no default that silently activates anything: the default profile is
+`disabled`, and an **enabled** NTCP2 surface must name a profile explicitly.
+
+| `enabled` | `qualification_profile` | Outcome |
+| --- | --- | --- |
+| `false` | `"disabled"` | accepted; the transport stays off |
+| `false` | `"controlled_loopback"` | refused — `controlled_loopback requires enabled = true` |
+| `false` | `"private_lan_qualification"` | refused — `private_lan_qualification requires enabled = true` |
+| `true` | `"disabled"` | refused — `enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile` |
+| `true` | `"controlled_loopback"` | accepted; the bind must be loopback |
+| `true` | `"private_lan_qualification"` | accepted; the bind must be an RFC1918 IPv4 literal |
+| `true` | any other value | refused — `enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile` |
+
+**The private-LAN profile is the operator's, and it is narrow.** It requires
+all of: `enabled = true`; exactly one RFC1918 IPv4 `bind_address` literal
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); an explicit nonzero
+`listen_port` of at least 1024; a network id representable by the handshake
+width; and **family coherence with SSU2** — the `[ssu2]` surface must itself
+be in `private_lan_qualification` mode and bind an RFC1918 IPv4 address,
+because one RouterInfo carries both transports' endpoints.
+
+Every refusal is a `ConfigError::Semantic` that names the offending field and
+states the requirement. The bind-address shapes are refused separately:
+
+| Field | Reason |
+| --- | --- |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an explicit RFC1918 IPv4 address literal` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported` |
+| `transport.ntcp2.listen_port` | `private_lan_qualification requires an explicit nonzero port` |
+| `transport.ntcp2.listen_port` | `private_lan_qualification requires a port of at least 1024` |
+| `network.network_id` | `private_lan_qualification requires a network ID representable by the handshake` |
+| `transport.ntcp2.qualification_profile` | `private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile` |
+| `transport.ntcp2.qualification_profile` | `private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address` |
+
+Note that a public IPv4 literal and TEST-NET `192.0.2.0/24` share the
+"requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or
+192.168.0.0/16)" reason, because both fail the same `is_private()` test; the
+loopback, unspecified, and IPv6 shapes each carry their own reason.
+
+#### The gate (`src/ntcp2_activation.rs`)
+
+`ntcp2_activation_scope(&Ntcp2Config) -> Result<Ntcp2DialScope, Ntcp2ActivationRefusal>`
+is **pure**. It takes an already-normalized configuration and returns either
+the address scope the transport may dial or a typed refusal. The purity is
+deliberate: the configuration layer already refuses every shape the gate
+refuses, so a gate branch inside the service closure could never be reached
+from a configuration file. Extracting it makes every branch reachable by a
+unit test.
+
+The refusal vocabulary is five variants, each with its own reason text:
+`Disabled` ("NTCP2 is disabled"), `NoExplicitProfile` ("NTCP2 requires an
+explicit qualification profile"), `NonLoopbackBind` ("the NTCP2
+controlled-loopback profile requires a fixed loopback bind address"),
+`NonPrivateLanBind` ("the NTCP2 private-LAN profile requires an RFC1918 IPv4
+bind address"), and `PrivilegedPort` ("NTCP2 requires an explicit
+non-privileged listen port").
+
+The gate is called from two places, so there is **one authority** for the
+decision:
+
+- the composition root in `src/lib.rs`, which fails daemon startup with the
+  refusal's reason; and
+- the `ntcp2-router` service closure, which applies the same gate as defense
+  in depth. That service is registered with
+  `StartupRequirement::Optional`, so a refusal there degrades that one
+  service and the rest of the router keeps running.
+
+The gate never widens a scope. `controlled_loopback` yields
+`Ntcp2DialScope::Loopback`; `private_lan_qualification` yields
+`Ntcp2DialScope::PrivateLan`. The scope is always the caller's and is never
+widened inside the runtime.
+
+#### What the profile does not do
+
+- **It publishes nothing.** The operator profile adds no publication path.
+  The NetDB publication path still requires an `Active` floodfill role
+  **and** an in-memory `FloodfillAdvertisementPermit`, and neither is
+  reachable from this profile. `[ssu2] advertise = true` remains refused at
+  parse time (`SSU2 address publication is unavailable in this milestone`).
+- **It advertises no capability.** The signed dual-transport record carries
+  **no capability letter** — no `caps=f`. The support inventory is unchanged.
+- **It mints no reachability permit.**
+- **It is not a public transport activation.** Public transport activation
+  remains unclaimed: it requires external two-family evidence, which needs an
+  authorized two-host topology this profile does not supply. What this profile
+  delivers is the source-side activation substrate, not an activation.
+- **The two families do not share one link registry.** SSU2 owns a private
+  `i2pr_transport::TransportManager`; NTCP2 owns its own admission
+  structures. What they share is one delivery registry
+  (`Ntcp2RouterDeliveryRegistry`), one bandwidth governor, one authenticated
+  I2NP dispatcher, and one local-RouterInfo channel.
+
+The dual-transport RouterInfo builders are scope-parameterized:
+`generate_scoped_dual_transport_router_info` copies both endpoints from the
+live owners' validated configuration and identity-bound stores and requires
+both to fall inside the scope, with matching address families and unprivileged
+ports. `generate_controlled_dual_transport_router_info` (loopback) and
+`generate_private_lan_dual_transport_router_info` (RFC1918) both delegate to
+it. The private-LAN record carries the operator's two socket-derived private
+endpoints and is **held locally only**: the operator hands it to the lab peer
+out of band.
 
 ### `NetDbSeam` and the reply-path flip (`src/netdb_seam.rs`)
 
@@ -1360,8 +1481,8 @@ filesystem and loopback test isolation.
 ### Notable dependency facts
 
 - `i2pr-transport-ntcp2` and `i2pr-transport-ssu2` are **not** direct dependencies. NTCP2 is
-  disabled in production (Plan 101); SSU2 contracts are reached through the
-  composition-owned path, not a direct crate edge.
+  disabled by default and gated on an explicit qualification profile; SSU2 contracts are reached
+  through the composition-owned path, not a direct crate edge.
 - `i2pr-core` is declared and is the only path crate the daemon does not yet reference from
   `src/`; keep it declared (contracts/budgets/health are its reason) but do not invent usage.
 - `zeroize` and `chacha20poly1305` are present specifically for the Plan 341
@@ -1459,6 +1580,7 @@ modules (notably `src/lib.rs:1718`, `src/config.rs`, and the module-local test b
 | M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
 | M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
 | SSU2 | 1 | `ssu2_daemon_preflight.rs` |
+| NTCP2 operator profile | 1 | `ntcp2_private_lan_profile.rs` — the configuration refusals, the family-coherence rule, the controlled profile's refusal to widen to a private-LAN bind, the advertisement refusal, and one environment-gated row that binds the operator's real RFC1918 endpoint on both transports and asserts the record carries no capability letter |
 | Java / M6 cross-family | 1 | `java_tunnel_external.rs` |
 
 ### Black-box product discipline
@@ -1521,6 +1643,9 @@ Invokes the compiled binary via `Command::new(env!("CARGO_BIN_EXE_i2pr"))`:
 In-crate `#[cfg(test)]` in `src/lib.rs` and `src/config.rs` also cover composition
 regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 `daemon_graph_rejects_ntcp2_enabled_config`) and the `[ssu2]` NTCP2 activation safety rows.
+The NTCP2 activation gate's own `#[cfg(test)]` module in `src/ntcp2_activation.rs` covers each
+refusal variant by name, every non-RFC1918 address shape, and the invariant that the gate
+never widens a scope.
 
 ---
 
@@ -1529,10 +1654,13 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 1. **The daemon is the composition root, and that is legitimate.** It is the only production
    owner of Tokio, sockets, timers, channels, and every listener; `check-runtime-boundaries.sh`
    enforces the inverse for every other crate.
-2. **NTCP2 is disabled and unenableable.** The default is `false`, and explicit
-   `ntcp2.enabled = true` is rejected during config validation with a stable semantic error.
+2. **NTCP2 is disabled by default and profile-gated.** The default is `false`. An enabled
+   NTCP2 surface must name an explicit qualification profile, and only `controlled_loopback`
+   and `private_lan_qualification` are accepted; every other shape is rejected during config
+   validation with a stable semantic error naming the offending field.
 3. **The composition graph never registers `ntcp2-transport`.** A `lifecycle` service owns the
-   shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all.
+   shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all. The daemon owns
+   its own `ntcp2-router` service instead.
 4. **No default config path.** Every subcommand requires `--config`, so operator intent is
    always explicit and reproducible.
 5. **`deny_unknown_fields` on all 22 `Raw*` config structs.** Extra keys are an error
@@ -1593,6 +1721,13 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     `RawConsoleConfig` converts a plaintext `password` to an Argon2id PHC string during
     normalization and hands only the hash to `Config`; the plaintext is not stored, not
     `Clone`, and `ConsolePasswordHash` has a redacting hand-written `Debug`.
+23. **The activation gate is a pure function, not an inline branch.** The configuration
+    layer already refuses every shape the NTCP2 activation gate refuses, so a gate branch
+    living inside the service closure could never be reached from a configuration file and
+    would therefore be untested by construction. `ntcp2_activation_scope` takes an
+    already-normalized `Ntcp2Config` and returns a scope or a typed refusal, which makes
+    every branch reachable by a unit test — including the branch that proves the gate does
+    not widen a scope.
 
 ---
 
@@ -1764,6 +1899,8 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
 - [i2pr-su3.md](i2pr-su3.md) — SU3 framing and signature verification.
 - [i2pr-netdb-persist.md](i2pr-netdb-persist.md) — `CacheLoader`, `ReseedIngestor`.
 - [i2pr-console.md](i2pr-console.md) — the socketless console substrate this crate hosts.
+- [NTCP2 private-LAN qualification procedure](../operations/ntcp2-private-lan-qualification.md) —
+  the operator-facing procedure for the guarded operator profile.
 - [tooling.md](tooling.md) — scripts, fixtures, lanes, CI.
 - [dependency-graph.md](dependency-graph.md) — the allowlist this crate satisfies.
 
@@ -1835,7 +1972,9 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
     SOCKS request-path integration, and the loopback outproxy wire lane. That gap is why Plan 343
     closed only half the line.
 - **NTCP2** — Plan 101 guard; the development interop lane is closed and normal-daemon NTCP2
-  stays disabled.
+  stays disabled by default. An enabled NTCP2 surface is gated on an explicit qualification
+  profile, and the operator-facing procedure for the guarded operator profile is
+  [`docs/operations/ntcp2-private-lan-qualification.md`](../operations/ntcp2-private-lan-qualification.md).
 - **Router console** — Plans 356–358, ADR 0034. Plan-of-record:
   [`356`](../../plans/implementation/router-console/356-eggserve-axum-self-contained-console-foundation.md),
   [`357`](../../plans/implementation/router-console/357-loopback-browser-security-and-optional-authentication.md),

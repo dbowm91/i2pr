@@ -1,6 +1,6 @@
 # `i2pr-runtime` — Deep Dive
 
-Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~19.5k lines (15 modules + `lib.rs`)
+Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~25.2k lines (16 modules + `lib.rs`)
 
 **Purpose:** the sole production owner of Tokio in the workspace — it owns
 sockets, timers, bounded channels, tasks, and wakeable cancellation, and
@@ -55,29 +55,30 @@ the production runtime owner. ADR 0002 records that decision.
 
 ## Module layout
 
-Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 21,126).
+Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 25,160).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- | --- |
 | `lib` | `src/lib.rs` | 170 | Crate root: module declarations, all `pub use` re-exports, `run_blocking`/`bounded_timeout` | `#![forbid(unsafe_code)]`, `run_blocking`, `bounded_timeout` |
 | `cancel` | `src/cancel.rs` | 169 | Hierarchical wakeable cancellation with first-reason-wins and parent-chain reason walking over `tokio_util::CancellationToken` | `CancellationToken` |
 | `channel` | `src/channel.rs` | 1908 | Typed bounded service channels (command/event/request/latest-state) with resource charging, overflow policies, privacy-safe counters | `ChannelSpec`, `ChannelName`, `CommunicationClass`, `OverflowPolicy`, `QueueCharge`, `RequestChannelParts`, `LatestState`, `*Sender`/`*Receiver`, `Received`, `ReceivedRequest`, `ChannelSnapshot`, all error types |
-| `bandwidth` | `src/bandwidth.rs` | 558 | Shared cancellable inbound/outbound byte token buckets with bounded FIFO waiter queues, independent direction scheduling and redacted peer keys | `BandwidthGovernor`, `BandwidthGovernorConfig`, `BandwidthDirection`, `BandwidthPeerKey`, `BandwidthGovernorSnapshot` |
-| `context` | `src/context.rs` | 692 | Per-service context bundle, readiness, health publication, `ChildScope` with bounded join/forced abort, internal `RuntimeClock` | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
-| `graph` | `src/graph.rs` | 648 | Service registration, deterministic topological ordering, full-graph validation before startup, restart policy | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `ServiceResult`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
-| `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 359 | Bounded data-phase receive oracle: one absolute deadline plus cumulative frame/byte/block/non-target-I2NP bounds, strict RouterInfo signature validation, exact DeliveryStatus correlation. Never wired into the production service graph | `OracleConfig`, `OracleCounters`, `OracleAccept`, `MatchedTarget`, `PeerRouterHashBinding`, `DataOracleError` (re-exported also as `DataOracle`) |
-| `ntcp2_driver` | `src/ntcp2_driver.rs` | 1220 | Runtime-owned handshake action executor: exact reads/writes, bounded deadlines, cancellation, replay admission, clock, padding, RouterInfo handoff | `HandshakeDriverConfig`, `HandshakeDriverError`, `HandshakeRun`, `HandshakeRunOutcome`, `HandshakeClock`, `HandshakeCounterSnapshot`, `PaddingProfile`, `drive_initiator_handshake`, `drive_responder_handshake`, `*_observed` variants |
+| `bandwidth` | `src/bandwidth.rs` | 945 | Shared cancellable inbound/outbound byte token buckets with bounded FIFO waiter queues, independent direction scheduling and redacted peer keys | `BandwidthGovernor`, `BandwidthGovernorConfig`, `BandwidthDirection`, `BandwidthPeerKey`, `BandwidthGovernorSnapshot` |
+| `context` | `src/context.rs` | 710 | Per-service context bundle, readiness, health publication, `ChildScope` with bounded join/forced abort, internal `RuntimeClock` | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
+| `graph` | `src/graph.rs` | 772 | Service registration, deterministic topological ordering, full-graph validation before startup, restart policy | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `ServiceResult`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
+| `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 609 | Bounded data-phase receive oracle: one absolute deadline plus cumulative frame/byte/block/non-target-I2NP bounds, strict RouterInfo signature validation, exact DeliveryStatus correlation. Never wired into the production service graph | `OracleConfig`, `OracleCounters`, `OracleAccept`, `MatchedTarget`, `PeerRouterHashBinding`, `DataOracleError` (re-exported also as `DataOracle`) |
+| `ntcp2_driver` | `src/ntcp2_driver.rs` | 1293 | Runtime-owned handshake action executor: exact reads/writes, bounded deadlines, cancellation, replay admission, clock, padding, RouterInfo handoff | `HandshakeDriverConfig`, `HandshakeDriverError`, `HandshakeRun`, `HandshakeRunOutcome`, `HandshakeClock`, `HandshakeCounterSnapshot`, `PaddingProfile`, `drive_initiator_handshake`, `drive_responder_handshake`, `*_observed` variants |
 | `ntcp2_handshake_observer` | `src/ntcp2_handshake_observer.rs` | 140 | Privacy-safe handshake progress observer trait. Records bounded stage name, octet counts, typed I/O result, elapsed ms — never raw payload, keys, Noise state, transcript, ciphertext, or RouterInfo bytes. Synchronous, infallible, non-blocking | `HandshakeProgressObserver` (trait), `HandshakeStageObservation`, `HandshakeIoResult`, `NoopHandshakeObserver` |
-| `ntcp2_link` | `src/ntcp2_link.rs` | 605 | Authenticated frame reader/writer children and per-frame inbound/outbound queue accounting leases | `AuthenticatedLink`, `AuthenticatedLinkError`, `AuthenticatedLinkStartError`, `AuthenticatedLinkSnapshot`, `ReceivedFrameLease` |
-| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | 2357 | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, global/IP/subnet admission, replay cache, dial backoff, link children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `InboundPermit`, `ActiveLinkAdmission`, `ActiveLinkPermit`, `ReplayCache`, `DialAdmission`, `DialKey`, `IpPrefixPolicy`, `AdmittedInboundStream`, `AuthenticatedInboundStream`, `ExactIoError`, `read_exact`, `write_all_exact` |
-| `observability` | `src/observability.rs` | 360 | Privacy-aware tracing events, bounded aggregate snapshots, shared `pub(crate) TaskCounters` | `RuntimeSnapshot`, `SupervisorSnapshot`, `ServiceSnapshot`, `SimulationSnapshot`, `RouterLifecycle`, `SnapshotError`, `event` |
+| `ntcp2_link` | `src/ntcp2_link.rs` | 1317 | Authenticated frame reader/writer children and per-frame inbound/outbound queue accounting leases | `AuthenticatedLink`, `AuthenticatedLinkError`, `AuthenticatedLinkStartError`, `AuthenticatedLinkSnapshot`, `ReceivedFrameLease` |
+| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | 3421 | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, global/IP/subnet admission, replay cache, dial backoff, link children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `InboundPermit`, `ActiveLinkAdmission`, `ActiveLinkPermit`, `ReplayCache`, `DialAdmission`, `DialKey`, `IpPrefixPolicy`, `AdmittedInboundStream`, `AuthenticatedInboundStream`, `ExactIoError`, `read_exact`, `write_all_exact` |
+| `observability` | `src/observability.rs` | 378 | Privacy-aware tracing events, bounded aggregate snapshots, shared `pub(crate) TaskCounters` | `RuntimeSnapshot`, `SupervisorSnapshot`, `ServiceSnapshot`, `SimulationSnapshot`, `RouterLifecycle`, `SnapshotError`, `event` |
 | `ssu2_controlled_peer_test` | `src/ssu2_controlled_peer_test.rs` | 767 | Bounded driver for the wire-real 7-message peer-test exchange; spawns ephemeral helper loop tasks under a caller-owned `ChildScope` and records nothing itself — outcomes return to the caller | `run_controlled_peer_test`, `ControlledPeerTestParams`, `ControlledPeerTestOutcome`, `ControlledPeerTestSigner` |
-| `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1 323 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
-| `ssu2_runtime` | `src/ssu2_runtime.rs` | 8 388 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
-| `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
+| `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1323 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
+| `ssu2_qualification_observer` | `src/ssu2_qualification_observer.rs` | 372 | Privacy-safe SSU2 qualification event observer: bounded stage names, counts, and typed outcomes — never raw payloads, keys, addresses, or RouterInfo bytes | `Ssu2QualificationObserver`, `Ssu2QualificationEvent`, `Ssu2QualificationEventKind` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 8412 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
+| `supervisor` | `src/supervisor.rs` | 2454 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
-`ssu2_runtime` is by far the largest module (7,235 lines, ~37% of the crate),
-followed by `ntcp2_runtime` (2,357) and `channel` (1,908).
+`ssu2_runtime` is by far the largest module (8,412 lines, ~33% of the crate),
+followed by `ntcp2_runtime` (3,421) and `channel` (1,908).
 
 ## Public surface
 
@@ -132,7 +133,8 @@ are `pub(crate)` and are **not** part of it.
   `ExactIoError`, `InboundAdmission`, `InboundChunk`, `InboundPermit`,
   `IoErrorKind`, `IpPrefixPolicy`, `LinkHandle`, `LinkId`, `LinkSendError`,
   `LinkSnapshot`, `LinkStartError`, `LinkTermination`, `ListenerHandle`,
-  `ListenerSnapshot`, `Ntcp2Deadline`, `Ntcp2DeadlineError`, `Ntcp2Event`,
+  `ListenerSnapshot`, `Ntcp2Deadline`, `Ntcp2DeadlineError`, `Ntcp2DialScope`,
+  `Ntcp2Event`,
   `Ntcp2EventKind`, `Ntcp2RuntimeConfig`, `Ntcp2RuntimeConfigError`,
   `Ntcp2RuntimeDeadlines`, `Ntcp2RuntimeLimits`, `Ntcp2RuntimeService`,
   `ReplayCache`, `ReplayCacheDecision`, `ReplayCacheSnapshot`,
@@ -430,6 +432,51 @@ time.
   (`Closed`, `Deadline`, `Cancelled`, `Failed`); `read_exact` and
   `write_all_exact` are the only raw-socket helpers.
 
+#### The address scope (`Ntcp2DialScope`)
+
+`Ntcp2DialScope` is the runtime's dial admission boundary. It has two
+variants and one predicate:
+
+| Variant | Admits | Refuses |
+| --- | --- | --- |
+| `Loopback` | loopback addresses only — **exactly** the historical clamp | every non-loopback address |
+| `PrivateLan` | RFC1918 IPv4 literals only (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) | loopback, the unspecified address, public IPv4, and every IPv6 form including ULA and IPv4-mapped literals |
+
+`admits(&self, ip: IpAddr) -> bool` is the whole rule; `name()` returns the
+stable scope name used in tracing stages and receipts (`loopback`,
+`private_lan`).
+
+`dial_authenticated_peer_in_scope(scope, ...)` is the scope-parameterized
+dial. Every other check is unchanged: the peer signature, the network id, the
+expected router hash, the address expiry, the admission and backoff rules,
+the deadline, the cancellation, and the link promotion. The address filter is
+`if !scope.admits(endpoint.ip())`.
+
+`dial_authenticated_loopback_peer(..)` remains and now delegates to
+`dial_authenticated_peer_in_scope` with `Ntcp2DialScope::Loopback`, so its
+behaviour is **unchanged**. The scope is always the caller's: the runtime
+never widens it, and it is never derived from configuration inside the
+runtime.
+
+`DialOutcome` gained one variant, `AddressOutOfScope`: no advertised address
+fell inside the caller's permitted scope. It is distinct from `Failed`,
+because "every advertised address was out of scope" is a policy outcome and
+not a transport failure — a refusal that the caller should see rather than
+retry.
+
+#### Installing the dual-transport RouterInfo (`ssu2_runtime.rs`)
+
+`Ssu2RuntimeService::install_scoped_dual_router_info(encoded, wall_now_ms,
+ntcp2_endpoint, scope)` installs the dual-transport RouterInfo form after
+verifying that its NTCP2 address names the separately bound endpoint **and**
+falls inside `scope`, with an unprivileged port. An endpoint outside the scope
+is refused exactly as the controlled profile refuses a non-loopback one, and
+the scope is never widened here.
+
+`install_controlled_dual_router_info(..)` remains and delegates with
+`Ntcp2DialScope::Loopback`, so the controlled profile keeps its historical
+loopback-only admission.
+
 ### `AuthenticatedLink` reader/writer supervision (`ntcp2_link.rs`)
 
 `reader_task` (and its `writer_task` counterpart) loop: read a 2-byte length
@@ -583,7 +630,7 @@ test) → typed outcome mirrored into reachability as family-only signals
 service and all tables is redacted. Sealed-session carriage of in-session blocks
 is proven in `i2pr-transport-ssu2/tests/peer_relay.rs`.
 
-### NTCP2 executor, driver, observer, and the non-activation guard
+### NTCP2 executor, driver, observer, and the activation guard
 
 `ntcp2_runtime` owns bounded NTCP2 socket/link lifecycle;
 `ntcp2_driver` fulfills handshake actions with exact reads/writes, bounded
@@ -591,23 +638,36 @@ deadlines, cancellation, replay admission, clock, padding, and RouterInfo
 handoff; `ntcp2_link` owns authenticated frame reader/writer children and queue
 leases.
 
-**The NTCP2 link service is composed but not activated in production.** Three
-independent guards agree:
+**NTCP2 is not activated by default.** Three independent guards agree:
 
-1. `crates/i2pr-daemon/src/config.rs:718` — `default_ntcp2_enabled()` returns
+1. `crates/i2pr-daemon/src/config.rs:1018` — `default_ntcp2_enabled()` returns
    `false`, so the normal daemon does not enable NTCP2.
-2. `grep` finds **no** reference to `Ntcp2RuntimeService` anywhere in
-   `crates/i2pr-daemon/src/`. The only non-test consumer is
-   `tools/i2pr-interop/src/main.rs`, a non-production test launcher.
+2. An enabled NTCP2 surface must name an explicit qualification profile.
+   Only `controlled_loopback` and `private_lan_qualification` are accepted,
+   and the daemon's own activation gate refuses every other shape with a
+   named reason. The daemon registers its own `ntcp2-router` service; the
+   transport crate's `ntcp2-transport` service is still never registered.
 3. `specs/support.toml` marks the NTCP2 surfaces `status = "experimental"`,
    `advertised = false`.
 
+The daemon does reach `Ntcp2RuntimeService` — `crates/i2pr-daemon/src/lib.rs`
+constructs one inside `register_ntcp2_service`, which runs only when
+`config.transport.ntcp2.enabled` is true and the activation gate admits the
+configuration. The guard is the **profile**, not the absence of a reference.
+
+The activation gate itself is not in this crate: it is
+`crates/i2pr-daemon/src/ntcp2_activation.rs`, and it is a pure function over
+an already-normalized configuration. Its result is the `Ntcp2DialScope` this
+crate's runtime admits, and the scope is never widened inside the runtime.
+The operator-facing procedure is
+[`docs/operations/ntcp2-private-lan-qualification.md`](../operations/ntcp2-private-lan-qualification.md).
+
 Plan 101
-(`plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md`,
-status *planned*) is the plan of record for the daemon activation-safety
+(`plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md`)
+is the plan of record for the daemon activation-safety
 corrective; the retained development result is `protocol-defect-localized` at
 `noise_authenticated` (Plan 099/100, `plans/closure/ntcp2-transport/099-status.md`).
-Nothing in this crate may be read as NTCP2 activation.
+Nothing in this crate may be read as a **public** NTCP2 activation.
 
 `ntcp2_data_oracle` and `ntcp2_handshake_observer` are **not compiled behind a
 Cargo feature** — both `mod` declarations are unconditional in `lib.rs`. What
@@ -781,14 +841,14 @@ integration tests across the 4 files in `tests/` — 102 total.
 | `channel.rs` | 11 (8 `start_paused`) | ordering + resource charge until processing finishes, `send_until` deadline/cancel, synthetic overload graph drains with no usage or task leak, request/latest-state paths |
 | `context.rs` | 3 | child scope join, bounded task limit, shutdown report |
 | `graph.rs` | 6 sync | lexical topological determinism, invalid graphs rejected before startup, restartable services require a policy, optional-startup and essential classification is a contradiction, startup requirement defaults to `Required` |
-| `ntcp2_data_oracle.rs` | 5 | bounded step budget, every negative bound, exact target correlation |
-| `ntcp2_driver.rs` | 6 (4 `start_paused`) | initiator/responder action fulfillment, padding bounds |
+| `ntcp2_data_oracle.rs` | 7 | bounded step budget, every negative bound, exact target correlation |
+| `ntcp2_driver.rs` | 7 (4 `start_paused`) | initiator/responder action fulfillment, padding bounds |
 | `ntcp2_handshake_observer.rs` | 2 | observer records metadata only, never payload |
-| `ntcp2_link.rs` | 1 | `queue_release_returns_to_baseline` (RAII accounting) |
-| `ntcp2_runtime.rs` | 8 (2 `start_paused`) | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, `link_reader_and_writer_are_joined_after_close`, `queue_entry_drop_releases_exactly_once`, `active_link_admission_is_exact_and_raii`, `queue_and_active_link_teardown_repeat_without_underflow` |
+| `ntcp2_link.rs` | 6 (1 `start_paused`) | `queue_release_returns_to_baseline` (RAII accounting) |
+| `ntcp2_runtime.rs` | 16 (2 `start_paused`) | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, `link_reader_and_writer_are_joined_after_close`, `queue_entry_drop_releases_exactly_once`, `active_link_admission_is_exact_and_raii`, `queue_and_active_link_teardown_repeat_without_underflow`, `dial_scope_admits_only_its_profile_addresses`, `dial_scope_admission_set_is_exactly_the_profile_set`, `loopback_scope_refuses_a_private_lan_address`, `private_lan_scope_refuses_a_public_address` |
 | `ssu2_peer_relay.rs` | 7 sync | `introducer_stays_disabled_by_default`, rate-limiter cheap-drop before crypto, quotas + shutdown to baseline, relay-request replay does not re-amplify, snapshot/Debug expose no secrets, earliest-deadline tracking, unknown signer fails closed |
-| `ssu2_runtime.rs` | 19 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests |
-| `supervisor.rs` | 13 (8 `start_paused`) | `services_start_ready_and_shutdown_gracefully`, `panic_is_classified_without_payload`, `restartable_services_use_bounded_backoff`, `degradable_and_optional_failures_do_not_stop_essential_work`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, **`forced_child_cleanup_is_repeatably_joined`**, `service_child_scope_is_joined_before_manager_completion` |
+| `ssu2_runtime.rs` | 21 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests |
+| `supervisor.rs` | 22 (20 `start_paused`) | `services_start_ready_and_shutdown_gracefully`, `panic_is_classified_without_payload`, `restartable_services_use_bounded_backoff`, `degradable_and_optional_failures_do_not_stop_essential_work`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, **`forced_child_cleanup_is_repeatably_joined`**, `service_child_scope_is_joined_before_manager_completion` |
 
 `observability.rs` and `ssu2_controlled_peer_test.rs` carry no in-crate
 `#[cfg(test)]` module; their behavior is covered by the integration suites.
@@ -805,10 +865,10 @@ integration tests across the 4 files in `tests/` — 102 total.
 ### Posture
 
 - **Paused time is the default for state-machine and overload tests.**
-  `#[tokio::test(start_paused = true)]` appears in `channel.rs` (8),
-  `ntcp2_driver.rs` (4), `ntcp2_runtime.rs` (2), `supervisor.rs` (8), and
-  `cancel.rs`. No wall-clock sleeps participate in overload or state-machine
-  assertions.
+  `#[tokio::test(start_paused = true)]` appears in `bandwidth.rs` (6),
+  `channel.rs` (8), `ntcp2_driver.rs` (4), `ntcp2_link.rs` (1),
+  `ntcp2_runtime.rs` (2), and `supervisor.rs` (20). No wall-clock sleeps
+  participate in overload or state-machine assertions.
 - **Real-socket suites are loopback-only and use OS-assigned ports.**
   Every bind literal in `tests/` is `127.0.0.1:0`; `ssu2_independent.rs` is the
   only file with fixed port numbers, and only because it dials an
@@ -883,6 +943,12 @@ integration tests across the 4 files in `tests/` — 102 total.
 13. **The crate is a bounded seam, not a protocol driver** — it executes
     transport actions and enforces runtime ownership, but claims no handshake,
     frame, manager-registration, or mixed-router completion.
+14. **The dial scope is the caller's, and the runtime never widens it** —
+    `Ntcp2DialScope` is passed in by the caller and applied as a filter, so a
+    scope cannot be widened from inside the runtime by a later configuration
+    change. `AddressOutOfScope` is a distinct outcome from `Failed`: "every
+    advertised address was out of scope" is a policy refusal the caller should
+    see, not a transport failure to retry.
 
 ## Cross-references
 

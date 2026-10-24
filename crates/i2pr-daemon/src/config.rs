@@ -1425,6 +1425,10 @@ const MAX_SSU2_HANDSHAKE_TIMEOUT_MS: u64 = 60_000;
 const MIN_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 10;
 const MAX_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 1_000;
 const MIN_SSU2_SERVICE_PORT: u16 = 1024;
+/// Plan 496: the NTCP2 private-LAN qualification profile carries the same
+/// non-privileged service-port floor as the SSU2 surface, so a configured
+/// NTCP2 service port is never a privileged port.
+const MIN_NTCP2_SERVICE_PORT: u16 = 1024;
 
 // --- Plan 174 service-tunnel defaults: disabled, loopback-only, no listener. ---
 
@@ -1653,6 +1657,14 @@ pub enum Ntcp2QualificationProfile {
     Disabled,
     /// Loopback-only source qualification. This never grants advertisement.
     ControlledLoopback,
+    /// Plan 496: explicit RFC1918 IPv4 bind for a private qualification
+    /// lab.
+    ///
+    /// This is source-side qualification only. It never grants NetDB
+    /// publication, a reachability permit, a `caps=f` advertisement, or
+    /// any public transport activation, and it requires the SSU2 surface
+    /// to be in the matching private-LAN profile.
+    PrivateLanQualification,
 }
 
 /// Normalized NTCP2 transport configuration.
@@ -1660,9 +1672,12 @@ pub enum Ntcp2QualificationProfile {
 pub struct Ntcp2Config {
     /// Whether NTCP2 transport is enabled.
     pub enabled: bool,
-    /// Explicit profile; the only enabled profile is loopback-only.
+    /// Explicit profile; the enabled profiles are the loopback-only
+    /// controlled profile and the RFC1918-only private-LAN qualification
+    /// profile.
     pub qualification_profile: Ntcp2QualificationProfile,
-    /// Local bind address, restricted to loopback while enabled.
+    /// Local bind address. The controlled profile is loopback-only; the
+    /// private-LAN profile requires an RFC1918 IPv4 literal.
     pub bind_address: IpAddr,
     /// Explicit, non-privileged port required by the qualification profile.
     pub listen_port: u16,
@@ -2276,7 +2291,7 @@ impl Config {
             });
         }
 
-        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, raw.network.network_id)?;
+        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, &raw.ssu2, raw.network.network_id)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
@@ -3451,20 +3466,31 @@ fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), C
     Ok(())
 }
 
-fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config, ConfigError> {
+fn normalize_ntcp2(
+    raw: &RawNtcp2Config,
+    ssu2: &RawSsu2Config,
+    network_id: u16,
+) -> Result<Ntcp2Config, ConfigError> {
     let qualification_profile = match (raw.enabled, raw.qualification_profile.as_str()) {
         (false, "disabled") => Ntcp2QualificationProfile::Disabled,
         (true, "controlled_loopback") => Ntcp2QualificationProfile::ControlledLoopback,
+        (true, "private_lan_qualification") => Ntcp2QualificationProfile::PrivateLanQualification,
         (false, "controlled_loopback") => {
             return Err(ConfigError::Semantic {
                 field: "transport.ntcp2.qualification_profile",
                 reason: "controlled_loopback requires enabled = true",
             });
         }
+        (false, "private_lan_qualification") => {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires enabled = true",
+            });
+        }
         (true, _) => {
             return Err(ConfigError::Semantic {
                 field: "transport.ntcp2.qualification_profile",
-                reason: "enabled NTCP2 requires the explicit controlled_loopback profile",
+                reason: "enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile",
             });
         }
         (false, _) => {
@@ -3474,13 +3500,33 @@ fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config,
             });
         }
     };
-    let bind_address: IpAddr = raw
-        .bind_address
-        .parse()
-        .map_err(|_| ConfigError::Semantic {
+    // Plan 496: an unset bind address is not a private-LAN endpoint, so
+    // it is refused with its own reason rather than with the generic
+    // literal-decode failure. The controlled profile keeps its existing
+    // behavior.
+    if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification
+        && raw.bind_address.trim().is_empty()
+    {
+        return Err(ConfigError::Semantic {
             field: "transport.ntcp2.bind_address",
-            reason: "must be an IP address literal",
-        })?;
+            reason: "private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint",
+        });
+    }
+    let bind_address: IpAddr = match raw.bind_address.parse() {
+        Ok(address) => address,
+        Err(_) => {
+            if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification {
+                return Err(ConfigError::Semantic {
+                    field: "transport.ntcp2.bind_address",
+                    reason: "private_lan_qualification requires an explicit RFC1918 IPv4 address literal",
+                });
+            }
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.bind_address",
+                reason: "must be an IP address literal",
+            });
+        }
+    };
     if qualification_profile == Ntcp2QualificationProfile::ControlledLoopback {
         if !bind_address.is_loopback() {
             return Err(ConfigError::Semantic {
@@ -3498,6 +3544,78 @@ fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config,
             return Err(ConfigError::Semantic {
                 field: "network.network_id",
                 reason: "controlled NTCP2 requires a network ID representable by the handshake",
+            });
+        }
+    }
+    if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification {
+        // Plan 496 §5.1: the operator profile is RFC1918 IPv4 only. Loopback
+        // is not a private LAN, the unspecified address is not an endpoint,
+        // public addresses are not private, and IPv6 is out of scope. Each
+        // shape is refused with its own reason.
+        match bind_address {
+            IpAddr::V4(address) => {
+                if address.is_loopback() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address",
+                    });
+                }
+                if address.is_unspecified() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address",
+                    });
+                }
+                if !address.is_private() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+                    });
+                }
+            }
+            IpAddr::V6(_) => {
+                return Err(ConfigError::Semantic {
+                    field: "transport.ntcp2.bind_address",
+                    reason: "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+                });
+            }
+        }
+        if raw.listen_port == 0 {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.listen_port",
+                reason: "private_lan_qualification requires an explicit nonzero port",
+            });
+        }
+        if raw.listen_port < MIN_NTCP2_SERVICE_PORT {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.listen_port",
+                reason: "private_lan_qualification requires a port of at least 1024",
+            });
+        }
+        if network_id > u16::from(u8::MAX) {
+            return Err(ConfigError::Semantic {
+                field: "network.network_id",
+                reason: "private_lan_qualification requires a network ID representable by the handshake",
+            });
+        }
+        // Family coherence with the SSU2 surface: the private-LAN profile
+        // composes one RouterInfo that carries both transports, so the two
+        // must agree on the private LAN and on the address family. This
+        // mirrors the controlled-loopback cross-transport rule that
+        // `normalize_floodfill` asserts for the floodfill profile.
+        if ssu2.qualification_profile != "private_lan_qualification" {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile",
+            });
+        }
+        if !matches!(
+            ssu2.bind_ipv4.trim().parse::<IpAddr>(),
+            Ok(IpAddr::V4(address)) if address.is_private()
+        ) {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address",
             });
         }
     }
@@ -5157,6 +5275,262 @@ data_dir = "./state"
             })
         ));
         assert!(!path.exists());
+    }
+
+    /// Plan 496 §5.1: the authorized shape of the NTCP2 private-LAN
+    /// qualification profile. Both transports sit in the same private-LAN
+    /// profile on an RFC1918 IPv4 endpoint.
+    const PRIVATE_LAN_NTCP2_BLOCK: &str = "enabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_address = \"192.168.10.25\"\nlisten_port = 44321\n";
+    const PRIVATE_LAN_SSU2_BLOCK: &str = "enabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n";
+
+    /// Builds a configuration carrying the two transport blocks under test.
+    fn private_lan_config(ntcp2_block: &str, ssu2_block: &str, network_block: &str) -> String {
+        format!(
+            "{}\n{}\n[transport.ntcp2]\n{}\n[ssu2]\n{}\n",
+            MINIMAL, network_block, ntcp2_block, ssu2_block
+        )
+    }
+
+    /// Plan 496 §5.1: every unauthorized shape of the private-LAN profile,
+    /// each paired with the repaired configuration that must still parse.
+    ///
+    /// The pair is the inverted probe: the refusal must fire on the
+    /// rejected shape and must not fire on its repair.
+    type PrivateLanCase = (&'static str, String, String, &'static str, &'static str);
+
+    fn private_lan_cases() -> Vec<PrivateLanCase> {
+        let ntcp2 = PRIVATE_LAN_NTCP2_BLOCK;
+        let ssu2 = PRIVATE_LAN_SSU2_BLOCK;
+        let repaired = private_lan_config(ntcp2, ssu2, "");
+        vec![
+            (
+                "the profile is not enabled",
+                private_lan_config(
+                    &ntcp2.replace("enabled = true", "enabled = false"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires enabled = true",
+            ),
+            (
+                "the bind address is unset",
+                private_lan_config(
+                    &ntcp2.replace("bind_address = \"192.168.10.25\"", "bind_address = \"\""),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint",
+            ),
+            (
+                "the bind address is not an address literal",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "not-an-ip"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an explicit RFC1918 IPv4 address literal",
+            ),
+            (
+                "the bind address is loopback",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "127.0.0.1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address",
+            ),
+            (
+                "the bind address is unspecified",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "0.0.0.0"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address",
+            ),
+            (
+                "the bind address is public",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "8.8.8.8"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+            ),
+            (
+                "the bind address is a TEST-NET address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "192.0.2.1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+            ),
+            (
+                "the bind address is an IPv6 unique-local address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "fd00::1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+            ),
+            (
+                "the bind address is an IPv6 loopback address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "::1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+            ),
+            (
+                "the listen port is zero",
+                private_lan_config(
+                    &ntcp2.replace("listen_port = 44321", "listen_port = 0"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.listen_port",
+                "private_lan_qualification requires an explicit nonzero port",
+            ),
+            (
+                "the listen port is privileged",
+                private_lan_config(
+                    &ntcp2.replace("listen_port = 44321", "listen_port = 1023"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.listen_port",
+                "private_lan_qualification requires a port of at least 1024",
+            ),
+            (
+                "the network id does not fit the handshake width",
+                private_lan_config(ntcp2, ssu2, "[network]\nnetwork_id = 300\n"),
+                repaired.clone(),
+                "network.network_id",
+                "private_lan_qualification requires a network ID representable by the handshake",
+            ),
+            (
+                "the ssu2 surface is not in the private-LAN profile",
+                private_lan_config(
+                    ntcp2,
+                    &ssu2.replace(
+                        "qualification_profile = \"private_lan_qualification\"",
+                        "qualification_profile = \"controlled_loopback\"",
+                    ),
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile",
+            ),
+            (
+                "the ssu2 surface does not bind an RFC1918 IPv4 address",
+                private_lan_config(ntcp2, &ssu2.replace("192.168.10.25", "127.0.0.1"), ""),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address",
+            ),
+        ]
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_refuses_every_unauthorized_shape() {
+        for (name, rejected, _repaired, field, reason) in private_lan_cases() {
+            match Config::parse(&rejected) {
+                Err(ConfigError::Semantic {
+                    field: got_field,
+                    reason: got_reason,
+                }) => {
+                    assert_eq!(
+                        got_field, field,
+                        "case `{name}` must name the offending field"
+                    );
+                    assert_eq!(
+                        got_reason, reason,
+                        "case `{name}` must state the requirement"
+                    );
+                }
+                Err(other) => {
+                    panic!("case `{name}` must be refused with a semantic error: {other:?}")
+                }
+                Ok(config) => panic!("case `{name}` must be refused, parsed {config:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_refusals_are_not_vacuous() {
+        // The inverted probe: repairing only the offending value of every
+        // refusal must make the same configuration parse. A refusal that
+        // also refused its own repair would prove nothing.
+        for (name, _rejected, repaired, _field, _reason) in private_lan_cases() {
+            let config = Config::parse(&repaired)
+                .unwrap_or_else(|error| panic!("case `{name}` repair must parse: {error:?}"));
+            assert_eq!(
+                config.transport.ntcp2.qualification_profile,
+                Ntcp2QualificationProfile::PrivateLanQualification,
+                "case `{name}` repair must select the private-LAN profile"
+            );
+            assert_eq!(config.transport.ntcp2.listen_port, 44321);
+        }
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_accepts_rfc1918_endpoint_with_matching_ssu2() {
+        let text = private_lan_config(PRIVATE_LAN_NTCP2_BLOCK, PRIVATE_LAN_SSU2_BLOCK, "");
+        let config = Config::parse(&text).expect("valid private-LAN profile");
+        assert!(config.transport.ntcp2.enabled);
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::PrivateLanQualification
+        );
+        assert_eq!(
+            config.transport.ntcp2.bind_address,
+            "192.168.10.25".parse::<IpAddr>().expect("RFC1918 literal")
+        );
+        assert_eq!(config.transport.ntcp2.listen_port, 44321);
+        assert_eq!(
+            config.ssu2.qualification_profile,
+            Ssu2QualificationProfile::PrivateLan
+        );
+        assert_eq!(
+            config.ssu2.bind_ipv4,
+            Some("192.168.10.25".parse::<IpAddr>().expect("RFC1918 literal"))
+        );
+        assert_eq!(config.ssu2.port, 44123);
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_never_falls_back_to_the_controlled_profile() {
+        // The controlled profile keeps its own bind, port, and profile
+        // rules, and a private-LAN bind under it stays refused.
+        let text = format!(
+            "{}\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = 44321\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("controlled-loopback profile still parses");
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::ControlledLoopback
+        );
+        assert!(config.transport.ntcp2.bind_address.is_loopback());
+        assert_eq!(config.transport.ntcp2.listen_port, 44321);
+
+        let non_loopback = text.replace("127.0.0.1", "192.168.10.25");
+        assert!(matches!(
+            Config::parse(&non_loopback),
+            Err(ConfigError::Semantic {
+                field: "transport.ntcp2.bind_address",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ntcp2_defaults_stay_disabled_and_loopback_only() {
+        // Invariant 1: with no `[transport.ntcp2]` section at all, NTCP2
+        // is disabled, disabled-profile, and loopback-only.
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.transport.ntcp2.enabled);
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::Disabled
+        );
+        assert!(config.transport.ntcp2.bind_address.is_loopback());
     }
 
     #[test]

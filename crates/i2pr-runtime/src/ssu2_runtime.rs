@@ -2880,7 +2880,31 @@ impl Ssu2RuntimeService {
         wall_now_ms: u64,
         ntcp2_endpoint: SocketAddr,
     ) -> Result<(), Ssu2PublicationUnavailable> {
-        if !ntcp2_endpoint.ip().is_loopback() || ntcp2_endpoint.port() < 1024 {
+        self.install_scoped_dual_router_info(
+            encoded,
+            wall_now_ms,
+            ntcp2_endpoint,
+            crate::ntcp2_runtime::Ntcp2DialScope::Loopback,
+        )
+    }
+
+    /// Installs the dual-transport RouterInfo form after verifying its NTCP2
+    /// address names the separately bound endpoint **and** falls inside
+    /// `scope`.
+    ///
+    /// Plan 496: the controlled profile keeps the historical loopback-only
+    /// admission. The guarded operator profile admits an RFC1918 IPv4
+    /// endpoint instead. The scope is supplied by the caller and is never
+    /// widened here: an endpoint outside the scope is refused exactly as the
+    /// controlled profile refuses a non-loopback one.
+    pub fn install_scoped_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+        scope: crate::ntcp2_runtime::Ntcp2DialScope,
+    ) -> Result<(), Ssu2PublicationUnavailable> {
+        if !scope.admits(ntcp2_endpoint.ip()) || ntcp2_endpoint.port() < 1024 {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);
         }
         self.install_local_router_info_inner(encoded, wall_now_ms, Some(ntcp2_endpoint))
