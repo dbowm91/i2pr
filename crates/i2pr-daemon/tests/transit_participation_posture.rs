@@ -274,7 +274,7 @@ fn a_restart_re_derives_the_accounting_from_zero() {
 
 #[test]
 fn the_receipts_are_bounded_and_carry_counts_only() {
-    let config = enabled_config(25, 32, 32);
+    let config = enabled_config(25, 8, 8);
     let governor = governor(1024 * 1024);
     let mut owner =
         TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
@@ -283,7 +283,7 @@ fn the_receipts_are_bounded_and_carry_counts_only() {
     }
     assert_eq!(owner.receipt_count(), MAX_TRANSIT_PARTICIPATION_RECEIPTS);
     for receipt in owner.receipts() {
-        assert!(receipt.participating_tunnels <= 32);
+        assert!(receipt.participating_tunnels <= 8);
         assert!(receipt.peers_participating <= MAX_TRANSIT_PARTICIPATION_TRACKED_PEERS);
         assert!(receipt.bytes_relayed <= owner.share_bytes_per_second());
     }
