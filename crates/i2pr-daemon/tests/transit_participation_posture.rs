@@ -27,13 +27,14 @@
 #![forbid(unsafe_code)]
 
 use i2pr_daemon::config::{
-    Config, ConfigError, DEFAULT_TRANSIT_PARTICIPATING_TUNNELS, DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP,
-    DEFAULT_TRANSIT_SHARE_LIMIT, MAX_TRANSIT_SHARE_LIMIT_PERCENT,
+    Config, ConfigError, DEFAULT_TRANSIT_PARTICIPATING_TUNNELS,
+    DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP, DEFAULT_TRANSIT_SHARE_LIMIT,
+    MAX_TRANSIT_SHARE_LIMIT_PERCENT,
 };
 use i2pr_daemon::transit_participation::{
     MAX_TRANSIT_PARTICIPATION_RECEIPTS, MAX_TRANSIT_PARTICIPATION_TRACKED_PEERS,
-    TransitParticipationBinding, TransitParticipationOwner, TransitParticipationPolicy,
-    TransitReceiptKind, TransitRefusalReason, TransitRevocationReason, TRANSIT_SHARE_WINDOW_SECONDS,
+    TRANSIT_SHARE_WINDOW_SECONDS, TransitParticipationBinding, TransitParticipationOwner,
+    TransitParticipationPolicy, TransitReceiptKind, TransitRefusalReason, TransitRevocationReason,
 };
 use i2pr_proto::Hash;
 use i2pr_runtime::{BandwidthGovernor, BandwidthGovernorConfig};
@@ -127,8 +128,8 @@ fn an_opt_in_requires_an_enforced_share() {
 fn the_share_limit_is_enforced_rather_than_growing() {
     let config = enabled_config(25, 4, 2);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     let budget = owner.share_bytes_per_second();
     assert_eq!(budget, 128 * 1024);
 
@@ -139,12 +140,18 @@ fn the_share_limit_is_enforced_rather_than_growing() {
     );
     assert_eq!(owner.bytes_relayed(), budget);
     assert_eq!(
-        owner.refusals().count(TransitRefusalReason::ShareLimitExceeded),
+        owner
+            .refusals()
+            .count(TransitRefusalReason::ShareLimitExceeded),
         1
     );
 
     // The next window starts from zero rather than carrying the debt.
-    assert!(owner.charge_relay(budget, TRANSIT_SHARE_WINDOW_SECONDS).is_ok());
+    assert!(
+        owner
+            .charge_relay(budget, TRANSIT_SHARE_WINDOW_SECONDS)
+            .is_ok()
+    );
     assert_eq!(owner.bytes_relayed(), budget * 2);
 }
 
@@ -152,8 +159,8 @@ fn the_share_limit_is_enforced_rather_than_growing() {
 fn the_participating_tunnel_count_is_enforced_and_counted() {
     let config = enabled_config(25, 2, 2);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
 
     assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
     assert!(owner.admit(&peer(2), 1, 0, 0).is_ok());
@@ -162,7 +169,8 @@ fn the_participating_tunnel_count_is_enforced_and_counted() {
         Err(TransitRefusalReason::ParticipatingTunnelLimit)
     );
     assert_eq!(
-        owner.refusals()
+        owner
+            .refusals()
             .count(TransitRefusalReason::ParticipatingTunnelLimit),
         1
     );
@@ -173,8 +181,8 @@ fn the_participating_tunnel_count_is_enforced_and_counted() {
 fn the_per_peer_participation_cap_is_enforced_and_counted() {
     let config = enabled_config(25, 8, 1);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
 
     assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
     assert_eq!(
@@ -182,7 +190,9 @@ fn the_per_peer_participation_cap_is_enforced_and_counted() {
         Err(TransitRefusalReason::PeerParticipationCap)
     );
     assert_eq!(
-        owner.refusals().count(TransitRefusalReason::PeerParticipationCap),
+        owner
+            .refusals()
+            .count(TransitRefusalReason::PeerParticipationCap),
         1
     );
     // Another peer is still admitted: the cap is per peer.
@@ -193,8 +203,8 @@ fn the_per_peer_participation_cap_is_enforced_and_counted() {
 fn a_policy_change_to_off_stops_participation_and_is_recorded() {
     let config = enabled_config(25, 4, 2);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
 
     let off = Config::parse(&format!("{MINIMAL}\n[transit]\n")).expect("default posture");
@@ -233,7 +243,10 @@ fn a_withdrawn_permit_stops_participation_and_is_recorded() {
     );
     assert_eq!(owner.participating_tunnels(), 0);
     assert_eq!(owner.stops(), 1);
-    assert_eq!(owner.admit(&peer(2), 0, 0, 0), Err(TransitRefusalReason::Revoked));
+    assert_eq!(
+        owner.admit(&peer(2), 0, 0, 0),
+        Err(TransitRefusalReason::Revoked)
+    );
 }
 
 #[test]
@@ -247,7 +260,10 @@ fn a_health_loss_stops_participation_and_is_recorded() {
     // The issuing governor is gone: the permit is no longer healthy.
     drop(issuing);
     assert!(!owner.revalidate(None));
-    assert_eq!(owner.revocation(), Some(TransitRevocationReason::HealthLost));
+    assert_eq!(
+        owner.revocation(),
+        Some(TransitRevocationReason::HealthLost)
+    );
     assert_eq!(owner.participating_tunnels(), 0);
     assert_eq!(owner.stops(), 1);
 }
@@ -256,14 +272,14 @@ fn a_health_loss_stops_participation_and_is_recorded() {
 fn a_restart_re_derives_the_accounting_from_zero() {
     let config = enabled_config(25, 4, 2);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
     assert!(owner.charge_relay(4_096, 0).is_ok());
     assert_eq!(owner.bytes_relayed(), 4_096);
 
-    let restarted =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let restarted = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     assert_eq!(restarted.bytes_relayed(), 0);
     assert_eq!(restarted.window_bytes(), 0);
     assert_eq!(restarted.participating_tunnels(), 0);
@@ -276,8 +292,8 @@ fn a_restart_re_derives_the_accounting_from_zero() {
 fn the_receipts_are_bounded_and_carry_counts_only() {
     let config = enabled_config(25, 8, 8);
     let governor = governor(1024 * 1024);
-    let mut owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let mut owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     for index in 0..(MAX_TRANSIT_PARTICIPATION_RECEIPTS + 10) {
         assert!(owner.admit(&peer(index as u8), 0, 0, 0).is_ok());
     }
@@ -293,12 +309,8 @@ fn the_receipts_are_bounded_and_carry_counts_only() {
 fn the_binding_revalidates_the_permit_at_the_point_of_use() {
     let config = enabled_config(25, 4, 2);
     let live_governor = governor(1024 * 1024);
-    let owner = TransitParticipationOwner::from_config(
-        &config.transit,
-        Some(&live_governor),
-        50,
-    )
-    .expect("owner");
+    let owner = TransitParticipationOwner::from_config(&config.transit, Some(&live_governor), 50)
+        .expect("owner");
     let mut binding = TransitParticipationBinding::new(owner, Some(live_governor));
     assert!(binding.revalidate());
     assert!(binding.snapshot().enabled);
@@ -324,9 +336,7 @@ fn the_policy_bounds_are_named_and_bounded() {
     // The share limit is a percentage: zero and over one hundred are both
     // refused.
     assert!(TransitParticipationPolicy::new(0, 4, 2).is_err());
-    assert!(
-        TransitParticipationPolicy::new(MAX_TRANSIT_SHARE_LIMIT_PERCENT + 1, 4, 2).is_err()
-    );
+    assert!(TransitParticipationPolicy::new(MAX_TRANSIT_SHARE_LIMIT_PERCENT + 1, 4, 2).is_err());
     assert!(TransitParticipationPolicy::new(100, 4, 2).is_ok());
     // The tunnel count and the per-peer cap are bounded, and the per-peer
     // cap may not exceed the router-wide count.

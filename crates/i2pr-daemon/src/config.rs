@@ -4595,9 +4595,8 @@ data_dir = "./state"
             })
         ));
 
-        let disabled_governor = format!(
-            "{MINIMAL}\n[bandwidth]\nenabled = false\n[transit]\nparticipation = true\n"
-        );
+        let disabled_governor =
+            format!("{MINIMAL}\n[bandwidth]\nenabled = false\n[transit]\nparticipation = true\n");
         assert!(matches!(
             Config::parse(&disabled_governor),
             Err(ConfigError::Semantic {
@@ -4674,7 +4673,10 @@ data_dir = "./state"
     #[test]
     fn transit_section_rejects_unknown_keys() {
         let unknown = format!("{MINIMAL}\n[transit]\nadvertise = true\n");
-        assert!(matches!(Config::parse(&unknown), Err(ConfigError::Parse(_))));
+        assert!(matches!(
+            Config::parse(&unknown),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]

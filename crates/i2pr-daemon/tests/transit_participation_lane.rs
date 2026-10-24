@@ -29,9 +29,7 @@ use std::path::{Path, PathBuf};
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
 use i2pr_daemon::config::Config;
 use i2pr_daemon::router_i2np::{RouterDeliveryService, generate_controlled_identity};
-use i2pr_daemon::transit_compose::{
-    TransitBuildService, TransitDispatch, TransitHopMaterial,
-};
+use i2pr_daemon::transit_compose::{TransitBuildService, TransitDispatch, TransitHopMaterial};
 use i2pr_daemon::transit_owner::{
     LiveBuildOutcome, LiveInboundOutcome, TransitDataDisposition, TransitLiveOwner,
 };
@@ -48,7 +46,9 @@ use i2pr_runtime::{
     Ssu2RuntimeConfig,
 };
 use i2pr_transport::{LinkId, PeerId};
-use i2pr_tunnel::build_crypto::{BuildCryptography, EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography};
+use i2pr_tunnel::build_crypto::{
+    BuildCryptography, EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography,
+};
 use i2pr_tunnel::identity::TunnelId;
 use i2pr_tunnel::multirecord::{RECORD_BYTES, encode_count_prefixed_short_payload};
 use i2pr_tunnel::short_record::{
@@ -115,15 +115,20 @@ fn enabled_posture() -> (TransitParticipationBinding, BandwidthGovernor) {
         max_pending_per_peer: 2,
     })
     .expect("valid governor");
-    let owner =
-        TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50).expect("owner");
+    let owner = TransitParticipationOwner::from_config(&config.transit, Some(&governor), 50)
+        .expect("owner");
     (
         TransitParticipationBinding::new(owner, Some(governor.clone())),
         governor,
     )
 }
 
-fn participant_record(next_router: Hash, receive: u32, next: u32, message_id: u32) -> ShortRequestRecord {
+fn participant_record(
+    next_router: Hash,
+    receive: u32,
+    next: u32,
+    message_id: u32,
+) -> ShortRequestRecord {
     ShortRequestRecord::try_new(
         TunnelId::new(receive).expect("id"),
         TunnelId::new(next).expect("id"),
@@ -199,7 +204,9 @@ fn relay_cell_bytes() -> Vec<u8> {
 }
 
 /// The digest of the receipt sequence: counts only, no identity.
-fn receipt_digest(receipts: &[i2pr_daemon::transit_participation::TransitParticipationReceipt]) -> String {
+fn receipt_digest(
+    receipts: &[i2pr_daemon::transit_participation::TransitParticipationReceipt],
+) -> String {
     let mut hasher = Sha256::new();
     for receipt in receipts {
         hasher.update(receipt.kind.label().as_bytes());
@@ -261,7 +268,10 @@ fn plan492_relay_then_revoke_is_observed_in_the_receipts() {
         .handle_inbound(&inbound_with(bytes), NOW_MS, NOW_SECONDS)
         .expect("build");
     assert!(
-        matches!(build, LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(_))),
+        matches!(
+            build,
+            LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(_))
+        ),
         "the peer's transit work must reach the transit data plane: {build:?}"
     );
 
@@ -371,9 +381,9 @@ fn plan492_relay_then_revoke_is_observed_in_the_receipts() {
     assert!(
         matches!(
             refused,
-            LiveInboundOutcome::Build(
-                LiveBuildOutcome::ParticipationRefused(TransitRefusalReason::ParticipationDisabled)
-            )
+            LiveInboundOutcome::Build(LiveBuildOutcome::ParticipationRefused(
+                TransitRefusalReason::ParticipationDisabled
+            ))
         ),
         "the revoked posture must refuse the next request: {refused:?}"
     );
@@ -409,7 +419,10 @@ fn plan492_the_disabled_posture_refuses_the_peers_transit_work() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xCAFE),
     );
-    owner.enable(service_for_test(), i2pr_daemon::transit_participation::TransitParticipationBinding::disabled());
+    owner.enable(
+        service_for_test(),
+        i2pr_daemon::transit_participation::TransitParticipationBinding::disabled(),
+    );
 
     let probe = service_for_test();
     let record = participant_record(
@@ -426,9 +439,9 @@ fn plan492_the_disabled_posture_refuses_the_peers_transit_work() {
     assert!(
         matches!(
             refused,
-            LiveInboundOutcome::Build(
-                LiveBuildOutcome::ParticipationRefused(TransitRefusalReason::ParticipationDisabled)
-            )
+            LiveInboundOutcome::Build(LiveBuildOutcome::ParticipationRefused(
+                TransitRefusalReason::ParticipationDisabled
+            ))
         ),
         "the disabled posture must refuse: {refused:?}"
     );

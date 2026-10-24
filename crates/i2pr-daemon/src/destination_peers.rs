@@ -502,7 +502,12 @@ pub fn select_projected_destination_path<R: CryptoRng + RngCore>(
     summary: &CandidateProjectionSummary,
     rng: &mut R,
 ) -> Result<Vec<DestinationPeerCandidate>, DestinationSelectionError> {
-    select_projected_destination_path_with_policy(candidates, summary, rng, &HopDiversityPolicy::default())
+    select_projected_destination_path_with_policy(
+        candidates,
+        summary,
+        rng,
+        &HopDiversityPolicy::default(),
+    )
 }
 
 /// Selects exactly three build peers from a bounded projection under an
@@ -565,9 +570,10 @@ fn search_path(
         *nodes += 1;
         let candidate_index = order[position];
         let candidate = &candidates[candidate_index];
-        if selected.iter().any(|selected_index| {
-            !diverse_from(candidate, &candidates[*selected_index])
-        }) {
+        if selected
+            .iter()
+            .any(|selected_index| !diverse_from(candidate, &candidates[*selected_index]))
+        {
             continue;
         }
         // Plan 492: Plan 488's /16 diversity rule. At most
@@ -582,7 +588,15 @@ fn search_path(
             *used += 1;
         }
         selected.push(candidate_index);
-        if search_path(candidates, order, position + 1, selected, nodes, policy, per_prefix) {
+        if search_path(
+            candidates,
+            order,
+            position + 1,
+            selected,
+            nodes,
+            policy,
+            per_prefix,
+        ) {
             return true;
         }
         selected.pop();

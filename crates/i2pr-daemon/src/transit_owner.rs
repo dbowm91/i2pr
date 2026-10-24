@@ -51,9 +51,7 @@ use crate::transit_compose::{
     SelfReplyOtbrmArgs, TransitBuildService, TransitDispatch, TransitDispatchRole,
     TransitIngressGate, TransitLiveStateSnapshot, TransitServiceError, TransitTunnelDataDispatch,
 };
-use crate::transit_participation::{
-    TransitParticipationBinding, TransitRefusalReason,
-};
+use crate::transit_participation::{TransitParticipationBinding, TransitRefusalReason};
 
 /// Live transit owner errors.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -951,9 +949,9 @@ where
         // unknown fail-closed) is unchanged and a refused request never
         // allocates a registration.
         if let Some(reason) = self.refuse_unless_participating(peer, now_seconds) {
-            return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::ParticipationRefused(
-                reason,
-            )));
+            return Ok(LiveInboundOutcome::Build(
+                LiveBuildOutcome::ParticipationRefused(reason),
+            ));
         }
         let dispatch = {
             let (owner, rng) = (&mut self.owner, &mut self.rng);

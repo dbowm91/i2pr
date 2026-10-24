@@ -71,11 +71,11 @@ use i2pr_daemon::router_i2np::{
     verify_reference_router_info,
 };
 use i2pr_daemon::transit_compose::{TransitBuildService, TransitHopMaterial};
-use i2pr_daemon::transit_participation::{
-    TransitParticipationBinding, TransitParticipationOwner, TransitParticipationPolicy,
-};
 use i2pr_daemon::transit_owner::{
     LiveGatewayOutcome, LiveInboundOutcome, TransitBuildEvidence, TransitLiveOwner,
+};
+use i2pr_daemon::transit_participation::{
+    TransitParticipationBinding, TransitParticipationOwner, TransitParticipationPolicy,
 };
 use i2pr_proto::{Hash, I2npMessage, RouterInfo};
 use i2pr_runtime::{
@@ -178,8 +178,7 @@ fn participation_for_test() -> TransitParticipationBinding {
         i2pr_daemon::config::MAX_TRANSIT_PEER_PARTICIPATION_CAP,
     )
     .expect("bounded posture");
-    let owner =
-        TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
+    let owner = TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
     TransitParticipationBinding::new(owner, Some(governor))
 }
 
@@ -5717,11 +5716,14 @@ fn fresh_owner(
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(seed),
     );
-    owner.enable(build_transit_service(
-        identity.local_hash,
-        identity.responder_priv,
-        handle.delivery().clone(),
-    ), participation_for_test());
+    owner.enable(
+        build_transit_service(
+            identity.local_hash,
+            identity.responder_priv,
+            handle.delivery().clone(),
+        ),
+        participation_for_test(),
+    );
     // Bounded LOCAL consumer: background reference tunnel-test
     // traffic can complete as OBEP LOCAL actions; without a sink
     // those would surface as fatal owner errors and abort the
@@ -6417,11 +6419,7 @@ async fn run_qualification() -> Result<(), String> {
         ChaCha8Rng::seed_from_u64(wall_secs() ^ 0x9E37),
     );
     reject_owner.enable(
-        build_rejecting_transit_service(
-            local_hash,
-            responder_priv,
-            handle.delivery().clone(),
-        ),
+        build_rejecting_transit_service(local_hash, responder_priv, handle.delivery().clone()),
         participation_for_test(),
     );
     reject_owner

@@ -173,9 +173,7 @@ impl TransitRefusalCounts {
         let counter = match reason {
             TransitRefusalReason::ParticipationDisabled => &mut self.participation_disabled,
             TransitRefusalReason::Revoked => &mut self.revoked,
-            TransitRefusalReason::ParticipatingTunnelLimit => {
-                &mut self.participating_tunnel_limit
-            }
+            TransitRefusalReason::ParticipatingTunnelLimit => &mut self.participating_tunnel_limit,
             TransitRefusalReason::PeerParticipationCap => &mut self.peer_participation_cap,
             TransitRefusalReason::ShareLimitExceeded => &mut self.share_limit_exceeded,
             TransitRefusalReason::NoEnforcedPermit => &mut self.no_enforced_permit,
@@ -313,7 +311,9 @@ pub enum TransitParticipationError {
     InvalidParticipatingTunnels,
     /// The per-peer participation cap is zero, above the ceiling, or larger
     /// than the router-wide count.
-    #[error("the transit per-peer participation cap must be positive, bounded, and no larger than the participating-tunnel count")]
+    #[error(
+        "the transit per-peer participation cap must be positive, bounded, and no larger than the participating-tunnel count"
+    )]
     InvalidPeerParticipationCap,
 }
 
@@ -471,7 +471,9 @@ impl TransitParticipationOwner {
             Some(governor) => match governor.capacity_permit(operator_share_percent) {
                 Some(permit) => {
                     let (_, outbound, share) = permit.configured_limits();
-                    let enforced = outbound.saturating_mul(u64::from(share)).saturating_div(100);
+                    let enforced = outbound
+                        .saturating_mul(u64::from(share))
+                        .saturating_div(100);
                     let transit = enforced
                         .saturating_mul(u64::from(policy.share_limit_percent))
                         .saturating_div(100);
@@ -619,7 +621,12 @@ impl TransitParticipationOwner {
             // current posture stays in force.
             return false;
         };
-        let previous = (self.policy, self.enabled, self.revoked, self.share_bytes_per_second);
+        let previous = (
+            self.policy,
+            self.enabled,
+            self.revoked,
+            self.share_bytes_per_second,
+        );
         let next_posture = (
             next.policy,
             next.enabled,
@@ -905,8 +912,8 @@ mod tests {
     }
 
     fn owner(share_limit: u8, tunnels: usize, peer_cap: usize) -> TransitParticipationOwner {
-        let policy =
-            TransitParticipationPolicy::new(share_limit, tunnels, peer_cap).expect("bounded policy");
+        let policy = TransitParticipationPolicy::new(share_limit, tunnels, peer_cap)
+            .expect("bounded policy");
         let governor = governor(1024 * 1024);
         TransitParticipationOwner::new(policy, Some(&governor), 50).expect("owner")
     }
@@ -956,7 +963,9 @@ mod tests {
             Err(TransitRefusalReason::ParticipatingTunnelLimit)
         );
         assert_eq!(
-            owner.refusals.count(TransitRefusalReason::ParticipatingTunnelLimit),
+            owner
+                .refusals
+                .count(TransitRefusalReason::ParticipatingTunnelLimit),
             1
         );
         assert_eq!(owner.participating_tunnels(), 2);
@@ -971,7 +980,9 @@ mod tests {
             Err(TransitRefusalReason::PeerParticipationCap)
         );
         assert_eq!(
-            owner.refusals.count(TransitRefusalReason::PeerParticipationCap),
+            owner
+                .refusals
+                .count(TransitRefusalReason::PeerParticipationCap),
             1
         );
         assert!(owner.admit(&peer(2), 1, 0, 0).is_ok());
@@ -988,11 +999,17 @@ mod tests {
         );
         assert_eq!(owner.bytes_relayed(), budget);
         assert_eq!(
-            owner.refusals.count(TransitRefusalReason::ShareLimitExceeded),
+            owner
+                .refusals
+                .count(TransitRefusalReason::ShareLimitExceeded),
             1
         );
         // The next window starts from zero.
-        assert!(owner.charge_relay(budget, TRANSIT_SHARE_WINDOW_SECONDS).is_ok());
+        assert!(
+            owner
+                .charge_relay(budget, TRANSIT_SHARE_WINDOW_SECONDS)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1025,8 +1042,7 @@ mod tests {
     fn revocation_by_permit_withdrawal_stops_participation() {
         let policy = TransitParticipationPolicy::new(25, 4, 2).expect("policy");
         let issuing = governor(1024 * 1024);
-        let mut owner =
-            TransitParticipationOwner::new(policy, Some(&issuing), 50).expect("owner");
+        let mut owner = TransitParticipationOwner::new(policy, Some(&issuing), 50).expect("owner");
         assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
         // A different governor instance makes the permit stale.
         let replacement = governor(1024 * 1024);
@@ -1038,21 +1054,26 @@ mod tests {
         );
         assert_eq!(owner.participating_tunnels(), 0);
         assert_eq!(owner.stops(), 1);
-        assert_eq!(owner.admit(&peer(2), 0, 0, 0), Err(TransitRefusalReason::Revoked));
+        assert_eq!(
+            owner.admit(&peer(2), 0, 0, 0),
+            Err(TransitRefusalReason::Revoked)
+        );
     }
 
     #[test]
     fn revocation_by_health_loss_stops_participation() {
         let policy = TransitParticipationPolicy::new(25, 4, 2).expect("policy");
         let issuing = governor(1024 * 1024);
-        let mut owner =
-            TransitParticipationOwner::new(policy, Some(&issuing), 50).expect("owner");
+        let mut owner = TransitParticipationOwner::new(policy, Some(&issuing), 50).expect("owner");
         assert!(owner.admit(&peer(1), 0, 0, 0).is_ok());
         // The issuing governor is dropped: the permit can no longer be
         // revalidated and the owner loses health.
         drop(issuing);
         assert!(!owner.revalidate(None));
-        assert_eq!(owner.revocation(), Some(TransitRevocationReason::HealthLost));
+        assert_eq!(
+            owner.revocation(),
+            Some(TransitRevocationReason::HealthLost)
+        );
         assert_eq!(owner.participating_tunnels(), 0);
     }
 
@@ -1066,8 +1087,7 @@ mod tests {
         // A restart constructs a fresh owner from the same posture.
         let policy = TransitParticipationPolicy::new(25, 4, 2).expect("policy");
         let governor = governor(1024 * 1024);
-        let restarted =
-            TransitParticipationOwner::new(policy, Some(&governor), 50).expect("owner");
+        let restarted = TransitParticipationOwner::new(policy, Some(&governor), 50).expect("owner");
         assert_eq!(restarted.bytes_relayed(), 0);
         assert_eq!(restarted.window_bytes(), 0);
         assert_eq!(restarted.participating_tunnels(), 0);

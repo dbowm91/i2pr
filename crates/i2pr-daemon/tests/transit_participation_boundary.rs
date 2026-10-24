@@ -246,7 +246,8 @@ fn check_participation_defaults_off(source: &str) -> Option<String> {
     let head = &body[..switch];
     let Some(default) = head.rfind("#[serde(default)]") else {
         return Some(
-            "the participation switch must carry `#[serde(default)]` so it defaults to off".to_owned(),
+            "the participation switch must carry `#[serde(default)]` so it defaults to off"
+                .to_owned(),
         );
     };
     let between = &head[default..];
@@ -302,9 +303,7 @@ fn check_share_is_enforced(source: &str) -> Option<String> {
     if revalidate < charge && charge < deliver {
         None
     } else {
-        Some(
-            "the share must be revalidated and charged before the cell is forwarded".to_owned(),
-        )
+        Some("the share must be revalidated and charged before the cell is forwarded".to_owned())
     }
 }
 
@@ -659,11 +658,13 @@ mod tests {
 ";
     assert_eq!(
         check_participation_defaults_off(in_test),
-        check_participation_defaults_off("\
+        check_participation_defaults_off(
+            "\
 struct RawTransitConfig {
     participation: bool,
 }
-"),
+"
+        ),
         "a test block must not change the verdict"
     );
 }

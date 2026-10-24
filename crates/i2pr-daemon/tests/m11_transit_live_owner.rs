@@ -31,7 +31,8 @@ use i2pr_proto::{
     TunnelDataMessage, TunnelGatewayMessage,
 };
 use i2pr_runtime::{
-    BandwidthGovernor, BandwidthGovernorConfig, CancellationToken, Ssu2InboundI2np, Ssu2RuntimeConfig,
+    BandwidthGovernor, BandwidthGovernorConfig, CancellationToken, Ssu2InboundI2np,
+    Ssu2RuntimeConfig,
 };
 use i2pr_transport::{LinkId, PeerId};
 use i2pr_tunnel::build_crypto::{EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography};
@@ -97,8 +98,7 @@ fn participation_for_test() -> TransitParticipationBinding {
         i2pr_daemon::config::MAX_TRANSIT_PEER_PARTICIPATION_CAP,
     )
     .expect("bounded posture");
-    let owner =
-        TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
+    let owner = TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
     TransitParticipationBinding::new(owner, Some(governor))
 }
 

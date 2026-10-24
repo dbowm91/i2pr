@@ -715,7 +715,9 @@ impl DestinationTunnelCoordinator {
     }
 
     /// Returns the bounded participation ledger's tracked counters.
-    pub fn hop_participation_counts(&self) -> &std::collections::BTreeMap<i2pr_netdb::RouterHash, u32> {
+    pub fn hop_participation_counts(
+        &self,
+    ) -> &std::collections::BTreeMap<i2pr_netdb::RouterHash, u32> {
         self.hop_participation.counts()
     }
 
