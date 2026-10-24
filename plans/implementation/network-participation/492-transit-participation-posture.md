@@ -1,7 +1,9 @@
 # Plan 492 — Transit participation: an operator-opted, bounded, revocable relay posture
 
-**Status:** registered, ready to execute (phase 5 of
-[network participation](../../subsystems/network-participation-roadmap.md))
+**Status:** closed as `passed-transit-participation-posture` (phase 5 of
+[network participation](../../subsystems/network-participation-roadmap.md));
+closure record
+`plans/closure/network-participation/492-status.md`
 **Owner:** `i2pr-daemon` (the participation owner and its policy),
 `i2pr-tunnel` (the transit state machine, unchanged), `i2pr-runtime` (the
 socket and timer ownership)

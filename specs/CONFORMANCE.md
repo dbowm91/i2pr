@@ -854,6 +854,60 @@ Evidence: `crates/i2pr-proto/src/common/version.rs`,
 artifact `tests/integration/network-participation/evidence/plan491/result.json`.
 The closure record is `plans/closure/network-participation/491-status.md`.
 
+## Transit participation posture (Plan 492)
+
+Plan 492 turned the existing transit machinery on for an **operator-opted
+profile**. What is claimed, and what is not:
+
+- **The posture is opt-in and default-off.** A new `[transit]` configuration
+  section carries `participation` (the single switch), `share_limit`,
+  `participating_tunnels`, and `peer_participation_cap`. The default
+  configuration does not change: a router that has never enabled
+  participation does not relay another router's tunnel traffic.
+- **The transit role is still not advertised and still not claimed for the
+  public network.** `router.version`, `caps`, and the published RouterInfo
+  are unchanged, and nothing is advertised. The posture is internal; the
+  public participation qualification is the two-family lane's work.
+- **The limits are bounded and validated before anything is constructed.**
+  `share_limit` is a percentage of the enforced share, `participating_tunnels`
+  and `peer_participation_cap` have named ceilings, and the per-peer cap may
+  not exceed the router-wide count.
+- **An opt-in requires an enforced share.** Participation without an enabled
+  bandwidth policy is a configuration error, because the share limit is
+  enforced against the governor's permitted share and would otherwise be
+  advisory.
+- **The share limit is enforced, not advisory.** The participation owner
+  holds the governor's permit and revalidates it at the point of use; the
+  relay is charged against the permitted share *before* the cell leaves the
+  router; and exceeding the share refuses the relay rather than growing it.
+- **The counts are the data plane's own.** The participating-tunnel count and
+  the per-peer count are the transit service's registration counts, so the
+  owner never keeps a second, diverging ledger of live tunnels.
+- **Revocation is prompt and observable.** An operator policy change, a
+  withdrawn or replaced permit, and a health loss each stop participation,
+  count the stop, and record it.
+- **The receipts are bounded and carry counts only.** No peer identity, no
+  address, no tunnel id, no key, and no payload.
+- **The dispatch order is unchanged** — creator/service first, transit
+  second, unknown fail-closed — and the posture is consulted after the
+  creator correlation check and before any slot is allocated.
+- **The router's own build hops now satisfy Plan 488's /16 diversity rule
+  and per-peer participation cap**, and a selection is recorded, so the cap
+  is not advisory.
+
+Evidence: `crates/i2pr-daemon/src/transit_participation.rs`,
+`crates/i2pr-daemon/src/transit_owner.rs`,
+`crates/i2pr-daemon/src/transit_compose.rs`,
+`crates/i2pr-daemon/src/destination_peers.rs`,
+`crates/i2pr-daemon/src/destination_tunnels.rs`,
+`crates/i2pr-daemon/src/config.rs`,
+`crates/i2pr-daemon/tests/transit_participation_posture.rs`,
+`crates/i2pr-daemon/tests/transit_participation_boundary.rs`,
+`crates/i2pr-daemon/tests/transit_participation_lane.rs`, and the sanitized
+lane artifact
+`tests/integration/network-participation/evidence/plan492/result.json`. The
+closure record is `plans/closure/network-participation/492-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

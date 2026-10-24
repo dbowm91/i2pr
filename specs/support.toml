@@ -371,7 +371,7 @@ plan_268_status = "passed-m11-receipt-family-three-completions-zero-semantic-fai
 m6_experimental_mixed_router_progression = "passed-via-i2pd-plan193"
 m6_java_full_router_compatibility = "retained-deferred-at-plan247"
 m6_full_two_family_router_conformance = "not-yet-claimed"
-m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 Plans 270-276 passed architecture, provenance, record validation/storage, bounded DatabaseStore/DatabaseLookup services, direct replication planning, versioned persistence/revalidation interfaces, bounded maintenance, and resource leases for the supported type 0/1/3/7 floor. Plan 280 stopped because no reviewed Rust I2P Red25519 provider was available at the time; Plan 281 deferred EncryptedLeaseSet type 5, and both of those gaps were later closed on the Proposal 170 line (Plans 330/331 provider, 350 store/serve, 351 consumer). Daemon role lifecycle, qualification, and all floodfill advertisement remain unimplemented/unclaimed."
+m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 Plans 270-276 passed architecture, provenance, record validation/storage, bounded DatabaseStore/DatabaseLookup services, direct replication planning, versioned persistence/revalidation interfaces, bounded maintenance, and resource leases for the supported type 0/1/3/7 floor. Plan 280 stopped because no reviewed Rust I2P Red25519 provider was available at the time; Plan 281 deferred EncryptedLeaseSet type 5, and both of those gaps were later closed on the Proposal 170 line (Plans 330/331 provider, 350 store/serve, 351 consumer). Daemon role lifecycle, qualification, and all floodfill advertisement remain unimplemented/unclaimed. Plan 492 added the operator-opted transit participation posture (`[transit]`, default off) with the bounded share, participating-tunnel and per-peer caps, the typed refusals, the revocation paths, the count-only receipts, and the /16 diversity rule on the router's own build hops; the posture is internal and the public transit role remains disabled, non-advertised, and unclaimed."
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
 m6_netdb_lookup_publication = "passed-via-plan186"
@@ -463,6 +463,9 @@ plan_490_status = "passed-ssu2-introducer-relay-role"
 plan_491_plan_of_record = "plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md"
 plan_491_closure = "plans/closure/network-participation/491-status.md"
 plan_491_status = "passed-api-version-floors-and-peer-eligibility"
+plan_492_plan_of_record = "plans/implementation/network-participation/492-transit-participation-posture.md"
+plan_492_closure = "plans/closure/network-participation/492-status.md"
+plan_492_status = "passed-transit-participation-posture"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -910,6 +913,29 @@ evidence = [
     "tests/integration/network-participation/evidence/plan491/result.json",
     "plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md",
     "plans/closure/network-participation/491-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "daemon.transit-participation-posture"
+protocol = "i2np-transit"
+structure = "operator-opted-bounded-revocable-transit-participation-posture-with-typed-refusals-and-count-only-receipts"
+scope = "required"
+status = "experimental"
+notes = "Plan 492 turned the existing transit machinery on for an operator-opted profile. A new `[transit]` configuration section carries the posture -- `participation` (the single switch, **off by default**), `share_limit`, `participating_tunnels`, and `peer_participation_cap` -- and it is the single source of the posture: the daemon-side participation owner is constructed from it, and the transit ingress owner consults that owner before it admits any transit work. The limits are bounded by named constants and validated before any owner or listener exists; an opt-in without an enabled bandwidth policy is a configuration error, because the share limit is enforced against the governor's permitted share and would otherwise be advisory. The share limit is enforced, not advisory: the participation owner holds the governor's `BandwidthEnforcementPermit` and revalidates it at the point of use, the relay is charged against the permitted share *before* the cell leaves the router, and exceeding the share refuses the relay rather than growing it. The participating-tunnel count and the per-peer count are the transit service's own registration counts, so the owner never keeps a second, diverging ledger of live tunnels. Revocation is prompt and observable: an operator policy change, a withdrawn or replaced governor permit, and a health loss each stop participation, count the stop, and record it, and the receipts are bounded and carry counts and stable labels only -- no peer identity, no address, no tunnel id, no key, no payload. The router's own build-hop selection now also honours Plan 488's /16 diversity rule and per-peer participation cap, and a selection is recorded so the cap is not advisory. The dispatch order is unchanged -- creator/service first, transit second, unknown fail-closed -- and the posture is consulted after the creator correlation check and before any slot is allocated, so a refused request never registers a tunnel. The surface is internal and non-advertised: nothing here changes `router.version`, `caps`, the published RouterInfo, or any advertisement, and the transit role stays disabled, non-advertised, and unclaimed for the public network. Plan 492 adds NO public participation claim: the posture and its controls are exercised against a private mesh, and the public-network participation qualification remains the two-family lane's work."
+evidence = [
+    "crates/i2pr-daemon/src/transit_participation.rs",
+    "crates/i2pr-daemon/src/transit_owner.rs",
+    "crates/i2pr-daemon/src/transit_compose.rs",
+    "crates/i2pr-daemon/src/destination_peers.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/transit_participation_posture.rs",
+    "crates/i2pr-daemon/tests/transit_participation_boundary.rs",
+    "crates/i2pr-daemon/tests/transit_participation_lane.rs",
+    "tests/integration/network-participation/evidence/plan492/result.json",
+    "plans/implementation/network-participation/492-transit-participation-posture.md",
+    "plans/closure/network-participation/492-status.md",
 ]
 advertised = false
 

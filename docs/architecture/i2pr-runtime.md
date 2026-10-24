@@ -689,6 +689,34 @@ surface): `DEFAULT_STARTUP_TIMEOUT` 30 s, `DEFAULT_READINESS_TIMEOUT` 30 s,
 86 400, `LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS` 3 600,
 `LOCAL_ROUTER_INFO_MAX_ENCODED_LEN` 16 KiB (`ssu2_runtime.rs:129-136`).
 
+### The governor's permit as an enforced share (Plan 492)
+
+`bandwidth.rs` is unchanged by Plan 492; the plan *consumed* the governor's
+existing permit semantics rather than adding a second accounting.
+
+`BandwidthGovernor::capacity_permit(share_percent)` issues a
+`BandwidthEnforcementPermit` that carries the configured rates and a weak
+reference to the governor instance that issued it. The permit answers three
+questions, and the transit participation posture asks them **at the point of
+use**:
+
+| Question | Method | Meaning when false |
+| --- | --- | --- |
+| Is the permit still the live one? | `is_current_for(&governor)` | the live governor is a different instance (the configuration was replaced): the share is *withdrawn* |
+| Is the issuing governor still alive? | `is_healthy()` | the governor's accounting state is gone or poisoned: the share is *unhealthy* |
+| What may this router spend? | `configured_limits()` | `(inbound, outbound, share_percent)`; the posture's budget is `outbound × share% × posture share limit %` |
+
+`i2pr-daemon::transit_participation::TransitParticipationOwner` holds the
+permit and revalidates it before it admits transit work and before it charges
+a relay. A permit that cannot be revalidated **revokes** the participation
+rather than letting the share grow, and a router with no permit at all
+refuses every request (`NoEnforcedPermit`) — the share limit is never
+advisory.
+
+The governor remains the socket-level enforcement; the posture is the
+router-level accounting of what the *transit role* may spend inside that
+enforced share. No new channel, no new queue, and no new task was added here.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

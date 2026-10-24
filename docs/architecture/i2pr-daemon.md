@@ -971,6 +971,94 @@ transit selectors is `0` / `0` / `0.0`. Plan 340 closed ownership of
 `total.transit.bytes`, `bw.transit.15s`, and `tunnels.shareratio` as a
 participation-posture change, not as missing snapshots.
 
+### Transit participation posture (Plan 492, `src/transit_participation.rs`)
+
+Plan 492 added the **operator-opted posture** that the M11 transit machinery
+had no answer for. The transit state machine and the transit ingress owner
+were already closed surfaces; what was missing was a policy that says *whether*
+this router relays other routers' tunnel traffic, *how much*, and *for how
+long*.
+
+The posture is one configuration section and one owner:
+
+```text
+[transit]
+participation = false          # the single switch; OFF by default
+share_limit = 25               # percent of the enforced share, 1..=100
+participating_tunnels = 4      # 1..=MAX_TRANSIT_PARTICIPATING_TUNNELS
+peer_participation_cap = 2      # 1..=MAX_TRANSIT_PEER_PARTICIPATION_CAP
+```
+
+`config.rs` owns the surface (`TransitConfig`, `RawTransitConfig` with
+`deny_unknown_fields`) and the named bounds
+(`MAX_TRANSIT_SHARE_LIMIT_PERCENT`, `MAX_TRANSIT_PARTICIPATING_TUNNELS`,
+`MAX_TRANSIT_PEER_PARTICIPATION_CAP`). `normalize_transit` rejects an
+out-of-range limit, a per-peer cap larger than the router-wide count, and an
+opt-in **without an enabled bandwidth policy** — the share limit is enforced
+against the governor's permitted share, so without a governor it would be
+advisory, and an advisory limit is a configuration error rather than a silent
+no-op.
+
+`transit_participation.rs` owns the policy:
+
+- `TransitParticipationPolicy` — the bounded limits, validated by one
+  constructor that the configuration path *and* the hand-built path both go
+  through.
+- `TransitParticipationOwner` — the accounting surface. It owns no socket, no
+  timer, and no task; the runtime owner supplies the clock.
+- `TransitParticipationBinding` — the owner plus the live governor, so the
+  permit stays healthy while the owner is installed and the owner has the
+  governor to revalidate against.
+
+**The counts are the data plane's own.** `admit` takes the transit service's
+authoritative registration counts (`active_count`, `active_for_peer`), so the
+owner never keeps a second, diverging ledger of live tunnels: an expired, a
+closed, and a rolled-back registration are reflected immediately. The
+participating-tunnel limit and the per-peer cap are measured against the
+registry, not against a counter that could drift.
+
+**The share is enforced, not advisory.** The owner holds the governor's
+`BandwidthEnforcementPermit` and revalidates it at the point of use
+(`revalidate`): a permit issued by a different governor instance is *stale*
+(`PermitWithdrawn`), and a dropped issuing governor is a *health loss*
+(`HealthLost`). The relay is charged against the permitted share **before**
+the cell leaves the router, and exceeding the share refuses the relay rather
+than growing it. Without an enforced permit there is no share, so every
+request is refused with `NoEnforcedPermit`.
+
+**The dispatch order is unchanged.** `TransitLiveOwner::dispatch_build_body`
+still reads *creator/service first, transit second, unknown fail-closed*, and
+the posture is consulted **after** the creator correlation check and **before**
+the transit dispatch — so a refused request never allocates a registration.
+`handle_tunnel_data_inner` charges the share before the forward. Both
+orderings are static-guarded by
+`crates/i2pr-daemon/tests/transit_participation_boundary.rs`, which carries an
+inverted probe for each rule.
+
+**The receipts are bounded and carry counts only.** A receipt holds the event
+kind, an optional typed refusal reason, the participating-tunnel count, the
+admitted-peer count, the relayed bytes, the refusal counters, and the stop
+count. It never holds a peer hash, an address, a tunnel id, a key, or a
+payload — and the guard proves that by inspecting the receipt *type*, not
+merely its values.
+
+**The ordinary build-hop selection now satisfies Plan 488's diversity rules.**
+`destination_peers.rs` gained `HopDiversityPolicy` (the /16 rule and the
+per-peer participation cap, taken from `i2pr-netdb` rather than restated),
+the candidate carries its `/16` prefix, and the bounded search honours
+`max_per_prefix16` without ever relaxing the rule to reach the hop count.
+`DestinationTunnelCoordinator` owns the bounded per-peer participation ledger
+and `record_hop_selection` records every selection, so the cap is measured
+against real selections rather than being advisory.
+
+> **Deviation from the plan document (recorded).** The plan named
+> `i2pr-client` for the selection diversity. The router's own build-hop
+> selection is the **daemon's** `destination_peers.rs`; `i2pr-client` owns
+> destination tunnel *lifecycles* and consumes peers that were already chosen
+> there (Plan 491 established the same fact for the version floors). The rule
+> therefore landed in the daemon, consuming Plan 488's policy from
+> `i2pr-netdb`, and `i2pr-client` is unchanged.
+
 ### M12 floodfill (Plans 270–283, 302–303, 306)
 
 `floodfill.rs` retains coordinator resource leases through effect completion, constructs

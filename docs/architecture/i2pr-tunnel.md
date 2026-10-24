@@ -685,6 +685,16 @@ and unclaimed**; the `transit` module is retained infrastructure whose
 M11 capability is explicitly not claimed. No multi-family interop
 qualification has been recorded.
 
+**Plan 492 added no tunnel-crate code.** The transit participation posture
+is a *daemon-side* policy: `i2pr-daemon`'s `transit_participation.rs` owns the
+operator opt-in, the share, the participating-tunnel count, the per-peer cap,
+the revocation, and the receipts. This crate's `TransitAdmissionPolicy` and
+`TransitRegistry` remain the authority for the *in-tunnel* limits, and the
+posture's counts are read from the registry rather than from a second ledger.
+`TransitRegistry::active_per_peer_count` is the per-peer number the posture's
+cap is measured against. The public transit role remains disabled,
+non-advertised, and unclaimed.
+
 ### Garlic reply handling
 
 `garlic_reply.rs` implements the Plan 188 bounded OBEP garlic unwrap:
