@@ -1110,6 +1110,108 @@ and the operator procedure
 The plan of record and its current status are in
 [`plans/registry.md`](../plans/registry.md).
 
+## NetDB participation consumer phase (Plan 497)
+
+Plan 488 built the peer-profile store and Plan 489 built the floodfill-indexed
+routing table; both recorded that nothing in the daemon called them. Plan 497 is
+the **consumer phase**. It is **registered**, not closed: the source-side work is
+landed, and the closure record and its evidence matrix are still outstanding.
+What is claimed, and what is not:
+
+- **The claim is a consumer seam and a daemon-owned service — not a participation
+  capability.** Plan 497 adds no network role. The router is still not found by a
+  peer, still enters the network only through a reseed, and still carries no
+  other router's traffic.
+- **It is default-off, and the one new key is additive.** `netdb.routing_table_enabled`
+  is `false` by default, so the daemon's behaviour is identical to today: the same
+  peers are asked, in the same order, from the flat store. The single new key,
+  `netdb.participation_maintenance_period_ms`, defaults to `60_000` ms, is
+  bounded to `[1 000, 3_600_000]` ms, and is refused at parse time with a
+  `ConfigError::Semantic` naming the field outside that range. No existing key
+  changes meaning.
+- **The flat store stays the authority; the table is a cache of derived state.**
+  `begin_tunnel_lookup` computes the flat store's selection first and only then
+  asks the routing table how it would order it. The table's answer may **reorder**
+  that selection and nothing more: the candidate set is never narrowed, the
+  lookup target stays excluded, and a peer the flat store would not have served is
+  ignored. A table that cannot answer does not fail the lookup — it falls back to
+  the flat store's selection exactly as today.
+- **Every fallback is counted by reason.** The consumer answers with either the
+  table's candidate list or a named fallback reason — `Disabled`, `NoCandidate`
+  or `Unavailable` (a poisoned table) — and `RoutingTableCounters` counts
+  `answered`, `fell_back_disabled`, `fell_back_no_candidate` and
+  `fell_back_unavailable` separately. A table miss is a counted outcome, not a
+  silent skip. The counters are held outside the table's lock on purpose: a
+  poisoned table cannot answer, and that fallback must still be counted.
+- **The preference is a priority prefix, not a closed list.** The engine's
+  preferred-order entry point computes the same selection the ordinary entry point
+  computes and only permutes it. On every later advance it re-selects against the
+  authoritative store and puts the preferred peers first, so **a peer ingested
+  while the lookup runs is still queried**. Plan 489's `start_with_candidates`
+  keeps its closed-list contract unchanged, and a test pins the difference.
+- **The two ordering metrics are different quantities.** The routing table orders
+  a peer by its **daily keyspace position** against the routing key; the flat
+  store orders by the peer's **canonical `RouterHash`** XOR distance against the
+  same key. The table's answer is therefore a genuine reordering, not a
+  restatement of the flat store's own order.
+- **The coordinator is not composed into the daemon.** `NetDbTunnelCoordinator`
+  is not created by the daemon today — every construction of it in the tree is in
+  test code. Plan 497 delivers the **seam** (`NetDbTunnelCoordinator::with_routing_table`)
+  that Plan 433's composition will use; Plan 433 owns the composition itself and
+  is registered **blocked** on Plans 431/432. Until Plan 433 lands, the shared
+  routing-table consumer is reachable only from the daemon crate.
+- **The startup projection is loaded when present and current, and discarded and
+  counted otherwise.** The bounded, sanitized, digest-framed peer-profile
+  projection is read from `<data_dir>/peer-profiles/` at startup; a corrupt,
+  oversized or stale projection is discarded with a count, never a startup
+  failure. "Current" is carried by the **file name**
+  (`profile-projection-<yyyyMMdd>.txt`), not by a format change — the projection
+  type carries no UTC-day field and the projection **bytes** are unchanged from
+  Plan 488's format. A projection from another UTC day is discarded, counted, and
+  removed.
+- **The daemon service is optional in both senses.** It is registered as
+  `netdb-participation` with `ServiceClassification::Optional` **and**
+  `StartupRequirement::Optional`, so a degraded participation owner degrades that
+  one feature and does not gate router readiness. With the routing table off the
+  service is inert: no population, no tick, no persistence.
+- **The crate is no longer unpoliced by the repository boundary script.**
+  `scripts/check-runtime-boundaries.sh` gains an `i2pr-netdb` section with 12
+  source rules, a manifest rule set, one positive control per rule category,
+  grouped-import controls, and a negative control over the crate's legitimate
+  surface. The plan **raised** that script's floors — the positive-control floor
+  from 14 to 30 and the raw-scan floor from 17 to 23 — rather than relaxing
+  them.
+- **Nothing is published and nothing is advertised.** `specs/support.toml` is
+  unchanged — 94 surfaces, 88 experimental, 5 deferred, 1 ready, and **0
+  advertised** — `router.version` stays `0.9.62`, and the published RouterInfo
+  capability set is unchanged. The routing table is **internal state**.
+- **The evidence is a private controlled mesh, not a public-network
+  measurement.** The stock-peer NetDb exploration lane and the `caps=f`
+  advertisement remain unlanded and stay gated on Plan 493's authorized two-host
+  topology. No public-network claim is made here.
+
+Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/netdb_tunnels.rs`,
+`crates/i2pr-daemon/src/netdb_seam.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/src/config.rs`,
+`crates/i2pr-netdb/src/lookup_engine.rs`,
+`crates/i2pr-netdb/src/bucket_set.rs`,
+`crates/i2pr-netdb/src/lookup_policy.rs`,
+`scripts/check-runtime-boundaries.sh`,
+`crates/i2pr-daemon/tests/netdb_routing_consumer.rs`, and the preferred-order
+rows in `crates/i2pr-netdb/src/lookup_engine.rs`
+(`a_preferred_peer_is_asked_first`,
+`a_preferred_peer_the_flat_store_would_not_serve_is_ignored`,
+`the_preferred_path_never_asks_the_target`,
+`the_preferred_path_still_reaches_a_peer_ingested_mid_lookup`). The plan of
+record and its current status are in
+[`plans/implementation/network-participation/497-netdb-participation-consumer-phase.md`](../plans/implementation/network-participation/497-netdb-participation-consumer-phase.md)
+and [`plans/registry.md`](../plans/registry.md). **There is no closure record
+for Plan 497 yet**, so the findings it discharges — Plan 488 F1, F3 and F4, and
+Plan 489 §11 known limitation 2 ("the routing table is not wired into the
+router's tunnel building") — close only if its acceptance rows hold.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

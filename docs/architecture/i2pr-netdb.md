@@ -67,8 +67,8 @@ It must **not** own:
 
 ## Module layout
 
-`crates/i2pr-netdb/src/` holds 30 modules plus `lib.rs`
-(23 094 lines total; line counts from `wc -l`).
+`crates/i2pr-netdb/src/` holds 31 modules plus `lib.rs`
+(23 982 lines total; line counts from `wc -l`).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
@@ -85,7 +85,7 @@ It must **not** own:
 | `lease_set2` | `lease_set2.rs` | 1000 | Plan 119 Standard LeaseSet2 validation, freshness policy, disclosure block, and bounded store | `ValidatedLeaseSet2`, `DestinationHash`, `LeaseSet2ValidationPolicy` / `LeaseSet2ValidationContext` / `LeaseSet2ValidationError`, `LeaseSetDisclosureBlock`, `LeaseSet2Store`, `LeaseSet2StoreConfig`, `LeaseSet2StoreStats`, `LeaseSet2InsertOutcome` |
 | `local` | `local.rs` | 812 | Local signed RouterInfo builder, controlled option declaration, data-only Java-compatible bandwidth-class derivation, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `BandwidthClass`, `BandwidthClassError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
 | `lookup_action` | `lookup_action.rs` | 476 | Typed action vocabulary emitted by the lookup machine; bounded gzip decompression; reply-path sink trait | `LookupAction`, `LookupOutcome`, `LookupFinalState`, `DecompressionError`, `ReplyPathSink`, `decompress_router_info`, `MAX_COMPRESSED_ROUTER_INFO_BYTES`, `MAX_DECOMPRESSED_ROUTER_INFO_BYTES`, `LOOKUP_EXCLUDED_PEER_BUDGET` |
-| `lookup_engine` | `lookup_engine.rs` | 1364 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
+| `lookup_engine` | `lookup_engine.rs` | 1 816 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing; **Plan 497** adds the preferred-order entry point `start_with_preferred`, which reorders the flat store's own selection without narrowing it | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 366 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
 | `lookup_policy` | `lookup_policy.rs` | 468 | Bounded lookup budgets and nearest-N floodfill candidate selection | `LookupPolicy`, `LookupPolicyError`, `FloodfillSelection`, `select_floodfill_candidates`, `MAX_SUGGESTED_HASH_LIMIT`, `DEFAULT_*` budget constants |
 | `profile` | `profile.rs` | 857 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, the capacity-class parser, and Plan 491's per-peer published API version evidence | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
@@ -103,7 +103,7 @@ It must **not** own:
 | `store` | `store.rs` | 584 | Bounded in-memory `RouterInfoStore` with checked arithmetic and deterministic replacement semantics | `RouterInfoStore`, `RouterInfoStoreConfig`, `RouterInfoStoreStats`, `InsertOutcome` |
 | `version` | `version.rs` | 247 | Plan 491 the router's peer-eligibility policy: the declared level parsed once, the two minimum-version floors derived from the specification's table, the typed eligibility decisions, and the counted refusal vocabulary | `CONTROLLED_API_VERSION`, `CONTROLLED_VERSION_FLOORS`, `MIN_PEER_VERSION_FOR_TUNNEL_BUILD`, `MIN_FLOODFILL_VERSION_FOR_DSM`, `SPECIFICATION_RELEASE`, `ROUTER_VERSION_PROPERTY`, `VersionRefusalCounts`, `published_version_of`, `tunnel_peer_eligibility`, `dsm_target_eligibility` |
 | `store_message` | `store_message.rs` | 318 | Plan 105 bounded ingestion handler for `DatabaseStore` arriving outside an active lookup | `handle_unsolicited_databasestore`, `UnsolicitedStorePolicy`, `UnsolicitedStoreOutcome`, `UnsolicitedStoreError` |
-| *(root)* | `lib.rs` | 206 | `#![forbid(unsafe_code)]`, 30 private module declarations, and the crate's whole public surface | — (re-exports only) |
+| *(root)* | `lib.rs` | 214 | `#![forbid(unsafe_code)]`, 31 private module declarations, and the crate's whole public surface | — (re-exports only) |
 
 ## Public surface
 
@@ -164,8 +164,8 @@ lookup_action DecompressionError, LOOKUP_EXCLUDED_PEER_BUDGET, LookupAction, Loo
               LookupOutcome, MAX_COMPRESSED_ROUTER_INFO_BYTES,
               MAX_DECOMPRESSED_ROUTER_INFO_BYTES, ReplyPathSink, decompress_router_info
 lookup_engine CoalescedRouterInfoLookup, DeliveryOutcome, LookupDiagnostics, LookupEngineError,
-              LookupResult, ResponseOutcome, RouterInfoLookup, StartOutcome, handle_database_store,
-              handle_database_store_lease_set2, handle_databasestore_message,
+              LookupResult, MAX_PINNED_CANDIDATES, ResponseOutcome, RouterInfoLookup, StartOutcome,
+              handle_database_store, handle_database_store_lease_set2, handle_databasestore_message,
               handle_delivery_outcome, handle_search_reply, handle_searchreply_message
 lookup_id     CoalescedTargets, LookupId, LookupKind, MAX_COALESCED_LOOKUPS, MAX_WAITERS_PER_LOOKUP,
               ReplyPath, ReplyPathError, ReplyPathProvider, WaiterSet,
@@ -629,7 +629,55 @@ published RouterInfo, or any support entry.
   caller, so the table's contents are reproducible. The crate-local
   guard `tests/profile_boundary.rs` enforces this, including a clock
   read (`std::time::Instant`, `std::time::SystemTime`) as a forbidden
-  construct with its own inverted probe.
+  construct with its own inverted probe. **Plan 497** adds the crate's
+  own section to the repository-wide guard
+  `scripts/check-runtime-boundaries.sh` (12 rules, one positive control
+  per rule), so the crate is no longer unpoliced by that script. The
+  script's rule set keys on the **module**, not the address type:
+  `std::net` is forbidden and `core::net` is the permitted spelling,
+  because the crate parses peer addresses with `core::net::IpAddr`. The
+  crate-local guard stays in place: Plan 488's informational finding F5
+  expected the duplication to be removed when F1 closed, and closing F1
+  did not remove it.
+
+### The preferred-order lookup entry point (Plan 497, `lookup_engine.rs`)
+
+Plan 489's `start_with_candidates` **freezes** the candidate list. Plan 497 adds
+a second entry point, `RouterInfoLookup::start_with_preferred`
+(`lookup_engine.rs:373`), for the case where a **cache of derived state** — the
+daemon's floodfill-indexed routing table — has an opinion about the *order* but
+must not be allowed to change the candidate *set*.
+
+- **The set is never reduced.** `start_with_preferred` computes exactly the
+  selection `start` computes —
+  `lookup_policy::select_floodfill_candidates` (`lookup_policy.rs:257`) — and
+  then only **reorders** it. A preferred peer the flat store would not have
+  served is ignored, and the target stays excluded exactly as it is for every
+  other entry point (`lookup_policy.rs:266` inserts the target into the
+  exclusion set). The table may reorder; it may never widen.
+- **The preference is a priority prefix, not a closed set.** On every later
+  advance the engine re-selects against the authoritative store and puts the
+  preferred peers first (`lookup_engine.rs:588`), so **a peer ingested while the
+  lookup runs is still queried**. A preferred peer the store no longer holds as
+  a floodfill advertiser drops out of the prefix on that advance
+  (`lookup_engine.rs:606`).
+- **`start_with_candidates` is unchanged.** It keeps its closed-list behaviour:
+  the list is pinned, truncated to `MAX_PINNED_CANDIDATES` (64)
+  (`lookup_engine.rs:341`), and the engine never re-sorts it or consults the
+  flat store behind the caller's back. The two entry points are **not** the
+  same thing, and a test pins the difference.
+
+**The two ordering metrics are different quantities.** The routing table orders
+a peer by its **daily keyspace position** against the routing key
+(`bucket_set.rs:530` — `distance(entry.position, *target)`), because a table
+entry's `position` is `daily_routing_key(router_hash, date)`
+(`bucket_set.rs:145`, and `position_of`). The flat store orders by the peer's
+**canonical `RouterHash`** XOR distance against the routing key
+(`lookup_policy.rs:274` — `xor_distance(&key, routing_key)`, with
+`xor_distance` in `routing.rs:115`). Both measure an XOR distance, but over
+different values — the day-keyed position versus the raw hash — so the two
+orders can disagree. That is what makes the table's answer a genuine
+**reordering** rather than a restatement of the flat store's own order.
 
 ### Transport-neutral lookup and publication machines
 
@@ -1131,35 +1179,38 @@ no `TcpStream`/`UdpSocket`/`SocketAddr`, no `std::fs`, no `async fn`, no
 `.await`, no `spawn`, no `JoinHandle`, no `thread::`, and no unbounded
 channel type. The only `write_all` hits are `std::io::Write` on in-memory
 cursors and ZIP writers. `bash scripts/check-runtime-boundaries.sh`
-passes on the current head. The one interior-mutability construct is
+passes on the current head, and since **Plan 497** it carries a dedicated
+`i2pr-netdb` section — so this crate's runtime neutrality is enforced by the
+repository-wide guard and not only by the crate-local one. The one
+interior-mutability construct is
 `Arc<Mutex<FloodfillResourceSnapshot>>` in `resource.rs`, which is
 synchronous, bounded, and drop-released.
 
 ## Tests
 
-395 tests, all local, all deterministic; no root, namespaces, Java I2P,
+412 tests, all local, all deterministic; no root, namespaces, Java I2P,
 i2pd, or Internet connection. `cargo test --locked -p i2pr-netdb
---all-targets -- --test-threads=1` passes: **285 in-crate unit tests,
+--all-targets -- --test-threads=1` passes: **302 in-crate unit tests,
 110 integration tests, 0 failed, 0 ignored.**
 
 Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 156 lines):
 
 | File | Lines | Tests | Coverage |
 | --- | ---: | ---: | --- |
-| `els2_foundation.rs` | 1 418 | 25 | Type-5 foundation: distinct blinded/storage keys per UTC day, day-bound expiry, opaque floodfill store-and-serve, freshness and storage-key enforcement, an **independent Python derivation** agreeing on credentials and layer ciphertexts, counter-1 stream start, lookup-secret bound, non-Red25519 blinded sigtype rejection, offline key-block parsing and delegation verification, owner-schedule self-consistency, per-client layer-1 flags refused by the no-auth floor, bounded precomputation, reserved layer-1 flag rejection, atomic counted restart-safe rollover, size ceilings on both layers, store capacity without mutating existing state, newer-replaces / stale-rejects semantics, tampered ciphertext rejected by the record signature, tampered signature and header fields rejected, type-7 owner blinding, unsupported unblinded sigtype rejected before derivation, wrong published timestamp and wrong secret yielding no decryption |
-| `els2_client_authorization.rs` | 1 061 | 30 | PSK and DH client authorization: both HKDF paths, bounded `AuthBlock` codec round-trips, client-count ceilings, wrong-role secret refusal, `AuthBlock` flag validation, `AuthClientMaterial` recovery, and the negative rows a tampered cookie yielding a *different* cookie rather than an error and a wrong PSK refused with the **same** error as an absent one (no oracle) |
+| `els2_foundation.rs` | 1 456 | 25 | Type-5 foundation: distinct blinded/storage keys per UTC day, day-bound expiry, opaque floodfill store-and-serve, freshness and storage-key enforcement, an **independent Python derivation** agreeing on credentials and layer ciphertexts, counter-1 stream start, lookup-secret bound, non-Red25519 blinded sigtype rejection, offline key-block parsing and delegation verification, owner-schedule self-consistency, per-client layer-1 flags refused by the no-auth floor, bounded precomputation, reserved layer-1 flag rejection, atomic counted restart-safe rollover, size ceilings on both layers, store capacity without mutating existing state, newer-replaces / stale-rejects semantics, tampered ciphertext rejected by the record signature, tampered signature and header fields rejected, type-7 owner blinding, unsupported unblinded sigtype rejected before derivation, wrong published timestamp and wrong secret yielding no decryption |
+| `els2_client_authorization.rs` | 1 147 | 31 | PSK and DH client authorization: both HKDF paths, bounded `AuthBlock` codec round-trips, client-count ceilings, wrong-role secret refusal, `AuthBlock` flag validation, `AuthClientMaterial` recovery, and the negative rows a tampered cookie yielding a *different* cookie rather than an error and a wrong PSK refused with the **same** error as an absent one (no oracle) |
 | `els2_auth_emissary_differential.rs` | 384 | 9 | Differential against a pinned reference transcript; fixtures `tests/data/els2-auth-emissary-differential.json` and `tests/data/els2-independent-derivation.json` |
 | `lease_set2_integration.rs` | 201 | 8 | `DestinationHash` indexing, the Plan 119 signature path, typed rejection of an invalid signature, a wrong expected key, and an expired LS2, deterministic replacement idempotency, swap on different bytes, capacity isolation from `RouterInfoStore`, `LeaseSet2StoreStats` contract |
 | `els2_type11_profile.rs` | 769 | 18 | Plan 346 ELS2 type-11 deployed signature-profile classification and verification |
 | `floodfill_type5_serve.rs` | 834 | 13 | Plan 332/346 floodfill store-and-serve of encrypted LeaseSet2 records |
-| `profile_boundary.rs` | 306 | 4 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
+| `profile_boundary.rs` | 365 | 6 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
 
-In-crate `#[cfg(test)]` modules (285 tests) are distributed as:
-`profile_store` 25, `bucket_set` 25, `local` 19, `profile` 18,
-`selection` 16, `floodfill_service` 16, `lease_set2` 14,
-`lookup_policy` 14, `routing` 13, `lookup_engine` 13, `store` 12,
-`router_info` 11, `publication` 11, `exploration` 13, `reseed` 9,
-`lookup_action` 9, `base64` 9, `lookup_id` 8, `optimized_lookup` 6,
+In-crate `#[cfg(test)]` modules (302 tests) are distributed as:
+`profile_store` 27, `bucket_set` 25, `local` 19, `lookup_engine` 18,
+`profile` 18, `selection` 17, `floodfill_service` 16, `lease_set2` 14,
+`lookup_policy` 14, `routing` 13, `exploration` 13, `store` 12,
+`publication` 12, `router_info` 11, `reseed` 9, `lookup_action` 9,
+`base64` 9, `version` 8, `lookup_id` 8, `optimized_lookup` 6,
 `store_message` 5, `databaselookup` 4, `replication` 3, `provenance` 3,
 `lease_set` 3, `els2` 3, and 1 each in `server_store`, `resource`, and
 `floodfill_role`. `els2_auth.rs` has no in-crate test module; its coverage
@@ -1224,6 +1275,11 @@ control to be exercised by its callers rather than internally.
 10. **Redaction is structural.** `RouterHash` and `DestinationHash`
     render as `X(..)` in `Debug`, and `RecordId`'s key renders as
     `"[redacted]"`, so a log line cannot leak identity.
+11. **A cache may reorder, never narrow.** Plan 497's `start_with_preferred`
+    computes the flat store's own selection and only permutes it. The
+    preferred peers are a **priority prefix**, so a peer ingested while the
+    lookup runs is still queried — the cache's opinion expires with each
+    advance instead of freezing the candidate set for the lookup's lifetime.
 
 ## LeaseSet2-kind lookups against a non-destination key (Plan 351, ADR 0033)
 
@@ -1307,6 +1363,16 @@ unwrapping, or inserting.
   [333](../../plans/closure/i2pcontrol-proposal-170/333-status.md) —
   passed; type-5 foundation and per-client authorization, no advertisement
   and no interoperability.
+
+**Network-participation closure records and plan of record**
+
+- [`488-status.md`](../../plans/closure/network-participation/488-status.md) — the
+  peer-profile store, the selection policy, and the bounded projection.
+- [`489-status.md`](../../plans/closure/network-participation/489-status.md) — the
+  floodfill-indexed routing table, the exploration job, and the optimized plan.
+- [`497-netdb-participation-consumer-phase.md`](../../plans/implementation/network-participation/497-netdb-participation-consumer-phase.md)
+  — the consumer phase: the routing-table consumer seam, the daemon's
+  `netdb-participation` service, and `start_with_preferred`.
 
 **Other closure records cited for specific contracts**
 
