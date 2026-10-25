@@ -1432,8 +1432,6 @@ Plan 497 recorded that `LookupPolicy::max_peers_per_lookup` was declared and
 validated but read by nothing. Plan 500 makes it load-bearing. The plan of
 record is
 [`plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md`](../plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md);
-its closure record is
-[`plans/closure/network-participation/500-status.md`](../plans/closure/network-participation/500-status.md);
 the predecessor closure record is
 [`plans/closure/network-participation/497-status.md`](../plans/closure/network-participation/497-status.md).
 What is claimed, and what is not:
