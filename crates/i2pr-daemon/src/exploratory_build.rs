@@ -3417,6 +3417,98 @@ mod tests {
         assert_eq!(coordinator.pending_destination_len(group_b), 1);
     }
 
+    /// Plan 502: the coordinator's creator-correlation facts are the
+    /// `(peer, message_id)` pairs of the router's **own** pending attempts.
+    ///
+    /// The transit owner matches an inbound build against exactly this
+    /// pair, so the router's own build replies are never claimed as
+    /// transit work. This row pins the producer side of that seam: the
+    /// peer is the attempt's target peer (the same key the coordinator
+    /// itself matches an inbound reply against), and **both** message ids
+    /// the attempt carries are published.
+    #[test]
+    fn the_reserved_creator_builds_are_the_pending_attempts_keyed_by_peer() {
+        fn pending(attempt_raw: u64) -> PendingBuild {
+            let destination_id = DestinationId::from_hash(Hash::from_bytes([0x41; 32]));
+            let peers = (0..3)
+                .map(|index| PeerBuildMaterial {
+                    router_hash: Hash::from_bytes([0x60 + index; 32]),
+                    static_encryption_key: [0x70 + index; 32],
+                    receive_tunnel: TunnelId::new(0x7400 + index as u32).expect("receive"),
+                    next_tunnel: TunnelId::new(0x7500 + index as u32).expect("next"),
+                    role: HopRole::Participant,
+                })
+                .collect::<Vec<_>>();
+            let request = DestinationBuildRequest {
+                destination_id,
+                direction: BuildDirection::Outbound,
+                peers,
+                creator_tunnel_id: TunnelId::new(0x7600 + attempt_raw as u32).expect("creator"),
+                message_id: 0x7700 + attempt_raw as u32,
+                outbound_reply_router: Some(Hash::from_bytes([0x78; 32])),
+                originator_hash: None,
+            };
+            let path_request = BuildPathRequest::from(request);
+            let mut reserved_tunnel_ids = vec![path_request.creator_tunnel_id.get()];
+            for peer in &path_request.peers {
+                reserved_tunnel_ids.push(peer.receive_tunnel.get());
+                reserved_tunnel_ids.push(peer.next_tunnel.get());
+            }
+            let attempt_id = BuildAttemptId::new(attempt_raw);
+            let path = short_build_path(&path_request, attempt_id, 1_000);
+            let target_peer = PeerId::from_hash(path.hops[0].router_hash());
+            let message_id = path.next_message_id;
+            PendingBuild {
+                attempt_id,
+                direction: BuildDirection::Outbound,
+                destination_id: Some(destination_id),
+                target_peer,
+                deadline_ms: 60_000,
+                message_id,
+                outer_message_id: 0x7800 + attempt_raw as u32,
+                reserved_tunnel_ids,
+                next_tunnel: TunnelId::new(0x7A00 + attempt_raw as u32).expect("next tunnel"),
+                garlic_key: None,
+                garlic_tag: None,
+                inbound_observation: InboundBuildObservation::default(),
+                delivery_set: BuildDeliverySet::default(),
+                state: ShortBuildStateMachine::new(path, 60_000),
+            }
+        }
+
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        assert!(
+            coordinator.reserved_creator_builds().is_empty(),
+            "a coordinator with no pending attempt owns no creator fact"
+        );
+        let attempt = pending(1);
+        let target_peer = attempt.target_peer;
+        let message_id = attempt.message_id;
+        let outer_message_id = attempt.outer_message_id;
+        coordinator.pending.insert(BuildAttemptId::new(1), attempt);
+        let facts = coordinator.reserved_creator_builds();
+        assert!(
+            facts.contains(&(target_peer, message_id)),
+            "the attempt's own message id must be published with its target peer"
+        );
+        assert!(
+            facts.contains(&(target_peer, outer_message_id)),
+            "the attempt's outer message id must be published with its target peer"
+        );
+        assert_eq!(
+            facts.len(),
+            2,
+            "one pending attempt publishes exactly its two message ids"
+        );
+        // The facts are deduplicated: a repeated pass publishes the same
+        // set, so the owner's sets cannot grow on every tick.
+        assert_eq!(
+            coordinator.reserved_creator_builds(),
+            facts,
+            "the producer is stable across calls"
+        );
+    }
+
     #[test]
     fn selected_destination_order_is_preserved_into_shared_short_build_path() {
         let candidates = vec![

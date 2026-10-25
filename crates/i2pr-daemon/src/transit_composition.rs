@@ -665,4 +665,60 @@ data_dir = \"./state\"
             "an admitted build relays no tunnel bytes yet"
         );
     }
+
+    /// Plan 502: the peer index is reconciled against the **live** session
+    /// set.
+    ///
+    /// The index is the owner's record of which routers it can reach.
+    /// Without the reconcile, a forward would decide to relay and then
+    /// report that it reached nobody; with a stale entry, a forward would
+    /// dispatch to a peer whose session is gone. This row pins both
+    /// directions: a departed session is removed, a live one is installed,
+    /// and a second pass changes nothing.
+    #[test]
+    fn the_peer_index_is_reconciled_against_the_live_session_set() {
+        let config = opted_in_config();
+        let governor = governor();
+        let bundle = identity();
+        let inputs = TransitCompositionInputs {
+            transit: config.transit,
+            bandwidth: config.bandwidth,
+            governor: Some(&governor),
+            delivery: Some(delivery(&bundle)),
+            cancellation: Some(CancellationToken::new()),
+            identity: Some(&bundle),
+        };
+        let mut owner = build_transit_owner(&inputs)
+            .expect("the opted-in path constructs an owner")
+            .expect("the opted-in path installs an owner");
+        let departed = Hash::from_bytes([0x41; 32]);
+        let live = Hash::from_bytes([0x42; 32]);
+        owner
+            .install_peer(departed, PeerId::from_hash(departed))
+            .expect("the departed peer is indexed");
+        assert!(owner.has_peer(&departed), "the peer starts indexed");
+        let mut installed = BTreeSet::new();
+        installed.insert(departed);
+        // The live session set no longer holds `departed`: its session
+        // closed. `live` is the only peer with a session now.
+        reconcile_transit_peers(&mut owner, &mut installed, &[live], NOW_SECONDS);
+        assert!(
+            !owner.has_peer(&departed),
+            "a peer whose session is gone must not stay indexed: a later forward would dispatch to \
+             a stale peer instead of reporting NoActiveSession"
+        );
+        assert!(
+            owner.has_peer(&live),
+            "a peer with a live session must be indexed"
+        );
+        assert_eq!(
+            installed.len(),
+            1,
+            "the installed set must mirror the live session set, not accumulate"
+        );
+        // A second pass over the same live set changes nothing.
+        reconcile_transit_peers(&mut owner, &mut installed, &[live], NOW_SECONDS);
+        assert!(owner.has_peer(&live), "the live peer stays indexed");
+        assert_eq!(installed.len(), 1, "the reconcile is idempotent");
+    }
 }
