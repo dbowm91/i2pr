@@ -67,6 +67,7 @@ pub mod ssu2_relay_drain;
 pub mod transit_compose;
 pub mod transit_composition;
 pub mod transit_owner;
+pub mod version_eligibility;
 pub mod transit_participation;
 pub mod transit_volume;
 pub mod tunnel_liveness;
