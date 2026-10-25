@@ -695,6 +695,16 @@ posture's counts are read from the registry rather than from a second ledger.
 cap is measured against. The public transit role remains disabled,
 non-advertised, and unclaimed.
 
+**Plan 502 added no tunnel-crate code either.** It installs the daemon's
+existing transit owner in the product composition behind the operator's
+default-off `[transit] participation` opt-in, and the values it feeds this
+crate's `TransitAdmissionPolicy` are **derived** from the daemon's
+normalized configuration — the operator's participating-tunnel and
+per-peer counts, and the enforced bandwidth share — and are checked against
+this crate's own ceilings by this crate's own constructor. The policy was
+always the authority for the in-tunnel limits; what changed is that the
+daemon now supplies a real one, and only for an operator who opted in.
+
 ### Garlic reply handling
 
 `garlic_reply.rs` implements the Plan 188 bounded OBEP garlic unwrap:

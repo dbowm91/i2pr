@@ -88,13 +88,14 @@
 //!
 //! ## Participation status
 //!
-//! Participation remains disabled in ordinary product profiles.
-//! Constructing a [`TransitBuildService`] is the controlled opt-in
-//! path; production profiles do not build one, so no public
-//! configuration has to be introduced merely for this plan. The
-//! [`TransitIngressGate::dispatch_short_build`] seam below is the
-//! narrow bridge the Plan 184 router-I2NP dispatcher calls when
-//! the controlled opt-in is installed.
+//! Participation remains disabled in ordinary product profiles. A
+//! [`TransitBuildService`] is built only on the explicit opt-in path: the
+//! controlled lanes build one directly, and Plan 502's production
+//! composition builds one when the operator opted in. The default profile
+//! builds none, so no public configuration has to be introduced merely for
+//! this plan. The [`TransitIngressGate::dispatch_short_build`] seam below is
+//! the narrow bridge the Plan 184 router-I2NP dispatcher calls when
+//! the opt-in is installed.
 
 #![forbid(unsafe_code)]
 
@@ -790,12 +791,12 @@ impl TransitBuildService {
         })
     }
 
-    /// Returns the shared transit-volume handle a controlled lane
-    /// publishes to the inspection surface.
+    /// Returns the shared transit-volume handle the owner publishes to
+    /// the inspection surface.
     ///
     /// Only a router that actually constructs this service can hold one,
-    /// which is what keeps the product posture (no service, no
-    /// counters) and the controlled lane (real counters) from being
+    /// which is what keeps the default posture (no service, no
+    /// counters) and a participating profile (real counters) from being
     /// confused for one another.
     pub fn volume_handle(&self) -> Arc<Mutex<TransitVolumeCounters>> {
         Arc::clone(&self.volume)
@@ -1877,11 +1878,13 @@ impl TransitBuildService {
 }
 
 /// Disabled-by-default ingress gate the daemon owns for Plan 252
-/// transit composition. Ordinary product profiles never construct
+/// transit composition. The **default** product profile never constructs
 /// a [`TransitBuildService`], so the gate stays disabled and every
 /// inbound `ShortTunnelBuild` keeps the existing
-/// `TunnelBuildReserved` outcome. A controlled test lane explicitly
-/// enables the gate; only then does authenticated STBM input reach
+/// `TunnelBuildReserved` outcome. The gate is enabled explicitly: a
+/// controlled test lane does it directly, and Plan 502's production
+/// composition does it when the operator opted in. Only then does
+/// authenticated STBM input reach
 /// the message-level transaction, and only after the caller proves
 /// the message is not creator-correlated build traffic.
 ///
@@ -1901,8 +1904,10 @@ impl TransitIngressGate {
         Self { service: None }
     }
 
-    /// Installs the controlled transit service. This is the
-    /// explicit opt-in path; production profiles never call it.
+    /// Installs the transit service. This is the
+    /// explicit opt-in path: the default profile never calls it, and
+    /// Plan 502's production composition calls it only when the operator
+    /// opted in.
     pub fn enable(&mut self, service: TransitBuildService) {
         self.service = Some(service);
     }

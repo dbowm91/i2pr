@@ -895,11 +895,13 @@ pub(crate) fn proposal_network_condition_value(
 /// participation posture (Plan 340).
 ///
 /// The value is a property of the enforced transit posture, not a
-/// substituted placeholder. A product router publishes
+/// substituted placeholder. The **default** product profile publishes
 /// `TransitParticipation::Disabled`, which owns no counters, so the zeros
 /// it reports are the truth about a router that relays nothing. A
-/// participating router reports counters its real `TunnelData` forward
-/// dispatches advanced.
+/// participating router — one whose operator opted in, so that Plan 502's
+/// composition installed the owner — publishes
+/// `TransitParticipation::Enabled` with that service's own counters, and
+/// reports what its real `TunnelData` forward dispatches advanced.
 ///
 /// Per-key gating is deliberate: `tunnels.shareratio` is a ratio, so while
 /// the router actually participates it additionally needs an attested

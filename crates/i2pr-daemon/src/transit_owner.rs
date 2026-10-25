@@ -517,8 +517,10 @@ pub type TransitLocalSink =
 /// The actual live authenticated SSU2/router-I2NP inbound owner for
 /// controlled transit (Plan 254 work packages C–G).
 ///
-/// Default construction is transit-disabled; controlled
-/// tests/qualification enable transit through [`Self::enable`].
+/// Default construction is transit-disabled; the owner is enabled through
+/// [`Self::enable`], which the controlled tests/qualification do directly
+/// and Plan 502's production composition does behind the operator's
+/// default-off `[transit] participation` opt-in.
 /// No public RouterInfo advertisement, no second socket or event
 /// loop, no public config surface. Creator/service ownership probes
 /// are typed `BTreeSet`s installed by the controlled harness; the

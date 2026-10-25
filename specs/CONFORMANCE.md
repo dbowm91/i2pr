@@ -687,12 +687,16 @@ for the normative record.
 
 What is claimed, and what is not:
 
-- **The honest product baseline is `0`, `0`, and `0.0`.** Production profiles
-  never construct a transit data-plane owner, so a product i2pr router relays
-  nothing and says so. The disabled posture holds **no counters at all**, so it
-  is structurally incapable of reporting a non-zero volume: the zero is a
-  property of the enforced posture, not a measurement substituted for a missing
-  one. This advertises the *absence* of transit participation.
+- **The honest default baseline is `0`, `0`, and `0.0`.** The default
+  production profile constructs no transit data-plane owner, so a default
+  product i2pr router relays nothing and says so. The disabled posture
+  holds **no counters at all**, so it is structurally incapable of
+  reporting a non-zero volume: the zero is a property of the enforced
+  posture, not a measurement substituted for a missing one. This
+  advertises the *absence* of transit participation. **Plan 502** makes an
+  *opted-in* profile construct the owner and report measured counters —
+  the default profile is unchanged, and see "The transit data-plane owner
+  in the product composition (Plan 502)" below.
 - **Transit participation is not enabled and is not advertised.** Enabling it is
   a separate product-posture decision gated by M11 re-qualification; the retained
   M11 evidence is bound to qualification SHA `6ab9dc2d` and not to the current
@@ -1485,6 +1489,78 @@ Evidence: `crates/i2pr-netdb/src/lookup_action.rs`,
 `crates/i2pr-netdb/tests/lookup_peer_budget.rs`,
 `crates/i2pr-daemon/src/netdb_participation.rs`, and
 `crates/i2pr-daemon/tests/netdb_peer_budget_receipt.rs`.
+
+## The transit data-plane owner in the product composition (Plan 502)
+
+Plan 492 built the transit participation posture and closed with a finding:
+*"a router that has never been given a transit owner does not relay. Owner:
+the plan that installs the transit owner in the product composition."* Plan
+502 is that plan. The plan of record is
+[`plans/implementation/network-participation/502-transit-owner-in-the-product-composition.md`](../plans/implementation/network-participation/502-transit-owner-in-the-product-composition.md);
+its closure record is
+[`plans/closure/network-participation/502-status.md`](../plans/closure/network-participation/502-status.md).
+
+What is claimed, and what is not:
+
+- **The owner is installed in the production composition, behind the
+  operator's existing default-off `[transit] participation` opt-in.** The
+  default profile constructs **nothing at all** — no service, no counters, no
+  owner, and no entropy drawn — and still publishes
+  `TransitParticipation::Disabled`. The three transit selectors therefore
+  still report `0`, `0`, and `0.0` for a default router, **because the
+  disabled posture owns no counters**, not because a zero was substituted for
+  a missing measurement.
+- **One pump, one decoder, one socket.** The owner is installed inside the
+  SSU2 service that already owns the transport, the inbound pump and the
+  `RouterDeliveryService`. There is no second socket, no second event loop,
+  and no second I2NP decode: the raw inbound is handed to the owner, which
+  performs the single canonical decode.
+- **The disabled probe is the no-owner fallback only.** The production
+  inbound path dispatches through the composition's entry point, which
+  consults the installed owner first and falls back to the controlled
+  disabled probe **only** when no owner exists, so the two can never run
+  beside each other.
+- **The peer index is reconciled against the live session set** and expired
+  registrations are swept, on the daemon's existing pump tick — bounded,
+  never per message, and never on a new task.
+- **The router's own coordinator traffic is not claimed as transit.** The
+  coordinator publishes the `(peer, message_id)` pairs of its own pending
+  attempts, keyed by the attempt's target peer, and the owner bypasses them.
+  The documented dispatch order — creator/service first, transit second,
+  unknown fail-closed — is unchanged.
+- **The boundary rule was strengthened, not satisfied.** The M11 rule 10 was
+  two text searches that a composition could pass by naming a module and
+  calling a no-op probe. It is now a function over the two production files
+  with eight rules and nine controls, every rule with a control that fires
+  it, and the counts derived. The control set includes the vestigial shape
+  the old rule accepted; the pre-Plan-502 text search is run against the
+  same fixture and is required to still accept it.
+- **The build's delivery to a peer is still NOT proven.** The evidence shows
+  the composition-installed owner **admits** a peer's transit work and
+  attempts the forward; the attempt reports
+  `RouterDeliveryOutcome::NoActiveSession`, because the private mesh has no
+  established session to the responder. The share is charged and the bytes
+  are accounted; **the cell does not reach a peer**. Plan 492's F1 is
+  unchanged, and the evidence asserts the concrete delivery outcome rather
+  than a `Forwarded(_)` wildcard or a byte count — the share is charged
+  *before* the forward, so either of those would pass on a relay that
+  reached nobody.
+- **There is no stock-peer evidence**, no LOCAL OBEP consumer (a LOCAL
+  action refuses with the typed `NoLocalConsumer`), and no NTCP2 ingress.
+- **The transit role is still not advertised and still not claimed for the
+  public network.** `specs/support.toml` stays at **94 surfaces, 88
+  experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
+  stays `0.9.62`; `caps` and the published RouterInfo are unchanged. Plan 436
+  stays **blocked** on Plan 433; this plan advances its source-side WP3 only.
+
+Evidence: `crates/i2pr-daemon/src/transit_composition.rs`,
+`crates/i2pr-daemon/src/transit_owner.rs`,
+`crates/i2pr-daemon/src/transit_participation.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/src/exploratory_build.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-daemon/tests/transit_composition.rs`, and
+`scripts/check-m11-transit-boundaries.sh`.
 
 ## Outbound proxy secret owner (Plan 341)
 

@@ -50,8 +50,10 @@ implementation.
   170's I2P-routed outproxy: it opens the Streaming route and recovers the credential, while the
   policy stays in the runtime-neutral `i2pr-service-tunnels`. Reachable from tests only; no
   request path consults it.
-- **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`) —
-  in the **disabled** posture only.
+- **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`,
+  `transit_composition.rs`) — the **disabled** posture by default; the owner is installed in the
+  production composition behind the operator's default-off `[transit] participation` opt-in
+  (Plan 502).
 - **M12 floodfill** (`floodfill.rs`) — controlled-activation/withdrawal composition only.
 - **Address book** (`addressbook.rs`, `addressbook_fetch.rs`, `control_sources.rs`): refresh
   tasks, timers, bounded download composition, and resolver-handle installation into SAM,
@@ -189,7 +191,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
-| `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502) | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_composition.rs` | 668 | **Plan 502** M11 transit **product composition**: the derivation of the admission policy, hop material and participation binding from the normalized configuration, the owner's construction behind the operator's default-off `[transit] participation` opt-in, the inbound dispatch that makes the whole owner/no-owner choice internally, and the bounded peer-index reconcile against the live session set | `TransitCompositionInputs`, `TransitAdmissionDerivation`, `TransitCompositionError`, `derive_admission_policy`, `build_transit_owner`, `compose_transit_owner`, `dispatch_transit_inbound`, `reconcile_transit_peers` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
@@ -1414,8 +1416,11 @@ the peer session. The dispatcher returns one of exactly four `RouterI2npOutcome`
 `RouterControl { .. }` — or `Unsupported { .. }` for a body kind it will not touch, and
 fails closed on `RouterI2npError::Empty` / `TooLarge` before any decode
 (`src/router_i2np.rs:471`, `474`). `dispatch_router_i2np_with_transit_bodies` (387) is the
-same seam plus the bounded `TransitInboundBodies` extraction, and
-`controlled_transit_disabled_probe` gates the transit-shaped path. `RouterDeliveryService`
+same seam plus the bounded `TransitInboundBodies` extraction.
+`controlled_transit_disabled_probe` is the no-owner fallback the composition's
+`dispatch_transit_inbound` uses when the operator did not opt in; the
+installed owner is consulted first, and the two can never run beside each
+other (Plan 502). `RouterDeliveryService`
 is the narrow outbound seam over the existing `send_i2np` path.
 
 The service **is** registered in the production graph: `src/lib.rs:3620` constructs
