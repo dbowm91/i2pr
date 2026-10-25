@@ -257,6 +257,7 @@ Filenames keep global i2pr numbers.
 | 492 | closed | passed-transit-participation-posture | `plans/implementation/network-participation/492-transit-participation-posture.md` | `plans/closure/network-participation/492-status.md` (implementation `d287635e`; floor-caught fixes `279f6ae4` and `f0e44798` committed separately) |
 | 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | `plans/closure/core-router-recovery/495-status.md` (`passed-peer-eligibility-gate-and-first-failure-owner`) — the peer-eligibility gate and the first-failure-owner outcome taxonomy; the gate dependency is discharged and Plan 493 remains blocked on the authorized two-host topology and Plan 435 |
 | 494 | blocked | registered-floodfill-role-and-caps-f-advertisement | `plans/implementation/network-participation/494-floodfill-role-and-caps-f-advertisement.md` | — |
+| 497 | registered | `registered-source-consumer` | `plans/implementation/network-participation/497-netdb-participation-consumer-phase.md` | — |
 
 ### Predecessor and dependency plans owned elsewhere
 
