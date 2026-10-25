@@ -4,7 +4,7 @@
 | --- | --- |
 | Plan | 500 |
 | Subsystem | `network-participation` |
-| State | `registered` (`registered-lookup-peer-budget-enforcement`) |
+| State | `closed` (`passed-lookup-peer-budget-enforcement`) |
 | Depends on | Plan 489 (`passed-floodfill-indexed-routing-table`), Plan 497 (`passed-netdb-participation-consumer-phase`) |
 | Discharges | Plan 497 L2 — `LookupPolicy::max_peers_per_lookup` is declared and validated but read by nothing |
 | Closure record | `plans/closure/network-participation/500-status.md` |
