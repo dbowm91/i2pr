@@ -1114,8 +1114,10 @@ The plan of record and its current status are in
 
 Plan 488 built the peer-profile store and Plan 489 built the floodfill-indexed
 routing table; both recorded that nothing in the daemon called them. Plan 497 is
-the **consumer phase**. It is **registered**, not closed: the source-side work is
-landed, and the closure record and its evidence matrix are still outstanding.
+the **consumer phase**, and it is **closed** as
+`passed-netdb-participation-consumer-phase`: the source-side work is landed and
+its evidence matrix is recorded in
+[`plans/closure/network-participation/497-status.md`](../plans/closure/network-participation/497-status.md).
 What is claimed, and what is not:
 
 - **The claim is a consumer seam and a daemon-owned service — not a participation
@@ -1205,12 +1207,16 @@ rows in `crates/i2pr-netdb/src/lookup_engine.rs`
 `a_preferred_peer_the_flat_store_would_not_serve_is_ignored`,
 `the_preferred_path_never_asks_the_target`,
 `the_preferred_path_still_reaches_a_peer_ingested_mid_lookup`). The plan of
-record and its current status are in
-[`plans/implementation/network-participation/497-netdb-participation-consumer-phase.md`](../plans/implementation/network-participation/497-netdb-participation-consumer-phase.md)
-and [`plans/registry.md`](../plans/registry.md). **There is no closure record
-for Plan 497 yet**, so the findings it discharges — Plan 488 F1, F3 and F4, and
-Plan 489 §11 known limitation 2 ("the routing table is not wired into the
-router's tunnel building") — close only if its acceptance rows hold.
+record is in
+[`plans/implementation/network-participation/497-netdb-participation-consumer-phase.md`](../plans/implementation/network-participation/497-netdb-participation-consumer-phase.md),
+and its closure record, requirement-to-evidence matrix and unblock audit are in
+[`plans/closure/network-participation/497-status.md`](../plans/closure/network-participation/497-status.md).
+Plan 497 **discharged** Plan 488 F1, F3 and F4, and **partially discharged** Plan
+489 §11 known limitation 2 ("the routing table is not wired into the router's
+tunnel building"): the coordinator-level consumer exists and the discriminator
+proves it, while the production composition of the coordinator into the
+daemon's service graph remains Plan 433's blocked scope and stays open and
+recorded there.
 
 ## Outbound proxy secret owner (Plan 341)
 

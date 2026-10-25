@@ -4,7 +4,7 @@
 | --- | --- |
 | Plan | 497 |
 | Subsystem | `network-participation` (consumer phase for Plans 488 and 489) |
-| State | `registered-source-consumer` |
+| State | `closed` (`passed-netdb-participation-consumer-phase`) — closure record `plans/closure/network-participation/497-status.md` |
 | Classification | capability (a live router selects lookup peers from its own Kademlia routing table) + invariant (the flat store stays the authority; every fallback is counted) |
 | Predecessors | Plan 488 (`passed-peer-profile-store`), Plan 489 (`passed-floodfill-indexed-routing-table`), Plan 496 (`passed-ntcp2-private-lan-operator-profile-and-gate-aware-activation`) |
 | Recorded open findings this plan discharges | Plan 488 **F3** ("wire `run_profile_maintenance` into the daemon's service graph"), Plan 488 **F4** ("persist the profile projection at startup"), Plan 488 **F1** ("add an `i2pr-netdb` section to `scripts/check-runtime-boundaries.sh`"), Plan 489 §11.2 ("the routing table is not wired into the router's tunnel building") |
