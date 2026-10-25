@@ -175,6 +175,17 @@ impl ActiveLookup {
         &self.suggestions
     }
 
+    /// Returns the frozen candidate list of the active lookup
+    /// (test-only).
+    ///
+    /// Plan 489's list is the caller's list; the accessor lets a test
+    /// prove that the peer budget narrows the **attempts** and leaves
+    /// the candidate list itself alone.
+    #[doc(hidden)]
+    pub fn pinned_candidates(&self) -> Option<&[RouterHash]> {
+        self.pinned.as_deref()
+    }
+
     fn new(lookup_id: LookupId, policy_max_suggested_hashes: usize) -> Self {
         Self {
             kind: lookup_id.kind(),
@@ -696,6 +707,28 @@ impl RouterInfoLookup {
                     return AdvanceOutcome::NeedsPath;
                 }
             };
+            // Plan 500: the policy's per-lookup peer budget is a hard
+            // ceiling on the number of attempts. The check sits *before*
+            // the peer is pushed onto `queried` and *before* the attempt
+            // counter moves, so the budget narrows **attempts** and
+            // never **candidates**: a candidate the budget prevented
+            // querying stays unqueried, and the candidate list itself is
+            // untouched.
+            //
+            // `state.attempts` and `state.queried` move together — the
+            // peer is pushed onto `queried` in the same breath that the
+            // counter is incremented, and nothing else touches either —
+            // so the counter is the authoritative figure for the
+            // attempts already made.
+            debug_assert_eq!(
+                state.attempts,
+                state.queried.len(),
+                "the attempt counter and the queried peers must stay in step"
+            );
+            if state.attempts >= self.policy.max_peers_per_lookup() {
+                self.active = Some(state);
+                return AdvanceOutcome::Terminal(LookupFinalState::PeerBudgetExhausted);
+            }
             state.queried.push(key);
             state.attempts += 1;
             let excluded: Vec<RouterHash> = state

@@ -1140,6 +1140,8 @@ pub enum RoutingReceiptKind {
     Discovered,
     /// A lookup was issued from the routing table.
     LookedUp,
+    /// A lookup terminated in a final state.
+    Terminal,
     /// The table rotated onto a new UTC day.
     Rotated,
     /// A persisted projection was loaded or discarded.
@@ -1155,6 +1157,7 @@ impl RoutingReceiptKind {
             Self::Explored => "explored",
             Self::Discovered => "discovered",
             Self::LookedUp => "looked_up",
+            Self::Terminal => "terminal",
             Self::Rotated => "rotated",
             Self::Projection => "projection",
         }
@@ -1185,6 +1188,14 @@ pub struct RoutingReceipt {
     pub refused_count: u32,
     /// The number of peers the exploration queried.
     pub explored_count: u32,
+    /// The number of lookups that terminated in each final state, keyed
+    /// by the stable state label.
+    ///
+    /// The counts are cumulative over the driver's lifetime. A lookup
+    /// that spent its peer budget is counted under
+    /// `peer-budget-exhausted`, which is a different bucket from the
+    /// `peer-exhausted` a candidate-list exhaustion lands in.
+    pub terminal_counts: BTreeMap<&'static str, u32>,
     /// A digest over the receipt's counts.
     pub digest: [u8; 32],
 }
@@ -1316,6 +1327,7 @@ pub struct RoutingTableDriver {
     config: RoutingTableConfig,
     receipts: VecDeque<RoutingReceipt>,
     max_receipts: usize,
+    terminal_counts: BTreeMap<&'static str, u32>,
     clock_ms: u64,
     request_counter: u64,
     active_routing_key: RouterHash,
@@ -1357,6 +1369,7 @@ impl RoutingTableDriver {
             config,
             receipts: VecDeque::new(),
             max_receipts: i2pr_netdb::MAX_OPTIMIZED_QUERYABLE.max(1),
+            terminal_counts: BTreeMap::new(),
             clock_ms: 0,
             request_counter: 0,
             active_routing_key: anchor,
@@ -1494,10 +1507,7 @@ impl RoutingTableDriver {
         let candidates = self.exploration_candidates(store, routing_key);
         let lookup_id = self.next_lookup_id(LookupKind::Exploratory, search_key);
         let dispatch = if candidates.is_empty() {
-            RoutingDispatch::Terminal {
-                lookup_id,
-                final_state: LookupFinalState::NoEligibleCandidates,
-            }
+            self.terminal_dispatch(lookup_id, LookupFinalState::NoEligibleCandidates)
         } else {
             let outcome = self
                 .exploration
@@ -1509,6 +1519,9 @@ impl RoutingTableDriver {
                 outcome,
                 lookup_id,
             );
+            if let RoutingDispatch::Terminal { final_state, .. } = &dispatch {
+                self.record_terminal(*final_state);
+            }
             self.record_exploration_issue(&dispatch);
             dispatch
         };
@@ -1525,48 +1538,40 @@ impl RoutingTableDriver {
         let Some(job) = self.exploration_job.as_ref() else {
             let lookup_id =
                 self.next_lookup_id(LookupKind::Exploratory, RouterHash::from_bytes([0; 32]));
-            return RoutingDispatch::Terminal {
-                lookup_id,
-                final_state: LookupFinalState::Cancelled,
-            };
+            return self.terminal_dispatch(lookup_id, LookupFinalState::Cancelled);
         };
         let lookup_id = match self.exploration.active_lookup() {
             Some(id) => id,
             None => {
                 let id = self.next_lookup_id(LookupKind::Exploratory, job.search_key());
-                return RoutingDispatch::Terminal {
-                    lookup_id: id,
-                    final_state: LookupFinalState::Cancelled,
-                };
+                return self.terminal_dispatch(id, LookupFinalState::Cancelled);
             }
         };
         if job.budget_exhausted() {
             if let Some(job) = self.exploration_job.as_mut() {
                 job.complete();
             }
-            return RoutingDispatch::Terminal {
-                lookup_id,
-                final_state: LookupFinalState::PeerExhausted,
-            };
+            return self.terminal_dispatch(lookup_id, LookupFinalState::PeerExhausted);
         }
         if job.is_expired(self.clock_ms) {
             if let Some(job) = self.exploration_job.as_mut() {
                 job.complete();
             }
-            return RoutingDispatch::Terminal {
-                lookup_id,
-                final_state: LookupFinalState::Timeout,
-            };
+            return self.terminal_dispatch(lookup_id, LookupFinalState::Timeout);
         }
         let routing_key = self.active_routing_key;
         let outcome = self.exploration.advance_after_reply(store, &routing_key);
         let dispatch = match outcome {
             StartOutcome::PendingAttempt(action) => dispatch_from_action(action),
             StartOutcome::NeedsReplyPath(_) => RoutingDispatch::NeedsReplyPath { lookup_id },
-            StartOutcome::Terminal(result) => RoutingDispatch::Terminal {
-                lookup_id,
-                final_state: failure_state(&result),
-            },
+            StartOutcome::Terminal(result) => {
+                let final_state = failure_state(&result);
+                self.record_terminal(final_state);
+                RoutingDispatch::Terminal {
+                    lookup_id,
+                    final_state,
+                }
+            }
         };
         self.record_exploration_issue(&dispatch);
         dispatch
@@ -1672,6 +1677,7 @@ impl RoutingTableDriver {
         if plan.queryable.is_empty() {
             if plan.pending.is_empty() {
                 let lookup_id = self.next_lookup_id(LookupKind::RouterInfo, target);
+                self.record_terminal(LookupFinalState::NoEligibleCandidates);
                 return RoutingLookupOutcome::Terminal {
                     lookup_id,
                     final_state: LookupFinalState::NoEligibleCandidates,
@@ -1707,10 +1713,13 @@ impl RoutingTableDriver {
             RoutingDispatch::Terminal {
                 lookup_id,
                 final_state,
-            } => RoutingLookupOutcome::Terminal {
-                lookup_id,
-                final_state,
-            },
+            } => {
+                self.record_terminal(final_state);
+                RoutingLookupOutcome::Terminal {
+                    lookup_id,
+                    final_state,
+                }
+            }
         }
     }
 
@@ -1830,6 +1839,7 @@ impl RoutingTableDriver {
                 .exploration_job
                 .as_ref()
                 .map_or(0, |job| job.report().peers_queried) as u32,
+            terminal_counts: self.terminal_counts.clone(),
             digest: routing_receipt_digest(
                 kind,
                 self.table.len(),
@@ -1845,6 +1855,34 @@ impl RoutingTableDriver {
             self.receipts.pop_front();
         }
         self.receipts.push_back(receipt);
+    }
+
+    /// Records a terminal lookup state under its own stable label.
+    ///
+    /// Every terminal state the driver maps is counted in the bucket of
+    /// its own label, so a lookup that spent the engine's per-lookup
+    /// peer budget (`peer-budget-exhausted`) is visible separately from
+    /// a lookup whose candidate list ran out (`peer-exhausted`). The
+    /// counts are carried by the receipt, which stays counts-only: it
+    /// never names a peer, a key, an endpoint or a payload.
+    fn record_terminal(&mut self, final_state: LookupFinalState) {
+        let counter = self.terminal_counts.entry(final_state.label()).or_insert(0);
+        *counter = counter.saturating_add(1);
+        self.emit_receipt(RoutingReceiptKind::Terminal, 0);
+    }
+
+    /// Records a terminal state and returns the terminal dispatch that
+    /// carries it.
+    fn terminal_dispatch(
+        &mut self,
+        lookup_id: LookupId,
+        final_state: LookupFinalState,
+    ) -> RoutingDispatch {
+        self.record_terminal(final_state);
+        RoutingDispatch::Terminal {
+            lookup_id,
+            final_state,
+        }
     }
 }
 
