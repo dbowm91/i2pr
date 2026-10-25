@@ -469,6 +469,9 @@ plan_492_status = "passed-transit-participation-posture"
 plan_503_plan_of_record = "plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md"
 plan_503_closure = "plans/closure/network-participation/503-status.md"
 plan_503_status = "registered-live-dsm-version-gate-and-peer-eligibility-receipt"
+plan_504_plan_of_record = "plans/implementation/network-participation/504-live-tunnel-liveness-in-the-product-composition.md"
+plan_504_closure = "plans/closure/network-participation/504-status.md"
+plan_504_status = "registered-live-tunnel-liveness-in-the-product-composition"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -939,6 +942,26 @@ evidence = [
     "crates/i2pr-daemon/tests/version_floor_boundary.rs",
     "plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md",
     "plans/closure/network-participation/503-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.exploratory-tunnel-liveness"
+protocol = "tunnel-build"
+structure = "creator-side-tunnel-liveness-probe-with-authenticated-correlation-and-a-proven-pair-teardown-gate"
+scope = "required"
+status = "experimental"
+notes = "Plan 185 delivered a creator-side tunnel-liveness scheduler -- pair each active outbound exploratory tunnel with an active inbound exploratory tunnel, probe through the outbound path, and correlate the answer that comes back. It is complete, bounded and unit-tested, and it had NEVER been constructed by the production daemon: an exhaustive audit of every public module in the daemon crate found it was the only one with zero production consumers. The live inbound path called the coordinator's dispatcher directly, so every inbound DeliveryStatus echo was discarded. Plan 185's closure record states that the daemon pump already called that seam; that statement was false of the tree it describes, and Plan 185's record is not rewritten -- the correction lives in Plan 504's closure record and in the registry's row. Plan 504 installs the scheduler: the live product owns it, it is driven on the EXISTING product tick, and the live inbound path routes through the existing liveness seam. The correlation is now AUTHENTICATED -- the dispatcher carries the acknowledged-message id and the scheduler matches on it, so a response credits exactly the probe that carried the id and an unmatched id is counted as an unauthenticated response and credited to nothing. A pair becomes PROVEN only when it has produced an authenticated response, and only a proven pair may ever be torn down: until the router has seen that peer answer, a missing response is indistinguishable from 'this peer does not answer', and the router must not act on a signal it cannot distinguish from its negation. The probe reuses the canonical outbound path (the same compose_outbound_build_deliveries and the same RouterDeliveryService delivery as the build reply) -- never a private parallel pipeline -- and its ids live in the high half of the u32 range so they cannot collide with the NetDB LS2 publication reply token that DeliveryStatusMessage::message_id already carries. The exploratory/destination distinction is structural: the pair listing reads only the exploratory pool's own registration lists, so a destination-role slot cannot appear in it, and only exploratory slots are ever removed. THE MEASURED LIMITATION, stated plainly: the production daemon installs NO exploratory tunnels -- ExploratoryBuildCoordinator::submit is called only from the out-of-crate lanes, while the daemon submits only destination builds -- so the scheduler tracks ZERO pairs in production today. It is installed and inert, not broken, and the proven-pair gate is what makes that safe: nothing is torn down. Wiring an exploratory build driver into the product is a separate plan. Plan 504 claims NO stock-peer evidence of the liveness response: the response half had never been observed over a wire with any peer, Plan 504's feasibility artefact is a LOCAL one, and whether an ordinary router relays a probe back to the named inbound gateway is unproven -- the proven-pair gate exists precisely because that question is open. The surface is internal and non-advertised: router.version stays 0.9.62, caps and the published RouterInfo are unchanged, the new support entry is experimental with advertised = false, the inventory's advertised count stays ZERO, and Cargo.toml/Cargo.lock stay byte-identical. No new task, no new timer, no new listener, no new socket."
+evidence = [
+    "crates/i2pr-daemon/src/tunnel_liveness.rs",
+    "crates/i2pr-daemon/src/exploratory_build.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/tunnel_liveness_boundary.rs",
+    "crates/i2pr-daemon/tests/tunnel_liveness_live.rs",
+    "plans/implementation/network-participation/504-live-tunnel-liveness-in-the-product-composition.md",
+    "plans/closure/network-participation/504-status.md",
 ]
 advertised = false
 

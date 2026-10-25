@@ -1094,7 +1094,7 @@ daemon-level service composition remains Plan 433's open work. Until Plan 433
 lands, the shared consumer is reachable only from this crate.
 
 **No advertisement and no capability change.** The routing table is **internal
-state**. `specs/support.toml` is unchanged by this plan — 95 surfaces (89
+state**. `specs/support.toml` is unchanged by this plan — 96 surfaces (90
 experimental, 5 deferred, 1 ready), 0 advertised — the published RouterInfo and
 its `caps` are unchanged, and `router.version` stays `0.9.62`. The evidence for
 this phase is a **private controlled mesh**, not a public-network measurement:
@@ -1188,6 +1188,107 @@ finding, not silently taken.
 inventory's advertised count stays **zero**, and `Cargo.toml` and
 `Cargo.lock` are byte-identical. Plan 503 is **not** a stock-peer
 qualification and claims no interop evidence.
+
+### The tunnel liveness scheduler in the product composition (Plan 504, `src/tunnel_liveness.rs`)
+
+Plan 185 delivered a tunnel-liveness scheduler for the creator side: pair
+each active **outbound** exploratory tunnel with an active **inbound**
+exploratory tunnel, probe through the outbound path, and correlate the
+answer that comes back. It is complete, bounded and unit-tested — and it
+had **never been constructed by the production daemon**. An exhaustive audit
+of every `pub mod` in `src/lib.rs` — in-crate production references against
+out-of-crate test references — returned exactly one module with no
+production consumer: `tunnel_liveness` (prod = 0, tests = 11). The live
+inbound path called the coordinator's dispatcher directly
+(`src/service_product.rs:3957`, `:6177`, `:7227`, `:7450`), never the
+existing `route_inbound_with_liveness` seam, so every inbound
+`DeliveryStatus` echo was **discarded**: nothing correlated it, because
+there was no pending test.
+
+Plan 185's closure record says the opposite —
+`plans/closure/mixed-router-interop/185-status.md:71-73` states that
+`route_inbound_with_liveness` is *the single helper the daemon pump calls*.
+That is false of the tree it describes. Plan 185's record is **not**
+rewritten; the correction lives in Plan 504's closure record and in the
+registry's row.
+
+**The feasibility question was answered by running code, not by prose.**
+Plan 504's first work package was an executable artefact that could stop
+the plan, and it drives the **real** composition: it installs a real
+outbound and inbound exploratory tunnel through the coordinator's own pool
+and registry, composes the probe through the coordinator's real
+`OutboundGatewayRole`, relays the resulting cell through the peer's real
+tunnel roles exactly as a peer's answer arrives, and hands it to the
+daemon's real inbound dispatch. The answer was **yes** on all three
+questions — and the third one changed the design: the answer arrives
+**tunneled**, through the inbound-tunnel path, not through the direct path.
+Correlating only the direct path would have meant the live router never saw
+its own answer, so the live correlation is wired at **both** seams.
+
+**The correlation is now authenticated.** The dispatcher used to keep the
+*transport* message id and discard `DeliveryStatusMessage::message_id` — the
+id of the message being acknowledged, which is the id that identifies the
+test — so the scheduler could only match "any `DeliveryStatus`, when
+exactly one test is pending", as its own doc comment said.
+`RouterI2npOutcome::RouterControl` now carries
+`acknowledged_message_id: Option<u32>` (`Some` for `DeliveryStatus`, `None`
+for the other three control bodies; the transport id is untouched and no
+decoder is weakened), and the scheduler matches on it.
+`record_authenticated_response` credits exactly the probe that carried the
+id; an id that matches nothing is counted as an **unauthenticated response**
+and credited to nothing.
+
+**The safety gate is the point of the whole plan.** A pair becomes
+**proven** only when it has produced an authenticated response, and only a
+proven pair may ever be marked unhealthy. Until the router has seen that
+peer answer, a missing response is indistinguishable from *this peer does
+not answer*, and the router must not act on a signal it cannot distinguish
+from its negation. A missing response for an unproven pair is still
+counted, the withheld teardown is counted once per pair, and both counters
+are published — so an operator sees that the liveness signal is not working
+rather than inferring it from silence. The threshold stays two consecutive
+failures, the response timeout stays 60 s (below the two-minute
+idle-deletion boundary), and only **exploratory** slots are ever removed: a
+destination tunnel is never removed by this plan.
+
+**The probe reuses the canonical path.** `compose_liveness_probe` calls the
+existing `compose_outbound_build_deliveries` — the same
+`registry.outbound(slot)` role, the same cell composition, the same
+`RouterDeliveryService` delivery as the build reply. The only change to
+that shared function is that the delivery instruction became a parameter;
+the build reply still passes `DeliveryInstruction::Router`. No private
+parallel pipeline. The probe's payload is a `DeliveryStatusMessage` whose
+acknowledged-message id **is** the probe id.
+
+**An identifier-space collision, found and avoided.**
+`DeliveryStatusMessage::message_id` is already the NetDB LS2 publication
+reply token (Plan 487) — a monotonic counter from 1. A liveness id from
+that space could be claimed by the publication path, so the liveness ids
+live in the **high half** of the `u32` range
+(`LIVENESS_PROBE_MESSAGE_ID_BASE`), disjoint from the publication token
+space.
+
+**The exploratory/destination distinction is structural, not inferred.**
+`exploratory_liveness_pairs` reads only the exploratory pool's own
+registration lists, so a destination-role slot — which lives in the shared
+`DataPlaneRegistry` but never in the pool's lists — cannot appear in it.
+No slot-number test, no heuristic.
+
+**The measured limitation, stated plainly.** The production daemon installs
+**no exploratory tunnels**: `ExploratoryBuildCoordinator::submit` is called
+only from the out-of-crate lanes, while the daemon submits only
+*destination* builds. So `exploratory_liveness_pairs()` returns empty in
+production today and the scheduler tracks zero pairs — it is **installed and
+inert**, not broken, and the invariant-9 gate is what makes that safe:
+nothing is torn down. Wiring an exploratory build driver into the product
+is a separate plan; Plan 504 does not add a second build mechanism.
+
+**No advertisement and no capability change.** `router.version` stays
+`0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+inventory's advertised count stays **zero**; `Cargo.toml` and
+`Cargo.lock` are byte-identical. No new task, no new timer, no new
+listener, no new socket: the scheduler runs on the **existing** 250 ms
+product tick.
 
 ### Outbound/inbound composition roles
 

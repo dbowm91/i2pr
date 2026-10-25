@@ -1094,8 +1094,8 @@ claimed, and what is not:
   path still requires an `Active` floodfill role **and** an in-memory
   `FloodfillAdvertisementPermit`, and neither is reachable from this profile.
   `[ssu2] advertise = true` remains refused at parse time.
-- **It promotes no capability.** `specs/support.toml` is unchanged — 95
-  surfaces, 89 experimental, 5 deferred, 1 ready, and **0 advertised** —
+- **It promotes no capability.** `specs/support.toml` is unchanged — 96
+  surfaces, 90 experimental, 5 deferred, 1 ready, and **0 advertised** —
   `router.version` stays `0.9.62`, and the published RouterInfo capability set
   is unchanged.
 - **It is not a public transport activation.** Public transport activation
@@ -1197,7 +1197,7 @@ What is claimed, and what is not:
   from 14 to 30 and the raw-scan floor from 17 to 23 — rather than relaxing
   them.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 95 surfaces, 89 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 96 surfaces, 90 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, and the published RouterInfo
   capability set is unchanged. The routing table is **internal state**.
 - **The evidence is a private controlled mesh, not a public-network
@@ -1284,7 +1284,7 @@ What is claimed, and what is not:
   change to the runtime's authentication path. The runtime still has **no
   outbound relay queueing API**. **Plan 499 adds that API** — see below.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 95 surfaces, 89 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 96 surfaces, 90 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, `caps` and the published
   RouterInfo are unchanged, and `ssu2.advertise` stays refused. The role
   remains behind the existing default-off `ssu2.introducer_service` opt-in.
@@ -1421,7 +1421,7 @@ What is claimed, and what is not:
   now_secs)`** that binds a tag to a **caller-supplied** hash (pre-existing,
   Plan 490). Plan 499's live path binds the authenticated session peer and
   adds no such API, but the surface remains.
-- **Nothing is promoted.** `specs/support.toml` stays at **95 surfaces, 89
+- **Nothing is promoted.** `specs/support.toml` stays at **96 surfaces, 90
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version` stays
   `0.9.62`; `caps` and the published RouterInfo are unchanged; `ssu2.advertise`
   stays refused. The role stays behind the existing **default-off**
@@ -1489,7 +1489,7 @@ What is claimed, and what is not:
   wiring.
 - **There is no stock-peer evidence** for the new exhaustion, and this is a
   lookup-engine bound, not a network capability.
-- **Nothing is promoted.** `specs/support.toml` stays at **95 surfaces, 89
+- **Nothing is promoted.** `specs/support.toml` stays at **96 surfaces, 90
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged.
 
@@ -1557,7 +1557,7 @@ What is claimed, and what is not:
 - **There is no stock-peer evidence**, no LOCAL OBEP consumer (a LOCAL
   action refuses with the typed `NoLocalConsumer`), and no NTCP2 ingress.
 - **The transit role is still not advertised and still not claimed for the
-  public network.** `specs/support.toml` stays at **95 surfaces, 89
+  public network.** `specs/support.toml` stays at **96 surfaces, 90
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged. Plan 436
   stays **blocked** on Plan 433; this plan advances its source-side WP3 only.
@@ -1650,6 +1650,78 @@ Evidence: `crates/i2pr-netdb/src/lookup_policy.rs`,
 `crates/i2pr-daemon/tests/version_floor_boundary.rs`. The plan of record is
 `plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md`;
 the closure record is `plans/closure/network-participation/503-status.md`.
+
+## The tunnel liveness scheduler in the product composition (Plan 504)
+
+Plan 185 delivered a tunnel-liveness scheduler for the creator side: pair
+each active **outbound** exploratory tunnel with an active **inbound**
+exploratory tunnel, probe through the outbound path, and correlate the
+answer that comes back. It is complete, bounded and unit-tested — and it had
+**never been constructed by the production daemon**. It was the only public
+module in the daemon crate with zero production consumers, and the live
+inbound path called the coordinator's dispatcher directly, so every inbound
+`DeliveryStatus` echo was discarded.
+
+Plan 185's closure record says the daemon pump already called that seam.
+**That statement was false of the tree it described.** Plan 185's record is
+not rewritten; the correction lives in Plan 504's closure record and in the
+registry's row.
+
+What is claimed, and what is not:
+
+- **The scheduler is now constructed by the live product**, owned beside the
+  coordinator it watches, driven on the **existing** 250 ms product tick,
+  with a bounded number of drives per tick.
+- **The correlation is authenticated.** The dispatcher now carries the
+  acknowledged-message id, and the scheduler matches on it: a response
+  credits exactly the probe that carried the id, and an id that matches
+  nothing is counted as an **unauthenticated response** and credited to
+  nothing. The previous "any `DeliveryStatus`, when exactly one test is
+  pending" fallback is unchanged and still exported for the lanes that use
+  it.
+- **A pair becomes proven only when it has produced an authenticated
+  response, and only a proven pair may ever be torn down.** Until the router
+  has seen that peer answer, a missing response is indistinguishable from
+  *this peer does not answer*, and the router must not act on a signal it
+  cannot distinguish from its negation. The withheld teardown is counted
+  once per pair and published, so the condition is visible rather than
+  silent.
+- **The probe reuses the canonical outbound path** — the same
+  `compose_outbound_build_deliveries`, the same `RouterDeliveryService`
+  delivery as the build reply. No private parallel pipeline.
+- **The liveness probe ids live in the high half of the `u32` range**, so
+  they cannot collide with the NetDB LS2 publication reply token that
+  `DeliveryStatusMessage::message_id` already carries.
+- **The exploratory/destination distinction is structural**: the pair
+  listing reads only the exploratory pool's own registration lists, so a
+  destination-role slot cannot appear in it.
+- **The measured limitation.** The production daemon installs **no
+  exploratory tunnels** — `ExploratoryBuildCoordinator::submit` is called
+  only from the out-of-crate lanes, while the daemon submits only
+  *destination* builds. The scheduler therefore tracks **zero pairs in
+  production today**: it is **installed and inert**, not broken, and the
+  proven-pair gate is what makes that safe. Wiring an exploratory build
+  driver into the product is a separate plan.
+- **No stock-peer evidence of the liveness response.** The response half
+  had never been observed over a wire — with any peer — before Plan 504, and
+  Plan 504's feasibility artefact is a **local** one. Whether an ordinary
+  router relays a probe back to the named inbound gateway is **unproven**,
+  and the proven-pair gate exists precisely because that question is open.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero**; `Cargo.toml` and
+  `Cargo.lock` are byte-identical. No new task, no new timer, no new
+  listener, no new socket.
+
+Evidence: `crates/i2pr-daemon/src/tunnel_liveness.rs`,
+`crates/i2pr-daemon/src/exploratory_build.rs`,
+`crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-daemon/tests/tunnel_liveness_boundary.rs`, and
+`crates/i2pr-daemon/tests/tunnel_liveness_live.rs`. The plan of record is
+`plans/implementation/network-participation/504-live-tunnel-liveness-in-the-product-composition.md`;
+the closure record is `plans/closure/network-participation/504-status.md`.
 
 ## Outbound proxy secret owner (Plan 341)
 
