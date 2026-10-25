@@ -262,7 +262,7 @@ Filenames keep global i2pr numbers.
 | 499 | closed | passed-introducer-live-tag-request-and-carriage | `plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md` | `plans/closure/network-participation/499-status.md` (implementation `99bc4603`; **Plan 490 Medium #2 discharged** — the relay tag is now issued to the **handshake-authenticated** session peer and the produced block is carried onto a live session; the **live three-party UDP mesh** shows the introduction completing end to end) |
 | 500 | closed | passed-lookup-peer-budget-enforcement | `plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md` | `plans/closure/network-participation/500-status.md` (implementation `6b7fe052`; **Plan 497 L2 discharged** — the declared per-lookup peer ceiling is now enforced in the engine's single attempt site, narrowing **attempts, never candidates**) |
 | 501 | closed | passed-transport-runtime-boundary-section | `plans/implementation/network-participation/501-transport-runtime-boundary-section.md` | `plans/closure/network-participation/501-status.md` (implementation `ac7c7897`; **Plan 490 Low #4 and Plan 497 L1 discharged** — the transport crates get a **normalised**, socket-keyed boundary section with an explicit address-value allow-set; the raw grep was fail-open for a grouped `use` and over-broad for an ungrouped one) |
-| 502 | registered | registered-transit-owner-in-the-product-composition | `plans/implementation/network-participation/502-transit-owner-in-the-product-composition.md` | — (**Plan 492 F2 discharged**: the daemon's existing transit data-plane owner is installed in the production composition behind the existing default-off `[transit] participation` opt-in, so an opted-in router admits and accounts for transit traffic instead of relaying nothing. Advances **Plan 436 WP3** source-side only; Plan 436 stays blocked on Plan 433. The M11 boundary rule is **strengthened** to guard the installed owner rather than a module name plus a no-op probe) |
+| 502 | closed | passed-transit-owner-in-the-product-composition | `plans/implementation/network-participation/502-transit-owner-in-the-product-composition.md` | `plans/closure/network-participation/502-status.md` (implementation `de796b73`; **Plan 492 F2 discharged** — the daemon's existing transit data-plane owner is installed in the production composition behind the existing default-off `[transit] participation` opt-in, so an opted-in router admits and accounts for transit traffic instead of relaying nothing; advances **Plan 436 WP3** source-side only, and Plan 436 stays blocked on Plan 433. The M11 boundary rule is **strengthened** to guard the installed owner rather than a module name plus a no-op probe, and the script's own production scan is **unfail-opened**: 58 158 production lines across the daemon had been invisible to all seven pre-existing rules) |
 
 ### Predecessor and dependency plans owned elsewhere
 
@@ -393,8 +393,13 @@ Full row history is §7. Current authority: Plan 488 is closed
 (`passed-peer-profile-store`), Plan 489 is closed
 (`passed-floodfill-indexed-routing-table`), Plan 490 is closed
 (`passed-ssu2-introducer-relay-role`), Plan 491 is closed
-(`passed-api-version-floors-and-peer-eligibility`), and Plan 492 is closed
-(`passed-transit-participation-posture`); **Plan 493 (the two-family public
+(`passed-api-version-floors-and-peer-eligibility`), Plan 492 is closed
+(`passed-transit-participation-posture`), and **Plan 502 is closed**
+(`passed-transit-owner-in-the-product-composition` — the transit data-plane
+owner is installed in the product composition behind the operator's
+default-off `[transit] participation` opt-in, which discharges Plan 492's
+F2; the build's *delivery* to a peer and the stock-peer evidence remain
+unproven, so nothing is advertised); **Plan 493 (the two-family public
 participation qualification) is the line's next phase and is registered
 blocked** on the authorized two-host topology, and Plan 494 is blocked on
 493. The prior axis — Plans 477–480 and
