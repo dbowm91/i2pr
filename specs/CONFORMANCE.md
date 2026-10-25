@@ -1094,8 +1094,8 @@ claimed, and what is not:
   path still requires an `Active` floodfill role **and** an in-memory
   `FloodfillAdvertisementPermit`, and neither is reachable from this profile.
   `[ssu2] advertise = true` remains refused at parse time.
-- **It promotes no capability.** `specs/support.toml` is unchanged — 96
-  surfaces, 90 experimental, 5 deferred, 1 ready, and **0 advertised** —
+- **It promotes no capability.** `specs/support.toml` is unchanged — 97
+  surfaces, 91 experimental, 5 deferred, 1 ready, and **0 advertised** —
   `router.version` stays `0.9.62`, and the published RouterInfo capability set
   is unchanged.
 - **It is not a public transport activation.** Public transport activation
@@ -1197,7 +1197,7 @@ What is claimed, and what is not:
   from 14 to 30 and the raw-scan floor from 17 to 23 — rather than relaxing
   them.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 96 surfaces, 90 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 97 surfaces, 91 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, and the published RouterInfo
   capability set is unchanged. The routing table is **internal state**.
 - **The evidence is a private controlled mesh, not a public-network
@@ -1284,7 +1284,7 @@ What is claimed, and what is not:
   change to the runtime's authentication path. The runtime still has **no
   outbound relay queueing API**. **Plan 499 adds that API** — see below.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 96 surfaces, 90 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 97 surfaces, 91 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, `caps` and the published
   RouterInfo are unchanged, and `ssu2.advertise` stays refused. The role
   remains behind the existing default-off `ssu2.introducer_service` opt-in.
@@ -1421,7 +1421,7 @@ What is claimed, and what is not:
   now_secs)`** that binds a tag to a **caller-supplied** hash (pre-existing,
   Plan 490). Plan 499's live path binds the authenticated session peer and
   adds no such API, but the surface remains.
-- **Nothing is promoted.** `specs/support.toml` stays at **96 surfaces, 90
+- **Nothing is promoted.** `specs/support.toml` stays at **97 surfaces, 91
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version` stays
   `0.9.62`; `caps` and the published RouterInfo are unchanged; `ssu2.advertise`
   stays refused. The role stays behind the existing **default-off**
@@ -1489,7 +1489,7 @@ What is claimed, and what is not:
   wiring.
 - **There is no stock-peer evidence** for the new exhaustion, and this is a
   lookup-engine bound, not a network capability.
-- **Nothing is promoted.** `specs/support.toml` stays at **96 surfaces, 90
+- **Nothing is promoted.** `specs/support.toml` stays at **97 surfaces, 91
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged.
 
@@ -1557,7 +1557,7 @@ What is claimed, and what is not:
 - **There is no stock-peer evidence**, no LOCAL OBEP consumer (a LOCAL
   action refuses with the typed `NoLocalConsumer`), and no NTCP2 ingress.
 - **The transit role is still not advertised and still not claimed for the
-  public network.** `specs/support.toml` stays at **96 surfaces, 90
+  public network.** `specs/support.toml` stays at **97 surfaces, 91
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged. Plan 436
   stays **blocked** on Plan 433; this plan advances its source-side WP3 only.
@@ -1701,7 +1701,10 @@ What is claimed, and what is not:
   *destination* builds. The scheduler therefore tracks **zero pairs in
   production today**: it is **installed and inert**, not broken, and the
   proven-pair gate is what makes that safe. Wiring an exploratory build
-  driver into the product is a separate plan.
+  driver into the product was a separate plan, and **Plan 505 is that
+  plan**: the daemon now names a peer, builds and installs a one-hop
+  exploratory tunnel toward it, and records the outcome — so the
+  scheduler has a population to watch.
 - **No stock-peer evidence of the liveness response.** The response half
   had never been observed over a wire — with any peer — before Plan 504, and
   Plan 504's feasibility artefact is a **local** one. Whether an ordinary
@@ -1722,6 +1725,111 @@ Evidence: `crates/i2pr-daemon/src/tunnel_liveness.rs`,
 `crates/i2pr-daemon/tests/tunnel_liveness_live.rs`. The plan of record is
 `plans/implementation/network-participation/504-live-tunnel-liveness-in-the-product-composition.md`;
 the closure record is `plans/closure/network-participation/504-status.md`.
+
+## The exploratory build driver in the product composition (Plan 505)
+
+Plan 504 installed the tunnel-liveness scheduler and left one thing open:
+the **population** the scheduler watches did not exist.
+`ExploratoryBuildCoordinator::submit` had **zero production callers** — every
+call site was an out-of-crate integration lane — so the daemon installed no
+exploratory tunnels, `exploratory_liveness_pairs()` returned empty, and the
+scheduler tracked **zero pairs**. The production rebuild path was complete but
+unreachable, because no pair existed to be removed.
+
+The peer-profile store was in the same state: constructed in production and
+**never fed**. `learn` had one caller and it was inside `#[cfg(test)]`, and
+`select_tunnel_build_peers` — Plan 491's version-gated selection — had no
+production caller at all, so the store was empty in a live router and nothing
+wrote the four observation signals Plan 497 recorded as open.
+
+The mechanism was complete; only its inputs were missing. `rebuild_exploratory`
+is already a complete first-build driver with the peer-selection step removed,
+and `install_established` already installs an exploratory build into the pool
+and the registry. **One new thing was needed: a peer.**
+
+What is claimed, and what is not:
+
+- **The driver names a peer through Plan 491's version-gated selection**
+  (`require_floodfill: false` — an exploratory tunnel is built toward an
+  ordinary peer, not necessarily a floodfill). A below-floor, unknown-version
+  or uncomparable-version peer is **refused and counted by reason**, never
+  silently skipped.
+- **The build goes through the existing `rebuild_exploratory`** — the same
+  path the liveness rebuild uses — so there is exactly **one** code path that
+  builds an exploratory tunnel, and the first build and the rebuild cannot
+  drift apart.
+- **The peer's static encryption key is the RouterInfo identity public key**,
+  exactly as the production rebuild path uses it, and **not** the SSU2 address
+  `s` option that Plan 185's external lane found to be the wrong key. The peer
+  selection and the peer-material resolver read the **same** store, so they
+  can never disagree about which peer exists.
+- **The peer-profile store is now fed in production.** The daemon learns its
+  real validated peers from the bootstrap snapshot — the same population the
+  routing table is populated from — so the store is no longer empty, and the
+  router has a live **writer** of the four observation signals. A learned peer
+  does not reset its restored observation state.
+- **The outcome map is total over all fourteen `BuildCoordinatorOutcome`
+  variants, and it distinguishes a peer fault from a local condition.**
+  `Installed` answers, `TimedOut` is unanswered, `HopRejected` is refused,
+  `DeliveryFailed` is unreachable and `InvalidReply` is misbehaving — but
+  `Cancelled`, `PoolRejected`, `InvalidRegistration`, `InvalidPath` and
+  `CoordinatorRejected` are **this router's** condition and produce **no**
+  peer-profile write. The router must never blame a peer for a fault of its
+  own. The four destination-scoped variants are never attributed to the
+  driver, which owns no destination attempt; an outcome with no in-flight
+  attempt, a wrong direction or a mismatched attempt id is an **orphan**:
+  counted and credited to nothing.
+- **The posture is off by default.** A new `[exploratory]` configuration
+  section carries one switch, `builds`, following the `[transit] participation`
+  precedent, and it is `deny_unknown_fields`, so a key that looks like an
+  advertisement is refused rather than ignored. There is deliberately **no**
+  count knob: the number of exploratory pairs is bounded by the coordinator's
+  own pool and by Plan 504's `MAX_LIVENESS_PAIRS`, and a configuration key that
+  could disagree with those ceilings would be a second source of truth.
+- **Off by default for a concrete reason, not out of caution.** The daemon's
+  transport can only dial a peer it may legally reach — the SSU2 dial target is
+  loopback-only and the private-LAN variant accepts only RFC1918 IPv4 — so a
+  public deployment's peer population is **not dialable at all**. Enabling the
+  posture is an explicit operator decision that this router should build
+  exploratory tunnels inside the mesh it can actually reach.
+- **No new task, no new timer, no new listener, no new socket.** The driver
+  runs on the **existing** 250 ms group tick beside Plan 504's liveness
+  driver, and the terminal outcomes reach it on both the expiry sweep and the
+  inbound build-reply path.
+- **The feasibility artefact is not vacuous, and that is measured.** It drives
+  a controlled mesh of two real SSU2 daemons against the real coordinator,
+  profile store and delivery seam. Swapping the responder's identity
+  encryption key for the SSU2 static key — the shortcut the pre-existing
+  `exploratory_build_live.rs` harness uses on both sides — makes the build
+  fail to install. The artefact therefore proves the production path, not a
+  test-only shortcut.
+- **No stock-peer evidence is claimed.** Whether an ordinary public router
+  accepts a driver-initiated one-hop exploratory build, and whether it relays
+  a liveness probe back, is **unproven**. The external lanes stay open until
+  Plan 493's authorized topology is available.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock` are
+  byte-identical.
+
+**What Plan 505 does not close.** The validated store is still not refreshed
+from live NetDB lookups, so the driver's population is the bootstrap snapshot.
+Plan 497 limitation 5's **read** half stays open: the driver becomes a live
+reader of the profile store, but the routing table's only reader remains Plan
+433's never-constructed `NetDbTunnelCoordinator`. Plan 487 F3's
+destination-inbound half still needs tunnel rekeying, which the tree does not
+implement at all.
+
+Evidence: `crates/i2pr-daemon/src/exploratory_driver.rs`,
+`crates/i2pr-daemon/src/exploratory_build.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/lib.rs`, `crates/i2pr-daemon/src/config.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-daemon/tests/exploratory_driver_boundary.rs`, and
+`crates/i2pr-daemon/tests/exploratory_driver_live.rs`. The plan of record is
+`plans/implementation/network-participation/505-exploratory-build-driver-in-the-product-composition.md`;
+the closure record is `plans/closure/network-participation/505-status.md`.
 
 ## Outbound proxy secret owner (Plan 341)
 
