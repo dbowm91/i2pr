@@ -20,7 +20,7 @@
 //! no owner, and no entropy is drawn.
 //!
 //! The module also owns the production inbound dispatch
-//! ([`dispatch_transit_inbound`]): the installed owner is consulted
+//! (`dispatch_transit_inbound`): the installed owner is consulted
 //! first and the controlled disabled probe is the **fallback for the
 //! no-owner case only**, so the two can never run beside each other.
 
