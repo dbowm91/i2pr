@@ -258,7 +258,7 @@ Filenames keep global i2pr numbers.
 | 493 | blocked | registered-two-family-public-participation-qualification | `plans/implementation/network-participation/493-two-family-public-participation-qualification.md` | `plans/closure/core-router-recovery/495-status.md` (`passed-peer-eligibility-gate-and-first-failure-owner`) — the peer-eligibility gate and the first-failure-owner outcome taxonomy; the gate dependency is discharged and Plan 493 remains blocked on the authorized two-host topology and Plan 435 |
 | 494 | blocked | registered-floodfill-role-and-caps-f-advertisement | `plans/implementation/network-participation/494-floodfill-role-and-caps-f-advertisement.md` | — |
 | 497 | closed | passed-netdb-participation-consumer-phase | `plans/implementation/network-participation/497-netdb-participation-consumer-phase.md` | `plans/closure/network-participation/497-status.md` (implementation `7183f0fb`; the coordinator-level consumer is proven by the discriminator, and the production composition of the coordinator into the daemon's service graph stays Plan 433's blocked scope) |
-| 498 | registered | `registered-introducer-role-owner` | `plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md` | — |
+| 498 | closed | passed-ssu2-introducer-role-owner-in-the-live-inbound-loop | `plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md` | `plans/closure/network-participation/498-status.md` (implementation `b362108c`; Plan 490 Medium #1 discharged, and Plan 490's prescription corrected — the live drain in `lib.rs` is the mandatory half; Plan 490 Medium #2 stays open) |
 
 ### Predecessor and dependency plans owned elsewhere
 

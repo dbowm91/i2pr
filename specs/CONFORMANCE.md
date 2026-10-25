@@ -1224,8 +1224,11 @@ Plan 490 built the SSU2 introducer (Bob) role owner and the runtime's relay
 handoff, and recorded that the daemon's ordinary inbound pump never drained
 that handoff: a Relay Request a peer really sent was decoded, authenticated,
 and then dropped. Plan 498 drains the handoff **on the daemon's live inbound
-loop**, and it corrects Plan 490's prescription on the way. What is claimed,
-and what is not:
+loop**, and it corrects Plan 490's prescription on the way. It is **closed** as
+`passed-ssu2-introducer-role-owner-in-the-live-inbound-loop`: the source-side
+work is landed and its evidence matrix is recorded in
+[`plans/closure/network-participation/498-status.md`](../plans/closure/network-participation/498-status.md).
+What is claimed, and what is not:
 
 - **The claim is a drained handoff and a counted decision — not a working
   end-to-end role.** The role now reaches its owner and the owner's decisions
@@ -1294,8 +1297,17 @@ Evidence: `crates/i2pr-daemon/src/ssu2_relay_drain.rs`,
 `crates/i2pr-runtime/src/ssu2_runtime.rs`, and
 `crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`. The plan of record is
 [`plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md`](../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md);
+its closure record, requirement-to-evidence matrix and unblock audit are in
+[`plans/closure/network-participation/498-status.md`](../plans/closure/network-participation/498-status.md);
 the predecessor closure record is
 [`plans/closure/network-participation/490-status.md`](../plans/closure/network-participation/490-status.md).
+Plan 498 **discharged** Plan 490 **Medium #1** (the handoff was never drained)
+and **corrected** its prescription — `ServiceProduct::poll_inbound` is not on
+the live path, so the live drain in `lib.rs` is the mandatory half. Plan 490
+**Medium #2** (no live socket carriage of a Relay Request) **stays open** and
+is recorded in the Plan 498 closure record: the runtime still has no outbound
+relay queueing API, so a produced Relay Intro / Relay Response is counted as
+`awaiting_carriage` rather than carried to the wire.
 
 ## Outbound proxy secret owner (Plan 341)
 

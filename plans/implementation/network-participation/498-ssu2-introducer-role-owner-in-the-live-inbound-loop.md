@@ -4,7 +4,7 @@
 | --- | --- |
 | Plan | 498 |
 | Subsystem | `network-participation` |
-| State | `registered` (`registered-introducer-role-owner`) |
+| State | `closed` (`passed-ssu2-introducer-role-owner-in-the-live-inbound-loop`) — closure record `plans/closure/network-participation/498-status.md` |
 | Depends on | Plan 490 (`passed-ssu2-introducer-relay-role`) |
 | Discharges | Plan 490 finding Medium #1 — the product's poll loop does not deliver live relay blocks to the role owner |
 | Closure record | `plans/closure/network-participation/498-status.md` |
