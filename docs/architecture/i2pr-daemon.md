@@ -27,7 +27,7 @@ implementation.
   on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
-- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:4493`): identity load,
+- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:4597`): identity load,
   cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
@@ -94,8 +94,8 @@ from the transport crate is still never registered: the daemon owns its own
 
 ## Module layout
 
-63 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
-`wc -l` on repo head. The tables below cover 62 of the crate's 69 `src/` files; seven rows are
+64 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
+`wc -l` on repo head. The tables below cover 63 of the crate's 70 `src/` files; seven rows are
 still owed by the plans that added those modules, and the gap is recorded rather than papered over.
 
 ### CLI and configuration
@@ -155,16 +155,16 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 6 786 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
 | `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
-| `src/lib.rs` | 5 644 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 5 748 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/bootstrap.rs` | 631 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
+| `src/bootstrap.rs` | 855 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
 
-> `bootstrap_daemon` itself lives in `src/lib.rs:4493`, not in `bootstrap.rs` — it is the
+> `bootstrap_daemon` itself lives in `src/lib.rs:4597`, not in `bootstrap.rs` — it is the
 > composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
 > `RouterInfoStoreConfig`, then calls `Bootstrap::run`.
 
@@ -184,7 +184,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/router_i2np.rs` | 3 680 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info` |
+| `src/router_i2np.rs` | 3 689 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info` |
 | `src/exploratory_build.rs` | 2 201 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
@@ -192,7 +192,8 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
-| `src/ssu2_introducer.rs` | 1 011 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver` |
+| `src/ssu2_introducer.rs` | 1 043 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt. **Plan 498** adds `NetDbSignerResolver`, the production `IntroducerSignerResolver` that answers only from the NetDB's validated store | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver`, `NetDbSignerResolver` |
+| `src/ssu2_relay_drain.rs` | 109 | Plan 498 bounded drain from the runtime's relay handoff into the introducer (Bob) role owner. A **pull** seam (`RelayEventSource`), one pass of at most `MAX_RELAY_DRAIN_PER_PASS` (16) events, and a counts-only outcome (`drained`, `admitted`, `refused`, `awaiting_carriage`). It never fails its caller and never logs a peer hash, a key, a tag, or a payload. It carries no produced block onto the wire | `drain_relay_events`, `RelayEventSource`, `RelayDrainOutcome`, `MAX_RELAY_DRAIN_PER_PASS` |
 | `src/ssu2_qualification_receipts.rs` | 283 | Plan 480 private local qualification readout: the permission-gated, pure projection of one SSU2 observer epoch into the Plan 476 local-observed phase vocabulary. Carries phase labels and counts only — no key, RouterInfo, address, endpoint, payload or transient message ID — and `live_qualification` stays `"not-run"`. **Plan 476** adds the `PrivateLan` read scope, the direction-preserving session phases and `request_sent`, and the `reply_correlated` boolean | `LocalQualificationProfile`, `LocalQualificationPermit`, `LocalObservedReceipt`, `LocalReceiptCollector`, `LOCAL_PHASES` |
 | `src/ssu2_qualification_export.rs` | 411 | Plan 476 sanitized local receipt export: writes the count-only projection of the local observer epoch to an operator-designated file (`[ssu2] qualification_receipt_path`, absolute path, parent directory must exist, mode `0600`). Opt-in, never a listener, never a publication permit; a collector refusal is recorded and is **sticky** for the life of the process | `LocalReceiptExporter`, `EXPORT_SCHEMA` |
 
@@ -397,7 +398,7 @@ under Key contracts for the lifecycle detail.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
-| `src/service_product.rs` | 5 186 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:895`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_product.rs` | 8 830 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2040`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
 | `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
@@ -419,7 +420,7 @@ under Key contracts for the lifecycle detail.
 
 ### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–70`)
 
-56 `pub mod` + 6 private modules + 5 `sam/` submodules:
+57 `pub mod` + 6 private modules + 5 `sam/` submodules:
 
 `pub mod` — `addressbook`, `app_gateway`, `app_manager_bridge`, `app_runtime`,
 `bootstrap`, `cli`, `config`, `console`, `control_sources`,
@@ -437,7 +438,8 @@ under Key contracts for the lifecycle detail.
 `service_tunnels_http_server`, `service_tunnels_irc_client`,
 `service_tunnels_irc_server`, `service_tunnels_socks5`, `service_tunnels_socks_irc`,
 `service_tunnels_streamr`, `service_tunnels_tls`, `ssu2_introducer`,
-`ssu2_qualification_export`, `ssu2_qualification_receipts`, `transit_compose`,
+`ssu2_qualification_export`, `ssu2_qualification_receipts`, `ssu2_relay_drain`,
+`transit_compose`,
 `transit_owner`, `transit_participation`, `transit_volume`,
 `tunnel_liveness`.
 
@@ -448,6 +450,9 @@ under Key contracts for the lifecycle detail.
 `ntcp2_activation` holds the profile-aware NTCP2 activation gate; it is a
 public module so that the gate's refusal vocabulary is nameable from outside
 the crate, and it holds **no** authority of its own.
+`ssu2_relay_drain` was added by Plan 498; it holds the bounded drain from the
+runtime's relay handoff into the introducer role owner and no authority of its
+own.
 
 Private — `mod addressbook_fetch`, `mod bandwidth_eligibility`, `mod news`,
 `mod service_lifecycle`,
@@ -682,7 +687,7 @@ non-loopback bind is rejected fail-closed.
 `Internal`. `ConfigError` variants: `Parse(toml::de::Error)`,
 `UnsupportedSchemaVersion { actual }`, `Semantic { .. }`.
 
-### `bootstrap_daemon` (`src/lib.rs:4493`) — ordered startup
+### `bootstrap_daemon` (`src/lib.rs:4597`) — ordered startup
 
 ```
 bootstrap_daemon(&Config, now_seconds, offline_reseed_path)
@@ -717,7 +722,7 @@ side effects); `Identity::Generate` -> `OsRng` -> `RouterIdentityBundle::generat
 `store.save_new` (atomic); `Identity::Inspect` -> `store.load` -> `IdentityInspected` (no
 secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }`).
 
-`run_daemon(config)` (`src/lib.rs:4613`) is the real daemon path:
+`run_daemon(config)` (`src/lib.rs:4717`) is the real daemon path:
 
 1. Compute wall-clock seconds.
 2. Run `bootstrap_daemon(&config, now_seconds, None)`.
@@ -739,7 +744,7 @@ secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }
 **not** synchronous; it hands an `async fn` to the runtime owner.
 
 `ServiceProduct` has exactly **one** `pub` entry point, `ServiceProduct::start`
-(`src/service_product.rs:895`); `ServiceProduct::start_over_existing_daemon` is
+(`src/service_product.rs:2040`); `ServiceProduct::start_over_existing_daemon` is
 `pub(crate)`, the normal-daemon adapter that reuses an already-running SSU2 owner. Build the
 one shared `ServiceTunnelManager` with `build_shared_service_manager` (Plan 337) and inject
 the same `Arc` into both the control state and the destination-group product.
@@ -1119,10 +1124,15 @@ target. The role owner:
   behind.
 
 The dispatch order is **service first, transit second, unknown fail-closed**:
-`Ssu2DaemonHandle::next_relay_dispatched` hands the decoded block to the
-service owner; a Relay Intro belongs to the target (transit) role and is
-refused by the service owner; the runtime never surfaces a block it could not
-classify.
+the decoded block reaches the service owner through the daemon's live inbound
+loop (Plan 498 — see the next section); a Relay Intro belongs to the target
+(transit) role and is refused by the service owner; the runtime never surfaces
+a block it could not classify.
+
+`Ssu2DaemonHandle::next_relay_dispatched` still exists and keeps its contract,
+but it has **no production caller** in the tree. Plan 498 **supersedes** it as
+the delivery seam: the live loop reaches the role owner through
+`try_next_relay_event`. Do not read `next_relay_dispatched` as the live path.
 
 The receipt carries **counts only** — `requests_admitted`, `intros_produced`,
 `responses_forwarded`, `tags_issued`, and refusals by typed reason. It never
@@ -1134,6 +1144,86 @@ available behind an explicit switch and defaults to off. When it is off the
 role does not start and the configuration status says so truthfully
 (`SSU2_INTRODUCER_DISABLED_REASON` — "available but not enabled", not the
 older and now false "unavailable in this milestone").
+
+### The relay handoff drain in the live inbound loop (Plan 498, `src/ssu2_relay_drain.rs`)
+
+Plan 490 built the role owner and the runtime's relay handoff, and recorded
+that the daemon's ordinary inbound pump never drained the handoff: a Relay
+Request that a peer really sent was decoded, authenticated, and then dropped.
+Plan 498 drains it **on the live path**, and it corrects Plan 490's
+prescription on the way.
+
+**The correction is the point.** Plan 490's finding prescribed adding the
+drain to `ServiceProduct::poll_inbound`. The daemon's own source says
+otherwise (`src/service_product.rs:3664-3665`): *"advance runs via the daemon
+loop; poll_inbound is not on the live path"*. The live inbound pump is the
+daemon loop in `src/lib.rs`, whose `tokio::select!` awaits the SSU2 I2NP
+handoff and the NTCP2 ingress and arms the `group_tick` and `relay_tick`
+cadences. A fix confined to `poll_inbound` would have closed the finding on
+paper while a live router still dropped every relay block. **The drain is in
+the daemon loop**, in the `relay_tick` arm beside `group_tick`.
+
+**There is exactly one owner.** `NormalSsu2Owner` (`src/lib.rs:2289-2292`) is
+either `Router(Ssu2DaemonHandle)` — no destination groups configured — or
+`Groups(Box<ServiceProduct>)`. The live loop drains through whichever holds
+the handle: `Ssu2DaemonHandle::try_next_relay_event`
+(`src/router_i2np.rs:2225`) or `ServiceProduct::try_next_relay_event`
+(`src/service_product.rs:3104`), and `NormalSsu2Owner` is itself the drain's
+`RelayEventSource` (`src/lib.rs:2357-2361`). The product exposes the **pull
+only**; it does not own a role owner. Two owners would mean two sets of
+counters and an ambiguity about which one is authoritative.
+
+**The drain is bounded and never fails.** One pass pulls at most
+`MAX_RELAY_DRAIN_PER_PASS` (16) events — the runtime relay channel's own
+capacity (`max_inbound_relay_queue`, default 16, ceiling
+`MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024) — and stops at the first empty pull.
+A refusal, a resolver miss, and a produced-but-not-carried block are
+**counted outcomes, not errors**: `RelayDrainOutcome` carries `drained`,
+`admitted`, `refused`, and `awaiting_carriage`, and carries counts only. The
+drain never logs a peer hash, a key, a tag, or a payload.
+
+**The resolver answers only from the validated store.** `NetDbSignerResolver`
+(`src/ssu2_introducer.rs:246-265`) implements `IntroducerSignerResolver` over
+the shared `Arc<Mutex<Bootstrap>>` and answers through
+`Bootstrap::validated_signing_key` (`src/bootstrap.rs:276-283`), a narrow
+read-only accessor over the NetDB's validated `RouterInfoStore`. A peer the
+NetDB does not hold yields `None`, and the role owner refuses the block with
+`UnknownRequester` rather than guessing; a poisoned bootstrap lock is
+fail-closed the same way. The bootstrap's lock is a `std::sync::Mutex` and the
+critical section is one map lookup that never awaits.
+
+**The role owner the live loop constructs is the one above.** It is built only
+when `ssu2.introducer_service` is on (`src/lib.rs:3964-3991`): the resolver
+first, then `Ssu2IntroducerService::new(...)` over the runtime service handle
+and the daemon's own router hash. The same key is **default off**
+(`src/config.rs:1402-1404`) and is refused at parse time unless
+`ssu2.enabled = true` (`src/config.rs:3353-3358`).
+
+**A produced block is counted, not carried.** The runtime has **no outbound
+relay queueing API**, so a Relay Intro or Relay Response the role owner
+produced is counted as `awaiting_carriage` and is not put on the wire. That is
+Plan 490 **Medium #2**, and it stays **open**: the live socket carriage of a
+Relay Request is not closed here.
+
+**What the evidence proves, and what it does not.** The drain's *behaviour* is
+proved in-process and socket-free by
+`crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`: the **discriminator** (a
+relay block reaches the role owner and the receipt moves 0→1), the **control**
+(an empty handoff delivers nothing and counts nothing), the **refusal row**
+(an unresolvable requester is refused and counted by reason, and no tracked
+state is left behind), and the **bound row** (one pass stops at the per-pass
+bound). The *live wiring* is proved by a **static guard** in the same file:
+the daemon's live loop calls the drain, the live owner is the drain's event
+source, and the live role owner answers requester keys from the validated
+store. The static guard does **not** prove that a live daemon executed the
+drain — the runtime's relay channel admits no external injection and the role
+requires the non-strict operator profile. There is **no** end-to-end
+relay-block injection on this host, and **no** stock-peer or public-network
+evidence.
+
+The role stays **opt-in and non-advertised**: `ssu2.introducer_service`
+defaults to off, `ssu2.advertise` stays refused, `router.version` stays
+`0.9.62`, and `specs/support.toml` is unchanged.
 
 ### API-version floors and peer eligibility (Plan 491)
 
@@ -1681,10 +1771,14 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**74 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:4764`, `src/config.rs`, and the module-local test blocks in
+**96 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+modules (notably `src/lib.rs:4868`, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
+
+The area inventory below names **78** of the 96 files. The remaining 18 were
+added by later plans and are not yet assigned an area; the inventory is not
+inflated to hide that.
 
 ### Acceptance-suite inventory by area
 
@@ -1702,7 +1796,7 @@ modules (notably `src/lib.rs:4764`, `src/config.rs`, and the module-local test b
 | Service tunnels (M10) | 24 | `service_tunnels_foundation.rs`, `service_tunnels_local_roundtrip.rs`, `service_tunnels_final_acceptance.rs`, `service_tunnels_adversarial_matrix.rs`, `service_tunnels_remote_qualification.rs`, `service_tunnels_application_remote_qualification.rs`, `service_tunnels_remote_route_integration_qualification.rs`, `service_tunnels_remote_transport_qualification.rs`, `service_tunnels_application_product_only_remote_qualification.rs`, `service_tunnels_application_genuine_remote_qualification.rs`, `service_tunnels_independent_application_clients.rs`, `service_tunnels_plan210_real_service_destination_material.rs`, `service_tunnels_plan212_router_backed_product.rs`, plus 12 per-profile `service_tunnel_*_product.rs` suites |
 | M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
 | M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
-| SSU2 | 1 | `ssu2_daemon_preflight.rs` |
+| SSU2 | 5 | `ssu2_daemon_preflight.rs`, `ssu2_introducer_mesh.rs` — the Plan 490 private controlled mesh for the introducer (Bob) role, `ssu2_introducer_handoff.rs` — the Plan 498 relay-handoff drain lane: the discriminator that a relay block reaches the role owner, the control, the refusal row and the bound row, `ssu2_qualification_export.rs`, `ssu2_qualification_receipts.rs` |
 | NTCP2 operator profile | 1 | `ntcp2_private_lan_profile.rs` — the configuration refusals, the family-coherence rule, the controlled profile's refusal to widen to a private-LAN bind, the advertisement refusal, and one environment-gated row that binds the operator's real RFC1918 endpoint on both transports and asserts the record carries no capability letter |
 | Java / M6 cross-family | 1 | `java_tunnel_external.rs` |
 
@@ -2057,6 +2151,16 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
 - **I2CP** — Plans 164–172. Closure:
   [`170`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
 - **SSU2** — Plans 158–161. Closure: `plans/closure/ssu2/`.
+- **SSU2 introducer (Bob) relay role** — Plans 490, 498. Closure:
+  [`490`](../../plans/closure/network-participation/490-status.md). Plan-of-record:
+  [`498`](../../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md).
+  Plan 498's implementation discharges Plan 490's **Medium #1** finding — the
+  runtime's relay handoff was decoded, authenticated, and then dropped because
+  the daemon never drained it — and it corrects that finding's prescription:
+  `ServiceProduct::poll_inbound` is not on the live path, so the drain lives in
+  the daemon's own inbound loop. Plan 490's **Medium #2** — no live socket
+  carriage of a Relay Request — **stays open**; the runtime still has no
+  outbound relay queueing API. The role stays default-off and non-advertised.
 - **M10 service tunnels** — Plans 174–180, 182, 213–215. Closure:
   `plans/closure/service-tunnels/`. Plan-of-record:
   [`174`](../../plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),

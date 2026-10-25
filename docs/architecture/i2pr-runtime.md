@@ -55,7 +55,7 @@ the production runtime owner. ADR 0002 records that decision.
 
 ## Module layout
 
-Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 25,160).
+Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 25,256).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- | --- |
@@ -74,10 +74,10 @@ Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 25,160).
 | `ssu2_controlled_peer_test` | `src/ssu2_controlled_peer_test.rs` | 767 | Bounded driver for the wire-real 7-message peer-test exchange; spawns ephemeral helper loop tasks under a caller-owned `ChildScope` and records nothing itself — outcomes return to the caller | `run_controlled_peer_test`, `ControlledPeerTestParams`, `ControlledPeerTestOutcome`, `ControlledPeerTestSigner` |
 | `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1323 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
 | `ssu2_qualification_observer` | `src/ssu2_qualification_observer.rs` | 372 | Privacy-safe SSU2 qualification event observer: bounded stage names, counts, and typed outcomes — never raw payloads, keys, addresses, or RouterInfo bytes | `Ssu2QualificationObserver`, `Ssu2QualificationEvent`, `Ssu2QualificationEventKind` |
-| `ssu2_runtime` | `src/ssu2_runtime.rs` | 8412 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 8508 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2InboundBatch`, `Ssu2InboundRelay`, `Ssu2RelayEvent`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
 | `supervisor` | `src/supervisor.rs` | 2454 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
-`ssu2_runtime` is by far the largest module (8,412 lines, ~33% of the crate),
+`ssu2_runtime` is by far the largest module (8,508 lines, ~34% of the crate),
 followed by `ntcp2_runtime` (3,421) and `channel` (1,908).
 
 ## Public surface
@@ -165,7 +165,8 @@ are `pub(crate)` and are **not** part of it.
   `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2RuntimeConfig`,
   `Ssu2RuntimeConfigError`, `Ssu2RuntimeDeadlines`, `Ssu2RuntimeLimits`,
   `Ssu2RuntimeService`, `Ssu2SendOutcome`, `Ssu2ServiceHandle`, `Ssu2Snapshot`,
-  `Ssu2SocketConfig`, `Ssu2TestFaults`
+  `Ssu2SocketConfig`, `Ssu2TestFaults`, `Ssu2InboundBatch`, `Ssu2InboundRelay`,
+  `Ssu2RelayEvent`
 - `supervisor`: `MAX_SHUTDOWN_DEADLINE`, `ShutdownOutcome`, `ShutdownReport`,
   `Supervisor`, `SupervisorConfigError`, `SupervisorError`, `SupervisorHandle`
 - Crate-root free functions: `run_blocking` (builds a disposable
@@ -175,7 +176,12 @@ are `pub(crate)` and are **not** part of it.
   identity/address material without depending on the transport crate directly
   (Plan 184; `pq` KEM-scheme metadata added in Plan 197): `IntroKey`,
   `PqCapabilities`, `Ssu2PqKem`, `Ssu2PublicKey`, `Ssu2RouterAddress`,
-  `constants`
+  `constants`. Plan 490 adds the bounded relay vocabulary the daemon's
+  introducer (Bob) role owner needs, without the daemon depending on the
+  transport crate directly: `IntroducerResponseOutcome`, `RelayError`,
+  `RelayIntroBlock`, `RelayRequestBlock`, `RelayResponseBlock`,
+  `RelayResponseCode`, `Ssu2Endpoint`, `relay_request_preimage`,
+  `relay_response_preimage`
 - Re-exported from `i2pr-core`: `CancellationReason`, `DegradationCode`,
   `FailureCategory`, `HealthDetail`, `HealthSnapshot`, `HealthState`,
   `InvalidLifecycleTransition`, `LifecycleState`, `ServiceClassification`,
@@ -579,6 +585,28 @@ daemon-facing role API — `introducer_service_enabled`, `issue_relay_tag`,
 introducer-only address form from the validated introducer set
 (`Ssu2PublicationUnavailable::NoIntroducers` when the set is empty).
 
+**Plan 498 — one non-blocking accessor on the relay handoff.** The runtime's
+relay channel was fed by the authenticated transport path but never drained by
+the daemon, so a Relay Request a peer really sent was decoded, authenticated,
+and then dropped. Plan 498 adds exactly one accessor to the runtime:
+`Ssu2ServiceHandle::try_next_relay_event()`, which pulls from the **existing**
+bounded relay channel (`mpsc::channel(max_inbound_relay_queue)` — default 16,
+ceiling `MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024). It adds **no** channel and
+**no** capacity, and it changes nothing about the runtime's authentication
+path; `next_relay_event()` keeps its awaiting contract beside it.
+
+The accessor is non-blocking because the drain must run on its own bounded
+tick: `tokio::select!` over the two handle receivers is impossible, since
+`next_inbound()` and `next_relay_event()` both take `&mut self` on the same
+handle. `try_next_relay_event()` returns `None` when the channel is empty
+**or** disconnected, so a closed handoff is indistinguishable from an idle one
+and neither can stall the drain.
+
+The runtime still has **no outbound relay queueing API**, so a Relay Intro or
+Relay Response the daemon's role owner produces is counted by the daemon and
+not carried onto the wire. That is Plan 490 **Medium #2**, and it stays
+**open**.
+
 ### `Ssu2PeerRelayService` (`ssu2_peer_relay.rs`, Plan 160)
 
 `Ssu2PeerRelayService::new(config)` owns the five Plan 160 tables
@@ -705,9 +733,9 @@ emits events through `tracing`; it never installs a global subscriber.
 | `MAX_CHANNEL_NAME_BYTES` | 64 | `channel.rs:25` |
 | `MAX_QUEUE_ITEM_BYTES` | 1 << 20 | `channel.rs:27` |
 | `MAX_CHILD_TASKS` | 64 | `context.rs:20` |
-| `MAX_SERVICE_COUNT` | 128 | `graph.rs:14` |
-| `MAX_SERVICE_TIMEOUT` | 3 600 s | `graph.rs:16` |
-| `MAX_RESTART_ATTEMPTS` | 32 | `graph.rs:24` |
+| `MAX_SERVICE_COUNT` | 128 | `graph.rs:16` |
+| `MAX_SERVICE_TIMEOUT` | 3 600 s | `graph.rs:18` |
+| `MAX_RESTART_ATTEMPTS` | 32 | `graph.rs:26` |
 | `MAX_SHUTDOWN_DEADLINE` | = `MAX_SERVICE_TIMEOUT` (3 600 s) | `supervisor.rs:31` |
 | `MAX_SNAPSHOT_CHANNELS` | 256 | `observability.rs:64` |
 | `MAX_SNAPSHOT_RESOURCES` | 32 | `observability.rs:66` |
@@ -715,39 +743,39 @@ emits events through `tracing`; it never installs a global subscriber.
 | `PEER_RELAY_DATAGRAMS_PER_SECOND` | 8 | `ssu2_peer_relay.rs:63` |
 | `PEER_RELAY_MAX_SIGNERS` | 128 | `ssu2_peer_relay.rs:65` |
 | `PEER_RELAY_RESPONSE_BUDGET_NUMERATOR` | 3 | `ssu2_peer_relay.rs:67` |
-| `MAX_SSU2_RUNTIME_DURATION` | 3 600 s | `ssu2_runtime.rs:108` |
-| `MAX_SSU2_PENDING_CEILING` | 1 024 | `ssu2_runtime.rs:110` |
-| `MAX_SSU2_ACTIVE_CEILING` | 1 024 | `ssu2_runtime.rs:112` |
-| `MAX_SSU2_STAGED_DATAGRAMS_CEILING` | 4 096 | `ssu2_runtime.rs:114` |
-| `MAX_SSU2_STAGED_BYTES_CEILING` | 64 MiB | `ssu2_runtime.rs:116` |
-| `MAX_SSU2_INBOUND_QUEUE_CEILING` | 1 024 | `ssu2_runtime.rs:118` |
-| `SSU2_DEFAULT_MTU` | 1 280 | `ssu2_runtime.rs:120` |
-| `SSU2_CONFIRMED_MTU_PAYLOAD` | 1 000 | `ssu2_runtime.rs:122` |
-| `SSU2_CACHED_TOKEN_GRACE` | 1 500 ms | `ssu2_runtime.rs:139` |
-| `SSU2_TOKEN_CACHE_PER_PEER` | 2 | `ssu2_runtime.rs:141` |
-| `SSU2_TOKEN_CACHE_PEERS` | 128 | `ssu2_runtime.rs:143` |
-| `SSU2_TOKEN_REQUEST_SOURCES` | 1 024 | `ssu2_runtime.rs:145` |
-| `SSU2_TOKEN_REQUESTS_PER_SECOND` | 8 | `ssu2_runtime.rs:147` |
-| `SSU2_LINKS_PER_PEER` | 8 | `ssu2_runtime.rs:149` |
-| `SSU2_MANAGER_MESSAGES_PER_LINK` | 64 | `ssu2_runtime.rs:151` |
-| `SSU2_MANAGER_BYTES_PER_LINK` | 256 KiB | `ssu2_runtime.rs:153` |
-| `SSU2_BACKOFF_ENTRIES` | 256 | `ssu2_runtime.rs:155` |
-| `SSU2_MAX_DRAIN_PER_SESSION` | 4 | `ssu2_runtime.rs:157` |
-| `SSU2_MAX_PATH_CANDIDATES_GLOBAL` | 256 | `ssu2_runtime.rs:163` |
-| `SSU2_SEND_QUEUE_MESSAGES` | 64 | `ssu2_runtime.rs:3019` |
-| `SSU2_SEND_QUEUE_BYTES` | 256 KiB | `ssu2_runtime.rs:3021` |
-| `ORACLE_MAX_FRAMES` | 16 | `ntcp2_data_oracle.rs:42` |
-| `ORACLE_MAX_PLAINTEXT_BYTES` | 256 KiB | `ntcp2_data_oracle.rs:46` |
-| `ORACLE_MAX_BLOCKS` | 64 | `ntcp2_data_oracle.rs:50` |
-| `ORACLE_MAX_NON_TARGET_I2NP` | 16 | `ntcp2_data_oracle.rs:54` |
-| `BOUNDED_STEP_BUDGET` | 5 ms | `ntcp2_data_oracle.rs:302` |
-| `ORACLE_SCHEMA` | `"i2pr-ntcp2-data-oracle-v1"` | `ntcp2_data_oracle.rs:38` |
+| `MAX_SSU2_RUNTIME_DURATION` | 3 600 s | `ssu2_runtime.rs:111` |
+| `MAX_SSU2_PENDING_CEILING` | 1 024 | `ssu2_runtime.rs:113` |
+| `MAX_SSU2_ACTIVE_CEILING` | 1 024 | `ssu2_runtime.rs:115` |
+| `MAX_SSU2_STAGED_DATAGRAMS_CEILING` | 4 096 | `ssu2_runtime.rs:117` |
+| `MAX_SSU2_STAGED_BYTES_CEILING` | 64 MiB | `ssu2_runtime.rs:119` |
+| `MAX_SSU2_INBOUND_QUEUE_CEILING` | 1 024 | `ssu2_runtime.rs:121` |
+| `SSU2_DEFAULT_MTU` | 1 280 | `ssu2_runtime.rs:123` |
+| `SSU2_CONFIRMED_MTU_PAYLOAD` | 1 000 | `ssu2_runtime.rs:125` |
+| `SSU2_CACHED_TOKEN_GRACE` | 1 500 ms | `ssu2_runtime.rs:142` |
+| `SSU2_TOKEN_CACHE_PER_PEER` | 2 | `ssu2_runtime.rs:144` |
+| `SSU2_TOKEN_CACHE_PEERS` | 128 | `ssu2_runtime.rs:146` |
+| `SSU2_TOKEN_REQUEST_SOURCES` | 1 024 | `ssu2_runtime.rs:148` |
+| `SSU2_TOKEN_REQUESTS_PER_SECOND` | 8 | `ssu2_runtime.rs:150` |
+| `SSU2_LINKS_PER_PEER` | 8 | `ssu2_runtime.rs:152` |
+| `SSU2_MANAGER_MESSAGES_PER_LINK` | 64 | `ssu2_runtime.rs:154` |
+| `SSU2_MANAGER_BYTES_PER_LINK` | 256 KiB | `ssu2_runtime.rs:156` |
+| `SSU2_BACKOFF_ENTRIES` | 256 | `ssu2_runtime.rs:158` |
+| `SSU2_MAX_DRAIN_PER_SESSION` | 4 | `ssu2_runtime.rs:160` |
+| `SSU2_MAX_PATH_CANDIDATES_GLOBAL` | 256 | `ssu2_runtime.rs:166` |
+| `SSU2_SEND_QUEUE_MESSAGES` | 64 | `ssu2_runtime.rs:3573` |
+| `SSU2_SEND_QUEUE_BYTES` | 256 KiB | `ssu2_runtime.rs:3575` |
+| `ORACLE_MAX_FRAMES` | 16 | `ntcp2_data_oracle.rs:45` |
+| `ORACLE_MAX_PLAINTEXT_BYTES` | 256 KiB | `ntcp2_data_oracle.rs:49` |
+| `ORACLE_MAX_BLOCKS` | 64 | `ntcp2_data_oracle.rs:53` |
+| `ORACLE_MAX_NON_TARGET_I2NP` | 16 | `ntcp2_data_oracle.rs:57` |
+| `BOUNDED_STEP_BUDGET` | 5 ms | `ntcp2_data_oracle.rs:509` |
+| `ORACLE_SCHEMA` | `"i2pr-ntcp2-data-oracle-v1"` | `ntcp2_data_oracle.rs:41` |
 
 Non-exported (`pub const` in a private module, so not part of the public
 surface): `DEFAULT_STARTUP_TIMEOUT` 30 s, `DEFAULT_READINESS_TIMEOUT` 30 s,
 `DEFAULT_SHUTDOWN_GRACE` 5 s (`graph.rs:18-22`); `LOCAL_ROUTER_INFO_MAX_AGE_SECS`
 86 400, `LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS` 3 600,
-`LOCAL_ROUTER_INFO_MAX_ENCODED_LEN` 16 KiB (`ssu2_runtime.rs:129-136`).
+`LOCAL_ROUTER_INFO_MAX_ENCODED_LEN` 16 KiB (`ssu2_runtime.rs:132-139`).
 
 ### The governor's permit as an enforced share (Plan 492)
 
@@ -830,8 +858,8 @@ applies to it without exception.
 
 ## Tests
 
-82 in-crate `#[test]` / `#[tokio::test]` functions across 11 modules, plus 20
-integration tests across the 4 files in `tests/` — 102 total.
+130 in-crate `#[test]` / `#[tokio::test]` functions across 14 modules, plus 23
+integration tests across the 4 files in `tests/` — 153 total.
 
 ### In-crate unit tests
 
@@ -847,7 +875,7 @@ integration tests across the 4 files in `tests/` — 102 total.
 | `ntcp2_link.rs` | 6 (1 `start_paused`) | `queue_release_returns_to_baseline` (RAII accounting) |
 | `ntcp2_runtime.rs` | 16 (2 `start_paused`) | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, `link_reader_and_writer_are_joined_after_close`, `queue_entry_drop_releases_exactly_once`, `active_link_admission_is_exact_and_raii`, `queue_and_active_link_teardown_repeat_without_underflow`, `dial_scope_admits_only_its_profile_addresses`, `dial_scope_admission_set_is_exactly_the_profile_set`, `loopback_scope_refuses_a_private_lan_address`, `private_lan_scope_refuses_a_public_address` |
 | `ssu2_peer_relay.rs` | 7 sync | `introducer_stays_disabled_by_default`, rate-limiter cheap-drop before crypto, quotas + shutdown to baseline, relay-request replay does not re-amplify, snapshot/Debug expose no secrets, earliest-deadline tracking, unknown signer fails closed |
-| `ssu2_runtime.rs` | 21 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests |
+| `ssu2_runtime.rs` | 24 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests + 3 Plan 498 non-blocking relay-pull tests (`try_next_relay_event_on_an_empty_channel_yields_none_and_consumes_nothing`, `try_next_relay_event_returns_a_queued_event_and_then_the_channel_is_empty`, `try_next_relay_event_yields_none_after_the_channel_disconnects`) |
 | `supervisor.rs` | 22 (20 `start_paused`) | `services_start_ready_and_shutdown_gracefully`, `panic_is_classified_without_payload`, `restartable_services_use_bounded_backoff`, `degradable_and_optional_failures_do_not_stop_essential_work`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, **`forced_child_cleanup_is_repeatably_joined`**, `service_child_scope_is_joined_before_manager_completion` |
 
 `observability.rs` and `ssu2_controlled_peer_test.rs` carry no in-crate

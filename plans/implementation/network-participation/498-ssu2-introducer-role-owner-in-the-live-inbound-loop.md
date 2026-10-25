@@ -64,8 +64,8 @@ The receiver is `Ssu2ServiceHandle::next_relay_event()`
 
 ### 3.2 Nothing drains it
 
-- `crates/i2pr-daemon/src/router_i2np.rs:2240-2249` —
-  `RouterI2npRuntime::next_relay_dispatched` is the only production seam that
+- `crates/i2pr-daemon/src/router_i2np.rs:2249` —
+  `Ssu2DaemonHandle::next_relay_dispatched` is the only production seam that
   delivers a handoff event to the role owner. It has **zero callers**
   anywhere in the tree, and it is **unreachable**: `NormalSsu2Owner`
   (`crates/i2pr-daemon/src/lib.rs:2288-2291`) exposes `next_inbound`,
@@ -214,7 +214,7 @@ permanently `UnknownRequester`.
 | Crate / file | Change |
 | --- | --- |
 | `crates/i2pr-runtime/src/ssu2_runtime.rs` | A **non-blocking** `Ssu2ServiceHandle::try_next_relay_event()` beside `next_relay_event()` (`:1384`). `try_recv` on the existing bounded relay channel; `Empty` and `Disconnected` both yield `None`. No new channel, no new capacity, no change to the authentication path. |
-| `crates/i2pr-daemon/src/router_i2np.rs` | `Ssu2DaemonHandle::try_next_relay_event()` beside `next_inbound()` (`:2216`). The existing `RouterI2npRuntime::next_relay_dispatched` (`:2240`) keeps its contract; this plan makes it reachable or supersedes it, and says which. |
+| `crates/i2pr-daemon/src/router_i2np.rs` | `Ssu2DaemonHandle::try_next_relay_event()` beside `next_inbound()` (`:2216`). The existing `Ssu2DaemonHandle::next_relay_dispatched` (`:2249`) keeps its contract; this plan **supersedes** it — the drain reaches the role owner through `try_next_relay_event` instead — and says so. |
 | `crates/i2pr-daemon/src/bootstrap.rs` | A narrow read-only accessor returning a peer's signing key from the validated store. |
 | `crates/i2pr-daemon/src/ssu2_introducer.rs` | A production `IntroducerSignerResolver` implementation over the shared bootstrap handle. |
 | `crates/i2pr-daemon/src/ssu2_relay_drain.rs` (new) | The bounded drain, the pull seam, and the counted outcome. |

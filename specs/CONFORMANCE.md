@@ -1218,6 +1218,85 @@ proves it, while the production composition of the coordinator into the
 daemon's service graph remains Plan 433's blocked scope and stays open and
 recorded there.
 
+## SSU2 introducer role owner in the live inbound loop (Plan 498)
+
+Plan 490 built the SSU2 introducer (Bob) role owner and the runtime's relay
+handoff, and recorded that the daemon's ordinary inbound pump never drained
+that handoff: a Relay Request a peer really sent was decoded, authenticated,
+and then dropped. Plan 498 drains the handoff **on the daemon's live inbound
+loop**, and it corrects Plan 490's prescription on the way. What is claimed,
+and what is not:
+
+- **The claim is a drained handoff and a counted decision — not a working
+  end-to-end role.** The role now reaches its owner and the owner's decisions
+  are counted, but the produced Relay Intro / Relay Response is **not** yet
+  carried to the wire.
+- **Plan 490's prescription named the wrong place, and the correction is part
+  of the delivery.** Plan 490's Medium #1 finding said to add the drain to
+  `ServiceProduct::poll_inbound`. The daemon's own source says `poll_inbound`
+  is **not on the live path** (`crates/i2pr-daemon/src/service_product.rs:3664-3665`);
+  the live inbound pump is the daemon loop in `crates/i2pr-daemon/src/lib.rs`.
+  A fix confined to `poll_inbound` would have closed the finding on paper
+  while a live router still dropped every relay block. The drain is in the
+  daemon loop.
+- **Plan 490 Medium #1 is discharged; Medium #2 stays open.** The drain
+  reaches the role owner, so Medium #1 — the handoff was never drained — is
+  discharged. Medium #2 — **no live socket carriage of a Relay Request** — is
+  **not** closed: the runtime still has no outbound relay queueing API, so a
+  produced block is counted as `awaiting_carriage` and is not carried onto the
+  wire.
+- **There is exactly one owner.** `NormalSsu2Owner` is either
+  `Router(Ssu2DaemonHandle)` or `Groups(Box<ServiceProduct>)`; the live loop
+  drains through whichever holds the handle. The product exposes the **pull**
+  only and does not own a role owner, so there are not two sets of counters.
+- **The drain is bounded and never fails.** One pass pulls at most
+  `MAX_RELAY_DRAIN_PER_PASS` (16) events, which is the runtime relay
+  channel's own capacity (`max_inbound_relay_queue`, default 16, ceiling
+  `MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024). A refusal is a counted outcome,
+  not an error. `RelayDrainOutcome` carries `drained`, `admitted`, `refused`,
+  and `awaiting_carriage`, and carries counts only — no peer hash, no key, no
+  tag, no payload.
+- **The resolver answers only from the validated store.** The production
+  `IntroducerSignerResolver` is `NetDbSignerResolver`, which answers through
+  `Bootstrap::validated_signing_key` — a narrow read-only accessor over the
+  NetDB's validated `RouterInfoStore`. An unknown peer yields `None`, and the
+  role owner refuses the block with `UnknownRequester` rather than guessing.
+- **The runtime gained one accessor and nothing else.**
+  `Ssu2ServiceHandle::try_next_relay_event` pulls from the **existing**
+  bounded relay channel. There is no new channel, no new capacity, and no
+  change to the runtime's authentication path. The runtime still has **no
+  outbound relay queueing API**.
+- **Nothing is published and nothing is advertised.** `specs/support.toml` is
+  unchanged — 94 surfaces, 88 experimental, 5 deferred, 1 ready, and **0
+  advertised** — `router.version` stays `0.9.62`, `caps` and the published
+  RouterInfo are unchanged, and `ssu2.advertise` stays refused. The role
+  remains behind the existing default-off `ssu2.introducer_service` opt-in.
+- **The evidence is behavioural and static — not a live-network measurement.**
+  The drain's behaviour is proved in-process and socket-free: a
+  **discriminator** (a relay block reaches the role owner and the receipt
+  moves 0→1), a **control** (an empty handoff delivers nothing and counts
+  nothing), a **refusal row** (an unresolvable requester is refused and
+  counted by reason, with no tracked state left behind), and a **bound row**.
+  The **live wiring** is proved by a **static guard** that asserts the
+  daemon's live loop calls the drain, that the live owner is the drain's
+  event source, and that the live role owner answers requester keys from the
+  validated store. The static guard does **not** prove that a live daemon
+  executed the drain: the runtime's relay channel admits no external injection
+  and the role requires the non-strict operator profile. There is **no**
+  end-to-end relay-block injection on this host and **no** stock-peer or
+  public-network evidence.
+
+Evidence: `crates/i2pr-daemon/src/ssu2_relay_drain.rs`,
+`crates/i2pr-daemon/src/ssu2_introducer.rs`,
+`crates/i2pr-daemon/src/bootstrap.rs`, `crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-runtime/src/ssu2_runtime.rs`, and
+`crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`. The plan of record is
+[`plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md`](../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md);
+the predecessor closure record is
+[`plans/closure/network-participation/490-status.md`](../plans/closure/network-participation/490-status.md).
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound
