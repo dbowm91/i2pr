@@ -385,19 +385,61 @@ participating.
 
 `scripts/check-m11-transit-boundaries.sh` rule 10 must be **strengthened**,
 and the amendment must be made **testable**. The rule becomes a function
-over a file so it can be exercised by a control:
+over the files so it can be exercised by a control:
 
-- **Positive:** the production `lib.rs` reaches the owner's inbound entry
-  point on the production inbound path.
+- **Positive:** the production `lib.rs` dispatches the inbound path through
+  the composition module's entry point, which makes the whole
+  owner/no-owner choice internally.
+- **Positive:** the production `lib.rs` reaches **neither** owner entry
+  point directly — neither the live owner's `handle_inbound` nor the
+  disabled probe. The owner is reached **only** through the composition.
+- **Positive:** the composition module **keeps** the disabled probe as the
+  no-owner fallback, **keeps** reaching the live owner's `handle_inbound`
+  on the installed-owner branch, and **owns** the construction entry point.
 - **Negative:** a synthetic `lib.rs` that calls the **probe only** — the
   vestigial shape of §3.4 — must be **reported**. A rule that a text
   search can satisfy without an installed owner is not an amendment.
-- **Positive:** the disabled probe must **remain** in `lib.rs` as the
-  no-owner fallback. Removing it is not required by this plan and would
-  weaken the existing guard.
+- **Negative:** the same vestigial shape with a live owner **beside** the
+  discarded probe — the exact shape the present rule accepts — must be
+  **reported**. This is the control that proves the amendment is stronger
+  than the rule it replaces.
+
+**The disabled probe moves out of `lib.rs` and into the composition
+module.** It is not removed: the no-owner fallback must exist, and the
+composition module is where that choice belongs. Leaving a probe call in
+`lib.rs` is precisely the vestigial shape the amendment must reject, so the
+amendment is what *permits* the probe to move — the present rule's second
+assertion ("`lib.rs` must consult the controlled transit probe") cannot be
+satisfied by a composition that reaches the owner at all, so the rule has to
+change for the honest shape to pass.
 
 Nothing else in the script is relaxed. The rule count and the control count
-must be **derived**, not hardcoded (the Plan 497 L1 lesson).
+must be **derived**, not hardcoded (the Plan 497 L1 lesson), and every rule
+must have a control that fires it.
+
+**A second, independent defect is in scope for this amendment.** The
+script's existing production scan strips each daemon source file from its
+first `#[cfg(test)]` to EOF, and `crates/i2pr-daemon/src/lib.rs` declares a
+test-only module at line 14 — so the tree every pre-existing rule scans is
+missing almost all of the daemon's production code, including the production
+inbound path. Those rules are **fail-open** on `lib.rs`: a forbidden call
+below line 14 is not seen. The amendment replaces that convention with a
+**scoped** per-item strip (the Plan 366 house fix) for the whole
+production tree, and every pre-existing rule must still pass. **If the
+scoped strip reveals a genuine production violation, that is a defect to
+report and fix — never a reason to weaken a rule.**
+
+### 7.1 The fixed seam names
+
+The implementation and the boundary rule are written against these names,
+so neither can drift into a shape the other does not expect:
+
+| Name | Owner |
+| --- | --- |
+| `crates/i2pr-daemon/src/transit_composition.rs` | the new composition module |
+| `transit_composition::build_transit_owner` | the construction entry point |
+| `transit_composition::dispatch_transit_inbound` | the inbound dispatch entry point; makes the whole owner/no-owner choice internally |
+| `crate::transit_owner::controlled_transit_disabled_probe` | the no-owner fallback, owned by the composition module |
 
 ### WP7 — the evidence
 
