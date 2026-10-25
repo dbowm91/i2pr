@@ -26,6 +26,7 @@ pub mod encrypted_service_resolver;
 pub mod encrypted_target_credential;
 pub mod error;
 pub mod exploratory_build;
+pub mod exploratory_driver;
 pub mod floodfill;
 pub mod i2cp;
 pub mod i2pcontrol;
