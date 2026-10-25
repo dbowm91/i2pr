@@ -266,7 +266,7 @@ Filenames keep global i2pr numbers.
 | 500 | closed | passed-lookup-peer-budget-enforcement | `plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md` | `plans/closure/network-participation/500-status.md` (implementation `6b7fe052`; **Plan 497 L2 discharged** — the declared per-lookup peer ceiling is now enforced in the engine's single attempt site, narrowing **attempts, never candidates**) |
 | 501 | closed | passed-transport-runtime-boundary-section | `plans/implementation/network-participation/501-transport-runtime-boundary-section.md` | `plans/closure/network-participation/501-status.md` (implementation `ac7c7897`; **Plan 490 Low #4 and Plan 497 L1 discharged** — the transport crates get a **normalised**, socket-keyed boundary section with an explicit address-value allow-set; the raw grep was fail-open for a grouped `use` and over-broad for an ungrouped one) |
 | 502 | closed | passed-transit-owner-in-the-product-composition | `plans/implementation/network-participation/502-transit-owner-in-the-product-composition.md` | `plans/closure/network-participation/502-status.md` (implementation `de796b73`; **Plan 492 F2 discharged** — the daemon's existing transit data-plane owner is installed in the production composition behind the existing default-off `[transit] participation` opt-in, so an opted-in router admits and accounts for transit traffic instead of relaying nothing; advances **Plan 436 WP3** source-side only, and Plan 436 stays blocked on Plan 433. The M11 boundary rule is **strengthened** to guard the installed owner rather than a module name plus a no-op probe, and the script's own production scan is **unfail-opened**: 58 158 production lines across the daemon had been invisible to all seven pre-existing rules) |
-| 503 | registered | registered-live-dsm-version-gate-and-peer-eligibility-receipt | `plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md` | `plans/closure/network-participation/503-status.md` (not yet written) — **Plan 491 F1 discharged**. Plan 491's *second* obligation (*minimum floodfill peers will send DSM to*) is enforced **nowhere in production**: the router's two live `DatabaseStore` sends select floodfills by XOR distance alone (`crates/i2pr-daemon/src/service_product.rs:6513-6528` and `destination_tunnels.rs:912` → `i2pr-netdb/src/lookup_policy.rs:257`) and never consult `dsm_target_eligibility`, because the coordinator that enforces it (`NetDbTunnelCoordinator`) is never constructed — Plan 433 owns that composition and is blocked. The plan delivers one shared, runtime-neutral version-gated floodfill selection, gates both live DSM paths on it, and makes the live build gate and the live DSM gate each produce Plan 491's `VersionEligibilityReceipt` in a bounded live-owned log published through `InspectionHandles`. Advertises nothing |
+| 503 | closed | passed-live-dsm-version-gate-and-peer-eligibility-receipt | `plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md` | `plans/closure/network-participation/503-status.md` — **Plan 491 F1 discharged**. Plan 491's *second* obligation (*minimum floodfill peers will send DSM to*) is enforced **nowhere in production**: the router's two live `DatabaseStore` sends select floodfills by XOR distance alone (`crates/i2pr-daemon/src/service_product.rs:6513-6528` and `destination_tunnels.rs:912` → `i2pr-netdb/src/lookup_policy.rs:257`) and never consult `dsm_target_eligibility`, because the coordinator that enforces it (`NetDbTunnelCoordinator`) is never constructed — Plan 433 owns that composition and is blocked. The plan delivers one shared, runtime-neutral version-gated floodfill selection, gates both live DSM paths on it, and makes the live build gate and the live DSM gate each produce Plan 491's `VersionEligibilityReceipt` in a bounded live-owned log published through `InspectionHandles`. Advertises nothing |
 
 ### Predecessor and dependency plans owned elsewhere
 
@@ -403,15 +403,16 @@ Full row history is §7. Current authority: Plan 488 is closed
 owner is installed in the product composition behind the operator's
 default-off `[transit] participation` opt-in, which discharges Plan 492's
 F2; the build's *delivery* to a peer and the stock-peer evidence remain
-unproven, so nothing is advertised); **Plan 503 is registered**
-(`registered-live-dsm-version-gate-and-peer-eligibility-receipt` — it
+unproven, so nothing is advertised); **Plan 503 is closed**
+(`passed-live-dsm-version-gate-and-peer-eligibility-receipt` — it
 discharges **Plan 491 F1** and closes the live half of Plan 491's *second*
-API-version obligation: the two live `DatabaseStore` sends publish to
+API-version obligation: the two live `DatabaseStore` sends used to publish to
 floodfills that publish no version, an uncomparable version, or a version
 below the floor, because the coordinator that enforces the DSM floor is never
-composed); **Plan 493 (the two-family public participation qualification)
-remains registered blocked** on the authorized two-host topology, and Plan
-494 is blocked on 493. The prior axis — Plans 477–480 and
+composed; Plan 503 puts the floor on both live paths and makes the
+peer-eligibility receipt a live product); **Plan 493 (the two-family public
+participation qualification) remains registered blocked** on the authorized
+two-host topology, and Plan 494 is blocked on 493. The prior axis — Plans 477–480 and
 485–487 — is closed and is not reopened here.
 
 **The qualification gate is itself a plan-of-record.** Plan 495
