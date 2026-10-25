@@ -41,11 +41,12 @@ if printf '%s\n' "$testkit_dependents" | grep -Ev 'crates/i2pr-testkit/Cargo.tom
   exit 1
 fi
 
-if grep -REn 'tokio::|std::net|std::fs|TcpStream|TcpListener|UdpSocket|UnixStream|OpenOptions|File::' \
-  "$root/crates/i2pr-transport/src" "$root/crates/i2pr-transport-ntcp2/src" "$root/crates/i2pr-transport-ssu2/src" >/dev/null; then
-  echo "transport contract crates must not own Tokio, sockets, or filesystem I/O" >&2
-  exit 1
-fi
+# The transport contract crates (`i2pr-transport`, `i2pr-transport-ntcp2`,
+# `i2pr-transport-ssu2`) are policed by the normalised transport section in
+# the Python pass below. Their former raw grep keyed on the literal
+# `std::net`, so it was fail-open for the grouped forms that hide the module
+# path (`use std::{fs, net};`, `use std::{net::ToSocketAddrs};`) and
+# over-broad for the legitimate `use std::net::IpAddr;`.
 
 # Plan 286: i2pr-i2pcontrol is a runtime-neutral control-contract crate.
 # No Tokio, sockets, filesystem ownership, async runtime, router-state
@@ -499,6 +500,72 @@ netdb_patterns = {
     "unchecked insertion": r"insert_unchecked",
 }
 
+# Plan 501 (WP1/WP2): the transport contract crates -- `i2pr-transport`,
+# `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` -- are runtime-neutral by
+# declaration in AGENTS.md: no Tokio, no sockets, no filesystem I/O, no
+# `async fn`.
+#
+# They used to be policed by ONE raw grep keyed on the literal `std::net`,
+# which was fail-open and over-broad at the same time. The crates legitimately
+# import `std::net::{IpAddr, SocketAddr}` inside a grouped `use`
+# (`crates/i2pr-transport-ntcp2/src/address.rs:9`,
+# `crates/i2pr-transport-ssu2/src/address.rs:21`), so the pattern matched
+# nothing at all -- a grouped `use std::{fs, net};` or
+# `use std::{net::ToSocketAddrs};` sat right beside the legitimate import and
+# was MISSED -- while the same pattern rejected the obvious
+# `use std::net::IpAddr;`. The rule could not be satisfied by writing the
+# import the obvious way.
+#
+# The rule is therefore socket-keyed, with an explicit address-value
+# allow-set, exactly as Plan 366 settled the console. The rule gets STRONGER:
+# `async fn` / `async_trait` and the DNS resolver join the rule set, the bare
+# module and the glob become named categories, and the grouped-import form is
+# now seen through the use-tree parser instead of hiding behind a brace.
+
+# `std::net` is neither blanket-banned nor blanket-allowed. A RouterAddress
+# carries a peer endpoint, so the crates need address *values*; exactly four
+# types are permitted by name. Everything else reached through `std::net` --
+# a socket type, the DNS resolver, the bare module, a glob -- stays forbidden.
+# Adding a type here is a change to the rule, not a convenience.
+TRANSPORT_ALLOWED_NET_TYPES = ("IpAddr", "SocketAddr", "Ipv4Addr", "Ipv6Addr")
+
+# The allow-set, as a negative lookahead: a `std::net` occurrence is permitted
+# only when it is immediately followed by one of the four allowed address
+# types. `std::net::IpAddr` passes; `std::net::TcpStream`, a bare
+# `use std::net;`, `use std::net::*;` and `use std::net::self;` do not. The
+# check runs on the NORMALISED text, so a grouped import cannot hide behind a
+# brace -- `use std::{fmt, net::{IpAddr, SocketAddr}};` is expanded into its
+# leaves first, and each leaf is judged on its own.
+_TRANSPORT_NET_ALLOW_RE = (
+    r"\bstd::net\b(?!\s*::\s*(?:"
+    + "|".join(TRANSPORT_ALLOWED_NET_TYPES)
+    + r")\b)"
+)
+
+transport_patterns = {
+    "tokio": r"tokio::",
+    "async": r"async\s+fn|async_trait",
+    "sockets": r"TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener|TcpSocket",
+    "resolver": r"ToSocketAddrs|to_socket_addrs",
+    "filesystem": r"std::fs|OpenOptions|File::",
+    "net module": r"std::net::(self\b|\*)",
+    "std::net import": _TRANSPORT_NET_ALLOW_RE,
+}
+
+# The allow-set may never name a socket or the resolver: those are the things
+# that can own or move a byte off the machine, so no allow-set entry can ever
+# be one of them. The check reuses the rule set's own patterns, so it cannot
+# drift away from them, and widening the allow-set to a socket type fails the
+# script here rather than silently.
+for _allowed_name in TRANSPORT_ALLOWED_NET_TYPES:
+    if re.search(transport_patterns["sockets"], _allowed_name) or re.search(
+        transport_patterns["resolver"], _allowed_name
+    ):
+        raise SystemExit(
+            "transport address-value allow-set names a forbidden type: "
+            + _allowed_name
+        )
+
 # The grouped-import alternations already spelled out in the shell rules above.
 i2pcontrol_patterns = {
     "runtime ownership": (
@@ -568,9 +635,28 @@ CONTROL = [
      "use tokio::{net::TcpListener, spawn};\n"),
     ("i2pr-netdb/nested group", netdb_patterns, "use std::{fs::{self, File}, net};\n"),
     ("i2pr-netdb/multi-line group", netdb_patterns, "use std::{\n    fs,\n    net,\n};\n"),
+    # Plan 501 (WP3): one positive control per `transport_patterns` rule
+    # category, so a category cannot be added without a proof that it fires.
+    ("transport/tokio", transport_patterns, "use tokio::runtime::Runtime;\n"),
+    ("transport/async", transport_patterns,
+     "pub async fn f() {}\nasync_trait::async_trait\n"),
+    ("transport/sockets", transport_patterns,
+     "use std::net::TcpStream;\nfn f() { let _ = TcpStream::connect(peer); }\n"),
+    ("transport/resolver", transport_patterns, "use std::net::ToSocketAddrs;\n"),
+    ("transport/filesystem", transport_patterns,
+     "fn f() { let _ = std::fs::read_to_string(\"x\"); let _ = OpenOptions::new(); }\n"),
+    ("transport/net module", transport_patterns, "use std::net::*;\n"),
+    ("transport/std::net import", transport_patterns, "use std::net::Shutdown;\n"),
+    # The two grouped shapes the removed raw grep could not see through: the
+    # whole `use` block is one line, so a pattern keyed on the literal
+    # `std::net` or `std::fs` never matched them. The normalised section
+    # resolves the group into its leaves first, and then judges each leaf.
+    ("transport/grouped socket import", transport_patterns, "use std::{net::TcpStream};\n"),
+    ("transport/grouped socket import (nested)", transport_patterns,
+     "use std::{fmt, net::{IpAddr, TcpStream}};\n"),
 ]
-if len(CONTROL) < 30:
-    raise SystemExit(f"boundary checker positive controls were removed: {len(CONTROL)} < 30")
+if len(CONTROL) < 39:
+    raise SystemExit(f"boundary checker positive controls were removed: {len(CONTROL)} < 39")
 _control_checked = 0
 for label, rule_set, probe in CONTROL:
     _control_checked += 1
@@ -589,6 +675,20 @@ for _category in netdb_patterns:
     ):
         raise SystemExit(
             "boundary checker has no positive control for the i2pr-netdb rule: "
+            + _category
+        )
+
+# Plan 501 (WP3): the same per-category proof for `transport_patterns`, so a
+# transport rule category cannot be added without a control that proves it
+# fires.
+for _category in transport_patterns:
+    if not any(
+        _label == f"transport/{_category}"
+        and re.search(transport_patterns[_category], normalise(_probe))
+        for _label, _, _probe in CONTROL
+    ):
+        raise SystemExit(
+            "boundary checker has no positive control for the transport rule: "
             + _category
         )
 
@@ -611,6 +711,42 @@ netdb_benign = (
 )
 if [c for c, p in netdb_patterns.items() if re.search(p, normalise(netdb_benign))]:
     raise SystemExit("boundary checker negative control flagged legitimate i2pr-netdb source")
+
+# Plan 501 (WP3): the negative control for the transport allow-set. The
+# crates legitimately import address *values*, and they import them grouped in
+# `crates/i2pr-transport-ntcp2/src/address.rs` and
+# `crates/i2pr-transport-ssu2/src/address.rs`. BOTH spellings must pass: a
+# rule that fires on everything is not a rule, and a rule that cannot be
+# satisfied by the obvious import is not a rule either.
+transport_benign = (
+    "use std::{fmt, net::{IpAddr, SocketAddr}};\n"
+    "use std::net::IpAddr;\n"
+    "use std::net::SocketAddr;\n"
+    "use std::net::Ipv4Addr;\n"
+    "use std::net::Ipv6Addr;\n"
+    "fn f(peer: SocketAddr) -> IpAddr { peer.ip() }\n"
+)
+if [c for c, p in transport_patterns.items() if re.search(p, normalise(transport_benign))]:
+    raise SystemExit("boundary checker negative control flagged legitimate transport source")
+
+# Plan 501 (WP3): a *mention* is not an import. A forbidden construct named
+# only in a comment or in a string literal -- including inside a
+# `#[cfg(test)]` region -- is prose, and the normalised scan masks both.
+# (An *import* inside a `#[cfg(test)]` region is still reported: the removed
+# raw grep covered test code, so suppressing test regions would weaken the
+# rule rather than settle it.)
+transport_mentions = (
+    "// The transport crates must not own sockets: `use std::net::TcpStream;` is banned.\n"
+    "//! `tokio::spawn` and `std::fs::read_to_string` are banned here too.\n"
+    "#[cfg(test)]\n"
+    "mod tests {\n"
+    "    // A mention inside a test region is still only a mention.\n"
+    "    const NOTE: &str = \"use std::net::TcpStream;\";\n"
+    "    const OTHER: &str = \"tokio::spawn\";\n"
+    "}\n"
+)
+if [c for c, p in transport_patterns.items() if re.search(p, normalise(transport_mentions))]:
+    raise SystemExit("boundary checker negative control flagged a mere mention")
 
 # The scan must also fail closed rather than skip input it cannot parse.
 for broken in ("use std::{fs, net\n", "use std::{fs, net}};\n", 'let s = "unterminated;\n'):
@@ -684,17 +820,41 @@ if "i2pr-i2pcontrol" in manager_manifest:
 # Plan 368: `i2pr-app-manager-proto` is the private trusted AppManager contract.
 # It is runtime-neutral in exactly the Plan 345 class, so it reuses the same rule
 # set rather than a narrower one that could be evaded.
+#
+# Plan 501: the three transport contract crates join this scan. The set of
+# scanned targets is recorded, so the transport section cannot be dropped from
+# the tuple without the script failing closed -- the raw-scan count alone
+# cannot prove that, because the transport grep it replaced is gone.
+scanned_targets = []
 for label, target, rule_set in (
     ("i2pr-app-manager-proto", root / "crates/i2pr-app-manager-proto/src", patterns),
     ("i2pr-i2pcontrol", root / "crates/i2pr-i2pcontrol/src", i2pcontrol_patterns),
     ("i2pr-service-tunnels", root / "crates/i2pr-service-tunnels/src", service_tunnel_patterns),
     ("i2pr-api", root / "crates/i2pr-api/src", i2pr_api_patterns),
     ("i2pr-netdb", root / "crates/i2pr-netdb/src", netdb_patterns),
+    ("i2pr-transport", root / "crates/i2pr-transport/src", transport_patterns),
+    ("i2pr-transport-ntcp2", root / "crates/i2pr-transport-ntcp2/src", transport_patterns),
+    ("i2pr-transport-ssu2", root / "crates/i2pr-transport-ssu2/src", transport_patterns),
 ):
+    scanned_targets.append(label)
     found = scan(target, rule_set)
     if found:
         detail = "\n".join(f"{p}:{n}: forbidden {c} API: {line[:100]}" for p, n, line, c in found)
         raise SystemExit(f"{label} runtime-neutrality violation:\n{detail}")
+
+# Plan 501: the transport section is load-bearing, so its presence is asserted
+# STRUCTURALLY -- from the set of targets actually scanned -- rather than from
+# a text anchor, which an anchor list can satisfy by naming itself.
+for _required_target in (
+    "i2pr-transport",
+    "i2pr-transport-ntcp2",
+    "i2pr-transport-ssu2",
+):
+    if _required_target not in scanned_targets:
+        raise SystemExit(
+            "transport runtime-boundary section was removed: "
+            + _required_target
+        )
 
 # Plan 362: i2pr-api is a wire/state crate; the daemon owns its listeners.
 manifest = (root / "crates/i2pr-api/Cargo.toml").read_text(encoding="utf-8")
@@ -706,11 +866,18 @@ if re.search(
 # Guard against silent weakening: the pre-existing raw scans above must never
 # disappear. Plan 362 only appends to them. The anchor literals are checked in
 # addition to the count so that lowering the count floor cannot disable this.
+#
+# Plan 501 removed exactly ONE raw scan -- the transport grep -- and replaced
+# it with the normalised transport section above, which is strictly stronger
+# (it sees through grouped `use` trees, and it bans `async fn`/`async_trait`
+# as well). The count floor therefore drops by one, and the replacement is
+# asserted explicitly below rather than assumed, so the rule cannot be lost
+# silently.
 raw_scans = len(re.findall(
     r"^if grep|^for manifest in", script_path.read_text(encoding="utf-8"), re.M
 ))
-if raw_scans < 23:
-    raise SystemExit(f"pre-existing raw boundary scans were removed: {raw_scans} < 23")
+if raw_scans < 22:
+    raise SystemExit(f"pre-existing raw boundary scans were removed: {raw_scans} < 22")
 script_text = script_path.read_text(encoding="utf-8")
 
 
@@ -757,11 +924,30 @@ for anchor in (
     if anchor not in shell:
         raise SystemExit(f"pre-existing raw boundary scan was removed: {anchor!r}")
 
+# Plan 501: the transport section replaced a raw grep, so the raw-scan COUNT
+# alone can no longer prove the rule is still there. These anchors are checked
+# against the whole script -- not the shell body -- and each is SPLIT so that
+# the anchor list cannot satisfy itself by naming the literal it looks for.
+# (The scan entries themselves are asserted structurally, above.)
+for anchor in (
+    "transport_patterns" + " = {",
+    "TRANSPORT_ALLOWED_NET_TYPES" + " = (",
+):
+    if anchor not in script_text:
+        raise SystemExit(f"transport runtime-boundary section was removed: {anchor!r}")
+
+# Every published count is DERIVED from the rule set it describes, so none of
+# them can drift again. The `i2pr-api` line used to claim "8 rules" while the
+# rule set carried seven.
 print(
-    "i2pr-app-proto runtime/OS boundary: ok (positive control passed)\n"
-    "i2pr-api runtime-neutrality: ok (8 rules, grouped-import positive controls passed)\n"
+    "i2pr-app-proto runtime/OS boundary: ok "
+    f"({len(patterns)} rules, positive control passed)\n"
+    "i2pr-api runtime-neutrality: ok "
+    f"({len(i2pr_api_patterns)} rules, grouped-import positive controls passed)\n"
     "i2pr-netdb runtime-neutrality: ok "
-    f"({len(netdb_patterns)} rules, per-rule positive controls passed)"
+    f"({len(netdb_patterns)} rules, per-rule positive controls passed)\n"
+    "transport runtime-neutrality: ok "
+    f"({len(transport_patterns)} rules, per-rule positive controls passed)"
 )
 PY
 

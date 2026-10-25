@@ -56,8 +56,9 @@ Hard boundaries (CI-enforced; fix code, never weaken scripts):
 - `i2pr-runtime` is the sole production owner of Tokio, sockets,
   timers, channels, and cancellation. Transport / API / service /
   tunnel / client / netdb / addressbook / i2pcontrol crates stay
-  runtime-neutral: no `tokio::*`, no `std::net`, no `std::fs`, no
-  ownerless `spawn`, no unbounded channels.
+  runtime-neutral: no `tokio::*`, no `std::net` socket or resolver API
+  (address *values* stay permitted where a crate needs them), no
+  `std::fs`, no ownerless `spawn`, no unbounded channels.
 - Every spawned task has explicit ownership and cancellation.
   Channel/socket close is a lifecycle event, not a blind retry.
 - Listeners bind loopback by default. Non-loopback needs explicit
@@ -653,7 +654,15 @@ Boundary checkers (invariants):
 - `check-runtime-boundaries.sh` — no unbounded channels, wall-clock
   sleeps, raw `JoinHandle`, ownerless `spawn`, `async fn` in
   transport contracts, Tokio/`std::net`/`std::fs` in wrong crates,
-  or production deps on `i2pr-testkit`.
+  or production deps on `i2pr-testkit`. The runtime-neutral contract
+  crates — `i2pr-app-proto`, `i2pr-app-manager-proto`, `i2pr-i2pcontrol`,
+  `i2pr-service-tunnels`, `i2pr-api`, `i2pr-netdb` and the three transport
+  contracts — are scanned through a **use-tree normaliser**, so a grouped
+  `use std::{…}` cannot hide. The transport rule is **socket-keyed**:
+  `std::net` address *values* stay permitted through an explicit four-type
+  allow-set (`IpAddr`, `SocketAddr`, `Ipv4Addr`, `Ipv6Addr`), and everything
+  else reached through `std::net` — a socket type, the DNS resolver, the bare
+  module, a glob — is reported.
 - `check-service-tunnel-boundaries.sh` — M10 runtime-neutral
   invariants (single pump, single manager entry point) plus **rules
   9–11** (Plan 343): the outproxy policy and route-owner pair
