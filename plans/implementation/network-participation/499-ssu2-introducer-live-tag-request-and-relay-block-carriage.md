@@ -299,12 +299,11 @@ therefore cannot ask this router for a tag, and this router cannot answer.
 | --- | --- |
 | `crates/i2pr-transport-ssu2/src/session.rs` | `QueuedControl::RelayTagRequest`, `QueuedControl::RelayTag(RelayTagBlock)`, `Ssu2Session::queue_relay_tag_request()`, `Ssu2Session::queue_relay_tag(tag)`, and the two transmit arms. The block encoders already exist; no wire-format change. |
 | `crates/i2pr-runtime/src/ssu2_runtime.rs` | The session-event loop handles `SessionEvent::RelayTagRequest` and `SessionEvent::RelayTag`; the tag is minted, bound to the session peer and answered on that session. New public `queue_relay_intro` / `queue_relay_response` with a typed error; the daemon-side handle gains the matching passthroughs. |
-| `crates/i2pr-daemon/src/ssu2_relay_drain.rs` | A `RelayCarriage` seam; the drain carries a produced block and counts carried / carriage-refused by reason. |
-| `crates/i2pr-daemon/src/router_i2np.rs` | `Ssu2DaemonHandle` gains the carriage passthroughs. |
-| `crates/i2pr-daemon/src/lib.rs` | The live loop's drain arm passes the production carriage. |
-| `crates/i2pr-daemon/src/ssu2_introducer.rs` | The role owner exposes the production carriage over the runtime it already owns. |
+| `crates/i2pr-daemon/src/ssu2_relay_drain.rs` | A `RelayCarriage` seam; the production `RuntimeRelayCarriage` over the runtime that owns the sessions; the drain **carries** a produced block and counts carried / carriage-refused by reason. `awaiting_carriage` is retired. |
+| `crates/i2pr-daemon/src/lib.rs` | The live loop's drain arm passes the production carriage and logs `carried` / `carriage_refused` counts instead of `awaiting_carriage`. |
+| `crates/i2pr-daemon/src/ssu2_introducer.rs` | The role owner refuses the new `Ssu2RelayEvent::Tag(_)` as not its role, exactly as it already refuses `Ssu2RelayEvent::Intro`. |
 | `crates/i2pr-transport-ssu2/tests/peer_relay.rs` | The transport's own rows for the two new controls, including the two failure modes. |
-| `crates/i2pr-runtime/tests/ssu2_local.rs` (or a new file) | The runtime's rows for the tag request and the carriage API. |
+| `crates/i2pr-runtime/tests/ssu2_local.rs` | The runtime's rows for the tag request and the carriage API. |
 | `crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs` | The daemon's carriage rows. |
 | `crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs` (new) | The live three-party UDP mesh. |
 

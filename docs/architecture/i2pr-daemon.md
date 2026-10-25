@@ -27,7 +27,7 @@ implementation.
   on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
-- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:4597`): identity load,
+- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:4619`): identity load,
   cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
@@ -155,7 +155,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 6 786 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
 | `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
-| `src/lib.rs` | 5 748 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 5 770 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
@@ -164,7 +164,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | --- | --- | --- | --- |
 | `src/bootstrap.rs` | 855 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
 
-> `bootstrap_daemon` itself lives in `src/lib.rs:4597`, not in `bootstrap.rs` — it is the
+> `bootstrap_daemon` itself lives in `src/lib.rs:4619`, not in `bootstrap.rs` — it is the
 > composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
 > `RouterInfoStoreConfig`, then calls `Bootstrap::run`.
 
@@ -192,8 +192,8 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
-| `src/ssu2_introducer.rs` | 1 043 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt. **Plan 498** adds `NetDbSignerResolver`, the production `IntroducerSignerResolver` that answers only from the NetDB's validated store | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver`, `NetDbSignerResolver` |
-| `src/ssu2_relay_drain.rs` | 109 | Plan 498 bounded drain from the runtime's relay handoff into the introducer (Bob) role owner. A **pull** seam (`RelayEventSource`), one pass of at most `MAX_RELAY_DRAIN_PER_PASS` (16) events, and a counts-only outcome (`drained`, `admitted`, `refused`, `awaiting_carriage`). It never fails its caller and never logs a peer hash, a key, a tag, or a payload. It carries no produced block onto the wire | `drain_relay_events`, `RelayEventSource`, `RelayDrainOutcome`, `MAX_RELAY_DRAIN_PER_PASS` |
+| `src/ssu2_introducer.rs` | 1 047 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt. **Plan 498** adds `NetDbSignerResolver`, the production `IntroducerSignerResolver` that answers only from the NetDB's validated store. **Plan 499** adds the `Ssu2RelayEvent::Tag(_)` refusal: a tag the runtime observed is not the role owner's to act on, exactly as an `Intro` is | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver`, `NetDbSignerResolver` |
+| `src/ssu2_relay_drain.rs` | 215 | Plan 498 bounded drain from the runtime's relay handoff into the introducer (Bob) role owner. A **pull** seam (`RelayEventSource`), one pass of at most `MAX_RELAY_DRAIN_PER_PASS` (16) events, and a counts-only outcome. It never fails its caller and never logs a peer hash, a key, a tag, or a payload. **Plan 499** adds a **carriage** seam (`RelayCarriage`) beside the pull seam and the production `RuntimeRelayCarriage` over the runtime that owns the sessions, so a produced block is carried onto the wire instead of counted and dropped; `awaiting_carriage` becomes `carried` plus `carriage_refusals` by reason | `drain_relay_events`, `RelayEventSource`, `RelayCarriage`, `RuntimeRelayCarriage`, `RelayDrainOutcome`, `MAX_RELAY_DRAIN_PER_PASS` |
 | `src/ssu2_qualification_receipts.rs` | 283 | Plan 480 private local qualification readout: the permission-gated, pure projection of one SSU2 observer epoch into the Plan 476 local-observed phase vocabulary. Carries phase labels and counts only — no key, RouterInfo, address, endpoint, payload or transient message ID — and `live_qualification` stays `"not-run"`. **Plan 476** adds the `PrivateLan` read scope, the direction-preserving session phases and `request_sent`, and the `reply_correlated` boolean | `LocalQualificationProfile`, `LocalQualificationPermit`, `LocalObservedReceipt`, `LocalReceiptCollector`, `LOCAL_PHASES` |
 | `src/ssu2_qualification_export.rs` | 411 | Plan 476 sanitized local receipt export: writes the count-only projection of the local observer epoch to an operator-designated file (`[ssu2] qualification_receipt_path`, absolute path, parent directory must exist, mode `0600`). Opt-in, never a listener, never a publication permit; a collector refusal is recorded and is **sticky** for the life of the process | `LocalReceiptExporter`, `EXPORT_SCHEMA` |
 
@@ -687,7 +687,7 @@ non-loopback bind is rejected fail-closed.
 `Internal`. `ConfigError` variants: `Parse(toml::de::Error)`,
 `UnsupportedSchemaVersion { actual }`, `Semantic { .. }`.
 
-### `bootstrap_daemon` (`src/lib.rs:4597`) — ordered startup
+### `bootstrap_daemon` (`src/lib.rs:4619`) — ordered startup
 
 ```
 bootstrap_daemon(&Config, now_seconds, offline_reseed_path)
@@ -722,7 +722,7 @@ side effects); `Identity::Generate` -> `OsRng` -> `RouterIdentityBundle::generat
 `store.save_new` (atomic); `Identity::Inspect` -> `store.load` -> `IdentityInspected` (no
 secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }`).
 
-`run_daemon(config)` (`src/lib.rs:4717`) is the real daemon path:
+`run_daemon(config)` (`src/lib.rs:4739`) is the real daemon path:
 
 1. Compute wall-clock seconds.
 2. Run `bootstrap_daemon(&config, now_seconds, None)`.
@@ -1177,10 +1177,12 @@ counters and an ambiguity about which one is authoritative.
 `MAX_RELAY_DRAIN_PER_PASS` (16) events — the runtime relay channel's own
 capacity (`max_inbound_relay_queue`, default 16, ceiling
 `MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024) — and stops at the first empty pull.
-A refusal, a resolver miss, and a produced-but-not-carried block are
+A refusal, a resolver miss, and a block that could not be carried are
 **counted outcomes, not errors**: `RelayDrainOutcome` carries `drained`,
-`admitted`, `refused`, and `awaiting_carriage`, and carries counts only. The
-drain never logs a peer hash, a key, a tag, or a payload.
+`admitted`, `refused`, `carried`, and `carriage_refusals` (a
+`BTreeMap<&'static str, u64>` keyed by the runtime's stable reason labels),
+and carries counts only. The drain never logs a peer hash, a key, a tag, or a
+payload.
 
 **The resolver answers only from the validated store.** `NetDbSignerResolver`
 (`src/ssu2_introducer.rs:246-265`) implements `IntroducerSignerResolver` over
@@ -1193,17 +1195,68 @@ fail-closed the same way. The bootstrap's lock is a `std::sync::Mutex` and the
 critical section is one map lookup that never awaits.
 
 **The role owner the live loop constructs is the one above.** It is built only
-when `ssu2.introducer_service` is on (`src/lib.rs:3964-3991`): the resolver
+when `ssu2.introducer_service` is on (`src/lib.rs:3964-3999`): the resolver
 first, then `Ssu2IntroducerService::new(...)` over the runtime service handle
 and the daemon's own router hash. The same key is **default off**
 (`src/config.rs:1402-1404`) and is refused at parse time unless
 `ssu2.enabled = true` (`src/config.rs:3353-3358`).
 
-**A produced block is counted, not carried.** The runtime has **no outbound
-relay queueing API**, so a Relay Intro or Relay Response the role owner
-produced is counted as `awaiting_carriage` and is not put on the wire. That is
-Plan 490 **Medium #2**, and it stays **open**: the live socket carriage of a
-Relay Request is not closed here.
+**A produced block is carried, not counted (Plan 499).** Plan 498's drain could
+only *pull*: it received a relay block the role owner had produced and had no
+way to put it on a session, so it counted it as `awaiting_carriage` and
+dropped it. Plan 490's **Medium #2** — the runtime's missing outbound relay
+queueing API — is now **closed** on the runtime side
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2107`, `:2128`, `:2139`), and the
+daemon owns the matching seam.
+
+The drain now carries **two** seams:
+
+- `RelayEventSource` — the **pull** seam, unchanged: where the relay events
+  come from (`src/ssu2_relay_drain.rs:57-60`).
+- `RelayCarriage` — the seam that puts a **produced** block on the wire
+  (`src/ssu2_relay_drain.rs:74-89`). It is told **which peer** the block is
+  for, because the block itself carries no destination — the session is the
+  destination. It returns a typed refusal. The trait's own doc comment calls
+  it a "pull-shaped seam beside `RelayEventSource`": it exists so the drain's
+  behaviour can be exercised without binding a socket, and it cannot enqueue
+  into the runtime's relay channel or weaken the role owner's verification,
+  because it runs only after the role owner admitted and verified the block.
+
+`RuntimeRelayCarriage` (`src/ssu2_relay_drain.rs:95-130`) is the production
+implementation. It holds the **same runtime service handle** that owns the
+live sessions — the one the role owner already holds — and forwards to the
+runtime's four peer-facing carriage methods, which resolve the peer to
+**exactly one** live session and queue the block on that session's bounded
+control queue. The carriage adds **no** new send path, **no** new socket and
+**no** new authority: it is the runtime's own bounded control queue, reached
+through the runtime's own API.
+
+The live inbound loop constructs the carriage and hands it to the drain
+(`src/lib.rs:3993-3995`), and the log line now reports `carried` and
+`carriage_refused` instead of `awaiting_carriage` (`src/lib.rs:4589-4590`).
+
+**What the carriage does not do.** It does not publish anything. The
+transport's own documentation says the target "asks the introducer for a tag
+**and publishes it**" (`crates/i2pr-transport-ssu2/src/relay.rs:789-793`);
+**publishing the tag is a NetDB/RouterInfo mechanism, not an SSU2 relay-block
+mechanism**, and Plan 499 publishes nothing. The tag is asked for and
+answered over the wire; nothing about it reaches a RouterInfo.
+
+**The daemon's anti-amplification check never fires on this path.** The role
+owner passes the constant `MAX_INTRODUCER_REQUEST_BYTES` (128,
+`src/ssu2_introducer.rs:60`, `:390`) rather than the real request length, so
+the transport's `request_bytes * 3 < 128` test
+(`crates/i2pr-transport-ssu2/src/relay.rs:864`) is **always** satisfied —
+`128 * 3 = 384`. This is **pre-existing** behaviour, not something Plan 499
+added or fixed; it is recorded here as a **known limitation**, and the
+transport's amplification budget is therefore **not** enforced by the daemon
+path.
+
+**The role owner refuses the tag event.** `Ssu2RelayEvent::Tag(_)` reaches
+the role owner on the same handoff as an `Intro`, and the owner refuses it as
+`NotOurRole` (`src/ssu2_introducer.rs:346-349`) — a tag the runtime observed
+is not the role owner's to act on, exactly as an `Intro` is
+(`src/ssu2_introducer.rs:345`).
 
 **What the evidence proves, and what it does not.** The drain's *behaviour* is
 proved in-process and socket-free by
@@ -1211,19 +1264,84 @@ proved in-process and socket-free by
 relay block reaches the role owner and the receipt moves 0→1), the **control**
 (an empty handoff delivers nothing and counts nothing), the **refusal row**
 (an unresolvable requester is refused and counted by reason, and no tracked
-state is left behind), and the **bound row** (one pass stops at the per-pass
-bound). The *live wiring* is proved by a **static guard** in the same file:
+state is left behind), the **bound row** (one pass stops at the per-pass
+bound), and the two **Plan 499 carriage rows** (the drain carries the
+produced intro to the tag's target, and a carriage refusal is counted by
+reason). The *live wiring* is proved by a **static guard** in the same file:
 the daemon's live loop calls the drain, the live owner is the drain's event
 source, and the live role owner answers requester keys from the validated
-store. The static guard does **not** prove that a live daemon executed the
-drain — the runtime's relay channel admits no external injection and the role
-requires the non-strict operator profile. There is **no** end-to-end
-relay-block injection on this host, and **no** stock-peer or public-network
-evidence.
+store.
+
+Plan 499 adds the first **live** evidence, in
+`crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs` — but it is evidence
+about **this router against other live routers**, not about a stock peer. The
+role owner in that mesh is exercised against a **test signer resolver**
+(`MeshSigners`), **not** the production `NetDbSignerResolver`; the production
+resolver needs a `Bootstrap` holding validated RouterInfos and has its own
+unit rows in `src/ssu2_introducer.rs`. There is still **no** stock-peer or
+public-network evidence, and the mesh needed **no external environment**.
 
 The role stays **opt-in and non-advertised**: `ssu2.introducer_service`
 defaults to off, `ssu2.advertise` stays refused, `router.version` stays
 `0.9.62`, and `specs/support.toml` is unchanged.
+
+### The live three-party UDP mesh (Plan 499, `tests/ssu2_introducer_live_mesh.rs`)
+
+Plan 499's mesh is the first evidence that the introducer role **completes on
+the wire**. Three **live routers over real loopback UDP** — Alice (the
+requester), Bob (**this router**, acting as the introducer) and Charlie (the
+target):
+
+1. **Charlie asks Bob for a tag.** Charlie sends a `RelayTagRequest` on the
+   live Bob↔Charlie session. Bob's runtime observes it, checks the
+   introducer gate, mints a nonzero tag from the OS CSPRNG, and binds it to
+   **Charlie's** router hash — the hash of the session peer, not anything
+   Charlie supplied. Bob answers with a `RelayTag` **on the same session**.
+2. **Alice presents the tag.** Alice sends a `RelayRequest` carrying the tag.
+   Bob's role owner resolves the tag to its owner (Charlie), verifies
+   **Alice's** signature against the resolver's key, and produces a Relay
+   Intro.
+3. **Bob carries the intro to Charlie.** The daemon's drain now *carries* the
+   produced block instead of counting it, and the runtime queues it on the
+   live Bob↔Charlie session. Charlie receives it, checks the nonce against
+   the request it made, and signs a Relay Response.
+4. **Bob carries the response to Alice.** Bob verifies the response — the
+   **nonce must equal the request's nonce** and the **sender must be the
+   target** — and the drain carries it onto the live Bob↔Alice session.
+5. **Alice verifies the response** under **Charlie's public key** over the
+   transport's exact preimage.
+
+Two further rows pin the boundaries. With the introducer **off**, Bob
+observes the request, issues **no** tag, and the requester observes none. And
+with **two peers each asking Bob for a tag** (the test names them Charlie and
+Dave), each issued tag resolves to **that peer's own** router hash and to
+**no other**, and an unknown tag resolves to nothing at all.
+
+**What the mesh does not prove.** It is three instances of this router. It is
+**not** a stock-peer lane: a lane against the pinned i2pd needs the Plan 493
+topology, which does not exist yet. It exercises the role owner against a
+**test** signer resolver, not the production `NetDbSignerResolver`. It
+publishes **nothing**: the transport's documentation says the target "asks
+the introducer for a tag **and publishes it**"
+(`crates/i2pr-transport-ssu2/src/relay.rs:789-793`), and publishing a tag in
+the target's RouterInfo is a **NetDB/RouterInfo mechanism**, not an SSU2
+relay-block mechanism — Plan 499 delivers the ask and the answer and
+publishes **nothing**.
+
+**The protocol facts, stated precisely.** The relay tag names the
+**target**, not the requester. The requester's own router hash is **not** in
+the request's signature preimage — `relay_request_preimage` binds **Bob's**
+and **Charlie's** hashes
+(`crates/i2pr-transport-ssu2/src/relay.rs:144-166`), and the requester's
+identity comes from the session and only selects **which key verifies** the
+signature. (The *Intro* block does carry the requester's hash —
+`intro.alice_hash()` is Alice's — but that is Bob's **output**, not a field
+Alice signed.) The transport's own parameter is *named* `alice_hash` while
+carrying the **tag owner's** hash in this path; the comment above the
+binding check (`crates/i2pr-transport-ssu2/src/relay.rs:877`) describes the
+parameter's **name**, not its
+binding, and is misleading here. See
+[i2pr-transport-ssu2](i2pr-transport-ssu2.md) for the full reading.
 
 ### API-version floors and peer eligibility (Plan 491)
 
@@ -1771,12 +1889,12 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**96 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:4868`, `src/config.rs`, and the module-local test blocks in
+**97 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+modules (notably `src/lib.rs:4890`, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 
-The area inventory below names **78** of the 96 files. The remaining 18 were
+The area inventory below names **79** of the 97 files. The remaining 18 were
 added by later plans and are not yet assigned an area; the inventory is not
 inflated to hide that.
 
@@ -1796,7 +1914,7 @@ inflated to hide that.
 | Service tunnels (M10) | 24 | `service_tunnels_foundation.rs`, `service_tunnels_local_roundtrip.rs`, `service_tunnels_final_acceptance.rs`, `service_tunnels_adversarial_matrix.rs`, `service_tunnels_remote_qualification.rs`, `service_tunnels_application_remote_qualification.rs`, `service_tunnels_remote_route_integration_qualification.rs`, `service_tunnels_remote_transport_qualification.rs`, `service_tunnels_application_product_only_remote_qualification.rs`, `service_tunnels_application_genuine_remote_qualification.rs`, `service_tunnels_independent_application_clients.rs`, `service_tunnels_plan210_real_service_destination_material.rs`, `service_tunnels_plan212_router_backed_product.rs`, plus 12 per-profile `service_tunnel_*_product.rs` suites |
 | M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
 | M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
-| SSU2 | 5 | `ssu2_daemon_preflight.rs`, `ssu2_introducer_mesh.rs` — the Plan 490 private controlled mesh for the introducer (Bob) role, `ssu2_introducer_handoff.rs` — the Plan 498 relay-handoff drain lane: the discriminator that a relay block reaches the role owner, the control, the refusal row and the bound row, `ssu2_qualification_export.rs`, `ssu2_qualification_receipts.rs` |
+| SSU2 | 6 | `ssu2_daemon_preflight.rs`, `ssu2_introducer_mesh.rs` — the Plan 490 private controlled mesh for the introducer (Bob) role, `ssu2_introducer_handoff.rs` — the Plan 498 relay-handoff drain lane: the discriminator that a relay block reaches the role owner, the control, the refusal row and the bound row, plus the Plan 499 carriage rows that the drain carries the produced block to the tag's target and counts a carriage refusal by reason, `ssu2_introducer_live_mesh.rs` — the Plan 499 live three-party UDP mesh, `ssu2_qualification_export.rs`, `ssu2_qualification_receipts.rs` |
 | NTCP2 operator profile | 1 | `ntcp2_private_lan_profile.rs` — the configuration refusals, the family-coherence rule, the controlled profile's refusal to widen to a private-LAN bind, the advertisement refusal, and one environment-gated row that binds the operator's real RFC1918 endpoint on both transports and asserts the record carries no capability letter |
 | Java / M6 cross-family | 1 | `java_tunnel_external.rs` |
 
@@ -2151,16 +2269,19 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
 - **I2CP** — Plans 164–172. Closure:
   [`170`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
 - **SSU2** — Plans 158–161. Closure: `plans/closure/ssu2/`.
-- **SSU2 introducer (Bob) relay role** — Plans 490, 498. Closure:
+- **SSU2 introducer (Bob) relay role** — Plans 490, 498, 499. Closure:
   [`490`](../../plans/closure/network-participation/490-status.md). Plan-of-record:
-  [`498`](../../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md).
+  [`498`](../../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md),
+  [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md).
   Plan 498's implementation discharges Plan 490's **Medium #1** finding — the
   runtime's relay handoff was decoded, authenticated, and then dropped because
   the daemon never drained it — and it corrects that finding's prescription:
   `ServiceProduct::poll_inbound` is not on the live path, so the drain lives in
-  the daemon's own inbound loop. Plan 490's **Medium #2** — no live socket
-  carriage of a Relay Request — **stays open**; the runtime still has no
-  outbound relay queueing API. The role stays default-off and non-advertised.
+  the daemon's own inbound loop. Plan 499 discharges Plan 490's **Medium #2**
+  finding — no live socket carriage of a Relay Request: the runtime gained a
+  bounded outbound relay queueing API and the daemon's drain gained a
+  carriage seam, and the live three-party UDP mesh shows the role completing
+  on the wire. The role stays default-off and non-advertised.
 - **M10 service tunnels** — Plans 174–180, 182, 213–215. Closure:
   `plans/closure/service-tunnels/`. Plan-of-record:
   [`174`](../../plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),

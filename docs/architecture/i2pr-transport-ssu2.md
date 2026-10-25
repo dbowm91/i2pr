@@ -148,11 +148,11 @@ Integration trajectories live in `tests/handshake.rs`,
 | `peer_test` | `src/peer_test.rs` | 1842 | PeerTest roles/correlation/typed outcomes | `PeerTestTable`, `PeerTestOutcome`, `PeerTestRole`, `PeerTestState`, `PeerTestError`, `PeerTestCounters`, `peer_test_preimage`, `verify_peer_test_signature`, `peer_test_conn_ids`, `build_out_of_session_peer_test`, `parse_out_of_session_peer_test`, `check_peer_test_freshness`, `MAX_PEER_TESTS_GLOBAL`, `MAX_PEER_TESTS_PER_PEER`, `PEER_TEST_TIMEOUT_MS`, `PEER_TEST_MAX_CLOCK_SKEW_SECONDS`, `PEER_TEST_SIGNATURE_PROLOGUE` |
 | `publication` | `src/publication.rs` | 840 | Deterministic publication snapshots | `PublicationRequest`, `PublicationPolicy`, `PublicationOutcome`, `Ssu2PublicationSnapshot`, `WithholdReason`, `PublicationError`, `build_publication_snapshot`, `parse_snapshot` |
 | `relay` | `src/relay.rs` | 1 691 | Relay requester/introducer/target + HolePunch | `RelayRequester`, `RelayIntroducer`, `RelayTarget`, `RelayCounters`, `RelayError`, `HolePunchMessage`, `hole_punch_conn_ids`, `build_hole_punch`, `parse_hole_punch`, `relay_request_preimage`, `relay_response_preimage`, `verify_relay_request`, `verify_relay_response`, `check_relay_freshness`, `relay_response_budget`, `MAX_RELAY_REQUESTS_GLOBAL`, `MAX_RELAY_REQUESTS_PER_PEER`, `MAX_RELAY_TAGS_GLOBAL`, `MAX_RELAY_TAGS_PER_PEER`, `RELAY_TAG_LIFETIME_SECS`, `RELAY_REQUEST_TIMEOUT_MS`, `RELAY_MAX_CLOCK_SKEW_SECONDS`, `RELAY_REQUEST_PROLOGUE`, `RELAY_RESPONSE_PROLOGUE`, `MAX_HOLE_PUNCH_PAYLOAD_BYTES` |
-| `session` | `src/session.rs` | 2949 | Authenticated data-phase session (largest module) | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
+| `session` | `src/session.rs` | 3066 | Authenticated data-phase session (largest module) | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
 | `state_machine` | `src/state_machine.rs` | 1572 | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `InitiatorSecrets`, `ResponderConfig`, `ResponderParams`, `RetryAnswer`, `ConfirmedParams`, `HandshakeAction`, `DatagramBytes`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `AuthenticatedSsu2Session`, `PeerNewToken`, `StateMachineError` |
 | `token` | `src/token.rs` | 435 | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 
-`src/` totals **18,540 lines**; `tests/` totals 4,284.
+`src/` totals **19,057 lines**; `tests/` totals 4,825.
 
 ## Public surface
 
@@ -579,6 +579,23 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   promotes; without the requeue, in-flight messages would strand.
 - Outbound controls are single-shot; per-message delivery failure
   past the retransmission ceiling is silent by design.
+- **Plan 499 — the two relay-tag controls.** `queue_relay_tag_request()`
+  (`session.rs:1051`) queues an empty-bodied `RelayTagRequest` (block 15) and
+  `queue_relay_tag(block)` (`session.rs:1067`) queues a `RelayTag` (block 16,
+  a nonzero `u32`). They join the existing `QueuedControl` queue
+  (`session.rs:508-511`) and leave in the next Data packet through the two
+  transmit arms at `session.rs:1243-1244`. Both carry the **same two failure
+  modes as every other queued control**: `SessionError::Terminated` on a
+  terminated session and `SessionError::LocalPolicyDenied` at the
+  `DATA_MAX_SENT_PACKETS` (256) ceiling. The block encoders and decoders for
+  types 15 and 16 already existed (`block.rs:1581-1582`, `block.rs:2020-2034`);
+  **the wire format did not change** — only the session's ability to *emit*
+  these two blocks is new. A zero tag never reaches the queue: the
+  `RelayTagBlock` constructor rejects it, and the runtime's
+  `random_u32_nonzero` (`crates/i2pr-runtime/src/ssu2_runtime.rs:1371`) never mints one. The inbound
+  direction mirrors the pair: `DecodedBlock::RelayTagRequest` and
+  `DecodedBlock::RelayTag(tag)` become `SessionEvent::RelayTagRequest` and
+  `SessionEvent::RelayTag(u32)` (`session.rs:1816-1821`).
 - `SessionCounters` — privacy-safe counts only (packets, ACKs, losses,
   retransmits, flight, cwnd, reassembly, termination). No hashes,
   nonces, or endpoints.
@@ -680,7 +697,7 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   readiness to transition into the normal handshake (never a fake
   session).
 - `RelayIntroducer` (Bob) — disabled unless explicitly enabled
-  (`ServiceDisabled`); live-tag checks bound to Alice
+  (`ServiceDisabled`); live-tag checks bound to the peer the tag names
   (`MAX_RELAY_TAGS_GLOBAL` = 16, `MAX_RELAY_TAGS_PER_PEER` = 4,
   `RELAY_TAG_LIFETIME_SECS` = 120), 3x anti-amplification budget
   enforced before crypto, replay idempotency (no second intro
@@ -701,6 +718,42 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   tag is therefore the only in-band link between the requester and the
   target. `issue_tag`'s bound peer is that target (the parameter name is
   historical). No preimage, block format, or codec changed.
+- **The `alice_hash` parameter name is a trap, and the source says so in
+  two places that do not agree.** `issue_tag` (`relay.rs:794`) and
+  `on_request` (`relay.rs:846`) both name their bound-peer parameter
+  `alice_hash`. In the **live target-shaped path** that parameter carries
+  the **tag owner's** hash — the *target's* — and never the requester's.
+  `issue_tag`'s own doc comment already flags the name as historical
+  ("The bound hash is therefore the introduction target, and the parameter
+  name is historical", `relay.rs:789-793`). The comment immediately above
+  the binding check does **not**:
+  `// Tag must be live and bound to this Alice.` (`relay.rs:877`), above
+  `if tag.expired(now_secs) || tag.alice_hash != *alice_hash`
+  (`relay.rs:881`). That comment describes the *parameter's name*, not its
+  binding, and it is **misleading in the live path**: the caller
+  `Ssu2PeerRelayService::on_relay_request_for_target` passes `target_hash`
+  as the transport's `alice_hash` **and** as the preimage's `charlie_hash`,
+  and its requester-hash argument is literally unused
+  (`crates/i2pr-runtime/src/ssu2_peer_relay.rs:733-756`, parameter named
+  `_requester_hash` at
+  `:736`). Read the parameter as *"the peer the tag names"*, not *"the
+  requester"*.
+- **The requester's own router hash is not in the request's signature
+  preimage.** `relay_request_preimage(bob_hash, charlie_hash, nonce, tag,
+  timestamp, version, endpoint)` (`relay.rs:144-166`) binds **Bob's** and
+  **Charlie's** hashes and nothing else. The requester's identity comes
+  from the *session* and only selects **which key verifies** the signature;
+  it is not a signed field. A request is therefore **not** cryptographically
+  bound to the requester's hash.
+- **The response's nonce must equal the request's nonce, and the response's
+  sender must be the target.** `RelayIntroducer::on_response`
+  (`relay.rs:925`) correlates by nonce against the live request table
+  (`self.requests.get(&block.nonce())`, `relay.rs:948`), refuses a nonce
+  it does not know as `UnknownCorrelation`, and requires
+  `tracked.charlie_hash == *sender_hash` (`relay.rs:951-953`) before it
+  verifies the target's signature over the `RelayAgreementOK` preimage.
+  It **consumes** the tracked request, so a replayed response is refused as
+  an unknown correlation rather than forwarded twice.
 - `RelayIntroducer::enabled()` is the production constructor;
   `enabled_for_tests()` is retained as an alias.
 - `RelayTarget` (Charlie) — introducer-context validation of
@@ -871,7 +924,7 @@ banned literal in the crate's own source.
 
 ## Tests
 
-**212 tests in the crate**, all passing
+**218 tests in the crate**, all passing
 (`cargo test -p i2pr-transport-ssu2 --all-targets`):
 
 | Target | Count |
@@ -880,8 +933,8 @@ banned literal in the crate's own source.
 | `tests/handshake.rs` | 22 |
 | `tests/data_phase.rs` | 19 |
 | `tests/path_validation.rs` | 9 |
-| `tests/peer_relay.rs` | 8 |
-| `tests/profile_boundary.rs` (Plan 490 static guard) | 9 |
+| `tests/peer_relay.rs` | 13 |
+| `tests/profile_boundary.rs` (Plan 490 static guard) | 10 |
 
 Inline unit-test distribution by module: `address.rs` 27,
 `path.rs` 13, `session.rs` 13, `peer_test.rs` 12, `handshake.rs` 11,
@@ -947,7 +1000,7 @@ Fixture bytes are committed and must not be edited; after any change
 | `peer_test.rs` (unit) | Spec preimage field order, full Alice trajectory to direct confirmation, unsigned-Msg 7 downgrade, contradiction without last-wins, invalid/stale/wrong-role/unknown boundedness, duplicate idempotency, concurrent isolation, exact quotas, expiry/cancel baselines, refusal/inconclusive neutrality, signer rejection, v6 separation |
 | `relay.rs` (unit) | Request/response preimage order, HolePunch conn-ID rule, HolePunch round trip with wrong-key rejection, requester correlation with distinct-tag isolation, disabled-by-default quotas with replay idempotency, target validation with replay suppression, quota/expiry baselines |
 | `introducer.rs` (unit) | Bounded deterministic live selection, failed-peer withdrawal, zero-tag/overflow eviction, publication-shape conversion |
-| `tests/peer_relay.rs` | Sealed-session carriage of RelayRequest/Response/Intro and PeerTest Msg 4 into their tables, out-of-session PeerTest/HolePunch round trips, introducer→publication→expiry integration, conservative reachability consumption, privacy regression |
+| `tests/peer_relay.rs` | Sealed-session carriage of RelayRequest/Response/Intro and PeerTest Msg 4 into their tables, out-of-session PeerTest/HolePunch round trips, introducer→publication→expiry integration, conservative reachability consumption, privacy regression. **Plan 499** adds five rows for the two new outbound relay-tag controls: the tag request traverses the session to the introducer, the tag traverses the session with the exact value, a terminated session refuses both, the control-queue ceiling refuses both, and a zero tag is rejected before it reaches the queue |
 
 Determinism: every secret, connection ID, packet number, token byte,
 challenge, timestamp, and both clocks is a caller-supplied
@@ -957,7 +1010,7 @@ deterministic generator.
 
 Runtime-side suites that exercise this crate's machines over real
 sockets (owned by `i2pr-runtime`, not by this crate) live in
-`crates/i2pr-runtime/tests/ssu2_local.rs` (10 tests),
+`crates/i2pr-runtime/tests/ssu2_local.rs` (19 tests),
 `crates/i2pr-runtime/tests/ssu2_peer_relay.rs` (7 tests), and the
 inline module tests in `crates/i2pr-runtime/src/ssu2_runtime.rs`; see
 [i2pr-runtime](i2pr-runtime.md).
@@ -1046,6 +1099,12 @@ inline module tests in `crates/i2pr-runtime/src/ssu2_runtime.rs`; see
   `159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
   `160-m8-ssu2-peer-test-and-relay-reachability.md`,
   `162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`.
+- Relay-role plans of record (this crate's relay machinery and the
+  introducer's session controls): Plan 490 (the introducer's bounded tables
+  and tag vocabulary),
+  [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md)
+  (the two outbound relay-tag controls and the live tag request). Closure:
+  [`490`](../../plans/closure/network-participation/490-status.md).
 - Closure: `plans/closure/ssu2/155-status.md` through
   `plans/closure/ssu2/160-status.md`, and
   `plans/closure/ssu2/161-status.md` (**PASSED** — the external

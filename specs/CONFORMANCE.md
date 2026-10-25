@@ -1247,7 +1247,8 @@ What is claimed, and what is not:
   discharged. Medium #2 — **no live socket carriage of a Relay Request** — is
   **not** closed: the runtime still has no outbound relay queueing API, so a
   produced block is counted as `awaiting_carriage` and is not carried onto the
-  wire.
+  wire. **Plan 499 discharges Medium #2** — see "SSU2 introducer live tag
+  request and relay-block carriage (Plan 499)" below.
 - **There is exactly one owner.** `NormalSsu2Owner` is either
   `Router(Ssu2DaemonHandle)` or `Groups(Box<ServiceProduct>)`; the live loop
   drains through whichever holds the handle. The product exposes the **pull**
@@ -1268,7 +1269,7 @@ What is claimed, and what is not:
   `Ssu2ServiceHandle::try_next_relay_event` pulls from the **existing**
   bounded relay channel. There is no new channel, no new capacity, and no
   change to the runtime's authentication path. The runtime still has **no
-  outbound relay queueing API**.
+  outbound relay queueing API**. **Plan 499 adds that API** — see below.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
   unchanged — 94 surfaces, 88 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, `caps` and the published
@@ -1307,7 +1308,121 @@ the live path, so the live drain in `lib.rs` is the mandatory half. Plan 490
 **Medium #2** (no live socket carriage of a Relay Request) **stays open** and
 is recorded in the Plan 498 closure record: the runtime still has no outbound
 relay queueing API, so a produced Relay Intro / Relay Response is counted as
-`awaiting_carriage` rather than carried to the wire.
+`awaiting_carriage` rather than carried to the wire. **Plan 499 discharges
+Medium #2** — the runtime gained a bounded outbound relay queueing API, the
+daemon's drain gained a carriage seam, and the live three-party UDP mesh shows
+the role completing on the wire.
+
+## SSU2 introducer live tag request and relay-block carriage (Plan 499)
+
+Plan 490 built the SSU2 introducer (Bob) role owner and the transport's relay
+machinery; Plan 498 made the role owner reachable in a live daemon. Plan 499
+makes the role **work**: the introducer can now be asked for a relay tag, and
+a relay block it produces can be carried onto the wire. The plan of record is
+[`plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md`](../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md);
+the predecessor closure record is
+[`plans/closure/network-participation/498-status.md`](../plans/closure/network-participation/498-status.md).
+What is claimed, and what is not:
+
+- **The claim is that the role completes on the wire between live routers, not
+  that it is supported.** Three live routers over real loopback UDP exchange a
+  relay tag, a Relay Request, a Relay Intro, a Relay Response and the
+  verified response. The role remains experimental, default-off and
+  non-advertised.
+- **The wire format did not change.** The block vocabulary for `RelayTagRequest`
+  (block 15) and `RelayTag` (block 16) already existed; only the session's
+  outbound control queue lacked them. Plan 499 adds
+  `Ssu2Session::queue_relay_tag_request()` and
+  `Ssu2Session::queue_relay_tag(block)` and nothing else on the wire.
+- **The relay tag names the TARGET, not the requester.** The transport's
+  parameter is *named* `alice_hash`, but in the live target-shaped path it
+  carries the **tag owner's** hash — the target's. The transport's own
+  `issue_tag` doc comment says the parameter name is historical
+  (`crates/i2pr-transport-ssu2/src/relay.rs:789-793`); the comment above the
+  binding check (`crates/i2pr-transport-ssu2/src/relay.rs:877`) describes the
+  parameter's **name**, not its
+  binding, and is **misleading in the live path**.
+- **The requester's own router hash is NOT in the request's signature
+  preimage.** `relay_request_preimage(bob_hash, charlie_hash, ...)`
+  (`crates/i2pr-transport-ssu2/src/relay.rs:144-166`) binds **Bob's** and
+  **Charlie's** hashes and nothing else. The requester's identity comes from
+  the session and only selects **which key verifies** the signature; a request
+  is **not** cryptographically bound to the requester's hash. (The *Intro*
+  block Bob produces **does** carry the requester's hash — that is Bob's
+  output, not a field Alice signed.)
+- **The response's nonce must equal the request's nonce, and the response's
+  sender must be the target.** The transport correlates by nonce against the
+  live request table and consumes the tracked request, so a replayed response
+  is refused as an unknown correlation; the daemon's role owner makes the same
+  two checks (`crates/i2pr-daemon/src/ssu2_introducer.rs:437`,
+  `:439-440` — `UnknownCorrelation`, `SenderMismatch`).
+- **The live tag request binds the authenticated session peer.** The runtime
+  mints a nonzero tag from the OS CSPRNG and binds it to the handshake-
+  authenticated session peer's router hash — never to a caller-supplied
+  identity — through the transport introducer, whose quota is the bound:
+  `MAX_RELAY_TAGS_GLOBAL` 16, `MAX_RELAY_TAGS_PER_PEER` 4,
+  `RELAY_TAG_LIFETIME_SECS` 120. The tag is answered **on the same session**.
+- **The carriage is a bounded queue on an existing session, not a new send
+  path.** The runtime's four peer-facing methods resolve the destination peer
+  to **exactly one** live session — ambiguity is refused, not guessed — and
+  queue the block on that session's bounded control queue. The daemon's drain
+  gained a `RelayCarriage` seam beside the existing `RelayEventSource` pull
+  seam, with a production `RuntimeRelayCarriage` over the runtime that owns
+  the sessions. `awaiting_carriage` becomes `carried` plus
+  `carriage_refusals` by reason.
+- **The RouterInfo publication step is NOT closed.** The transport's
+  documentation says the target "asks the introducer for a tag **and
+  publishes it**". Publishing the tag in the target's RouterInfo is a
+  **NetDB/RouterInfo mechanism**, not an SSU2 relay-block mechanism. Plan 499
+  delivers the ask and the answer; it publishes **nothing**.
+- **The mesh exercises the role owner against a TEST signer resolver, not the
+  production `NetDbSignerResolver`.** `NetDbSignerResolver` needs a
+  `Bootstrap` holding validated RouterInfos and has its own unit rows; the
+  live mesh uses a test resolver (`MeshSigners`,
+  `crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs:355`).
+- **There is no stock-peer lane.** A lane against the pinned i2pd needs the
+  Plan 493 topology, which does not exist yet. The mesh is three instances of
+  this router.
+- **`Ssu2RelayQueueError::SessionTerminated` is not reachable end to end.**
+  The runtime removes a terminated session from both `state.active` and
+  `state.peer_links` in the same locked operation, so the *observable* refusal
+  after a termination is `NoSession`. The `SessionError` →
+  `Ssu2RelayQueueError` mapping is asserted by a focused in-crate unit row
+  instead.
+- **`Ssu2RelayQueueError::AmbiguousSession` is not reachable end to end
+  either.** The transport manager's duplicate policy resolves a **same-peer**
+  duplicate as `RejectNew`, `ReplaceExisting` or `RetainExistingDrainNew`
+  (`AcceptNew` is reserved for a *different* peer), so `peer_links[peer]`
+  never holds two links. The ambiguous branch is asserted through a focused
+  in-crate unit row of the resolution helper.
+- **The daemon's anti-amplification check never fires on the daemon path.**
+  The role owner passes the constant `MAX_INTRODUCER_REQUEST_BYTES` (128)
+  rather than the real request length, so the transport's
+  `request_bytes * 3 < 128` test is always satisfied. This is **pre-existing**
+  behaviour, not added or fixed by Plan 499, and it is recorded here as a
+  **known limitation**: the transport's amplification budget is not enforced by
+  the daemon path.
+- **The runtime still exposes a public `issue_relay_tag(tag, target_hash,
+  now_secs)`** that binds a tag to a **caller-supplied** hash (pre-existing,
+  Plan 490). Plan 499's live path binds the authenticated session peer and
+  adds no such API, but the surface remains.
+- **Nothing is promoted.** `specs/support.toml` stays at **94 surfaces, 88
+  experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; `ssu2.advertise`
+  stays refused. The role stays behind the existing **default-off**
+  `ssu2.introducer_service` opt-in.
+- **The mesh needed no external environment** and is not environment-gated.
+
+Evidence: `crates/i2pr-transport-ssu2/src/session.rs`,
+`crates/i2pr-transport-ssu2/src/relay.rs`,
+`crates/i2pr-transport-ssu2/tests/peer_relay.rs`,
+`crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-runtime/tests/ssu2_local.rs`,
+`crates/i2pr-daemon/src/ssu2_relay_drain.rs`,
+`crates/i2pr-daemon/src/ssu2_introducer.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`, and
+`crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs`.
 
 ## Outbound proxy secret owner (Plan 341)
 
