@@ -89,16 +89,16 @@ So the whole exploratory half of the router is a loop with no entry point.
 
 ### 3.3 The peer-profile store is constructed but never fed
 
-`NetDbParticipation::new` (`crates/i2pr-daemon/src/lib.rs:1877`) builds the
+`NetDbParticipation::new` (`crates/i2pr-daemon/src/lib.rs:1872`) builds the
 `PeerParticipationHandle` at `:1902` and the daemon holds it at `:1853`.
 
 - `learn` (`crates/i2pr-daemon/src/netdb_participation.rs:262`) has **one**
   caller in the whole crate, and it is inside `#[cfg(test)]`
   (`crates/i2pr-daemon/src/lib.rs:5911`).
 - `observe_answered` / `observe_refused` / `observe_unanswered` /
-  `observe_unreachable` (`netdb_participation.rs:296`, `:308`, `:319`, `:324`)
+  `observe_unreachable` (`crates/i2pr-daemon/src/netdb_participation.rs:296`, `:308`, `:319`, `:324`)
   have **no** production caller.
-- `select_tunnel_build_peers` (`netdb_participation.rs:384`) has **no**
+- `select_tunnel_build_peers` (`crates/i2pr-daemon/src/netdb_participation.rs:384`) has **no**
   production caller. It is version-gated (`require_floodfill: false`) and is
   exactly the read side a driver needs.
 
@@ -159,7 +159,7 @@ record) does not apply here.
 
 ### 3.8 The mechanism is bounded by construction
 
-- `MAX_PENDING_BUILDS = 16` (`exploratory_build.rs:104`),
+- `MAX_PENDING_BUILDS = 16` (`crates/i2pr-daemon/src/exploratory_build.rs:104`),
   `BUILD_DEADLINE_MS = 60_000` (`:137`),
   `MAX_LIVENESS_PAIRS = 8`, `MAX_PENDING_LIVENESS_TESTS = 16`
   (`crates/i2pr-daemon/src/tunnel_liveness.rs:81`, `:84`).
@@ -282,7 +282,7 @@ length, is **refused and counted**, never substituted.
 ### WP3 — the peer selection
 
 The driver selects through `PeerParticipationDriver::select_tunnel_build_peers`
-(`netdb_participation.rs:384`), which is Plan 491's version-gated selection
+(`crates/i2pr-daemon/src/netdb_participation.rs:384`), which is Plan 491's version-gated selection
 with `require_floodfill: false` — an exploratory tunnel is built toward an
 ordinary peer, not necessarily a floodfill.
 
@@ -298,14 +298,14 @@ about which peer exists.
 ### WP4 — the build attempt
 
 The driver submits through the existing `rebuild_exploratory`
-(`exploratory_build.rs:2679`) — the same path the liveness rebuild uses — so
+(`crates/i2pr-daemon/src/exploratory_build.rs:2679`) — the same path the liveness rebuild uses — so
 there is exactly **one** code path that builds an exploratory tunnel, and the
 first build and the rebuild cannot drift apart.
 
 The driver submits only when:
 
 - the operator has enabled the feature;
-- the coordinator is not paused (`is_paused`, `exploratory_build.rs:1113`);
+- the coordinator is not paused (`is_paused`, `crates/i2pr-daemon/src/exploratory_build.rs:1113`);
 - the pending table is empty (`pending_len`, `:1191`);
 - the pool has no usable exploratory pair;
 - a peer was selected and its material resolved.
@@ -317,7 +317,7 @@ Every one of those refusals is counted.
 The driver keeps a **single bounded in-flight record** (direction, peer key,
 attempt id). When the coordinator produces a terminal outcome — from the
 inbound build reply (`InboundRouteOutcome::coordinator`,
-`exploratory_build.rs:2784`) or from `expire_pending` (`:2588`) — the driver
+`crates/i2pr-daemon/src/exploratory_build.rs:2784`) or from `expire_pending` (`:2588`) — the driver
 maps it to the peer and records one observation:
 
 | Outcome | Observation |
