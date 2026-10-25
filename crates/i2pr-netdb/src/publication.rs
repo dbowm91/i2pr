@@ -17,7 +17,7 @@ use crate::lookup_policy::{
 };
 use crate::router_info::RouterHash;
 use crate::store::RouterInfoStore;
-use crate::version::{VersionRefusalCounts, dsm_target_eligibility, published_version_of};
+use crate::version::VersionRefusalCounts;
 
 /// Maximum number of concurrent publication attempts the coordinator
 /// will track. The bound is intentionally small to keep runtime
@@ -202,32 +202,27 @@ impl PublicationCoordinator {
     /// that publishes an unknown, uncomparable, or below-floor API version is
     /// refused, counted by reason, and excluded from the target set. The
     /// refusal is never a silent skip.
+    ///
+    /// Plan 503: the selection is the shared
+    /// [`crate::lookup_policy::select_version_gated_floodfills`], so this
+    /// enforcement point and the live publication paths share one
+    /// implementation. The routing key is the local RouterHash and the local
+    /// RouterHash is excluded, exactly as the hand-rolled selection did.
     pub fn nearest_eligible_floodfills(&self, store: &RouterInfoStore) -> FloodfillTargetSelection {
         let Some(local) = self.local_snapshot.as_ref() else {
             return FloodfillTargetSelection::default();
         };
         let local_key = local.router_hash();
-        let selection = crate::lookup_policy::select_floodfill_candidates(
+        let selection = crate::lookup_policy::select_version_gated_floodfills(
             store,
-            &local_key,
             &local_key,
             &[local_key],
             &self.policy,
         );
-        let mut targets = Vec::new();
-        let mut refusals = VersionRefusalCounts::default();
-        for entry in selection.entries() {
-            let Some(record) = store.get(&entry.key) else {
-                continue;
-            };
-            let eligibility = dsm_target_eligibility(published_version_of(record));
-            if eligibility.is_eligible() {
-                targets.push(entry.key);
-            } else {
-                refusals.record(eligibility);
-            }
+        FloodfillTargetSelection {
+            targets: selection.targets().to_vec(),
+            refusals: *selection.refusals(),
         }
-        FloodfillTargetSelection { targets, refusals }
     }
 
     /// Builds the `DatabaseStore` I2NP body for one publication
@@ -725,6 +720,46 @@ mod tests {
         let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
         coordinator.register_local(local);
         let selection = coordinator.nearest_eligible_floodfills(&store);
+        assert_eq!(
+            selection.targets(),
+            &[router_hash(eligible.identity()).unwrap()]
+        );
+        assert_eq!(selection.refusals().below_floor, 1);
+        assert_eq!(selection.refusals().unknown_version, 1);
+        assert_eq!(selection.refusals().uncomparable_version, 1);
+        assert_eq!(selection.refusals().total(), 3);
+    }
+
+    /// Plan 503: the coordinator's publication selection and the shared
+    /// version-gated selection are one implementation, so they produce the
+    /// same targets and the same counted refusals.
+    #[test]
+    fn the_refactored_publication_selection_matches_the_shared_selection() {
+        let signer = bundle(0x790);
+        let eligible = bundle(0x791);
+        let below_floor = bundle(0x792);
+        let unknown_version = bundle(0x793);
+        let uncomparable = bundle(0x794);
+        let mut store = RouterInfoStore::default();
+        store.insert(floodfill_helper(&eligible));
+        store.insert(floodfill_helper_with_version(&below_floor, "0.9.61"));
+        store.insert(floodfill_helper_without_version(&unknown_version));
+        store.insert(floodfill_helper_with_version(&uncomparable, "0.9.62."));
+        let local = local_router_info(&signer);
+        let local_key = local.router_hash();
+        let policy = PublicationCoordinator::default_policy();
+        let mut coordinator = PublicationCoordinator::new(policy);
+        coordinator.register_local(local);
+        let selection = coordinator.nearest_eligible_floodfills(&store);
+        let shared = crate::lookup_policy::select_version_gated_floodfills(
+            &store,
+            &local_key,
+            &[local_key],
+            &policy,
+        );
+        assert_eq!(selection.targets(), shared.targets());
+        assert_eq!(selection.refusals(), shared.refusals());
+        // The pre-refactor expectations are unchanged.
         assert_eq!(
             selection.targets(),
             &[router_hash(eligible.identity()).unwrap()]

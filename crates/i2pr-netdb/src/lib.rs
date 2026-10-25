@@ -139,7 +139,7 @@ pub use lookup_policy::{
     DEFAULT_MAX_CANDIDATES_CONSIDERED, DEFAULT_MAX_PEERS_PER_LOOKUP, DEFAULT_MAX_SUGGESTED_HASHES,
     DEFAULT_PER_ATTEMPT_DEADLINE_MS, DEFAULT_SUGGESTED_HASH_LIMIT, DEFAULT_TOTAL_DEADLINE_MS,
     FloodfillSelection, LookupPolicy, LookupPolicyError, MAX_SUGGESTED_HASH_LIMIT,
-    select_floodfill_candidates,
+    VersionGatedFloodfillSelection, select_floodfill_candidates, select_version_gated_floodfills,
 };
 pub use optimized_lookup::{
     MAX_OPTIMIZED_PENDING, MAX_OPTIMIZED_PENDING_LIMIT, MAX_OPTIMIZED_QUERYABLE,
