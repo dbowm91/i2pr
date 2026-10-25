@@ -602,6 +602,10 @@ async fn plan212_router_backed_generic_directions() {
         options: Default::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
         shared_manager: None,
+
+        // Plan 505: this lane does not enable the exploratory
+        // build posture, so it owns no driver.
+        exploratory_driver: None,
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

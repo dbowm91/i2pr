@@ -51,6 +51,17 @@ use crate::version_eligibility::VersionEligibilityOwner;
 /// counts only: they name no peer, no tunnel and no payload.
 pub type LivenessCounterCell = std::sync::Mutex<crate::tunnel_liveness::LivenessCounters>;
 
+/// Plan 505 — the live exploratory-build driver counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// exploratory-build posture without polling the product. The counters
+/// are counts only: they name no peer, no address, no key and no
+/// payload.
+pub type ExploratoryDriverCounterCell =
+    std::sync::Mutex<crate::exploratory_driver::ExploratoryDriverCounters>;
+
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
 
@@ -254,6 +265,10 @@ pub struct InspectionHandles {
     /// (Plan 504). The product refreshes the cell on its tick; the
     /// counters are counts only and name no peer, tunnel or payload.
     liveness_live: Mutex<Option<Arc<LivenessCounterCell>>>,
+    /// Live exploratory-build driver counters, published by the
+    /// composition root (Plan 505). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address or key.
+    exploratory_driver_live: Mutex<Option<Arc<ExploratoryDriverCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -281,6 +296,7 @@ impl InspectionHandles {
             transit_live: Mutex::new(None),
             version_live: Mutex::new(None),
             liveness_live: Mutex::new(None),
+            exploratory_driver_live: Mutex::new(None),
         }
     }
 
@@ -562,6 +578,39 @@ impl InspectionHandles {
     /// fabricated zero.
     pub fn liveness_counters_snapshot(&self) -> Option<crate::tunnel_liveness::LivenessCounters> {
         let cell = self.liveness_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 505: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// exploratory-build posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_exploratory_driver_counters(&self, cell: Arc<ExploratoryDriverCounterCell>) {
+        if let Ok(mut slot) = self.exploratory_driver_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published exploratory-build driver counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn exploratory_driver_counters(&self) -> Option<Arc<ExploratoryDriverCounterCell>> {
+        self.exploratory_driver_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published exploratory-build
+    /// driver counters.
+    ///
+    /// Plan 505: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn exploratory_driver_counters_snapshot(
+        &self,
+    ) -> Option<crate::exploratory_driver::ExploratoryDriverCounters> {
+        let cell = self.exploratory_driver_counters()?;
         cell.lock().ok().map(|counters| *counters)
     }
 

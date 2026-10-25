@@ -499,6 +499,9 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         options: ServiceProductOptions::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
         shared_manager: Some(Arc::clone(&manager)),
+        // Plan 505: this lane does not enable the exploratory build
+        // posture, so it owns no driver.
+        exploratory_driver: None,
     };
 
     let mut product = ServiceProduct::start(spec)

@@ -405,6 +405,19 @@ pub struct ServiceProductSpec {
     /// router delivery backend before any control reconcile can run —
     /// the SSU2 service starts ahead of the I2PControl service.
     pub shared_manager: Option<Arc<ServiceTunnelManager>>,
+    /// Plan 505 — the exploratory build driver, when the composition root
+    /// built one.
+    ///
+    /// The driver names a peer through Plan 491's version-gated selection,
+    /// builds a one-hop exploratory tunnel toward it through the **existing**
+    /// build path, and records the outcome in the peer-profile store.
+    ///
+    /// `None` means the driver's path is inert: no peer is named, no tunnel
+    /// is built, and the product's exploratory step is a no-op. The
+    /// composition root passes `None` unless the operator has enabled the
+    /// `[exploratory]` posture, so a router that has never opted in behaves
+    /// exactly as it does today.
+    pub exploratory_driver: Option<crate::exploratory_driver::ExploratoryDriver>,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -574,6 +587,10 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
         };
         let product = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -649,6 +666,10 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
         };
         let result = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -726,6 +747,10 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
         };
         let router_infos = Vec::new();
         let mut product = ServiceProduct::start_over_existing_daemon(
@@ -1080,6 +1105,17 @@ struct ProductInner {
     /// publishes into the inspection seam. The product refreshes it on
     /// its tick; it holds counts only.
     liveness_counters_cell: Arc<crate::i2pcontrol_inspection::LivenessCounterCell>,
+    /// Plan 505 — the live exploratory build driver. It names a peer
+    /// through Plan 491's version-gated selection, builds a one-hop
+    /// exploratory tunnel toward it, and records the outcome in the
+    /// peer-profile store. `None` means the operator has not enabled the
+    /// `[exploratory]` posture and the driver's path is inert.
+    exploratory_driver: Option<crate::exploratory_driver::ExploratoryDriver>,
+    /// Plan 505 — the live counter cell the composition root publishes
+    /// into the inspection seam. The product refreshes it on its tick; it
+    /// holds counts only.
+    exploratory_driver_counters_cell:
+        Arc<crate::i2pcontrol_inspection::ExploratoryDriverCounterCell>,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
     /// Plan 503 — the live owner of the peer-eligibility receipts. The
@@ -2311,6 +2347,10 @@ impl ServiceProduct {
                 liveness_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::tunnel_liveness::LivenessCounters::default(),
                 )),
+                exploratory_driver: spec.exploratory_driver,
+                exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::exploratory_driver::ExploratoryDriverCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -2563,6 +2603,10 @@ impl ServiceProduct {
                 liveness,
                 liveness_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::tunnel_liveness::LivenessCounters::default(),
+                )),
+                exploratory_driver: spec.exploratory_driver,
+                exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::exploratory_driver::ExploratoryDriverCounters::default(),
                 )),
                 ssu2_handle,
                 destination_tunnels,
@@ -3438,6 +3482,93 @@ impl ServiceProduct {
         Arc::clone(&self.inner.liveness_counters_cell)
     }
 
+    /// Plan 505 — drives the exploratory build driver on the product tick.
+    ///
+    /// The driver names a peer through Plan 491's version-gated selection,
+    /// builds a one-hop exploratory tunnel toward it through the
+    /// **existing** exploratory build path, and records the outcome in the
+    /// peer-profile store. It is the population Plan 504's liveness
+    /// scheduler watches.
+    ///
+    /// No task, no timer, no listener and no socket is added: the driver is
+    /// a plain value the tick advances, beside Plan 504's liveness driver.
+    /// When the operator has not enabled the `[exploratory]` posture the
+    /// product owns no driver at all and this step is inert.
+    fn drive_exploratory_builds(&mut self, now_ms: u64) {
+        // The default posture owns no driver at all, so the tick's
+        // exploratory step costs nothing when the operator has not opted in.
+        let Some(driver) = self.inner.exploratory_driver.as_ref() else {
+            return;
+        };
+        if !driver.enabled() {
+            return;
+        }
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let bridge = i2pr_tunnel::bridge::ShortBuildI2npBridge::new();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => return,
+        };
+        let local_router_hash = self.inner.local_router_hash;
+        let Some(driver) = self.inner.exploratory_driver.as_mut() else {
+            return;
+        };
+        let action = driver.drive(
+            now_ms,
+            &mut self.inner.coordinator,
+            &delivery,
+            &bridge,
+            local_router_hash,
+            &mut rng,
+        );
+        if matches!(
+            action,
+            crate::exploratory_driver::ExploratoryDriverAction::SubmittedOutbound
+                | crate::exploratory_driver::ExploratoryDriverAction::SubmittedInbound
+        ) {
+            tracing::debug!(
+                transition = "exploratory_build_submitted",
+                "an exploratory tunnel build was submitted"
+            );
+        }
+        self.publish_exploratory_driver_counters();
+    }
+
+    /// Plan 505 — records one terminal build outcome with the exploratory
+    /// build driver.
+    ///
+    /// The driver owns the **exploratory** attempts; a destination-scoped
+    /// outcome, an outcome with no in-flight attempt, a wrong direction and a
+    /// mismatched attempt id are all counted as orphans and credited to
+    /// nothing. A **local** condition is counted and produces **no**
+    /// peer-profile write.
+    fn observe_exploratory_outcome(&mut self, outcome: &BuildCoordinatorOutcome) {
+        if let Some(driver) = self.inner.exploratory_driver.as_mut() {
+            driver.observe_outcome(outcome);
+        }
+    }
+
+    /// Plan 505 — refreshes the published exploratory-driver counters.
+    fn publish_exploratory_driver_counters(&self) {
+        let Some(driver) = self.inner.exploratory_driver.as_ref() else {
+            return;
+        };
+        let counters = driver.counters();
+        if let Ok(mut cell) = self.inner.exploratory_driver_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 505 — returns the live exploratory-driver counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection seam so
+    /// a reader observes the running router's exploratory-build posture.
+    pub fn exploratory_driver_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::ExploratoryDriverCounterCell> {
+        Arc::clone(&self.inner.exploratory_driver_counters_cell)
+    }
+
     /// Deterministic pool-advance seam used by manual-clock tests and by the
     /// production poll wrapper above.
     async fn advance_destination_pools_at(
@@ -3616,6 +3747,10 @@ impl ServiceProduct {
         self.retire_orphaned_sam_destinations();
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
+            // Plan 505 — the exploratory driver owns the exploratory
+            // attempts; a destination-scoped outcome is not its outcome and
+            // is counted as an orphan.
+            self.observe_exploratory_outcome(&outcome);
             self.record_destination_build_outcome(&outcome);
             if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } = outcome
             {
@@ -3630,6 +3765,11 @@ impl ServiceProduct {
         // that advances the coordinator's clock and expires its
         // pending builds. No new task, no new timer.
         self.drive_tunnel_liveness(now_ms).await;
+        // Plan 505 — the exploratory build driver is driven on the same
+        // tick, beside the liveness scheduler it feeds. The driver is the
+        // population the scheduler watches: without it the scheduler has no
+        // pair to observe. No new task, no new timer.
+        self.drive_exploratory_builds(now_ms);
         let destination_ids = self.inner.destination_ids.clone();
         for destination_id in destination_ids {
             let Some(snapshot) =
@@ -4244,6 +4384,9 @@ impl ServiceProduct {
                 outcome,
             );
             for outcome in routed.coordinator {
+                // Plan 505 — the exploratory driver records one
+                // peer-level observation for the terminal outcome it owns.
+                self.observe_exploratory_outcome(&outcome);
                 self.record_destination_build_outcome(&outcome);
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
                     &outcome

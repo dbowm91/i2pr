@@ -1015,6 +1015,10 @@ fn build_daemon_graph_inner(
             ntcp2_ingress.delivery.clone(),
             local_router_info_tx,
             local_router_info_rx,
+            // Plan 505: the peer-profile handle the exploratory build
+            // driver selects its peers through and records its
+            // observations into.
+            participation.profiles.clone(),
         )?;
     }
 
@@ -1936,6 +1940,10 @@ impl NetDbParticipation {
         self.routing_table.advance_time(now_ms);
         // Populate the routing table from the daemon's own NetDB.
         self.populate_routing_table(bootstrap, &[]);
+        // Plan 505: feed the peer-profile store from the daemon's own
+        // NetDB, so the exploratory build driver's selection has the
+        // router's real peer population to draw from.
+        self.learn_bootstrap_peers(bootstrap, now_ms);
 
         // The profile maintenance owner runs on the configured cadence under
         // the service's child scope, so the task has an owner and a
@@ -2018,6 +2026,39 @@ impl NetDbParticipation {
         for (peer, from) in suggestions {
             self.routing_table.index_suggested(*peer, from);
         }
+    }
+
+    /// Plan 505 — feeds the peer-profile store from the daemon's own NetDB.
+    ///
+    /// The exploratory build driver selects its peers through this store, so
+    /// the store must hold the router's **real** peer population. The
+    /// records come from the bootstrap snapshot — the same population the
+    /// routing table is populated from — so the driver's selection and its
+    /// peer-material resolver can never disagree about which peer exists.
+    ///
+    /// The snapshot is the bounded one the bootstrap already publishes, and
+    /// the batch is learned with **one** receipt, so a large NetDB cannot
+    /// churn the bounded receipt log.
+    fn learn_bootstrap_peers(
+        &self,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        now_ms: u64,
+    ) {
+        let Some(bootstrap) = bootstrap else {
+            return;
+        };
+        // The snapshot is taken under the bootstrap's lock and the batch is
+        // learned outside it, so the two locks are never held at once.
+        let records = {
+            let Ok(bootstrap) = bootstrap.lock() else {
+                return;
+            };
+            bootstrap.validated_router_info_snapshot()
+        };
+        self.profiles.with(|profiles| {
+            profiles.advance_time(now_ms);
+            profiles.learn_all(records);
+        });
     }
 
     /// Loads the persisted peer-profile projection at startup.
@@ -3405,6 +3446,10 @@ fn register_ssu2_service(
     ntcp2_delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
     local_router_info: tokio::sync::watch::Sender<Option<Arc<Vec<u8>>>>,
     local_router_info_rx: tokio::sync::watch::Receiver<Option<Arc<Vec<u8>>>>,
+    // Plan 505: the daemon's peer-profile handle. The exploratory build
+    // driver selects its peers through it and records its observations back
+    // into it, so the store is no longer empty in a live router.
+    peer_profiles: crate::netdb_participation::PeerParticipationHandle,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, decode_authenticated_router_i2np, floodfill_body_from_message,
@@ -3456,6 +3501,10 @@ fn register_ssu2_service(
             )
         });
     let floodfill_config_path = config.source_path.clone();
+    // Plan 505: the exploratory build posture is copied out of the
+    // configuration here, like every other configuration value the
+    // `'static` service closure below reads.
+    let exploratory_builds = config.exploratory.builds;
     let inspection = Arc::clone(inspection);
     let router_ingress = Arc::new(tokio::sync::Mutex::new(router_ingress));
     builder
@@ -3491,6 +3540,9 @@ fn register_ssu2_service(
                 let addressbook = Arc::clone(&addressbook);
                 let group_lifecycle = group_lifecycle.clone();
                 let shared_service_manager = shared_service_manager.clone();
+                // Plan 505: the closure is `Fn`, so the peer-profile handle
+                // is cloned into the async block rather than consumed.
+                let peer_profiles = peer_profiles.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -3967,6 +4019,27 @@ fn register_ssu2_service(
                                 ),
                             );
                         };
+                        // Plan 505: build the exploratory build driver when
+                        // the operator has enabled the `[exploratory]`
+                        // posture. The driver's peer selection and its
+                        // peer-material resolver both read the daemon's own
+                        // peer-profile store, so they can never disagree
+                        // about which peer exists.
+                        let exploratory_driver = if exploratory_builds {
+                            let profiles = peer_profiles.clone();
+                            let resolver = std::sync::Arc::new(
+                                crate::exploratory_driver::ProfileStorePeerResolver::new(
+                                    profiles.clone(),
+                                ),
+                            );
+                            Some(crate::exploratory_driver::ExploratoryDriver::new(
+                                true,
+                                profiles,
+                                resolver,
+                            ))
+                        } else {
+                            None
+                        };
                         let spec = crate::service_product::ServiceProductSpec {
                             data_dir: data_dir.clone(),
                             ssu2_bind,
@@ -3989,6 +4062,15 @@ fn register_ssu2_service(
                             // Plan 337: the one shared manager, also held
                             // by the I2PControl control state.
                             shared_manager: shared_service_manager.clone(),
+                            // Plan 505: the exploratory build driver, when
+                            // the operator has enabled the `[exploratory]`
+                            // posture. The driver selects its peers through
+                            // the daemon's own peer-profile store and
+                            // records its observations back into it, so the
+                            // store is no longer empty in a live router and
+                            // the Plan 504 liveness scheduler finally has
+                            // a population to watch.
+                            exploratory_driver,
                         };
                         match crate::service_product::ServiceProduct::start_over_existing_daemon(
                             spec,
@@ -4016,6 +4098,15 @@ fn register_ssu2_service(
                                 // liveness posture is observable through the
                                 // inspection plane. The cell carries counts
                                 // only: no peer, tunnel or payload.
+                                // Plan 505: publish the live
+                                // exploratory-build driver counters so the
+                                // running router's exploratory posture is
+                                // observable through the inspection plane.
+                                // The counters carry counts and stable
+                                // reason labels only.
+                                inspection.publish_exploratory_driver_counters(
+                                    product.exploratory_driver_counters_cell(),
+                                );
                                 inspection.publish_liveness_counters(
                                     product.liveness_counters_cell(),
                                 );
