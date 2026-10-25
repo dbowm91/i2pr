@@ -70,12 +70,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use i2pr_client::DestinationTunnelPool;
 use i2pr_netdb::{
     DestinationHash, InsertOutcome, LeaseSet2Store, LookupAction, LookupId, LookupPolicy,
     ReplyPath, ReplyPathError, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
-    router_hash_from_destination, select_floodfill_candidates,
+    VersionGatedFloodfillSelection, router_hash_from_destination, select_floodfill_candidates,
+    select_version_gated_floodfills,
 };
 use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_transport::Deadline;
@@ -634,6 +636,11 @@ pub struct DestinationTunnelCoordinator {
     /// Plan 492 — the Plan 488 diversity rules the ordinary build-hop
     /// selection honours.
     hop_diversity: crate::destination_peers::HopDiversityPolicy,
+    /// Plan 503 — the live owner of the peer-eligibility receipts. The
+    /// coordinator records one receipt per live peer-eligibility decision:
+    /// the tunnel-build gate and the DSM-target gate. A coordinator without
+    /// an owner records nothing.
+    version_eligibility: Option<Arc<crate::version_eligibility::VersionEligibilityOwner>>,
     next_request_id: u64,
     now_ms: u64,
     counters: DestinationTunnelCounters,
@@ -658,10 +665,25 @@ impl DestinationTunnelCoordinator {
                 i2pr_netdb::MAX_PARTICIPATION_TRACKED_PEERS,
             ),
             hop_diversity: crate::destination_peers::HopDiversityPolicy::default(),
+            version_eligibility: None,
             next_request_id: INITIAL_DESTINATION_REQUEST_ID,
             now_ms: 0,
             counters: DestinationTunnelCounters::default(),
         }
+    }
+
+    /// Attaches the live peer-eligibility receipt owner.
+    ///
+    /// Plan 503: the coordinator records one receipt per live
+    /// peer-eligibility decision — the tunnel-build gate and the DSM-target
+    /// gate — so the running router's decisions are observable. A
+    /// coordinator without an owner records nothing.
+    pub fn with_version_eligibility(
+        mut self,
+        owner: Arc<crate::version_eligibility::VersionEligibilityOwner>,
+    ) -> Self {
+        self.version_eligibility = Some(owner);
+        self
     }
 
     /// Returns the authoritative bounded RouterInfo store.
@@ -692,11 +714,36 @@ impl DestinationTunnelCoordinator {
         Vec<crate::destination_peers::DestinationPeerCandidate>,
         crate::destination_peers::CandidateProjectionSummary,
     ) {
-        crate::destination_peers::project_validated_store(
+        let (candidates, summary) = crate::destination_peers::project_validated_store(
             &self.store,
             self.hop_participation.counts(),
             &self.hop_diversity,
-        )
+        );
+        // Plan 503: the tunnel-build gate is a live peer-eligibility
+        // decision, so it leaves a receipt. The receipt counts the version
+        // refusals only; the projection's other refusal reasons are counted
+        // in the summary.
+        self.record_version_receipt(
+            crate::version_eligibility::VersionEligibilityReceipt::tunnel_build_peer(
+                &summary,
+                candidates.len(),
+            ),
+        );
+        (candidates, summary)
+    }
+
+    /// Records one peer-eligibility receipt when the live owner is attached.
+    ///
+    /// Plan 503. A coordinator without an owner records nothing: the
+    /// controlled helper and the integration lanes construct one without the
+    /// owner and are unaffected.
+    fn record_version_receipt(
+        &self,
+        receipt: crate::version_eligibility::VersionEligibilityReceipt,
+    ) {
+        if let Some(owner) = &self.version_eligibility {
+            owner.record(receipt);
+        }
     }
 
     /// Records one build-hop selection against the bounded per-peer
@@ -917,6 +964,55 @@ impl DestinationTunnelCoordinator {
         let target_hash = router_hash_from_destination(*target);
         select_floodfill_candidates(&self.store, &target_hash, routing_key, &[], &self.policy)
             .hashes()
+    }
+
+    /// Returns the version-gated floodfill candidates for the supplied
+    /// destination/routing key through the authoritative store.
+    ///
+    /// Plan 503: a floodfill that publishes no API version, an uncomparable
+    /// API version, or an API version below the DSM floor is **never** a DSM
+    /// target. Every refusal is counted by reason, and the decision leaves a
+    /// receipt. The selection is the same shape as
+    /// [`Self::candidate_hashes`] — the same routing key, the same target
+    /// exclusion, the same policy ceiling — with the floor applied.
+    pub fn version_gated_candidate_hashes(
+        &self,
+        target: &DestinationHash,
+        routing_key: &RouterHash,
+    ) -> VersionGatedFloodfillSelection {
+        let target_hash = router_hash_from_destination(*target);
+        let selection =
+            select_version_gated_floodfills(&self.store, routing_key, &[target_hash], &self.policy);
+        self.record_dsm_receipt(&selection);
+        selection
+    }
+
+    /// Returns the version-gated floodfill candidates for the router's own
+    /// RouterInfo publication.
+    ///
+    /// Plan 503: the creator RouterInfo publication is a `DatabaseStore`, so
+    /// the DSM floor applies to it exactly as it applies to a LeaseSet2
+    /// publication. Our own hash is excluded and is the routing key, which
+    /// is the shape the publication path has always used.
+    pub fn version_gated_publication_floodfills(
+        &self,
+        local_hash: &RouterHash,
+    ) -> VersionGatedFloodfillSelection {
+        let selection =
+            select_version_gated_floodfills(&self.store, local_hash, &[*local_hash], &self.policy);
+        self.record_dsm_receipt(&selection);
+        selection
+    }
+
+    /// Records the DSM-target receipt for one gated selection.
+    fn record_dsm_receipt(&self, selection: &VersionGatedFloodfillSelection) {
+        self.record_version_receipt(
+            crate::version_eligibility::VersionEligibilityReceipt::dsm_target(
+                selection.examined(),
+                selection.accepted(),
+                selection.refusals(),
+            ),
+        );
     }
 
     /// Returns a privacy-safe summary of the cached remote LeaseSet2,

@@ -1064,6 +1064,10 @@ struct ProductInner {
     coordinator: ExploratoryBuildCoordinator,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
+    /// Plan 503 — the live owner of the peer-eligibility receipts. The
+    /// destination coordinator records one receipt per live
+    /// peer-eligibility decision through this owner.
+    version_eligibility: Arc<crate::version_eligibility::VersionEligibilityOwner>,
     destination_ids: Vec<i2pr_client::DestinationId>,
     destination_runtimes: std::collections::HashMap<
         i2pr_client::DestinationId,
@@ -2082,10 +2086,21 @@ impl ServiceProduct {
         // exploratory coordinator, one authoritative NetDB store —
         // services consume typed handles/material, never owned
         // transports (Plan 212 §4).
-        let destination_tunnels = Arc::new(Mutex::new(DestinationTunnelCoordinator::new(
-            LookupPolicy::default(),
-            RouterInfoStoreConfig::default(),
-        )));
+        // Plan 503: the live owner of the peer-eligibility receipts. The
+        // destination coordinator records one receipt per live
+        // peer-eligibility decision through it, so the running router's
+        // decisions are observable.
+        let version_eligibility =
+            Arc::new(crate::version_eligibility::VersionEligibilityOwner::new(
+                crate::version_eligibility::MAX_VERSION_ELIGIBILITY_RECEIPTS,
+            ));
+        let destination_tunnels = Arc::new(Mutex::new(
+            DestinationTunnelCoordinator::new(
+                LookupPolicy::default(),
+                RouterInfoStoreConfig::default(),
+            )
+            .with_version_eligibility(Arc::clone(&version_eligibility)),
+        ));
         let mut coordinator =
             ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
                 ExploratoryPoolConfig::balanced(),
@@ -2269,6 +2284,7 @@ impl ServiceProduct {
                 coordinator,
                 ssu2_handle,
                 destination_tunnels,
+                version_eligibility,
                 destination_ids,
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
@@ -2344,10 +2360,18 @@ impl ServiceProduct {
                 )));
             }
         };
-        let destination_tunnels = Arc::new(Mutex::new(DestinationTunnelCoordinator::new(
-            LookupPolicy::default(),
-            store_config,
-        )));
+        // Plan 503: the live owner of the peer-eligibility receipts. The
+        // destination coordinator records one receipt per live
+        // peer-eligibility decision through it, so the running router's
+        // decisions are observable.
+        let version_eligibility =
+            Arc::new(crate::version_eligibility::VersionEligibilityOwner::new(
+                crate::version_eligibility::MAX_VERSION_ELIGIBILITY_RECEIPTS,
+            ));
+        let destination_tunnels = Arc::new(Mutex::new(
+            DestinationTunnelCoordinator::new(LookupPolicy::default(), store_config)
+                .with_version_eligibility(Arc::clone(&version_eligibility)),
+        ));
         let mut seed_failed = false;
         {
             let mut guard = destination_tunnels.lock().await;
@@ -2502,6 +2526,7 @@ impl ServiceProduct {
                 coordinator,
                 ssu2_handle,
                 destination_tunnels,
+                version_eligibility,
                 destination_ids,
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
@@ -2622,6 +2647,17 @@ impl ServiceProduct {
     /// dispatch path. Values contain no ids, peer data, or payload details.
     pub fn inbound_traffic_snapshot(&self) -> InboundTrafficSnapshot {
         self.inner.inbound_traffic
+    }
+
+    /// Returns the live peer-eligibility receipt owner (Plan 503).
+    ///
+    /// The destination coordinator records one receipt per live
+    /// peer-eligibility decision — the tunnel-build gate and the DSM-target
+    /// gate — so a caller that holds this handle can read the running
+    /// router's decisions. The receipts carry counts and stable reason
+    /// labels only: no peer hash, address, key, version string, or payload.
+    pub fn version_eligibility(&self) -> Arc<crate::version_eligibility::VersionEligibilityOwner> {
+        Arc::clone(&self.inner.version_eligibility)
     }
 
     /// Returns the manager's typed inbound-orphan-receive count
@@ -6510,27 +6546,25 @@ async fn publish_creator_router_info(
         return;
     };
     let our_router_hash = i2pr_netdb::router_hash_from_proto_hash(local_hash);
+    // Plan 503: the creator RouterInfo publication is a `DatabaseStore`, so
+    // the API-version DSM floor applies to it exactly as it applies to a
+    // LeaseSet2 publication. A floodfill that publishes no version, an
+    // uncomparable version, or a version below the floor is never a target;
+    // every refusal is counted by reason and leaves a receipt.
     let floodfills = {
         let guard = destination_tunnels.lock().await;
-        let mut scored: Vec<([u8; 32], Hash)> = Vec::new();
-        for record in guard.store().floodfill_advertisers() {
-            let key = record.key();
-            if key.as_hash() == &local_hash {
-                continue;
-            }
-            scored.push((
-                i2pr_netdb::xor_distance(&key, &our_router_hash),
-                Hash::from_bytes(*key.as_bytes()),
-            ));
-        }
-        scored.sort_by_key(|entry| entry.0);
-        scored.truncate(CREATOR_RI_PUBLICATION_FLOODFILLS);
-        scored.into_iter().map(|(_, hash)| hash).collect::<Vec<_>>()
+        let selection = guard.version_gated_publication_floodfills(&our_router_hash);
+        selection
+            .targets()
+            .iter()
+            .take(CREATOR_RI_PUBLICATION_FLOODFILLS)
+            .map(|hash| Hash::from_bytes(*hash.as_bytes()))
+            .collect::<Vec<_>>()
     };
     if floodfills.is_empty() {
         tracing::debug!(
             transition = "creator_ri_publication_skipped",
-            "no known floodfill for creator RouterInfo publication",
+            "no eligible floodfill for creator RouterInfo publication",
         );
         return;
     }
@@ -8410,9 +8444,12 @@ async fn publish_service_ls2_for_service(
         let coord_guard = destination_tunnels.lock().await;
         let target = DestinationHash::from_hash(store_message.key);
         let routing_key = i2pr_netdb::router_hash_from_destination(target);
-        let mut candidates = coord_guard.candidate_hashes(&target, &routing_key);
-        candidates = bounded_publication_floodfills(candidates);
-        candidates
+        // Plan 503: the DSM floor applies to the LeaseSet2 publication's
+        // targets. A floodfill that publishes no version, an uncomparable
+        // version, or a version below the floor is never a target; every
+        // refusal is counted by reason and leaves a receipt.
+        let selection = coord_guard.version_gated_candidate_hashes(&target, &routing_key);
+        bounded_publication_floodfills(selection.targets().to_vec())
     };
     let floodfill = match floodfills.first().copied() {
         Some(floodfill) => floodfill,

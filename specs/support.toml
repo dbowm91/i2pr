@@ -466,6 +466,9 @@ plan_491_status = "passed-api-version-floors-and-peer-eligibility"
 plan_492_plan_of_record = "plans/implementation/network-participation/492-transit-participation-posture.md"
 plan_492_closure = "plans/closure/network-participation/492-status.md"
 plan_492_status = "passed-transit-participation-posture"
+plan_503_plan_of_record = "plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md"
+plan_503_closure = "plans/closure/network-participation/503-status.md"
+plan_503_status = "registered-live-dsm-version-gate-and-peer-eligibility-receipt"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -913,6 +916,29 @@ evidence = [
     "tests/integration/network-participation/evidence/plan491/result.json",
     "plans/implementation/network-participation/491-api-version-floors-and-peer-eligibility.md",
     "plans/closure/network-participation/491-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.api-version-floors-live-dsm-gate"
+protocol = "reseed-netdb"
+structure = "live-dsm-publication-api-version-gate-with-counted-refusals-and-live-peer-eligibility-receipts"
+scope = "required"
+status = "experimental"
+notes = "Plan 491's second API-version obligation -- *minimum floodfill peers will send DSM to* -- was enforced nowhere in production. The router's two live `DatabaseStore` sends selected floodfills by XOR distance alone: the creator RouterInfo publication and the service LeaseSet2 publication. The typed, counted DSM refusal Plan 491 built had no production caller, because the coordinator that enforces it is never composed. The router therefore published its RouterInfo and its LeaseSet2 to floodfills that publish no API version, an uncomparable API version, or an API version below the floor -- the under-compliance Plan 491 exists to prevent. Plan 503 puts the floor on both live DSM paths through one shared, runtime-neutral, version-gated floodfill selection that returns the eligible targets and the counted refusals; the closed enforcement point and the live paths are now one implementation. A floodfill that publishes no version, an uncomparable version, or a version below the floor is never a DSM target, every refusal is counted by reason (unknown-version, uncomparable-version, below-floor), and an empty eligible set fails closed through the existing typed rejection rather than publishing anyway. Plan 503 also makes Plan 491's peer-eligibility receipt a live product: the live tunnel-build gate and the live DSM gate each record a receipt into a bounded live-owned log published through the daemon's existing inspection seam, so the running router's decisions are observable. The receipts carry counts and stable labels only -- no peer hash, no address, no key, no version string. The declared `router.version` is unchanged, its Plan 285 pinning test still passes, the floors remain derived specification constants, and no configuration key can lower them. The surface is internal and non-advertised: nothing here changes `caps`, the published RouterInfo, or any advertisement. Plan 503 adds NO participation capability. It is **not** a stock-peer qualification and claims no interop evidence: the router's lookup-target selection is deliberately NOT gated (a `DatabaseLookup` is not a DSM and is not one of Plan 491's two obligations), and that gap is recorded as an open finding."
+evidence = [
+    "crates/i2pr-netdb/src/lookup_policy.rs",
+    "crates/i2pr-netdb/src/publication.rs",
+    "crates/i2pr-netdb/src/version.rs",
+    "crates/i2pr-daemon/src/version_eligibility.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/src/destination_peers.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/version_eligibility_live.rs",
+    "crates/i2pr-daemon/tests/version_floor_boundary.rs",
+    "plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md",
+    "plans/closure/network-participation/503-status.md",
 ]
 advertised = false
 

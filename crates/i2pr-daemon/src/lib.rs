@@ -4000,7 +4000,18 @@ fn register_ssu2_service(
                         )
                         .await
                         {
-                            Ok(product) => NormalSsu2Owner::Groups(Box::new(product)),
+                            Ok(product) => {
+                                // Plan 503: publish the live peer-eligibility
+                                // receipt owner so the running router's
+                                // peer-eligibility decisions are observable
+                                // through the inspection plane. The owner
+                                // carries counts and stable reason labels
+                                // only.
+                                inspection.publish_version_eligibility(
+                                    product.version_eligibility(),
+                                );
+                                NormalSsu2Owner::Groups(Box::new(product))
+                            }
                             Err(error) => {
                                 let detail = i2pr_core::HealthDetail::new(format!(
                                     "Destination-group product failed before readiness: {error}"
