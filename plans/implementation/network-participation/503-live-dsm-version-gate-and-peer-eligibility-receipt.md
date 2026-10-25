@@ -385,15 +385,49 @@ owner; the owner's own lock is held only for the length of a clone.
 
 **The static guard** (`crates/i2pr-daemon/tests/version_floor_boundary.rs`)
 gains rules, each with an **inverted probe** and the existing benign probe
-retained:
+retained.
+
+The rules that matter are **structural**: they assert that a *named
+function's own body* contains the required **call** — matched with its open
+parenthesis, so a dead helper, a type name, an unreachable branch, a comment
+or a test block does not satisfy them. A whole-file token search would not
+have caught Plan 491's gap.
 
 1. the live creator-RouterInfo publication path consults the gated
-   selection;
-2. the live LeaseSet2 publication path consults the gated selection;
-3. the live build path records a peer-eligibility receipt;
-4. the receipt type still carries no peer identity — **retargeted** from
+   selection — the body of `publish_creator_router_info` must contain
+   `version_gated_publication_floodfills(`;
+2. the live LeaseSet2 publication path consults the gated selection — the
+   body of `publish_service_ls2_for_service` must contain
+   `version_gated_candidate_hashes(`;
+3. **neither** of those bodies may contain `.candidate_hashes(` — the
+   **leading dot** is the discriminator, because the gated call site reads
+   `.version_gated_candidate_hashes(` and therefore does not contain
+   `.candidate_hashes(`. The discriminator is asserted by its own test;
+4. the live build path records a peer-eligibility receipt — the body of
+   `destination_peer_candidates` must contain `tunnel_build_peer(`;
+5. the live DSM gates record a DSM receipt — the bodies of
+   `version_gated_candidate_hashes` and `version_gated_publication_floodfills`
+   must each call `record_dsm_receipt(`, **and** the recorder's own body
+   must contain `dsm_target(`. This is **stronger** than requiring the
+   literal `dsm_target(` inside each gated method: the recorder's receipt
+   *kind* is pinned as well as the call, so a recorder switched to the
+   tunnel-build receipt is caught — a single-frame check would not catch it.
+   The implementation keeps the shared recorder rather than duplicating the
+   receipt construction into both methods;
+6. the receipt type still carries no peer identity — **retargeted** from
    `netdb_participation.rs` to the new module, with the probe unchanged in
-   substance.
+   substance;
+7. the publication coordinator must consult the **shared gated selection**,
+   **and** the shared selection must consult the gate itself. Plan 503's own
+   refactor moved `dsm_target_eligibility` out of `publication.rs` into
+   `lookup_policy.rs`; the rule is **strengthened** into two halves rather
+   than relaxed, so it now pins *where* the enforcement lives.
+
+The guard's own extractor is validated: the body scanner is string-aware (a
+brace inside a string or character literal does not change the nesting
+depth, and a lifetime is not a character literal), it anchors on the
+function **definition** rather than a call site, and it yields nothing for
+an absent function so every caller fails closed.
 
 **The out-of-crate lane** (`crates/i2pr-daemon/tests/version_eligibility_live.rs`)
 drives the **public** daemon API (`DestinationTunnelCoordinator`) and proves:
@@ -407,9 +441,15 @@ drives the **public** daemon API (`DestinationTunnelCoordinator`) and proves:
   counts are the decision's own counts, and whose
   `examined == accepted + refused` — **scoped to the DSM gate**, where the
   identity is exact (see WP4);
+- the build gate's receipt carries the projection's own counts, and
+  **provably does not** satisfy that identity — asserted, so a future
+  change that made it true would be noticed;
 - the receipt and the rendered log carry **no** peer hash, address, key or
   version string;
-- the receipt log is **bounded** — at the cap the oldest entry is evicted.
+- the receipt log is **bounded** — at the cap the oldest entry is evicted,
+  and a cap of zero records nothing;
+- a coordinator without an owner records nothing, while reaching the same
+  targets.
 
 ### WP7 — Plan 491 F3's disposition
 
