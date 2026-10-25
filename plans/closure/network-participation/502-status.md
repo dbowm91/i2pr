@@ -316,10 +316,11 @@ The isolated tree was deleted afterwards.
 
 ### The routine floor
 
-Two floor runs, both on the closing tree's code, and the first one is
-recorded here because **it found a real defect**.
+Three floor runs. The first two are recorded here because the first
+**found a real defect** and the second was **stopped deliberately**, not
+because it failed.
 
-**Run 1** — tree `de796b73` + `cb30f55c` — **99 PASS / 1 FAIL**:
+**Run A** — tree `de796b73` + `cb30f55c` — **99 PASS / 1 FAIL**:
 
 ```text
 RESULT cargo-test-workspace PASS (1843s)
@@ -341,7 +342,16 @@ so `RUSTDOCFLAGS="-D warnings" cargo doc` could not resolve it. Fixed in
 crate-private, because it is an internal composition seam and not public
 API.
 
-**Run 2** — tree `596ba7a8` (the closing tree) — **100 PASS / 0 FAIL**,
+**Run B** — tree `596ba7a8` — **stopped deliberately**, part-way through.
+Reviewing the closing tree found that Plan 502 had **falsified a set of
+statements** across the source comments, the normative spec reference,
+`specs/CONFORMANCE.md` and the architecture deep-dives — each of which said
+the product cannot relay. Those were corrected in `75b28e26`, and the
+closure record was written in `3cc23676`. Stopping was the right call: the
+floor cannot certify a tree whose documentation describes a different
+product.
+
+**Run C** — tree `3cc23676` (the closing tree) — **100 PASS / 0 FAIL**,
 every step of the `AGENTS.md` routine floor:
 
 | Step | Outcome |
@@ -350,7 +360,7 @@ every step of the `AGENTS.md` routine floor:
 | `cargo check --locked --workspace --all-targets` | PASS |
 | `cargo build --locked -p i2pr-app-fixture -p i2pr-apphost -p i2pr-appd -p i2pr-appctl` | PASS |
 | the static-fixture build / copy / plain rebuild | PASS |
-| `cargo test --locked --workspace --all-targets -- --test-threads=1` | PASS (1843 s) |
+| `cargo test --locked --workspace --all-targets -- --test-threads=1` | PASS (1849 s) |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | PASS |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps` | PASS |
 | `cargo test --locked --workspace --doc` | PASS |
@@ -379,8 +389,8 @@ every step of the `AGENTS.md` routine floor:
 | `check-ntcp2-vectors` / `check-ssu2-vectors` / `check-i2cp-vectors` | PASS |
 | `check-ntcp2-interoperability` | PASS |
 | `check-constrained-host-lane-boundary` | PASS |
-| `check-m11-transit-boundaries` / `-transit-qualification-evidence` | PASS |
-| `check-m11-transit-boundaries --self-test` | PASS |
+| `check-m11-transit-boundaries` (+ `--self-test`) | PASS |
+| `check-m11-transit-qualification-evidence` | PASS |
 | `check-els2-type11-transcript-boundary` / `-els2-live-lane-evidence` | PASS |
 | `check-encrypted-service-consumer-caller` | PASS |
 | `check-outproxy-request-path` / `-outproxy-wire-lane-evidence` | PASS |
@@ -395,10 +405,19 @@ every step of the `AGENTS.md` routine floor:
 | `check-m12-floodfill-boundaries --self-test` | PASS |
 | the NTCP2 harness tests | PASS |
 | the Plan 488 / 489 / 490 / 491 / 492 / 496 / 497 / 498 lanes and their evidence-determinism checks | PASS |
+| **the Plan 502 lane, its unit tests and the boundary self-test** | PASS |
 | `cargo deny check advisories bans sources` | PASS |
 
 **All local.** No CI run was performed for this plan; the floor is the local
 evidence and is labelled as such.
+
+The floor ran on tree `3cc23676`. This record's floor history was corrected
+afterwards, to name the three runs that actually happened rather than two,
+and the floor steps that read `plans/` — `check-global-plan-number-uniqueness`,
+the 51 planning tests, `check-tooling-inventory`, `check-m11-transit-boundaries`
+and the documentation link check — were re-run on the corrected tree and all
+passed. A prose correction inside this record cannot change a compiled
+artefact, so no other floor step is affected.
 
 ## Invariant review
 
