@@ -21,11 +21,36 @@
 //! 5. **The receipts carry counts, not identities.** A receipt that could
 //!    name a peer is not a receipt.
 //!
+//! Plan 503 discharges the finding Plan 491 left open: the second obligation
+//! — the minimum floodfill version for DSM — was enforced **nowhere in the
+//! two live `DatabaseStore` sends**, which selected floodfills by XOR
+//! distance alone. Plan 503 puts the floor on both live DSM paths and makes
+//! the peer-eligibility receipt a live product, and the guard gains the
+//! structural rules that would have caught that gap:
+//!
+//! 6. **The live DSM publication paths consult the gated selection.** The
+//!    creator-RouterInfo publication and the LeaseSet2 publication must ask
+//!    the shared gated selection for their DSM targets, and neither may fall
+//!    back to the ungated, distance-only selection.
+//! 7. **The live gates record their decisions.** The tunnel-build gate and
+//!    the two DSM gates must record a receipt, so a refusal is observable
+//!    and never a silent skip.
+//! 8. **The gate lives in one place.** The publication coordinator selects
+//!    through the shared gated selection and the gate itself lives in the
+//!    selection policy, so a refactor cannot move the enforcement out of the
+//!    shared path without tripping the guard.
+//!
 //! The guard is deliberately **fail-closed**: it strips comments before
 //! matching (so a doc comment that merely names a construct is not a
 //! violation), it excludes `#[cfg(test)]` blocks, and every rule carries its
 //! own **inverted probe** — a synthetic violating source must be reported.
 //! If a rule ever stops detecting its violation, its probe fails.
+//!
+//! Rules 1, 2, 4 and 5 are **textual**: they assert that a token does or does
+//! not appear anywhere in the production code view. Rules 3, 6, 7 and 8 are
+//! **structural**: they assert that a *named function's own body* contains
+//! the required call, so a token that appears in a sibling function, in a
+//! comment, or in a test block does not satisfy them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -216,6 +241,139 @@ fn code_view(source: &str) -> String {
     strip_cfg_test_blocks(&strip_comments(source))
 }
 
+/// Returns the byte range of the brace-balanced block that opens at or after
+/// `start`, as `(open, close)`; `close` is one past the closing brace.
+///
+/// The scan is **string-aware**: a brace inside a string literal or inside a
+/// character literal does not change the nesting depth, so a body that holds
+/// `"}"` does not end the block early. A lifetime (`'a`) is not a character
+/// literal and is scanned as ordinary text.
+fn brace_balanced_block(code: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let open = code[start..].find('{')? + start;
+    let mut depth = 0usize;
+    let mut cursor = open;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                cursor = skip_string_literal(bytes, cursor);
+                continue;
+            }
+            b'\'' => {
+                if let Some(end) = skip_char_literal(bytes, cursor) {
+                    cursor = end;
+                    continue;
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, cursor + 1));
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+/// Returns the offset just past the string literal that starts at `start`.
+fn skip_string_literal(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            b'"' => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    cursor
+}
+
+/// Returns the offset just past the character literal that starts at `start`,
+/// or `None` when the quote opens a lifetime instead.
+fn skip_char_literal(bytes: &[u8], start: usize) -> Option<usize> {
+    let is_char_literal = match bytes.get(start + 1) {
+        Some(b'\\') => true,
+        Some(_) => bytes.get(start + 2) == Some(&b'\''),
+        None => false,
+    };
+    if !is_char_literal {
+        return None;
+    }
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            b'\'' => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    Some(cursor)
+}
+
+/// Returns the body of the function whose **definition** is anchored at
+/// `fn <name>`.
+///
+/// The anchor is the definition and never a call site: the needle carries the
+/// `fn` keyword, and the character that follows it must not continue an
+/// identifier, so `fn candidate_hashes` never matches
+/// `fn version_gated_candidate_hashes`.
+///
+/// The body is the text between the function's own braces. A function that is
+/// not present yields `None`, so every caller fails closed.
+fn function_body<'a>(code: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("fn {name}");
+    let mut offset = 0usize;
+    while let Some(position) = code[offset..].find(needle.as_str()) {
+        let start = offset + position;
+        let after = start + needle.len();
+        offset = after;
+        let continues_identifier = code[after..]
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_alphanumeric() || character == '_');
+        if continues_identifier {
+            continue;
+        }
+        let (open, close) = brace_balanced_block(code, after)?;
+        return Some(&code[open + 1..close - 1]);
+    }
+    None
+}
+
+/// Rule 6: the body of `fn <name>` must contain `token`.
+///
+/// The token is matched with its open parenthesis, so the rule asserts a
+/// **call** and not a bare identifier: a dead helper, a type name, or an
+/// unreachable branch does not satisfy it.
+fn check_body_contains(source: &str, name: &str, token: &str) -> Option<String> {
+    let code = code_view(source);
+    let Some(body) = function_body(&code, name) else {
+        return Some(format!("`fn {name}` must exist in the production surface"));
+    };
+    if body.contains(token) {
+        None
+    } else {
+        Some(format!("`fn {name}` must contain `{token}`"))
+    }
+}
+
+/// Rule 6: the body of `fn <name>` must not contain `token`.
+fn check_body_avoids(source: &str, name: &str, token: &str) -> Option<String> {
+    let code = code_view(source);
+    let Some(body) = function_body(&code, name) else {
+        return Some(format!("`fn {name}` must exist in the production surface"));
+    };
+    if body.contains(token) {
+        Some(format!("`fn {name}` must not contain `{token}`"))
+    } else {
+        None
+    }
+}
+
 /// Rule 1: the declared version is not edited.
 fn check_declared_version(source: &str) -> Option<String> {
     let code = code_view(source);
@@ -265,32 +423,18 @@ fn check_no_config_knob(source: &str) -> Option<String> {
 }
 
 /// Rule 5: a receipt may not carry a peer identity.
+///
+/// The receipt type moved to `version_eligibility` in Plan 503; the rule's
+/// substance is unchanged — only the module that owns the type moved.
 fn check_receipt_has_no_identity(source: &str) -> Option<String> {
     let code = code_view(source);
     let Some(start) = code.find("pub struct VersionEligibilityReceipt") else {
         return Some("the version receipt type must exist".to_owned());
     };
-    let Some(open) = code[start..].find('{') else {
+    let Some((open, close)) = brace_balanced_block(&code, start) else {
         return Some("the version receipt type must have a body".to_owned());
     };
-    let body_start = start + open;
-    let bytes = code.as_bytes();
-    let mut depth = 0usize;
-    let mut cursor = body_start;
-    while cursor < bytes.len() {
-        match bytes[cursor] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-        cursor += 1;
-    }
-    let body = &code[body_start..cursor];
+    let body = &code[open + 1..close - 1];
     for token in RECEIPT_IDENTITY_TOKENS {
         if body.contains(token) {
             return Some(format!("a receipt may not carry a peer identity ({token})"));
@@ -329,6 +473,16 @@ fn the_tunnel_build_enforcement_point_consults_the_gate() {
     );
 }
 
+/// Plan 491 rule 3, plus Plan 503's rule 8: the gate must live in the shared
+/// selection, and the shared selection must consult the gate.
+///
+/// Plan 503 refactored `PublicationCoordinator::nearest_eligible_floodfills`
+/// onto the shared gated selection, so the gate call no longer sits in
+/// `publication.rs`. The rule is **retargeted, not weakened**: it is now two
+/// halves that pin *where* the enforcement lives — the coordinator must
+/// consult `select_version_gated_floodfills`, and the selection policy must
+/// consult `dsm_target_eligibility` — so a later refactor cannot move the
+/// gate out of the shared selection without tripping the guard.
 #[test]
 fn the_dsm_enforcement_points_consult_the_gate() {
     let daemon = source_of("crates/i2pr-daemon/src/netdb_tunnels.rs");
@@ -339,9 +493,23 @@ fn the_dsm_enforcement_points_consult_the_gate() {
     );
     let publication = source_of("crates/i2pr-netdb/src/publication.rs");
     assert_eq!(
-        check_calls_gate(&publication, "dsm_target_eligibility"),
+        check_body_contains(
+            &publication,
+            "nearest_eligible_floodfills",
+            "select_version_gated_floodfills("
+        ),
         None,
-        "the publication target selection must consult the DSM gate"
+        "the publication target selection must consult the shared gated selection"
+    );
+    let policy = source_of("crates/i2pr-netdb/src/lookup_policy.rs");
+    assert_eq!(
+        check_body_contains(
+            &policy,
+            "select_version_gated_floodfills",
+            "dsm_target_eligibility("
+        ),
+        None,
+        "the shared gated selection must consult the DSM gate"
     );
 }
 
@@ -365,13 +533,113 @@ fn no_configuration_key_can_lower_a_floor() {
     );
 }
 
+/// Plan 491 rule 5. Plan 503 moved the receipt type out of
+/// `netdb_participation` into its own `version_eligibility` module; the rule
+/// and its inverted probe are unchanged.
 #[test]
 fn the_version_receipt_carries_no_peer_identity() {
-    let source = source_of("crates/i2pr-daemon/src/netdb_participation.rs");
+    let source = source_of("crates/i2pr-daemon/src/version_eligibility.rs");
     assert_eq!(
         check_receipt_has_no_identity(&source),
         None,
         "a receipt that could name a peer is not a receipt"
+    );
+}
+
+/// Plan 503 rule 6, first half: the live creator-RouterInfo publication path
+/// must ask the shared gated selection for its DSM targets.
+///
+/// This is the rule that would have caught Plan 491's gap: before Plan 503
+/// the live publication selected floodfills by XOR distance alone, so a peer
+/// below the DSM floor was still a DSM target.
+#[test]
+fn the_live_creator_router_info_publication_consults_the_gated_selection() {
+    let source = source_of("crates/i2pr-daemon/src/service_product.rs");
+    assert_eq!(
+        check_body_contains(
+            &source,
+            "publish_creator_router_info",
+            "version_gated_publication_floodfills("
+        ),
+        None,
+        "the live creator-RouterInfo publication must consult the gated selection"
+    );
+}
+
+/// Plan 503 rule 6, second half: the live LeaseSet2 publication path must ask
+/// the shared gated selection for its DSM targets.
+#[test]
+fn the_live_service_lease_set_publication_consults_the_gated_selection() {
+    let source = source_of("crates/i2pr-daemon/src/service_product.rs");
+    assert_eq!(
+        check_body_contains(
+            &source,
+            "publish_service_ls2_for_service",
+            "version_gated_candidate_hashes("
+        ),
+        None,
+        "the live LeaseSet2 publication must consult the gated selection"
+    );
+}
+
+/// Plan 503 rule 6, third half: neither live publication path may use the
+/// ungated, distance-only selection.
+///
+/// The discriminator is the **leading dot**. The gated call site reads
+/// `coord_guard.version_gated_candidate_hashes(`, so the text
+/// `.version_gated_candidate_hashes(` does **not** contain the token
+/// `.candidate_hashes(` — the character before `candidate_hashes` is the
+/// `_` of `version_gated_`, not a `.`. The ungated call site reads
+/// `coord_guard.candidate_hashes(`, which does contain it. The dot is what
+/// separates the two, so the token is matched with the dot.
+#[test]
+fn the_live_publication_paths_do_not_use_the_ungated_selection() {
+    let source = source_of("crates/i2pr-daemon/src/service_product.rs");
+    for function in [
+        "publish_creator_router_info",
+        "publish_service_ls2_for_service",
+    ] {
+        assert_eq!(
+            check_body_avoids(&source, function, ".candidate_hashes("),
+            None,
+            "`fn {function}` must not use the ungated distance-only selection"
+        );
+    }
+}
+
+/// Plan 503 rule 7: the live gates record their decisions, so a refusal is
+/// observable and never a silent skip.
+///
+/// The tunnel-build gate constructs its receipt in place, so its own body
+/// must contain the receipt constructor. The two DSM gates delegate the
+/// construction to the crate-private `record_dsm_receipt` helper — that is
+/// the landed implementation's shape — so each DSM gate's body must call the
+/// recorder and the recorder's body must build a **DSM-target** receipt.
+/// Together the three assertions pin "this gate records a DSM-target
+/// receipt" as tightly as a single-frame check would, and they also fail if
+/// the recorder were changed to record a different gate's receipt.
+#[test]
+fn the_live_gates_record_their_decisions() {
+    let source = source_of("crates/i2pr-daemon/src/destination_tunnels.rs");
+    assert_eq!(
+        check_body_contains(&source, "destination_peer_candidates", "tunnel_build_peer("),
+        None,
+        "the live tunnel-build gate must record its receipt"
+    );
+    for function in [
+        "version_gated_candidate_hashes",
+        "version_gated_publication_floodfills",
+    ] {
+        assert_eq!(
+            check_body_contains(&source, function, "record_dsm_receipt("),
+            None,
+            "`fn {function}` must record its receipt"
+        );
+    }
+    assert_eq!(
+        check_body_contains(&source, "record_dsm_receipt", "dsm_target("),
+        None,
+        "the DSM recorder must record a DSM-target receipt"
     );
 }
 
@@ -492,5 +760,277 @@ fn project(record: &ValidatedRouterInfo) -> Option<Candidate> {
         check_calls_gate(gated, "tunnel_peer_eligibility"),
         None,
         "the production gate call must be found"
+    );
+}
+
+/// The inverted probe for rule 8, first half: a publication coordinator that
+/// does not consult the shared gated selection must be reported.
+#[test]
+fn the_guard_reports_a_publication_coordinator_without_the_shared_selection() {
+    let violating = "\
+fn nearest_eligible_floodfills(&self, store: &RouterInfoStore) -> FloodfillTargetSelection {
+    let mut targets = Vec::new();
+    for candidate in store.floodfill_advertisers() {
+        targets.push(candidate.key);
+    }
+    FloodfillTargetSelection::default()
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "nearest_eligible_floodfills",
+            "select_version_gated_floodfills("
+        )
+        .is_some(),
+        "a publication coordinator that bypasses the shared selection must be reported"
+    );
+}
+
+/// The inverted probe for rule 8, second half: a selection policy that does
+/// not consult the DSM gate must be reported.
+#[test]
+fn the_guard_reports_a_selection_policy_without_the_gate() {
+    let violating = "\
+fn select_version_gated_floodfills(
+    store: &RouterInfoStore,
+    routing_key: &RouterHash,
+    excluded: &[RouterHash],
+    policy: &LookupPolicy,
+) -> VersionGatedFloodfillSelection {
+    let candidates = nearest_floodfill_candidates(store, routing_key, excluded, policy);
+    VersionGatedFloodfillSelection::default()
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "select_version_gated_floodfills",
+            "dsm_target_eligibility("
+        )
+        .is_some(),
+        "a shared selection that ignores the DSM gate must be reported"
+    );
+}
+
+/// The inverted probe for rule 6, first half: a live creator-RouterInfo
+/// publication that does not consult the gated selection must be reported.
+#[test]
+fn the_guard_reports_a_creator_publication_without_the_gated_selection() {
+    let violating = "\
+async fn publish_creator_router_info(&mut self) -> Result<(), PublishError> {
+    let targets = self.nearest_floodfills();
+    self.send(targets).await
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "publish_creator_router_info",
+            "version_gated_publication_floodfills("
+        )
+        .is_some(),
+        "a creator-RouterInfo publication that bypasses the gate must be reported"
+    );
+}
+
+/// The inverted probe for rule 6, second half: a live LeaseSet2 publication
+/// that does not consult the gated selection must be reported.
+#[test]
+fn the_guard_reports_a_lease_set_publication_without_the_gated_selection() {
+    let violating = "\
+async fn publish_service_ls2_for_service(&mut self) -> Result<(), PublishError> {
+    let targets = self.nearest_floodfills();
+    self.send(targets).await
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "publish_service_ls2_for_service",
+            "version_gated_candidate_hashes("
+        )
+        .is_some(),
+        "a LeaseSet2 publication that bypasses the gate must be reported"
+    );
+}
+
+/// The inverted probe for rule 6, third half: a live publication that uses
+/// the ungated, distance-only selection must be reported.
+#[test]
+fn the_guard_reports_a_publication_that_uses_the_ungated_selection() {
+    let violating = "\
+async fn publish_service_ls2_for_service(&mut self) -> Result<(), PublishError> {
+    let selection = coord_guard.candidate_hashes(&target, &routing_key);
+    self.send(selection.targets().to_vec()).await
+}
+";
+    assert!(
+        check_body_avoids(
+            violating,
+            "publish_service_ls2_for_service",
+            ".candidate_hashes("
+        )
+        .is_some(),
+        "a publication that selects by distance alone must be reported"
+    );
+}
+
+/// The inverted probe for rule 7, first half: a live tunnel-build gate that
+/// records no receipt must be reported.
+#[test]
+fn the_guard_reports_a_build_gate_without_a_receipt() {
+    let violating = "\
+fn destination_peer_candidates(&self) -> (Vec<Candidate>, Summary) {
+    crate::destination_peers::project_validated_store(&self.store, self.counts(), &self.policy)
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "destination_peer_candidates",
+            "tunnel_build_peer("
+        )
+        .is_some(),
+        "a tunnel-build gate that records no receipt must be reported"
+    );
+}
+
+/// The inverted probe for rule 7, second half: a live DSM gate that records
+/// no receipt must be reported.
+#[test]
+fn the_guard_reports_a_dsm_gate_without_a_receipt() {
+    let violating = "\
+fn version_gated_candidate_hashes(&self, target: &DestinationHash) -> VersionGatedFloodfillSelection {
+    let selection = select_version_gated_floodfills(&self.store, routing_key, &[target_hash], &self.policy);
+    selection
+}
+";
+    assert!(
+        check_body_contains(
+            violating,
+            "version_gated_candidate_hashes",
+            "record_dsm_receipt("
+        )
+        .is_some(),
+        "a DSM gate that records no receipt must be reported"
+    );
+}
+
+/// The inverted probe for rule 7, third half: a recorder that records a
+/// different gate's receipt must be reported.
+#[test]
+fn the_guard_reports_a_recorder_that_records_the_wrong_receipt() {
+    let violating = "\
+fn record_dsm_receipt(&self, selection: &VersionGatedFloodfillSelection) {
+    self.record_version_receipt(
+        crate::version_eligibility::VersionEligibilityReceipt::tunnel_build_peer(
+            &summary,
+            selection.accepted() as usize,
+        ),
+    );
+}
+";
+    assert!(
+        check_body_contains(violating, "record_dsm_receipt", "dsm_target(").is_some(),
+        "a DSM recorder that records another gate's receipt must be reported"
+    );
+}
+
+/// The body-scoped rules must not be satisfied by a token that appears
+/// somewhere else in the file.
+#[test]
+fn the_guard_ignores_a_body_rule_token_outside_the_named_function() {
+    let outside = "\
+/// The gate is version_gated_publication_floodfills.
+fn some_other_helper(&self) -> Selection {
+    let selection = version_gated_publication_floodfills(&local_router_hash);
+    selection
+}
+
+fn publish_creator_router_info(&mut self) -> Result<(), PublishError> {
+    let targets = self.nearest_floodfills();
+    self.send(targets).await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn uses_the_gate() {
+        let _ = version_gated_publication_floodfills(&local_router_hash);
+    }
+}
+";
+    // The gated call exists three times in the fixture — in a comment, in a
+    // sibling function, and in a test block — and none of them is inside the
+    // named function's body, so the rule must still report the violation.
+    assert!(
+        check_body_contains(
+            outside,
+            "publish_creator_router_info",
+            "version_gated_publication_floodfills("
+        )
+        .is_some(),
+        "a sibling function, a comment or a test block must not satisfy a body rule"
+    );
+}
+
+/// The `.candidate_hashes(` discriminator depends on the leading dot, so the
+/// gated call site must not contain the ungated token.
+#[test]
+fn the_ungated_selector_discriminator_is_the_leading_dot() {
+    assert!(
+        !".version_gated_candidate_hashes(".contains(".candidate_hashes("),
+        "the gated call site must not contain the ungated token"
+    );
+    assert!(
+        ".candidate_hashes(".contains(".candidate_hashes("),
+        "the ungated call site must contain the token"
+    );
+    assert!(
+        !"version_gated_candidate_hashes(".contains(".candidate_hashes("),
+        "an unqualified call site must not contain the token either"
+    );
+}
+
+/// The function-body extractor must be correct on the shapes a real crate
+/// contains: a nested block, a string literal that holds a brace, a character
+/// literal that holds a brace, and a function that is the last item in the
+/// file.
+#[test]
+fn the_function_body_extractor_handles_nested_blocks_strings_and_a_trailing_item() {
+    let source = "\
+fn outer() -> u8 {
+    let text = \"}\";
+    let brace = '{';
+    if true {
+        let inner = \"{\";
+        let _ = (text, brace, inner);
+    }
+    7
+}
+fn last() -> u8 {
+    let text = \"{\";
+    text.len() as u8
+}
+";
+    let code = code_view(source);
+    let outer = function_body(&code, "outer").expect("the outer body must be found");
+    assert!(
+        outer.contains("if true {"),
+        "a nested block must stay inside the body"
+    );
+    assert!(
+        !outer.contains("fn last"),
+        "the body must end at its own closing brace"
+    );
+    let last = function_body(&code, "last").expect("the trailing body must be found");
+    assert!(
+        last.contains("text.len()"),
+        "the trailing item's body must be found"
+    );
+    assert!(
+        function_body(&code, "absent").is_none(),
+        "an absent function must not be found"
     );
 }
