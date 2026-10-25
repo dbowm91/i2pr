@@ -199,9 +199,18 @@ fn wrap_inner_wire(
     }
 }
 
+/// Composes the outbound tunnel cells for one payload.
+///
+/// Plan 504: the delivery instruction is a parameter so the build
+/// reply and the Plan 504 liveness probe share this one cell
+/// composition path — the same outbound role, the same framing, the
+/// same bounded cell ceiling. The build reply asks for
+/// `DeliveryInstruction::Router`; the liveness probe asks for
+/// `DeliveryInstruction::Tunnel` so the answer comes back through
+/// the paired inbound tunnel.
 fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
     role: &i2pr_tunnel::roles::OutboundGatewayRole,
-    target_router: Hash,
+    delivery: DeliveryInstruction,
     message_id: u32,
     expiration_ms: u64,
     wire: &[u8],
@@ -209,9 +218,7 @@ fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
     rng: &mut R,
 ) -> Result<Vec<(PeerId, Vec<u8>, u32)>, BuildCoordinatorError> {
     let header = TunnelPayloadHeader {
-        delivery: DeliveryInstruction::Router {
-            router: target_router,
-        },
+        delivery,
         message_id,
         expiration_ms,
     };
@@ -251,6 +258,18 @@ fn compose_outbound_build_deliveries<R: CryptoRng + RngCore>(
             ))
         })
         .collect()
+}
+
+/// Plan 504 — the public peer material one exploratory rebuild needs.
+///
+/// The material is public: a peer's router hash and its static
+/// encryption key are both published in the peer's RouterInfo.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExploratoryRebuildPeer {
+    /// The peer's router hash.
+    pub router_hash: Hash,
+    /// The peer's public static encryption key.
+    pub static_encryption_key: [u8; i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN],
 }
 
 /// Direction of one pending build attempt.
@@ -706,6 +725,14 @@ pub struct BuildCoordinatorCounters {
     pub duplicate_replies: u64,
     /// Outbound tunnel-build requests the coordinator emitted.
     pub outbound_builds: u64,
+    /// Plan 504 — liveness probes the coordinator composed and
+    /// delivered through the canonical outbound path.
+    pub liveness_probes: u64,
+    /// Plan 504 — liveness probes the coordinator could not deliver.
+    ///
+    /// The counter is the operator-visible signal that the probe path
+    /// itself is not working; it never counts as a peer failure.
+    pub liveness_probe_failures: u64,
 }
 
 /// Attempt-scoped, count-only relationship between an authenticated inbound
@@ -1256,6 +1283,195 @@ impl ExploratoryBuildCoordinator {
         self.registry.usable_outbound_slots(self.now_ms)
     }
 
+    /// Returns the installed **exploratory** tunnel pairs the Plan 504
+    /// liveness scheduler may track.
+    ///
+    /// A pair is an outbound exploratory slot together with the
+    /// inbound exploratory slot whose gateway is the *same* peer, so
+    /// the probe leaves through one tunnel and the answer comes back
+    /// through the other.
+    ///
+    /// The exploratory/destination distinction is **structural**, not
+    /// a slot-number test: only the exploratory pool's own
+    /// registrations are considered on both sides. A
+    /// destination-role slot lives in the shared data-plane registry
+    /// but never in the pool's registration list, so it can never
+    /// appear in the returned pairs.
+    ///
+    /// The matching is one-to-one and deterministic: each outbound
+    /// slot takes the first (lowest-slot) inbound slot that shares
+    /// its peer, and an inbound slot is never handed to two outbound
+    /// slots.
+    pub fn exploratory_liveness_pairs(&self) -> Vec<(TunnelSlot, TunnelSlot)> {
+        let inbound_registrations = self.pool.inbound_registrations();
+        let mut claimed_inbound: HashSet<TunnelSlot> = HashSet::new();
+        let mut pairs = Vec::new();
+        for outbound in self.pool.outbound_registrations() {
+            let outbound_slot = outbound.slot();
+            let Some((outbound_first_hop, _)) = self.registry_outbound_first_hop(outbound_slot)
+            else {
+                continue;
+            };
+            for inbound in &inbound_registrations {
+                let inbound_slot = inbound.slot();
+                if claimed_inbound.contains(&inbound_slot) {
+                    continue;
+                }
+                // The registry is keyed by the *local receive* tunnel
+                // id, which the pool's public routing metadata carries.
+                let Some(local_receive) = self
+                    .pool
+                    .routing(inbound_slot)
+                    .map(|routing| routing.local_inbound_receive())
+                else {
+                    continue;
+                };
+                let Some(inbound_gateway) = self.registry_inbound_first_hop(local_receive) else {
+                    continue;
+                };
+                if inbound_gateway == outbound_first_hop {
+                    claimed_inbound.insert(inbound_slot);
+                    pairs.push((outbound_slot, inbound_slot));
+                    break;
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Emits one Plan 504 liveness probe through the canonical
+    /// outbound path.
+    ///
+    /// The probe payload is a `DeliveryStatus` I2NP message whose
+    /// body carries `probe_message_id` — the identifier the remote
+    /// echoes back, so the answer can be attributed to one specific
+    /// pending test instead of guessed.
+    ///
+    /// The probe is addressed to the paired inbound tunnel
+    /// (`DeliveryInstruction::Tunnel`), so the answer arrives through
+    /// the inbound path the pair names, and it is delivered by the
+    /// same `RouterDeliveryService` the build reply uses.
+    ///
+    /// The emission reuses `compose_outbound_build_deliveries` —
+    /// the same outbound role, the same cell composition, the same
+    /// delivery seam. There is no private parallel pipeline.
+    pub fn emit_liveness_probe<R>(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+        probe_message_id: u32,
+        now_ms: u64,
+        delivery: &RouterDeliveryService,
+        rng: &mut R,
+    ) -> Result<(), BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        let cells = self.compose_liveness_probe(
+            outbound_slot,
+            inbound_slot,
+            probe_message_id,
+            now_ms,
+            rng,
+        )?;
+        for (target_peer, transport_wire, _) in cells {
+            let request =
+                RouterDeliveryRequest::new(target_peer, transport_wire, BUILD_DELIVERY_TIMEOUT)
+                    .map_err(|_| {
+                        BuildCoordinatorError::Coordinator("delivery request validation failed")
+                    })?;
+            let (result, _selected, _ticket) =
+                delivery.deliver_with_ticket(request, &i2pr_runtime::CancellationToken::new());
+            if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                self.counters.liveness_probe_failures =
+                    self.counters.liveness_probe_failures.saturating_add(1);
+                return Err(BuildCoordinatorError::Coordinator(
+                    "liveness probe delivery was refused",
+                ));
+            }
+        }
+        self.counters.liveness_probes = self.counters.liveness_probes.saturating_add(1);
+        Ok(())
+    }
+
+    /// Composes one Plan 504 liveness probe through the coordinator's
+    /// real outbound path, without delivering it.
+    ///
+    /// The composition is the same one [`Self::emit_liveness_probe`]
+    /// delivers: the same outbound role, the same cell composition,
+    /// the same `DeliveryInstruction::Tunnel` addressing the paired
+    /// inbound tunnel. The delivery itself is the only difference, so
+    /// an evidence lane can drive the composition and observe the
+    /// exact cell the router would put on the wire.
+    pub fn compose_liveness_probe<R>(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+        probe_message_id: u32,
+        now_ms: u64,
+        rng: &mut R,
+    ) -> Result<Vec<(PeerId, Vec<u8>, u32)>, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if probe_message_id == 0 {
+            return Err(BuildCoordinatorError::Coordinator(
+                "liveness probe message id is zero",
+            ));
+        }
+        let routing = self
+            .pool
+            .routing(inbound_slot)
+            .ok_or(BuildCoordinatorError::Coordinator(
+                "liveness probe has no inbound routing metadata",
+            ))?;
+        let gateway = routing.first_hop_router();
+        let gateway_receive = routing.first_hop_receive_tunnel();
+        let outbound_first_hop = self
+            .registry_outbound_first_hop(outbound_slot)
+            .ok_or(BuildCoordinatorError::Coordinator(
+                "liveness probe has no installed outbound role",
+            ))?
+            .0;
+        if gateway != outbound_first_hop {
+            return Err(BuildCoordinatorError::Coordinator(
+                "liveness probe pair does not share one peer",
+            ));
+        }
+        let outbound_role =
+            self.registry
+                .outbound(outbound_slot)
+                .ok_or(BuildCoordinatorError::Coordinator(
+                    "liveness probe has no installed outbound role",
+                ))?;
+        // The probe must outlive the window in which its answer can
+        // arrive, so it uses the scheduler's response timeout.
+        let expiration_ms =
+            now_ms.saturating_add(crate::tunnel_liveness::LIVENESS_RESPONSE_TIMEOUT_MS);
+        let inner_message_id = fresh_transport_message_id(rng)?;
+        let body = crate::tunnel_liveness::delivery_status_message(probe_message_id, now_ms);
+        let inner =
+            I2npMessage::new_standard(inner_message_id, Date::from_millis(expiration_ms), body)
+                .map_err(|_| {
+                    BuildCoordinatorError::Coordinator("liveness probe I2NP framing failed")
+                })?;
+        let wire = inner
+            .encode_standard_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| BuildCoordinatorError::Coordinator("liveness probe encoding failed"))?;
+        compose_outbound_build_deliveries(
+            outbound_role,
+            DeliveryInstruction::Tunnel {
+                tunnel_id: gateway_receive.get(),
+                gateway,
+            },
+            inner_message_id,
+            expiration_ms,
+            &wire,
+            now_ms,
+            rng,
+        )
+    }
+
     /// Returns the data-plane registry holding the installed tunnel
     /// roles. Plan 187 §6/§7 drives destination lookup/publication
     /// composition and inbound Garlic recovery through these real
@@ -1620,7 +1836,9 @@ impl ExploratoryBuildCoordinator {
             )?;
             let cells = compose_outbound_build_deliveries(
                 outbound_role,
-                first_peer_hash,
+                DeliveryInstruction::Router {
+                    router: first_peer_hash,
+                },
                 outer_message_id,
                 expiration_ms,
                 &wire,
@@ -2427,6 +2645,97 @@ impl ExploratoryBuildCoordinator {
         Ok(self.registry.remove_slot(slot))
     }
 
+    /// Removes one exploratory pair's slots from the pool and the
+    /// registry.
+    ///
+    /// Plan 504: only the two supplied slots are removed. The caller
+    /// passes the slots the coordinator reported as an *exploratory*
+    /// pair (see [`Self::exploratory_liveness_pairs`]), so a
+    /// destination-role tunnel is never removed through this path.
+    pub fn remove_exploratory_pair(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+    ) -> bool {
+        let removed_outbound = self.remove_slot(outbound_slot).is_ok();
+        let removed_inbound = self.remove_slot(inbound_slot).is_ok();
+        removed_outbound || removed_inbound
+    }
+
+    /// Asks the coordinator to rebuild one exploratory tunnel through
+    /// its **existing** submit path.
+    ///
+    /// Plan 504: the rebuild is the coordinator's own
+    /// [`Self::submit`]; the plan adds no second build mechanism. The
+    /// replacement peer material is supplied by the caller, because the
+    /// coordinator deliberately does not retain a peer's static
+    /// encryption key — the secret tunnel material moves into the
+    /// runtime role owner on activation and is zeroized there.
+    ///
+    /// Every identifier the replacement build uses is allocated from
+    /// the coordinator's own monotonic pools, so the rebuild can never
+    /// reuse an identifier that is pending, active, retiring, or
+    /// replay-retained.
+    pub fn rebuild_exploratory<R>(
+        &mut self,
+        direction: BuildDirection,
+        peer: ExploratoryRebuildPeer,
+        local_router_hash: Option<Hash>,
+        delivery: &RouterDeliveryService,
+        bridge: &ShortBuildI2npBridge,
+        rng: &mut R,
+    ) -> Result<SubmitResult, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if self.now_ms == 0 {
+            return Err(BuildCoordinatorError::Coordinator(
+                "advance_time not called",
+            ));
+        }
+        let receive_tunnel = TunnelId::new(self.next_creator_tunnel_id_value()?)
+            .map_err(|_| BuildCoordinatorError::Coordinator("rebuild receive tunnel id is zero"))?;
+        let next_tunnel = TunnelId::new(self.next_creator_tunnel_id_value()?)
+            .map_err(|_| BuildCoordinatorError::Coordinator("rebuild next tunnel id is zero"))?;
+        let creator_tunnel_id = TunnelId::new(self.next_creator_tunnel_id_value()?)
+            .map_err(|_| BuildCoordinatorError::Coordinator("rebuild creator tunnel id is zero"))?;
+        let message_id = fresh_transport_message_id(rng)?;
+        let mut outer_message_id = fresh_transport_message_id(rng)?;
+        while outer_message_id == message_id {
+            outer_message_id = fresh_transport_message_id(rng)?;
+        }
+        let bridge_header = BridgeHeader::ShortTransport {
+            message_id: outer_message_id,
+            expiration_seconds: u32::try_from(self.now_ms / 1000)
+                .unwrap_or(u32::MAX)
+                .saturating_add(60),
+        };
+        let request = BuildRequest {
+            direction,
+            peer: PeerBuildMaterial {
+                router_hash: peer.router_hash,
+                static_encryption_key: peer.static_encryption_key,
+                receive_tunnel,
+                next_tunnel,
+                role: match direction {
+                    BuildDirection::Outbound => HopRole::OutboundEndpoint,
+                    BuildDirection::Inbound => HopRole::InboundGateway,
+                },
+            },
+            creator_tunnel_id,
+            message_id,
+            outbound_reply_router: match direction {
+                BuildDirection::Outbound => local_router_hash,
+                BuildDirection::Inbound => None,
+            },
+            originator_hash: match direction {
+                BuildDirection::Inbound => local_router_hash,
+                BuildDirection::Outbound => None,
+            },
+        };
+        self.submit(request, delivery, bridge, bridge_header, rng)
+    }
+
     fn record_failure(&mut self) {
         self.paused = self.pool.note_build_failure() >= self.failure_threshold;
     }
@@ -3027,7 +3336,9 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(0x478);
         let deliveries = compose_outbound_build_deliveries(
             &role,
-            build_gateway_hash,
+            DeliveryInstruction::Router {
+                router: build_gateway_hash,
+            },
             0x3456,
             30_000,
             &[0x61; 32],
@@ -3733,7 +4044,9 @@ mod tests {
         let role = OutboundGatewayRole::new(tunnel, now_ms.saturating_add(60_000));
         let deliveries = compose_outbound_build_deliveries(
             &role,
-            Hash::from_bytes([0x60; 32]),
+            DeliveryInstruction::Router {
+                router: Hash::from_bytes([0x60; 32]),
+            },
             0x8003,
             60_000,
             &wire,
@@ -3753,6 +4066,437 @@ mod tests {
             body_len.div_ceil(1024),
             2,
             "cell needs two SSU2 fragments at the default budget"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plan_504_tests {
+    //! Plan 504 WP1 — the live-tunnel-liveness feasibility artefact.
+    //!
+    //! The artefact drives the *real* composition rather than a
+    //! stand-in:
+    //!
+    //! 1. it installs one outbound and one inbound exploratory tunnel
+    //!    whose first hop is the same peer, through the coordinator's
+    //!    own pool and registry;
+    //! 2. it drives the Plan 185 scheduler to a `SendTest` and composes
+    //!    the probe through the coordinator's real
+    //!    `OutboundGatewayRole` — the same role, cell composition and
+    //!    delivery the build reply uses;
+    //! 3. it relays the resulting cell through the peer's real tunnel
+    //!    roles (outbound participant, outbound endpoint, inbound
+    //!    gateway, inbound participant) exactly as a peer's answer
+    //!    would arrive, and hands the arriving cell to the daemon's
+    //!    real inbound tunnel-data dispatch;
+    //! 4. it asserts that the recovered `DeliveryStatus` names the
+    //!    probe's identifier, that the dispatcher exposes that
+    //!    identifier as the acknowledged message id, and that the
+    //!    scheduler correlates the response **by that identifier**.
+
+    use i2pr_proto::{TunnelDataMessage, TunnelGatewayMessage};
+    use i2pr_tunnel::build_crypto::LayerKeys;
+    use i2pr_tunnel::established::{
+        EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+    };
+    use i2pr_tunnel::identity::TunnelPeer;
+    use i2pr_tunnel::layer::DuplicateWindow;
+    use i2pr_tunnel::pool::RegisterOutcome;
+    use i2pr_tunnel::roles::{
+        InboundGatewayRole, InboundParticipantRole, OutboundEndpointRole, OutboundParticipantRole,
+        RouterDeliveryKind,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    use crate::exploratory_build::{
+        ExploratoryBuildCoordinator, ExploratoryPoolConfig, REASSEMBLER_AGGREGATE_BYTES,
+        REASSEMBLER_CAPACITY, REASSEMBLER_EXPIRY_MS, RegisterError,
+    };
+    use crate::inbound_dispatch::{InboundDispatchOutcome, dispatch_inbound_tunnel_data};
+    use crate::router_i2np::{RouterI2npKind, RouterI2npOutcome};
+    use crate::tunnel_liveness::{LivenessAction, LivenessConfig, TunnelLivenessScheduler};
+    use i2pr_runtime::Ssu2InboundI2np;
+
+    const NOW_MS: u64 = 1_700_000_000_000;
+
+    fn peer(value: u8) -> TunnelPeer {
+        TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([value; 32]))
+    }
+
+    fn layer_keys(seed: u8) -> LayerKeys {
+        LayerKeys::new(
+            [seed; 32],
+            [seed.wrapping_add(1); 32],
+            [seed.wrapping_add(2); 32],
+        )
+    }
+
+    /// The outbound exploratory tunnel: local gateway -> shared peer
+    /// (participant) -> the outbound endpoint peer.
+    fn outbound_tunnel() -> EstablishedTunnel {
+        let shared = peer(0x21);
+        let endpoint = peer(0x22);
+        EstablishedTunnel::new(
+            i2pr_tunnel::identity::TunnelDirection::Outbound,
+            i2pr_tunnel::identity::TunnelId::new(0x501).expect("id"),
+            vec![
+                EstablishedHop::with_next(
+                    shared,
+                    EstablishedRole::Participant,
+                    i2pr_tunnel::identity::TunnelId::new(0x601).expect("id"),
+                    layer_keys(0x30),
+                    EstablishedNextHop::new(
+                        endpoint,
+                        i2pr_tunnel::identity::TunnelId::new(0x602).expect("id"),
+                    ),
+                ),
+                EstablishedHop::terminal(
+                    endpoint,
+                    EstablishedRole::OutboundEndpoint,
+                    i2pr_tunnel::identity::TunnelId::new(0x602).expect("id"),
+                    layer_keys(0x31),
+                ),
+            ],
+            0,
+            None,
+            None,
+        )
+        .expect("outbound established tunnel")
+    }
+
+    /// The inbound exploratory tunnel: shared peer (inbound gateway)
+    /// -> inbound tail peer (participant) -> the local endpoint.
+    fn inbound_tunnel(local_receive: i2pr_tunnel::identity::TunnelId) -> EstablishedTunnel {
+        let shared = peer(0x21);
+        let tail = peer(0x23);
+        let gateway_receive = i2pr_tunnel::identity::TunnelId::new(0x701).expect("id");
+        EstablishedTunnel::new(
+            i2pr_tunnel::identity::TunnelDirection::Inbound,
+            // The exploratory pool registers an inbound tunnel under
+            // its local receive id, so the creator id and the local
+            // receive id are one value.
+            local_receive,
+            vec![
+                EstablishedHop::with_next(
+                    shared,
+                    EstablishedRole::InboundGateway,
+                    gateway_receive,
+                    layer_keys(0x40),
+                    EstablishedNextHop::new(
+                        tail,
+                        i2pr_tunnel::identity::TunnelId::new(0x702).expect("id"),
+                    ),
+                ),
+                EstablishedHop::with_next(
+                    tail,
+                    EstablishedRole::Participant,
+                    i2pr_tunnel::identity::TunnelId::new(0x702).expect("id"),
+                    layer_keys(0x41),
+                    EstablishedNextHop::new(
+                        peer(0x24),
+                        i2pr_tunnel::identity::TunnelId::new(local_receive.get()).expect("id"),
+                    ),
+                ),
+            ],
+            0,
+            Some((shared, gateway_receive)),
+            Some(local_receive),
+        )
+        .expect("inbound established tunnel")
+    }
+
+    /// Installs one exploratory pair into the coordinator's own pool
+    /// and registry, exactly as a completed build would.
+    fn install_pair(
+        coordinator: &mut ExploratoryBuildCoordinator,
+    ) -> (i2pr_tunnel::pool::TunnelSlot, i2pr_tunnel::pool::TunnelSlot) {
+        let outbound_slot = match coordinator
+            .pool
+            .register_outbound_with_material(outbound_tunnel().into_extracted(), NOW_MS / 1000)
+        {
+            Ok(RegisterOutcome::Inserted { slot, .. }) => slot,
+            Ok(RegisterOutcome::Duplicate { slot }) => slot,
+            Err(RegisterError::Full { kind, .. }) => panic!("outbound pool full: {kind:?}"),
+            Err(RegisterError::Invalid(error)) => {
+                panic!("outbound registration invalid: {error:?}")
+            }
+        };
+        coordinator
+            .pool
+            .mark_established(outbound_slot)
+            .expect("outbound established");
+        let outbound_role = coordinator
+            .pool
+            .activate(outbound_slot)
+            .expect("outbound activated");
+        coordinator
+            .registry
+            .activate_outbound(outbound_slot, outbound_role, NOW_MS + 600_000)
+            .expect("outbound role activated");
+
+        let local_receive = i2pr_tunnel::identity::TunnelId::new(0x901).expect("id");
+        let inbound_slot = match coordinator.pool.register_inbound_with_material(
+            inbound_tunnel(local_receive).into_extracted(),
+            NOW_MS / 1000,
+        ) {
+            Ok(RegisterOutcome::Inserted { slot, .. }) => slot,
+            Ok(RegisterOutcome::Duplicate { slot }) => slot,
+            Err(RegisterError::Full { kind, .. }) => panic!("inbound pool full: {kind:?}"),
+            Err(RegisterError::Invalid(error)) => panic!("inbound registration invalid: {error:?}"),
+        };
+        coordinator
+            .pool
+            .mark_established(inbound_slot)
+            .expect("inbound established");
+        let inbound_role = coordinator
+            .pool
+            .activate(inbound_slot)
+            .expect("inbound activated");
+        coordinator
+            .registry
+            .activate_inbound(
+                inbound_slot,
+                inbound_role,
+                REASSEMBLER_CAPACITY,
+                REASSEMBLER_AGGREGATE_BYTES,
+                REASSEMBLER_EXPIRY_MS,
+                NOW_MS,
+                NOW_MS + 600_000,
+            )
+            .expect("inbound role activated");
+        (outbound_slot, inbound_slot)
+    }
+
+    /// Plan 504 WP1 — the feasibility artefact.
+    ///
+    /// Asserts, in running code, that
+    ///
+    /// - a probe composed through the **real** `OutboundGatewayRole`
+    ///   produces a cell the peer can relay back;
+    /// - the daemon's **real** inbound tunnel-data dispatch classifies
+    ///   the recovered message as a `DeliveryStatus`;
+    /// - the dispatcher exposes the acknowledged message id, so the
+    ///   response is attributed to **one specific pending test**;
+    /// - the scheduler correlates the response **by that identifier**,
+    ///   and a response carrying no pending identifier is not
+    ///   evidence.
+    #[test]
+    fn plan_504_probe_answer_is_classified_and_correlated_by_the_acknowledged_id() {
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.advance_time(NOW_MS);
+        let (outbound_slot, inbound_slot) = install_pair(&mut coordinator);
+
+        // The coordinator reports the installed exploratory pair. The
+        // pairing is structural: both sides are pool registrations.
+        let pairs = coordinator.exploratory_liveness_pairs();
+        assert_eq!(
+            pairs,
+            vec![(outbound_slot, inbound_slot)],
+            "the installed exploratory pair is reported"
+        );
+
+        // The scheduler tracks the pair and asks for a probe.
+        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+        scheduler.advance_time(NOW_MS);
+        scheduler
+            .register_pair(outbound_slot, inbound_slot)
+            .expect("pair registered");
+        scheduler.advance_time(NOW_MS + crate::tunnel_liveness::FIRST_LIVENESS_DELAY_MS + 1);
+        let (test_id, probe_message_id) = match scheduler.drive() {
+            LivenessAction::SendTest {
+                outbound_slot: driven_outbound,
+                inbound_slot: driven_inbound,
+                test_id,
+                probe_message_id,
+            } => {
+                assert_eq!(driven_outbound, outbound_slot);
+                assert_eq!(driven_inbound, inbound_slot);
+                (test_id, probe_message_id)
+            }
+            other => panic!("expected SendTest, got {other:?}"),
+        };
+
+        // The probe is composed through the coordinator's real outbound
+        // role — the same cell composition the build reply uses.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x504);
+        let cells = coordinator
+            .compose_liveness_probe(
+                outbound_slot,
+                inbound_slot,
+                probe_message_id,
+                NOW_MS,
+                &mut rng,
+            )
+            .expect("probe composed through the real outbound role");
+        assert_eq!(cells.len(), 1, "the probe fits one tunnel cell");
+
+        // Decode the transport wire the router would put on the wire
+        // and recover the tunnel-data cell it carries.
+        let transport = i2pr_proto::I2npMessage::decode_short_transport(
+            &cells[0].1,
+            i2pr_transport::MAX_I2NP_MESSAGE_BYTES,
+        )
+        .expect("transport decode");
+        let i2pr_proto::I2npBody::TunnelData(cell) = transport.body() else {
+            panic!("the probe cell is a tunnel-data message");
+        };
+        let cell: &TunnelDataMessage = cell.as_ref();
+
+        // The peer relays the probe back through the paired inbound
+        // tunnel, exactly as a peer's answer would arrive: the
+        // outbound participant forwards it, the outbound endpoint
+        // reports a tunnel-gateway action, the inbound gateway
+        // rewrites the delivery instruction to local, and the inbound
+        // participant hands the cell to the local endpoint.
+        let outbound_hops = coordinator
+            .registry
+            .outbound(outbound_slot)
+            .expect("outbound role")
+            .established()
+            .hops()
+            .to_vec();
+        let mut outbound_participant =
+            OutboundParticipantRole::new(&outbound_hops[0], DuplicateWindow::new(16), 60_000)
+                .expect("outbound participant");
+        let mut outbound_endpoint = OutboundEndpointRole::new(
+            &outbound_hops[1],
+            DuplicateWindow::new(16),
+            16,
+            1 << 20,
+            60_000,
+            60_000,
+            0,
+        );
+        let after_participant = outbound_participant
+            .process(&peer(0x20).hash(), cell, 0)
+            .expect("outbound participant forwards");
+        let endpoint_action = outbound_endpoint
+            .process(&peer(0x22).hash(), &after_participant, 0)
+            .expect("outbound endpoint")
+            .expect("the endpoint produced a delivery action");
+        let RouterDeliveryKind::TunnelGateway = endpoint_action.kind else {
+            panic!("the endpoint reported a tunnel-gateway action");
+        };
+        // The endpoint forwards the probe to the inbound gateway the
+        // probe named.
+        let gateway_receive = endpoint_action.tunnel_id.expect("tunnel id");
+        assert_eq!(
+            gateway_receive.get(),
+            0x701,
+            "the probe named the paired inbound gateway's receive tunnel"
+        );
+        assert_eq!(
+            endpoint_action.target_router,
+            peer(0x21).hash(),
+            "the probe named the shared peer as the inbound gateway"
+        );
+
+        let nested = i2pr_proto::I2npMessage::decode_standard(
+            &endpoint_action.message,
+            i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+        )
+        .expect("the endpoint re-framed the probe as a standard message");
+        let gateway_message = TunnelGatewayMessage {
+            tunnel_id: gateway_receive.get(),
+            message: Box::new(nested),
+        };
+        let inbound_hops = inbound_tunnel(i2pr_tunnel::identity::TunnelId::new(0x901).expect("id"))
+            .hops()
+            .to_vec();
+        let inbound_gateway =
+            InboundGatewayRole::new(&inbound_hops[0], DuplicateWindow::new(16), 60_000)
+                .expect("inbound gateway");
+        let mut inbound_rng = ChaCha8Rng::seed_from_u64(0x505);
+        let gateway_cell = inbound_gateway
+            .process(&gateway_message, &mut inbound_rng, 0)
+            .expect("inbound gateway forwards");
+        let mut inbound_participant =
+            InboundParticipantRole::new(&inbound_hops[1], DuplicateWindow::new(16), 60_000)
+                .expect("inbound participant");
+        let arriving = inbound_participant
+            .process(&peer(0x21).hash(), &gateway_cell.cell, 0)
+            .expect("inbound participant forwards");
+        assert_eq!(
+            arriving.tunnel_id, 0x901,
+            "the answer arrives on the local inbound endpoint"
+        );
+
+        // The daemon's real inbound tunnel-data dispatch recovers the
+        // message and classifies it.
+        let dispatched =
+            dispatch_inbound_tunnel_data(coordinator.registry_mut(), &arriving, NOW_MS)
+                .expect("the daemon inbound tunnel-data dispatch");
+        let InboundDispatchOutcome::DeliveryStatusComplete { bytes } = dispatched else {
+            panic!("the answer is classified as a delivery status: {dispatched:?}");
+        };
+
+        // The recovered body names the probe's identifier, so the
+        // answer is attributable to one specific pending test.
+        let recovered =
+            i2pr_proto::I2npMessage::decode_standard(&bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("recovered envelope decode");
+        let i2pr_proto::I2npBody::DeliveryStatus(status) = recovered.body() else {
+            panic!("the recovered envelope is a delivery status");
+        };
+        assert_eq!(
+            status.message_id, probe_message_id,
+            "the answer names the identifier the probe carried"
+        );
+
+        // The dispatcher exposes the acknowledged identifier, so the
+        // direct inbound path can attribute the answer too.
+        let outcome = crate::router_i2np::dispatch_router_i2np(
+            &Ssu2InboundI2np {
+                link_id: i2pr_transport::LinkId::new(1).expect("link id"),
+                peer: i2pr_transport::PeerId::from_hash(peer(0x21).hash()),
+                bytes: bytes.clone(),
+            },
+            NOW_MS,
+        )
+        .expect("the dispatcher classifies the answer");
+        let RouterI2npOutcome::RouterControl {
+            kind: RouterI2npKind::DeliveryStatus,
+            acknowledged_message_id,
+            ..
+        } = outcome
+        else {
+            panic!("the dispatcher classified the answer as a delivery status");
+        };
+        assert_eq!(
+            acknowledged_message_id,
+            Some(probe_message_id),
+            "the dispatcher exposes the acknowledged identifier"
+        );
+
+        // The scheduler correlates the answer **by that identifier**.
+        assert_eq!(
+            scheduler.record_authenticated_response(probe_message_id),
+            Some(test_id),
+            "the answer is attributed to the probe that caused it"
+        );
+        assert_eq!(
+            scheduler.counters().successful_responses,
+            1,
+            "the answer counted as one success"
+        );
+        assert_eq!(
+            scheduler.counters().unproven_pairs,
+            0,
+            "the pair is proven by the authenticated answer"
+        );
+
+        // An answer that carries no pending identifier is not
+        // evidence and refreshes nothing.
+        assert_eq!(
+            scheduler.record_authenticated_response(probe_message_id ^ 0xFFFF),
+            None,
+            "an unrelated identifier matches no pending test"
+        );
+        assert_eq!(
+            scheduler.counters().unauthenticated_responses,
+            1,
+            "the unauthenticated answer is counted, not credited"
         );
     }
 }

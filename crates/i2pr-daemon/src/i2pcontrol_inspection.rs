@@ -42,6 +42,15 @@ use crate::service_tunnels::ServiceTunnelManager;
 use crate::transit_volume::{TransitParticipation, transit_share_ratio};
 use crate::version_eligibility::VersionEligibilityOwner;
 
+/// Plan 504 — the live tunnel-liveness counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// liveness posture without polling the product. The counters are
+/// counts only: they name no peer, no tunnel and no payload.
+pub type LivenessCounterCell = std::sync::Mutex<crate::tunnel_liveness::LivenessCounters>;
+
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
 
@@ -241,6 +250,10 @@ pub struct InspectionHandles {
     /// Live peer-eligibility receipt owner, published by the composition
     /// root (Plan 503). The log holds counts and stable reason labels only.
     version_live: Mutex<Option<Arc<VersionEligibilityOwner>>>,
+    /// Live tunnel-liveness counters, published by the composition root
+    /// (Plan 504). The product refreshes the cell on its tick; the
+    /// counters are counts only and name no peer, tunnel or payload.
+    liveness_live: Mutex<Option<Arc<LivenessCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -267,6 +280,7 @@ impl InspectionHandles {
             news_live: Mutex::new(None),
             transit_live: Mutex::new(None),
             version_live: Mutex::new(None),
+            liveness_live: Mutex::new(None),
         }
     }
 
@@ -519,6 +533,36 @@ impl InspectionHandles {
     /// owner's privilege.
     pub fn transit_participation(&self) -> Option<TransitParticipation> {
         self.transit_live.lock().ok().and_then(|live| live.clone())
+    }
+
+    /// Publishes the live tunnel-liveness counter cell.
+    ///
+    /// Plan 504: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// liveness posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_liveness_counters(&self, cell: Arc<LivenessCounterCell>) {
+        if let Ok(mut slot) = self.liveness_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published tunnel-liveness counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn liveness_counters(&self) -> Option<Arc<LivenessCounterCell>> {
+        self.liveness_live.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published tunnel-liveness
+    /// counters.
+    ///
+    /// Plan 504: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn liveness_counters_snapshot(&self) -> Option<crate::tunnel_liveness::LivenessCounters> {
+        let cell = self.liveness_counters()?;
+        cell.lock().ok().map(|counters| *counters)
     }
 
     pub(crate) fn publish_news_manager(&self, manager: Arc<crate::news::NewsManager>) {

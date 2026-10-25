@@ -310,6 +310,15 @@ const DEFAULT_TUNNEL_DEADLINE: Duration = Duration::from_secs(60);
 const MAX_STARTUP_REPLAY_MESSAGES: usize = 1024;
 const MAX_STARTUP_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 
+/// Plan 504 — the bounded number of liveness actions one product tick
+/// may act on.
+///
+/// The scheduler's `drive()` returns one action per call, so a tick
+/// keeps driving until the scheduler reports `Idle`. The bound stops
+/// a large backlog of due pairs from turning one tick into an
+/// unbounded burst of tunnel traffic.
+const MAX_LIVENESS_DRIVES_PER_TICK: usize = 8;
+
 /// Tunable bound for the production composition.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceProductOptions {
@@ -1062,6 +1071,15 @@ impl From<crate::router_i2np::Ssu2ServiceError> for ServiceProductError {
 /// Inner composition state the helper owns but the driver never sees.
 struct ProductInner {
     coordinator: ExploratoryBuildCoordinator,
+    /// Plan 504 — the live owner of the creator-side tunnel-liveness
+    /// scheduler. The scheduler tracks the *exploratory* tunnel pairs
+    /// the coordinator installed and never a destination tunnel; it
+    /// owns no task and no timer, and the product tick drives it.
+    liveness: crate::tunnel_liveness::TunnelLivenessScheduler,
+    /// Plan 504 — the live counter cell the composition root
+    /// publishes into the inspection seam. The product refreshes it on
+    /// its tick; it holds counts only.
+    liveness_counters_cell: Arc<crate::i2pcontrol_inspection::LivenessCounterCell>,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
     /// Plan 503 — the live owner of the peer-eligibility receipts. The
@@ -2107,6 +2125,12 @@ impl ServiceProduct {
             )
             .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
+        // Plan 504 — the live owner of the creator-side tunnel-liveness
+        // scheduler. The same bounded defaults Plan 185 fixed, so the
+        // live policy and the tested policy are one.
+        let mut liveness = crate::tunnel_liveness::TunnelLivenessScheduler::new(
+            crate::tunnel_liveness::LivenessConfig::plan_185_defaults(),
+        );
 
         // Plan 212 §8 — router bootstrap only (no application
         // LeaseSet2 lookup). Application lookup is per-service
@@ -2247,6 +2271,7 @@ impl ServiceProduct {
             && let Err(error) = provision_all_service_router_material(
                 &manager,
                 &mut coordinator,
+                &mut liveness,
                 &destination_tunnels,
                 &mut ssu2_handle,
                 &peer,
@@ -2282,6 +2307,10 @@ impl ServiceProduct {
             manager,
             inner: ProductInner {
                 coordinator,
+                liveness,
+                liveness_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::tunnel_liveness::LivenessCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -2403,6 +2432,12 @@ impl ServiceProduct {
             )
             .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
+        // Plan 504 — the live owner of the creator-side tunnel-liveness
+        // scheduler. The same bounded defaults Plan 185 fixed, so the
+        // live policy and the tested policy are one.
+        let mut liveness = crate::tunnel_liveness::TunnelLivenessScheduler::new(
+            crate::tunnel_liveness::LivenessConfig::plan_185_defaults(),
+        );
         let backend = Arc::new(RemoteDestinationBackend::new(
             Arc::clone(&destination_tunnels),
             ssu2_handle.delivery().clone(),
@@ -2480,6 +2515,7 @@ impl ServiceProduct {
         if let Err(error) = provision_all_service_router_material(
             &manager,
             &mut coordinator,
+            &mut liveness,
             &destination_tunnels,
             &mut ssu2_handle,
             &peer,
@@ -2524,6 +2560,10 @@ impl ServiceProduct {
             manager,
             inner: ProductInner {
                 coordinator,
+                liveness,
+                liveness_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::tunnel_liveness::LivenessCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -3023,6 +3063,7 @@ impl ServiceProduct {
         let result = provision_all_service_router_material(
             &self.manager,
             &mut self.inner.coordinator,
+            &mut self.inner.liveness,
             &self.inner.destination_tunnels,
             &mut self.inner.ssu2_handle,
             &peer,
@@ -3159,6 +3200,242 @@ impl ServiceProduct {
     /// (Bob) role owner exactly as the daemon's live inbound loop does.
     pub(crate) fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
         self.inner.ssu2_handle.try_next_relay_event()
+    }
+
+    /// Plan 504 — drives the creator-side tunnel-liveness scheduler on
+    /// the product tick.
+    ///
+    /// The scheduler owns the *exploratory* pairs the coordinator
+    /// installed. The tick:
+    ///
+    /// 1. syncs the pair table with the coordinator — new exploratory
+    ///    pairs are registered, pairs that went away are unregistered
+    ///    (an unregister drops the pair's pending tests **without**
+    ///    counting them as failures);
+    /// 2. drives the scheduler and acts on at most
+    ///    [`MAX_LIVENESS_DRIVES_PER_TICK`] actions, so one tick can
+    ///    never become an unbounded burst;
+    /// 3. publishes the counters so the router's liveness posture is
+    ///    observable.
+    ///
+    /// No task, no timer, no listener and no socket is added: the
+    /// scheduler is a plain value the tick advances.
+    async fn drive_tunnel_liveness(&mut self, now_ms: u64) {
+        self.sync_liveness_pairs();
+        self.inner.liveness.advance_time(now_ms);
+        for _ in 0..MAX_LIVENESS_DRIVES_PER_TICK {
+            match self.inner.liveness.drive() {
+                crate::tunnel_liveness::LivenessAction::SendTest {
+                    outbound_slot,
+                    inbound_slot,
+                    test_id,
+                    probe_message_id,
+                } => {
+                    tracing::debug!(
+                        test_id = test_id.get(),
+                        transition = "liveness_probe_due",
+                        "emitting tunnel liveness probe"
+                    );
+                    self.emit_liveness_probe(
+                        outbound_slot,
+                        inbound_slot,
+                        test_id,
+                        probe_message_id,
+                        now_ms,
+                    );
+                }
+                crate::tunnel_liveness::LivenessAction::MarkUnhealthy {
+                    outbound_slot,
+                    inbound_slot,
+                    consecutive_failures,
+                } => {
+                    tracing::warn!(
+                        transition = "liveness_pair_unhealthy",
+                        consecutive_failures,
+                        "removing the unhealthy exploratory tunnel pair"
+                    );
+                    self.remove_liveness_pair(outbound_slot, inbound_slot).await;
+                }
+                crate::tunnel_liveness::LivenessAction::Idle { .. } => break,
+            }
+        }
+        self.publish_liveness_counters();
+    }
+
+    /// Plan 504 — registers the coordinator's installed exploratory
+    /// pairs with the liveness scheduler and unregisters the pairs
+    /// that went away.
+    fn sync_liveness_pairs(&mut self) {
+        let installed = self.inner.coordinator.exploratory_liveness_pairs();
+        let installed_outbound: std::collections::HashSet<TunnelSlot> =
+            installed.iter().map(|(outbound, _)| *outbound).collect();
+        for outbound in self.inner.liveness.tracked_outbound_slots() {
+            if !installed_outbound.contains(&outbound) {
+                // Unregistering drops the pair's pending tests without
+                // counting a failure.
+                self.inner.liveness.unregister_pair(outbound);
+            }
+        }
+        for (outbound, inbound) in installed {
+            if let Err(error) = self.inner.liveness.register_pair(outbound, inbound) {
+                tracing::debug!(
+                    transition = "liveness_pair_not_tracked",
+                    reason = %error,
+                    "the liveness pair ceiling rejected an exploratory pair"
+                );
+            }
+        }
+    }
+
+    /// Plan 504 — emits one liveness probe through the coordinator's
+    /// canonical outbound path.
+    ///
+    /// A probe that could not be emitted at all (a local composition
+    /// fault, or a pair that went away between the scheduler's
+    /// decision and the emission) is *abandoned*, not counted as a
+    /// peer failure: the peer never saw the probe.
+    fn emit_liveness_probe(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+        test_id: crate::tunnel_liveness::LivenessTestId,
+        probe_message_id: u32,
+        now_ms: u64,
+    ) {
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => {
+                self.inner.liveness.abandon_test(test_id);
+                return;
+            }
+        };
+        if let Err(error) = self.inner.coordinator.emit_liveness_probe(
+            outbound_slot,
+            inbound_slot,
+            probe_message_id,
+            now_ms,
+            &delivery,
+            &mut rng,
+        ) {
+            tracing::debug!(
+                transition = "liveness_probe_not_emitted",
+                reason = %error,
+                "the liveness probe could not be emitted"
+            );
+            self.inner.liveness.abandon_test(test_id);
+        }
+    }
+
+    /// Plan 504 — removes an unhealthy exploratory pair from the
+    /// coordinator and asks the coordinator to rebuild it through its
+    /// **existing** submit path.
+    ///
+    /// Only exploratory slots are removed: the pair came from
+    /// [`ExploratoryBuildCoordinator::exploratory_liveness_pairs`],
+    /// which never reports a destination-role slot.
+    async fn remove_liveness_pair(&mut self, outbound_slot: TunnelSlot, inbound_slot: TunnelSlot) {
+        // The peer's identity is captured before the removal, so the
+        // rebuild can be requested for the same peer.
+        let peer = self
+            .inner
+            .coordinator
+            .registry_outbound_first_hop(outbound_slot)
+            .map(|(hash, _)| hash);
+        self.inner
+            .coordinator
+            .remove_exploratory_pair(outbound_slot, inbound_slot);
+        let Some(peer_hash) = peer else {
+            return;
+        };
+        let Some(static_key) = self.peer_static_encryption_key(peer_hash).await else {
+            // Without the peer's public key the coordinator cannot
+            // rebuild the tunnel. The pair is still removed, so the
+            // router stops using a tunnel it judged dead.
+            tracing::debug!(
+                transition = "liveness_rebuild_not_requested",
+                reason = "peer router info unavailable",
+                "the unhealthy exploratory pair was removed without a rebuild"
+            );
+            return;
+        };
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let bridge = i2pr_tunnel::bridge::ShortBuildI2npBridge::new();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => return,
+        };
+        let local_router_hash = self.inner.local_router_hash;
+        let peer = crate::exploratory_build::ExploratoryRebuildPeer {
+            router_hash: peer_hash,
+            static_encryption_key: static_key,
+        };
+        // Both directions of the pair share one peer, so the same
+        // public peer material serves the replacement tunnels.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            if let Err(error) = self.inner.coordinator.rebuild_exploratory(
+                direction,
+                peer,
+                local_router_hash,
+                &delivery,
+                &bridge,
+                &mut rng,
+            ) {
+                tracing::debug!(
+                    transition = "liveness_rebuild_rejected",
+                    reason = %error,
+                    "the coordinator refused the exploratory rebuild request"
+                );
+            }
+        }
+    }
+
+    /// Plan 504 — resolves one peer's public static encryption key
+    /// from the authoritative RouterInfo store.
+    ///
+    /// The key is public peer material (it is published in the peer's
+    /// RouterInfo); the lookup never returns a secret.
+    async fn peer_static_encryption_key(
+        &self,
+        peer_hash: Hash,
+    ) -> Option<[u8; i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN]> {
+        let store = self.inner.destination_tunnels.lock().await;
+        let key = i2pr_netdb::RouterHash::from_hash(peer_hash);
+        let record = store.store().get(&key)?;
+        let bytes = record
+            .router_info()
+            .router_identity()
+            .public_key()
+            .as_bytes();
+        let mut static_key = [0_u8; i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN];
+        if bytes.len() != static_key.len() {
+            return None;
+        }
+        static_key.copy_from_slice(bytes);
+        Some(static_key)
+    }
+
+    /// Plan 504 — publishes the liveness counters through the
+    /// inspection seam so the running router's liveness posture is
+    /// observable.
+    ///
+    /// The composition root publishes the *same* cell into the
+    /// inspection seam, so the counters stay live without the product
+    /// owning the inspection handles.
+    fn publish_liveness_counters(&self) {
+        let counters = self.inner.liveness.counters();
+        if let Ok(mut cell) = self.inner.liveness_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 504 — returns the live tunnel-liveness counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection
+    /// seam so a reader observes the running router's liveness
+    /// posture.
+    pub fn liveness_counters_cell(&self) -> Arc<crate::i2pcontrol_inspection::LivenessCounterCell> {
+        Arc::clone(&self.inner.liveness_counters_cell)
     }
 
     /// Deterministic pool-advance seam used by manual-clock tests and by the
@@ -3349,6 +3626,10 @@ impl ServiceProduct {
                     });
             }
         }
+        // Plan 504 — the liveness scheduler is driven on the same tick
+        // that advances the coordinator's clock and expires its
+        // pending builds. No new task, no new timer.
+        self.drive_tunnel_liveness(now_ms).await;
         let destination_ids = self.inner.destination_ids.clone();
         for destination_id in destination_ids {
             let Some(snapshot) =
@@ -3951,10 +4232,17 @@ impl ServiceProduct {
         message: Option<&I2npMessage>,
     ) {
         if self.inner.retirement.is_none() {
-            let routed = self
-                .inner
-                .coordinator
-                .route_inbound_i2np_classified(inbound, outcome);
+            // Plan 504 — the live inbound route goes through the
+            // liveness seam. The outcome was decoded exactly once by
+            // the caller, so the classified variant correlates that
+            // same outcome with the pending liveness tests instead of
+            // running a second decoder.
+            let routed = crate::tunnel_liveness::route_inbound_with_liveness_classified(
+                &mut self.inner.coordinator,
+                &mut self.inner.liveness,
+                inbound,
+                outcome,
+            );
             for outcome in routed.coordinator {
                 self.record_destination_build_outcome(&outcome);
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
@@ -4644,6 +4932,27 @@ impl ServiceProduct {
                 }
             }
             I2npBody::DeliveryStatus(status) => {
+                // Plan 504 — a liveness probe's answer arrives on the
+                // exploratory inbound tunnel the probe named, so the
+                // *tunneled* delivery-status path is where the live
+                // correlation happens. The answer is attributed by the
+                // identifier the probe carried, so only that probe
+                // refreshes the pair; an answer that matches no
+                // pending probe is not evidence and refreshes nothing.
+                //
+                // The liveness identifier space is disjoint from the
+                // publication reply-token space, so the two
+                // correlations below cannot claim the same answer.
+                let liveness_test = self
+                    .inner
+                    .liveness
+                    .record_authenticated_response(status.message_id);
+                if liveness_test.is_some() {
+                    tracing::debug!(
+                        transition = "liveness_response_correlated",
+                        "a tunnel liveness probe was answered on the exploratory inbound tunnel (counts only)",
+                    );
+                }
                 // Plan 487 WP4 — a `DeliveryStatus` that carries a
                 // publication's reply token is the network's
                 // acknowledgement that the record was stored. It
@@ -6153,6 +6462,7 @@ fn selected_peer_material(
 async fn await_destination_build_install(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
+    liveness: &mut crate::tunnel_liveness::TunnelLivenessScheduler,
     ssu2_handle: &mut Ssu2DaemonHandle,
     attempt_id: i2pr_tunnel::short::BuildAttemptId,
     destination_id: i2pr_client::DestinationId,
@@ -6174,7 +6484,15 @@ async fn await_destination_build_install(
         else {
             continue;
         };
-        let routed = coordinator.route_inbound_i2np(&inbound, wall_ms());
+        // Plan 504 — the live inbound route goes through the
+        // liveness seam, so an inbound `DeliveryStatus` echo is
+        // correlated with the pending liveness test that caused it.
+        let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+            coordinator,
+            liveness,
+            &inbound,
+            wall_ms(),
+        );
         queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound)?;
         let Ok(routed) = routed else {
             continue;
@@ -6702,6 +7020,7 @@ mod creator_router_info_publication_tests {
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
+    liveness: &mut crate::tunnel_liveness::TunnelLivenessScheduler,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &mut Ssu2DaemonHandle,
     peer: &RouterBootstrapMaterial,
@@ -6941,6 +7260,7 @@ async fn provision_all_service_router_material(
                     match await_destination_build_install(
                         manager,
                         coordinator,
+                        liveness,
                         ssu2_handle,
                         attempt_id,
                         runtime.destination_id,
@@ -7224,7 +7544,14 @@ async fn provision_all_service_router_material(
                     else {
                         continue;
                     };
-                    let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
+                    // Plan 504 — the live inbound route goes through
+                    // the liveness seam.
+                    let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+                        coordinator,
+                        liveness,
+                        &inbound_msg,
+                        wall_ms(),
+                    );
                     queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
                     let Ok(routed) = routed else {
                         continue;
@@ -7447,7 +7774,14 @@ async fn provision_all_service_router_material(
                 else {
                     continue;
                 };
-                let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
+                // Plan 504 — the live inbound route goes through the
+                // liveness seam.
+                let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+                    coordinator,
+                    liveness,
+                    &inbound_msg,
+                    wall_ms(),
+                );
                 queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
                 let Ok(routed) = routed else {
                     continue;

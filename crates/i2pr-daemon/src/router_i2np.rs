@@ -195,6 +195,20 @@ pub enum RouterI2npOutcome {
         link_id: LinkId,
         /// Encoded length of the dispatched message.
         encoded_len: usize,
+        /// Identifier of the message this control body acknowledges,
+        /// when the body carries one.
+        ///
+        /// Plan 504: the `DeliveryStatus` body already carries the
+        /// acknowledged message id in
+        /// [`i2pr_proto::DeliveryStatusMessage::message_id`]. The
+        /// dispatcher used to discard it, so an inbound echo could
+        /// not be attributed to the probe that caused it. The
+        /// transport `message_id` above is a different identifier (the
+        /// id of the message that *arrived*) and is left untouched.
+        ///
+        /// Every control body other than `DeliveryStatus` reports
+        /// `None`; the classification of those bodies is unchanged.
+        acknowledged_message_id: Option<u32>,
     },
     /// Bounded explicit disposition for unsupported/unknown bodies.
     /// Never a panic, never unbounded retention.
@@ -252,6 +266,24 @@ impl RouterI2npOutcome {
             | Self::TunnelData { encoded_len, .. }
             | Self::RouterControl { encoded_len, .. }
             | Self::Unsupported { encoded_len, .. } => encoded_len,
+        }
+    }
+
+    /// Returns the identifier of the message this outcome
+    /// acknowledges, when the body carries one.
+    ///
+    /// Plan 504: only a `DeliveryStatus` body names the message it
+    /// acknowledges. The value is the acknowledged message id, never
+    /// the transport `message_id` of the arriving message. `None`
+    /// means the outcome carries no acknowledgement, so it is not
+    /// evidence for anything.
+    pub const fn acknowledged_message_id(self) -> Option<u32> {
+        match self {
+            Self::RouterControl {
+                acknowledged_message_id,
+                ..
+            } => acknowledged_message_id,
+            _ => None,
         }
     }
 }
@@ -678,6 +710,7 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
         I2npBody::DatabaseLookup(_) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DatabaseLookup,
@@ -687,6 +720,7 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
         I2npBody::DatabaseSearchReply(_) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DatabaseSearchReply,
@@ -696,8 +730,9 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
-        I2npBody::DeliveryStatus(_) => Ok(RouterI2npOutcome::RouterControl {
+        I2npBody::DeliveryStatus(status) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DeliveryStatus,
             header,
             message_id,
@@ -705,6 +740,10 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            // Plan 504: the body names the message it acknowledges;
+            // the dispatcher used to discard it, so an inbound echo
+            // could not be attributed to the probe that caused it.
+            acknowledged_message_id: Some(status.message_id),
         }),
         I2npBody::TunnelTest(test) => Ok(RouterI2npOutcome::PeerTest {
             header,

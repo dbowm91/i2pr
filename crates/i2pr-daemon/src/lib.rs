@@ -4010,6 +4010,14 @@ fn register_ssu2_service(
                                 inspection.publish_version_eligibility(
                                     product.version_eligibility(),
                                 );
+                                // Plan 504: publish the live tunnel-liveness
+                                // counter cell so the running router's
+                                // liveness posture is observable through the
+                                // inspection plane. The cell carries counts
+                                // only: no peer, tunnel or payload.
+                                inspection.publish_liveness_counters(
+                                    product.liveness_counters_cell(),
+                                );
                                 NormalSsu2Owner::Groups(Box::new(product))
                             }
                             Err(error) => {
