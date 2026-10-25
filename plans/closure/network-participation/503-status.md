@@ -313,6 +313,25 @@ other step is a checker or a small lane. **No step was skipped, and no step
 was made to pass by relaxing a script, a filter, or an environment
 variable.**
 
+**The floor history, stated exactly.** The 102 steps ran on the tree at
+`d63749eb` — the last commit that changes code or tests. The closure commit
+adds only files under `plans/`, which the floor reads through its
+plan-reading steps. Those steps were therefore **re-run on the closure tree**
+(`a00d4a02`) and all pass:
+
+| Step | Result |
+| --- | --- |
+| `check-global-plan-number-uniqueness` | pass |
+| `check-adr-number-uniqueness` | pass |
+| `check-tooling-inventory` | pass — every published figure matches the tree |
+| `planning-tests` (`tests/planning`) | pass — 51 tests |
+| `check-runtime-boundaries` | pass |
+| the link checker (134 relative links, 209 `file:line` citations) | no broken link, no out-of-range citation, and the four unresolved bare-filename citations in the daemon deep-dive are the pre-existing drift recorded below |
+
+There was **no failed floor run** in this plan's history and no deliberately
+stopped one: the first run of the floor on the closing tree was green, so
+there is nothing to report beyond that.
+
 ### The focused verification, before the floor
 
 | Command | Result |
