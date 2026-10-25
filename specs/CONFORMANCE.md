@@ -947,6 +947,15 @@ What is claimed, and what is not:
   string, no payload.
 - **The declared version is never edited to dodge a floor.** A peer that
   refuses the declaration is a finding, not a licence to edit it.
+- **One half of this was not enforced in production until Plan 503.** The
+  tunnel-build half ran on the live path from the start. The DSM half did
+  not: the router's two live `DatabaseStore` sends selected floodfills by
+  XOR distance alone and never consulted the gate, and the typed DSM
+  refusal this section describes had no production caller because the
+  coordinator that enforces it is never composed. **Plan 503** puts the
+  floor on both live DSM paths and makes this section's receipt shape a
+  live product — see "The live DSM version gate and the live peer-
+  eligibility receipt (Plan 503)" below.
 
 The two reference implementations are the behavioral oracles: Java I2P
 2.13.0 applies `0.9.62` in `net.i2p.router.tunnel.pool.TunnelPeerSelector`,
@@ -1085,8 +1094,8 @@ claimed, and what is not:
   path still requires an `Active` floodfill role **and** an in-memory
   `FloodfillAdvertisementPermit`, and neither is reachable from this profile.
   `[ssu2] advertise = true` remains refused at parse time.
-- **It promotes no capability.** `specs/support.toml` is unchanged — 94
-  surfaces, 88 experimental, 5 deferred, 1 ready, and **0 advertised** —
+- **It promotes no capability.** `specs/support.toml` is unchanged — 95
+  surfaces, 89 experimental, 5 deferred, 1 ready, and **0 advertised** —
   `router.version` stays `0.9.62`, and the published RouterInfo capability set
   is unchanged.
 - **It is not a public transport activation.** Public transport activation
@@ -1188,7 +1197,7 @@ What is claimed, and what is not:
   from 14 to 30 and the raw-scan floor from 17 to 23 — rather than relaxing
   them.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 94 surfaces, 88 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 95 surfaces, 89 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, and the published RouterInfo
   capability set is unchanged. The routing table is **internal state**.
 - **The evidence is a private controlled mesh, not a public-network
@@ -1275,7 +1284,7 @@ What is claimed, and what is not:
   change to the runtime's authentication path. The runtime still has **no
   outbound relay queueing API**. **Plan 499 adds that API** — see below.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 94 surfaces, 88 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 95 surfaces, 89 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, `caps` and the published
   RouterInfo are unchanged, and `ssu2.advertise` stays refused. The role
   remains behind the existing default-off `ssu2.introducer_service` opt-in.
@@ -1412,7 +1421,7 @@ What is claimed, and what is not:
   now_secs)`** that binds a tag to a **caller-supplied** hash (pre-existing,
   Plan 490). Plan 499's live path binds the authenticated session peer and
   adds no such API, but the surface remains.
-- **Nothing is promoted.** `specs/support.toml` stays at **94 surfaces, 88
+- **Nothing is promoted.** `specs/support.toml` stays at **95 surfaces, 89
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version` stays
   `0.9.62`; `caps` and the published RouterInfo are unchanged; `ssu2.advertise`
   stays refused. The role stays behind the existing **default-off**
@@ -1480,7 +1489,7 @@ What is claimed, and what is not:
   wiring.
 - **There is no stock-peer evidence** for the new exhaustion, and this is a
   lookup-engine bound, not a network capability.
-- **Nothing is promoted.** `specs/support.toml` stays at **94 surfaces, 88
+- **Nothing is promoted.** `specs/support.toml` stays at **95 surfaces, 89
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged.
 
@@ -1548,7 +1557,7 @@ What is claimed, and what is not:
 - **There is no stock-peer evidence**, no LOCAL OBEP consumer (a LOCAL
   action refuses with the typed `NoLocalConsumer`), and no NTCP2 ingress.
 - **The transit role is still not advertised and still not claimed for the
-  public network.** `specs/support.toml` stays at **94 surfaces, 88
+  public network.** `specs/support.toml` stays at **95 surfaces, 89
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged. Plan 436
   stays **blocked** on Plan 433; this plan advances its source-side WP3 only.
@@ -1561,6 +1570,86 @@ Evidence: `crates/i2pr-daemon/src/transit_composition.rs`,
 `crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
 `crates/i2pr-daemon/tests/transit_composition.rs`, and
 `scripts/check-m11-transit-boundaries.sh`.
+
+## The live DSM version gate and the live peer-eligibility receipt (Plan 503)
+
+Plan 491 gave the router two API-version obligations. Its **second** one —
+*minimum floodfill peers will send DSM to* — was **enforced nowhere in
+production**. Plan 503 puts it on the live paths and makes the decision
+observable in the running router.
+
+The gap, precisely:
+
+- the router's **two live `DatabaseStore` sends** selected floodfills by XOR
+  distance alone and never consulted `dsm_target_eligibility` — the creator
+  RouterInfo publication and the service LeaseSet2 publication;
+- the typed, counted DSM refusal Plan 491 built
+  (`crates/i2pr-daemon/src/netdb_tunnels.rs:790` `begin_publication`) had
+  **zero production callers**, because `NetDbTunnelCoordinator` is never
+  composed — Plan 433 owns that composition and is registered `blocked`;
+- so the router published its RouterInfo and its LeaseSet2 to floodfills that
+  publish no API version, an uncomparable API version, or an API version
+  below `0.9.62` — the exact under-compliance Plan 491 exists to prevent;
+- and Plan 491's receipt shape was produced only by the participation driver's
+  own selection methods, which have only test callers, so **no running router
+  ever produced a receipt**.
+
+What is claimed, and what is not:
+
+- **The floor is now enforced on both live DSM paths**, through one shared,
+  runtime-neutral, version-gated selection in `i2pr-netdb`
+  (`lookup_policy::select_version_gated_floodfills`). The closed enforcement
+  point (`PublicationCoordinator::nearest_eligible_floodfills`) and the live
+  paths are now **one** implementation; its public behaviour is unchanged.
+- **A refused floodfill is never a DSM target, and never a silent skip.** A
+  floodfill that publishes no version, an uncomparable version, or a version
+  below the floor is excluded from the target set and counted by reason
+  (`unknown-version`, `uncomparable-version`, `below-floor`).
+- **An empty eligible set fails closed** through the paths that already
+  existed: the creator publication is skipped with a debug transition, and the
+  LeaseSet2 publication releases its reserved intent and returns the existing
+  typed request-construction failure. A refused floodfill is a **refusal**,
+  not a delivery failure.
+- **The candidates are considered within the policy's ceiling and the
+  eligible ones are kept**, so a below-floor floodfill can no longer consume
+  one of the three publication slots.
+- **The receipt is a live product.** The live tunnel-build gate and the live
+  DSM gate each record a receipt into a bounded live-owned log published
+  through the daemon's inspection seam. The receipts carry **counts and
+  stable reason labels only** — no peer hash, no address, no key, no version
+  string, no payload. The log is bounded and evicts its oldest entry at its
+  cap.
+- **The identity `examined == accepted + refused` is exact for the DSM gate**,
+  whose only two outcomes are eligible and refused-by-version-reason. It does
+  **not** hold for the build gate, whose `examined` is the whole scanned
+  population: the build projection's `unqualified` and `capped_participation`
+  reasons are not version refusals, so they stay in
+  `CandidateProjectionSummary` and are deliberately absent from the receipt.
+- **The lookup-target selection is deliberately NOT gated.** A
+  `DatabaseLookup` is not a DSM and is not one of Plan 491's two obligations.
+  That gap is recorded as an open finding, not silently taken.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock`
+  are byte-identical.
+- **This is not a stock-peer qualification.** Plan 503 claims **no interop
+  evidence**. Plan 491's F2 (no stock-peer evidence for the floors) needs the
+  authorized two-host topology Plan 493 owns, and Plan 491's F4 (an
+  intermittent `i2pcontrol_tunnels` staging failure) belongs to the
+  I2PControl line. Neither is closed here.
+
+Evidence: `crates/i2pr-netdb/src/lookup_policy.rs`,
+`crates/i2pr-netdb/src/publication.rs`,
+`crates/i2pr-netdb/src/version.rs`,
+`crates/i2pr-daemon/src/version_eligibility.rs`,
+`crates/i2pr-daemon/src/destination_tunnels.rs`,
+`crates/i2pr-daemon/src/destination_peers.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-daemon/tests/version_eligibility_live.rs`, and
+`crates/i2pr-daemon/tests/version_floor_boundary.rs`. The plan of record is
+`plans/implementation/network-participation/503-live-dsm-version-gate-and-peer-eligibility-receipt.md`;
+the closure record is `plans/closure/network-participation/503-status.md`.
 
 ## Outbound proxy secret owner (Plan 341)
 

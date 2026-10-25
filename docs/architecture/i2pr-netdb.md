@@ -538,6 +538,49 @@ whatever the floor is.
 and nothing else — no peer hash, no address, no key, no version string — so
 a refusal can be reported without disclosing who was refused.
 
+### The shared version-gated floodfill selection (Plan 503, `lookup_policy.rs`)
+
+Plan 491 built one version-gated selection — `PublicationCoordinator::
+nearest_eligible_floodfills` — and it had **no production caller**. The
+router's two live `DatabaseStore` sends selected floodfills by XOR distance
+alone, through `select_floodfill_candidates`, which filters on nothing but
+distance and exclusion. So the router published to floodfills that publish
+no API version, an uncomparable version, or a version below the floor.
+
+Plan 503 puts the gate in the crate that owns the ordering, so the closed
+enforcement point and the live paths are **one** implementation:
+
+- `nearest_floodfill_candidates` is the shared ordering core — the nearest
+  floodfill set for a routing key, with the caller's exclusions applied and
+  the set truncated to `policy.max_candidates_considered()`. The exclusion
+  set is the caller's; a caller that must also exclude a target adds it.
+- `select_floodfill_candidates` keeps its signature, its set, its order, its
+  truncation and its exclusion semantics, and delegates to the core with the
+  target added to the excluded slice.
+- `select_version_gated_floodfills` applies `dsm_target_eligibility(
+  published_version_of(record))` to each nearest candidate and returns
+  `VersionGatedFloodfillSelection { targets, refusals, examined }`. A
+  floodfill that is unknown, uncomparable or below the floor is **never** a
+  target, and every refusal is counted by reason. A refusal is never a
+  silent skip.
+- `PublicationCoordinator::nearest_eligible_floodfills` now delegates to the
+  shared selection with the local RouterHash as both the routing key and the
+  exclusion — the shape the hand-rolled selection always used. Its public
+  behaviour is unchanged.
+
+**The examined count is the identity the gate can carry exactly.** It counts
+only the candidates whose stored record could be read, so every examined
+candidate is either an accepted target or a refusal counted by reason, and
+`examined == accepted + refused` holds. The unreadable branch is unreachable
+today — the candidate list is derived from the same store the records are
+read from, and the store is borrowed immutably for the whole selection — but
+it is written so the identity cannot drift if that ever changes.
+
+The selection is **runtime-neutral**: no Tokio, no async function, no
+socket, no filesystem, no clock, no task. The `i2pr-netdb` section of
+`scripts/check-runtime-boundaries.sh` enforces that over the whole crate,
+`version.rs` and `selection.rs` included.
+
 ### The floodfill-indexed routing table, the exploration job, and the optimized lookup (`bucket_set.rs`, `exploration.rs`, `optimized_lookup.rs`)
 
 Plan 489 replaces the flat, undifferentiated peer map with a **bounded,

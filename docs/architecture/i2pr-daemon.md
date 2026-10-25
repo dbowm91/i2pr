@@ -445,7 +445,7 @@ under Key contracts for the lifecycle detail.
 `transit_compose`,
 `transit_composition`,
 `transit_owner`, `transit_participation`, `transit_volume`,
-`tunnel_liveness`.
+`tunnel_liveness`, `version_eligibility`.
 
 `console` and `i2pcontrol_dispatch` were added by Plans 356–358;
 `app_gateway`, `app_manager_bridge` by Plan 368 and `app_runtime` by Plan 369.
@@ -1094,13 +1094,100 @@ daemon-level service composition remains Plan 433's open work. Until Plan 433
 lands, the shared consumer is reachable only from this crate.
 
 **No advertisement and no capability change.** The routing table is **internal
-state**. `specs/support.toml` is unchanged by this plan — 94 surfaces (88
+state**. `specs/support.toml` is unchanged by this plan — 95 surfaces (89
 experimental, 5 deferred, 1 ready), 0 advertised — the published RouterInfo and
 its `caps` are unchanged, and `router.version` stays `0.9.62`. The evidence for
 this phase is a **private controlled mesh**, not a public-network measurement:
 Plan 489 §11.1's stock-peer NetDB exploration lane and Plan 494's `caps=f`
 advertisement remain unlanded, and Plan 494 stays gated on Plan 493's authorized
 two-host topology.
+
+### The live DSM version gate and the live peer-eligibility receipt (Plan 503, `src/version_eligibility.rs`)
+
+Plan 491 attached two duties to the API version this router declares: minimum
+peers a tunnel may be built through, and minimum floodfill peers a DSM may be
+sent to. The **first** was enforced on the live path. The **second** was
+enforced **nowhere in production**.
+
+The router's two live `DatabaseStore` sends selected floodfills by XOR distance
+alone and never consulted `dsm_target_eligibility`:
+
+- the **creator RouterInfo** publication (`src/service_product.rs:6497`,
+  reached from the live composition through `src/lib.rs:3991`) sorted the
+  floodfill advertisers itself and truncated to three;
+- the **service LeaseSet2** publication (`src/service_product.rs:8222`,
+  reached from `src/service_product.rs:3008`/`:3606`/`:7586`) went through
+  `DestinationTunnelCoordinator::candidate_hashes` →
+  `i2pr_netdb::lookup_policy::select_floodfill_candidates`, a selection that
+  filters on nothing but distance and exclusion.
+
+The typed, counted DSM refusal Plan 491 built
+(`src/netdb_tunnels.rs:790` `begin_publication`) has **zero production
+callers**, because `NetDbTunnelCoordinator` is never composed — see the
+section above. The router therefore published its RouterInfo and its LeaseSet2
+to floodfills that publish no version, an uncomparable version, or a version
+below `0.9.62`: the exact under-compliance Plan 491 exists to prevent.
+
+**Both live paths now consult the shared, version-gated selection** in
+`i2pr-netdb` (`lookup_policy::select_version_gated_floodfills`), through two
+coordinator methods:
+
+- `DestinationTunnelCoordinator::version_gated_candidate_hashes` — the
+  LeaseSet2 publication's selection, with the same routing key, the same
+  target exclusion and the same three-floodfill bound as before, with the
+  floor applied;
+- `DestinationTunnelCoordinator::version_gated_publication_floodfills` — the
+  creator RouterInfo publication's selection, with our own router hash as both
+  the routing key and the exclusion.
+
+The candidates are now considered within the policy's ceiling and the
+**eligible** ones are kept, so a below-floor floodfill can no longer consume
+one of the three publication slots. An empty eligible set fails closed through
+the paths that already existed: the creator publication is skipped with a
+debug transition, and the LeaseSet2 publication releases its reserved intent
+and returns the existing typed request-construction failure. A refused
+floodfill is a **refusal**, not a delivery failure, and it is counted by
+reason.
+
+**The receipt is now a live product.** `src/version_eligibility.rs` owns the
+peer-eligibility decision surface: `VersionDecisionKind`,
+`VersionEligibilityReceipt`, the digest, the two constructors, and
+`VersionEligibilityOwner` — a bounded log (`VecDeque`, an explicit cap, the
+oldest entry evicted at the cap) behind an internal `std::sync::Mutex`, so
+the shared handle is a plain `Arc`. The receipt carries **counts and stable
+reason labels only**: no peer hash, no address, no key, no version string, no
+payload.
+
+The coordinator records one receipt per live decision — the tunnel-build gate
+(`destination_peer_candidates`) and the two DSM gates. A coordinator without an
+owner records nothing, so the controlled helper and the integration lanes are
+unaffected. The owner reaches the coordinator without a signature change: the
+service product creates it, hands it to the coordinator, keeps it, and exposes
+it through `ServiceProduct::version_eligibility`; the composition publishes it
+into `InspectionHandles` (`publish_version_eligibility` /
+`version_eligibility`), so the running router's decisions are observable
+through the plane that already publishes the transit posture.
+
+**The identity `examined == accepted + refused` is exact for the DSM gate**,
+whose only two outcomes are eligible and refused-by-version-reason. It does
+**not** hold for the build gate, whose `examined` is the whole scanned
+population: the build projection has two further refusal reasons —
+`unqualified` (the record lacks build metadata) and `capped_participation`
+(the peer reached its participation cap) — and **neither is a version
+refusal**, so neither appears in the receipt. They stay counted in
+`CandidateProjectionSummary`.
+
+**The lookup-target selection is deliberately not gated.** A `DatabaseLookup`
+is not a DSM and is not one of Plan 491's two obligations; extending the floor
+to the lookup path would change which floodfills the router can ask at all,
+which is a product decision beyond this plan. That gap is recorded as an open
+finding, not silently taken.
+
+**No advertisement and no capability change.** `router.version` stays
+`0.9.62`, `caps` and the published RouterInfo are unchanged, the support
+inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. Plan 503 is **not** a stock-peer
+qualification and claims no interop evidence.
 
 ### Outbound/inbound composition roles
 

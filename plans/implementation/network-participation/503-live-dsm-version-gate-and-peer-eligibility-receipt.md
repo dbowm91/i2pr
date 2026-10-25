@@ -282,11 +282,17 @@ one of the three publication slots.
 
 **The service LeaseSet2 publication** (`service_product.rs:8222`) replaces
 `candidate_hashes` with the gated equivalent. When no eligible floodfill
-remains, the existing fail-closed path is taken: the reserved publication
-intent is released and the typed `PublicationFailureClass::RequestConstruction`
-/ `PublicationBeginRejection::NoEligibleFloodfill` rejection is returned.
-**A refused floodfill is never counted as a delivery failure** — it is
-counted as a refusal, by reason, in the receipt.
+remains, the **existing** fail-closed path is taken unchanged: the reserved
+publication intent is released and the typed
+`PublicationFailureClass::RequestConstruction` stage failure is returned.
+That error shape is **not** changed by this plan — widening the eligible
+set's failure into the `PublicationBeginRejection::NoEligibleFloodfill`
+*begin* rejection would alter an existing error contract for a case the
+router already handled, and the distinction it would buy ("no floodfill is
+known" against "every known floodfill is ineligible") is already carried by
+the receipt: the first has `examined == 0`, the second has `examined == n`
+with the refusal counts. **A refused floodfill is never counted as a
+delivery failure** — it is counted as a refusal, by reason, in the receipt.
 
 Both paths keep their existing "best-effort publication; provisioning
 continues" semantics. A below-floor floodfill is a **refusal**, not an
