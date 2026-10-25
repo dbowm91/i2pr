@@ -93,6 +93,8 @@ struct RawConfig {
     bandwidth: RawBandwidthConfig,
     #[serde(default)]
     transit: RawTransitConfig,
+    #[serde(default)]
+    exploratory: RawExploratoryConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -972,6 +974,27 @@ impl Default for RawTransitConfig {
             peer_participation_cap: default_transit_peer_participation_cap(),
         }
     }
+}
+
+/// The operator-controlled exploratory build posture (Plan 505).
+///
+/// The posture is a **posture**, not an advertisement: it never publishes the
+/// exploratory role, never lowers a protocol floor, and never reaches the
+/// network on its own. `builds` is the single switch and it is **off by
+/// default**; a router that has never set it builds no exploratory tunnel.
+///
+/// The posture is off by default for a concrete reason, not out of caution.
+/// The daemon's transport can only dial a peer it may legally reach — the
+/// SSU2 dial target is loopback-only and the private-LAN variant accepts
+/// only RFC1918 IPv4 — so a public deployment's peer population is not
+/// dialable at all. Enabling the posture is an explicit operator decision
+/// that this router should build exploratory tunnels inside the mesh it can
+/// actually reach.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExploratoryConfig {
+    #[serde(default)]
+    builds: bool,
 }
 
 fn default_transit_share_limit() -> u8 {
@@ -2095,6 +2118,9 @@ pub struct Config {
     /// Operator-controlled transit participation posture (Plan 492; default
     /// off, never advertised).
     pub transit: TransitConfig,
+    /// Operator-controlled exploratory build posture (Plan 505; default off,
+    /// never advertised).
+    pub exploratory: ExploratoryConfig,
 }
 
 /// Product backend used for normal-daemon SAM-created destinations.
@@ -2202,6 +2228,21 @@ pub struct TransitConfig {
     /// The maximum number of participating tunnels one peer may hold.
     /// `1..=`[`MAX_TRANSIT_PEER_PARTICIPATION_CAP`].
     pub peer_participation_cap: usize,
+}
+
+/// The operator-controlled exploratory build posture (Plan 505).
+///
+/// The posture is **off by default**. Enabling it is an explicit operator
+/// decision that says this router should name a peer, build a one-hop
+/// exploratory tunnel toward it, and watch the pair for liveness.
+///
+/// The posture never advertises the exploratory role: the published
+/// capability string is unchanged by this surface, and the role stays
+/// non-advertised until the evidence that justifies an advertisement exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExploratoryConfig {
+    /// Whether the operator opted this router into exploratory tunnel builds.
+    pub builds: bool,
 }
 
 /// Normalized service-tunnel configuration.
@@ -2349,6 +2390,7 @@ impl Config {
         let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &ntcp2, &netdb)?;
         let bandwidth = normalize_bandwidth(&raw.bandwidth, &ssu2)?;
         let transit = normalize_transit(&raw.transit, &bandwidth)?;
+        let exploratory = normalize_exploratory(&raw.exploratory);
 
         Ok(Self {
             source_path: None,
@@ -2383,6 +2425,7 @@ impl Config {
             floodfill,
             bandwidth,
             transit,
+            exploratory,
         })
     }
 }
@@ -4093,6 +4136,19 @@ fn normalize_transit(
     })
 }
 
+/// Normalizes the exploratory build posture (Plan 505).
+///
+/// The posture has exactly one switch and one bound-free value: whether the
+/// operator opted this router into building exploratory tunnels. There is
+/// deliberately **no** count knob — the number of exploratory pairs the
+/// router maintains is bounded by the coordinator's own pool and by Plan
+/// 504's `MAX_LIVENESS_PAIRS`, so a configuration key that could disagree
+/// with those ceilings would be a second source of truth rather than a
+/// limit.
+fn normalize_exploratory(raw: &RawExploratoryConfig) -> ExploratoryConfig {
+    ExploratoryConfig { builds: raw.builds }
+}
+
 fn normalize_reseed(
     raw: &RawReseedConfig,
     netdb: &NetDbConfig,
@@ -4883,6 +4939,46 @@ data_dir = "./state"
         let unknown = format!("{MINIMAL}\n[transit]\nadvertise = true\n");
         assert!(matches!(
             Config::parse(&unknown),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    /// Plan 505 WP1: the exploratory build posture is **off by default**, so a
+    /// router that has never set it builds no exploratory tunnel.
+    #[test]
+    fn exploratory_builds_are_disabled_by_default() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.exploratory.builds);
+    }
+
+    /// Plan 505 WP1: an explicit opt-in is accepted and normalized.
+    #[test]
+    fn exploratory_builds_accept_an_explicit_opt_in() {
+        let configured = format!("{MINIMAL}\n[exploratory]\nbuilds = true\n");
+        let parsed = Config::parse(&configured).expect("valid exploratory posture");
+        assert!(parsed.exploratory.builds);
+    }
+
+    /// Plan 505 WP1: the section is strict, so a key that looks like an
+    /// advertisement is refused rather than ignored.
+    #[test]
+    fn exploratory_section_rejects_unknown_keys() {
+        let unknown = format!("{MINIMAL}\n[exploratory]\nadvertise = true\n");
+        assert!(matches!(
+            Config::parse(&unknown),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    /// Plan 505 WP1: the posture carries **no** count knob. The number of
+    /// exploratory pairs the router maintains is bounded by the coordinator's
+    /// pool and Plan 504's `MAX_LIVENESS_PAIRS`; a configuration key that
+    /// could disagree with those ceilings would be a second source of truth.
+    #[test]
+    fn exploratory_section_rejects_a_pair_count_knob() {
+        let rejected = format!("{MINIMAL}\n[exploratory]\nmax_pairs = 2\n");
+        assert!(matches!(
+            Config::parse(&rejected),
             Err(ConfigError::Parse(_))
         ));
     }

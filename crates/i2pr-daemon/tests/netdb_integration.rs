@@ -214,6 +214,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             participating_tunnels: i2pr_daemon::config::DEFAULT_TRANSIT_PARTICIPATING_TUNNELS,
             peer_participation_cap: i2pr_daemon::config::DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP,
         },
+        exploratory: i2pr_daemon::config::ExploratoryConfig { builds: false },
         source_path: None,
     }
 }
