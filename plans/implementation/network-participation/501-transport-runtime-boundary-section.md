@@ -4,7 +4,7 @@
 | --- | --- |
 | Plan | 501 |
 | Subsystem | `network-participation` |
-| State | `registered` (`registered-transport-runtime-boundary-section`) |
+| State | `closed` (`passed-transport-runtime-boundary-section`) |
 | Depends on | Plan 362 (`passed-i2pr-api-runtime-boundary-section`), Plan 366 (`passed-console-boundary-section`), Plan 497 (the `i2pr-netdb` section) |
 | Discharges | Plan 490 Low #4 — no `i2pr-transport-ssu2` section in `scripts/check-runtime-boundaries.sh`, and the raw transport greps are fail-open for a grouped `use`; Plan 497 L1 — the `i2pr-api` section prints "8 rules" while carrying seven |
 | Closure record | `plans/closure/network-participation/501-status.md` |
