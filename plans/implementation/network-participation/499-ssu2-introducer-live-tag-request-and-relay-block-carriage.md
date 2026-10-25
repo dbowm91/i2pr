@@ -252,10 +252,16 @@ therefore cannot ask this router for a tag, and this router cannot answer.
     counted by reason.
   - `SessionEvent::RelayTag(u32)` is counted as an observed tag.
 - **WP3 — the runtime's outbound relay carriage API.**
-  - `Ssu2RuntimeService::queue_relay_intro(target, block)` and
-    `queue_relay_response(requester, block)`, resolving the peer's session
-    through the same chain `queue_controlled_peer_test` uses, and waking the
-    scheduler.
+  - The **peer-facing** methods on `Ssu2RuntimeService`, all resolving the
+    peer's session through the same chain `queue_controlled_peer_test` uses
+    and all waking the scheduler:
+    `queue_relay_request`, `queue_relay_tag_request`, `queue_relay_intro`
+    and `queue_relay_response`.
+  - `queue_relay_request` and `queue_relay_tag_request` are the **peers'
+    side** of the same mechanism. They are in scope only because the live
+    three-party mesh needs its requester and its target to be **real live
+    routers** rather than transport-level stubs; no requester or target
+    *role* is built, and neither method carries any policy.
   - A typed error that distinguishes *no session*, *ambiguous session*,
     *session terminated* and *control queue full*.
 - **WP4 — the daemon's carriage seam and the live drain.**
@@ -276,9 +282,12 @@ therefore cannot ask this router for a tag, and this router cannot answer.
   does not publish anything, and it does not advertise the tag.
 - **A stock-peer lane.** A lane against the pinned i2pd needs the Plan 493
   topology.
-- **The requester side.** The relay *request* (`queue_relay_request`) is the
-  requester's own path; this router is the introducer. The transport keeps
-  the API; this plan does not build a requester role.
+- **The requester and target *roles*.** The transport keeps the requester's
+  block-emission API and this plan exposes it on the runtime, because the
+  live mesh needs its requester and its target to be real live routers. But
+  this router builds **no requester role** — no target selection, no
+  correlation table, no response verification on the requester's side — and
+  **no target role** beyond answering a tag request.
 - **Link selection between two concurrent sessions with one peer.** The plan
   refuses an ambiguous peer and records it as a finding; a link-selection
   policy is a separate change.
@@ -363,7 +372,11 @@ session and a full control queue both refuse.
 - The transport's introducer quota is the bound; a refused issuance is
   counted by reason.
 - `SessionEvent::RelayTag(u32)` is counted as an observed tag and creates no
-  state.
+  state. The **observed tag is surfaced on the runtime's existing relay
+  handoff** as a new `Ssu2RelayEvent::Tag(u32)` variant, because the peer
+  that asked for a tag is the peer that has to learn it. The daemon's role
+  owner refuses that variant as not its role, exactly as it already refuses
+  `Ssu2RelayEvent::Intro`.
 
 **Acceptance:** a live peer that asks for a tag over a real session receives
 a `RelayTag` block; the tag resolves through `relay_tag_owner` to that
