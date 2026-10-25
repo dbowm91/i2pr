@@ -195,6 +195,9 @@ record) does not apply here.
 12. **No advertisement.** `router.version` stays `0.9.62`; `caps` and the
     published RouterInfo are unchanged; the support inventory's advertised
     count stays zero.
+13. **A local condition is never written into a peer's profile.** The
+    router's own faults are counted by the driver's counters and never
+    degrade a peer's profile score.
 
 ## 5. Scope
 
@@ -325,12 +328,27 @@ maps it to the peer and records one observation:
 | `Installed` | `observe_answered` |
 | `TimedOut` | `observe_unanswered` |
 | `HopRejected` | `observe_refused` |
-| delivery refused at submit (`SubmitResult::Rejected`) | `observe_unreachable` |
-| `Cancelled`, `InvalidReply`, `PoolRejected`, `InvalidRegistration` | `observe_misbehaving` |
+| `DeliveryFailed` | `observe_unreachable` |
+| `InvalidReply` | `observe_misbehaving` — the peer sent a reply the strict decoder refused |
+| `Cancelled`, `PoolRejected`, `InvalidRegistration`, `InvalidPath`, `CoordinatorRejected` | **none** — these are *this router's* condition |
+| the four destination-scoped variants | never attributed to the driver |
 
-**Every terminal outcome produces exactly one observation**, and an outcome
+**Every terminal outcome produces exactly one disposition**, and an outcome
 with no in-flight record is counted as an orphan and produces none. The
-mapping is total: no outcome is silently dropped.
+mapping is total over all fourteen `BuildCoordinatorOutcome` variants: no
+outcome is silently dropped.
+
+**A local condition is never written into a peer's profile.** The local pool
+refusing a registration, an invalid local registration, a local coordinator
+rejection, an invalid path and a local cancellation are **this router's**
+faults. Recording any of them as `observe_misbehaving` would blame the peer
+for a condition the peer did not cause — and would let a local fault degrade
+a good peer's profile score, which is the peer-side equivalent of
+publishing a peer-side refusal as an `i2pr` defect. The driver counts those
+outcomes in its own counters and leaves the peer's profile untouched. The
+distinction is the same one the repo already draws between a peer that
+**misbehaves** (it replied with data that does not match the requested key)
+and a peer that is merely **unreachable**.
 
 ### WP6 — the counters and the inspection seam
 
@@ -466,8 +484,11 @@ cargo test --locked -p i2pr-daemon --test version_eligibility_live -- --test-thr
    a below-floor peer is refused and counted.
 3. The driver builds through the **single** exploratory build path and
    installs the result into the pool and the registry.
-4. **Every** terminal outcome produces exactly one profile-store observation,
-   and the mapping is total.
+4. **Every** terminal outcome produces exactly one **disposition**, and the
+   mapping is total over all fourteen `BuildCoordinatorOutcome` variants. A
+   **local** condition is counted and produces **no** peer-profile write; the
+   contrast — a genuine peer fault **does** write one — is asserted in the
+   same test, so the omission cannot be a broken recorder.
 5. The peer-profile store is **fed** in a live daemon and is **written** by the
    driver — the write side that Plan 497 limitation 5 recorded as open.
 6. The liveness scheduler tracks a **non-zero** pair count in the controlled
