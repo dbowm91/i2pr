@@ -172,7 +172,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/netdb_participation.rs` | 2 488 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either. **Plan 497** adds the `RoutingTableConsumer` — the shared, mutex-owned handle the lookup path consults, whose `candidates(...)` answers `Table(Vec<RouterHash>)` or `Fallback(RoutingTableFallback)`, and whose `RoutingTableCounters` count every fallback by reason | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome`, `RoutingTableConsumer`, `RoutingTableCandidates`, `RoutingTableFallback`, `RoutingTableCounters` |
+| `src/netdb_participation.rs` | 2 526 | Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either. **Plan 497** adds the `RoutingTableConsumer` — the shared, mutex-owned handle the lookup path consults, whose `candidates(...)` answers `Table(Vec<RouterHash>)` or `Fallback(RoutingTableFallback)`, and whose `RoutingTableCounters` count every fallback by reason | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome`, `RoutingTableConsumer`, `RoutingTableCandidates`, `RoutingTableFallback`, `RoutingTableCounters` |
 | `src/netdb_seam.rs` | 1 320 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider; **Plan 497** adds `begin_lookup_with_preferred`, which forwards a routing table's preferred peer list to the engine's `start_with_preferred` entry point | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome`, `begin_lookup_with_preferred` |
 | `src/netdb_tunnels.rs` | 1 135 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss; **Plan 491** refuses a DSM whose floodfill target is below the DSM API-version floor; **Plan 497** adds `with_routing_table`, which injects the shared `RoutingTableConsumer` so `begin_tunnel_lookup` can ask the table how it would order the flat store's selection | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
@@ -953,6 +953,17 @@ signed and suggested evidence counts, the queryable/pending/refused split — an
 a SHA-256 digest over them. It never carries a peer's hash, address, key
 material, session state, or payload; the private-mesh lane asserts that a
 receipt rendered in full carries no peer hash.
+
+**Plan 500 adds the terminal-state counts.** A `RoutingReceipt` now also
+carries `terminal_counts`: the number of lookups that terminated in each
+final state, keyed by the state's stable label. The labels come from
+`i2pr_netdb::LookupFinalState::label()`, so the same final state always lands
+in the same bucket — and, in particular, a lookup that spent its per-lookup
+peer budget (`peer-budget-exhausted`) is counted **separately** from a lookup
+that ran out of candidates (`peer-exhausted`). The two are different events
+with different causes and different remedies, and folding them into one
+bucket would make the peer budget invisible in the diagnostics. The counts
+are cumulative over the driver's lifetime and carry no peer identity.
 
 `RoutingProjectionOutcome` is the persistence contract: a projection that
 round-trips is `Restored { peers }`; a corrupt, oversized or expired
@@ -1889,12 +1900,12 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**97 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+**98 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
 modules (notably `src/lib.rs:4890`, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 
-The area inventory below names **79** of the 97 files. The remaining 18 were
+The area inventory below names **80** of the 98 files. The remaining 18 were
 added by later plans and are not yet assigned an area; the inventory is not
 inflated to hide that.
 
@@ -1903,7 +1914,7 @@ inflated to hide that.
 | Area | Count | Representative files |
 | --- | --- | --- |
 | CLI | 1 | `cli.rs` |
-| NetDB | 6 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted |
+| NetDB | 7 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates |
 | Exploratory tunnels / build / liveness | 4 | `exploratory_build_unit.rs`, `exploratory_build_live.rs`, `exploratory_tunnel_external.rs` |
 | Destinations (M6) | 3 | `destination_tunnel_unit.rs`, `destination_tunnel_live.rs`, `destination_tunnel_external.rs` |
 | Streaming (M6) | 3 | `streaming_tunnel_unit.rs`, `streaming_tunnel_live.rs`, `streaming_tunnel_external.rs` |

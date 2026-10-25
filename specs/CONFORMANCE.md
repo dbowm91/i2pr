@@ -1426,6 +1426,66 @@ Evidence: `crates/i2pr-transport-ssu2/src/session.rs`,
 `crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`, and
 `crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs`.
 
+## The lookup engine's per-lookup peer budget (Plan 500)
+
+Plan 497 recorded that `LookupPolicy::max_peers_per_lookup` was declared and
+validated but read by nothing. Plan 500 makes it load-bearing. The plan of
+record is
+[`plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md`](../plans/implementation/network-participation/500-lookup-peer-budget-enforcement.md);
+its closure record is
+[`plans/closure/network-participation/500-status.md`](../plans/closure/network-participation/500-status.md);
+the predecessor closure record is
+[`plans/closure/network-participation/497-status.md`](../plans/closure/network-participation/497-status.md).
+What is claimed, and what is not:
+
+- **The claim is that the budget is a real bound on the number of peers a
+  lookup queries.** It is enforced in the engine's single attempt site, so
+  it binds on `start`, `start_with_candidates`, `start_with_preferred` and
+  the response-driven advance alike — not on one entry point.
+- **The budget narrows attempts, never candidates.** The check sits before
+  the peer is marked queried and before the attempt counter moves, so a
+  candidate the budget prevented querying stays unqueried and the candidate
+  list itself is untouched. Plan 489's pinned list and Plan 497's
+  preference prefix are unchanged.
+- **The two exhaustions are typed and counted separately.**
+  `LookupFinalState::PeerExhausted` means the **candidate list** ran out;
+  `LookupFinalState::PeerBudgetExhausted` means the **policy** ceiling was
+  reached while candidates remained. The daemon's routing receipt counts
+  them in separate buckets keyed by the state's stable label, and the
+  receipt stays counts-only — no peer hash, no key, no payload.
+- **The behaviour change is on the failure path, and it is stated here.**
+  A lookup that succeeds within the budget is unaffected. A lookup that
+  fails now stops at the budget (default 8 peers) instead of querying as
+  many peers as the candidate list holds (up to
+  `max_candidates_considered`, default 32) — so it does less work, finishes
+  sooner, and **may fail where it previously succeeded**. That is the
+  declared policy's intent: two distinct ceilings, the tighter one on peers
+  actually queried.
+- **`max_candidates_considered` is unchanged.** It remains the separate
+  ceiling on the candidate set the selector produces, enforced in
+  `select_floodfill_candidates`.
+- **The policy's existing validations stay load-bearing.** A zero peer
+  budget is still `LookupPolicyError::ZeroPeers`, and a peer budget above
+  the candidate ceiling is still `PeerBudgetExceedsCandidates`.
+- **The routing table's selection semantics are unchanged.** The table may
+  **reorder** the flat store's selection and never narrow or widen it —
+  Plan 497's invariant, unchanged here.
+- **The participation driver is still not composed into the router's tunnel
+  building.** That composition is Plan 433's scope and remains registered
+  **blocked**; this plan changes the driver's *reason vocabulary*, not its
+  wiring.
+- **There is no stock-peer evidence** for the new exhaustion, and this is a
+  lookup-engine bound, not a network capability.
+- **Nothing is promoted.** `specs/support.toml` stays at **94 surfaces, 88
+  experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
+  stays `0.9.62`; `caps` and the published RouterInfo are unchanged.
+
+Evidence: `crates/i2pr-netdb/src/lookup_action.rs`,
+`crates/i2pr-netdb/src/lookup_engine.rs`,
+`crates/i2pr-netdb/tests/lookup_peer_budget.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`, and
+`crates/i2pr-daemon/tests/netdb_peer_budget_receipt.rs`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

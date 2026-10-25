@@ -84,8 +84,8 @@ It must **not** own:
 | `lease_set` | `lease_set.rs` | 574 | Plan 272 validated classic LeaseSet and MetaLeaseSet plus their bounded stores | `ValidatedLeaseSet`, `ValidatedMetaLeaseSet`, `LeaseSetValidationContext`, `LeaseSetValidationError`, `LeaseSetStore`, `LeaseSetStoreConfig`, `LeaseSetInsertOutcome`, `MetaLeaseSetStore`, `MetaLeaseSetStoreConfig`, `MetaLeaseSetInsertOutcome` |
 | `lease_set2` | `lease_set2.rs` | 1000 | Plan 119 Standard LeaseSet2 validation, freshness policy, disclosure block, and bounded store | `ValidatedLeaseSet2`, `DestinationHash`, `LeaseSet2ValidationPolicy` / `LeaseSet2ValidationContext` / `LeaseSet2ValidationError`, `LeaseSetDisclosureBlock`, `LeaseSet2Store`, `LeaseSet2StoreConfig`, `LeaseSet2StoreStats`, `LeaseSet2InsertOutcome` |
 | `local` | `local.rs` | 812 | Local signed RouterInfo builder, controlled option declaration, data-only Java-compatible bandwidth-class derivation, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `BandwidthClass`, `BandwidthClassError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
-| `lookup_action` | `lookup_action.rs` | 476 | Typed action vocabulary emitted by the lookup machine; bounded gzip decompression; reply-path sink trait | `LookupAction`, `LookupOutcome`, `LookupFinalState`, `DecompressionError`, `ReplyPathSink`, `decompress_router_info`, `MAX_COMPRESSED_ROUTER_INFO_BYTES`, `MAX_DECOMPRESSED_ROUTER_INFO_BYTES`, `LOOKUP_EXCLUDED_PEER_BUDGET` |
-| `lookup_engine` | `lookup_engine.rs` | 1 816 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing; **Plan 497** adds the preferred-order entry point `start_with_preferred`, which reorders the flat store's own selection without narrowing it | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
+| `lookup_action` | `lookup_action.rs` | 500 | Typed action vocabulary emitted by the lookup machine; bounded gzip decompression; reply-path sink trait | `LookupAction`, `LookupOutcome`, `LookupFinalState`, `DecompressionError`, `ReplyPathSink`, `decompress_router_info`, `MAX_COMPRESSED_ROUTER_INFO_BYTES`, `MAX_DECOMPRESSED_ROUTER_INFO_BYTES`, `LOOKUP_EXCLUDED_PEER_BUDGET` |
+| `lookup_engine` | `lookup_engine.rs` | 1 849 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing; **Plan 497** adds the preferred-order entry point `start_with_preferred`, which reorders the flat store's own selection without narrowing it; **Plan 500** enforces the policy's per-lookup peer ceiling in the single attempt site, so it binds on every entry point and narrows attempts, never candidates | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 366 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
 | `lookup_policy` | `lookup_policy.rs` | 468 | Bounded lookup budgets and nearest-N floodfill candidate selection | `LookupPolicy`, `LookupPolicyError`, `FloodfillSelection`, `select_floodfill_candidates`, `MAX_SUGGESTED_HASH_LIMIT`, `DEFAULT_*` budget constants |
 | `profile` | `profile.rs` | 857 | Plan 488 peer profile vocabulary: capacity tier, reachability state, the bounded explainable score, the capacity-class parser, and Plan 491's per-peer published API version evidence | `Profile`, `ProfileTier`, `ProfileState`, `ProfileScore`, `ProfileError`, `PeerCapacityClass`, `network_prefix16`, `MAX_PROFILE_SCORE`, `SCORE_*` |
@@ -679,6 +679,42 @@ different values — the day-keyed position versus the raw hash — so the two
 orders can disagree. That is what makes the table's answer a genuine
 **reordering** rather than a restatement of the flat store's own order.
 
+### The per-lookup peer budget (Plan 500, `lookup_engine.rs`)
+
+`LookupPolicy::max_peers_per_lookup` (default 8) is a **hard ceiling on the
+number of peers a lookup queries**. It is enforced in the engine's single
+attempt site, `advance_attempt` — the one place `start`,
+`start_with_candidates`, `start_with_preferred` and the response-driven
+advance all emit an attempt from — so the budget binds on **every** entry
+point rather than on one of them.
+
+**The budget narrows attempts, never candidates.** The check sits *before* the
+peer is pushed onto the lookup's `queried` set and *before* the attempt
+counter moves, so a candidate the budget prevented querying stays
+unqueried, and the candidate list itself is untouched. Plan 489's pinned list
+and Plan 497's preference prefix are both unchanged: the engine still knows
+the same peers, it simply stops asking sooner.
+
+The exhaustion is **typed and distinguishable**. `LookupFinalState` carries
+two separate terminal states:
+
+| State | Means |
+| --- | --- |
+| `PeerExhausted` | the **candidate list** ran out — the lookup asked every peer it could and none answered |
+| `PeerBudgetExhausted` | the **policy** ceiling on attempts was reached while candidates were still left |
+
+`LookupFinalState::label()` returns the stable label a receipt counts the
+state under (`"peer-exhausted"`, `"peer-budget-exhausted"`, …), and the
+`Display` impl delegates to it, so the same final state always lands in the
+same bucket.
+
+**The behaviour change is on the failure path.** A lookup that *succeeds*
+within the budget is unaffected. A lookup that *fails* now stops at the
+budget instead of querying as many peers as the candidate list holds (up to
+`max_candidates_considered`, 32) — so it does less work, finishes sooner,
+and may fail where it previously succeeded. That is the declared policy's
+intent: two distinct ceilings, the tighter one on peers actually queried.
+
 ### Transport-neutral lookup and publication machines
 
 `LookupKind` has two variants with I2NP lookup-type bits:
@@ -710,7 +746,11 @@ caller-supplied request id.
   `total_deadline_ms = 5_000`, `per_attempt_deadline_ms = 1_500`,
   `max_suggested_hashes = 128`, `max_candidates_considered = 32`. All
   are caller-overridable and validated at construction
-  (`LookupPolicyError`).
+  (`LookupPolicyError`). **Plan 500** makes `max_peers_per_lookup`
+  load-bearing: it is the ceiling on the number of peers a lookup queries,
+  enforced in the engine's attempt site (see *The per-lookup peer budget*
+  above). `max_candidates_considered` remains the separate ceiling on the
+  candidate set the selector produces.
 - `PublicationCoordinator` emits one bounded `DatabaseStore` per nearest
   floodfill with `reply_token = 0` store-and-forget semantics, tracks
   acknowledgement tokens, **never re-signs the local RouterInfo** (a
@@ -1188,12 +1228,12 @@ synchronous, bounded, and drop-released.
 
 ## Tests
 
-412 tests, all local, all deterministic; no root, namespaces, Java I2P,
+420 tests, all local, all deterministic; no root, namespaces, Java I2P,
 i2pd, or Internet connection. `cargo test --locked -p i2pr-netdb
 --all-targets -- --test-threads=1` passes: **302 in-crate unit tests,
-110 integration tests, 0 failed, 0 ignored.**
+118 integration tests, 0 failed, 0 ignored.**
 
-Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 156 lines):
+Integration files under `crates/i2pr-netdb/tests/` (8 files, 5 616 lines):
 
 | File | Lines | Tests | Coverage |
 | --- | ---: | ---: | --- |
@@ -1204,6 +1244,7 @@ Integration files under `crates/i2pr-netdb/tests/` (7 files, 5 156 lines):
 | `els2_type11_profile.rs` | 769 | 18 | Plan 346 ELS2 type-11 deployed signature-profile classification and verification |
 | `floodfill_type5_serve.rs` | 834 | 13 | Plan 332/346 floodfill store-and-serve of encrypted LeaseSet2 records |
 | `profile_boundary.rs` | 365 | 6 | Plan 488 static boundary guard for the crate: the production sources carry no `tokio::*`, no `std::net`, no `std::fs`, no `async fn`, no task ownership and no unchecked-insertion path. The guard carries its own inverted probe — a synthetic violating source must be reported, and a source that only *mentions* a forbidden construct in a comment or inside a `#[cfg(test)]` block must not be. |
+| `lookup_peer_budget.rs` | 460 | 7 | Plan 500 the per-lookup peer budget: a candidate set larger than the budget stops at the budget with `PeerBudgetExhausted`; a set at or below the budget still reports the candidate exhaustion; a successful lookup is unaffected; the policy still refuses a zero budget and a budget above the candidate ceiling; the budget binds on **every** entry point, not just one; the pinned candidate list is unchanged under the budget; and the preferred path still reaches a peer ingested mid-lookup under the budget |
 
 In-crate `#[cfg(test)]` modules (302 tests) are distributed as:
 `profile_store` 27, `bucket_set` 25, `local` 19, `lookup_engine` 18,
