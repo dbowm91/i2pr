@@ -3095,6 +3095,16 @@ impl ServiceProduct {
         &self.inner.ssu2_handle
     }
 
+    /// Plan 498: pulls the next authenticated inbound relay block without
+    /// waiting.
+    ///
+    /// The runtime's relay handoff is a second bounded channel beside the
+    /// I2NP handoff. The qualification path drains it into the introducer
+    /// (Bob) role owner exactly as the daemon's live inbound loop does.
+    pub(crate) fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        self.inner.ssu2_handle.try_next_relay_event()
+    }
+
     /// Deterministic pool-advance seam used by manual-clock tests and by the
     /// production poll wrapper above.
     async fn advance_destination_pools_at(

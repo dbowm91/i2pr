@@ -1385,6 +1385,21 @@ impl Ssu2ServiceHandle {
         self.relay.recv().await
     }
 
+    /// Receives the next inbound relay block without waiting.
+    ///
+    /// Plan 498: the daemon's live inbound loop drains the relay handoff on
+    /// a bounded tick. `next_relay_event` awaits, and `tokio::select!` over
+    /// the two handle receivers is impossible because both take `&mut self`
+    /// on the same handle — so the loop needs a non-blocking pull.
+    ///
+    /// Returns `None` when the channel is empty **or** disconnected. The
+    /// channel is the existing bounded relay channel
+    /// (`max_inbound_relay_queue`, default 16); this adds no channel and no
+    /// capacity, and changes nothing about the runtime's authentication path.
+    pub fn try_next_relay_event(&mut self) -> Option<Ssu2InboundRelay> {
+        self.relay.try_recv().ok()
+    }
+
     /// Returns the bound IPv4 socket address, if any.
     pub const fn local_v4(&self) -> Option<SocketAddr> {
         self.local_v4
@@ -7134,6 +7149,87 @@ mod tests {
             Ssu2RuntimeService::new(config, identity_with_router_info(vec![0xFF_u8; 64])),
             Err(Ssu2RuntimeConfigError::InvalidIdentity)
         ));
+    }
+
+    // -- Plan 498 non-blocking relay accessor ---------------------------
+    //
+    // The daemon's live inbound loop pulls the runtime's relay handoff on
+    // a bounded tick, because the two handoff receivers live behind one
+    // `&mut self` handle and cannot both be awaited by one `select!`.
+    // These rows pin the pull's semantics without a socket: an empty
+    // channel yields `None` and consumes nothing, a queued event is
+    // returned, the channel is empty again afterwards, and a disconnected
+    // channel is not mistaken for a live event.
+
+    fn relay_service_for_test() -> Ssu2RuntimeService {
+        let keys = make_path_keys();
+        Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info,
+            },
+        )
+        .expect("service")
+    }
+
+    fn relay_handle_for_test() -> (Ssu2ServiceHandle, mpsc::Sender<Ssu2InboundRelay>) {
+        let service = relay_service_for_test();
+        let (_inbound_tx, inbound_rx) = mpsc::channel::<Ssu2InboundI2np>(1);
+        let (relay_tx, relay_rx) = mpsc::channel::<Ssu2InboundRelay>(
+            Ssu2RuntimeConfig::default().limits.max_inbound_relay_queue,
+        );
+        (
+            Ssu2ServiceHandle {
+                service,
+                inbound: inbound_rx,
+                relay: relay_rx,
+                local_v4: None,
+                local_v6: None,
+            },
+            relay_tx,
+        )
+    }
+
+    fn relay_event_for_test() -> Ssu2InboundRelay {
+        let endpoint = Ssu2Endpoint::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40000).expect("endpoint");
+        let block =
+            i2pr_transport_ssu2::RelayRequestBlock::new(21, 7, 1000, 2, endpoint, vec![0x5A; 64])
+                .expect("block");
+        Ssu2InboundRelay {
+            link_id: LinkId::new(1).expect("link"),
+            peer: PeerId::from_hash(Hash::from_bytes([0x77_u8; 32])),
+            event: Ssu2RelayEvent::Request(block),
+        }
+    }
+
+    #[test]
+    fn try_next_relay_event_on_an_empty_channel_yields_none_and_consumes_nothing() {
+        let (mut handle, relay_tx) = relay_handle_for_test();
+        assert!(handle.try_next_relay_event().is_none());
+        relay_tx.try_send(relay_event_for_test()).expect("queue");
+        assert!(handle.try_next_relay_event().is_some());
+    }
+
+    #[test]
+    fn try_next_relay_event_returns_a_queued_event_and_then_the_channel_is_empty() {
+        let (mut handle, relay_tx) = relay_handle_for_test();
+        relay_tx.try_send(relay_event_for_test()).expect("queue");
+        let event = handle.try_next_relay_event().expect("event");
+        match event.event {
+            Ssu2RelayEvent::Request(block) => assert_eq!(block.nonce(), 21),
+            other => panic!("unexpected relay event: {other:?}"),
+        }
+        assert!(handle.try_next_relay_event().is_none());
+    }
+
+    #[test]
+    fn try_next_relay_event_yields_none_after_the_channel_disconnects() {
+        let (mut handle, relay_tx) = relay_handle_for_test();
+        drop(relay_tx);
+        assert!(handle.try_next_relay_event().is_none());
     }
 
     // -- Plan 159 real-UDP path-validation acceptance -------------------

@@ -262,6 +262,26 @@ impl Bootstrap {
         &self.store
     }
 
+    /// Returns one peer's signing key from its **validated** RouterInfo.
+    ///
+    /// Plan 498: the SSU2 introducer (Bob) role owner must never trust a key
+    /// that arrived on the wire. The key comes from a RouterInfo this NetDB
+    /// already validated — `RouterInfoStore` admits only
+    /// `ValidatedRouterInfo`, and there is no unchecked insert path.
+    ///
+    /// The answer is `None` for a peer this NetDB does not hold, so the
+    /// role owner refuses the block rather than guessing. The critical
+    /// section is one map lookup; the caller must not await while holding
+    /// the bootstrap's lock.
+    pub fn validated_signing_key(
+        &self,
+        peer_hash: &RouterHash,
+    ) -> Option<i2pr_proto::SigningPublicKey> {
+        self.store
+            .get(peer_hash)
+            .map(|record| record.router_info().router_identity().signing_key().clone())
+    }
+
     /// Validates and applies an authenticated unsolicited RouterInfo store to
     /// the same bounded NetDB used by bootstrap. LeaseSet payloads are refused
     /// by the existing unsolicited-store policy.
@@ -701,6 +721,54 @@ mod tests {
         let bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
         assert_eq!(bootstrap.snapshot().state, BootstrapState::Empty);
         assert_eq!(bootstrap.snapshot().record_count, 0);
+    }
+
+    /// Plan 498: the introducer role owner's resolver answers **only**
+    /// from the NetDB's validated store.
+    #[test]
+    fn a_validated_peer_yields_its_signing_key_and_an_unknown_peer_yields_none() {
+        let config = ReseedConfig {
+            enabled: false,
+            max_sources: 4,
+            max_su3_bytes: 1024,
+            sources: Vec::new(),
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4981);
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(1),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("signed RouterInfo");
+        let validated = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(Date::from_millis(1)),
+        )
+        .expect("validated RouterInfo");
+        let key = validated.key();
+        let expected = validated
+            .router_info()
+            .router_identity()
+            .signing_key()
+            .clone();
+
+        let mut bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
+        bootstrap.store.insert(validated);
+
+        assert_eq!(
+            bootstrap.validated_signing_key(&key),
+            Some(expected),
+            "a validated peer must yield its own signing key"
+        );
+        assert_eq!(
+            bootstrap.validated_signing_key(&RouterHash::from_bytes([0x77; 32])),
+            None,
+            "an unknown peer must yield no key, so the role owner refuses it"
+        );
     }
 
     #[test]

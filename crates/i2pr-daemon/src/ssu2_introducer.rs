@@ -32,6 +32,7 @@
 //!   capacity and evicts deterministically.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use i2pr_proto::SigningPublicKey;
 use i2pr_runtime::{
@@ -230,6 +231,37 @@ pub trait IntroducerSignerResolver {
     /// Returns the peer's signing key, or `None` when the peer is
     /// unknown or its RouterInfo is not validated.
     fn signing_key(&self, peer_hash: &[u8; 32]) -> Option<SigningPublicKey>;
+}
+
+/// The daemon's production [`IntroducerSignerResolver`].
+///
+/// Plan 498: the resolver answers **only** from the NetDB's validated
+/// store. A peer this NetDB does not hold yields `None`, and the role
+/// owner then refuses the relay block with
+/// [`Ssu2IntroducerRefusal::UnknownRequester`] rather than guessing.
+///
+/// The bootstrap's lock is a `std::sync::Mutex`. The critical section is
+/// one map lookup and it never awaits: the guard is created and dropped
+/// inside the synchronous [`IntroducerSignerResolver::signing_key`] call.
+pub struct NetDbSignerResolver {
+    bootstrap: Arc<Mutex<crate::bootstrap::Bootstrap>>,
+}
+
+impl NetDbSignerResolver {
+    /// Wraps the shared bootstrap owner.
+    pub fn new(bootstrap: Arc<Mutex<crate::bootstrap::Bootstrap>>) -> Self {
+        Self { bootstrap }
+    }
+}
+
+impl IntroducerSignerResolver for NetDbSignerResolver {
+    fn signing_key(&self, peer_hash: &[u8; 32]) -> Option<SigningPublicKey> {
+        let hash = i2pr_netdb::RouterHash::from_bytes(*peer_hash);
+        // A poisoned lock is fail-closed: the answer is `None`, so the role
+        // owner refuses the block instead of admitting an unverifiable peer.
+        let bootstrap = self.bootstrap.lock().ok()?;
+        bootstrap.validated_signing_key(&hash)
+    }
 }
 
 /// The daemon's SSU2 introducer (Bob) role owner.

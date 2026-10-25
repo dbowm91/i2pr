@@ -63,6 +63,7 @@ pub mod service_tunnels_tls;
 pub mod ssu2_introducer;
 pub mod ssu2_qualification_export;
 pub mod ssu2_qualification_receipts;
+pub mod ssu2_relay_drain;
 pub mod transit_compose;
 pub mod transit_owner;
 pub mod transit_participation;
@@ -2309,6 +2310,20 @@ impl NormalSsu2Owner {
         }
     }
 
+    /// Plan 498: pulls the next authenticated inbound relay block without
+    /// waiting.
+    ///
+    /// The runtime's relay handoff is a second bounded channel beside the
+    /// I2NP handoff, and the daemon's live inbound loop drains it into the
+    /// introducer (Bob) role owner. The pull is non-blocking so the drain
+    /// can run on its own bounded tick.
+    fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        match self {
+            Self::Router(handle) => handle.try_next_relay_event(),
+            Self::Groups(product) => product.try_next_relay_event(),
+        }
+    }
+
     async fn process_group_inbound(
         &mut self,
         inbound: &i2pr_runtime::Ssu2InboundI2np,
@@ -2336,6 +2351,12 @@ impl NormalSsu2Owner {
                 let _ = (*product).shutdown().await;
             }
         }
+    }
+}
+
+impl crate::ssu2_relay_drain::RelayEventSource for NormalSsu2Owner {
+    fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        NormalSsu2Owner::try_next_relay_event(self)
     }
 }
 
@@ -3617,6 +3638,11 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    // Plan 498: the introducer (Bob) role owner needs this
+                    // router's own hash to bind the relay blocks it admits.
+                    // The identity is moved into the runtime service below,
+                    // so the hash is taken first.
+                    let local_router_hash = *identity.router_hash.as_bytes();
                     let daemon_service = match Ssu2DaemonService::new_with_bandwidth(
                         &ssu2_config,
                         identity,
@@ -3814,6 +3840,13 @@ fn register_ssu2_service(
                         .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let mut group_tick = tokio::time::interval(Duration::from_millis(250));
                     group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Plan 498: the relay handoff drain tick. The runtime's
+                    // relay channel is bounded at
+                    // `max_inbound_relay_queue` (default 16); the tick
+                    // bounds how long a relay block waits for the
+                    // introducer (Bob) role owner.
+                    let mut relay_tick = tokio::time::interval(Duration::from_millis(100));
+                    relay_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let pump_started = tokio::time::Instant::now();
                     let mut reply_token_probe_sent = HashSet::new();
                     let mut pending_reply_token_probes = HashMap::new();
@@ -3916,6 +3949,45 @@ fn register_ssu2_service(
                         }
                     } else {
                         NormalSsu2Owner::Router(handle)
+                    };
+                    // Plan 498: the SSU2 introducer (Bob) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.introducer_service`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner and drains nothing.
+                    //
+                    // The resolver answers a requester's signing key only
+                    // from the NetDB's validated store. A peer this NetDB
+                    // does not hold yields `None`, and the role owner then
+                    // refuses the block rather than guessing.
+                    let mut introducer = if ssu2_config.introducer_service {
+                        let Some(bootstrap) = bootstrap.as_ref() else {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "validated bootstrap store unavailable for the SSU2 introducer role",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_runtime::ServiceFailure::new(
+                                    i2pr_runtime::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        };
+                        let signers =
+                            crate::ssu2_introducer::NetDbSignerResolver::new(Arc::clone(bootstrap));
+                        let owner_handle = crate::ssu2_introducer::Ssu2IntroducerService::new(
+                            crate::ssu2_introducer::Ssu2IntroducerConfig {
+                                enabled: true,
+                                ..Default::default()
+                            },
+                            owner.handle().service().clone(),
+                            local_router_hash,
+                        );
+                        Some((owner_handle, signers))
+                    } else {
+                        None
                     };
                     if !owner
                         .handle()
@@ -4465,6 +4537,38 @@ fn register_ssu2_service(
                                             detail,
                                         ),
                                     );
+                                }
+                            }
+
+                            _ = relay_tick.tick() => {
+                                // Plan 498: drain the runtime's bounded
+                                // relay handoff into the introducer (Bob)
+                                // role owner. A refusal is a counted
+                                // outcome, never an error: the drain never
+                                // fails the loop.
+                                if let Some((introducer, signers)) = introducer.as_mut() {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let drained = crate::ssu2_relay_drain::drain_relay_events(
+                                        &mut owner,
+                                        introducer,
+                                        &*signers,
+                                        now_ms,
+                                        now_ms / 1_000,
+                                    );
+                                    if drained.drained > 0 {
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            admitted = drained.admitted,
+                                            refused = drained.refused,
+                                            awaiting_carriage = drained.awaiting_carriage,
+                                            "SSU2 introducer relay handoff drained"
+                                        );
+                                    }
                                 }
                             }
                         }

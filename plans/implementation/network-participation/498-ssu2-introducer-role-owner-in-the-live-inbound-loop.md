@@ -101,8 +101,21 @@ arms the SSU2 I2NP handoff and the NTCP2 ingress, and whose `group_tick` arm
 
 A plan that patched only `poll_inbound` would close the finding on paper while
 a live router still dropped every relay block. **This plan drains on the live
-path** and also drains in `poll_inbound`, so the qualification drivers and the
-live router exercise the same drain code.
+path.**
+
+### 3.3.1 The role owner has exactly one owner
+
+The drain lives in the daemon's live inbound loop, and the role owner lives
+with it. `NormalSsu2Owner` has two variants — `Router(Ssu2DaemonHandle)` when
+no destination groups are configured, and `Groups(Box<ServiceProduct>)` when
+they are — and the live loop drains through whichever holds the handle. The
+product therefore exposes the **pull** only
+(`ServiceProduct::try_next_relay_event`); it does not own a role owner.
+
+Two owners would mean two sets of counters and an ambiguity about which one
+is authoritative. The qualification drivers, which drive `ServiceProduct`
+directly and never enter the daemon's live loop, are not the live path and do
+not need a second owner.
 
 ### 3.4 Where the authoritative validated store lives
 
@@ -167,8 +180,9 @@ permanently `UnknownRequester`.
     (`Ssu2DaemonHandle::try_next_relay_event`) and on `NormalSsu2Owner`.
   - The role owner constructed in the daemon's live loop when the opt-in is
     set, and a bounded drain on a dedicated tick.
-  - The same drain in `ServiceProduct::poll_inbound`, so the qualification
-    path exercises it too.
+  - The product exposes the **pull** only
+    (`ServiceProduct::try_next_relay_event`), so the live loop drains
+    through whichever owner holds the handle.
   - A daemon-side **pull seam** so the discriminators can drive the handoff
     without a socket.
 - **WP3 — the discriminators and the documentation.**
@@ -203,9 +217,10 @@ permanently `UnknownRequester`.
 | `crates/i2pr-daemon/src/router_i2np.rs` | `Ssu2DaemonHandle::try_next_relay_event()` beside `next_inbound()` (`:2216`). The existing `RouterI2npRuntime::next_relay_dispatched` (`:2240`) keeps its contract; this plan makes it reachable or supersedes it, and says which. |
 | `crates/i2pr-daemon/src/bootstrap.rs` | A narrow read-only accessor returning a peer's signing key from the validated store. |
 | `crates/i2pr-daemon/src/ssu2_introducer.rs` | A production `IntroducerSignerResolver` implementation over the shared bootstrap handle. |
+| `crates/i2pr-daemon/src/ssu2_relay_drain.rs` (new) | The bounded drain, the pull seam, and the counted outcome. |
 | `crates/i2pr-daemon/src/lib.rs` | The role owner in the live loop, the bounded drain on a dedicated tick, and the `NormalSsu2Owner` relay accessor. |
-| `crates/i2pr-daemon/src/service_product.rs` | The same drain in `poll_inbound`, so the qualification path exercises it. |
-| `crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs` (new) | The two discriminator rows. |
+| `crates/i2pr-daemon/src/service_product.rs` | The pull accessor, so the live loop drains through the product's handle when the product owns it. |
+| `crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs` (new) | The discriminator rows and the live-wiring static guard. |
 
 No new workspace dependency. `i2pr-daemon` already depends on `i2pr-runtime`,
 `i2pr-netdb` and `i2pr-proto` (`crates/i2pr-daemon/Cargo.toml:25`, `:27`,
@@ -309,13 +324,11 @@ the live loop; the role owner's receipt moves from 0 to 1.
 ## 10. Required tests
 
 - **The discriminator.** A relay block placed in the handoff is delivered by
-  the product's drain to the role owner: the receipt's `requests_admitted`
-  goes 0→1 and `intros_produced` goes 0→1, and the outcome is
-  `IntroRequired` naming the tag's target. A drain that never reached the
-  role owner would leave both counters at zero, so the row is sharp.
-- **The control.** With no role owner — the opt-in off — the same block is not
-  delivered and nothing is counted. The control is what makes the
-  discriminator sharp.
+  the drain to the role owner: the receipt's `requests_admitted` goes 0→1 and
+  `intros_produced` goes 0→1. A drain that never reached the role owner
+  would leave both counters at zero, so the row is sharp.
+- **The control.** With an empty handoff, nothing is delivered and nothing is
+  counted. The control is what makes the discriminator sharp.
 - **The refusal.** With a resolver that has no key for the requester, the
   block is refused with `UnknownRequester`, the refusal counter goes 0→1,
   `requests_admitted` stays 0, and replaying the identical event is refused
@@ -323,10 +336,23 @@ the live loop; the role owner's receipt moves from 0 to 1.
   no tracked state was created.
 - **The bound.** A drain pass over a full channel processes at most the
   per-pass bound.
+- **The produced block is counted, not silently dropped.** The role owner
+  produces a Relay Intro or Relay Response that must still be carried to a
+  peer. The runtime has no outbound relay queueing API — that is Plan 490
+  Medium #2's scope — so the drain counts the block as
+  `awaiting_carriage` rather than dropping it without a trace.
+- **The resolver's own rows.** A validated peer in the NetDB yields its own
+  signing key; an unknown peer yields none, so the role owner refuses it.
+- **The live-wiring static guard.** The daemon's live inbound loop calls the
+  drain, the live owner is the drain's event source, and the live role owner
+  answers requester keys from the validated store. This is a **static**
+  guard: it proves the wiring is present, not that a live daemon executed
+  it, because the runtime's relay channel admits no external injection and
+  the role requires the non-strict operator profile.
 - **Default-off.** With `ssu2.introducer_service = false`, the daemon
   constructs no role owner.
 - **The runtime accessor.** `try_next_relay_event` returns `None` on an empty
-  channel and does not consume a later event.
+  channel, returns a queued event, and does not consume a later event.
 - The routine floor in `AGENTS.md` passes in full.
 
 Every one of these rows is socket-free. The existing private mesh
@@ -365,17 +391,22 @@ and the full routine floor from `AGENTS.md`.
 ### 13.1 Acceptance
 
 1. The discriminator row passes: a relay block reaches the role owner through
-   the product's drain and the receipt moves 0→1.
-2. The control row passes: with no role owner, nothing is delivered and
+   the drain and the receipt moves 0→1.
+2. The control row passes: with an empty handoff, nothing is delivered and
    nothing is counted.
 3. The refusal row passes: an unresolvable requester is refused and counted,
    and no state is left behind.
 4. The default-off row passes.
 5. The bound row passes.
-6. The runtime's accessor rows pass, and the runtime's existing suite is
+6. The produced-block row passes: a produced Relay Intro or Relay Response is
+   counted as `awaiting_carriage` and never silently dropped.
+7. The resolver's rows pass: a validated peer yields its key and an unknown
+   peer yields none.
+8. The live-wiring static guard passes.
+9. The runtime's accessor rows pass, and the runtime's existing suite is
    unchanged.
-7. The full routine floor passes.
-8. `specs/support.toml`, `Cargo.toml` and `Cargo.lock` are byte-identical.
+10. The full routine floor passes.
+11. `specs/support.toml`, `Cargo.toml` and `Cargo.lock` are byte-identical.
 
 ### 13.2 Stop conditions
 

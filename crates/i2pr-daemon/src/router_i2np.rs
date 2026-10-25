@@ -2217,6 +2217,15 @@ impl Ssu2DaemonHandle {
         self.handle.next_inbound().await
     }
 
+    /// Receives the next authenticated inbound relay block without waiting.
+    ///
+    /// Plan 498: the daemon's live inbound loop drains the runtime's relay
+    /// handoff on a bounded tick. This is the non-blocking counterpart of
+    /// the I2NP handoff's `next_inbound`.
+    pub fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        self.handle.try_next_relay_event()
+    }
+
     /// Receives the next inbound message and dispatches it through
     /// the central router-I2NP dispatcher, preserving authenticated
     /// peer identity. Returns `None` after shutdown drains the queue.
