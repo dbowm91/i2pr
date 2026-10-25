@@ -120,7 +120,70 @@ The scheduler's own doc says what the router is missing
 > the outbound path, and matches the response that arrives through the
 > inbound path.
 
-### 3.5 The mechanism is bounded and safe by construction
+### 3.6 The response half has never been exercised over a wire
+
+This is the fact that shapes the whole plan, and it must be stated before
+the implementation, not discovered during it.
+
+**Every lane that uses the scheduler stops at the request half.**
+
+- `crates/i2pr-daemon/tests/exploratory_build_live.rs:753-782` registers a
+  pair, drives the scheduler to a `SendTest`, and then calls
+  `scheduler.record_response(test_id)` **directly**. The response is
+  *simulated*; no message crosses a wire.
+- `crates/i2pr-daemon/tests/exploratory_tunnel_external.rs:358-369`, against
+  the exact-pinned i2pd, asserts only that the scheduler produces a
+  `SendTest` and that `counters().tests_sent == 1`. It does **not** assert
+  that any peer answers.
+- The same shape holds in `netdb_tunnel_external.rs`,
+  `destination_tunnel_external.rs`, `netdb_tunnel_live.rs`,
+  `destination_tunnel_live.rs`, `java_tunnel_external.rs` and the
+  service-tunnel qualification lanes: they drive the scheduler, and none of
+  them observes a correlated response.
+
+So the **request** half is proven; the **response** half is proven **nowhere**
+— not against a stock peer, and not against another `i2pr` router.
+
+### 3.7 The correlation is currently unauthenticated, and the plan says so
+
+`TunnelLivenessScheduler::record_inbound_outcome`
+(`crates/i2pr-daemon/src/tunnel_liveness.rs:432-456`) matches an inbound
+`DeliveryStatus` **without** an authenticated message id. Its own doc comment
+says:
+
+> Without an authenticated message id the scheduler cannot match the inbound
+> echo to a pending test id; the daemon pump must call
+> [`Self::record_response`] directly when it has a confirmed test id. The
+> helper returns the next outstanding test id when exactly one pending test
+> exists, otherwise `None`.
+
+That is a **weak** correlation: *any* inbound `DeliveryStatus` refreshes the
+pending test whenever exactly one test is pending, and nothing correlates
+when more than one is pending.
+
+The reason is visible in the dispatcher
+(`crates/i2pr-daemon/src/router_i2np.rs:700-708`): the `DeliveryStatus`
+classification keeps the **transport** message id and **discards** the
+`DeliveryStatusMessage::message_id` — the id of the message being
+acknowledged. The id that would identify the test is thrown away.
+
+**This is why the plan cannot simply wire the scheduler in.** With an
+unauthenticated correlation and a response half that has never been observed,
+a live router could tear down a healthy pair it cannot prove is unhealthy,
+and would do so **repeatedly**. That is a regression, not a capability.
+
+The plan therefore does three things it did not originally say it would do:
+
+1. it makes the correlation **authenticated** — the acknowledged-message id
+   is exposed by the dispatcher and matched against the pending test;
+2. it gates the **teardown** on positive evidence that the pair has
+   answered at least once, so a router that has never seen a response can
+   never tear anything down (invariant 9);
+3. it makes the **feasibility question executable** (WP1) rather than
+   assumed, so the plan can stop honestly if the response half cannot be
+   produced.
+
+### 3.8 The mechanism is bounded by construction
 
 | Bound | Value | Where |
 | --- | --- | --- |
@@ -158,17 +221,34 @@ liveness window — the status it has today, which is no worse.
 8. **A false liveness verdict may not take down a good destination.** The
    scheduler's verdict removes an **exploratory** pair; a destination
    tunnel is not touched by this plan (see §5.2).
+9. **A verdict may only be acted on when the signal is distinguishable from
+   its opposite.** A missing response means "dead" **only** if the router has
+   already seen that peer answer. Until a pair has produced at least one
+   correlated response, a missing response is counted and **never** acted on.
+   This is the same rule the rest of this repo applies to a refusal: refuse
+   to act on a signal that cannot be distinguished from its negation.
+10. **The correlation must be authenticated.** The scheduler may only
+   refresh a pair from a response that carries **that pair's** test id in
+   the acknowledged-message field. A response that cannot be attributed to a
+   pending test is not evidence, and is not counted as one.
 
 ## 5. Scope
 
 ### 5.1 In scope
 
+- **The feasibility question is answered by running code** (WP1), and the
+  plan stops honestly if the answer is no.
 - The live daemon owns a `TunnelLivenessScheduler`.
 - The coordinator's installed **exploratory** tunnel pairs are registered with
   it, and unregistered when the pair goes away.
 - The scheduler is driven on the existing tick; a `SendTest` action emits the
   `DeliveryStatus` test through the paired outbound role, and the response is
   correlated through the inbound path.
+- **The correlation is authenticated**: the acknowledged-message id is exposed
+  by the dispatcher and matched against the pending test, so a response is
+  attributed to exactly one test.
+- **A teardown requires positive evidence**: a pair that has never answered
+  is never torn down.
 - A `MarkUnhealthy` action removes the pair from the coordinator and asks the
   coordinator to rebuild — the recovery the router cannot do today.
 - The live inbound route goes through `route_inbound_with_liveness`.
@@ -217,7 +297,32 @@ liveness window — the status it has today, which is no worse.
 
 ## 7. Work packages
 
-### WP1 — the live owner
+### WP1 — the feasibility question, as an executable artefact
+
+**This is the first work package, and it can stop the plan.** It answers, in
+running code rather than in prose:
+
+1. Can a probe emitted through the **real** `OutboundGatewayRole` produce a
+   response that the **real** inbound dispatcher classifies as a
+   `DeliveryStatus`?
+2. Can that response be attributed to **one specific pending test** — the
+   acknowledged-message id the dispatcher currently discards?
+3. What exactly does the response look like on the wire, and which path does
+   it arrive on?
+
+The artefact is a local, deterministic lane that drives the real
+composition: emit the probe through the real outbound role, deliver the
+resulting cell back through the real inbound dispatch path exactly as the
+peer's answer would arrive, and assert the scheduler correlates it **by the
+acknowledged id**.
+
+**If the answer to (1) or (2) is no**, the plan **stops** and records the
+precise reason, the gap stays open, and the closure record says what would
+be needed. A plan that stops honestly with a measured reason is worth more
+than a plan that installs a mechanism whose response half has never been
+observed.
+
+### WP2 — the live owner
 
 `ServiceProduct` owns a `TunnelLivenessScheduler` beside the coordinator it
 watches. It is created with `LivenessConfig::plan_185_defaults()` — the
@@ -226,7 +331,7 @@ policy are one. The scheduler's counters are published through the existing
 `InspectionHandles` seam, so the running router's liveness posture is
 observable.
 
-### WP2 — registering the pairs
+### WP3 — registering the pairs
 
 When the coordinator installs an **exploratory** outbound tunnel and its
 paired inbound tunnel, the pair is registered with the scheduler
@@ -240,7 +345,7 @@ destination tunnels, because only the exploratory pairs are tracked. The
 plan's implementation must make that distinction explicit rather than
 inferring it from a slot number.
 
-### WP3 — driving the scheduler
+### WP4 — driving the scheduler
 
 The scheduler is driven on the **existing** product tick — the same tick
 that already advances the coordinator's clock and expires its pending
@@ -261,19 +366,44 @@ are due, the pump must keep driving until the scheduler returns `Idle`,
 with a **bounded** number of drives per tick so a large backlog cannot turn
 one tick into an unbounded burst. The bound is a named constant.
 
-### WP4 — correlating the response
+### WP5 — correlating the response, authentically
 
 The live inbound route goes through `route_inbound_with_liveness`, which
 correlates an inbound `DeliveryStatus` with a pending test and refreshes the
 pair. The four direct `route_inbound_i2np` call sites become the liveness
-variant. The helper is **existing** and unchanged: the plan wires it, it
-does not rewrite it.
+variant. The helper is **existing**: the plan wires it, it does not rewrite
+it.
+
+**But the correlation must be made authenticated first.** Today the
+dispatcher discards the acknowledged-message id
+(`crates/i2pr-daemon/src/router_i2np.rs:700-708`), and the scheduler's
+`record_inbound_outcome` therefore matches "any `DeliveryStatus`, when
+exactly one test is pending". That is not a correlation.
+
+The plan's change:
+
+- the `DeliveryStatus` classification **exposes the acknowledged-message
+  id** — the `DeliveryStatusMessage::message_id` the body already carries,
+  which is the id the remote echoes for the message we tunneled. It is
+  added to the outcome in a way that does not weaken any decoder and does
+  not change the classification of any other body;
+- the probe's tunneled message carries a **test-derived id** in that field,
+  so the remote's acknowledgement echoes it back;
+- the scheduler matches on **that id**, so a response is attributed to
+  exactly one pending test, and a response that carries no pending id is
+  **not** evidence and is not counted as one.
+
+The scheduler's existing `record_inbound_outcome` behaviour — the
+"exactly one pending test" fallback — **stays** for the lanes that use it,
+but the live path uses the authenticated match. The plan must not weaken
+the existing helper's contract to make the live path work.
 
 The helper's own doc says it "never weakens any decoder; it only correlates
 inbound observations with pending tests". That property is the reason the
-plan prefers it over a new correlation path.
+plan prefers it over a new correlation path, and it is why the authenticated
+id is *added* to the outcome rather than smuggled in through a side channel.
 
-### WP5 — the removal and the rebuild
+### WP6 — the removal and the rebuild
 
 On `MarkUnhealthy`, the pump removes the pair's slots from the coordinator
 (`remove_slot`) and asks the coordinator to rebuild. The rebuild request is
@@ -288,9 +418,16 @@ pair, so:
 - the verdict is **counted** (`LivenessCounters`), so an operator can see a
   router that is tearing down healthy pairs — and the counter is published;
 - the removed slots are exploratory only. **A destination tunnel is never
-  removed by this plan.**
+  removed by this plan**;
+- **a pair that has never produced a correlated response is never torn
+  down.** Until the router has seen that pair answer, a missing response is
+  indistinguishable from "this peer does not answer", and the router must
+  not act on a signal it cannot distinguish from its negation. The
+  "unproven pair" state is itself **counted** and published, so an operator
+  can see that the liveness signal is not working rather than inferring it
+  from silence.
 
-### WP6 — the controls
+### WP7 — the controls
 
 **The static guard** gains rules, each with an inverted probe:
 
@@ -309,7 +446,7 @@ pair, so:
 - the scheduler's counters report the failures;
 - the scheduler's pair and pending tables stay within their ceilings.
 
-### WP7 — the documentation
+### WP8 — the documentation
 
 `docs/architecture/i2pr-daemon.md` gains the liveness section;
 `specs/CONFORMANCE.md` gains a Plan 504 section; `specs/support.toml` gains
@@ -399,7 +536,10 @@ plus the full routine floor from `AGENTS.md` before the closure.
 
 ### 13.1 Acceptance
 
-1. The live daemon constructs a `TunnelLivenessScheduler` and publishes its
+1. **The feasibility artefact answers (1), (2) and (3) in running code**, and
+   its answer is recorded in the closure record whichever way it goes. If it
+   is "no", the plan stops with the measured reason and the gap stays open.
+2. The live daemon constructs a `TunnelLivenessScheduler` and publishes its
    counters.
 2. An installed exploratory pair is registered; a removed pair is
    unregistered, and its pending tests are dropped without counting a
@@ -435,6 +575,13 @@ plus the full routine floor from `AGENTS.md` before the closure.
   failures and the verdict is counted.
 
 ### 13.3 What this plan does **not** close
+
+- **No stock-peer evidence of the liveness response.** The response half has
+  never been observed over a wire, with any peer (see §3.6). The plan's
+  feasibility artefact is a **local** one. Whether an ordinary router
+  answers the probe is **unproven**, and is recorded as such — the same
+  treatment Plan 491 F2 and Plan 493 give stock-peer evidence. The teardown
+  gate (invariant 9) exists precisely because that question is open.
 
 - **Plan 487 F3's destination-inbound half.** Detecting a dead transit hop
   in the destination's **inbound** pool needs **tunnel rekeying**, which the
