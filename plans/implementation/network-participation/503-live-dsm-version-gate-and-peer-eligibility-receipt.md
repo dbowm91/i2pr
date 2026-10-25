@@ -256,9 +256,10 @@ the comparator and the floors. This plan adds:
   which apply `dsm_target_eligibility(published_version_of(record))` to each
   candidate and count every refusal by reason.
 
-**The invariant:** `examined == accepted + refused`, exactly. A candidate
-whose record cannot be read is not counted as examined, so the identity
-cannot drift.
+**The invariant, for the DSM gate:** `examined == accepted + refused`,
+exactly. A candidate whose record cannot be read is not counted as examined,
+so the identity cannot drift. The DSM gate has exactly two outcomes —
+eligible or refused by reason — so the identity is exact there.
 
 `PublicationCoordinator::nearest_eligible_floodfills` is refactored onto
 `select_version_gated_floodfills` so the closed enforcement point and the
@@ -303,8 +304,10 @@ decision surface:
   label, the examined count, the accepted count, then the refusal counts in
   sorted label order, hashed with SHA-256 through `i2pr_proto`'s reviewed
   `Hash::digest`;
-- the two constructors: one from a `CandidateProjectionSummary` (the build
-  gate) and one from a `VersionGatedFloodfillSelection` (the DSM gate);
+- the two constructors: one from a `CandidateProjectionSummary` **and** the
+  number of candidates the projection returned (the build gate), and one from
+  a `VersionGatedFloodfillSelection` (the DSM gate, which carries its own
+  accepted count);
 - `VersionEligibilityOwner` — the bounded log: a `VecDeque` with an explicit
   cap, evicting the oldest entry at the cap, holding an internal
   `std::sync::Mutex` so the shared handle is a plain `Arc`.
@@ -323,11 +326,33 @@ API and its lane are unchanged.
 `Arc<VersionEligibilityOwner>` and three recording points:
 
 - `destination_peer_candidates()` — the **build** gate. The receipt's
-  `examined` is the number of records the projection considered and its
-  `accepted` is the number of candidates that survived every refusal.
+  `examined` is the number of records the projection considered
+  (`CandidateProjectionSummary::scanned`) and its `accepted` is the number
+  of candidates that survived every refusal.
 - the gated floodfill selections — the **DSM** gate. The receipt's
   `examined` is the number of candidates the gate examined and its
   `accepted` is the number of eligible targets.
+
+**The receipt's `refusals` map carries the three *version* reasons only** —
+Plan 491's shape, which the participation driver's receipts already use
+(`VersionRefusalCounts` has exactly `unknown_version`,
+`uncomparable_version` and `below_version_floor`). The build projection has
+two further refusal reasons — `unqualified` (the record lacks build or
+diversity metadata) and `capped_participation` (the peer reached the
+per-peer participation cap) — and **neither is a version refusal**, so
+neither appears in the receipt. They remain counted in
+`CandidateProjectionSummary`, where they already are.
+
+**The consequence, stated so that no test asserts the wrong identity:** the
+identity `examined == accepted + refused` is exact for the **DSM** gate,
+whose only two outcomes are eligible and refused-by-version-reason. It does
+**not** hold for the **build** gate, where `examined` is the whole scanned
+population and the projection's two non-version refusal reasons are counted
+elsewhere. A test that asserts the identity must scope it to the DSM gate;
+a test that asserts it for the build gate is asserting something false.
+This mirrors the participation driver's own receipts, where `examined` is
+the store's profile count and the refusal map holds the version reasons
+only.
 
 Every one of the three is on a **live** path:
 
@@ -373,8 +398,9 @@ drives the **public** daemon API (`DestinationTunnelCoordinator`) and proves:
   same way;
 - a floodfill at the floor is eligible;
 - the live gate produces a receipt whose `examined`, `accepted` and refusal
-  counts are the decision's own counts, and whose `examined == accepted +
-  refused`;
+  counts are the decision's own counts, and whose
+  `examined == accepted + refused` — **scoped to the DSM gate**, where the
+  identity is exact (see WP4);
 - the receipt and the rendered log carry **no** peer hash, address, key or
   version string;
 - the receipt log is **bounded** — at the cap the oldest entry is evicted.
