@@ -99,7 +99,7 @@ use thiserror::Error;
 use crate::block::{
     AckBlock, AddressBlock, Block, BlockError, DecodedBlock, FirstFragmentBlock,
     FollowOnFragmentBlock, PathChallengeBlock, PathResponseBlock, PeerTestBlock, RelayIntroBlock,
-    RelayRequestBlock, RelayResponseBlock, encode_blocks, parse_blocks,
+    RelayRequestBlock, RelayResponseBlock, RelayTagBlock, encode_blocks, parse_blocks,
 };
 use crate::constants;
 use crate::crypto::{DataCipher, IntroKey, Ssu2CryptoError, Ssu2SplitKeys};
@@ -505,6 +505,10 @@ enum QueuedControl {
     RelayResponse(RelayResponseBlock),
     /// One in-session RelayIntro (Plan 160; single-shot, bounded).
     RelayIntro(RelayIntroBlock),
+    /// One in-session RelayTagRequest (block 15; empty body).
+    RelayTagRequest,
+    /// One in-session RelayTag (block 16; a nonzero tag).
+    RelayTag(RelayTagBlock),
     /// One in-session PeerTest block (Plan 160; single-shot, bounded).
     PeerTest(PeerTestBlock),
     /// One in-session Address report (Plan 283; single-shot, bounded).
@@ -1038,6 +1042,40 @@ impl Ssu2Session {
         Ok(())
     }
 
+    /// Queues one single-shot in-session RelayTagRequest (block 15).
+    ///
+    /// The body is empty: the request names no target, so the session
+    /// is the whole destination. Same bounds as every other queued
+    /// control: refused on a terminated session and past the
+    /// control-queue ceiling.
+    pub fn queue_relay_tag_request(&mut self) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::RelayTagRequest);
+        Ok(())
+    }
+
+    /// Queues one single-shot in-session RelayTag (block 16).
+    ///
+    /// The tag is nonzero by construction: [`RelayTagBlock::new`]
+    /// rejects zero before it can reach the queue.
+    pub fn queue_relay_tag(&mut self, block: RelayTagBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::RelayTag(block));
+        Ok(())
+    }
+
     /// Queues one single-shot in-session PeerTest block (Plan 160).
     pub fn queue_peer_test(&mut self, block: PeerTestBlock) -> Result<(), SessionError> {
         if self.is_terminated() {
@@ -1174,6 +1212,8 @@ impl Ssu2Session {
                 QueuedControl::RelayRequest(block) => QueuedControl::RelayRequest(block.clone()),
                 QueuedControl::RelayResponse(block) => QueuedControl::RelayResponse(block.clone()),
                 QueuedControl::RelayIntro(block) => QueuedControl::RelayIntro(block.clone()),
+                QueuedControl::RelayTagRequest => QueuedControl::RelayTagRequest,
+                QueuedControl::RelayTag(block) => QueuedControl::RelayTag(*block),
                 QueuedControl::PeerTest(block) => QueuedControl::PeerTest(block.clone()),
                 QueuedControl::Address(block) => QueuedControl::Address(*block),
             };
@@ -1200,6 +1240,8 @@ impl Ssu2Session {
                 QueuedControl::RelayRequest(block) => Some(Block::RelayRequest(block)),
                 QueuedControl::RelayResponse(block) => Some(Block::RelayResponse(block)),
                 QueuedControl::RelayIntro(block) => Some(Block::RelayIntro(block)),
+                QueuedControl::RelayTagRequest => Some(Block::RelayTagRequest),
+                QueuedControl::RelayTag(block) => Some(Block::RelayTag(block)),
                 QueuedControl::PeerTest(block) => Some(Block::PeerTest(block)),
                 QueuedControl::Address(block) => Some(Block::Address(block)),
             };

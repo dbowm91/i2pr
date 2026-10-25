@@ -1,10 +1,14 @@
-//! Plan 498 — the bounded drain from the runtime's relay handoff into the
-//! SSU2 introducer (Bob) role owner.
+//! Plan 499 — the bounded drain from the runtime's relay handoff into the
+//! SSU2 introducer (Bob) role owner, and the carriage that puts the role
+//! owner's produced block on the wire.
 //!
 //! Plan 490 built the role owner and the runtime's relay handoff, and
-//! recorded that the daemon's ordinary inbound pump never drained the
-//! handoff: a Relay Request that a peer really sent was decoded,
-//! authenticated and then dropped. This module owns the drain.
+//! recorded that the daemon's ordinary inbound pump never drained that
+//! handoff: a Relay Request a peer really sent was decoded, authenticated
+//! and then dropped. Plan 498 added the drain. This module owns both the
+//! drain and the **carriage**: the produced Relay Intro or Relay Response
+//! is put on the session with its destination peer instead of being
+//! dropped.
 //!
 //! Properties:
 //!
@@ -12,20 +16,22 @@
 //!   per-pass bound is reached, whichever comes first. The runtime's relay
 //!   channel is itself bounded (`max_inbound_relay_queue`, default 16).
 //! - The drain **never fails** its caller. A refusal, a resolver miss and a
-//!   produced-but-not-carried block are counted outcomes, not errors.
+//!   block that cannot be carried are counted outcomes, not errors.
 //! - The drain **never logs** a peer hash, a key, a tag or a payload. The
 //!   counters carry counts only.
 //! - The source is a **pull** seam. It cannot enqueue into the runtime's
 //!   relay channel; that channel's sender is private to the runtime and is
 //!   fed only by the authenticated transport path.
-//!
-//! What this module does **not** do is carry a produced Relay Intro or
-//! Relay Response onto the wire. The runtime has no outbound relay queueing
-//! API; that is Plan 490 Medium #2's own scope, and the
-//! [`RelayDrainOutcome::awaiting_carriage`] counter is what keeps the gap
-//! from being a silent drop.
+//! - The carriage happens **after** the role owner admitted and verified
+//!   the block. The carriage cannot make an unverifiable request
+//!   verifiable, and it cannot make the role owner admit a block it would
+//!   otherwise refuse.
 
-use i2pr_runtime::Ssu2InboundRelay;
+use std::collections::BTreeMap;
+
+use i2pr_runtime::{
+    RelayIntroBlock, RelayResponseBlock, Ssu2InboundRelay, Ssu2RelayQueueError, Ssu2RuntimeService,
+};
 
 use crate::ssu2_introducer::{
     IntroducerSignerResolver, Ssu2IntroducerOutcome, Ssu2IntroducerService,
@@ -53,10 +59,76 @@ pub trait RelayEventSource {
     fn try_next_relay_event(&mut self) -> Option<Ssu2InboundRelay>;
 }
 
+/// The carriage that puts a produced relay block on the wire.
+///
+/// Plan 499. The role owner produces a block **for a peer**: a Relay Intro
+/// for the introduction target, a Relay Response for the requester. The
+/// block itself carries no destination — the session is the destination —
+/// so the carriage is told which peer the block is for.
+///
+/// This is a **pull-shaped** seam beside [`RelayEventSource`]: it exists so
+/// the drain's behaviour can be exercised without binding a socket. It
+/// cannot enqueue into the runtime's relay channel, and it cannot weaken
+/// the role owner's verification, because the carriage runs only after the
+/// role owner admitted and verified the block.
+pub trait RelayCarriage {
+    /// Carries one Relay Intro to the introduction target.
+    fn carry_intro(
+        &self,
+        target: &[u8; 32],
+        block: &RelayIntroBlock,
+    ) -> Result<(), Ssu2RelayQueueError>;
+
+    /// Carries one Relay Response to the requester.
+    fn carry_response(
+        &self,
+        requester: &[u8; 32],
+        block: &RelayResponseBlock,
+    ) -> Result<(), Ssu2RelayQueueError>;
+}
+
+/// The production carriage: the runtime that owns the sessions.
+///
+/// The runtime resolves the destination peer to its live session and puts
+/// the block on that session's outbound control queue. The runtime owns
+/// the session registry, so this type holds no session state of its own.
+pub struct RuntimeRelayCarriage {
+    runtime: Ssu2RuntimeService,
+}
+
+impl RuntimeRelayCarriage {
+    /// Creates a carriage over the runtime that owns the live sessions.
+    pub fn new(runtime: Ssu2RuntimeService) -> Self {
+        Self { runtime }
+    }
+}
+
+impl RelayCarriage for RuntimeRelayCarriage {
+    fn carry_intro(
+        &self,
+        target: &[u8; 32],
+        block: &RelayIntroBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        self.runtime
+            .queue_relay_intro(i2pr_transport::PeerId::from_bytes(*target), block.clone())
+    }
+
+    fn carry_response(
+        &self,
+        requester: &[u8; 32],
+        block: &RelayResponseBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        self.runtime.queue_relay_response(
+            i2pr_transport::PeerId::from_bytes(*requester),
+            block.clone(),
+        )
+    }
+}
+
 /// The counted outcome of one drain pass.
 ///
 /// Counts only: no peer hash, no key, no tag, no payload.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RelayDrainOutcome {
     /// Relay events pulled from the source.
     pub drained: u64,
@@ -64,12 +136,15 @@ pub struct RelayDrainOutcome {
     pub admitted: u64,
     /// Events the role owner refused.
     pub refused: u64,
-    /// Blocks the role owner produced that must still be carried to a peer.
+    /// Blocks the role owner produced **and** the carriage put on the wire.
+    pub carried: u64,
+    /// Blocks the role owner produced that could **not** be carried, by
+    /// reason.
     ///
-    /// Plan 498 does not carry them: the runtime has no outbound relay
-    /// queueing API, which is Plan 490 Medium #2's own scope. The count is
-    /// what keeps the block from being a silent drop.
-    pub awaiting_carriage: u64,
+    /// A block that cannot be carried is counted here, never dropped
+    /// without a trace. The keys are the runtime's stable reason labels
+    /// (`Ssu2RelayQueueError::reason`); no peer identity appears in them.
+    pub carriage_refusals: BTreeMap<&'static str, u64>,
 }
 
 /// Drains the runtime's relay handoff into the introducer role owner.
@@ -78,10 +153,15 @@ pub struct RelayDrainOutcome {
 /// until the source is empty or the bound is reached, whichever comes first.
 /// A refusal is a counted outcome, not an error — the drain never fails the
 /// caller's loop.
+///
+/// Plan 499. A block the role owner produces is **carried**: the carriage
+/// puts it on the session with the peer it is for. A carriage that cannot
+/// be performed is counted by reason, and the drain continues.
 pub fn drain_relay_events(
     source: &mut dyn RelayEventSource,
     owner: &mut Ssu2IntroducerService,
     signers: &dyn IntroducerSignerResolver,
+    carriage: &dyn RelayCarriage,
     now_ms: u64,
     now_secs: u64,
 ) -> RelayDrainOutcome {
@@ -95,13 +175,39 @@ pub fn drain_relay_events(
             Ssu2IntroducerOutcome::Refused { .. } => {
                 outcome.refused = outcome.refused.saturating_add(1);
             }
-            // The role owner produced a block for a peer. Carrying it is
-            // Plan 490 Medium #2's scope; the count is what keeps the
-            // block from being a silent drop.
-            Ssu2IntroducerOutcome::IntroRequired { .. }
-            | Ssu2IntroducerOutcome::ResponseRequired { .. } => {
+            // The role owner produced a block for a peer. The carriage puts
+            // it on that peer's session. A carriage that cannot be performed
+            // is counted by reason, never dropped silently.
+            Ssu2IntroducerOutcome::IntroRequired { target, intro } => {
                 outcome.admitted = outcome.admitted.saturating_add(1);
-                outcome.awaiting_carriage = outcome.awaiting_carriage.saturating_add(1);
+                match carriage.carry_intro(&target, &intro) {
+                    Ok(()) => {
+                        outcome.carried = outcome.carried.saturating_add(1);
+                    }
+                    Err(reason) => {
+                        *outcome
+                            .carriage_refusals
+                            .entry(reason.reason())
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+            Ssu2IntroducerOutcome::ResponseRequired {
+                requester,
+                response,
+            } => {
+                outcome.admitted = outcome.admitted.saturating_add(1);
+                match carriage.carry_response(&requester, &response) {
+                    Ok(()) => {
+                        outcome.carried = outcome.carried.saturating_add(1);
+                    }
+                    Err(reason) => {
+                        *outcome
+                            .carriage_refusals
+                            .entry(reason.reason())
+                            .or_insert(0) += 1;
+                    }
+                }
             }
         }
     }

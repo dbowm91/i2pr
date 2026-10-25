@@ -1,16 +1,23 @@
 //! Plan 498 — the SSU2 introducer (Bob) role owner's relay handoff.
+//! Plan 499 — and the carriage that puts the produced block on the wire.
 //!
 //! Plan 490 built the role owner and the runtime's relay handoff, and
 //! recorded that the daemon's ordinary inbound pump never drained the
 //! handoff: a Relay Request that a peer really sent was decoded,
 //! authenticated and then dropped.
 //!
+//! Plan 498 added the drain. Plan 499 adds the **carriage**: the block the
+//! role owner produces is put on the session with the peer it is for,
+//! instead of being counted and dropped.
+//!
 //! This lane drives the **daemon's drain** — the same
 //! `drain_relay_events` the daemon's live inbound loop calls — over a
 //! daemon-side pull seam, so the handoff can be exercised without binding
 //! a socket. The pull seam cannot enqueue into the runtime's relay
 //! channel: that channel's sender is private to the runtime and is fed
-//! only by the authenticated transport path.
+//! only by the authenticated transport path. The carriage seam is the same
+//! shape: it records what it was asked to carry, and it runs only after the
+//! role owner admitted and verified the block.
 //!
 //! The lane asserts:
 //!
@@ -20,11 +27,19 @@
 //!   nothing;
 //! - **the refusal** — a requester the NetDB does not hold is refused,
 //!   the refusal is counted by reason, and no state is left behind;
-//! - **the bound** — one drain pass processes at most the per-pass bound.
+//! - **the bound** — one drain pass processes at most the per-pass bound;
+//! - **the carriage** — the produced intro reaches the carriage with the
+//!   tag's target as its destination, and names the requester inside the
+//!   block;
+//! - **the carriage refusal** — a block that cannot be carried is counted
+//!   by reason, never dropped without a trace.
 //!
 //! Every event is a real, signed Relay Request over the specification's
 //! preimage. Nothing here reaches a socket, a listener, or the network.
+//! The lane that *does* drive real UDP is
+//! `ssu2_introducer_live_mesh.rs`.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use i2pr_crypto::{RouterIdentityBundle, SigningPrivateKey};
@@ -33,12 +48,13 @@ use i2pr_daemon::ssu2_introducer::{
     IntroducerSignerResolver, Ssu2IntroducerConfig, Ssu2IntroducerRefusal, Ssu2IntroducerService,
 };
 use i2pr_daemon::ssu2_relay_drain::{
-    MAX_RELAY_DRAIN_PER_PASS, RelayDrainOutcome, RelayEventSource, drain_relay_events,
+    MAX_RELAY_DRAIN_PER_PASS, RelayCarriage, RelayDrainOutcome, RelayEventSource,
+    drain_relay_events,
 };
 use i2pr_proto::{Hash, SigningPublicKey};
 use i2pr_runtime::{
-    Ssu2Endpoint, Ssu2InboundRelay, Ssu2RelayEvent, Ssu2RuntimeConfig, Ssu2RuntimeService,
-    relay_request_preimage,
+    RelayIntroBlock, RelayResponseBlock, Ssu2Endpoint, Ssu2InboundRelay, Ssu2RelayEvent,
+    Ssu2RelayQueueError, Ssu2RuntimeConfig, Ssu2RuntimeService, relay_request_preimage,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -88,6 +104,65 @@ struct MeshSigners {
 impl IntroducerSignerResolver for MeshSigners {
     fn signing_key(&self, peer_hash: &[u8; 32]) -> Option<SigningPublicKey> {
         self.keys.get(peer_hash).cloned()
+    }
+}
+
+/// A carriage that records what it was asked to carry.
+///
+/// Plan 499: the drain's *carriage* half. It records the destination peer
+/// and the block it was handed, so a row can prove the produced block
+/// reached the carriage with the right destination — and that a carriage
+/// which cannot be performed is counted by reason rather than dropped.
+///
+/// Like the production carriage, it cannot enqueue into the runtime's relay
+/// channel, and it runs only after the role owner admitted and verified the
+/// block.
+#[derive(Default)]
+struct RecordingCarriage {
+    intros: RefCell<Vec<([u8; 32], RelayIntroBlock)>>,
+    responses: RefCell<Vec<([u8; 32], RelayResponseBlock)>>,
+    refuse_with: Option<Ssu2RelayQueueError>,
+}
+
+impl RecordingCarriage {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// A carriage that refuses every block with one reason.
+    fn refusing(reason: Ssu2RelayQueueError) -> Self {
+        Self {
+            refuse_with: Some(reason),
+            ..Self::default()
+        }
+    }
+}
+
+impl RelayCarriage for RecordingCarriage {
+    fn carry_intro(
+        &self,
+        target: &[u8; 32],
+        block: &RelayIntroBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        if let Some(reason) = self.refuse_with {
+            return Err(reason);
+        }
+        self.intros.borrow_mut().push((*target, block.clone()));
+        Ok(())
+    }
+
+    fn carry_response(
+        &self,
+        requester: &[u8; 32],
+        block: &RelayResponseBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        if let Some(reason) = self.refuse_with {
+            return Err(reason);
+        }
+        self.responses
+            .borrow_mut()
+            .push((*requester, block.clone()));
+        Ok(())
     }
 }
 
@@ -194,14 +269,36 @@ fn the_drain_delivers_a_relay_block_to_the_role_owner() {
     assert_eq!(owner.receipt().intros_produced, 0);
 
     let mut source = QueueSource::new(vec![request_event(&bob, &alice_key)]);
-    let outcome = drain_relay_events(&mut source, &mut owner, &signers, NOW_MS, NOW_SECS);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(
+        &mut source,
+        &mut owner,
+        &signers,
+        &carriage,
+        NOW_MS,
+        NOW_SECS,
+    );
 
     assert_eq!(outcome.drained, 1, "one event was pulled from the handoff");
     assert_eq!(outcome.admitted, 1, "the role owner admitted the request");
     assert_eq!(outcome.refused, 0);
     assert_eq!(
-        outcome.awaiting_carriage, 1,
-        "the produced intro is counted, not silently dropped"
+        outcome.carried, 1,
+        "the produced intro is carried onto a session, not silently dropped"
+    );
+    assert!(
+        outcome.carriage_refusals.is_empty(),
+        "a carried block must not be counted as a carriage refusal"
+    );
+    assert_eq!(
+        carriage.intros.borrow().len(),
+        1,
+        "the carriage must be handed exactly one intro"
+    );
+    assert_eq!(
+        carriage.intros.borrow()[0].0,
+        TARGET_HASH,
+        "the intro must be carried to the tag's target, not to the requester"
     );
     assert_eq!(
         owner.receipt().requests_admitted,
@@ -221,11 +318,23 @@ fn the_drain_delivers_nothing_when_the_handoff_is_empty() {
     // and nothing is counted. This is what makes the discriminator sharp.
     let (mut owner, signers, _, _) = lane();
     let mut source = QueueSource::new(Vec::new());
-    let outcome = drain_relay_events(&mut source, &mut owner, &signers, NOW_MS, NOW_SECS);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(
+        &mut source,
+        &mut owner,
+        &signers,
+        &carriage,
+        NOW_MS,
+        NOW_SECS,
+    );
 
     assert_eq!(outcome, RelayDrainOutcome::default());
     assert_eq!(owner.receipt().requests_admitted, 0);
     assert_eq!(owner.receipt().intros_produced, 0);
+    assert!(
+        carriage.intros.borrow().is_empty(),
+        "an empty handoff must not produce a carriage"
+    );
 }
 
 #[test]
@@ -240,12 +349,14 @@ fn the_drain_refuses_a_requester_the_netdb_does_not_hold() {
     };
 
     let mut source = QueueSource::new(vec![request_event(&bob, &alice_key)]);
-    let outcome = drain_relay_events(&mut source, &mut owner, &empty, NOW_MS, NOW_SECS);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(&mut source, &mut owner, &empty, &carriage, NOW_MS, NOW_SECS);
 
     assert_eq!(outcome.drained, 1);
     assert_eq!(outcome.admitted, 0);
     assert_eq!(outcome.refused, 1);
-    assert_eq!(outcome.awaiting_carriage, 0);
+    assert_eq!(outcome.carried, 0);
+    assert!(outcome.carriage_refusals.is_empty());
     assert_eq!(owner.receipt().requests_admitted, 0);
     assert_eq!(owner.receipt().intros_produced, 0);
     assert_eq!(
@@ -260,7 +371,8 @@ fn the_drain_refuses_a_requester_the_netdb_does_not_hold() {
     // The replay is refused the same way. A tracked request would have
     // turned the replay into a different reason.
     let mut source = QueueSource::new(vec![request_event(&bob, &alice_key)]);
-    let outcome = drain_relay_events(&mut source, &mut owner, &empty, NOW_MS, NOW_SECS);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(&mut source, &mut owner, &empty, &carriage, NOW_MS, NOW_SECS);
     assert_eq!(outcome.refused, 1);
     assert_eq!(
         owner
@@ -289,7 +401,15 @@ fn the_drain_is_bounded_per_pass() {
         .map(|_| request_event(&bob, &alice_key))
         .collect();
     let mut source = QueueSource::new(events);
-    let outcome = drain_relay_events(&mut source, &mut owner, &signers, NOW_MS, NOW_SECS);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(
+        &mut source,
+        &mut owner,
+        &signers,
+        &carriage,
+        NOW_MS,
+        NOW_SECS,
+    );
 
     assert_eq!(
         outcome.drained, MAX_RELAY_DRAIN_PER_PASS as u64,
@@ -298,6 +418,92 @@ fn the_drain_is_bounded_per_pass() {
     assert!(
         !source.events.is_empty(),
         "the events beyond the bound stay in the handoff"
+    );
+}
+
+/// Plan 499: the produced block is **carried**, not dropped.
+///
+/// The block the role owner produced is put on the session with the peer it
+/// is for. This row proves the destination is the tag's target — the
+/// firewalled peer that asked for the tag — and not the requester, and
+/// that the intro names the requester inside the block.
+#[test]
+fn the_drain_carries_the_produced_intro_to_the_tags_target() {
+    let (mut owner, signers, alice_key, bob) = lane();
+    let mut source = QueueSource::new(vec![request_event(&bob, &alice_key)]);
+    let carriage = RecordingCarriage::new();
+    let outcome = drain_relay_events(
+        &mut source,
+        &mut owner,
+        &signers,
+        &carriage,
+        NOW_MS,
+        NOW_SECS,
+    );
+
+    assert_eq!(outcome.carried, 1);
+    let intros = carriage.intros.borrow();
+    assert_eq!(intros.len(), 1);
+    let (destination, intro) = &intros[0];
+    assert_eq!(
+        *destination, TARGET_HASH,
+        "the intro goes to the tag's target, not to the requester"
+    );
+    assert_eq!(
+        *intro.alice_hash(),
+        REQUESTER_HASH,
+        "the carried intro must name the requester inside the block"
+    );
+    assert_eq!(
+        intro.relay_tag(),
+        TAG,
+        "the carried intro must carry the tag the requester presented"
+    );
+}
+
+/// Plan 499: a block that **cannot** be carried is counted by reason.
+///
+/// The drain must not fail its caller and must not drop the block without a
+/// trace. The refusal is counted under the runtime's stable reason label,
+/// and the drain continues with the next event.
+#[test]
+fn the_drain_counts_a_carriage_refusal_by_reason() {
+    let (mut owner, signers, alice_key, bob) = lane();
+    let mut source = QueueSource::new(vec![request_event(&bob, &alice_key)]);
+    let carriage = RecordingCarriage::refusing(Ssu2RelayQueueError::NoSession);
+    let outcome = drain_relay_events(
+        &mut source,
+        &mut owner,
+        &signers,
+        &carriage,
+        NOW_MS,
+        NOW_SECS,
+    );
+
+    assert_eq!(outcome.drained, 1, "the event was still pulled");
+    assert_eq!(outcome.admitted, 1, "the role owner still admitted it");
+    assert_eq!(
+        outcome.carried, 0,
+        "a block that was not carried must not be counted as carried"
+    );
+    assert_eq!(
+        outcome.carriage_refusals.get("no_session"),
+        Some(&1),
+        "the carriage refusal must be counted by its reason"
+    );
+    assert_eq!(
+        outcome.carriage_refusals.len(),
+        1,
+        "only the refusal's own reason may be counted"
+    );
+    assert!(
+        carriage.intros.borrow().is_empty(),
+        "a refusing carriage must not record a carried block"
+    );
+    assert_eq!(
+        owner.receipt().intros_produced,
+        1,
+        "the role owner still produced the block; the carriage is a separate step"
     );
 }
 
@@ -334,5 +540,13 @@ fn the_daemon_live_loop_drains_the_relay_handoff() {
     assert!(
         source.contains("NetDbSignerResolver::new("),
         "the live role owner must answer requester keys from the validated store"
+    );
+    assert!(
+        source.contains("crate::ssu2_relay_drain::RuntimeRelayCarriage::new("),
+        "the live loop must carry the produced block onto a session"
+    );
+    assert!(
+        !source.contains("awaiting_carriage"),
+        "the live loop must not still report a block as awaiting carriage"
     );
 }

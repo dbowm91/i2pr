@@ -24,14 +24,14 @@ use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::SigningPublicKey;
 use i2pr_transport::{AddressFamily, PeerTestOutcomeKind, ReachabilitySignal, ReachabilityState};
 use i2pr_transport_ssu2::{
-    IntroKey, IntroducerProvenance, IntroducerRecord, IntroducerTable, PeerTestBlock,
-    PeerTestOutcome, PeerTestRole, PeerTestTable, PublicationPolicy, PublicationRequest,
-    RelayIntroBlock, RelayIntroducer, RelayRequestBlock, RelayRequester, RelayResponseBlock,
-    RelayTarget, Role, SessionConfig, SessionEvent, Ssu2AddressClass, Ssu2Capabilities,
-    Ssu2Endpoint, Ssu2PublicKey, Ssu2Session, Ssu2SplitKeys, Ssu2Transcript, build_hole_punch,
-    build_out_of_session_peer_test, hole_punch_conn_ids, parse_hole_punch,
-    parse_out_of_session_peer_test, peer_test_conn_ids, peer_test_preimage, relay_request_preimage,
-    relay_response_preimage,
+    AddressBlock, BlockError, IntroKey, IntroducerProvenance, IntroducerRecord, IntroducerTable,
+    PeerTestBlock, PeerTestOutcome, PeerTestRole, PeerTestTable, PublicationPolicy,
+    PublicationRequest, RelayIntroBlock, RelayIntroducer, RelayRequestBlock, RelayRequester,
+    RelayResponseBlock, RelayTagBlock, RelayTarget, Role, SessionConfig, SessionError,
+    SessionEvent, Ssu2AddressClass, Ssu2Capabilities, Ssu2Endpoint, Ssu2PublicKey, Ssu2Session,
+    Ssu2SplitKeys, Ssu2Transcript, build_hole_punch, build_out_of_session_peer_test,
+    hole_punch_conn_ids, parse_hole_punch, parse_out_of_session_peer_test, peer_test_conn_ids,
+    peer_test_preimage, relay_request_preimage, relay_response_preimage,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -459,6 +459,87 @@ fn relay_intro_reaches_target_and_replay_does_not_reamplify() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn relay_tag_request_traverses_session_to_introducer() {
+    let (mut alice, mut bob) = paired_sessions();
+    // The request body is empty: the asking session is the whole
+    // destination, so nothing names a target on the wire.
+    alice.queue_relay_tag_request().expect("queue");
+    let events = carry(&mut alice, &mut bob, NOW_MS);
+    assert!(
+        events.contains(&SessionEvent::RelayTagRequest),
+        "the peer decodes the empty relay-tag request"
+    );
+}
+
+#[test]
+fn relay_tag_traverses_session_with_the_exact_tag() {
+    let (mut alice, mut bob) = paired_sessions();
+    let tag = 0x0BAD_F00D_u32;
+    let block = RelayTagBlock::new(tag).expect("tag");
+    alice.queue_relay_tag(block).expect("queue");
+    let events = carry(&mut alice, &mut bob, NOW_MS);
+    let received = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::RelayTag(value) => Some(*value),
+            _ => None,
+        })
+        .expect("relay tag event carries the exact tag");
+    assert_eq!(received, tag);
+}
+
+#[test]
+fn relay_tag_controls_are_refused_on_a_terminated_session() {
+    let (mut alice, _bob) = paired_sessions();
+    alice.initiate_termination(0).expect("terminate");
+    assert!(alice.is_terminated());
+    let block = RelayTagBlock::new(0x0BAD_F00D).expect("tag");
+    assert_eq!(
+        alice.queue_relay_tag_request(),
+        Err(SessionError::Terminated),
+        "a terminated session accepts no new control"
+    );
+    assert_eq!(
+        alice.queue_relay_tag(block),
+        Err(SessionError::Terminated),
+        "a terminated session accepts no new control"
+    );
+}
+
+#[test]
+fn relay_tag_controls_are_refused_at_the_control_queue_ceiling() {
+    let (mut alice, _bob) = paired_sessions();
+    // The control queue is private, so the only honest way to reach the
+    // ceiling from the public surface is to fill it with real controls.
+    // An unrelated control fills it, so the refusal below is a property
+    // of the shared queue and not of the tag path.
+    let endpoint = v4(10, 40000);
+    for _ in 0..i2pr_transport_ssu2::constants::DATA_MAX_SENT_PACKETS {
+        alice
+            .queue_address(AddressBlock::new(endpoint))
+            .expect("fill");
+    }
+    let block = RelayTagBlock::new(0x0BAD_F00D).expect("tag");
+    assert_eq!(
+        alice.queue_relay_tag_request(),
+        Err(SessionError::LocalPolicyDenied),
+        "the ceiling refuses one more control"
+    );
+    assert_eq!(
+        alice.queue_relay_tag(block),
+        Err(SessionError::LocalPolicyDenied),
+        "the ceiling refuses one more control"
+    );
+}
+
+#[test]
+fn zero_relay_tag_is_rejected_before_the_queue() {
+    // The nonzero invariant is pinned at the block layer: a zero tag
+    // never becomes a queueable control.
+    assert_eq!(RelayTagBlock::new(0), Err(BlockError::RelayMalformed));
 }
 
 #[test]

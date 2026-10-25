@@ -3985,7 +3985,15 @@ fn register_ssu2_service(
                             owner.handle().service().clone(),
                             local_router_hash,
                         );
-                        Some((owner_handle, signers))
+                        // Plan 499: the carriage puts the role owner's
+                        // produced block on the session with the peer it is
+                        // for. It holds the same runtime — the one that owns
+                        // the live sessions — so the block reaches the wire
+                        // through the runtime's own bounded control queue.
+                        let carriage = crate::ssu2_relay_drain::RuntimeRelayCarriage::new(
+                            owner.handle().service().clone(),
+                        );
+                        Some((owner_handle, signers, carriage))
                     } else {
                         None
                     };
@@ -4546,7 +4554,14 @@ fn register_ssu2_service(
                                 // role owner. A refusal is a counted
                                 // outcome, never an error: the drain never
                                 // fails the loop.
-                                if let Some((introducer, signers)) = introducer.as_mut() {
+                                //
+                                // Plan 499: a block the role owner produced
+                                // is carried onto the session with the peer
+                                // it is for, so the introduction completes
+                                // on the wire instead of stopping at the
+                                // role owner's decision.
+                                if let Some((introducer, signers, carriage)) = introducer.as_mut()
+                                {
                                     let now_ms = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|duration| {
@@ -4557,15 +4572,22 @@ fn register_ssu2_service(
                                         &mut owner,
                                         introducer,
                                         &*signers,
+                                        &*carriage,
                                         now_ms,
                                         now_ms / 1_000,
                                     );
                                     if drained.drained > 0 {
+                                        // Counts only: the refusal keys are
+                                        // stable reason labels, and no peer
+                                        // identity is logged.
+                                        let carriage_refused: u64 =
+                                            drained.carriage_refusals.values().copied().sum();
                                         tracing::debug!(
                                             drained = drained.drained,
                                             admitted = drained.admitted,
                                             refused = drained.refused,
-                                            awaiting_carriage = drained.awaiting_carriage,
+                                            carried = drained.carried,
+                                            carriage_refused = carriage_refused,
                                             "SSU2 introducer relay handoff drained"
                                         );
                                     }

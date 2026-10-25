@@ -343,6 +343,10 @@ impl Ssu2IntroducerService {
             // The Relay Intro is the target side's message. This router
             // is the introducer, so it is not our role.
             Ssu2RelayEvent::Intro(_) => self.refuse(Ssu2IntroducerRefusal::NotOurRole),
+            // Plan 499: a relay tag is the *target* side's message — the
+            // peer that asked this router for a tag is told which tag it
+            // got. This router is the introducer, so it is not our role.
+            Ssu2RelayEvent::Tag(_) => self.refuse(Ssu2IntroducerRefusal::NotOurRole),
         }
     }
 

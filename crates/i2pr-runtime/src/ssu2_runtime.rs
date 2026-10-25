@@ -826,6 +826,40 @@ pub enum Ssu2RelayEvent {
     Intro(i2pr_transport_ssu2::RelayIntroBlock),
     /// A Relay Response (Charlie to Bob).
     Response(i2pr_transport_ssu2::RelayResponseBlock),
+    /// A relay tag observed on an authenticated session.
+    ///
+    /// The peer that asked for a tag is the peer that has to learn it, so
+    /// the observed tag travels back over the same bounded relay handoff
+    /// as the other relay blocks. The runtime creates no state for it.
+    Tag(u32),
+}
+
+/// The reason an outbound relay block could not be carried.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2RelayQueueError {
+    /// No live session exists for the peer.
+    NoSession,
+    /// More than one live session exists for the peer; the runtime refuses to guess.
+    AmbiguousSession,
+    /// The session is terminated.
+    SessionTerminated,
+    /// The session's control queue is at its ceiling.
+    ControlQueueFull,
+}
+
+impl Ssu2RelayQueueError {
+    /// A stable, count-only reason key for this refusal.
+    ///
+    /// The key is a label only: it carries no peer identity, no tag and no
+    /// payload. It exists so a refusal can be counted by reason.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::NoSession => "no_session",
+            Self::AmbiguousSession => "ambiguous_session",
+            Self::SessionTerminated => "session_terminated",
+            Self::ControlQueueFull => "control_queue_full",
+        }
+    }
 }
 
 /// One batch of runtime handoff events produced by a datagram or a
@@ -888,6 +922,18 @@ pub struct Ssu2Snapshot {
     pub path_expirations: u64,
     /// Candidate admissions denied by quota/budget ceilings.
     pub path_denied: u64,
+    /// Relay-tag requests observed on an authenticated session.
+    pub relay_tag_requests: u64,
+    /// Relay tags minted, bound to the requesting peer and answered.
+    pub relay_tags_issued: u64,
+    /// Relay tags observed on an authenticated session.
+    pub relay_tags_observed: u64,
+    /// Relay blocks queued onto a live session.
+    pub relay_blocks_queued: u64,
+    /// Relay blocks refused for any reason.
+    ///
+    /// The per-reason breakdown lives in [`Ssu2RelayCounters`].
+    pub relay_blocks_refused: u64,
     /// Conservative router-level reachability state.
     pub reachability: ReachabilityState,
     /// Current pending outbound handshakes.
@@ -902,6 +948,41 @@ pub struct Ssu2Snapshot {
     pub cached_tokens: usize,
     /// Local RouterInfo installation generation (diagnostics only).
     pub local_router_info_generation: u64,
+}
+
+/// Counts-only SSU2 relay counters (Plan 499).
+///
+/// Every relay-tag request the runtime observes and every outbound relay
+/// block it refuses is counted here. No field carries a peer hash, a key, a
+/// tag value, an endpoint or a payload: counts and reason labels only.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Ssu2RelayCounters {
+    /// Relay-tag requests observed on an authenticated session.
+    pub tag_requests_observed: u64,
+    /// Relay tags minted, bound to the requesting peer and answered.
+    pub tags_issued: u64,
+    /// Tag requests refused because the introducer service is disabled.
+    pub tag_refused_disabled: u64,
+    /// Tag requests refused because no usable nonzero tag could be minted.
+    pub tag_refused_random: u64,
+    /// Tag requests refused by the transport's introducer quota.
+    pub tag_refused_quota: u64,
+    /// Tag answers refused because the session is terminated.
+    pub tag_refused_terminated: u64,
+    /// Tag answers refused because the control queue is at its ceiling.
+    pub tag_refused_control_queue_full: u64,
+    /// Relay tags observed on an authenticated session.
+    pub tags_observed_inbound: u64,
+    /// Relay blocks queued onto a live session.
+    pub blocks_queued: u64,
+    /// Relay blocks refused because no live session exists for the peer.
+    pub blocks_refused_no_session: u64,
+    /// Relay blocks refused because more than one live session exists.
+    pub blocks_refused_ambiguous_session: u64,
+    /// Relay blocks refused because the session is terminated.
+    pub blocks_refused_session_terminated: u64,
+    /// Relay blocks refused because the control queue is at its ceiling.
+    pub blocks_refused_control_queue_full: u64,
 }
 
 /// Factual public publication material obtained from the live SSU2 owner.
@@ -1243,6 +1324,19 @@ struct ServiceCounters {
     controlled_confirmed: AtomicU64,
     controlled_received: AtomicU64,
     controlled_drops: AtomicU64,
+    relay_tag_requests: AtomicU64,
+    relay_tags_issued: AtomicU64,
+    relay_tag_refused_disabled: AtomicU64,
+    relay_tag_refused_random: AtomicU64,
+    relay_tag_refused_quota: AtomicU64,
+    relay_tag_refused_terminated: AtomicU64,
+    relay_tag_refused_control_queue_full: AtomicU64,
+    relay_tags_observed: AtomicU64,
+    relay_blocks_queued: AtomicU64,
+    relay_blocks_refused_no_session: AtomicU64,
+    relay_blocks_refused_ambiguous_session: AtomicU64,
+    relay_blocks_refused_session_terminated: AtomicU64,
+    relay_blocks_refused_control_queue_full: AtomicU64,
 }
 
 fn monotonic_ms(started: &tokio::time::Instant) -> u64 {
@@ -1915,6 +2009,28 @@ impl Ssu2RuntimeService {
             path_rejections: counters.path_rejections.load(Ordering::Relaxed),
             path_expirations: counters.path_expirations.load(Ordering::Relaxed),
             path_denied: counters.path_denied.load(Ordering::Relaxed),
+            relay_tag_requests: counters.relay_tag_requests.load(Ordering::Relaxed),
+            relay_tags_issued: counters.relay_tags_issued.load(Ordering::Relaxed),
+            relay_tags_observed: counters.relay_tags_observed.load(Ordering::Relaxed),
+            relay_blocks_queued: counters.relay_blocks_queued.load(Ordering::Relaxed),
+            relay_blocks_refused: counters
+                .relay_blocks_refused_no_session
+                .load(Ordering::Relaxed)
+                .saturating_add(
+                    counters
+                        .relay_blocks_refused_ambiguous_session
+                        .load(Ordering::Relaxed),
+                )
+                .saturating_add(
+                    counters
+                        .relay_blocks_refused_session_terminated
+                        .load(Ordering::Relaxed),
+                )
+                .saturating_add(
+                    counters
+                        .relay_blocks_refused_control_queue_full
+                        .load(Ordering::Relaxed),
+                ),
             reachability,
             pending_outbound,
             pending_inbound,
@@ -1933,6 +2049,172 @@ impl Ssu2RuntimeService {
         self.shared
             .local_router_info_generation
             .load(Ordering::Relaxed)
+    }
+
+    /// Returns the counts-only relay counters (Plan 499).
+    ///
+    /// The per-reason breakdown lives here rather than in
+    /// [`Ssu2Snapshot`], whose flat aggregate shape has no reason
+    /// dimension. No counter carries a peer hash, a key, a tag value, an
+    /// endpoint or a payload.
+    pub fn relay_counters(&self) -> Ssu2RelayCounters {
+        let counters = &self.shared.counters;
+        Ssu2RelayCounters {
+            tag_requests_observed: counters.relay_tag_requests.load(Ordering::Relaxed),
+            tags_issued: counters.relay_tags_issued.load(Ordering::Relaxed),
+            tag_refused_disabled: counters.relay_tag_refused_disabled.load(Ordering::Relaxed),
+            tag_refused_random: counters.relay_tag_refused_random.load(Ordering::Relaxed),
+            tag_refused_quota: counters.relay_tag_refused_quota.load(Ordering::Relaxed),
+            tag_refused_terminated: counters
+                .relay_tag_refused_terminated
+                .load(Ordering::Relaxed),
+            tag_refused_control_queue_full: counters
+                .relay_tag_refused_control_queue_full
+                .load(Ordering::Relaxed),
+            tags_observed_inbound: counters.relay_tags_observed.load(Ordering::Relaxed),
+            blocks_queued: counters.relay_blocks_queued.load(Ordering::Relaxed),
+            blocks_refused_no_session: counters
+                .relay_blocks_refused_no_session
+                .load(Ordering::Relaxed),
+            blocks_refused_ambiguous_session: counters
+                .relay_blocks_refused_ambiguous_session
+                .load(Ordering::Relaxed),
+            blocks_refused_session_terminated: counters
+                .relay_blocks_refused_session_terminated
+                .load(Ordering::Relaxed),
+            blocks_refused_control_queue_full: counters
+                .relay_blocks_refused_control_queue_full
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Plan 499 — the outbound relay carriage API.
+    //
+    // The runtime owns the session registry and the transport's bounded
+    // control queue; the caller owns the block's content. The peer is
+    // the destination: a relay block carries no destination of its own,
+    // the resolved session is the destination.
+    // -------------------------------------------------------------------
+
+    /// Queues one Relay Request block toward `peer`.
+    ///
+    /// The block rides the session's normal transmit path, so it leaves in
+    /// the next Data packet and the peer decodes it as an authenticated
+    /// relay block. Exactly one live session must exist for the peer: a
+    /// peer with more than one live link is refused with
+    /// [`Ssu2RelayQueueError::AmbiguousSession`] rather than guessed at.
+    pub fn queue_relay_request(
+        &self,
+        peer: PeerId,
+        block: i2pr_transport_ssu2::RelayRequestBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        self.queue_relay_block(peer, |session| session.queue_relay_request(block))
+    }
+
+    /// Queues one in-session RelayTagRequest toward `peer`.
+    ///
+    /// The request body is empty: the peer is the destination, so the
+    /// session is the whole destination. The request carries no policy —
+    /// whether the *receiving* peer answers is that peer's own introducer
+    /// gate (`ssu2.introducer_service`), not the requester's.
+    pub fn queue_relay_tag_request(&self, peer: PeerId) -> Result<(), Ssu2RelayQueueError> {
+        self.queue_relay_block(peer, |session| session.queue_relay_tag_request())
+    }
+
+    /// Queues one Relay Intro block toward `peer`.
+    ///
+    /// See [`Self::queue_relay_request`] for the resolution contract.
+    pub fn queue_relay_intro(
+        &self,
+        peer: PeerId,
+        block: i2pr_transport_ssu2::RelayIntroBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        self.queue_relay_block(peer, |session| session.queue_relay_intro(block))
+    }
+
+    /// Queues one Relay Response block toward `peer`.
+    ///
+    /// See [`Self::queue_relay_request`] for the resolution contract.
+    pub fn queue_relay_response(
+        &self,
+        peer: PeerId,
+        block: i2pr_transport_ssu2::RelayResponseBlock,
+    ) -> Result<(), Ssu2RelayQueueError> {
+        self.queue_relay_block(peer, |session| session.queue_relay_response(block))
+    }
+
+    /// Resolves `peer` to exactly one live link and queues one control on it.
+    ///
+    /// This is the single place the runtime resolves a peer to a session,
+    /// so every carriage refusal has one reason vocabulary. The state
+    /// mutex is held for the lookup and the queueing only; nothing here
+    /// awaits, and the scheduler is woken after the queueing so the block
+    /// leaves on the next tick.
+    ///
+    /// A poisoned state mutex means no live session can be established, so
+    /// it fails closed as a terminated session — the same shape as
+    /// [`Self::queue_to_session`]'s closed outcome — and is counted like
+    /// every other refusal.
+    fn queue_relay_block<F>(&self, peer: PeerId, queue: F) -> Result<(), Ssu2RelayQueueError>
+    where
+        F: FnOnce(
+            &mut i2pr_transport_ssu2::Ssu2Session,
+        ) -> Result<(), i2pr_transport_ssu2::SessionError>,
+    {
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                let error = Ssu2RelayQueueError::SessionTerminated;
+                self.note_relay_refusal(error);
+                return Err(error);
+            }
+        };
+        let link = match resolve_single_peer_link(state.peer_links.get(&peer)) {
+            Ok(link) => link,
+            Err(error) => {
+                self.note_relay_refusal(error);
+                return Err(error);
+            }
+        };
+        let Some(record) = state.active.get_mut(&link) else {
+            let error = Ssu2RelayQueueError::NoSession;
+            self.note_relay_refusal(error);
+            return Err(error);
+        };
+        match queue(&mut record.session) {
+            Ok(()) => {
+                self.shared
+                    .counters
+                    .relay_blocks_queued
+                    .fetch_add(1, Ordering::Relaxed);
+                self.shared.notify.notify_one();
+                Ok(())
+            }
+            Err(error) => {
+                let error = relay_queue_reason(error);
+                self.note_relay_refusal(error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Counts one refused relay-block carriage by reason.
+    fn note_relay_refusal(&self, error: Ssu2RelayQueueError) {
+        let counters = &self.shared.counters;
+        let counter = match error {
+            Ssu2RelayQueueError::NoSession => &counters.relay_blocks_refused_no_session,
+            Ssu2RelayQueueError::AmbiguousSession => {
+                &counters.relay_blocks_refused_ambiguous_session
+            }
+            Ssu2RelayQueueError::SessionTerminated => {
+                &counters.relay_blocks_refused_session_terminated
+            }
+            Ssu2RelayQueueError::ControlQueueFull => {
+                &counters.relay_blocks_refused_control_queue_full
+            }
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     // -------------------------------------------------------------------
@@ -2734,6 +3016,102 @@ impl Ssu2RuntimeService {
                     .controlled_drops
                     .fetch_add(1, Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Answers one authenticated relay-tag request on the session it
+    /// arrived on (Plan 499, WP2).
+    ///
+    /// The order is fixed and fail-closed at every step:
+    ///
+    /// 1. the introducer gate — with the operator's default-off
+    ///    `ssu2.introducer_service` opt-in off, no tag is issued and no
+    ///    answer is queued;
+    /// 2. the tag itself comes from the OS CSPRNG and is nonzero, so the
+    ///    transport's block constructor cannot reject it;
+    /// 3. the tag is bound to the **session peer's** router hash — the
+    ///    handshake-authenticated peer, never a caller-supplied identity —
+    ///    through the transport's introducer, whose quota is the bound;
+    /// 4. the answer is queued on the same session and the scheduler is
+    ///    woken so it leaves on the next tick.
+    ///
+    /// Every refusal is counted by reason; nothing is silently ignored.
+    fn answer_relay_tag_request(
+        &self,
+        state: &mut ServiceState,
+        link_id: &LinkId,
+        peer: &PeerId,
+        now_secs: u64,
+    ) {
+        self.shared
+            .counters
+            .relay_tag_requests
+            .fetch_add(1, Ordering::Relaxed);
+        if !self.shared.peer_relay.introducer_enabled() {
+            self.shared
+                .counters
+                .relay_tag_refused_disabled
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let tag = match random_u32_nonzero() {
+            Ok(tag) => tag,
+            Err(()) => {
+                self.shared
+                    .counters
+                    .relay_tag_refused_random
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        let peer_hash = *peer.hash().as_bytes();
+        if self
+            .shared
+            .peer_relay
+            .issue_introducer_tag(tag, &peer_hash, now_secs)
+            .is_err()
+        {
+            self.shared
+                .counters
+                .relay_tag_refused_quota
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let Ok(block) = i2pr_transport_ssu2::RelayTagBlock::new(tag) else {
+            // Unreachable: `random_u32_nonzero` never returns zero and
+            // the block constructor rejects only zero. Fail closed.
+            self.shared
+                .counters
+                .relay_tag_refused_random
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let queued = match state.active.get_mut(link_id) {
+            Some(record) => record.session.queue_relay_tag(block),
+            None => Err(i2pr_transport_ssu2::SessionError::Terminated),
+        };
+        match queued {
+            Ok(()) => {
+                self.shared
+                    .counters
+                    .relay_tags_issued
+                    .fetch_add(1, Ordering::Relaxed);
+                self.shared.notify.notify_one();
+            }
+            Err(error) => match error {
+                i2pr_transport_ssu2::SessionError::LocalPolicyDenied => {
+                    self.shared
+                        .counters
+                        .relay_tag_refused_control_queue_full
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {
+                    self.shared
+                        .counters
+                        .relay_tag_refused_terminated
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            },
         }
     }
 
@@ -3600,6 +3978,42 @@ fn capability_link_id(capability: &i2pr_transport::LinkDeliveryCapability) -> Li
 fn release_active_locked(state: &mut ServiceState, record: &ActiveSession) {
     count_down(&mut state.active_ip, &record.peer_addr.ip());
     subnet_down(&mut state.active_subnet, &record.subnet);
+}
+
+/// Resolves one peer to exactly one live link (Plan 499).
+///
+/// The session registry keys live links by peer, and the generic
+/// transport manager keeps at most one active link per peer, so the
+/// ambiguous case is a guard rather than a routine. It is refused, never
+/// guessed. A peer with no link — or an empty link set — has no session.
+fn resolve_single_peer_link(
+    links: Option<&HashSet<LinkId>>,
+) -> Result<LinkId, Ssu2RelayQueueError> {
+    match links {
+        Some(links) if links.is_empty() => Err(Ssu2RelayQueueError::NoSession),
+        Some(links) if links.len() == 1 => links
+            .iter()
+            .next()
+            .copied()
+            .ok_or(Ssu2RelayQueueError::NoSession),
+        Some(_) => Err(Ssu2RelayQueueError::AmbiguousSession),
+        None => Err(Ssu2RelayQueueError::NoSession),
+    }
+}
+
+/// Maps one transport session error onto the runtime's carriage refusal.
+///
+/// The transport refuses a terminated session and a full control queue.
+/// Every other failure is treated as a terminated session so the runtime
+/// fails closed rather than retrying a block it cannot carry.
+fn relay_queue_reason(error: i2pr_transport_ssu2::SessionError) -> Ssu2RelayQueueError {
+    match error {
+        i2pr_transport_ssu2::SessionError::Terminated => Ssu2RelayQueueError::SessionTerminated,
+        i2pr_transport_ssu2::SessionError::LocalPolicyDenied => {
+            Ssu2RelayQueueError::ControlQueueFull
+        }
+        _ => Ssu2RelayQueueError::SessionTerminated,
+    }
 }
 
 fn remove_peer_link_locked(state: &mut ServiceState, peer: &PeerId, link_id: &LinkId) {
@@ -5709,6 +6123,28 @@ impl Ssu2RuntimeService {
                         event: Ssu2RelayEvent::Response(block),
                     });
                 }
+                // Plan 499 (WP2): a peer asked this router for a relay
+                // tag. The tag is minted, bound to the session peer and
+                // answered on the same session; nothing about the
+                // requester is taken from the request itself.
+                SessionEvent::RelayTagRequest => {
+                    self.answer_relay_tag_request(state, &link_id, &peer, now_secs);
+                }
+                // Plan 499 (WP2): this router learned a tag from a peer.
+                // The tag creates no state of its own; it travels back
+                // over the bounded relay handoff because the peer that
+                // asked for a tag is the peer that has to learn it.
+                SessionEvent::RelayTag(tag) => {
+                    self.shared
+                        .counters
+                        .relay_tags_observed
+                        .fetch_add(1, Ordering::Relaxed);
+                    relay.push(Ssu2InboundRelay {
+                        link_id,
+                        peer,
+                        event: Ssu2RelayEvent::Tag(tag),
+                    });
+                }
                 _ => {}
             }
         }
@@ -6930,6 +7366,54 @@ impl Ssu2LinkHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plan 499: the peer-to-link resolution refuses an ambiguous peer
+    /// rather than guessing which live session to carry a block on.
+    ///
+    /// The live two-link case cannot be built with the local harness: the
+    /// generic transport manager keeps at most one active link per peer,
+    /// so the runtime's link index never holds two links for one peer in
+    /// production. The branch is therefore covered here, against the
+    /// resolution helper the carriage API uses.
+    #[test]
+    fn relay_peer_resolution_refuses_ambiguous_and_empty_link_sets() {
+        let first = LinkId::new(1).expect("link");
+        let second = LinkId::new(2).expect("link");
+        assert_eq!(
+            resolve_single_peer_link(None),
+            Err(Ssu2RelayQueueError::NoSession)
+        );
+        assert_eq!(
+            resolve_single_peer_link(Some(&HashSet::new())),
+            Err(Ssu2RelayQueueError::NoSession)
+        );
+        assert_eq!(
+            resolve_single_peer_link(Some(&HashSet::from([first]))),
+            Ok(first)
+        );
+        assert_eq!(
+            resolve_single_peer_link(Some(&HashSet::from([first, second]))),
+            Err(Ssu2RelayQueueError::AmbiguousSession)
+        );
+    }
+
+    /// Plan 499: the transport's session errors map onto the runtime's
+    /// carriage refusals, and anything unexpected fails closed.
+    #[test]
+    fn relay_session_errors_map_onto_carriage_refusals() {
+        assert_eq!(
+            relay_queue_reason(i2pr_transport_ssu2::SessionError::Terminated),
+            Ssu2RelayQueueError::SessionTerminated
+        );
+        assert_eq!(
+            relay_queue_reason(i2pr_transport_ssu2::SessionError::LocalPolicyDenied),
+            Ssu2RelayQueueError::ControlQueueFull
+        );
+        assert_eq!(
+            relay_queue_reason(i2pr_transport_ssu2::SessionError::OutboundQueueFull),
+            Ssu2RelayQueueError::SessionTerminated
+        );
+    }
 
     #[test]
     fn source_write_receipt_requires_distinct_fragments_and_fails_partial_writes() {
