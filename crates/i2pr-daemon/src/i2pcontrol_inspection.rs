@@ -40,6 +40,7 @@ use crate::i2cp::I2cpServiceState;
 use crate::sam::SamServiceState;
 use crate::service_tunnels::ServiceTunnelManager;
 use crate::transit_volume::{TransitParticipation, transit_share_ratio};
+use crate::version_eligibility::VersionEligibilityOwner;
 
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
@@ -237,6 +238,9 @@ pub struct InspectionHandles {
     /// cannot report non-zero volume; a controlled lane publishes the
     /// counters its real forward path advances.
     transit_live: Mutex<Option<TransitParticipation>>,
+    /// Live peer-eligibility receipt owner, published by the composition
+    /// root (Plan 503). The log holds counts and stable reason labels only.
+    version_live: Mutex<Option<Arc<VersionEligibilityOwner>>>,
 }
 
 impl InspectionHandles {
@@ -262,6 +266,7 @@ impl InspectionHandles {
             ssu2_live: Mutex::new(None),
             news_live: Mutex::new(None),
             transit_live: Mutex::new(None),
+            version_live: Mutex::new(None),
         }
     }
 
@@ -537,6 +542,26 @@ impl InspectionHandles {
         }
     }
 
+    /// Publishes the live peer-eligibility receipt owner (called once by the
+    /// composition root, Plan 503).
+    ///
+    /// The owner is shared as a plain `Arc`; the handles keep only the
+    /// handle, so the receipts stay observable while the router runs.
+    pub fn publish_version_eligibility(&self, owner: Arc<VersionEligibilityOwner>) {
+        if let Ok(mut live) = self.version_live.lock() {
+            *live = Some(owner);
+        }
+    }
+
+    /// Reads the published peer-eligibility receipt owner.
+    ///
+    /// The read is cheap and non-async: the `Arc` is cloned out from under
+    /// the slot lock and the lock is released before the owner is returned.
+    /// An unpublished slot is a gap, never an empty receipt.
+    pub fn version_eligibility(&self) -> Option<Arc<VersionEligibilityOwner>> {
+        self.version_live.lock().ok().and_then(|live| live.clone())
+    }
+
     /// Publishes the live SAM state (called once by the SAM factory).
     pub fn publish_sam(&self, state: Arc<SamServiceState>) {
         if let Ok(mut live) = self.sam_live.lock() {
@@ -634,6 +659,14 @@ impl core::fmt::Debug for InspectionHandles {
                 "manager_live",
                 &self
                     .manager_live
+                    .lock()
+                    .map(|live| live.is_some())
+                    .unwrap_or(false),
+            )
+            .field(
+                "version_live",
+                &self
+                    .version_live
                     .lock()
                     .map(|live| live.is_some())
                     .unwrap_or(false),
@@ -2704,5 +2737,46 @@ mod tests {
             client_service_result(ClientService::HttpProxy, &handles)["enabled"],
             serde_json::json!(true)
         );
+    }
+
+    #[test]
+    fn the_peer_eligibility_owner_is_published_and_readable() {
+        use crate::version_eligibility::VersionEligibilityReceipt;
+
+        let handles = test_handles();
+        // An unpublished slot is a gap, never an empty receipt log.
+        assert!(handles.version_eligibility().is_none());
+
+        let owner = Arc::new(VersionEligibilityOwner::new(4));
+        owner.record(VersionEligibilityReceipt::dsm_target(
+            3,
+            0,
+            &i2pr_netdb::VersionRefusalCounts {
+                unknown_version: 0,
+                uncomparable_version: 0,
+                below_floor: 3,
+            },
+        ));
+        handles.publish_version_eligibility(Arc::clone(&owner));
+
+        let published = handles
+            .version_eligibility()
+            .expect("the owner is published");
+        assert_eq!(published.receipt_count(), 1);
+        assert_eq!(published.last().map(|receipt| receipt.examined), Some(3));
+        // The published handle is the same owner the composition root holds.
+        owner.record(VersionEligibilityReceipt::dsm_target(
+            4,
+            1,
+            &i2pr_netdb::VersionRefusalCounts::default(),
+        ));
+        assert_eq!(
+            handles
+                .version_eligibility()
+                .expect("the owner is published")
+                .receipt_count(),
+            2
+        );
+        assert!(format!("{handles:?}").contains("version_live: true"));
     }
 }

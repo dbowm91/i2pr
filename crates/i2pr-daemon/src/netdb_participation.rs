@@ -39,13 +39,21 @@ use i2pr_netdb::{
     ProfileInsertOutcome, ProfileProjection, ProfileProjectionError, ProfileStore,
     ProfileStoreConfig, ProfileStoreStats, ReplyPath, ResponseOutcome, RotationReport, RouterHash,
     RouterInfoLookup, RouterInfoStore, RoutingTableProjectionError, SelectionConstraints,
-    StartOutcome, TableInsertOutcome, ValidatedRouterInfo, ValidationContext, VersionGate,
-    VersionRefusalCounts, daily_routing_key, plan_optimized_lookup, select_candidates,
-    select_candidates_with_report,
+    StartOutcome, TableInsertOutcome, ValidatedRouterInfo, ValidationContext, VersionRefusalCounts,
+    daily_routing_key, plan_optimized_lookup, select_candidates, select_candidates_with_report,
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseSearchReplyMessage, DatabaseStoreMessage, Date, Hash,
 };
+
+/// The peer-eligibility decision surface moved to [`crate::version_eligibility`]
+/// in Plan 503, so the live gates and this driver share one receipt shape.
+///
+/// The re-export keeps Plan 491's public paths — the
+/// `netdb_participation::VersionEligibilityReceipt` and
+/// `netdb_participation::VersionDecisionKind` paths — unchanged for the
+/// crates and the lanes that already use them.
+pub use crate::version_eligibility::{VersionDecisionKind, VersionEligibilityReceipt};
 
 /// The maximum number of receipts the driver retains.
 pub const DEFAULT_MAX_RECEIPTS: usize = 256;
@@ -106,64 +114,6 @@ impl ParticipationReceipt {
             ParticipationReceiptKind::Selected => "selected",
             ParticipationReceiptKind::Projection => "projection",
         }
-    }
-}
-
-/// The peer-eligibility gate a version receipt describes.
-///
-/// Plan 491. The gate names the enforcement point; the floor it applies is
-/// specification policy, not an operator setting.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VersionDecisionKind {
-    /// The tunnel-build peer selection: the minimum peer version a tunnel
-    /// may be built through.
-    TunnelBuildPeer,
-    /// The DSM publication target selection: the minimum floodfill version a
-    /// DSM may be sent to.
-    DsmTarget,
-}
-
-impl VersionDecisionKind {
-    /// Returns the stable label of the gate.
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::TunnelBuildPeer => "tunnel-build-peer",
-            Self::DsmTarget => "dsm-target",
-        }
-    }
-
-    /// The selection gate this decision applies.
-    const fn selection_gate(&self) -> VersionGate {
-        match self {
-            Self::TunnelBuildPeer => VersionGate::TunnelBuildPeer,
-            Self::DsmTarget => VersionGate::DsmTarget,
-        }
-    }
-}
-
-/// A sanitized receipt of one peer-eligibility decision.
-///
-/// The receipt carries counts and stable reason labels only. It never carries
-/// a peer hash, an address, a key, a version string, or a payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VersionEligibilityReceipt {
-    /// The gate the decision applied.
-    pub kind: VersionDecisionKind,
-    /// The number of peers the decision examined.
-    pub examined: u32,
-    /// The number of peers the decision accepted.
-    pub accepted: u32,
-    /// The number of peers the decision refused, keyed by the stable reason
-    /// label.
-    pub refusals: BTreeMap<&'static str, u32>,
-    /// A digest over the receipt's counts.
-    pub digest: [u8; 32],
-}
-
-impl VersionEligibilityReceipt {
-    /// The number of peers the decision refused.
-    pub fn refused(&self) -> u32 {
-        self.refusals.values().copied().sum()
     }
 }
 
@@ -551,17 +501,10 @@ impl PeerParticipationDriver {
         accepted: u32,
         refusals: &VersionRefusalCounts,
     ) {
-        let mut by_reason = BTreeMap::new();
-        for (label, count) in refusals.counts_by_reason() {
-            by_reason.insert(label, count);
-        }
-        let receipt = VersionEligibilityReceipt {
-            kind,
-            examined,
-            accepted,
-            refusals: by_reason,
-            digest: version_receipt_digest(kind, examined, accepted, refusals),
-        };
+        // The receipt is built by the owner module's constructor, so the
+        // driver's receipts carry the same fields and the same digest as the
+        // live gates' receipts.
+        let receipt = VersionEligibilityReceipt::from_decision(kind, examined, accepted, refusals);
         if self.max_receipts == 0 {
             return;
         }
@@ -570,36 +513,6 @@ impl PeerParticipationDriver {
         }
         self.version_receipts.push_back(receipt);
     }
-}
-
-/// A digest over one peer-eligibility receipt's counts.
-///
-/// The digest covers the gate, the population, the accepted count and the
-/// refusal counts. It covers no peer identity, because the receipt holds
-/// none.
-fn version_receipt_digest(
-    kind: VersionDecisionKind,
-    examined: u32,
-    accepted: u32,
-    refusals: &VersionRefusalCounts,
-) -> [u8; 32] {
-    let mut buffer = Vec::new();
-    buffer.extend_from_slice(kind.label().as_bytes());
-    buffer.push(b'|');
-    buffer.extend_from_slice(examined.to_string().as_bytes());
-    buffer.push(b'|');
-    buffer.extend_from_slice(accepted.to_string().as_bytes());
-    buffer.push(b'|');
-    for (label, count) in refusals.counts_by_reason() {
-        buffer.extend_from_slice(label.as_bytes());
-        buffer.push(b'=');
-        buffer.extend_from_slice(count.to_string().as_bytes());
-        buffer.push(b',');
-    }
-    let hash = Hash::digest(&buffer);
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(hash.as_bytes());
-    digest
 }
 
 /// The daemon's shared handle to the participation driver.
@@ -911,6 +824,7 @@ impl RoutingTableConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version_eligibility::version_receipt_digest;
     use i2pr_crypto::RouterIdentityBundle;
     use i2pr_netdb::{RouterInfoStoreConfig, ValidationContext, router_hash};
     use i2pr_proto::{Date, Mapping};
@@ -1088,6 +1002,95 @@ mod tests {
         assert_eq!(first.len(), 1);
         let second = driver.select(4, 5);
         assert_eq!(second.len(), 1);
+    }
+
+    #[test]
+    fn the_version_receipts_are_unchanged_by_the_move() {
+        // The Plan 491 private mesh: five peers publishing five different API
+        // versions. The two receipts' digests are pinned to the values the
+        // pre-move implementation produced, so a drift in the digest
+        // algorithm is caught here and not only in the evidence lane.
+        const GOLDEN_TUNNEL_DIGEST: &str =
+            "a1c7672f10901a1ff63a0fcad72194e318169b501660fac3c6607dba54b2d73a";
+        const GOLDEN_DSM_DIGEST: &str =
+            "02a33179621bce2730a80dfa5cd662ba64f2f3d629ad588d313c195a9234bf5c";
+
+        fn mesh_peer(
+            signer: &RouterIdentityBundle,
+            published_ms: u64,
+            version: Option<&str>,
+        ) -> ValidatedRouterInfo {
+            let mut options = Mapping::builder();
+            if let Some(version) = version {
+                options
+                    .insert("router.version".to_owned(), version.to_owned())
+                    .expect("router.version");
+            }
+            options
+                .insert("caps".to_owned(), "f".to_owned())
+                .expect("caps");
+            let info = signer
+                .sign_router_info(
+                    Date::from_millis(published_ms),
+                    Vec::new(),
+                    Vec::new(),
+                    options.build().expect("options"),
+                )
+                .expect("sign");
+            ValidatedRouterInfo::from_router_info(
+                info,
+                None,
+                ValidationContext::new(Date::from_millis(published_ms)),
+            )
+            .expect("validate")
+        }
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        }
+
+        let mut driver = PeerParticipationDriver::new(ProfileStoreConfig::default());
+        for (seed, version) in [
+            (0x4911u64, Some("0.9.62")),
+            (0x4912, Some("0.9.70")),
+            (0x4913, Some("0.9.61")),
+            (0x4914, None),
+            (0x4915, Some("0.9.62.")),
+        ] {
+            driver.learn(mesh_peer(&bundle(seed), 60_000, version));
+        }
+
+        let tunnel = driver.select_tunnel_build_peers(8, 0x4910);
+        let dsm = driver.select_dsm_targets(8, 0x4920);
+        let receipts = driver.version_receipts();
+        assert_eq!(receipts.len(), 2);
+
+        let tunnel_receipt = receipts
+            .iter()
+            .find(|receipt| receipt.kind == VersionDecisionKind::TunnelBuildPeer)
+            .expect("tunnel-build receipt");
+        assert_eq!(tunnel_receipt.examined, 5);
+        assert_eq!(tunnel_receipt.accepted, 2);
+        assert_eq!(hex(&tunnel_receipt.digest), GOLDEN_TUNNEL_DIGEST);
+        assert_eq!(
+            tunnel_receipt.digest,
+            version_receipt_digest(VersionDecisionKind::TunnelBuildPeer, 5, 2, &tunnel.refusals,)
+        );
+
+        let dsm_receipt = receipts
+            .iter()
+            .find(|receipt| receipt.kind == VersionDecisionKind::DsmTarget)
+            .expect("dsm receipt");
+        assert_eq!(dsm_receipt.examined, 5);
+        assert_eq!(dsm_receipt.accepted, 2);
+        assert_eq!(hex(&dsm_receipt.digest), GOLDEN_DSM_DIGEST);
+        assert_eq!(
+            dsm_receipt.digest,
+            version_receipt_digest(VersionDecisionKind::DsmTarget, 5, 2, &dsm.refusals)
+        );
     }
 
     #[tokio::test]
