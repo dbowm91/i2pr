@@ -36,6 +36,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use i2pr_proto::TunnelDataMessage;
 use i2pr_runtime::CancellationToken;
@@ -52,6 +53,7 @@ use crate::transit_compose::{
     TransitIngressGate, TransitLiveStateSnapshot, TransitServiceError, TransitTunnelDataDispatch,
 };
 use crate::transit_participation::{TransitParticipationBinding, TransitRefusalReason};
+use crate::transit_volume::TransitVolumeCounters;
 
 /// Live transit owner errors.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -1461,6 +1463,20 @@ where
             return false;
         };
         service.forget_peer_by_session(peer)
+    }
+
+    /// Returns the shared transit-volume counters of the installed
+    /// service.
+    ///
+    /// `None` while the owner holds no transit service, which is the
+    /// product posture: a router that constructed no service owns no
+    /// counters, and the publication surface must report that absence
+    /// rather than a substituted zero.
+    pub fn volume_counters(&mut self) -> Option<Arc<Mutex<TransitVolumeCounters>>> {
+        self.owner
+            .gate
+            .service_mut()
+            .map(|service| service.volume_handle())
     }
 
     /// Marks the owner cancelled and drains transit synchronously.

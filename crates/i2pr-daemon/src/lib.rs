@@ -65,6 +65,7 @@ pub mod ssu2_qualification_export;
 pub mod ssu2_qualification_receipts;
 pub mod ssu2_relay_drain;
 pub mod transit_compose;
+pub mod transit_composition;
 pub mod transit_owner;
 pub mod transit_participation;
 pub mod transit_volume;
@@ -90,13 +91,16 @@ use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
+use rand_chacha::ChaCha8Rng;
 use rand_core::TryRngCore;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use crate::transit_owner::TransitLiveOwner;
 
 /// Bounded startup deadline installed on every supervised daemon service.
 ///
@@ -2284,6 +2288,32 @@ struct Ntcp2IngressOwner {
     delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
 }
 
+/// Plan 502: installs the router's own coordinator facts into the transit
+/// owner.
+///
+/// The owner records creator-owned build replies and creator/service-owned
+/// tunnel ids in narrow typed sets. The facts come from the build
+/// coordinator that owns the router's pending attempts, so the router's
+/// own traffic is never claimed as transit work.
+///
+/// The sets only grow: a fact that was true stays true for the router's
+/// lifetime, and the number of facts is bounded by the coordinator's
+/// pending-build and tunnel-retention ceilings times the number of builds
+/// the router performs.
+fn install_transit_creator_correlation(
+    transit: &mut TransitLiveOwner<ChaCha8Rng>,
+    owner: &NormalSsu2Owner,
+) {
+    let (builds, tunnel_ids) = owner.transit_creator_correlation();
+    for (peer, message_id) in builds {
+        transit.install_creator_build(peer, message_id);
+    }
+    for tunnel_id in tunnel_ids {
+        transit.install_creator_data(tunnel_id);
+        transit.install_creator_gateway(tunnel_id);
+    }
+}
+
 /// One inbound queue owner for the normal daemon. The group product wraps
 /// the same SSU2 handle; it never starts another transport or receiver.
 enum NormalSsu2Owner {
@@ -2296,6 +2326,26 @@ impl NormalSsu2Owner {
         match self {
             Self::Router(handle) => handle,
             Self::Groups(product) => product.ssu2_handle(),
+        }
+    }
+
+    /// Plan 502: the router's own coordinator facts the transit owner
+    /// must bypass.
+    ///
+    /// The documented order is creator/service first, transit second,
+    /// unknown fail-closed. Without these facts the transit owner would
+    /// claim the router's **own** coordinator traffic as transit work.
+    ///
+    /// A router that owns no build coordinator owns no coordinator
+    /// traffic, so it has nothing to bypass and the correlation stays
+    /// empty.
+    fn transit_creator_correlation(&self) -> (Vec<(i2pr_transport::PeerId, u32)>, Vec<u32>) {
+        match self {
+            Self::Router(_) => (Vec::new(), Vec::new()),
+            Self::Groups(product) => (
+                product.transit_creator_builds(),
+                product.transit_creator_tunnel_ids(),
+            ),
         }
     }
 
@@ -3353,7 +3403,7 @@ fn register_ssu2_service(
         Ssu2DaemonService, decode_authenticated_router_i2np, floodfill_body_from_message,
         generate_controlled_identity_with_keys, generate_private_lan_identity_with_keys,
     };
-    use crate::transit_owner::controlled_transit_disabled_probe;
+    use crate::transit_owner::TransitLiveOwner;
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
     let router_info_store_config =
@@ -3369,6 +3419,12 @@ fn register_ssu2_service(
     let reply_token_probe_enabled = config.floodfill.send_reply_token_probe;
     let request_driven_lookup_probe_enabled = config.floodfill.send_initiator_lookup_probe;
     let bandwidth_share_percent = config.bandwidth.share_percent;
+    // Plan 502: the transit composition derives its inputs from the
+    // normalized `[transit]` and `[bandwidth]` sections. They are copied
+    // here because the service closure is `'static` and the configuration
+    // reference does not outlive this call.
+    let transit_config = config.transit;
+    let transit_bandwidth_config = config.bandwidth;
     let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
     // Plan 496: the NTCP2 endpoint the local RouterInfo's NTCP2 address
     // must match before the SSU2 owner will install it, and the address
@@ -3643,6 +3699,11 @@ fn register_ssu2_service(
                     // The identity is moved into the runtime service below,
                     // so the hash is taken first.
                     let local_router_hash = *identity.router_hash.as_bytes();
+                    // Plan 502: the transit composition needs the same
+                    // bandwidth governor the SSU2 owner enforces against.
+                    // The governor is moved into the SSU2 service below, so
+                    // the composition keeps its own handle.
+                    let transit_bandwidth = bandwidth.clone();
                     let daemon_service = match Ssu2DaemonService::new_with_bandwidth(
                         &ssu2_config,
                         identity,
@@ -3950,6 +4011,58 @@ fn register_ssu2_service(
                     } else {
                         NormalSsu2Owner::Router(handle)
                     };
+                    // Plan 502: the router hashes the transit owner holds an
+                    // index entry for. The set is bounded by the live
+                    // session set and by the transit peer index's own
+                    // capacity.
+                    let mut transit_peers: BTreeSet<i2pr_proto::Hash> = BTreeSet::new();
+                    // Plan 502: the transit data-plane owner.
+                    //
+                    // Every input is derived by the composition from the
+                    // normalized configuration, the router identity bundle,
+                    // and the transport seams this service already owns. The
+                    // owner is constructed **only** when the operator opted
+                    // in; the default product constructs nothing at all.
+                    //
+                    // A construction failure leaves the router running
+                    // **without** an owner: it never falls back to
+                    // something that implies participation.
+                    let transit_inputs =
+                        crate::transit_composition::TransitCompositionInputs {
+                            transit: transit_config,
+                            bandwidth: transit_bandwidth_config,
+                            governor: transit_bandwidth.as_ref(),
+                            delivery: Some(owner.handle().delivery().clone()),
+                            cancellation: Some(cancellation.clone()),
+                            identity: Some(bundle.as_ref()),
+                        };
+                    let mut transit_owner: Option<TransitLiveOwner<ChaCha8Rng>> =
+                        match crate::transit_composition::build_transit_owner(&transit_inputs) {
+                            Ok(owner) => owner,
+                            Err(error) => {
+                                tracing::warn!(
+                                    reason = %error,
+                                    "the transit data-plane owner was not installed; the router \
+                                     keeps running without transit participation"
+                                );
+                                None
+                            }
+                        };
+                    // Plan 502: the participation posture is published only
+                    // when the owner exists, and it carries the **service's
+                    // own** volume handle. A router that installed no owner
+                    // keeps the `Disabled` posture the composition root
+                    // published: the Disabled posture owns no counters, so
+                    // the selectors report zeros because there is nothing to
+                    // read, not because a zero was substituted.
+                    if let Some(counters) = transit_owner
+                        .as_mut()
+                        .and_then(|owner| owner.volume_counters())
+                    {
+                        inspection.publish_transit_participation(
+                            crate::transit_volume::TransitParticipation::Enabled(counters),
+                        );
+                    }
                     // Plan 498: the SSU2 introducer (Bob) role owner.
                     //
                     // The role is constructed only when the operator opted
@@ -4103,11 +4216,21 @@ fn register_ssu2_service(
                         tokio::select! {
                             biased;
                             _ = token.cancelled() => {
+                                // Plan 502: the transit owner is cancelled and
+                                // drained deterministically on shutdown, using
+                                // the same outer cancellation token the
+                                // service owns.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    transit.cancel();
+                                }
                                 owner.shutdown().await;
                                 return i2pr_runtime::ServiceResult::RequestedShutdown;
                             }
                             changed = local_router_info_rx.changed() => {
                                 if changed.is_err() {
+                                    if let Some(transit) = transit_owner.as_mut() {
+                                        transit.cancel();
+                                    }
                                     owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 }
@@ -4183,6 +4306,9 @@ fn register_ssu2_service(
                                 }
                             } => {
                                 let Some(inbound) = inbound else {
+                                    if let Some(transit) = transit_owner.as_mut() {
+                                        transit.cancel();
+                                    }
                                     owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 };
@@ -4445,6 +4571,20 @@ fn register_ssu2_service(
                                         ),
                                     }
                                 }
+                                // Plan 502: refresh the transit owner's
+                                // creator correlation **before** the router's
+                                // own coordinator consumes the message. The
+                                // coordinator removes a pending attempt when
+                                // it claims the reply, so the facts have to be
+                                // read while the attempt is still pending.
+                                //
+                                // Without this the transit owner would claim
+                                // the router's own build replies as transit
+                                // work and spend the participation budget on
+                                // the router's own coordinator traffic.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    install_transit_creator_correlation(transit, &owner);
+                                }
                                 if let Err(error) =
                                     owner.process_group_inbound(&inbound, outcome, message).await
                                 {
@@ -4480,20 +4620,44 @@ fn register_ssu2_service(
                                     );
                                 }
                                 if !served {
-                                    // Bounded dispatch: success and failure
-                                    // both release the inbound bytes with the
-                                    // call frame. Unsupported bodies are an
-                                    // explicit disposition, not an error.
-                                    // Controlled transit stays disabled in
-                                    // ordinary product profiles: the live
-                                    // transit owner is consulted only as a
-                                    // disabled probe so the production
-                                    // caller references the live-owner
-                                    // module without dispatching.
-                                    let _ = controlled_transit_disabled_probe(&outcome);
+                                    // Plan 502: the production inbound path
+                                    // dispatches through the transit
+                                    // composition. The installed owner is
+                                    // consulted first; the controlled
+                                    // disabled probe is the fallback for the
+                                    // no-owner case only, so the two can
+                                    // never run beside each other.
+                                    let _ = crate::transit_composition::dispatch_transit_inbound(
+                                        &mut transit_owner,
+                                        &outcome,
+                                        &inbound,
+                                        now_ms,
+                                        now_ms / 1_000,
+                                    );
                                 }
                             }
                             _ = evaluation.tick() => {
+                                // Plan 502: reconcile the transit owner's peer
+                                // index against the live authenticated session
+                                // set and sweep expired registrations. The
+                                // pass is bounded, and it runs on this existing
+                                // periodic tick — never per message and never
+                                // on a new task.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let live = owner.handle().service().active_peer_hashes();
+                                    crate::transit_composition::reconcile_transit_peers(
+                                        transit,
+                                        &mut transit_peers,
+                                        &live,
+                                        now_ms / 1_000,
+                                    );
+                                }
                                 if let Some(state) = floodfill.as_mut() {
                                     run_floodfill_evaluation(
                                         state,

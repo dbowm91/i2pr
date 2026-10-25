@@ -1036,6 +1036,33 @@ impl ExploratoryBuildCoordinator {
         ids
     }
 
+    /// Returns the creator-correlated build facts the transit owner must
+    /// bypass: the `(peer, message_id)` pairs of the router's **own**
+    /// pending build replies.
+    ///
+    /// The peer is the attempt's target peer, because the coordinator
+    /// matches an inbound reply against exactly this pair: the transit
+    /// owner's creator check therefore uses the same key the coordinator
+    /// itself uses, and the router's own build replies can never be
+    /// claimed as transit work.
+    ///
+    /// The set is bounded by the coordinator's pending-build ceiling.
+    pub(crate) fn reserved_creator_builds(&self) -> Vec<(PeerId, u32)> {
+        let mut pairs = self
+            .pending
+            .values()
+            .flat_map(|attempt| {
+                [
+                    (attempt.target_peer, attempt.message_id),
+                    (attempt.target_peer, attempt.outer_message_id),
+                ]
+            })
+            .collect::<Vec<_>>();
+        pairs.sort_unstable();
+        pairs.dedup();
+        pairs
+    }
+
     #[cfg(test)]
     fn has_pending_message_id(&self, message_id: u32) -> bool {
         self.pending

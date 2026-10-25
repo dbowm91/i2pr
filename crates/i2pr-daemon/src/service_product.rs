@@ -67,6 +67,7 @@ use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_service_tunnels::{ServiceTunnelSet, StaticAliasTable};
 use i2pr_transport::Deadline;
+use i2pr_transport::PeerId;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::identity::TunnelId;
@@ -3093,6 +3094,25 @@ impl ServiceProduct {
     /// dispatch services such as floodfill evaluation.
     pub(crate) const fn ssu2_handle(&self) -> &Ssu2DaemonHandle {
         &self.inner.ssu2_handle
+    }
+
+    /// Plan 502: the router's own pending build-reply facts, as the
+    /// `(peer, message_id)` pairs the transit owner's creator correlation
+    /// must bypass.
+    ///
+    /// The peer is the attempt's target peer — the same key the build
+    /// coordinator matches an inbound reply against — so the transit
+    /// owner can never claim the router's own build replies as transit
+    /// work.
+    pub(crate) fn transit_creator_builds(&self) -> Vec<(PeerId, u32)> {
+        self.inner.coordinator.reserved_creator_builds()
+    }
+
+    /// Plan 502: the tunnel ids the router owns as creator/service. The
+    /// transit owner must bypass them so the router's own tunnel traffic
+    /// is never claimed as transit work.
+    pub(crate) fn transit_creator_tunnel_ids(&self) -> Vec<u32> {
+        self.inner.coordinator.reserved_tunnel_ids()
     }
 
     /// Plan 498: pulls the next authenticated inbound relay block without

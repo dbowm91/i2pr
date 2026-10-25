@@ -507,7 +507,12 @@ impl InspectionHandles {
 
     /// Reads the published transit participation posture. A poisoned lock
     /// or an unpublished slot is a gap, never a zero.
-    pub(crate) fn transit_participation(&self) -> Option<TransitParticipation> {
+    ///
+    /// Plan 502: the reader is public so an out-of-crate evidence lane can
+    /// observe the published posture through the same value the
+    /// Proposal-170 selectors project. It is read-only: publishing is the
+    /// owner's privilege.
+    pub fn transit_participation(&self) -> Option<TransitParticipation> {
         self.transit_live.lock().ok().and_then(|live| live.clone())
     }
 
@@ -902,7 +907,7 @@ pub(crate) fn proposal_network_condition_value(
 /// A disabled router short-circuits to `0.0`, which is true regardless of
 /// the denominator. An unpublished posture, an unreadable counter, or a
 /// missing denominator is a gap — never a zero.
-pub(crate) fn proposal_transit_volume(
+pub fn proposal_transit_volume(
     key: &'static str,
     handles: &InspectionHandles,
 ) -> Result<serde_json::Value, InspectionGap> {

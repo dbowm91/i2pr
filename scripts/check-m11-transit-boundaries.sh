@@ -5,8 +5,1029 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_file="$root/crates/i2pr-tunnel/src/transit.rs"
 daemon_transit="$root/crates/i2pr-daemon/src/transit_compose.rs"
 daemon_transit_owner="$root/crates/i2pr-daemon/src/transit_owner.rs"
+daemon_lib="$root/crates/i2pr-daemon/src/lib.rs"
+daemon_transit_composition="$root/crates/i2pr-daemon/src/transit_composition.rs"
+daemon_root="$root/crates/i2pr-daemon/src"
+
+# Plan 502: `--self-test` exercises the rule controls alone, so they can be
+# proven on a tree whose Rust side has not landed yet. The default mode
+# runs the controls *and* the production checks.
+case "${1:-}" in
+    "") transit_mode="scan" ;;
+    --self-test) transit_mode="self-test" ;;
+    -h|--help)
+        printf 'usage: %s [--self-test]\n' "${BASH_SOURCE[0]}"
+        exit 0
+        ;;
+    *)
+        printf 'check-m11-transit-boundaries: unknown argument: %s\n' "$1" >&2
+        exit 2
+        ;;
+esac
 
 fail() { echo "check-m11-transit-boundaries: $*" >&2; exit 1; }
+
+# One temporary root for everything this script builds.
+tmp_root="$(mktemp -d)"
+production_src="$tmp_root/production"
+comment_stripped="$tmp_root/comment-stripped"
+rule_python="$tmp_root/rule.py"
+mkdir -p "$production_src" "$comment_stripped"
+trap 'rm -rf "$tmp_root"' EXIT
+
+# The scoped production-code stripper, the mirror of the pre-existing
+# production rules, and the Plan 502 rule-10 check live in ONE Python
+# program, so they cannot drift apart. It is invoked twice: once to build
+# the tree that every pre-existing rule below scans, and once -- after
+# every pre-existing rule has run -- to judge the Plan 502
+# transit-composition rule.
+cat > "$rule_python" <<'PY'
+"""Shared rule machinery for `scripts/check-m11-transit-boundaries.sh`.
+
+Three things live here so that they cannot drift apart:
+
+* the **scoped** production-code stripper, which builds the tree every
+  pre-existing rule in the shell script scans;
+* the **mirror** of those pre-existing rules, so the stripper's controls
+  can prove that the tree is scanned the way the shell scans it; and
+* the **Plan 502 rule-10 check**, which guards the transit data-plane
+  owner in the product composition.
+
+Modes
+-----
+build <repo_root> <dest_tree> <script_path>
+    Build the scoped production tree and run the stripper's controls.
+scan <lib.rs> <transit_composition.rs> <script_path>
+    Run the rule-10 controls and judge the production tree.
+self-test <script_path>
+    Run both control sets. Tree-independent: no daemon source is read.
+"""
+
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+MODE = sys.argv[1]
+failures = []
+
+
+def fail(message):
+    failures.append(message)
+
+
+def read(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as exc:
+        fail(f"cannot read {path}: {exc}")
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# the scoped stripper
+# ---------------------------------------------------------------------------
+
+CFG_TEST = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+RAW_START = re.compile(r"(?<![A-Za-z0-9_])(?:r|br|rb)(#*)\"")
+LINE_COMMENT = re.compile(r"^[ \t]*//")
+
+
+def mask(text):
+    """Blank comments and literals, preserving the line structure.
+
+    The rules judge executable code, not prose: the production sources
+    name the very symbols the rules forbid, in their documentation. A
+    mention in a comment must neither satisfy a rule nor trip one.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        raw = RAW_START.match(text, index)
+        if raw is not None:
+            # A raw string: `r"..."`, `r#"..."#`, `br##"..."##`. It ends at
+            # a quote followed by the same number of `#`s.
+            closing = '"' + raw.group(1)
+            end = text.find(closing, raw.end())
+            end = length if end < 0 else end + len(closing)
+            chunk = text[index:end]
+            out.append("".join("\n" if c == "\n" else " " for c in chunk))
+            index = end
+            continue
+        if char == "/" and text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            out.append(" " * (end - index))
+            index = end
+            continue
+        if char == "/" and text.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < length and depth:
+                if text.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif text.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            chunk = text[index:end]
+            out.append("".join("\n" if c == "\n" else " " for c in chunk))
+            index = end
+            continue
+        if char == '"':
+            end = index + 1
+            while end < length:
+                if text[end] == "\\":
+                    end += 2
+                    continue
+                if text[end] == '"':
+                    end += 1
+                    break
+                end += 1
+            chunk = text[index:end]
+            out.append("".join("\n" if c == "\n" else " " for c in chunk))
+            index = end
+            continue
+        if char == "'":
+            literal = re.match(r"'(\\.|[^\\'])'", text[index:index + 4])
+            if literal:
+                out.append(" " * literal.end())
+                index += literal.end()
+                continue
+            # A Rust lifetime (`'a`) is not a char literal.
+            out.append(char)
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def test_regions(lines):
+    """Per-line flag: is this line inside an `#[cfg(test)]` region?
+
+    Scoped, never latched: a test region ends where the item it
+    annotates ends -- at the matching close brace, or at the `;` of a
+    brace-less annotation.
+
+    The blunt convention this script used before -- "drop everything from
+    the first `#[cfg(test)]` to end-of-file" -- is a latching defect, the
+    same defect Plan 366 fixed in `check-console-boundaries.sh`. The
+    daemon's `lib.rs` declares a test-only module at line 14 and
+    `service_product.rs` at line 137, so the blunt form truncated the
+    daemon's production composition to 13 of its 5770 lines and hid the
+    production inbound path from every rule that scans the tree.
+    """
+    suppressed = [False] * len(lines)
+    index = 0
+    while index < len(lines):
+        if not CFG_TEST.search(lines[index]):
+            index += 1
+            continue
+        # Find the item the annotation applies to, skipping any further
+        # attribute lines.
+        item = index
+        while item < len(lines):
+            stripped = lines[item].strip()
+            if stripped and not stripped.startswith("#["):
+                break
+            item += 1
+        if item >= len(lines):
+            for k in range(index, len(lines)):
+                suppressed[k] = True
+            break
+        if "{" in lines[item]:
+            for k in range(index, item):
+                suppressed[k] = True
+            depth = 0
+            opened = False
+            k = item
+            while k < len(lines):
+                depth += lines[k].count("{") - lines[k].count("}")
+                if lines[k].count("{"):
+                    opened = True
+                suppressed[k] = True
+                if opened and depth <= 0:
+                    break
+                k += 1
+            index = k + 1
+        else:
+            for k in range(index, item + 1):
+                suppressed[k] = True
+            index = item + 1
+    return suppressed
+
+
+def production_source(text):
+    """The file's production code, with every `#[cfg(test)]` region blanked.
+
+    The removed lines are blanked rather than deleted, so the line numbers
+    the rules report are the source file's own.
+    """
+    lines = mask(text).split("\n")
+    suppressed = test_regions(lines)
+    original = text.split("\n")
+    return "\n".join(
+        "" if suppressed[index] else original[index]
+        for index in range(len(original))
+    )
+
+
+def production_code(text):
+    """The file's executable production code: comments and literals blanked."""
+    lines = mask(text).split("\n")
+    suppressed = test_regions(lines)
+    return "\n".join(
+        "" if suppressed[index] else lines[index]
+        for index in range(len(lines))
+    )
+
+
+def blunt_source(text):
+    """The convention this script used before: truncate at the first test.
+
+    Kept only so the controls can prove that the scoped strip, and not
+    this one, is what makes them fire.
+    """
+    kept = []
+    for line in text.split("\n"):
+        if CFG_TEST.search(line):
+            break
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def comment_strip(text):
+    """Drop the line comments, as the shell's `grep -v -E` does."""
+    return "\n".join(
+        line for line in text.split("\n") if not LINE_COMMENT.match(line)
+    )
+
+
+# ---------------------------------------------------------------------------
+# the pre-existing rules that scan the production tree
+# ---------------------------------------------------------------------------
+#
+# These mirror the shell rules verbatim, so the stripper's controls can
+# prove that the scoped tree is scanned the way the shell scans it. The
+# drift guard below asserts that every pattern still appears in the
+# script's shell body, so the mirror cannot rot unnoticed.
+
+PRODUCTION_RULES = [
+    ("process_short_build_request", r"process_short_build_request\b", None),
+    ("chacha20_transform", r"chacha20_transform\(", None),
+    ("short_envelope_primitives",
+     r"seal_short_reply\(|open_short_reply\(|seal_short_request\(|open_short_request\(",
+     None),
+    ("forward_participant_layer", r"forward_participant_layer\b", "plan253"),
+    ("peer_index_btreemap", r"peer_index: BTreeMap", None),
+    ("bandwidth_option_redecode",
+     r'mapping\.get\(|mapping\(\).get\(|get\("m"\)|get\("r"\)|get\("l"\)|get\("b"\)',
+     None),
+    ("participant_forward_direct", r"TunnelLayerTransform::participant_forward", "comment"),
+]
+
+
+def production_rule_hits(production, comment_stripped):
+    """(rule id, line number, line) for every pre-existing rule hit."""
+    hits = []
+    for rule_id, pattern, prefilter in PRODUCTION_RULES:
+        regex = re.compile(pattern)
+        source = comment_stripped if prefilter == "comment" else production
+        for number, line in enumerate(source.split("\n"), 1):
+            if prefilter == "plan253" and "// Plan 253 removes" in line:
+                continue
+            if regex.search(line):
+                hits.append((rule_id, number, line.strip()))
+    return hits
+
+
+def shell_only(text):
+    """The shell body, with any `<<'PY'` heredoc body blanked out.
+
+    The anchors below are checked against this rather than the whole file,
+    so that the anchor list cannot satisfy itself.
+    """
+    kept, inside = [], False
+    for line in text.split("\n"):
+        if line.rstrip().endswith("<<'PY'"):
+            inside = True
+            kept.append(line)
+            continue
+        if inside:
+            if line.rstrip() == "PY":
+                inside = False
+                kept.append(line)
+            else:
+                kept.append("")
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def check_no_drift(script_path):
+    """The shell rules must still be there; the mirror above cannot rot."""
+    shell = shell_only(read(script_path))
+    for _, pattern, _ in PRODUCTION_RULES:
+        if pattern not in shell:
+            fail(f"pre-existing production scan was removed: {pattern!r}")
+    for anchor in ("// Plan 253 removes", "^[[:space:]]*//"):
+        if anchor not in shell:
+            fail(f"pre-existing production scan was removed: {anchor!r}")
+
+
+# ---------------------------------------------------------------------------
+# the stripper's controls
+# ---------------------------------------------------------------------------
+#
+# The first fixture is the latching control: a test-only module stands
+# above production code that contains every forbidden pattern. The scoped
+# strip must scan that production code, and the blunt convention must
+# miss it -- which is what proves the change is real and not cosmetic.
+# The second fixture is the mirror image: every forbidden pattern sits
+# inside a test region, and no rule may fire.
+
+PRODUCTION_CODE_FIXTURE = """\
+#[cfg(test)]
+mod app_runtime_qualification;
+
+pub fn pump(request: &ShortRequestRecord, payload: &mut [u8]) {
+    let _ = process_short_build_request(request);
+    let _ = chacha20_transform(payload);
+    let _ = seal_short_request(payload);
+    let _ = open_short_request(payload);
+    let _ = seal_short_reply(payload);
+    let _ = open_short_reply(payload);
+    let _ = forward_participant_layer(payload);
+}
+
+pub struct PeerIndex {
+    peer_index: BTreeMap<Hash, PeerId>,
+}
+
+pub fn read_options(mapping: &Mapping) {
+    let _ = mapping.get("m");
+    let _ = mapping().get("r");
+    let _ = mapping.get("l");
+    let _ = mapping.get("b");
+}
+
+pub fn transform(keys: &LayerKeys) {
+    let _ = TunnelLayerTransform::participant_forward(keys);
+}
+"""
+
+TEST_REGION_FIXTURE = """\
+#[cfg(test)]
+mod tests {
+    pub fn pump(request: &ShortRequestRecord, payload: &mut [u8]) {
+        let _ = process_short_build_request(request);
+        let _ = chacha20_transform(payload);
+        let _ = seal_short_request(payload);
+        let _ = open_short_request(payload);
+        let _ = seal_short_reply(payload);
+        let _ = open_short_reply(payload);
+        let _ = forward_participant_layer(payload);
+    }
+
+    pub struct PeerIndex {
+        peer_index: BTreeMap<Hash, PeerId>,
+    }
+
+    pub fn read_options(mapping: &Mapping) {
+        let _ = mapping.get("m");
+        let _ = mapping().get("r");
+        let _ = mapping.get("l");
+        let _ = mapping.get("b");
+    }
+
+    pub fn transform(keys: &LayerKeys) {
+        let _ = TunnelLayerTransform::participant_forward(keys);
+    }
+}
+
+pub fn pump_production() {
+    let _ = 1;
+}
+"""
+
+# (label, source text, expected fired rule ids, substrings that must survive)
+STRIPPER_CONTROLS = [
+    (
+        "positive/test-region-above-production-code",
+        PRODUCTION_CODE_FIXTURE,
+        {rule_id for rule_id, _, _ in PRODUCTION_RULES},
+        ["pub fn pump(", "pub fn read_options(", "pub fn transform("],
+    ),
+    (
+        "positive/forbidden-patterns-only-in-a-test-region",
+        TEST_REGION_FIXTURE,
+        set(),
+        ["pub fn pump_production()"],
+    ),
+]
+
+
+def run_stripper_controls():
+    """Exercise the scoped strip against the pre-existing rules."""
+    outcomes = []
+    exercised = set()
+    for label, text, expected, must_survive in STRIPPER_CONTROLS:
+        production = production_source(text)
+        fired = {
+            rule_id
+            for rule_id, _, _ in production_rule_hits(production, comment_strip(production))
+        }
+        outcomes.append((label, sorted(fired)))
+        exercised |= fired
+        if fired != expected:
+            fail(
+                f"control {label}: expected rules {sorted(expected)}, "
+                f"reported {sorted(fired)}"
+            )
+        for needle in must_survive:
+            if needle not in production:
+                fail(
+                    f"control {label}: the scoped strip removed production code "
+                    f"that must survive: {needle!r}"
+                )
+        if not expected:
+            continue
+        # The blunt convention must miss this shape. If it did not, the
+        # control would not distinguish the scoped strip from the
+        # latching one, and the change would be cosmetic.
+        blunt = blunt_source(text)
+        blunt_fired = {
+            rule_id
+            for rule_id, _, _ in production_rule_hits(blunt, comment_strip(blunt))
+        }
+        if blunt_fired:
+            fail(
+                f"control {label}: the blunt convention also reported "
+                f"{sorted(blunt_fired)}; the control does not distinguish the "
+                "scoped strip from the latching one"
+            )
+    for rule_id, _, _ in PRODUCTION_RULES:
+        if rule_id not in exercised:
+            fail(f"no stripper control exercises the production rule {rule_id}")
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
+# Plan 502 rule 10: the transit owner in the product composition
+# ---------------------------------------------------------------------------
+
+PROBE = "controlled_transit_disabled_probe"
+DISPATCH = "dispatch_transit_inbound"
+BUILDER = "build_transit_owner"
+LIVE_INBOUND = "handle_inbound"
+
+
+def word(name):
+    """An identifier as a whole word."""
+    return re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
+
+
+def call(name):
+    """An identifier used as a call, turbofish included."""
+    return re.compile(
+        r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*(?:::<[^;()]*>)?\s*\("
+    )
+
+
+class Source:
+    """One production source file: its raw text and its executable code."""
+
+    def __init__(self, path, text):
+        self.path = path
+        self.text = text
+        self.code = production_code(text)
+
+
+def rule_lib_references_owner_module(ctx):
+    # The legacy assertion, unchanged: the production `lib.rs` must
+    # reference the live-owner module.
+    if "transit_owner" not in ctx.lib.text:
+        return ["production lib.rs must reference the transit_owner live-owner module"]
+    return []
+
+
+def rule_lib_dispatches_through_composition(ctx):
+    if not call(DISPATCH).search(ctx.lib.code):
+        return [
+            "production lib.rs must dispatch the inbound path through "
+            "transit_composition::dispatch_transit_inbound; without that call "
+            "there is no proof the production inbound path reaches an owner"
+        ]
+    return []
+
+
+def rule_lib_has_no_direct_probe(ctx):
+    if word(PROBE).search(ctx.lib.code):
+        return [
+            "production lib.rs must not call controlled_transit_disabled_probe "
+            "directly; the no-owner fallback belongs to "
+            "transit_composition::dispatch_transit_inbound, and a probe call "
+            "beside a live owner is the vestigial shape this rule must reject"
+        ]
+    return []
+
+
+def rule_lib_has_no_direct_owner_dispatch(ctx):
+    if word(LIVE_INBOUND).search(ctx.lib.code):
+        return [
+            "production lib.rs must not call TransitLiveOwner::handle_inbound "
+            "directly; the owner is reached only through "
+            "transit_composition::dispatch_transit_inbound, which makes the "
+            "whole owner/no-owner choice internally"
+        ]
+    return []
+
+
+def rule_lib_constructs_the_owner(ctx):
+    if not word(BUILDER).search(ctx.lib.code):
+        return [
+            "production lib.rs must construct the transit owner through "
+            "transit_composition::build_transit_owner"
+        ]
+    return []
+
+
+def rule_composition_keeps_the_disabled_probe(ctx):
+    if not word(PROBE).search(ctx.comp.code):
+        return [
+            "transit_composition.rs must keep controlled_transit_disabled_probe "
+            "as the no-owner fallback of dispatch_transit_inbound"
+        ]
+    return []
+
+
+def rule_composition_reaches_the_live_owner(ctx):
+    if not word(LIVE_INBOUND).search(ctx.comp.code):
+        return [
+            "transit_composition.rs must reach TransitLiveOwner::handle_inbound "
+            "on the installed-owner branch of dispatch_transit_inbound"
+        ]
+    return []
+
+
+def rule_composition_owns_the_builder(ctx):
+    if not word(BUILDER).search(ctx.comp.code):
+        return [
+            "transit_composition.rs must own the build_transit_owner "
+            "construction entry point"
+        ]
+    return []
+
+
+RULES = [
+    ("lib-owner-module", rule_lib_references_owner_module),
+    ("lib-composition-dispatch", rule_lib_dispatches_through_composition),
+    ("lib-no-direct-disabled-probe", rule_lib_has_no_direct_probe),
+    ("lib-no-direct-owner-dispatch", rule_lib_has_no_direct_owner_dispatch),
+    ("lib-owner-construction", rule_lib_constructs_the_owner),
+    ("composition-disabled-probe", rule_composition_keeps_the_disabled_probe),
+    ("composition-live-owner", rule_composition_reaches_the_live_owner),
+    ("composition-builder", rule_composition_owns_the_builder),
+]
+
+
+class Context:
+    def __init__(self, lib, comp):
+        self.lib = lib
+        self.comp = comp
+
+
+def evaluate(lib, comp):
+    """Every violation of the rule set, as (rule id, message) pairs."""
+    context = Context(lib, comp)
+    hits = []
+    for rule_id, rule in RULES:
+        for message in rule(context):
+            hits.append((rule_id, message))
+    return hits
+
+
+# The controls for rule 10. The positive control is the shape Plan 502
+# §6 and WP1/WP2 describe: the production `lib.rs` constructs the owner
+# and dispatches through the composition module, and the composition
+# module makes the whole owner/no-owner choice. The probe identifier
+# appears in the `lib.rs` *comment* on purpose: a prose mention is not a
+# call, and a rule that fired on prose would be a rule about
+# documentation.
+AGREED_LIB = """\
+// Plan 502: the production inbound path reaches the transit owner through
+// the composition module. `controlled_transit_disabled_probe` is the
+// no-owner fallback inside `dispatch_transit_inbound` and is never called
+// from here.
+use crate::transit_composition::{build_transit_owner, dispatch_transit_inbound};
+use crate::transit_owner::TransitLiveOwner;
+
+pub fn register_ssu2_service(config: &Config) -> Result<(), DaemonError> {
+    let owner: Option<TransitLiveOwner<ChaCha8Rng>> = build_transit_owner(config)?;
+    let _ = dispatch_transit_inbound(&owner, &outcome, &inbound, now_ms);
+    Ok(())
+}
+"""
+
+AGREED_COMP = """\
+use crate::transit_owner::{controlled_transit_disabled_probe, TransitLiveOwner};
+
+pub(crate) fn build_transit_owner(
+    config: &Config,
+) -> Result<Option<TransitLiveOwner<ChaCha8Rng>>, TransitCompositionError> {
+    Ok(None)
+}
+
+pub(crate) fn dispatch_transit_inbound(
+    owner: &Option<TransitLiveOwner<ChaCha8Rng>>,
+    outcome: &RouterI2npOutcome,
+    inbound: &Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<(), TransitCompositionError> {
+    match owner {
+        Some(owner) => {
+            owner.handle_inbound(inbound, now_ms)?;
+        }
+        None => {
+            let _ = controlled_transit_disabled_probe(outcome);
+        }
+    }
+    Ok(())
+}
+"""
+
+# Plan 502 §3.4's vestigial shape: the production inbound path consults
+# the disabled probe and discards the result. No owner is reached.
+VESTIGIAL_LIB = """\
+use crate::transit_owner::controlled_transit_disabled_probe;
+
+pub fn pump(outcome: &RouterI2npOutcome) {
+    let _ = controlled_transit_disabled_probe(outcome);
+}
+"""
+
+# The same vestigial shape with a live owner installed beside it: the
+# literal text of the old rule is satisfied, and the rule guarded nothing.
+VESTIGIAL_WITH_OWNER_LIB = """\
+use crate::transit_owner::{controlled_transit_disabled_probe, TransitLiveOwner};
+
+pub fn pump(
+    owner: &TransitLiveOwner<ChaCha8Rng>,
+    outcome: &RouterI2npOutcome,
+    inbound: &Ssu2InboundI2np,
+) {
+    let _ = owner.handle_inbound(inbound, 0);
+    let _ = controlled_transit_disabled_probe(outcome);
+}
+"""
+
+# The agreed shape plus a direct call to the live owner's inbound entry
+# point: the owner is reached, but the composition no longer makes the
+# whole owner/no-owner choice.
+DIRECT_OWNER_DISPATCH_LIB = """\
+use crate::transit_composition::{build_transit_owner, dispatch_transit_inbound};
+use crate::transit_owner::TransitLiveOwner;
+
+pub fn register_ssu2_service(config: &Config) -> Result<(), DaemonError> {
+    let owner: Option<TransitLiveOwner<ChaCha8Rng>> = build_transit_owner(config)?;
+    let _ = dispatch_transit_inbound(&owner, &outcome, &inbound, now_ms);
+    if let Some(owner) = &owner {
+        let _ = owner.handle_inbound(&inbound, now_ms);
+    }
+    Ok(())
+}
+"""
+
+# The composition module with its no-owner fallback deleted.
+COMPOSITION_WITHOUT_PROBE_COMP = """\
+use crate::transit_owner::TransitLiveOwner;
+
+pub(crate) fn build_transit_owner(
+    config: &Config,
+) -> Result<Option<TransitLiveOwner<ChaCha8Rng>>, TransitCompositionError> {
+    Ok(None)
+}
+
+pub(crate) fn dispatch_transit_inbound(
+    owner: &Option<TransitLiveOwner<ChaCha8Rng>>,
+    outcome: &RouterI2npOutcome,
+    inbound: &Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<(), TransitCompositionError> {
+    match owner {
+        Some(owner) => {
+            owner.handle_inbound(inbound, now_ms)?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+"""
+
+# A composition module that dispatches but never reaches the live owner.
+COMPOSITION_NEVER_REACHES_OWNER_COMP = """\
+use crate::transit_owner::controlled_transit_disabled_probe;
+
+pub(crate) fn dispatch_transit_inbound(
+    outcome: &RouterI2npOutcome,
+) -> Result<(), TransitCompositionError> {
+    let _ = controlled_transit_disabled_probe(outcome);
+    Ok(())
+}
+"""
+
+# A production inbound path that names no owner at all.
+NO_OWNER_LIB = """\
+pub fn pump(outcome: &RouterI2npOutcome) {
+    let _ = outcome;
+}
+"""
+
+# The shape of the real `crates/i2pr-daemon/src/lib.rs`: a test-only
+# module is declared near the top of the file, and the production code
+# lives below it. A strip that latched on the first `#[cfg(test)]` would
+# truncate this file and hide the production inbound path.
+TEST_REGION_ABOVE_PRODUCTION_LIB = """\
+#[cfg(test)]
+mod app_runtime_qualification;
+
+use crate::transit_composition::{build_transit_owner, dispatch_transit_inbound};
+use crate::transit_owner::TransitLiveOwner;
+
+pub fn register_ssu2_service(config: &Config) -> Result<(), DaemonError> {
+    let owner: Option<TransitLiveOwner<ChaCha8Rng>> = build_transit_owner(config)?;
+    let _ = dispatch_transit_inbound(&owner, &outcome, &inbound, now_ms);
+    Ok(())
+}
+"""
+
+# The agreed production shape, plus probe and live-owner calls inside a
+# test region. A test-only call is not a production call and must not be
+# reported.
+TEST_ONLY_CALLS_LIB = """\
+use crate::transit_composition::{build_transit_owner, dispatch_transit_inbound};
+use crate::transit_owner::TransitLiveOwner;
+
+pub fn register_ssu2_service(config: &Config) -> Result<(), DaemonError> {
+    let owner: Option<TransitLiveOwner<ChaCha8Rng>> = build_transit_owner(config)?;
+    let _ = dispatch_transit_inbound(&owner, &outcome, &inbound, now_ms);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::transit_owner::{controlled_transit_disabled_probe, TransitLiveOwner};
+
+    #[test]
+    fn probe_is_a_no_op() {
+        let _ = controlled_transit_disabled_probe(&outcome);
+    }
+
+    #[test]
+    fn owner_dispatches() {
+        let _ = owner.handle_inbound(&inbound, 0);
+    }
+}
+"""
+
+# (label, lib.rs text, transit_composition.rs text, expected rule ids,
+#  whether the legacy text search accepts the same lib.rs)
+CONTROLS = [
+    (
+        "positive/agreed-composition-shape",
+        AGREED_LIB,
+        AGREED_COMP,
+        set(),
+        None,
+    ),
+    (
+        "negative/vestigial-probe-only",
+        VESTIGIAL_LIB,
+        AGREED_COMP,
+        {"lib-composition-dispatch", "lib-no-direct-disabled-probe", "lib-owner-construction"},
+        True,
+    ),
+    (
+        "negative/vestigial-probe-beside-live-owner",
+        VESTIGIAL_WITH_OWNER_LIB,
+        AGREED_COMP,
+        {
+            "lib-composition-dispatch",
+            "lib-no-direct-disabled-probe",
+            "lib-no-direct-owner-dispatch",
+            "lib-owner-construction",
+        },
+        True,
+    ),
+    (
+        "negative/direct-owner-dispatch-beside-composition",
+        DIRECT_OWNER_DISPATCH_LIB,
+        AGREED_COMP,
+        {"lib-no-direct-owner-dispatch"},
+        None,
+    ),
+    (
+        "negative/composition-fallback-deleted",
+        AGREED_LIB,
+        COMPOSITION_WITHOUT_PROBE_COMP,
+        {"composition-disabled-probe"},
+        None,
+    ),
+    (
+        "negative/no-owner-named-in-production",
+        NO_OWNER_LIB,
+        AGREED_COMP,
+        {"lib-owner-module", "lib-composition-dispatch", "lib-owner-construction"},
+        None,
+    ),
+    (
+        "negative/composition-never-reaches-live-owner",
+        AGREED_LIB,
+        COMPOSITION_NEVER_REACHES_OWNER_COMP,
+        {"composition-live-owner", "composition-builder"},
+        None,
+    ),
+    (
+        "positive/test-region-does-not-hide-production",
+        TEST_REGION_ABOVE_PRODUCTION_LIB,
+        AGREED_COMP,
+        set(),
+        None,
+    ),
+    (
+        "positive/test-only-calls-are-not-production-calls",
+        TEST_ONLY_CALLS_LIB,
+        AGREED_COMP,
+        set(),
+        None,
+    ),
+]
+
+
+def legacy_rule_accepted(lib_text):
+    """Rule 10 exactly as it stood before Plan 502: two text searches."""
+    return "transit_owner" in lib_text and PROBE in lib_text
+
+
+def run_rule_controls():
+    """Exercise the rule set against synthetic files on disk."""
+    exercised = set()
+    outcomes = []
+    for label, lib_text, comp_text, expected, legacy_accepts in CONTROLS:
+        tmp = tempfile.mkdtemp(prefix="i2pr-transit-composition.")
+        try:
+            lib_path = os.path.join(tmp, "lib.rs")
+            comp_path = os.path.join(tmp, "transit_composition.rs")
+            with open(lib_path, "w", encoding="utf-8") as handle:
+                handle.write(lib_text)
+            with open(comp_path, "w", encoding="utf-8") as handle:
+                handle.write(comp_text)
+            lib = Source(lib_path, read(lib_path))
+            comp = Source(comp_path, read(comp_path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        hits = evaluate(lib, comp)
+        reported = {rule_id for rule_id, _ in hits}
+        exercised |= reported
+        outcomes.append((label, sorted(reported)))
+        if reported != expected:
+            fail(
+                f"control {label}: expected rules {sorted(expected)}, "
+                f"reported {sorted(reported)}"
+            )
+        if legacy_accepts is None:
+            continue
+        # The strictness proof: the rule this amendment replaces accepts
+        # the vestigial shape, and the amended rule reports it.
+        if not legacy_rule_accepted(lib_text):
+            fail(
+                f"control {label}: the legacy text search no longer accepts "
+                "this shape; the strictness comparison is stale"
+            )
+        if not reported:
+            fail(
+                f"control {label}: the amended rule accepted the vestigial "
+                "shape the legacy rule accepted"
+            )
+    for rule_id, _ in RULES:
+        if rule_id not in exercised:
+            fail(f"no control exercises the rule {rule_id}")
+    return outcomes
+
+
+def build_production_tree(repo_root, dest):
+    """Write the scoped production tree that every pre-existing rule scans."""
+    daemon_root = os.path.join(repo_root, "crates", "i2pr-daemon", "src")
+    written = 0
+    for dirpath, dirnames, filenames in os.walk(daemon_root):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if not name.endswith(".rs"):
+                continue
+            src = os.path.join(dirpath, name)
+            out = os.path.join(dest, os.path.relpath(src, repo_root))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "w", encoding="utf-8") as handle:
+                handle.write(production_source(read(src)))
+            written += 1
+    return written
+
+
+def check_production_tree(lib_path, comp_path):
+    if not os.path.isfile(lib_path):
+        fail(f"production daemon lib.rs is missing: {lib_path}")
+        return
+    if not os.path.isfile(comp_path):
+        fail(
+            "production transit composition module is missing: "
+            f"{comp_path} -- Plan 502 installs the transit data-plane owner "
+            "there, and rule 10 cannot be satisfied without it"
+        )
+        return
+    lib = Source(lib_path, read(lib_path))
+    comp = Source(comp_path, read(comp_path))
+    for rule_id, message in evaluate(lib, comp):
+        fail(f"rule 10 [{rule_id}]: {message}")
+
+
+def report(outcomes, summary):
+    for label, reported in outcomes:
+        print(
+            f"check-m11-transit-boundaries: control {label}: "
+            + (f"reported {reported}" if reported else "clean")
+        )
+    print(summary)
+
+
+if MODE == "build":
+    repo_root, dest, script_path = sys.argv[2], sys.argv[3], sys.argv[4]
+    check_no_drift(script_path)
+    stripper_outcomes = run_stripper_controls()
+    written = build_production_tree(repo_root, dest)
+    if written == 0:
+        fail(
+            "the daemon source tree produced no production files; the "
+            "production scans below would be vacuous"
+        )
+    if failures:
+        for message in failures:
+            print(f"check-m11-transit-boundaries: FAIL: {message}", file=sys.stderr)
+        raise SystemExit(1)
+    report(
+        stripper_outcomes,
+        "check-m11-transit-boundaries: production tree ok "
+        f"({written} daemon source files, {len(PRODUCTION_RULES)} production "
+        "rules mirrored, per-rule controls passed)",
+    )
+elif MODE == "scan":
+    lib_path, comp_path, script_path = sys.argv[2], sys.argv[3], sys.argv[4]
+    check_no_drift(script_path)
+    rule_outcomes = run_rule_controls()
+    check_production_tree(lib_path, comp_path)
+    if failures:
+        for message in failures:
+            print(f"check-m11-transit-boundaries: FAIL: {message}", file=sys.stderr)
+        raise SystemExit(1)
+    report(
+        rule_outcomes,
+        "check-m11-transit-boundaries: transit composition rule ok "
+        f"({len(RULES)} rules, {len(CONTROLS)} controls exercised)",
+    )
+elif MODE == "self-test":
+    script_path = sys.argv[2]
+    check_no_drift(script_path)
+    stripper_outcomes = run_stripper_controls()
+    rule_outcomes = run_rule_controls()
+    if failures:
+        for message in failures:
+            print(f"check-m11-transit-boundaries: FAIL: {message}", file=sys.stderr)
+        raise SystemExit(1)
+    report(
+        stripper_outcomes + rule_outcomes,
+        "check-m11-transit-boundaries: self-test ok "
+        f"({len(PRODUCTION_RULES)} production rules, {len(STRIPPER_CONTROLS)} "
+        f"stripper controls, {len(RULES)} transit rules, "
+        f"{len(CONTROLS)} transit controls exercised)",
+    )
+else:
+    print(f"check-m11-transit-boundaries: unknown mode {MODE!r}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+
+# `--self-test` runs the controls alone: it reads no daemon source, so it
+# is independent of whether the Plan 502 Rust has landed.
+if [ "$transit_mode" = "self-test" ]; then
+    python3 "$rule_python" self-test "${BASH_SOURCE[0]}" || exit 1
+    echo "check-m11-transit-boundaries: passed"
+    exit 0
+fi
 
 for owner in TransitHopRole TransitHopRegistration TransitRegistry TransitAdmissionState TransitAdmissionToken; do
     if rg -U -n "derive\([^)]*Clone[^)]*\)[[:space:]]*(pub[[:space:]]+)?(struct|enum)[[:space:]]+$owner" "$source_file"; then
@@ -47,16 +1068,18 @@ daemon_root="$root/crates/i2pr-daemon/src"
 # Production boundary checks run against non-test code only: inline
 # `#[cfg(test)]` modules may seal synthetic fixtures to construct
 # inputs, but production paths must treat transformed payloads as
-# opaque. Strip everything from the first `#[cfg(test)]` marker to
-# end-of-file per source file before matching.
-production_src="$(mktemp -d)"
-trap 'rm -rf "$production_src"' EXIT
-while IFS= read -r src; do
-    rel="${src#$root/}"
-    dest="$production_src/$rel"
-    mkdir -p "$(dirname "$dest")"
-    awk '/#\[cfg\(test\)\]/{exit} {print}' "$src" > "$dest"
-done < <(find "$daemon_root" -name '*.rs')
+# opaque.
+#
+# The strip is SCOPED: every `#[cfg(test)]` region is removed, and only
+# that region -- the production code around it stays. The blunt
+# convention this script used before ("drop everything from the first
+# `#[cfg(test)]` to end-of-file") latched on the first annotation, and
+# the daemon's `lib.rs` declares a test-only module at line 14 and
+# `service_product.rs` at line 137: the blunt form truncated the
+# daemon's production composition to 13 of its 5770 lines and hid the
+# production inbound path from every rule below. The scoped form is
+# Plan 366's fix, applied here.
+python3 "$rule_python" build "$root" "$production_src" "${BASH_SOURCE[0]}" || exit 1
 if rg -n 'process_short_build_request\b' "$production_src"; then
     fail "production daemon code must not call process_short_build_request; use process_short_build_message"
 fi
@@ -89,9 +1112,9 @@ fi
 #    re-implementing the canonical participant / OBEP / IBGW
 #    transforms locally. Comment lines beginning with `//` are
 #    excluded because the production daemon may mention the
-#    canonical helper in documentation only.
-comment_stripped="$(mktemp -d)/stripped"
-trap 'rm -rf "$production_src" "$comment_stripped"' EXIT
+#    canonical helper in documentation only. This pass runs on the
+#    scoped production tree, so a `#[cfg(test)]` region can neither
+#    hide production code nor contribute a mention.
 while IFS= read -r src; do
     rel="${src#$production_src/}"
     dest="$comment_stripped/$rel"
@@ -162,16 +1185,6 @@ if rg -n 'plan253_short_build_payload' "$daemon_root"; then
 fi
 if rg -n 'fn .*short_build_payload' "$daemon_root"; then
     fail "no short_build_payload helper may remain in daemon code; use the canonical transit body handoff"
-fi
-# 10. The production live-owner module must be referenced by the
-#     actual inbound owner outside tests. The ordinary daemon SSU2
-#     pump in `lib.rs` consults the disabled probe so the caller
-#     exists in non-test production code.
-if ! rg -q 'transit_owner' "$root/crates/i2pr-daemon/src/lib.rs"; then
-    fail "production lib.rs must reference the transit_owner live-owner module"
-fi
-if ! rg -q 'controlled_transit_disabled_probe' "$root/crates/i2pr-daemon/src/lib.rs"; then
-    fail "production lib.rs must consult the controlled transit probe on the inbound path"
 fi
 # 11. The production short-build dispatch path must use the outer
 #     owner's real cancellation token, never a fresh token created
@@ -581,5 +1594,47 @@ fi
 if [[ "$corrected_in_code" -lt 2 ]]; then
     fail "external runner must pass the corrected production-source pathspec at both call sites (found ${corrected_in_code} in code, expected at least 2)"
 fi
+
+# Plan 502 (WP6): rule 10 -- the transit data-plane owner must be in the
+# product composition, and this rule must guard that fact *structurally*.
+#
+# The rule this replaces was two text searches:
+#
+#   rg -q 'transit_owner'                    lib.rs
+#   rg -q 'controlled_transit_disabled_probe' lib.rs
+#
+# Both were satisfiable without an installed owner. The second matched a
+# call to `controlled_transit_disabled_probe`, which is
+# `TransitOwner::is_transit_managed(outcome)` -- a `matches!` with no
+# dispatch -- whose result the caller discarded. A composition that
+# installed the live owner *and kept the probe call beside it* satisfied
+# the literal text while the rule guarded nothing (Plan 502 §3.4).
+# **A text search that can be satisfied without an installed owner is
+# not an amendment.**
+#
+# The amended rule is a function over the two production files, so it can
+# be exercised by controls:
+#
+#   * the production `lib.rs` must dispatch the inbound path through
+#     `transit_composition::dispatch_transit_inbound`, which makes the
+#     whole owner/no-owner choice internally;
+#   * the production `lib.rs` must NOT reach
+#     `controlled_transit_disabled_probe` directly, and must NOT call
+#     `TransitLiveOwner::handle_inbound` directly. The owner is reached
+#     only through the composition module, so the vestigial "probe beside
+#     a live owner" shape -- and the "live owner beside the composition"
+#     shape -- are failures, not passes;
+#   * the composition module must keep the disabled probe (the fallback
+#     must exist), must reach the live owner's `handle_inbound`, and must
+#     own the construction entry point;
+#   * the production `lib.rs` must still reference the live-owner
+#     module, and must construct the owner through the composition
+#     module's entry point.
+#
+# This runs LAST, so that every pre-existing rule above still runs and
+# still reports before the Plan 502 gate is judged. Nothing else in this
+# script is relaxed, and both the rule set and the control set are
+# derived, never counted by hand.
+python3 "$rule_python" scan "$daemon_lib" "$daemon_transit_composition" "${BASH_SOURCE[0]}" || exit 1
 
 echo "check-m11-transit-boundaries: passed"
