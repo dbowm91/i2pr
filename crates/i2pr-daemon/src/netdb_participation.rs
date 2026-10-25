@@ -19,8 +19,16 @@
 //! building in this phase. Plan 488 delivers the policy and its inputs; the
 //! wiring is the consumer's change and belongs to the participation
 //! phases that follow.
+//!
+//! Plan 497 is that consumer phase. It adds
+//! [`RoutingTableConsumer`]: the daemon owns one, populates it from its own
+//! NetDB, and the live lookup path asks it for the closest-first verified
+//! floodfills for a key. The table stays a cache of derived state and the
+//! flat peer map stays the authority, so a table miss falls back to today's
+//! selection and the fallback is counted by reason.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -703,6 +711,201 @@ fn receipt_digest(stats: &ProfileStoreStats, selected_count: u32) -> [u8; 32] {
     let mut digest = [0u8; 32];
     digest.copy_from_slice(hash.as_bytes());
     digest
+}
+
+/// The daemon-side consumer seam for the floodfill-indexed routing table.
+///
+/// Plan 497. Plans 488 and 489 delivered the peer-profile store, the
+/// floodfill-indexed routing table and the optimized lookup plan, and both
+/// recorded that nothing in the daemon called them. This seam is that
+/// consumer's surface: the daemon owns one, populates it from its own NetDB,
+/// and the live lookup path asks it for the closest-first verified floodfills
+/// for a key.
+///
+/// The table is a **cache of derived state**; the flat peer map stays the
+/// **authority**. A table that cannot answer a key never fails the lookup —
+/// the caller falls back to the flat store's selection, and every fallback is
+/// counted by reason. The table may only ever improve the choice, never
+/// remove a candidate the flat store could serve.
+pub struct RoutingTableConsumer {
+    inner: Arc<Mutex<RoutingTableConsumerState>>,
+    /// Lookups whose candidate list came from the table.
+    ///
+    /// The counters live **outside** the lock on purpose. A poisoned
+    /// table cannot answer, and that fallback must still be counted by
+    /// reason: a fallback that is not counted is a silent fallback.
+    answered: AtomicU64,
+    /// Lookups that fell back because the table is disabled.
+    fell_back_disabled: AtomicU64,
+    /// Lookups that fell back because the table held no queryable candidate
+    /// for the key.
+    fell_back_no_candidate: AtomicU64,
+    /// Lookups that fell back because the table could not be reached at
+    /// all — a poisoned lock.
+    fell_back_unavailable: AtomicU64,
+}
+
+/// The consumer's state: the driver and the operator's switch.
+struct RoutingTableConsumerState {
+    /// Whether the table may answer a lookup at all.
+    enabled: bool,
+    /// The Plan 489 driver.
+    driver: RoutingTableDriver,
+}
+
+/// The counted outcome of asking the routing table for candidates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RoutingTableCounters {
+    /// Lookups whose candidate list came from the routing table.
+    pub answered: u64,
+    /// Lookups that fell back to the flat store because the table is off.
+    pub fell_back_disabled: u64,
+    /// Lookups that fell back to the flat store because the table held no
+    /// queryable candidate for the key.
+    pub fell_back_no_candidate: u64,
+    /// Lookups that fell back to the flat store because the table could not
+    /// be reached at all.
+    pub fell_back_unavailable: u64,
+}
+
+impl RoutingTableCounters {
+    /// Returns the number of lookups that fell back to the flat store.
+    pub const fn fell_back(&self) -> u64 {
+        self.fell_back_disabled
+            .saturating_add(self.fell_back_no_candidate)
+            .saturating_add(self.fell_back_unavailable)
+    }
+}
+
+/// The answer to a candidate request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RoutingTableCandidates {
+    /// The table answered with this closest-first candidate list.
+    Table(Vec<RouterHash>),
+    /// The table could not answer; the caller must use the flat store.
+    Fallback(RoutingTableFallback),
+}
+
+/// Why the routing table could not answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoutingTableFallback {
+    /// The table is disabled.
+    Disabled,
+    /// The table holds no queryable candidate for the key.
+    NoCandidate,
+    /// The table could not be reached at all — its lock is poisoned.
+    ///
+    /// The fallback is counted under this reason rather than under
+    /// [`Self::NoCandidate`]: an operator reading the counters must be
+    /// able to tell "the table had no peer for this key" apart from
+    /// "the table is broken".
+    Unavailable,
+}
+
+impl RoutingTableConsumer {
+    /// Wraps a driver in a shared consumer.
+    ///
+    /// `enabled` is the operator's switch. A disabled consumer answers
+    /// every request with [`RoutingTableFallback::Disabled`], so the
+    /// caller falls back to the flat store exactly as it does today.
+    pub fn new(driver: RoutingTableDriver, enabled: bool) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RoutingTableConsumerState { enabled, driver })),
+            answered: AtomicU64::new(0),
+            fell_back_disabled: AtomicU64::new(0),
+            fell_back_no_candidate: AtomicU64::new(0),
+            fell_back_unavailable: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns whether the table may answer a lookup.
+    pub fn is_enabled(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|guard| guard.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Indexes one validated peer, recording its own signed evidence.
+    pub fn index(&self, validated: &ValidatedRouterInfo) -> Option<TableInsertOutcome> {
+        self.inner
+            .lock()
+            .ok()
+            .map(|mut guard| guard.driver.index(validated))
+    }
+
+    /// Indexes one peer a verified floodfill suggested.
+    pub fn index_suggested(
+        &self,
+        key: RouterHash,
+        from: &RouterHash,
+    ) -> Option<TableInsertOutcome> {
+        self.inner
+            .lock()
+            .ok()
+            .map(|mut guard| guard.driver.index_suggested(key, from))
+    }
+
+    /// Advances the driver's clock so the daily rotation can happen.
+    pub fn advance_time(&self, now_ms: u64) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.driver.advance_time(now_ms);
+        }
+    }
+
+    /// Returns the number of peers the table currently holds.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|guard| guard.driver.table().len())
+            .unwrap_or(0)
+    }
+
+    /// Returns whether the table holds no peer.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Asks the table for the closest-first verified floodfills for a key.
+    ///
+    /// The returned list is the table's answer. A [`RoutingTableFallback`]
+    /// means the caller must use the flat store's selection; the reason is
+    /// counted either way.
+    pub fn candidates(
+        &self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+        excluded: &[RouterHash],
+    ) -> RoutingTableCandidates {
+        let Ok(guard) = self.inner.lock() else {
+            // A poisoned table cannot answer. The fallback is still
+            // counted, by its own reason: a fallback that is not
+            // counted is a silent fallback.
+            self.fell_back_unavailable.fetch_add(1, Ordering::Relaxed);
+            return RoutingTableCandidates::Fallback(RoutingTableFallback::Unavailable);
+        };
+        if !guard.enabled {
+            self.fell_back_disabled.fetch_add(1, Ordering::Relaxed);
+            return RoutingTableCandidates::Fallback(RoutingTableFallback::Disabled);
+        }
+        let plan = guard.driver.plan(store, *routing_key, excluded);
+        if plan.queryable.is_empty() {
+            self.fell_back_no_candidate.fetch_add(1, Ordering::Relaxed);
+            return RoutingTableCandidates::Fallback(RoutingTableFallback::NoCandidate);
+        }
+        self.answered.fetch_add(1, Ordering::Relaxed);
+        RoutingTableCandidates::Table(plan.queryable_hashes())
+    }
+
+    /// Returns the counted outcomes.
+    pub fn counters(&self) -> RoutingTableCounters {
+        RoutingTableCounters {
+            answered: self.answered.load(Ordering::Relaxed),
+            fell_back_disabled: self.fell_back_disabled.load(Ordering::Relaxed),
+            fell_back_no_candidate: self.fell_back_no_candidate.load(Ordering::Relaxed),
+            fell_back_unavailable: self.fell_back_unavailable.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2211,5 +2414,75 @@ mod routing_tests {
         };
         assert_eq!(lookup_id.kind(), LookupKind::RouterInfo);
         assert_eq!(message.lookup_type, 2);
+    }
+
+    // Plan 497 — the consumer seam's counted outcomes ---------------
+
+    #[test]
+    fn the_consumer_answers_from_the_table_and_counts_it() {
+        let local = bundle(0x4970_0001);
+        let mut driver = new_driver(&local);
+        let alpha = floodfill(0x4970_0002);
+        driver.index(&alpha);
+        let mut peers = store();
+        peers.insert(alpha.clone());
+        let consumer = RoutingTableConsumer::new(driver, true);
+        let target = RouterHash::from_bytes([82; 32]);
+        let routing_key = routing_key_for(&target);
+        let outcome = consumer.candidates(&peers, &routing_key, &[]);
+        let RoutingTableCandidates::Table(candidates) = outcome else {
+            panic!("the table must answer: {outcome:?}");
+        };
+        assert_eq!(candidates, vec![alpha.key()]);
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 1);
+        assert_eq!(counters.fell_back(), 0);
+    }
+
+    #[test]
+    fn a_disabled_consumer_falls_back_and_counts_the_reason() {
+        let local = bundle(0x4970_0003);
+        let consumer = RoutingTableConsumer::new(new_driver(&local), false);
+        let peers = store();
+        let target = RouterHash::from_bytes([83; 32]);
+        let routing_key = routing_key_for(&target);
+        let outcome = consumer.candidates(&peers, &routing_key, &[]);
+        assert_eq!(
+            outcome,
+            RoutingTableCandidates::Fallback(RoutingTableFallback::Disabled)
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 0);
+        assert_eq!(counters.fell_back_disabled, 1);
+        assert_eq!(counters.fell_back_no_candidate, 0);
+        assert_eq!(counters.fell_back_unavailable, 0);
+    }
+
+    #[test]
+    fn a_poisoned_table_falls_back_and_counts_the_reason() {
+        // A poisoned table cannot answer. The fallback must still be
+        // counted, and under its own reason: a fallback that is not
+        // counted is a silent fallback.
+        let local = bundle(0x4970_0004);
+        let consumer = RoutingTableConsumer::new(new_driver(&local), true);
+        let inner = Arc::clone(&consumer.inner);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = inner.lock().expect("the table's lock is held");
+            panic!("poison the table");
+        });
+        let peers = store();
+        let target = RouterHash::from_bytes([84; 32]);
+        let routing_key = routing_key_for(&target);
+        let outcome = consumer.candidates(&peers, &routing_key, &[]);
+        assert_eq!(
+            outcome,
+            RoutingTableCandidates::Fallback(RoutingTableFallback::Unavailable)
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 0);
+        assert_eq!(counters.fell_back_unavailable, 1);
+        assert_eq!(counters.fell_back_disabled, 0);
+        assert_eq!(counters.fell_back_no_candidate, 0);
+        assert_eq!(counters.fell_back(), 1);
     }
 }

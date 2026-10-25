@@ -93,6 +93,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             exploration_enabled: false,
             exploration_max_peers: 8,
             exploration_deadline_ms: 30_000,
+            participation_maintenance_period_ms: 60_000,
         },
         reseed: ReseedConfig {
             enabled: false,

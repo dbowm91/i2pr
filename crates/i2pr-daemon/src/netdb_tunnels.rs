@@ -52,6 +52,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use i2pr_netdb::{
     FloodfillTargetSelection, LookupAction, LookupId, LookupPolicy, PublicationAttemptRecord,
@@ -263,6 +264,10 @@ pub struct NetDbTunnelCoordinator {
     next_request_id: u64,
     now_ms: u64,
     counters: NetDbTunnelCounters,
+    /// Plan 497: the floodfill-indexed routing table this coordinator asks
+    /// for its lookup candidates. `None` — the default — keeps the flat
+    /// store as the sole source of candidates.
+    routing_table: Option<Arc<crate::netdb_participation::RoutingTableConsumer>>,
 }
 
 impl NetDbTunnelCoordinator {
@@ -279,7 +284,27 @@ impl NetDbTunnelCoordinator {
             next_request_id: INITIAL_NETDB_REQUEST_ID,
             now_ms: 0,
             counters: NetDbTunnelCounters::default(),
+            routing_table: None,
         }
+    }
+
+    /// Attaches the floodfill-indexed routing table.
+    ///
+    /// Plan 497. With a table attached, a lookup first asks the table for
+    /// its closest-first verified floodfills. A table that cannot answer
+    /// falls back to the flat store's selection, and the fallback is
+    /// counted by reason — the flat store stays the authority.
+    pub fn with_routing_table(
+        mut self,
+        routing_table: Arc<crate::netdb_participation::RoutingTableConsumer>,
+    ) -> Self {
+        self.routing_table = Some(routing_table);
+        self
+    }
+
+    /// Returns the routing table this coordinator consults, if any.
+    pub fn routing_table(&self) -> Option<&Arc<crate::netdb_participation::RoutingTableConsumer>> {
+        self.routing_table.as_ref()
     }
 
     /// Returns the authoritative bounded store.
@@ -417,13 +442,34 @@ impl NetDbTunnelCoordinator {
             self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
             return Err(NetDbTunnelError::NoEligibleCandidates);
         }
+        // Plan 497: ask the floodfill-indexed routing table how it would
+        // order these candidates. The table is a cache of derived state
+        // and the flat store stays the authority, so the table's answer
+        // may only *reorder* the selection above — it can never remove a
+        // candidate the flat store could serve, and it can never add one
+        // the flat store would not have served. A table that cannot
+        // answer falls back to the flat store's selection, and the
+        // consumer counts the fallback by reason.
+        let preferred = match self.routing_table.as_ref() {
+            Some(table) => match table.candidates(&self.store, routing_key, &[]) {
+                crate::netdb_participation::RoutingTableCandidates::Table(preferred) => {
+                    Some(preferred)
+                }
+                crate::netdb_participation::RoutingTableCandidates::Fallback(_) => None,
+            },
+            None => None,
+        };
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).expect("request id");
         self.seam
             .set_reply_path_provider(Box::new(StaticReplyProvider { path: reply_path }));
-        let action = self
-            .seam
-            .begin_lookup(&self.store, request_id, target, routing_key);
+        let action = self.seam.begin_lookup_with_preferred(
+            &self.store,
+            request_id,
+            target,
+            routing_key,
+            preferred.as_deref(),
+        );
         match action {
             LookupAction::SendDatabaselookup { lookup_id, .. } => {
                 let deadline_ms = self.now_ms.saturating_add(DEFAULT_LOOKUP_DEADLINE_MS);
@@ -979,5 +1025,111 @@ mod tests {
             .expect_err("direct must reject");
         assert_eq!(error, NetDbTunnelError::DirectTransportRejected);
         assert_eq!(coord.counters().direct_rejections, 1);
+    }
+
+    /// Plan 497: the routing table may only **reorder** the flat store's
+    /// selection, never narrow it.
+    ///
+    /// The lane holds two floodfills. The routing table holds one of
+    /// them, so the table's peer leads the lookup. The other peer is
+    /// in the flat store only, and the lookup must still reach it: the
+    /// table changed the order, not the set.
+    #[test]
+    fn the_routing_table_reorders_the_selection_without_narrowing_it() {
+        use crate::netdb_participation::{
+            RoutingTableConfig, RoutingTableConsumer, RoutingTableDriver,
+        };
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_netdb::router_hash;
+        use i2pr_proto::{Date, Mapping};
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+        use std::sync::Arc;
+
+        const T0: u64 = 1_000;
+
+        fn signer(seed: u64) -> RouterIdentityBundle {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            RouterIdentityBundle::generate(&mut rng).expect("identity")
+        }
+
+        fn floodfill_bytes(signer: &RouterIdentityBundle) -> Vec<u8> {
+            let mut options = Mapping::builder();
+            options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+            let info = signer
+                .sign_router_info(
+                    Date::from_millis(T0),
+                    Vec::new(),
+                    Vec::new(),
+                    options.build().expect("options"),
+                )
+                .expect("sign");
+            info.encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+                .expect("encode")
+        }
+
+        let local = signer(0x4970_0001);
+        let alpha = signer(0x4970_0002);
+        let zeta = signer(0x4970_0003);
+        let theta = signer(0x4970_0004);
+        let alpha_key = router_hash(alpha.identity()).expect("hash");
+        let zeta_key = router_hash(zeta.identity()).expect("hash");
+        let theta_key = router_hash(theta.identity()).expect("hash");
+
+        let mut coord =
+            NetDbTunnelCoordinator::new(LookupPolicy::default(), RouterInfoStoreConfig::default());
+        coord.advance_time(T0);
+        coord
+            .bootstrap_reference_router_info(&floodfill_bytes(&alpha), Date::from_millis(T0))
+            .expect("alpha is admitted");
+        coord
+            .bootstrap_reference_router_info(&floodfill_bytes(&zeta), Date::from_millis(T0))
+            .expect("zeta is admitted");
+
+        // The routing table holds alpha only. The routing key is zeta's
+        // own key, so the flat store's nearest-first choice is zeta.
+        let mut driver = RoutingTableDriver::new(
+            router_hash(local.identity()).expect("hash"),
+            Date::from_millis(T0),
+            RoutingTableConfig::default(),
+        );
+        driver.advance_time(T0);
+        let record = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            i2pr_proto::RouterInfo::decode(&floodfill_bytes(&alpha), MAX_COMMON_STRUCTURE_SIZE)
+                .expect("decode"),
+            None,
+            i2pr_netdb::ValidationContext::new(Date::from_millis(T0)),
+        )
+        .expect("validate");
+        driver.index(&record);
+        let consumer = Arc::new(RoutingTableConsumer::new(driver, true));
+        let mut coord = coord.with_routing_table(Arc::clone(&consumer));
+
+        let path =
+            i2pr_netdb::ReplyPath::new(RouterHash::from_bytes([0x49; 32]), 7).expect("reply path");
+        let (_, action) = coord
+            .begin_tunnel_lookup(theta_key, &zeta_key, path)
+            .expect("the lookup is dispatchable");
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        assert_eq!(
+            peer, alpha_key,
+            "the routing table's peer must lead the lookup"
+        );
+
+        // The store-only peer is still reachable: the table reordered
+        // the selection, it did not narrow it.
+        let store = &coord.store;
+        let action = coord.seam.advance_after_path(store, &zeta_key);
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        assert_eq!(
+            peer, zeta_key,
+            "the store-only peer must still be asked after the table's peer"
+        );
+        assert_eq!(consumer.counters().answered, 1);
+        assert_eq!(consumer.counters().fell_back(), 0);
     }
 }

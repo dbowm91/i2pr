@@ -159,6 +159,13 @@ pub struct ActiveLookup {
     /// candidates from this list instead of re-selecting against the
     /// flat store.
     pinned: Option<Vec<RouterHash>>,
+    /// Plan 497: the routing table's preferred peers for this lookup.
+    ///
+    /// Unlike `pinned`, this is a **priority prefix**, not a closed
+    /// set. The flat store's current selection still follows it, so a
+    /// peer ingested while the lookup runs is still queried and no
+    /// candidate the flat store could serve is ever lost.
+    preferred: Option<Vec<RouterHash>>,
 }
 
 impl ActiveLookup {
@@ -179,6 +186,7 @@ impl ActiveLookup {
             attempts: 0,
             suggestions_merged: 0,
             pinned: None,
+            preferred: None,
         }
     }
 
@@ -205,6 +213,7 @@ impl ActiveLookup {
             attempts: 0,
             suggestions_merged: 0,
             pinned: None,
+            preferred: None,
         }
     }
 
@@ -333,6 +342,80 @@ impl RouterInfoLookup {
             .collect();
         state.pinned = Some(pinned.clone());
         let result = self.advance_attempt(state, &pinned);
+        self.handle_start_outcome(result, lookup_id)
+    }
+
+    /// Plan 497: starts a lookup whose **preferred** peers are tried
+    /// first, without freezing the candidate set.
+    ///
+    /// The caller supplies the routing table's closest-first answer.
+    /// The state machine selects the candidates exactly as
+    /// [`Self::start`] does — the same flat-store selection, the same
+    /// policy, the same exclusions — and then **reorders** that
+    /// selection so the preferred peers lead. The candidate *set* is
+    /// therefore never reduced: a peer the flat store could serve is
+    /// still served, and the target is still excluded.
+    ///
+    /// A preferred peer the flat store would not have served is
+    /// ignored. The table is a cache of derived state and the flat
+    /// store is the authority, so the table may improve the choice but
+    /// never widen it.
+    ///
+    /// Unlike [`Self::start_with_candidates`], the preference is not a
+    /// closed list. On every later advance the state machine re-selects
+    /// against the authoritative store and puts the preferred peers
+    /// first, so a peer ingested while the lookup runs is still queried.
+    /// Plan 489's exploratory path keeps its closed-list behaviour.
+    ///
+    /// The deadline, the peer budget, the duplicate coalescing, the
+    /// suggestion merging and the fail-closed terminal states are
+    /// unchanged.
+    pub fn start_with_preferred(
+        &mut self,
+        store: &RouterInfoStore,
+        lookup_id: LookupId,
+        routing_key: &RouterHash,
+        preferred: &[RouterHash],
+    ) -> StartOutcome {
+        if self.active.is_some() {
+            return StartOutcome::Terminal(Box::new(LookupResult::Failure {
+                lookup_id,
+                final_state: LookupFinalState::Cancelled,
+                diagnostics: LookupDiagnostics::default(),
+            }));
+        }
+        self.active_request_id = Some(lookup_id.request_id());
+        let mut state = ActiveLookup::new(lookup_id, self.policy.max_suggested_hashes());
+        // The authoritative selection, computed exactly as `start`
+        // computes it.
+        let selected = crate::lookup_policy::select_floodfill_candidates(
+            store,
+            &state.target,
+            routing_key,
+            &state.excluded,
+            &self.policy,
+        )
+        .hashes();
+        // Reorder, never shrink: the preferred peers that the flat
+        // store's own selection would serve lead, and the rest of the
+        // selection follows in the flat store's own nearest-first
+        // order. The resulting list holds exactly the selected peers.
+        let mut preferred_peers: Vec<RouterHash> = Vec::new();
+        for key in preferred.iter().copied() {
+            if !selected.contains(&key) || preferred_peers.contains(&key) {
+                continue;
+            }
+            preferred_peers.push(key);
+        }
+        let mut ordered: Vec<RouterHash> = preferred_peers.clone();
+        for key in selected.iter().copied() {
+            if ordered.contains(&key) {
+                continue;
+            }
+            ordered.push(key);
+        }
+        state.preferred = Some(preferred_peers);
+        let result = self.advance_attempt(state, &ordered);
         self.handle_start_outcome(result, lookup_id)
     }
 
@@ -496,9 +579,15 @@ impl RouterInfoLookup {
         // already ordered closest-first by the routing table, so the
         // state machine never re-sorts it and never consults the flat
         // store behind the caller's back.
-        let candidates: Vec<RouterHash> = match &state.pinned {
-            Some(pinned) => pinned.clone(),
-            None => {
+        //
+        // Plan 497: the routing table's preferred peers are a
+        // *priority prefix*, not a closed set. The flat store's current
+        // selection still follows them, so a peer ingested while the
+        // lookup runs is still queried and no candidate the flat store
+        // could serve is lost.
+        let candidates: Vec<RouterHash> = match (&state.pinned, &state.preferred) {
+            (Some(pinned), _) => pinned.clone(),
+            (None, preferred) => {
                 let selection = crate::lookup_policy::select_floodfill_candidates(
                     store,
                     &state.target,
@@ -506,7 +595,35 @@ impl RouterInfoLookup {
                     &state.excluded,
                     &self.policy,
                 );
-                selection.hashes()
+                match preferred {
+                    Some(preferred) => {
+                        let mut ordered: Vec<RouterHash> =
+                            Vec::with_capacity(preferred.len() + selection.len());
+                        for key in preferred.iter().copied() {
+                            // The flat store stays the authority: only a peer
+                            // the store still holds as a floodfill advertiser may
+                            // lead the list.
+                            if !store
+                                .get(&key)
+                                .is_some_and(|record| record.advertises_floodfill())
+                            {
+                                continue;
+                            }
+                            if ordered.contains(&key) {
+                                continue;
+                            }
+                            ordered.push(key);
+                        }
+                        for key in selection.hashes() {
+                            if ordered.contains(&key) {
+                                continue;
+                            }
+                            ordered.push(key);
+                        }
+                        ordered
+                    }
+                    None => selection.hashes(),
+                }
             }
         };
         let outcome = self.advance_attempt(state, &candidates);
@@ -1545,5 +1662,155 @@ mod tests {
         assert_eq!(coalesced.waiter_count(&target), 1);
         assert!(coalesced.remove_waiter(&target, 1));
         assert_eq!(coalesced.target_count(), 0);
+    }
+
+    // Plan 497 — the preferred-order path --------------------------
+
+    /// Drives a lookup to its first attempt and returns the peer it
+    /// asks.
+    fn first_attempt_peer(
+        lookup: &mut RouterInfoLookup,
+        store: &RouterInfoStore,
+        lookup_id: LookupId,
+        routing_key: &RouterHash,
+    ) -> RouterHash {
+        let path = ReplyPath::new(RouterHash::from_bytes([0x77u8; 32]), 0xCAFE).expect("path");
+        assert!(lookup.accept_reply_path(lookup_id, path));
+        let action = match lookup.handle_pending_after_path(store, routing_key) {
+            StartOutcome::PendingAttempt(action) => action,
+            other => panic!("expected PendingAttempt, got {other:?}"),
+        };
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        peer
+    }
+
+    #[test]
+    fn a_preferred_peer_is_asked_first() {
+        let mut store = RouterInfoStore::default();
+        let first = bundle(0x701);
+        let second = bundle(0x702);
+        store.insert(floodfill(&first, 1));
+        store.insert(floodfill(&second, 1));
+        let first_key = router_hash(first.identity()).expect("hash");
+        let target = RouterHash::from_bytes([0xC0u8; 32]);
+        let lookup_id = LookupId::new(0x71, LookupKind::RouterInfo, target);
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let outcome = lookup.start_with_preferred(&store, lookup_id, &routing_key, &[first_key]);
+        assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+        let peer = first_attempt_peer(&mut lookup, &store, lookup_id, &routing_key);
+        assert_eq!(
+            peer, first_key,
+            "the preferred peer must be asked before the flat store's order"
+        );
+    }
+
+    #[test]
+    fn a_preferred_peer_the_flat_store_would_not_serve_is_ignored() {
+        // The flat store is the authority: the preference may reorder
+        // the selection but never widen it.
+        let mut store = RouterInfoStore::default();
+        let known = bundle(0x703);
+        store.insert(floodfill(&known, 1));
+        let known_key = router_hash(known.identity()).expect("hash");
+        let unknown = bundle(0x704);
+        let unknown_key = router_hash(unknown.identity()).expect("hash");
+        let target = RouterHash::from_bytes([0xC0u8; 32]);
+        let lookup_id = LookupId::new(0x72, LookupKind::RouterInfo, target);
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let outcome = lookup.start_with_preferred(&store, lookup_id, &routing_key, &[unknown_key]);
+        assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+        let peer = first_attempt_peer(&mut lookup, &store, lookup_id, &routing_key);
+        assert_eq!(
+            peer, known_key,
+            "a peer the flat store does not hold must never be asked"
+        );
+    }
+
+    #[test]
+    fn the_preferred_path_never_asks_the_target() {
+        let mut store = RouterInfoStore::default();
+        let target_signer = bundle(0x705);
+        let other = bundle(0x706);
+        store.insert(floodfill(&target_signer, 1));
+        store.insert(floodfill(&other, 1));
+        let target = router_hash(target_signer.identity()).expect("hash");
+        let other_key = router_hash(other.identity()).expect("hash");
+        let lookup_id = LookupId::new(0x73, LookupKind::RouterInfo, target);
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let outcome = lookup.start_with_preferred(&store, lookup_id, &routing_key, &[target]);
+        assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+        let peer = first_attempt_peer(&mut lookup, &store, lookup_id, &routing_key);
+        assert_eq!(
+            peer, other_key,
+            "the lookup target must stay excluded even when preferred"
+        );
+    }
+
+    #[test]
+    fn the_preferred_path_still_reaches_a_peer_ingested_mid_lookup() {
+        // Plan 497's no-regression row: the preferred order is a
+        // priority prefix, not a closed set, so a peer learned while
+        // the lookup runs is still queried.
+        let mut store = RouterInfoStore::default();
+        let first = bundle(0x707);
+        store.insert(floodfill(&first, 1));
+        let first_key = router_hash(first.identity()).expect("hash");
+        let target = RouterHash::from_bytes([0xC0u8; 32]);
+        let lookup_id = LookupId::new(0x74, LookupKind::RouterInfo, target);
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let outcome = lookup.start_with_preferred(&store, lookup_id, &routing_key, &[first_key]);
+        assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+        let peer = first_attempt_peer(&mut lookup, &store, lookup_id, &routing_key);
+        assert_eq!(peer, first_key);
+
+        // A second floodfill arrives in the store while the lookup runs.
+        let second = bundle(0x708);
+        let second_key = router_hash(second.identity()).expect("hash");
+        store.insert(floodfill(&second, 1));
+
+        let action = match lookup.advance_after_reply(&store, &routing_key) {
+            StartOutcome::PendingAttempt(action) => action,
+            other => panic!("expected PendingAttempt, got {other:?}"),
+        };
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        assert_eq!(
+            peer, second_key,
+            "a peer ingested during the lookup must still be queried"
+        );
+    }
+
+    #[test]
+    fn the_closed_candidate_list_does_not_reach_a_peer_ingested_mid_lookup() {
+        // The control for the row above: Plan 489's closed list keeps
+        // its documented behaviour, which is why Plan 497 needs its own
+        // entry point rather than reusing this one.
+        let mut store = RouterInfoStore::default();
+        let first = bundle(0x709);
+        store.insert(floodfill(&first, 1));
+        let first_key = router_hash(first.identity()).expect("hash");
+        let target = RouterHash::from_bytes([0xC0u8; 32]);
+        let lookup_id = LookupId::new(0x75, LookupKind::RouterInfo, target);
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let outcome = lookup.start_with_candidates(lookup_id, &[first_key]);
+        assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+        let peer = first_attempt_peer(&mut lookup, &store, lookup_id, &routing_key);
+        assert_eq!(peer, first_key);
+
+        let second = bundle(0x70A);
+        store.insert(floodfill(&second, 1));
+        let outcome = lookup.advance_after_reply(&store, &routing_key);
+        assert!(
+            matches!(outcome, StartOutcome::Terminal(_)),
+            "the closed list must not consult the store behind the caller's back"
+        );
     }
 }

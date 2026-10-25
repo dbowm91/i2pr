@@ -82,7 +82,8 @@ use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
 use i2pr_netdb::{
-    LocalRouterInfoBuilder, RouterInfoStore, RouterInfoStoreConfig, ValidationContext,
+    BucketSetConfig, ExplorationBudget, ExplorationPolicy, LocalRouterInfoBuilder,
+    ProfileStoreConfig, RouterHash, RouterInfoStore, RouterInfoStoreConfig, ValidationContext,
 };
 use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
@@ -90,7 +91,9 @@ use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
 use rand_core::TryRngCore;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -406,6 +409,7 @@ fn readiness_expectation(service: &str) -> &'static str {
         CONSOLE_SERVICE_NAME => "loopback router console listener bound and accepting",
         ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
         SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
+        NETDB_PARTICIPATION_SERVICE_NAME => "NetDB participation owner running",
         NTCP2_SERVICE_NAME => "controlled NTCP2 TCP listener bound with local RouterInfo ready",
         SSU2_SERVICE_NAME => "authenticated router I2NP owner running",
         APP_RUNTIME_SERVICE_NAME => {
@@ -921,6 +925,28 @@ fn build_daemon_graph_inner(
     if config.news.enabled {
         register_news_refresh_service(&mut builder, config, inspection)?;
     }
+
+    // Plan 497: the daemon owns the NetDB participation state. The shared
+    // routing-table consumer is built here so that Plan 433's composition
+    // of the NetDB tunnel-building coordinator takes this exact `Arc`
+    // through `NetDbTunnelCoordinator::with_routing_table`.
+    //
+    // That coordinator is **not** created in this phase, and must not be:
+    // Plan 433 owns the composition of the NetDB / destination-tunnel
+    // coordinator into the service graph and is registered blocked on an
+    // external acquisition contract. Composing it here would take a scope
+    // this plan does not own.
+    let participation = Arc::new(NetDbParticipation::new(
+        config,
+        local_router_hash(bootstrap.as_ref()),
+        wall_clock_ms(),
+    ));
+    register_netdb_participation_service(
+        &mut builder,
+        config,
+        bootstrap.clone(),
+        Arc::clone(&participation),
+    )?;
 
     // NTCP2 and SSU2 feed one bounded router-I2NP ingress owner. Keeping
     // the bridge here makes the composition explicit: the NTCP2 link task
@@ -1492,6 +1518,9 @@ const I2CP_SERVICE_NAME: &str = "i2cp-bridge";
 const I2PCONTROL_SERVICE_NAME: &str = "i2pcontrol";
 const ADDRESSBOOK_REFRESH_SERVICE_NAME: &str = "addressbook-refresh";
 const SIGNED_NEWS_REFRESH_SERVICE_NAME: &str = "signed-news-refresh";
+/// Plan 497: the supervised owner of the daemon's NetDB participation
+/// state.
+const NETDB_PARTICIPATION_SERVICE_NAME: &str = "netdb-participation";
 
 /// Registers the supervised I2PControl HTTPS service in the supplied
 /// builder. The factory captures the [`I2pControlServiceState`] so the
@@ -1752,6 +1781,455 @@ fn register_news_refresh_service(
         })?;
     Ok(())
 }
+/// The directory, under the router data directory, that holds the persisted
+/// peer-profile projection (Plan 497).
+const PROFILE_PROJECTION_DIRECTORY: &str = "peer-profiles";
+
+/// The prefix of one persisted peer-profile projection file (Plan 497).
+const PROFILE_PROJECTION_FILE_PREFIX: &str = "profile-projection-";
+
+/// The suffix of one persisted peer-profile projection file (Plan 497).
+const PROFILE_PROJECTION_FILE_SUFFIX: &str = ".txt";
+
+/// The maximum number of directory entries the startup projection scan
+/// examines (Plan 497).
+///
+/// The scan is bounded so a hostile or accidental directory cannot turn the
+/// router's startup into an unbounded walk.
+const PROFILE_PROJECTION_SCAN_LIMIT: usize = 64;
+
+/// Returns the daemon's wall-clock reading in milliseconds.
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+/// Returns the local router's hash, or the null hash when the router has no
+/// identity yet.
+///
+/// The null hash anchors the routing table at a fixed position. It is only
+/// reachable before the router publishes an identity, and an empty table
+/// cannot answer a lookup with it.
+fn local_router_hash(bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>) -> RouterHash {
+    bootstrap
+        .and_then(|bootstrap| bootstrap.lock().ok())
+        .and_then(|bootstrap| bootstrap.local_hash())
+        .unwrap_or_else(|| RouterHash::from_bytes([0u8; 32]))
+}
+
+/// The daemon's NetDB participation state.
+///
+/// Plan 497. The daemon owns one peer-profile store and one floodfill-indexed
+/// routing table:
+///
+/// * the **participation owner** drives the profile maintenance cadence and
+///   owns the persisted peer-profile projection;
+/// * the **routing table** is a cache of derived state. The flat peer map
+///   stays the **authority**: a table that cannot answer a key falls back
+///   to today's selection, and every fallback is counted by reason.
+///
+/// Plan 433 owns the composition of the NetDB tunnel-building coordinator
+/// into the daemon's service graph, and that coordinator is **not** created
+/// here: Plan 433 is registered blocked on an external acquisition
+/// contract. The shared consumer is built here so that Plan 433's
+/// composition takes this exact `Arc` through
+/// `NetDbTunnelCoordinator::with_routing_table`; until then the consumer is
+/// reachable only from this crate.
+struct NetDbParticipation {
+    /// The shared peer-profile handle the maintenance owner drives.
+    profiles: crate::netdb_participation::PeerParticipationHandle,
+    /// The shared routing-table consumer the lookup path consults.
+    routing_table: Arc<crate::netdb_participation::RoutingTableConsumer>,
+    /// The number of projections the startup load applied.
+    restored_projections: AtomicU32,
+    /// The number of projections the startup load refused to apply.
+    discarded_projections: AtomicU32,
+}
+
+impl NetDbParticipation {
+    /// Builds the daemon's participation state.
+    ///
+    /// The routing table is a **cache**: it is populated from the daemon's
+    /// own NetDB and it never removes a peer the flat store could serve.
+    /// When the operator has not enabled the table the consumer is built
+    /// disabled, so every request answers
+    /// [`RoutingTableFallback::Disabled`](crate::netdb_participation::RoutingTableFallback::Disabled)
+    /// and the lookup path falls back to the flat store exactly as it does
+    /// today.
+    fn new(config: &Config, local_hash: RouterHash, now_ms: u64) -> Self {
+        let router_info =
+            RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
+        let profile_store = ProfileStoreConfig {
+            router_info,
+            max_profiles: config
+                .netdb
+                .max_records
+                .min(ProfileStoreConfig::default().max_profiles),
+            ..ProfileStoreConfig::default()
+        };
+        let driver = crate::netdb_participation::RoutingTableDriver::new(
+            local_hash,
+            Date::from_millis(now_ms),
+            crate::netdb_participation::RoutingTableConfig {
+                table: BucketSetConfig {
+                    max_entries: config.netdb.routing_table_max_entries,
+                    max_bucket_size: config.netdb.routing_table_max_bucket_size,
+                },
+                exploration: ExplorationPolicy {
+                    budget: ExplorationBudget {
+                        max_peers: config.netdb.exploration_max_peers,
+                        deadline_ms: config.netdb.exploration_deadline_ms,
+                    },
+                    ..ExplorationPolicy::default()
+                },
+                ..crate::netdb_participation::RoutingTableConfig::default()
+            },
+        );
+        Self {
+            profiles: crate::netdb_participation::PeerParticipationHandle::new(
+                crate::netdb_participation::PeerParticipationDriver::new(profile_store),
+            ),
+            routing_table: Arc::new(crate::netdb_participation::RoutingTableConsumer::new(
+                driver,
+                config.netdb.routing_table_enabled,
+            )),
+            restored_projections: AtomicU32::new(0),
+            discarded_projections: AtomicU32::new(0),
+        }
+    }
+
+    /// Starts the participation owner.
+    ///
+    /// The owner applies the persisted projection when it is present and
+    /// current, populates the routing table from the daemon's own NetDB,
+    /// advances the driver's clock so the daily rotation can happen, and
+    /// then runs the maintenance cadence under the service's child scope.
+    /// Every step is bounded and local: none of them can fail the router's
+    /// startup.
+    fn start(
+        self: &Arc<Self>,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        projection_directory: &Path,
+        children: &i2pr_runtime::ChildScope,
+        period: Duration,
+    ) {
+        let now_ms = wall_clock_ms();
+        // Plan 488 F4: apply the persisted projection when it is present and
+        // current; discard it otherwise.
+        self.load_projection(projection_directory, now_ms);
+        // Advance the driver's clock first, so every peer the table holds
+        // is indexed with today's date and the daily rotation can happen.
+        self.routing_table.advance_time(now_ms);
+        // Populate the routing table from the daemon's own NetDB.
+        self.populate_routing_table(bootstrap, &[]);
+
+        // The profile maintenance owner runs on the configured cadence under
+        // the service's child scope, so the task has an owner and a
+        // cancellation path.
+        let profiles = self.profiles.clone();
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let exit = crate::netdb_participation::run_profile_maintenance(
+                profiles,
+                child_cancellation,
+                period,
+            )
+            .await;
+            match exit {
+                crate::netdb_participation::ProfileMaintenanceExit::Cancelled => Ok(()),
+                crate::netdb_participation::ProfileMaintenanceExit::InvalidPeriod => {
+                    Err(i2pr_runtime::ChildTaskFailure::Explicit)
+                }
+            }
+        }) {
+            tracing::warn!("the NetDB participation maintenance owner was not registered: {error}");
+        }
+
+        // The routing-table owner runs on the same cadence: it refreshes the
+        // table from the daemon's own NetDB, advances the table's clock so
+        // the daily rotation can happen, and persists the peer-profile
+        // projection.
+        let participation = Arc::clone(self);
+        let bootstrap = bootstrap.cloned();
+        let projection_directory = projection_directory.to_path_buf();
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = child_cancellation.cancelled() => return Ok(()),
+                    _ = ticker.tick() => {
+                        let now_ms = wall_clock_ms();
+                        // The clock moves first, so the peers the table
+                        // holds are indexed with today's date.
+                        participation.routing_table.advance_time(now_ms);
+                        participation.populate_routing_table(bootstrap.as_ref(), &[]);
+                        participation.persist_projection(&projection_directory, now_ms);
+                    }
+                }
+            }
+        }) {
+            tracing::warn!("the NetDB routing-table owner was not registered: {error}");
+        }
+    }
+
+    /// Populates the routing table from the daemon's own NetDB.
+    ///
+    /// Every validated floodfill the NetDB holds is indexed with **its own
+    /// signed evidence**. A peer whose own record does not advertise `f` is
+    /// refused: the table never accepts one peer's advertisement of another
+    /// as evidence for it.
+    ///
+    /// A peer a verified floodfill *suggested* is indexed as a suggestion,
+    /// never as signed evidence: the suggesting peer must itself be indexed
+    /// with signed evidence, or the table refuses the suggestion. The daemon
+    /// has no suggestion source yet — Plan 489's exploration is not
+    /// composed into the service graph — so the list is empty. The rule is
+    /// enforced here so that a suggestion is never mistaken for evidence
+    /// when that source arrives.
+    fn populate_routing_table(
+        &self,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        suggestions: &[(RouterHash, RouterHash)],
+    ) {
+        let Some(bootstrap) = bootstrap else {
+            return;
+        };
+        let Ok(bootstrap) = bootstrap.lock() else {
+            return;
+        };
+        for peer in bootstrap.store().floodfill_advertisers() {
+            self.routing_table.index(peer);
+        }
+        for (peer, from) in suggestions {
+            self.routing_table.index_suggested(*peer, from);
+        }
+    }
+
+    /// Loads the persisted peer-profile projection at startup.
+    ///
+    /// Plan 488 F4. A projection is applied only when it is **present** and
+    /// **current**: it must name the current UTC day and it must decode. A
+    /// corrupt projection, an oversized projection, or one built for a
+    /// different UTC day is **discarded and counted**; it is never applied,
+    /// and it never fails the router's startup.
+    fn load_projection(&self, directory: &Path, now_ms: u64) {
+        let Some(today) = projection_day(now_ms) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.take(PROFILE_PROJECTION_SCAN_LIMIT) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(day) = projection_day_of(name) else {
+                continue;
+            };
+            if day == today {
+                self.apply_projection(&entry.path());
+            } else {
+                // A projection built for another UTC day is stale: it is
+                // discarded and counted, and it is never applied.
+                self.discard_projection("stale-day");
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Applies one persisted projection, or discards and counts it.
+    fn apply_projection(&self, path: &Path) {
+        let Ok(bytes) = read_bounded(path, i2pr_netdb::DEFAULT_MAX_PROJECTION_BYTES) else {
+            self.discard_projection("unreadable");
+            return;
+        };
+        let outcome = self
+            .profiles
+            .with(|driver| driver.load_projection(&bytes))
+            .unwrap_or(
+                crate::netdb_participation::ProjectionLoadOutcome::Discarded {
+                    reason: "unavailable",
+                },
+            );
+        match outcome {
+            crate::netdb_participation::ProjectionLoadOutcome::Restored { .. } => {
+                self.restored_projections.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::netdb_participation::ProjectionLoadOutcome::Discarded { reason } => {
+                self.discard_projection(reason);
+            }
+        }
+    }
+
+    /// Counts one projection the startup load refused to apply.
+    ///
+    /// The driver keeps its own decode-failure counter; this counter is the
+    /// daemon's own view of **every** projection the startup load refused,
+    /// whichever layer refused it.
+    fn discard_projection(&self, reason: &'static str) {
+        self.discarded_projections.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!("a persisted peer-profile projection was discarded: {reason}");
+    }
+
+    /// Persists the peer-profile projection for the current UTC day.
+    ///
+    /// The bytes are the store's own bounded encoding: the daemon adds no
+    /// framing of its own. The projection is written to a temporary file and
+    /// renamed into place, so a reader never sees a half-written
+    /// projection.
+    fn persist_projection(&self, directory: &Path, now_ms: u64) {
+        let Some(day) = projection_day(now_ms) else {
+            return;
+        };
+        let Some(bytes) = self
+            .profiles
+            .with(|driver| driver.encode_projection().ok())
+            .flatten()
+        else {
+            return;
+        };
+        if bytes.len() > i2pr_netdb::DEFAULT_MAX_PROJECTION_BYTES {
+            return;
+        }
+        if std::fs::create_dir_all(directory).is_err() {
+            return;
+        }
+        let path = directory.join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        let temporary = directory.join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}.tmp"
+        ));
+        if std::fs::write(&temporary, &bytes).is_err() {
+            return;
+        }
+        if std::fs::rename(&temporary, &path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+    }
+
+    /// Reports the participation counters when the owner stops.
+    fn report(&self) {
+        let counters = self.routing_table.counters();
+        tracing::info!(
+            "NetDB participation owner stopped: restored_projections={} discarded_projections={} routing_table_answered={} routing_table_fell_back={}",
+            self.restored_projections.load(Ordering::Relaxed),
+            self.discarded_projections.load(Ordering::Relaxed),
+            counters.answered,
+            counters.fell_back(),
+        );
+    }
+}
+
+/// Returns the UTC day key of one instant, as `yyyyMMdd`.
+///
+/// The key is the routing table's own daily rotation key, so a projection
+/// and the table agree on what "today" is.
+fn projection_day(now_ms: u64) -> Option<String> {
+    let key = i2pr_netdb::format_daily_key(Date::from_millis(now_ms)).ok()?;
+    String::from_utf8(key.to_vec()).ok()
+}
+
+/// Returns the UTC day a projection file name names, if it names one.
+fn projection_day_of(name: &str) -> Option<String> {
+    let day = name
+        .strip_prefix(PROFILE_PROJECTION_FILE_PREFIX)?
+        .strip_suffix(PROFILE_PROJECTION_FILE_SUFFIX)?;
+    if day.len() == 8 && day.bytes().all(|byte| byte.is_ascii_digit()) {
+        Some(day.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Reads at most `maximum` bytes from one file.
+///
+/// A file larger than the ceiling is refused rather than read: the
+/// projection is a bounded cache, and an oversized file is a hostile input.
+fn read_bounded(path: &Path, maximum: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
+    let mut reader = file.take(limit);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Registers the supervised NetDB participation owner (Plan 497).
+///
+/// The service is `Optional` and carries
+/// [`i2pr_core::StartupRequirement::Optional`]: a participation owner that
+/// cannot start degrades the routing table's feature and nothing else. The
+/// router still starts and still serves.
+///
+/// When `netdb.routing_table_enabled` is `false` — the default — the owner
+/// is deliberately **inert**: it populates nothing, it ticks nothing, and
+/// the shared consumer answers every request with
+/// [`RoutingTableFallback::Disabled`](crate::netdb_participation::RoutingTableFallback::Disabled),
+/// so the lookup path falls back to the flat store exactly as it does today.
+fn register_netdb_participation_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+    participation: Arc<NetDbParticipation>,
+) -> Result<(), DaemonError> {
+    let enabled = config.netdb.routing_table_enabled;
+    let period = Duration::from_millis(config.netdb.participation_maintenance_period_ms);
+    let projection_directory = config.router.data_dir.join(PROFILE_PROJECTION_DIRECTORY);
+    builder
+        .register(
+            service_spec(
+                NETDB_PARTICIPATION_SERVICE_NAME,
+                ServiceClassification::Optional,
+                move |ctx| {
+                    let participation = Arc::clone(&participation);
+                    let bootstrap = bootstrap.clone();
+                    let projection_directory = projection_directory.clone();
+                    let cancellation = ctx.cancellation().clone();
+                    let readiness = ctx.readiness();
+                    let children = ctx.children();
+                    Box::pin(async move {
+                        // Plan 360 readiness contract: readiness means the
+                        // participation owner is running. It deliberately
+                        // does not wait for the first maintenance pass, the
+                        // first table population, or the projection load:
+                        // each is bounded, local and failure-tolerant.
+                        if let Err(failure) =
+                            signal_running(NETDB_PARTICIPATION_SERVICE_NAME, &readiness)
+                        {
+                            return failure;
+                        }
+                        if enabled {
+                            participation.start(
+                                bootstrap.as_ref(),
+                                &projection_directory,
+                                &children,
+                                period,
+                            );
+                        }
+                        cancellation.cancelled().await;
+                        participation.report();
+                        i2pr_runtime::ServiceResult::RequestedShutdown
+                    })
+                },
+            )
+            .startup_requirement(i2pr_core::StartupRequirement::Optional),
+        )
+        .map_err(|error| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register NetDB participation service: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
 /// Bounded Plan 279 normal-path evaluation period.
 const NORMAL_FLOODFILL_EVALUATION_PERIOD: Duration = Duration::from_secs(30);
 /// Serving-NetDB record age ceiling for the normal path (mirrors the
@@ -4852,6 +5330,7 @@ mod tests {
             CONSOLE_SERVICE_NAME,
             ADDRESSBOOK_REFRESH_SERVICE_NAME,
             SIGNED_NEWS_REFRESH_SERVICE_NAME,
+            NETDB_PARTICIPATION_SERVICE_NAME,
             SSU2_SERVICE_NAME,
         ] {
             let expectation = readiness_expectation(service);
@@ -4864,5 +5343,302 @@ mod tests {
                 "{service} expectation exceeds the bounded health-detail limit"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 497: the daemon's NetDB participation owner.
+    // -----------------------------------------------------------------------
+
+    /// A minimal configuration with the routing table off, which is the
+    /// shipped default.
+    const PARTICIPATION_DEFAULT_CONFIG: &str =
+        "schema_version = 1\n[router]\ndata_dir = \"./state\"\n";
+
+    /// A configuration with the routing table on.
+    const PARTICIPATION_ENABLED_CONFIG: &str = "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[netdb]\nrouting_table_enabled = true\n";
+
+    /// Builds a validated floodfill RouterInfo.
+    fn participation_floodfill(seed: u64) -> i2pr_netdb::ValidatedRouterInfo {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::Mapping;
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity");
+        let published = Date::from_millis(1_000);
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "Nf".to_owned()).unwrap();
+        let info = signer
+            .sign_router_info(published, Vec::new(), Vec::new(), options.build().unwrap())
+            .expect("sign");
+        i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(published),
+        )
+        .expect("validate")
+    }
+
+    /// Builds the participation state for one configuration.
+    fn participation_for(text: &str) -> (Config, NetDbParticipation) {
+        let config = Config::parse(text).expect("valid configuration");
+        let participation =
+            NetDbParticipation::new(&config, RouterHash::from_bytes([7u8; 32]), 1_000);
+        (config, participation)
+    }
+
+    /// Plan 497: with the routing table off — the shipped default — the
+    /// shared consumer answers every request with `Disabled` and nothing
+    /// else happens: no table population, no maintenance tick, and no
+    /// counter other than the disabled fallback moves.
+    #[test]
+    fn the_default_off_netdb_participation_owner_is_inert() {
+        let (config, participation) = participation_for(PARTICIPATION_DEFAULT_CONFIG);
+        assert!(
+            !config.netdb.routing_table_enabled,
+            "the routing table must be off by default"
+        );
+        let consumer = Arc::clone(&participation.routing_table);
+        assert!(!consumer.is_enabled());
+        assert!(consumer.is_empty(), "an inert owner must populate no table");
+        assert_eq!(consumer.len(), 0);
+        assert_eq!(
+            consumer.counters(),
+            crate::netdb_participation::RoutingTableCounters::default(),
+            "an inert owner must not move any counter"
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.receipt_count())
+                .unwrap_or(0),
+            0,
+            "an inert owner must run no maintenance pass"
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.store().len())
+                .unwrap_or(0),
+            0,
+            "an inert owner must learn no peer"
+        );
+
+        let store = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        let key = RouterHash::from_bytes([3u8; 32]);
+        assert_eq!(
+            consumer.candidates(&store, &key, &[]),
+            crate::netdb_participation::RoutingTableCandidates::Fallback(
+                crate::netdb_participation::RoutingTableFallback::Disabled
+            )
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 0);
+        assert_eq!(counters.fell_back_no_candidate, 0);
+        assert_eq!(counters.fell_back_disabled, 1);
+        assert_eq!(counters.fell_back(), 1);
+    }
+
+    /// Plan 497: with the routing table on, the consumer indexes a
+    /// validated floodfill with its own signed evidence and then answers
+    /// with the closest-first table, falling back with a counted reason for
+    /// a key it cannot serve.
+    #[test]
+    fn the_enabled_netdb_participation_owner_indexes_and_answers() {
+        let (config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        assert!(config.netdb.routing_table_enabled);
+        let consumer = Arc::clone(&participation.routing_table);
+        assert!(consumer.is_enabled());
+
+        let peer = participation_floodfill(0x4970_0001);
+        let peer_key = peer.key();
+        assert_eq!(
+            consumer.index(&peer),
+            Some(i2pr_netdb::TableInsertOutcome::Inserted),
+            "a validated floodfill enters the table with its own signed evidence"
+        );
+        assert_eq!(consumer.len(), 1);
+
+        // The NetDB holds the peer, so the table can answer with it.
+        let mut store = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        store.insert(peer.clone());
+        let routing_key = i2pr_netdb::daily_routing_key(&peer_key, Date::from_millis(1_000))
+            .map(RouterHash::from_hash)
+            .expect("routing key");
+        match consumer.candidates(&store, &routing_key, &[]) {
+            crate::netdb_participation::RoutingTableCandidates::Table(candidates) => {
+                assert_eq!(candidates, vec![peer_key]);
+            }
+            other => panic!("the table must answer with its candidate: {other:?}"),
+        }
+        assert_eq!(consumer.counters().answered, 1);
+
+        // A key the table cannot serve — the peer is not in the NetDB, so it
+        // is pending rather than queryable — falls back with its reason.
+        let empty = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        assert_eq!(
+            consumer.candidates(&empty, &routing_key, &[]),
+            crate::netdb_participation::RoutingTableCandidates::Fallback(
+                crate::netdb_participation::RoutingTableFallback::NoCandidate
+            )
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 1);
+        assert_eq!(counters.fell_back_no_candidate, 1);
+        assert_eq!(counters.fell_back_disabled, 0);
+        assert_eq!(counters.fell_back(), 1);
+    }
+
+    /// Plan 497: a peer whose own record does not advertise `f` never
+    /// enters the table on its own evidence.
+    #[test]
+    fn the_netdb_participation_owner_refuses_a_peer_that_is_not_a_floodfill() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::Mapping;
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        let consumer = Arc::clone(&participation.routing_table);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4970_0002);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity");
+        let published = Date::from_millis(1_000);
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "N".to_owned()).unwrap();
+        let info = signer
+            .sign_router_info(published, Vec::new(), Vec::new(), options.build().unwrap())
+            .expect("sign");
+        let plain = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(published),
+        )
+        .expect("validate");
+        assert_eq!(
+            consumer.index(&plain),
+            Some(i2pr_netdb::TableInsertOutcome::RejectedNotFloodfill)
+        );
+        assert!(consumer.is_empty());
+    }
+
+    /// Plan 488 F4: a corrupt projection and a projection built for another
+    /// UTC day are discarded and counted, and neither is ever applied.
+    #[test]
+    fn the_netdb_participation_owner_discards_a_corrupt_projection() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let day = projection_day(now_ms).expect("a UTC day");
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        std::fs::write(&path, b"not a projection").expect("write projection");
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        participation.load_projection(directory.path(), now_ms);
+        assert_eq!(
+            participation.discarded_projections.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            participation.restored_projections.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.store().len())
+                .unwrap_or(0),
+            0,
+            "a discarded projection must never be applied"
+        );
+    }
+
+    /// Plan 488 F4: a projection built for another UTC day is stale. It is
+    /// discarded and counted, and it is never applied.
+    #[test]
+    fn the_netdb_participation_owner_discards_a_projection_from_another_day() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let stale_day = projection_day(now_ms - 24 * 60 * 60 * 1_000).expect("a UTC day");
+        assert_ne!(stale_day, projection_day(now_ms).expect("a UTC day"));
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{stale_day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        std::fs::write(&path, b"a stale projection").expect("write projection");
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        participation.load_projection(directory.path(), now_ms);
+        assert_eq!(
+            participation.discarded_projections.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            participation.restored_projections.load(Ordering::Relaxed),
+            0
+        );
+        assert!(!path.exists(), "a stale projection must not be left behind");
+    }
+
+    /// Plan 488 F4: a projection of the current UTC day is applied, and the
+    /// round trip survives a restart.
+    #[test]
+    fn the_netdb_participation_owner_applies_a_current_projection() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let day = projection_day(now_ms).expect("a UTC day");
+        let peer = participation_floodfill(0x4970_0003);
+        let peer_key = peer.key();
+
+        // Build a projection whose peer answered, and persist it.
+        let (_config, writer) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        writer.profiles.with(|driver| driver.advance_time(now_ms));
+        writer.profiles.with(|driver| driver.learn(peer.clone()));
+        writer
+            .profiles
+            .with(|driver| driver.observe_answered(&peer_key));
+        writer.persist_projection(directory.path(), now_ms);
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        assert!(path.exists(), "the projection must be persisted");
+
+        // A fresh owner that already holds the peer applies the projection
+        // and the peer's profile state comes back with it.
+        let (_config, reader) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        reader.profiles.with(|driver| driver.advance_time(now_ms));
+        reader.profiles.with(|driver| driver.learn(peer.clone()));
+        let state_before = reader
+            .profiles
+            .with(|driver| {
+                driver
+                    .store()
+                    .profile(&peer_key)
+                    .map(|profile| profile.state())
+            })
+            .flatten();
+        assert_eq!(
+            state_before,
+            Some(i2pr_netdb::ProfileState::NeverTried),
+            "a freshly learned peer has never been contacted"
+        );
+
+        reader.load_projection(directory.path(), now_ms);
+        assert_eq!(reader.restored_projections.load(Ordering::Relaxed), 1);
+        assert_eq!(reader.discarded_projections.load(Ordering::Relaxed), 0);
+        let state_after = reader
+            .profiles
+            .with(|driver| {
+                driver
+                    .store()
+                    .profile(&peer_key)
+                    .map(|profile| profile.state())
+            })
+            .flatten();
+        assert_eq!(
+            state_after,
+            Some(i2pr_netdb::ProfileState::Answered),
+            "the current projection must be applied"
+        );
     }
 }

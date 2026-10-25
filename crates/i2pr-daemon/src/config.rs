@@ -37,6 +37,20 @@ const MAX_ALLOWED_EXPLORATION_DEADLINE_MS: u64 = 3_600_000;
 /// Plan 489: the shortest exploration the daemon accepts, in
 /// milliseconds.
 const MIN_EXPLORATION_DEADLINE_MS: u64 = 1_000;
+/// Plan 497: the longest participation maintenance cadence the daemon
+/// accepts, in milliseconds.
+///
+/// The ceiling is the participation driver's own `MAX_MAINTENANCE_PERIOD`
+/// (one hour). A cadence above it is refused by the driver itself, so the
+/// configuration refuses it first and names the field.
+const MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS: u64 = 3_600_000;
+/// Plan 497: the shortest participation maintenance cadence the daemon
+/// accepts, in milliseconds.
+///
+/// One second keeps the cadence loop from becoming a busy loop. The
+/// driver's own store still decides when a maintenance pass is actually
+/// due; this bound only refuses a cadence that could spin.
+const MIN_PARTICIPATION_MAINTENANCE_PERIOD_MS: u64 = 1_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +254,15 @@ struct RawNetDbConfig {
     /// milliseconds.
     #[serde(default = "default_netdb_exploration_deadline_ms")]
     exploration_deadline_ms: u64,
+    /// Plan 497: the cadence of the NetDB participation maintenance owner,
+    /// in milliseconds.
+    ///
+    /// The cadence is the period at which the daemon wakes the
+    /// participation owner. It is bounded on both sides: a zero or
+    /// sub-second cadence is refused, and so is one above the driver's
+    /// own one-hour ceiling.
+    #[serde(default = "default_netdb_participation_maintenance_period_ms")]
+    participation_maintenance_period_ms: u64,
 }
 
 impl Default for RawNetDbConfig {
@@ -256,6 +279,8 @@ impl Default for RawNetDbConfig {
             exploration_enabled: default_netdb_exploration_enabled(),
             exploration_max_peers: default_netdb_exploration_max_peers(),
             exploration_deadline_ms: default_netdb_exploration_deadline_ms(),
+            participation_maintenance_period_ms: default_netdb_participation_maintenance_period_ms(
+            ),
         }
     }
 }
@@ -1115,6 +1140,15 @@ const fn default_netdb_exploration_deadline_ms() -> u64 {
     30_000
 }
 
+/// Plan 497: the default cadence of the NetDB participation maintenance
+/// owner, in milliseconds.
+///
+/// One minute matches the peer-profile store's own maintenance interval,
+/// so one daemon tick is one due maintenance pass.
+const fn default_netdb_participation_maintenance_period_ms() -> u64 {
+    60_000
+}
+
 const fn default_reseed_enabled() -> bool {
     false
 }
@@ -1746,6 +1780,15 @@ pub struct NetDbConfig {
     /// Plan 489: the maximum lifetime of one exploration, in
     /// milliseconds.
     pub exploration_deadline_ms: u64,
+    /// Plan 497: the cadence of the NetDB participation maintenance owner,
+    /// in milliseconds.
+    ///
+    /// The cadence is the period at which the daemon wakes the
+    /// participation owner. It is bounded on both sides: a zero or
+    /// sub-second cadence is refused, and so is one above the driver's
+    /// own one-hour ceiling. The key is **additive** — it changes no other
+    /// key's meaning.
+    pub participation_maintenance_period_ms: u64,
 }
 
 /// Normalized reseed configuration.
@@ -3784,6 +3827,18 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
             reason: "cannot be enabled while netdb.routing_table_enabled is false",
         });
     }
+    if raw.participation_maintenance_period_ms < MIN_PARTICIPATION_MAINTENANCE_PERIOD_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.participation_maintenance_period_ms",
+            reason: "must be at least one second",
+        });
+    }
+    if raw.participation_maintenance_period_ms > MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.participation_maintenance_period_ms",
+            reason: "exceeds the participation maintenance safety limit",
+        });
+    }
     Ok(NetDbConfig {
         enabled: raw.enabled,
         max_records: raw.max_records as usize,
@@ -3796,6 +3851,7 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
         exploration_enabled: raw.exploration_enabled,
         exploration_max_peers: raw.exploration_max_peers as usize,
         exploration_deadline_ms: raw.exploration_deadline_ms,
+        participation_maintenance_period_ms: raw.participation_maintenance_period_ms,
     })
 }
 
@@ -5568,6 +5624,12 @@ data_dir = "./state"
         assert!(!config.netdb.exploration_enabled);
         assert_eq!(config.netdb.exploration_max_peers, 8);
         assert_eq!(config.netdb.exploration_deadline_ms, 30_000);
+        // Plan 497: the participation maintenance cadence is additive and
+        // defaults to one minute.
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
     }
 
     #[test]
@@ -5647,6 +5709,87 @@ data_dir = "./state"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_defaults_to_one_minute() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
+        assert_eq!(config.netdb.participation_maintenance_period_ms, 60_000);
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_is_accepted_at_its_default() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL,
+            default_netdb_participation_maintenance_period_ms()
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_refuses_zero() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = 0\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.participation_maintenance_period_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_refuses_a_value_above_the_ceiling() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL,
+            MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS + 1
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.participation_maintenance_period_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_accepts_the_ceiling_itself() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL, MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS
+        );
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_is_additive() {
+        // The new key changes no existing key's meaning: the neighbouring
+        // keys keep their defaults and their own bounds.
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.netdb.routing_table_enabled);
+        assert_eq!(config.netdb.routing_table_max_entries, 1_024);
+        assert_eq!(config.netdb.routing_table_max_bucket_size, 8);
+        assert!(!config.netdb.exploration_enabled);
+        assert_eq!(config.netdb.exploration_max_peers, 8);
+        assert_eq!(config.netdb.exploration_deadline_ms, 30_000);
     }
 
     #[test]

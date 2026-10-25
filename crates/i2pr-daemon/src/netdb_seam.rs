@@ -611,8 +611,37 @@ impl NetDbSeam {
         target: RouterHash,
         routing_key: &RouterHash,
     ) -> LookupAction {
+        self.begin_lookup_with_preferred(store, request_id, target, routing_key, None)
+    }
+
+    /// Begins a new lookup whose preferred peers are tried first.
+    ///
+    /// Plan 497. When `preferred` is `Some`, the state machine selects
+    /// the candidates exactly as it always does — the same flat-store
+    /// selection, the same policy, the same exclusions — and then
+    /// reorders that selection so the routing table's preferred peers
+    /// lead. The candidate **set** is never reduced: a peer the flat
+    /// store could serve is still served, and the target is still
+    /// excluded.
+    ///
+    /// `None` keeps the flat-store behaviour exactly as it was, so an
+    /// unchanged deployment is unaffected.
+    pub fn begin_lookup_with_preferred(
+        &mut self,
+        store: &RouterInfoStore,
+        request_id: u64,
+        target: RouterHash,
+        routing_key: &RouterHash,
+        preferred: Option<&[RouterHash]>,
+    ) -> LookupAction {
         let lookup_id = LookupId::new(request_id, LookupKind::RouterInfo, target);
-        let outcome = self.lookup.start(store, lookup_id, routing_key);
+        let outcome = match preferred {
+            Some(preferred) => {
+                self.lookup
+                    .start_with_preferred(store, lookup_id, routing_key, preferred)
+            }
+            None => self.lookup.start(store, lookup_id, routing_key),
+        };
         match outcome {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => {
