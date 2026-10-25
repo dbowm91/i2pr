@@ -4,7 +4,7 @@
 | --- | --- |
 | Plan | 499 |
 | Subsystem | `network-participation` |
-| State | `registered` (`registered-introducer-live-tag-request-and-carriage`) |
+| State | `closed` (`passed-introducer-live-tag-request-and-carriage`) |
 | Depends on | Plan 490 (`passed-ssu2-introducer-relay-role`), Plan 498 (`passed-ssu2-introducer-role-owner-in-the-live-inbound-loop`) |
 | Discharges | Plan 490 finding Medium #2 — no live socket carriage of a Relay Request |
 | Closure record | `plans/closure/network-participation/499-status.md` |

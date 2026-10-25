@@ -2270,7 +2270,8 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
   [`170`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
 - **SSU2** — Plans 158–161. Closure: `plans/closure/ssu2/`.
 - **SSU2 introducer (Bob) relay role** — Plans 490, 498, 499. Closure:
-  [`490`](../../plans/closure/network-participation/490-status.md). Plan-of-record:
+  [`490`](../../plans/closure/network-participation/490-status.md),
+  [`499`](../../plans/closure/network-participation/499-status.md). Plan-of-record:
   [`498`](../../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md),
   [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md).
   Plan 498's implementation discharges Plan 490's **Medium #1** finding — the

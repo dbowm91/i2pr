@@ -1320,6 +1320,8 @@ machinery; Plan 498 made the role owner reachable in a live daemon. Plan 499
 makes the role **work**: the introducer can now be asked for a relay tag, and
 a relay block it produces can be carried onto the wire. The plan of record is
 [`plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md`](../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md);
+its closure record is
+[`plans/closure/network-participation/499-status.md`](../plans/closure/network-participation/499-status.md);
 the predecessor closure record is
 [`plans/closure/network-participation/498-status.md`](../plans/closure/network-participation/498-status.md).
 What is claimed, and what is not:

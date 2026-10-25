@@ -1098,4 +1098,4 @@ integration tests across the 4 files in `tests/` — 162 total.
   `037-m3-corrective-integration-closure.md`;
   `plans/closure/ssu2/158-status.md`, `159-status.md`, `160-status.md`,
   `161-status.md`, `162-status.md`; `plans/closure/floodfill/282-status.md`,
-  `283-status.md`.
+  `283-status.md`; `plans/closure/network-participation/499-status.md`.

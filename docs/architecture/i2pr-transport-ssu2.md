@@ -1104,7 +1104,8 @@ inline module tests in `crates/i2pr-runtime/src/ssu2_runtime.rs`; see
   and tag vocabulary),
   [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md)
   (the two outbound relay-tag controls and the live tag request). Closure:
-  [`490`](../../plans/closure/network-participation/490-status.md).
+  [`490`](../../plans/closure/network-participation/490-status.md),
+  [`499`](../../plans/closure/network-participation/499-status.md).
 - Closure: `plans/closure/ssu2/155-status.md` through
   `plans/closure/ssu2/160-status.md`, and
   `plans/closure/ssu2/161-status.md` (**PASSED** — the external
