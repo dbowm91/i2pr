@@ -478,6 +478,9 @@ plan_505_status = "registered-exploratory-build-driver-in-the-product-compositio
 plan_506_plan_of_record = "plans/implementation/network-participation/506-peer-knowledge-reconcile.md"
 plan_506_closure = "plans/closure/network-participation/506-status.md"
 plan_506_status = "registered-peer-knowledge-reconcile"
+plan_507_plan_of_record = "plans/implementation/network-participation/507-netdb-retention-policy.md"
+plan_507_closure = "plans/closure/network-participation/507-status.md"
+plan_507_status = "registered-netdb-retention-policy"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -1012,6 +1015,27 @@ evidence = [
     "crates/i2pr-daemon/tests/peer_reconcile_live.rs",
     "plans/implementation/network-participation/506-peer-knowledge-reconcile.md",
     "plans/closure/network-participation/506-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.retention-policy"
+protocol = "netdb"
+structure = "explicit-prune-of-the-live-peer-stores-on-the-router-s-own-acceptance-window"
+scope = "required"
+status = "experimental"
+notes = "Plan 507 closes the retention gap: the router's peer records could outlive the router's OWN acceptance window, and both live stores FROZE at their quota. RouterInfoStore::prune -- the tree's OWN explicit-prune operation, the one Plan 103 section 3.4 preferred over silent eviction -- had EXACTLY ONE CALLER, its own unit test, so no production path ever pruned. The store REFUSES at capacity with CapacityExceeded and NEVER evicts, so a NetDB that filled up refused every new peer, permanently, and kept records the router's own validator would refuse to accept today. THE RETENTION WINDOW IS THE ROUTER'S OWN ACCEPTANCE WINDOW: the daemon's RETENTION_WINDOW_MS is DERIVED from i2pr_netdb::ValidationPolicy::default_const().max_age through a const fn, so the router retains exactly what it accepts and the constant cannot drift from the policy without a compile error. There is NO new configuration key: config.rs is untouched and the static guard refuses a retention or max_age key there. THE PRUNE RIDES THE RECONCILE'S EXISTING CADENCE: it is folded into Plan 506's PeerReconcile::run, so the prune and the reconcile can never drift apart in time, and the router gains no second knob and no second task. THE ORDER IS prune the bootstrap, prune the destination store, snapshot, insert, learn, so a record the prune removed is NEVER carried into the destination store. The prune calls the tree's own RouterInfoStore::prune through a bounded, non-awaiting step: the bootstrap's lock is taken and released, then the destination coordinator's lock is tried and released, and no lock is ever held across an await. THE DESTINATION STORE'S LOCK IS TRIED, NEVER WAITED FOR: a store another task is using is left alone for that pass, the condition is COUNTED under the stable reason label prune-unavailable, and the reconcile still runs. EVERY PRUNE IS COUNTED: pruned-bootstrap, pruned-destination and prune-unavailable carry counts and stable reason labels only -- no peer, address, key or payload -- and the counters are published through the SAME inspection seam Plan 506 established, so an unpublished or poisoned slot stays a GAP, never a fabricated zero. THE PEER-PROFILE STORE IS NOT PRUNED: it has its own eviction policy and self-corrects through the observation tiers. The router's OWN RouterInfo is never a prune victim: the local record lives beside the store, not inside it. The surface is internal and non-advertised: nothing here changes router.version, caps, the published RouterInfo, or any advertisement."
+evidence = [
+    "crates/i2pr-daemon/src/peer_reconcile.rs",
+    "crates/i2pr-daemon/src/bootstrap.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-netdb/src/store.rs",
+    "crates/i2pr-daemon/tests/netdb_retention_feasibility.rs",
+    "crates/i2pr-daemon/tests/netdb_retention_boundary.rs",
+    "crates/i2pr-daemon/tests/netdb_retention_live.rs",
+    "plans/implementation/network-participation/507-netdb-retention-policy.md",
+    "plans/closure/network-participation/507-status.md",
 ]
 advertised = false
 

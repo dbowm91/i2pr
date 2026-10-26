@@ -1943,6 +1943,105 @@ Evidence: `crates/i2pr-daemon/src/peer_reconcile.rs`,
 `plans/implementation/network-participation/506-peer-knowledge-reconcile.md`;
 the closure record is `plans/closure/network-participation/506-status.md`.
 
+## The NetDB retention policy (Plan 507)
+
+Plan 506 gave the router a **population** it could grow. Plan 507 gives that
+population a **shelf life**.
+
+The gap, precisely:
+
+- `RouterInfoStore::prune(now, max_age_ms)` — the tree's own explicit prune,
+  the one Plan 103 §3.4 preferred over silent eviction — had **exactly one
+  caller**: its own unit test at `crates/i2pr-netdb/src/store.rs`. No
+  production path pruned.
+- `RouterInfoStore::insert` **refuses** at the quota and **never evicts**, so
+  a NetDB that filled up refused every new peer, permanently, and kept records
+  the router's own validator would refuse to accept today.
+- the router refused a RouterInfo older than `DEFAULT_MAX_AGE` (24 h) at
+  validation and then **retained** one indefinitely. The acceptance rule and
+  the retention rule disagreed.
+
+What is claimed, and what is not:
+
+- **The retention window is the router's own acceptance window.** The
+  daemon's `RETENTION_WINDOW_MS` is derived from
+  `i2pr_netdb::ValidationPolicy::default_const().max_age` through a `const
+  fn`, so the router retains exactly what it accepts and the constant cannot
+  drift from the policy without a compile error. A second value would be a
+  second source of truth, which is the defect this plan removes.
+- **The prune is the tree's own explicit prune.** The daemon calls
+  `RouterInfoStore::prune` through a bounded method on the bootstrap and on
+  the destination coordinator. `i2pr-netdb` is **not** changed: the plan adds
+  a **caller**, not a mechanism.
+- **The prune rides the reconcile's existing cadence.** It is folded into
+  Plan 506's `PeerReconcile::run`, so the prune and the reconcile can never
+  drift apart in time, and the router gains no second knob and no second
+  task. **No new configuration key**: `config.rs` is untouched, and the static
+  guard refuses a `retention` or `max_age` key there.
+- **The ordering is prune, prune, snapshot, insert, learn.** The prune runs
+  **before** the reconcile's snapshot, so a record the prune removed is never
+  carried into the destination store.
+- **The locks are taken one at a time and are never nested.** The bootstrap's
+  lock is released before the destination coordinator's lock is taken, and
+  the step takes **no await at all**, so no lock is ever held across an await.
+- **The destination store's lock is tried, never waited for.** A store another
+  task is using is left alone for that pass; the condition is **counted**
+  under the stable reason label `prune-unavailable`, and the reconcile still
+  runs. The store turns over on the next pass.
+- **Every prune is counted.** `pruned-bootstrap`, `pruned-destination` and
+  `prune-unavailable` carry counts and stable reason labels only — no peer,
+  address, key or payload — and they are published through the **same**
+  inspection seam Plan 506 established, so an unpublished or poisoned slot
+  stays a **gap**, never a fabricated zero.
+- **The peer-profile store is not pruned.** It has its own eviction policy and
+  self-corrects through the observation tiers; an age prune there would be a
+  second policy for the same store.
+- **The router's own RouterInfo is never a prune victim.** The local record
+  lives beside the store, not inside it, so the prune cannot reach it.
+- **The prune never selects.** It removes peer **records**; Plan 491's
+  version gate stays at **selection**.
+- **The controls are not vacuous, and that is measured.** Four mutations of
+  the real tree, each applied, run against the real lanes, and reverted:
+  removing the prune call from `fn run` fails **nine** tests, among them
+  `the_product_prunes_the_bootstrap_and_the_destination_store` and
+  `the_prune_runs_before_the_snapshot`; moving the prune call after the
+  reconcile's snapshot fails **seven**, among them
+  `the_prune_runs_before_the_snapshot`; collapsing the retention window to
+  zero fails **seven**, among them
+  `a_record_inside_the_window_survives_the_prune`; and dropping the
+  destination-store prune count fails **five**, among them
+  `every_prune_must_be_counted`. The tree was restored byte-for-byte after
+  each control.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero** (99 surfaces, 93 experimental,
+  5 deferred, 1 ready); `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+**What Plan 507 does not close.** The **floodfill-exhaustion consequence**:
+pruning a stale floodfill can leave the router with no lookup target.
+Protecting floodfills would mean retaining records the router would refuse to
+accept — the exact inconsistency this plan removes — so the consequence is
+recorded, not designed away. The **destination store's quota values** are
+unchanged (4 096 records and 4 MiB by default); the plan changes what
+happens *at* the quota, not the quota. The **peer-profile store's age
+policy** is out of scope: it already evicts to make room and self-corrects.
+Plan 503's **lookup-target API-version gate** stays open. Plan 491 F2 and F4,
+Plan 490 Medium #3, Plan 502 M1 and Plan 487 F3's destination-inbound half
+stay open. **No stock-peer evidence is claimed**: whether an ordinary public
+router's peer set survives a 24-hour retention window is **unproven**, and
+the external lanes stay open until Plan 493's authorized topology exists.
+
+Evidence: `crates/i2pr-daemon/src/peer_reconcile.rs`,
+`crates/i2pr-daemon/src/bootstrap.rs`,
+`crates/i2pr-daemon/src/destination_tunnels.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-netdb/src/store.rs`,
+`crates/i2pr-daemon/tests/netdb_retention_feasibility.rs`,
+`crates/i2pr-daemon/tests/netdb_retention_boundary.rs`, and
+`crates/i2pr-daemon/tests/netdb_retention_live.rs`. The plan of record is
+`plans/implementation/network-participation/507-netdb-retention-policy.md`;
+the closure record is `plans/closure/network-participation/507-status.md`.
+
 ## Outbound proxy secret owner (Plan 341)
 
 Plan 327 was blocked on a credential it could not produce. The inbound

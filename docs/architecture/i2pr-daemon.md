@@ -164,7 +164,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/bootstrap.rs` | 855 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
+| `src/bootstrap.rs` | 877 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
 
 > `bootstrap_daemon` itself lives in `src/lib.rs:4619`, not in `bootstrap.rs` — it is the
 > composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
@@ -190,8 +190,8 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/exploratory_build.rs` | 2 201 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/exploratory_driver.rs` | 1 778 | **Plan 505** exploratory build driver: the router names a peer through Plan 491's version-gated selection, builds a one-hop exploratory tunnel toward it through the EXISTING `rebuild_exploratory` path, and records exactly one peer-level observation per terminal outcome -- a local condition produces none, so the router never blames a peer for a fault of its own | `PeerBuildIdentity`, `PeerMaterialError`, `PeerBuildIdentityResolver`, `ProfileStorePeerResolver`, `PeerObservation`, `observation_for_outcome`, `ExploratoryDriverCounters`, `ExploratoryDriverAction`, `SelectedPeer`, `ExploratoryDriverState`, `ExploratoryDriver` |
-| `src/peer_reconcile.rs` | 787 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS` |
-| `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
+| `src/peer_reconcile.rs` | 933 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS`, `RETENTION_WINDOW_MS` |
+| `src/destination_tunnels.rs` | 2 152 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
 | `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502) | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_composition.rs` | 668 | **Plan 502** M11 transit **product composition**: the derivation of the admission policy, hop material and participation binding from the normalized configuration, the owner's construction behind the operator's default-off `[transit] participation` opt-in, the inbound dispatch that makes the whole owner/no-owner choice internally, and the bounded peer-index reconcile against the live session set | `TransitCompositionInputs`, `TransitAdmissionDerivation`, `TransitCompositionError`, `derive_admission_policy`, `build_transit_owner`, `compose_transit_owner`, `dispatch_transit_inbound`, `reconcile_transit_peers` |
@@ -403,7 +403,7 @@ under Key contracts for the lifecycle detail.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
-| `src/service_product.rs` | 8 830 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2040`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_product.rs` | 9 523 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2040`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
 | `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
@@ -1914,6 +1914,93 @@ Plan 503's lookup-target API-version gate all stay open. **No stock-peer
 evidence is claimed**: whether an ordinary public router sends unsolicited
 stores this router will accept is **unproven**.
 
+### The NetDB retention policy (Plan 507, `src/peer_reconcile.rs`)
+
+Plan 506 closed the **population** the router learns. Plan 507 closes the
+**shelf life** of what it learned.
+
+**The gap.** `RouterInfoStore::prune(now, max_age_ms)` -- the tree's own
+explicit prune, the one Plan 103 §3.4 preferred over silent eviction -- had
+**exactly one caller**: its own unit test at
+`crates/i2pr-netdb/src/store.rs`. No production path pruned. The store
+**refuses** at its quota and **never evicts**, so a NetDB that filled up
+refused every new peer, permanently, and kept records the router's own
+validator would refuse to accept today: the router refused a RouterInfo
+older than `DEFAULT_MAX_AGE` (24 h) at validation and then retained one
+indefinitely. The acceptance rule and the retention rule disagreed.
+
+**The retention window is the router's own acceptance window.**
+`peer_reconcile::RETENTION_WINDOW_MS` is derived from
+`i2pr_netdb::ValidationPolicy::default_const().max_age` through a `const
+fn`, so the router retains exactly what it accepts and the constant cannot
+drift from the policy without a compile error. A second value would be a
+second source of truth, which is the defect this plan removes. There is
+**no new configuration key**: `config.rs` is untouched, and the static guard
+refuses a `retention` or `max_age` key there.
+
+**The prune rides the reconcile's existing cadence.** It is folded into
+Plan 506's `PeerReconcile::run`, so the prune and the reconcile can never
+drift apart in time. The router gains no second knob, no second task and no
+second timer.
+
+**The order is prune the bootstrap, prune the destination store, snapshot,
+insert, learn.** The prune runs **before** the reconcile's snapshot, so a
+record the prune removed is never carried into the destination store. The
+prune calls the tree's own `RouterInfoStore::prune` through a bounded
+method on `Bootstrap` and on `DestinationTunnelCoordinator`;
+**`i2pr-netdb` is not changed** -- the plan adds a *caller*, not a
+mechanism.
+
+**The locks are one at a time and never nested.** The bootstrap's lock is
+taken and released, then the destination coordinator's lock is tried and
+released, and the step takes **no await at all**, so no lock is ever held
+across an await. The destination store's lock is **tried, never waited
+for**: a store another task is using is left alone for that pass, the
+condition is **counted** under the stable reason label `prune-unavailable`,
+and the reconcile still runs. The store turns over on the next pass.
+
+**Every prune is counted.** `pruned-bootstrap`, `pruned-destination` and
+`prune-unavailable` carry counts and stable reason labels only -- no peer,
+address, key or payload -- and they ride the **same** inspection seam Plan
+506 established, so an unpublished or poisoned slot stays a **gap**, never a
+fabricated zero.
+
+**Three things the prune deliberately does not do.** It does not prune the
+**peer-profile store**, which has its own eviction policy and self-corrects
+through the observation tiers. It does not reach the router's **own
+RouterInfo**, which lives beside the store rather than inside it. And it
+does not **select**: it removes peer *records*, so Plan 491's version gate
+stays at selection.
+
+**The controls are not vacuous, and that is measured.** Four mutations of
+the real tree, each applied, run against the real lanes, and reverted:
+removing the prune call from `fn run` fails nine tests; moving the prune
+call after the reconcile's snapshot fails seven; collapsing the retention
+window to zero fails seven; and dropping the destination-store prune count
+fails five. The tree was restored byte-for-byte after each control. The
+WP1 feasibility artefact carries two more controls of its own, recorded in
+its module comment.
+
+**The consequence of the policy is recorded, not designed away.** Pruning a
+stale floodfill can leave the router with no lookup target. Protecting
+floodfills would mean retaining records the router would refuse to accept
+-- the exact inconsistency this plan removes.
+
+**What Plan 507 does not close.** The destination store's **quota values**
+are unchanged (4 096 records and 4 MiB by default); the plan changes what
+happens *at* the quota, not the quota. The **lookup-target API-version
+gate** (Plan 503) stays open: the specification's table constrains neither a
+lookup target nor a DSM target beyond the two gates already in place, so
+the floor there is a product decision and not a derived one. Plan 491 F2 and
+F4, Plan 490 Medium #3, Plan 502 M1 and Plan 487 F3's destination-inbound
+half stay open. **No stock-peer evidence is claimed.**
+
+**A documentation drift is recorded, not fixed.** The module table's
+per-file line counts above are stale for 40 of the 63 rows that carry one.
+Plan 507 updated the four rows it changed and left the rest alone: the
+drift is a separate concern with its own plan-of-record, and correcting
+thirty-six unrelated rows here would bury the change.
+
 ### Transit participation posture (Plan 492, `src/transit_participation.rs`)
 
 Plan 492 added the **operator-opted posture** that the M11 transit machinery
@@ -2378,12 +2465,12 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**106 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+**108 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
 modules (notably `src/lib.rs:4890`, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 
-The area inventory below names **67** of the 106 files. The remaining 39 were
+The area inventory below names **69** of the 108 files. The remaining 39 were
 added by later plans and are not yet assigned an area; the inventory is not
 inflated to hide that.
 
@@ -2392,7 +2479,7 @@ inflated to hide that.
 | Area | Count | Representative files |
 | --- | --- | --- |
 | CLI | 1 | `cli.rs` |
-| NetDB | 9 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates, `peer_reconcile_boundary.rs` — the Plan 506 static guard: the reconcile's lock order, its canonical write APIs, its bounded cadence, the single unsolicited-store ingest and the version gate at selection, `peer_reconcile_live.rs` — the Plan 506 out-of-crate lane: a peer that arrives through the production unsolicited-store path becomes known to both build-with stores after one reconcile |
+| NetDB | 9 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates, `peer_reconcile_boundary.rs` — the Plan 506 static guard: the reconcile's lock order, its canonical write APIs, its bounded cadence, the single unsolicited-store ingest and the version gate at selection, `peer_reconcile_live.rs` — the Plan 506 out-of-crate lane: a peer that arrives through the production unsolicited-store path becomes known to both build-with stores after one reconcile, `netdb_retention_feasibility.rs` — the Plan 507 feasibility artefact: a store at its quota refuses a new peer and accepts it after a prune, `netdb_retention_boundary.rs` — the Plan 507 static guard: the retention window is the router's own acceptance window, the prune is the tree's own explicit prune, the ordering is prune then snapshot, the locks are one at a time, every prune is counted and no configuration key appears, `netdb_retention_live.rs` — the Plan 507 out-of-crate lane: the product prunes both live stores, a store at its quota turns over, a poisoned lock is counted and the router's own RouterInfo is never a victim |
 | Exploratory tunnels / build / liveness | 4 | `exploratory_build_unit.rs`, `exploratory_build_live.rs`, `exploratory_tunnel_external.rs` |
 | Destinations (M6) | 3 | `destination_tunnel_unit.rs`, `destination_tunnel_live.rs`, `destination_tunnel_external.rs` |
 | Streaming (M6) | 3 | `streaming_tunnel_unit.rs`, `streaming_tunnel_live.rs`, `streaming_tunnel_external.rs` |
