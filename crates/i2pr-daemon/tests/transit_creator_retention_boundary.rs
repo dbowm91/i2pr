@@ -4,11 +4,18 @@
 //! The guard asserts the **structural** shape of the retention policy: the
 //! window is derived from the coordinator's own bounds, every installed
 //! fact carries an expiry, the expiry is computed in the safe direction,
-//! every use site consults the expiry, the facts are maps rather than
-//! insert-only sets, the sweep drops the expired facts, the production
-//! wiring installs and sweeps on the tick it already had, no configuration
-//! key appears, the owner gains no task and no timer, and the counts are
-//! the observability seam.
+//! every use site consults the expiry **through one wrapper**, the facts
+//! are held by that wrapper rather than by insert-only sets, the sweep
+//! drops the expired facts, the production wiring installs and sweeps on
+//! the tick it already had, no configuration key appears, the owner gains
+//! no task and no timer, and the counts are the observability seam.
+//!
+//! The wrapper is the point of the design. The membership test is
+//! clock-aware, so a use site cannot consult a fact without consulting its
+//! expiry, and the test is spelled `contains`, so Plan 492's dispatch-order
+//! guard -- which anchors on the literal `creator_builds.contains` -- still
+//! names exactly the check it names today, and that guard stays
+//! byte-identical.
 //!
 //! Properties of the guard:
 //!
@@ -215,6 +222,19 @@ fn code_view(source: &str) -> String {
     strip_cfg_test_blocks(&strip_comments(source))
 }
 
+/// Returns the source text with every whitespace character removed.
+///
+/// The rules that name a **receiver and a method** -- `creator_data.contains`
+/// -- must not depend on the formatter's line breaking, so the receiver and
+/// the method are matched in the compacted text. The compaction cannot
+/// manufacture a call that is not there: the tokens it matches carry their
+/// own open parenthesis.
+fn compact(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 /// Returns the byte range of the brace-balanced block that opens at or after
 /// `start`, as `(open, close)`; `close` is one past the closing brace.
 ///
@@ -379,19 +399,6 @@ fn check_body_contains(source: &str, name: &str, token: &str) -> Option<String> 
     }
 }
 
-/// The body of `fn <name>` must not contain `token`.
-fn check_body_avoids(source: &str, name: &str, token: &str) -> Option<String> {
-    let code = code_view(source);
-    let Some(body) = function_body(&code, name) else {
-        return Some(format!("`fn {name}` must exist in the production surface"));
-    };
-    if body.contains(token) {
-        Some(format!("`fn {name}` must not contain `{token}`"))
-    } else {
-        None
-    }
-}
-
 /// The production code view must not contain `token`.
 fn check_code_avoids(source: &str, token: &str) -> Option<String> {
     let code = code_view(source);
@@ -510,42 +517,68 @@ fn rule_the_expiry_is_computed_in_the_safe_direction(tree: &Landed) -> Option<St
     None
 }
 
-/// Rule 4 — every use site consults the expiry.
+/// Rule 4 — every use site consults the expiry **through the wrapper**.
 ///
-/// A use site that consults the set's membership rather than the fact's
-/// expiry would honour an expired fact.
+/// A use site that reaches the fact through a raw lookup rather than the
+/// wrapper's clock-aware membership test would honour an expired fact. The
+/// receiver and the method are matched in the compacted body, so the rule
+/// does not depend on the formatter's line breaking, and the call must
+/// carry a clock.
 fn rule_every_use_site_consults_the_expiry(tree: &Landed) -> Option<String> {
+    let code = code_view(&tree.owner);
     for (name, set) in [
         ("dispatch_router_garlic", "creator_builds"),
         ("dispatch_build_body", "creator_builds"),
         ("handle_tunnel_data_inner", "creator_data"),
         ("handle_gateway_inner", "creator_gateways"),
     ] {
-        if let Some(violation) = check_body_contains(&tree.owner, name, set) {
-            return Some(violation);
+        let Some(body) = function_body(&code, name) else {
+            return Some(format!("`fn {name}` must exist in the production surface"));
+        };
+        let flat = compact(body);
+        let membership = format!("{set}.contains(");
+        let membership_ms = format!("{set}.contains_ms(");
+        if !flat.contains(&membership) && !flat.contains(&membership_ms) {
+            return Some(format!(
+                "`fn {name}` must consult `{set}` through the wrapper's clock-aware membership test"
+            ));
         }
-        if let Some(violation) = check_body_contains(&tree.owner, name, "expiry") {
-            return Some(violation);
+        if flat.contains(&format!("{set}.get(")) {
+            return Some(format!(
+                "`fn {name}` must not reach `{set}` through a raw lookup"
+            ));
         }
-        if let Some(violation) = check_body_avoids(&tree.owner, name, "contains(") {
-            return Some(violation);
+        if !flat.contains("now_seconds") && !flat.contains("now_ms") {
+            return Some(format!(
+                "`fn {name}` must consult the creator facts with a clock"
+            ));
         }
     }
     None
 }
 
-/// Rule 5 — the facts are maps with an expiry, not insert-only sets.
-fn rule_the_facts_are_maps_with_an_expiry(tree: &Landed) -> Option<String> {
+/// Rule 5 — the facts are held by the wrapper, not by a bare map and not by
+/// an insert-only set.
+///
+/// A bare `BTreeMap` would let a use site reach the fact without its
+/// expiry, and an insert-only set would have no expiry at all.
+fn rule_the_facts_are_held_by_the_wrapper(tree: &Landed) -> Option<String> {
     for token in [
-        "creator_builds: BTreeMap<",
-        "creator_data: BTreeMap<",
-        "creator_gateways: BTreeMap<",
+        "creator_builds: CreatorFacts<",
+        "creator_data: CreatorFacts<",
+        "creator_gateways: CreatorFacts<",
     ] {
         if let Some(violation) = check_struct_contains(&tree.owner, "TransitLiveOwner", token) {
             return Some(violation);
         }
     }
-    for token in ["BTreeSet<(i2pr_proto::Hash, u32)>", "BTreeSet<u32>"] {
+    for token in [
+        "creator_builds: BTreeMap<",
+        "creator_data: BTreeMap<",
+        "creator_gateways: BTreeMap<",
+        "BTreeSet<(i2pr_proto::Hash, u32)>",
+        "BTreeSet<u32>",
+    ] {
         if let Some(violation) = check_code_avoids(&tree.owner, token) {
             return Some(violation);
         }
@@ -554,18 +587,26 @@ fn rule_the_facts_are_maps_with_an_expiry(tree: &Landed) -> Option<String> {
 }
 
 /// Rule 6 — the sweep drops the expired facts.
+///
+/// The sweep rides the tick that installs them, and it reclaims through the
+/// wrapper's own `retain_live`, so the comparison that decides liveness is
+/// the same comparison the use sites make.
 fn rule_the_sweep_drops_the_expired_facts(tree: &Landed) -> Option<String> {
     for token in [
-        "retain(",
+        "retain_live(",
         "creator_builds",
         "creator_data",
         "creator_gateways",
         "now_ms / 1_000",
-        "> now_seconds",
     ] {
         if let Some(violation) =
             check_body_contains(&tree.owner, "expire_creator_correlation", token)
         {
+            return Some(violation);
+        }
+    }
+    for token in ["retain(", "expiry", "> now_seconds"] {
+        if let Some(violation) = check_body_contains(&tree.owner, "retain_live", token) {
             return Some(violation);
         }
     }
@@ -623,6 +664,45 @@ fn rule_the_counts_are_the_observability_seam(tree: &Landed) -> Option<String> {
     check_struct_contains(&tree.owner, "CreatorCorrelationCounts", "pub builds: usize")
 }
 
+/// Rule 11 — the wrapper owns the expiry semantics in one place.
+///
+/// The membership test consults the fact's expiry, the millisecond test
+/// floors its clock, and the wrapper's `retain_live` compares against the
+/// same boundary. The owner's use sites keep the literal
+/// `creator_builds.contains`, so Plan 492's dispatch-order guard still has
+/// the anchor it has today.
+fn rule_the_wrapper_owns_the_expiry_semantics(tree: &Landed) -> Option<String> {
+    if let Some(violation) =
+        check_struct_contains(&tree.owner, "CreatorFacts", "facts: BTreeMap<K, u64>")
+    {
+        return Some(violation);
+    }
+    for token in ["expiry_seconds", "self.facts.insert(key, expiry_seconds)"] {
+        if let Some(violation) = check_body_contains(&tree.owner, "insert", token) {
+            return Some(violation);
+        }
+    }
+    for token in ["expiry", "now_seconds", "get(key)"] {
+        if let Some(violation) = check_body_contains(&tree.owner, "contains", token) {
+            return Some(violation);
+        }
+    }
+    for token in ["now_ms / 1_000", "self.contains("] {
+        if let Some(violation) = check_body_contains(&tree.owner, "contains_ms", token) {
+            return Some(violation);
+        }
+    }
+    // Plan 492's dispatch-order guard anchors on the literal
+    // `creator_builds.contains` inside `fn dispatch_build_body`. The rule
+    // asserts the same anchor, so a change that would break that guard is
+    // reported here first.
+    check_body_contains(
+        &tree.owner,
+        "dispatch_build_body",
+        "creator_builds.contains",
+    )
+}
+
 /// Every rule, as a list of violations.
 fn check_all(tree: &Landed) -> Vec<String> {
     let mut violations = Vec::new();
@@ -631,12 +711,13 @@ fn check_all(tree: &Landed) -> Vec<String> {
         ("rule 2", rule_every_installed_fact_carries_an_expiry),
         ("rule 3", rule_the_expiry_is_computed_in_the_safe_direction),
         ("rule 4", rule_every_use_site_consults_the_expiry),
-        ("rule 5", rule_the_facts_are_maps_with_an_expiry),
+        ("rule 5", rule_the_facts_are_held_by_the_wrapper),
         ("rule 6", rule_the_sweep_drops_the_expired_facts),
         ("rule 7", rule_the_wiring_installs_and_sweeps),
         ("rule 8", rule_no_new_configuration_key),
         ("rule 9", rule_the_owner_gains_no_task_or_timer),
         ("rule 10", rule_the_counts_are_the_observability_seam),
+        ("rule 11", rule_the_wrapper_owns_the_expiry_semantics),
     ];
     for (label, rule) in rules {
         if let Some(violation) = rule(tree) {
@@ -783,16 +864,16 @@ fn every_use_site_must_consult_the_expiry() {
     assert_eq!(rule_every_use_site_consults_the_expiry(&landed()), None);
 }
 
-/// Rule 4's inverted probe: a use site that consults membership rather than
-/// the expiry must fire the rule.
+/// Rule 4's inverted probe: a use site that reaches the fact through a raw
+/// lookup must fire the rule.
 #[test]
 fn the_use_site_rule_fires_when_the_expiry_is_not_consulted() {
     let tree = landed();
     let mutated = Landed {
         owner: replace_occurrence(
             &tree.owner,
-            ".is_some_and(|expiry| *expiry > now_ms / 1_000)",
-            ".is_some()",
+            "self.creator_data.contains_ms(&tunnel_id, now_ms)",
+            "self.creator_data.get(&tunnel_id).is_some()",
             0,
         ),
         ..tree
@@ -806,8 +887,8 @@ fn the_use_site_rule_fires_when_the_expiry_is_not_consulted() {
 
 /// Rule 5 — the facts are maps with an expiry, not insert-only sets.
 #[test]
-fn the_facts_must_be_maps_with_an_expiry() {
-    assert_eq!(rule_the_facts_are_maps_with_an_expiry(&landed()), None);
+fn the_facts_must_be_held_by_the_wrapper() {
+    assert_eq!(rule_the_facts_are_held_by_the_wrapper(&landed()), None);
 }
 
 /// Rule 5's inverted probe: turning a fact back into an insert-only set must
@@ -818,7 +899,7 @@ fn the_map_rule_fires_when_a_fact_becomes_a_set() {
     let mutated = Landed {
         owner: replace_occurrence(
             &tree.owner,
-            "creator_data: BTreeMap<u32, u64>",
+            "creator_data: CreatorFacts<u32>",
             "creator_data: BTreeSet<u32>",
             0,
         ),
@@ -826,7 +907,7 @@ fn the_map_rule_fires_when_a_fact_becomes_a_set() {
     };
     assert!(mutated.owner != tree.owner, "the mutation must apply");
     assert!(
-        rule_the_facts_are_maps_with_an_expiry(&mutated).is_some(),
+        rule_the_facts_are_held_by_the_wrapper(&mutated).is_some(),
         "an insert-only set must be reported"
     );
 }
@@ -847,24 +928,38 @@ fn the_sweep_rule_fires_when_the_sweep_retains_everything() {
     // still retains an expired fact.
     let mut owner = tree.owner.clone();
     for _ in 0..3 {
-        owner = replace_occurrence(
-            &owner,
-            "retain(|_, expiry| *expiry > now_seconds)",
-            "retain(|_, expiry| *expiry > 0)",
-            0,
-        );
+        owner = replace_occurrence(&owner, ".retain_live(now_seconds);", "", 0);
     }
     let mutated = Landed { owner, ..tree };
     assert!(mutated.owner != tree.owner, "the mutation must apply");
     assert!(
-        !mutated
-            .owner
-            .contains("retain(|_, expiry| *expiry > now_seconds)"),
-        "the mutation must remove every clock comparison"
+        !mutated.owner.contains(".retain_live(now_seconds);"),
+        "the mutation must remove every sweep"
     );
     assert!(
         rule_the_sweep_drops_the_expired_facts(&mutated).is_some(),
         "a sweep that drops nothing must be reported"
+    );
+}
+
+/// Rule 6's second inverted probe: a `retain_live` that keeps every fact must
+/// fire the rule.
+#[test]
+fn the_sweep_rule_fires_when_the_wrapper_keeps_every_fact() {
+    let tree = landed();
+    let mutated = Landed {
+        owner: replace_occurrence(
+            &tree.owner,
+            "self.facts.retain(|_, expiry| *expiry > now_seconds);",
+            "self.facts.retain(|_, _| true);",
+            0,
+        ),
+        ..tree
+    };
+    assert!(mutated.owner != tree.owner, "the mutation must apply");
+    assert!(
+        rule_the_sweep_drops_the_expired_facts(&mutated).is_some(),
+        "a sweep that keeps every fact must be reported"
     );
 }
 
@@ -971,6 +1066,64 @@ fn the_counts_rule_fires_when_a_count_is_dropped() {
     );
 }
 
+/// Rule 11 — the wrapper owns the expiry semantics in one place.
+#[test]
+fn the_wrapper_must_own_the_expiry_semantics() {
+    assert_eq!(rule_the_wrapper_owns_the_expiry_semantics(&landed()), None);
+}
+
+/// Rule 11's inverted probe: a membership test that ignores the expiry must
+/// fire the rule.
+#[test]
+fn the_wrapper_rule_fires_when_the_membership_test_ignores_the_expiry() {
+    let tree = landed();
+    let mutated = Landed {
+        owner: replace_occurrence(
+            &tree.owner,
+            ".is_some_and(|expiry| *expiry > now_seconds)",
+            ".is_some()",
+            0,
+        ),
+        ..tree
+    };
+    assert!(mutated.owner != tree.owner, "the mutation must apply");
+    assert!(
+        rule_the_wrapper_owns_the_expiry_semantics(&mutated).is_some(),
+        "a membership test that ignores the expiry must be reported"
+    );
+}
+
+/// Rule 11's second inverted probe: dropping the literal that Plan 492's
+/// dispatch-order guard anchors on must fire the rule.
+#[test]
+fn the_wrapper_rule_fires_when_the_plan_492_anchor_is_dropped() {
+    let tree = landed();
+    // Every use site must lose the literal: the rule asserts that the
+    // anchor survives, and a probe that dropped only one of two occurrences
+    // would leave the rule passing.
+    let mut owner = tree.owner.clone();
+    for _ in 0..2 {
+        owner = replace_occurrence(
+            &owner,
+            "creator_builds.contains(&creator_key, now_seconds)",
+            "creator_builds.get(&creator_key).is_some()",
+            0,
+        );
+    }
+    let mutated = Landed { owner, ..tree };
+    assert!(mutated.owner != tree.owner, "the mutation must apply");
+    assert!(
+        !mutated
+            .owner
+            .contains("creator_builds.contains(&creator_key, now_seconds)"),
+        "the mutation must remove every occurrence of the anchor"
+    );
+    assert!(
+        rule_the_wrapper_owns_the_expiry_semantics(&mutated).is_some(),
+        "a dropped Plan 492 anchor must be reported"
+    );
+}
+
 /// The rule set is complete: every rule is reachable and the whole tree
 /// holds.
 #[test]
@@ -981,14 +1134,15 @@ fn every_rule_is_reachable_and_the_tree_holds() {
         ("rule 2", rule_every_installed_fact_carries_an_expiry),
         ("rule 3", rule_the_expiry_is_computed_in_the_safe_direction),
         ("rule 4", rule_every_use_site_consults_the_expiry),
-        ("rule 5", rule_the_facts_are_maps_with_an_expiry),
+        ("rule 5", rule_the_facts_are_held_by_the_wrapper),
         ("rule 6", rule_the_sweep_drops_the_expired_facts),
         ("rule 7", rule_the_wiring_installs_and_sweeps),
         ("rule 8", rule_no_new_configuration_key),
         ("rule 9", rule_the_owner_gains_no_task_or_timer),
         ("rule 10", rule_the_counts_are_the_observability_seam),
+        ("rule 11", rule_the_wrapper_owns_the_expiry_semantics),
     ];
-    assert_eq!(rules.len(), 10);
+    assert_eq!(rules.len(), 11);
     for (label, rule) in rules {
         assert_eq!(rule(&tree), None, "{label} must hold on the landed tree");
     }

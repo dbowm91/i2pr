@@ -530,6 +530,77 @@ pub struct CreatorCorrelationCounts {
     pub gateways: usize,
 }
 
+/// Plan 508: the creator-correlated facts the live owner must bypass,
+/// with their expiries.
+///
+/// The facts are bounded by their expiry, so membership is a question about
+/// **now** and not about the set. The wrapper owns that question once, so
+/// a use site cannot consult a fact without consulting its expiry.
+///
+/// The membership test is spelled `contains`, so Plan 492's dispatch-order
+/// guard -- whose rule is that the creator correlation check precedes the
+/// participation posture and the transit dispatch -- still names exactly
+/// the check it names today, and that guard is left byte-identical.
+#[derive(Debug)]
+struct CreatorFacts<K: Ord> {
+    /// The recorded facts and their expiry, in seconds.
+    facts: BTreeMap<K, u64>,
+}
+
+impl<K: Ord> CreatorFacts<K> {
+    /// Creates an empty set of facts.
+    fn new() -> Self {
+        Self {
+            facts: BTreeMap::new(),
+        }
+    }
+
+    /// Records a fact with its expiry, in seconds.
+    fn insert(&mut self, key: K, expiry_seconds: u64) {
+        self.facts.insert(key, expiry_seconds);
+    }
+
+    /// Returns whether the fact is recorded **and still live** at
+    /// `now_seconds`.
+    ///
+    /// Plan 508: the comparison floors the clock, so a fact is honoured for
+    /// at least as long as its expiry allows. That is the safe direction:
+    /// the bypass is a decline, and a fact kept one second too long only
+    /// makes the owner decline traffic it could have relayed.
+    fn contains(&self, key: &K, now_seconds: u64) -> bool {
+        self.facts
+            .get(key)
+            .is_some_and(|expiry| *expiry > now_seconds)
+    }
+
+    /// Returns whether the fact is recorded and still live at `now_ms`.
+    ///
+    /// Plan 508: the millisecond clock is floored to seconds here, so the
+    /// comparison the use sites make is always in the **safe** direction: a
+    /// fact is honoured for at least as long as its expiry allows. The
+    /// bypass is a decline, and a fact kept one second too long only makes
+    /// the owner decline traffic it could have relayed.
+    fn contains_ms(&self, key: &K, now_ms: u64) -> bool {
+        self.contains(key, now_ms / 1_000)
+    }
+
+    /// Drops the facts that have expired.
+    fn retain_live(&mut self, now_seconds: u64) {
+        self.facts.retain(|_, expiry| *expiry > now_seconds);
+    }
+
+    /// The number of recorded facts.
+    fn len(&self) -> usize {
+        self.facts.len()
+    }
+}
+
+impl<K: Ord> Default for CreatorFacts<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The actual live authenticated SSU2/router-I2NP inbound owner for
 /// controlled transit (Plan 254 work packages C–G).
 ///
@@ -549,9 +620,9 @@ pub struct TransitLiveOwner<R> {
     rng: R,
     delivery: RouterDeliveryService,
     cancellation: CancellationToken,
-    creator_builds: BTreeMap<(i2pr_proto::Hash, u32), u64>,
-    creator_data: BTreeMap<u32, u64>,
-    creator_gateways: BTreeMap<u32, u64>,
+    creator_builds: CreatorFacts<(i2pr_proto::Hash, u32)>,
+    creator_data: CreatorFacts<u32>,
+    creator_gateways: CreatorFacts<u32>,
     local_sink: Option<TransitLocalSink>,
     /// Plan 492: the operator-opted participation posture the transit path
     /// is admitted against.
@@ -590,9 +661,9 @@ where
             rng,
             delivery,
             cancellation,
-            creator_builds: BTreeMap::new(),
-            creator_data: BTreeMap::new(),
-            creator_gateways: BTreeMap::new(),
+            creator_builds: CreatorFacts::new(),
+            creator_data: CreatorFacts::new(),
+            creator_gateways: CreatorFacts::new(),
             local_sink: None,
             participation: TransitParticipationBinding::disabled(),
         }
@@ -694,11 +765,9 @@ where
     /// relayed.
     pub fn expire_creator_correlation(&mut self, now_ms: u64) {
         let now_seconds = now_ms / 1_000;
-        self.creator_builds
-            .retain(|_, expiry| *expiry > now_seconds);
-        self.creator_data.retain(|_, expiry| *expiry > now_seconds);
-        self.creator_gateways
-            .retain(|_, expiry| *expiry > now_seconds);
+        self.creator_builds.retain_live(now_seconds);
+        self.creator_data.retain_live(now_seconds);
+        self.creator_gateways.retain_live(now_seconds);
     }
 
     /// Returns the number of creator-correlated facts the owner holds.
@@ -866,11 +935,8 @@ where
         // Creator correlation uses the inner build message id the
         // service recovered; a match means our own coordinator
         // originated this build and transit must not claim it.
-        if self
-            .creator_builds
-            .get(&(peer.hash(), inner_msgid))
-            .is_some_and(|expiry| *expiry > now_seconds)
-        {
+        let creator_key = (peer.hash(), inner_msgid);
+        if self.creator_builds.contains(&creator_key, now_seconds) {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
@@ -1023,11 +1089,8 @@ where
         message_id: u32,
         now_seconds: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self
-            .creator_builds
-            .get(&(peer.hash(), message_id))
-            .is_some_and(|expiry| *expiry > now_seconds)
-        {
+        let creator_key = (peer.hash(), message_id);
+        if self.creator_builds.contains(&creator_key, now_seconds) {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         if !self.is_enabled() {
@@ -1107,11 +1170,7 @@ where
         // Ownership order: creator/service first, transit second,
         // unknown fail closed. The probe is consulted before any
         // transit state mutation.
-        if self
-            .creator_data
-            .get(&tunnel_id)
-            .is_some_and(|expiry| *expiry > now_ms / 1_000)
-        {
+        if self.creator_data.contains_ms(&tunnel_id, now_ms) {
             return Ok(LiveInboundOutcome::Data(
                 TransitDataDisposition::CreatorOwned,
             ));
@@ -1249,11 +1308,7 @@ where
         peer: PeerId,
         now_ms: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self
-            .creator_gateways
-            .get(&parts.tunnel_id)
-            .is_some_and(|expiry| *expiry > now_ms / 1_000)
-        {
+        if self.creator_gateways.contains_ms(&parts.tunnel_id, now_ms) {
             return Ok(LiveInboundOutcome::Gateway(
                 LiveGatewayOutcome::CreatorOwned,
             ));

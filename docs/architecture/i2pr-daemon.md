@@ -193,7 +193,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/peer_reconcile.rs` | 933 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS`, `RETENTION_WINDOW_MS` |
 | `src/destination_tunnels.rs` | 2 152 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
-| `src/transit_owner.rs` | 1 616 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502) | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_owner.rs` | 1 671 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502). Plan 508 adds the `CreatorFacts` wrapper that holds the creator-correlated facts with their expiries | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_composition.rs` | 668 | **Plan 502** M11 transit **product composition**: the derivation of the admission policy, hop material and participation binding from the normalized configuration, the owner's construction behind the operator's default-off `[transit] participation` opt-in, the inbound dispatch that makes the whole owner/no-owner choice internally, and the bounded peer-index reconcile against the live session set | `TransitCompositionInputs`, `TransitAdmissionDerivation`, `TransitCompositionError`, `derive_admission_policy`, `build_transit_owner`, `compose_transit_owner`, `dispatch_transit_inbound`, `reconcile_transit_peers` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
@@ -1950,6 +1950,24 @@ milliseconds. The window is stored in seconds with a **ceiling** at
 install time and a **floor** at comparison time, so a fact is never
 declined before it has expired.
 
+**The expiry is owned by one wrapper.** The three fact sets are held by
+a `CreatorFacts<K>` wrapper whose membership test is **clock-aware**, so a
+use site cannot reach a fact without reaching its expiry: the comparison
+lives in exactly one place, and the use sites call `contains` or
+`contains_ms` rather than re-implementing the test. The wrapper also owns
+the millisecond-to-second floor, so the two use sites that hold
+milliseconds cannot round in the unsafe direction by accident.
+
+**The wrapper is spelled `contains` for a reason.** Plan 492's
+dispatch-order guard anchors on the literal `creator_builds.contains`
+inside `fn dispatch_build_body`, so that guard and the shape of the
+creator-correlation check are coupled in the source. The first Plan 508
+implementation replaced the check with a raw map lookup and broke that
+anchor; the wrapper keeps the literal, so **Plan 492's guard is left
+byte-identical** and stays green. Plan 508's own guard asserts the same
+anchor (rule 11), so a change that would break Plan 492's guard is
+reported by Plan 508's guard first, with the reason named.
+
 **The coordinator's own fact set is untouched.** It was already bounded
 and already expired; only the owner's **copy** was unbounded.
 
@@ -1960,6 +1978,14 @@ nothing, a window that collapses to zero, and an install that drops the
 expiry. They fail six, eleven, eleven and eight tests respectively, and
 the tree was restored byte-for-byte after each. Two of them were found
 to be weaker than they looked and were fixed — see the closure record.
+
+**The closing floor found a real regression, and it was fixed in the
+design rather than in another plan's guard.** The first implementation
+replaced the creator-correlation check with a raw map lookup, which
+removed the literal Plan 492's dispatch-order guard anchors on, and the
+floor failed on Plan 492's guard. Two fixes were available: rewrite
+Plan 492's anchor, or make the replacement keep the anchor. The second
+was chosen, because another plan's guard is not this plan's to edit.
 
 **A documentation drift is recorded, not fixed.** The module table's
 per-file line counts above are stale for **33** of the 63 rows that carry
