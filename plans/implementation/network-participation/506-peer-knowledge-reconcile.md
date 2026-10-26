@@ -219,12 +219,23 @@ capacity**.
 
 | File | Change |
 | --- | --- |
-| `crates/i2pr-daemon/src/service_product.rs` | the product gains the bootstrap and peer-profile handles, a bounded reconcile, and the cadence gate |
+| `crates/i2pr-daemon/src/peer_reconcile.rs` | **new** — the reconcile, its bounded counters and its cadence gate |
+| `crates/i2pr-daemon/src/service_product.rs` | the product gains the bootstrap and peer-profile handles, the reconcile, and the cadence |
 | `crates/i2pr-daemon/src/lib.rs` | the composition hands the product its handles; the duplicate ingest is removed |
 | `crates/i2pr-daemon/src/i2pcontrol_inspection.rs` | the reconcile's counters are published, following the existing `publish_*` / `*()` pattern |
-| `crates/i2pr-daemon/src/config.rs` | the reconcile cadence, bounded on both sides, reusing the existing participation cadence rather than adding a second one |
 | `crates/i2pr-daemon/tests/peer_reconcile_boundary.rs` | **new** — the static guard |
 | `crates/i2pr-daemon/tests/peer_reconcile_live.rs` | **new** — the out-of-crate lane |
+
+**Correction, recorded when the code landed (2026-10-26).** The table above
+originally listed `crates/i2pr-daemon/src/config.rs` as a production change.
+It is **not**: the reconcile reuses the **existing**
+`netdb.participation_maintenance_period_ms` key, which the configuration
+parser already bounds to `[1 000 ms, 3 600 000 ms]`, so **no new key** is
+added and `config.rs` is untouched. The reconcile's own bound is the same
+range, and the composition root copies the value out of the configuration
+the way every other configuration value the `'static` service closure reads
+is copied. The table also gained the `peer_reconcile.rs` row, because the
+reconcile landed in its own module rather than inside `service_product.rs`.
 
 ## 7. Work packages
 
