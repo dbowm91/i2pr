@@ -85,7 +85,7 @@ therefore known to the bootstrap and to **nothing else**.
 
 `DatabaseStoreMessage` carries exactly **one** record
 (`crates/i2pr-proto/src/i2np/netdb.rs:150`). `DatabaseSearchReplyMessage`
-carries peer **hashes only** (`netdb.rs:223`). The production router runs
+carries peer **hashes only** (`crates/i2pr-proto/src/i2np/netdb.rs:223`). The production router runs
 **no** RouterInfo-kind lookup: the only `begin_lookup` caller is the
 never-constructed `NetDbTunnelCoordinator` (`netdb_tunnels.rs:466`, built only
 inside its own `#[cfg(test)]` block), and the production live lookup is a
