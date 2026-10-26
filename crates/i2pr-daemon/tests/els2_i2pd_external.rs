@@ -502,6 +502,11 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         // Plan 505: this lane does not enable the exploratory build
         // posture, so it owns no driver.
         exploratory_driver: None,
+        // Plan 506 — the integration lane owns no bootstrap store and
+        // no peer-profile handle, so its reconcile has no source.
+        bootstrap: None,
+        peer_profiles: None,
+        reconcile_period_ms: i2pr_daemon::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
     };
 
     let mut product = ServiceProduct::start(spec)

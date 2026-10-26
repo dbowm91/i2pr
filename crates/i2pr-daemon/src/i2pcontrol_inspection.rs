@@ -62,6 +62,15 @@ pub type LivenessCounterCell = std::sync::Mutex<crate::tunnel_liveness::Liveness
 pub type ExploratoryDriverCounterCell =
     std::sync::Mutex<crate::exploratory_driver::ExploratoryDriverCounters>;
 
+/// Plan 506 — the live peer-knowledge reconcile counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// peer-knowledge posture without polling the product. The counters are
+/// counts only: they name no peer, no address, no key and no payload.
+pub type PeerReconcileCounterCell = std::sync::Mutex<crate::peer_reconcile::PeerReconcileCounters>;
+
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
 
@@ -269,6 +278,10 @@ pub struct InspectionHandles {
     /// composition root (Plan 505). The product refreshes the cell on its
     /// tick; the counters are counts only and name no peer, address or key.
     exploratory_driver_live: Mutex<Option<Arc<ExploratoryDriverCounterCell>>>,
+    /// Live peer-knowledge reconcile counters, published by the
+    /// composition root (Plan 506). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address or key.
+    peer_reconcile_live: Mutex<Option<Arc<PeerReconcileCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -297,6 +310,7 @@ impl InspectionHandles {
             version_live: Mutex::new(None),
             liveness_live: Mutex::new(None),
             exploratory_driver_live: Mutex::new(None),
+            peer_reconcile_live: Mutex::new(None),
         }
     }
 
@@ -611,6 +625,39 @@ impl InspectionHandles {
         &self,
     ) -> Option<crate::exploratory_driver::ExploratoryDriverCounters> {
         let cell = self.exploratory_driver_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 506: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// peer-knowledge posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_peer_reconcile_counters(&self, cell: Arc<PeerReconcileCounterCell>) {
+        if let Ok(mut slot) = self.peer_reconcile_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published peer-knowledge reconcile counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn peer_reconcile_counters(&self) -> Option<Arc<PeerReconcileCounterCell>> {
+        self.peer_reconcile_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published peer-knowledge
+    /// reconcile counters.
+    ///
+    /// Plan 506: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn peer_reconcile_counters_snapshot(
+        &self,
+    ) -> Option<crate::peer_reconcile::PeerReconcileCounters> {
+        let cell = self.peer_reconcile_counters()?;
         cell.lock().ok().map(|counters| *counters)
     }
 

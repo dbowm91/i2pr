@@ -418,6 +418,30 @@ pub struct ServiceProductSpec {
     /// `[exploratory]` posture, so a router that has never opted in behaves
     /// exactly as it does today.
     pub exploratory_driver: Option<crate::exploratory_driver::ExploratoryDriver>,
+    /// Plan 506 — the daemon's live bootstrap store, when the composition
+    /// root built one.
+    ///
+    /// The reconcile snapshots the bootstrap's validated RouterInfos under
+    /// this handle's lock, so a peer the router accepts on a **live**
+    /// session becomes known to the stores the router builds with. `None`
+    /// means the composition has no bootstrap store, and the reconcile's
+    /// source is unavailable: the reconcile counts that and never fails.
+    pub bootstrap: Option<Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    /// Plan 506 — the daemon's live peer-profile handle, when the
+    /// composition root built one.
+    ///
+    /// The reconcile learns the bootstrap's validated RouterInfos into the
+    /// peer-profile store, so Plan 505's exploratory build driver selects
+    /// from a **live** population rather than the startup snapshot.
+    pub peer_profiles: Option<crate::netdb_participation::PeerParticipationHandle>,
+    /// Plan 506 — the cadence of the peer-knowledge reconcile, in
+    /// milliseconds.
+    ///
+    /// The composition root supplies the **existing** NetDB participation
+    /// maintenance period, so the reconcile shares one source of truth and
+    /// the router has no second cadence knob. The reconcile refuses an
+    /// out-of-range cadence at construction.
+    pub reconcile_period_ms: u64,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -591,6 +615,12 @@ mod normal_daemon_owner_tests {
             // not enable the exploratory build posture, so they own no
             // driver.
             exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
         };
         let product = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -670,6 +700,12 @@ mod normal_daemon_owner_tests {
             // not enable the exploratory build posture, so they own no
             // driver.
             exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
         };
         let result = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -751,6 +787,12 @@ mod normal_daemon_owner_tests {
             // not enable the exploratory build posture, so they own no
             // driver.
             exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
         };
         let router_infos = Vec::new();
         let mut product = ServiceProduct::start_over_existing_daemon(
@@ -1093,6 +1135,32 @@ impl From<crate::router_i2np::Ssu2ServiceError> for ServiceProductError {
     }
 }
 
+/// Plan 506 — builds the peer-knowledge reconcile over the three handles
+/// the product needs.
+///
+/// The reconcile is **one** bounded operation: it snapshots the
+/// bootstrap's validated RouterInfos under the bootstrap's lock, releases
+/// it, inserts the records into the destination store and learns them into
+/// the peer-profile store. An out-of-range cadence is a configuration
+/// error: the router does not run with a reconcile it cannot bound.
+///
+/// The production composition supplies the **existing** NetDB
+/// participation maintenance period, which the configuration parser has
+/// already bounded to the same range, so the refusal cannot fire on a
+/// configured router.
+fn build_peer_reconcile(
+    spec: &ServiceProductSpec,
+    destinations: &Arc<Mutex<DestinationTunnelCoordinator>>,
+) -> Result<crate::peer_reconcile::PeerReconcile, ServiceProductError> {
+    crate::peer_reconcile::PeerReconcile::new(
+        spec.bootstrap.clone(),
+        Arc::clone(destinations),
+        spec.peer_profiles.clone(),
+        spec.reconcile_period_ms,
+    )
+    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))
+}
+
 /// Inner composition state the helper owns but the driver never sees.
 struct ProductInner {
     coordinator: ExploratoryBuildCoordinator,
@@ -1116,6 +1184,16 @@ struct ProductInner {
     /// holds counts only.
     exploratory_driver_counters_cell:
         Arc<crate::i2pcontrol_inspection::ExploratoryDriverCounterCell>,
+    /// Plan 506 — the live peer-knowledge reconcile. It carries the
+    /// bootstrap's validated RouterInfos into the two stores the router
+    /// builds with: the destination coordinator's authoritative store and
+    /// the peer-profile store. It owns no task and no timer; the product
+    /// tick drives it on a bounded cadence.
+    peer_reconcile: Option<crate::peer_reconcile::PeerReconcile>,
+    /// Plan 506 — the live counter cell the composition root publishes
+    /// into the inspection seam. The product refreshes it on its tick; it
+    /// holds counts only.
+    peer_reconcile_counters_cell: Arc<crate::i2pcontrol_inspection::PeerReconcileCounterCell>,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
     /// Plan 503 — the live owner of the peer-eligibility receipts. The
@@ -2155,6 +2233,11 @@ impl ServiceProduct {
             )
             .with_version_eligibility(Arc::clone(&version_eligibility)),
         ));
+        // Plan 506 — the peer-knowledge reconcile. It carries the
+        // bootstrap's validated RouterInfos into the two stores the router
+        // builds with, so a peer the router accepts on a live session is
+        // not remembered by the bootstrap alone.
+        let peer_reconcile = build_peer_reconcile(&spec, &destination_tunnels)?;
         let mut coordinator =
             ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
                 ExploratoryPoolConfig::balanced(),
@@ -2351,6 +2434,10 @@ impl ServiceProduct {
                 exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::exploratory_driver::ExploratoryDriverCounters::default(),
                 )),
+                peer_reconcile: Some(peer_reconcile),
+                peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::peer_reconcile::PeerReconcileCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -2441,6 +2528,11 @@ impl ServiceProduct {
             DestinationTunnelCoordinator::new(LookupPolicy::default(), store_config)
                 .with_version_eligibility(Arc::clone(&version_eligibility)),
         ));
+        // Plan 506 — the peer-knowledge reconcile. It carries the
+        // bootstrap's validated RouterInfos into the two stores the router
+        // builds with, so a peer the router accepts on a live session is
+        // not remembered by the bootstrap alone.
+        let peer_reconcile = build_peer_reconcile(&spec, &destination_tunnels)?;
         let mut seed_failed = false;
         {
             let mut guard = destination_tunnels.lock().await;
@@ -2607,6 +2699,10 @@ impl ServiceProduct {
                 exploratory_driver: spec.exploratory_driver,
                 exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::exploratory_driver::ExploratoryDriverCounters::default(),
+                )),
+                peer_reconcile: Some(peer_reconcile),
+                peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::peer_reconcile::PeerReconcileCounters::default(),
                 )),
                 ssu2_handle,
                 destination_tunnels,
@@ -3569,6 +3665,56 @@ impl ServiceProduct {
         Arc::clone(&self.inner.exploratory_driver_counters_cell)
     }
 
+    /// Plan 506 — runs one peer-knowledge reconcile when its cadence is due.
+    ///
+    /// The step is a plain value the tick advances, beside Plan 505's
+    /// exploratory driver. It owns no task, no timer, no listener and no
+    /// socket: the reconcile reads a bounded snapshot of the bootstrap's
+    /// validated RouterInfos, writes them through the canonical write APIs
+    /// into the two stores the router builds with, and counts every
+    /// outcome by reason.
+    ///
+    /// The reconcile never fails the tick. A capacity refusal, a conflict
+    /// and a stale replacement are counted, not fatal, and an unreadable
+    /// source is counted as a gap.
+    async fn reconcile_peer_knowledge(&mut self, now_ms: u64) {
+        let Some(reconcile) = self.inner.peer_reconcile.as_mut() else {
+            return;
+        };
+        let action = reconcile.run(now_ms).await;
+        if matches!(
+            action,
+            crate::peer_reconcile::PeerReconcileAction::Reconciled { .. }
+        ) {
+            tracing::debug!(
+                transition = "peer_knowledge_reconciled",
+                "the router's peer knowledge was reconciled into the build-with stores"
+            );
+        }
+        self.publish_peer_reconcile_counters();
+    }
+
+    /// Plan 506 — refreshes the published peer-reconcile counters.
+    fn publish_peer_reconcile_counters(&self) {
+        let Some(reconcile) = self.inner.peer_reconcile.as_ref() else {
+            return;
+        };
+        let counters = reconcile.counters();
+        if let Ok(mut cell) = self.inner.peer_reconcile_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 506 — returns the live peer-reconcile counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection seam so
+    /// a reader observes the running router's peer-knowledge posture.
+    pub fn peer_reconcile_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::PeerReconcileCounterCell> {
+        Arc::clone(&self.inner.peer_reconcile_counters_cell)
+    }
+
     /// Deterministic pool-advance seam used by manual-clock tests and by the
     /// production poll wrapper above.
     async fn advance_destination_pools_at(
@@ -3770,6 +3916,13 @@ impl ServiceProduct {
         // population the scheduler watches: without it the scheduler has no
         // pair to observe. No new task, no new timer.
         self.drive_exploratory_builds(now_ms);
+        // Plan 506 — the peer-knowledge reconcile is driven on the same
+        // tick, behind its own bounded cadence. It carries the bootstrap's
+        // validated RouterInfos into the two stores the router builds with,
+        // so the population the driver above selects from grows with the
+        // peers the router accepts on a live session. No new task, no new
+        // timer.
+        self.reconcile_peer_knowledge(now_ms).await;
         let destination_ids = self.inner.destination_ids.clone();
         for destination_id in destination_ids {
             let Some(snapshot) =

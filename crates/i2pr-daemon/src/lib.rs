@@ -3506,6 +3506,12 @@ fn register_ssu2_service(
     // configuration here, like every other configuration value the
     // `'static` service closure below reads.
     let exploratory_builds = config.exploratory.builds;
+    // Plan 506: the peer-knowledge reconcile reuses the **existing** NetDB
+    // participation maintenance period, so there is one source of truth for
+    // the router's peer cadence and no second configuration knob. The value
+    // is copied out of the configuration here, like every other
+    // configuration value the `'static` service closure below reads.
+    let reconcile_period_ms = config.netdb.participation_maintenance_period_ms;
     let inspection = Arc::clone(inspection);
     let router_ingress = Arc::new(tokio::sync::Mutex::new(router_ingress));
     builder
@@ -3977,6 +3983,11 @@ fn register_ssu2_service(
                     // including when the only way to create one is
                     // I2PControl. See `service_tunnels_active`.
                     let has_enabled_groups = service_runtime_active;
+                    // Plan 506: the product needs the **live** bootstrap
+                    // handle so its reconcile can snapshot the router's
+                    // real peer population. The handle is cloned before
+                    // the borrow below so the product owns it.
+                    let live_bootstrap = bootstrap.clone();
                     let mut owner = if has_enabled_groups {
                         let Some(bootstrap) = bootstrap.as_ref() else {
                             handle.shutdown();
@@ -4072,6 +4083,19 @@ fn register_ssu2_service(
                             // the Plan 504 liveness scheduler finally has
                             // a population to watch.
                             exploratory_driver,
+                            // Plan 506: the live bootstrap handle and the
+                            // live peer-profile handle the reconcile needs.
+                            // The bootstrap handle lets the reconcile
+                            // snapshot the router's real peer population;
+                            // the profile handle lets it learn that
+                            // population into the store Plan 505's driver
+                            // selects from. The cadence is the **existing**
+                            // NetDB participation maintenance period, so
+                            // there is one source of truth and no second
+                            // configuration knob.
+                            bootstrap: live_bootstrap.clone(),
+                            peer_profiles: Some(peer_profiles.clone()),
+                            reconcile_period_ms,
                         };
                         match crate::service_product::ServiceProduct::start_over_existing_daemon(
                             spec,
@@ -4110,6 +4134,14 @@ fn register_ssu2_service(
                                 );
                                 inspection.publish_liveness_counters(
                                     product.liveness_counters_cell(),
+                                );
+                                // Plan 506: publish the live peer-knowledge
+                                // reconcile counters so the running router's
+                                // peer-knowledge posture is observable through
+                                // the inspection plane. The counters carry
+                                // counts and stable reason labels only.
+                                inspection.publish_peer_reconcile_counters(
+                                    product.peer_reconcile_counters_cell(),
                                 );
                                 NormalSsu2Owner::Groups(Box::new(product))
                             }
