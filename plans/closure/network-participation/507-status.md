@@ -167,7 +167,132 @@ The guard's rule names are the **landed** names in
 
 ### The routine floor
 
-<!-- FLOOR-TABLE -->
+113 steps, run on the closing tree. The script is
+`/tmp/i2pr-floor-507-run1.sh`; the log is `/tmp/i2pr-floor-507-run1.log`.
+It is Plan 506's 110-step floor plus three Plan 507 steps
+(`plan507-retention-feasibility`, `plan507-retention-boundary` and
+`plan507-retention-live`).
+
+| # | Step | Result | Seconds |
+| --- | --- | --- | --- |
+| 1 | `cargo-fmt` | PASS | 3 |
+| 2 | `cargo-check` | PASS | 7 |
+| 3 | `cargo-build-siblings` | PASS | 0 |
+| 4 | `cargo-build-static-fixture` | PASS | 1 |
+| 5 | `cargo-copy-static-fixture` | PASS | 0 |
+| 6 | `cargo-rebuild-plain-fixture` | PASS | 0 |
+| 7 | `cargo-test-workspace` | PASS | 1275 |
+| 8 | `cargo-clippy` | PASS | 12 |
+| 9 | `cargo-doc` | PASS | 10 |
+| 10 | `cargo-test-doc` | PASS | 3 |
+| 11 | `check-dependency-direction` | PASS | 1 |
+| 12 | `check-global-plan-number-uniqueness` | PASS | 0 |
+| 13 | `check-adr-number-uniqueness` | PASS | 0 |
+| 14 | `check-portable-service-tunnel-api` | PASS | 0 |
+| 15 | `check-portable-service-tunnel-consumer` | PASS | 6 |
+| 16 | `planning-tests` | PASS | 7 |
+| 17 | `check-runtime-boundaries` | PASS | 0 |
+| 18 | `check-console-boundaries` | PASS | 1 |
+| 19 | `check-console-browser-security` | PASS | 0 |
+| 20 | `check-tooling-inventory` | PASS | 0 |
+| 21 | `check-license-metadata` | PASS | 1 |
+| 22 | `check-managed-app-private-client-seams` | PASS | 0 |
+| 23 | `check-router-readiness-contract` | PASS | 0 |
+| 24 | `check-router-readiness-contract-self` | PASS | 0 |
+| 25 | `check-core-router-recovery-contract` | PASS | 0 |
+| 26 | `check-core-router-recovery-contract-self` | PASS | 0 |
+| 27 | `plan449-ssu2-preflight-self` | PASS | 0 |
+| 28 | `plan495-peer-eligibility-self` | PASS | 0 |
+| 29 | `plan495-peer-eligibility-profile-drift` | PASS | 0 |
+| 30 | `plan476-gate-binding` | PASS | 0 |
+| 31 | `plan476-gate-binding-self` | PASS | 1 |
+| 32 | `check-managed-app-package-boundary` | PASS | 0 |
+| 33 | `check-managed-app-package-boundary-self` | PASS | 0 |
+| 34 | `check-managed-app-policy-boundary` | PASS | 0 |
+| 35 | `check-managed-app-policy-boundary-self` | PASS | 0 |
+| 36 | `check-managed-app-secured-sandbox` | PASS | 0 |
+| 37 | `check-managed-app-secured-sandbox-self` | PASS | 0 |
+| 38 | `check-service-tunnel-boundaries` | PASS | 0 |
+| 39 | `check-managed-app-gateway-boundary` | PASS | 0 |
+| 40 | `check-managed-app-manager-boundary` | PASS | 0 |
+| 41 | `check-m11-per-epoch-composition` | PASS | 1 |
+| 42 | `check-service-anonymity-boundaries` | PASS | 0 |
+| 43 | `check-fixture-manifest` | PASS | 0 |
+| 44 | `check-ntcp2-vectors` | PASS | 0 |
+| 45 | `check-ssu2-vectors` | PASS | 0 |
+| 46 | `check-i2cp-vectors` | PASS | 2 |
+| 47 | `check-ntcp2-interoperability` | PASS | 0 |
+| 48 | `check-constrained-host-lane-boundary` | PASS | 0 |
+| 49 | `check-m11-transit-boundaries` | PASS | 2 |
+| 50 | `check-m11-transit-qualification-evidence` | PASS | 2 |
+| 51 | `check-sam-acceptance-evidence` | PASS | 0 |
+| 52 | `check-ssu2-acceptance-evidence` | PASS | 0 |
+| 53 | `check-i2cp-acceptance-evidence` | PASS | 0 |
+| 54 | `check-i2pcontrol-acceptance-evidence` | PASS | 0 |
+| 55 | `check-els2-type11-transcript-boundary` | PASS | 0 |
+| 56 | `check-els2-live-lane-evidence` | PASS | 2 |
+| 57 | `check-encrypted-service-consumer-caller` | PASS | 0 |
+| 58 | `check-outproxy-request-path` | PASS | 0 |
+| 59 | `check-outproxy-wire-lane-evidence` | PASS | 1 |
+| 60 | `check-config-secret-hygiene` | PASS | 0 |
+| 61 | `check-workflow-validity` | PASS | 0 |
+| 62 | `check-floodfill-type5-serve` | PASS | 0 |
+| 63 | `check-service-tunnel-acceptance-evidence` | PASS | 1 |
+| 64 | `check-exploratory-tunnel-evidence` | PASS | 0 |
+| 65 | `check-netdb-tunnel-evidence` | PASS | 0 |
+| 66 | `check-destination-tunnel-evidence` | PASS | 0 |
+| 67 | `check-streaming-tunnel-evidence` | PASS | 5 |
+| 68 | `check-m6-mixed-router-acceptance-evidence` | PASS | 3 |
+| 69 | `check-m12-floodfill-qualification-evidence-self` | PASS | 0 |
+| 70 | `check-m12-floodfill-boundaries-self` | PASS | 0 |
+| 71 | `ntcp2-harness-tests` | PASS | 0 |
+| 72 | `plan488-mesh-lane` | PASS | 1 |
+| 73 | `plan488-evidence-deterministic` | PASS | 0 |
+| 74 | `plan489-mesh-lane` | PASS | 0 |
+| 75 | `plan489-evidence-deterministic` | PASS | 0 |
+| 76 | `plan490-mesh-lane` | PASS | 0 |
+| 77 | `plan490-evidence-deterministic` | PASS | 0 |
+| 78 | `plan490-ssu2-transport-suite` | PASS | 6 |
+| 79 | `plan490-transport-boundary-guard` | PASS | 0 |
+| 80 | `plan491-mesh-lane` | PASS | 1 |
+| 81 | `plan491-evidence-deterministic` | PASS | 0 |
+| 82 | `plan491-boundary-guard` | PASS | 0 |
+| 83 | `plan491-proto-suite` | PASS | 0 |
+| 84 | `plan491-netdb-suite` | PASS | 89 |
+| 85 | `plan491-client-suite` | PASS | 26 |
+| 86 | `plan492-posture-suite` | PASS | 1 |
+| 87 | `plan492-m11-lane` | PASS | 4 |
+| 88 | `plan502-transit-composition-lane` | PASS | 0 |
+| 89 | `plan502-transit-composition-unit` | PASS | 1 |
+| 90 | `plan502-transit-boundary-self` | PASS | 0 |
+| 91 | `plan496-private-lan-profile` | PASS | 0 |
+| 92 | `plan496-ntcp2-activation-gate` | PASS | 0 |
+| 93 | `plan497-routing-consumer-lane` | PASS | 1 |
+| 94 | `plan497-netdb-preferred-order` | PASS | 0 |
+| 95 | `plan497-daemon-participation-unit` | PASS | 2 |
+| 96 | `plan498-introducer-handoff-lane` | PASS | 1 |
+| 97 | `plan498-introducer-mesh-lane` | PASS | 1 |
+| 98 | `plan498-bootstrap-resolver-row` | PASS | 25 |
+| 99 | `plan498-runtime-relay-accessor` | PASS | 4 |
+| 100 | `plan503-version-eligibility-live` | PASS | 1 |
+| 101 | `plan503-version-eligibility-unit` | PASS | 0 |
+| 102 | `plan504-liveness-boundary` | PASS | 1 |
+| 103 | `plan504-liveness-live` | PASS | 0 |
+| 104 | `plan504-liveness-unit` | PASS | 0 |
+| 105 | `plan505-driver-boundary` | PASS | 1 |
+| 106 | `plan505-driver-live` | PASS | 2 |
+| 107 | `plan505-driver-unit` | PASS | 1 |
+| 108 | `plan506-reconcile-boundary` | PASS | 5 |
+| 109 | `plan506-reconcile-live` | PASS | 0 |
+| 110 | `plan507-retention-feasibility` | PASS | 1 |
+| 111 | `plan507-retention-boundary` | PASS | 1 |
+| 112 | `plan507-retention-live` | PASS | 0 |
+| 113 | `cargo-deny` | PASS | 1 |
+
+**113 of 113 steps passed, 0 failed.** The steps Plan 507 adds are the three
+Plan 507 lanes: the WP1 feasibility artefact, the static guard and the live
+lane.
+
 
 ### The focused verification
 
@@ -358,12 +483,12 @@ the destination store's lock is contended on every pass; a rising
 
 ### Medium
 
-- **The daemon deep-dive's module-table line counts are stale for 40 of the
+- **The daemon deep-dive's module-table line counts are stale for 36 of the
   63 rows that carry one** (measured by comparing every row against the
-  file). Plan 507 updated the **four** rows it changed and left the rest:
-  the drift is a separate concern with its own plan-of-record, and
-  correcting thirty-six unrelated rows here would bury the change. **Not
-  fixed.**
+  file). Plan 507 measured **40** stale rows, updated the **four** it
+  changed, and left the rest: the drift is a separate concern with its own
+  plan-of-record, and correcting thirty-six unrelated rows here would bury
+  the change. **Not fixed.**
 - **The registry's prose surface tally was stale by one plan.** It read
   "of 97 surface entries … (91 `experimental`, 5 `deferred`, 1 `ready")" and
   was last touched by Plan 505's commit — Plan 506 added a surface and did
@@ -373,10 +498,10 @@ the destination store's lock is contended on every pass; a rising
 
 ### Low
 
-- **Two of the guard's four new probes were initially wrong** in a way that
-  would have made them pass vacuously, and one live-lane assertion was
-  blind to a collapsed window. All three are recorded above and fixed; the
-  live lane's blind spot was found by a negative control, not by review.
+- **Two of the guard's probes were initially wrong** in a way that would
+  have made them pass vacuously, and one live-lane assertion was blind to a
+  collapsed window. All three are recorded above and fixed; the live lane's
+  blind spot was found by a negative control, not by review.
 - **The prune's `try_lock` is a deferral, not a wait.** A pass that could
   not take the destination store's lock leaves the stale records in place
   for that pass. The condition is counted, and the store turns over on the

@@ -1996,10 +1996,11 @@ F4, Plan 490 Medium #3, Plan 502 M1 and Plan 487 F3's destination-inbound
 half stay open. **No stock-peer evidence is claimed.**
 
 **A documentation drift is recorded, not fixed.** The module table's
-per-file line counts above are stale for 40 of the 63 rows that carry one.
-Plan 507 updated the four rows it changed and left the rest alone: the
-drift is a separate concern with its own plan-of-record, and correcting
-thirty-six unrelated rows here would bury the change.
+per-file line counts above are stale for **36** of the 63 rows that carry
+one. Plan 507 measured 40 stale rows, corrected the four it changed, and
+left the rest alone: the drift is a separate concern with its own
+plan-of-record, and correcting thirty-six unrelated rows here would bury
+the change.
 
 ### Transit participation posture (Plan 492, `src/transit_participation.rs`)
 
