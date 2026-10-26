@@ -4666,29 +4666,17 @@ fn register_ssu2_service(
                                     }
                                 }
                                 product_effect |= served;
-                                if !served
-                                    && let Some(i2pr_proto::I2npBody::DatabaseStore(store)) =
-                                        message.map(i2pr_proto::I2npMessage::body)
-                                    && let Some(bootstrap) = bootstrap.as_ref()
-                                {
-                                    match bootstrap.lock() {
-                                        Ok(mut bootstrap) => match bootstrap
-                                            .ingest_authenticated_router_store(store, now_ms)
-                                        {
-                                            Ok(outcome) => tracing::debug!(
-                                                ?outcome,
-                                                "authenticated NTCP2/SSU2 RouterInfo store applied"
-                                            ),
-                                            Err(error) => tracing::debug!(
-                                                reason = %error,
-                                                "authenticated unsolicited DatabaseStore refused"
-                                            ),
-                                        },
-                                        Err(_) => tracing::warn!(
-                                            "bootstrap NetDB lock poisoned; authenticated RouterInfo store refused"
-                                        ),
-                                    }
-                                }
+                                // Plan 506: the unsolicited store is ingested
+                                // **once** per message. The ingest above
+                                // already applied it, and its condition --
+                                // a `DatabaseStore` body with a bootstrap
+                                // store -- is a strict superset of the
+                                // `!served` case this block used to cover.
+                                // The second write was a real double write
+                                // on every accepted unsolicited store: it
+                                // re-validated the record and re-applied it
+                                // to the store, yielding
+                                // `InsertOutcome::Idempotent`.
                                 // Plan 502: refresh the transit owner's
                                 // creator correlation **before** the router's
                                 // own coordinator consumes the message. The
