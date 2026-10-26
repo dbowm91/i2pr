@@ -475,6 +475,9 @@ plan_504_status = "registered-live-tunnel-liveness-in-the-product-composition"
 plan_505_plan_of_record = "plans/implementation/network-participation/505-exploratory-build-driver-in-the-product-composition.md"
 plan_505_closure = "plans/closure/network-participation/505-status.md"
 plan_505_status = "registered-exploratory-build-driver-in-the-product-composition"
+plan_506_plan_of_record = "plans/implementation/network-participation/506-peer-knowledge-reconcile.md"
+plan_506_closure = "plans/closure/network-participation/506-status.md"
+plan_506_status = "registered-peer-knowledge-reconcile"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -987,6 +990,28 @@ evidence = [
     "crates/i2pr-daemon/tests/exploratory_driver_live.rs",
     "plans/implementation/network-participation/505-exploratory-build-driver-in-the-product-composition.md",
     "plans/closure/network-participation/505-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.peer-knowledge-reconcile"
+protocol = "netdb"
+structure = "bounded-product-owned-reconcile-carrying-the-bootstrap-s-validated-routerinfos-into-the-two-build-with-stores"
+scope = "required"
+status = "experimental"
+notes = "Plan 506 closes the peer-knowledge gap: a peer the router accepts on a LIVE session was known ONLY to the bootstrap NetDB. Three production sites ingest an authenticated unsolicited DatabaseStore into the bootstrap store, but the two stores the router actually BUILDS WITH -- the destination coordinator's authoritative store and the peer-profile store -- were seeded ONCE AT STARTUP and never again: insert_validated_router_info had exactly one production caller, the startup seed, and learn_bootstrap_peers had exactly one production caller, also at startup. A peer learned afterwards was therefore invisible to both, so the population Plan 505's exploratory driver draws from never grew. THE FRAMING IS NARROWER THAN IT LOOKS: the router does NOT learn peers from a NetDB lookup -- a DatabaseStore carries one record, a DatabaseSearchReply carries peer HASHES ONLY, and the production router runs NO RouterInfo-kind lookup -- so the live-learned RouterInfos are exactly the unsolicited DatabaseStores, and this surface is the path that carries them into the build-with stores. THE RECONCILE IS ONE BOUNDED OPERATION owned by the daemon product: it snapshots the bootstrap's validated RouterInfos under the bootstrap's lock and RELEASES that lock, inserts each record into the destination store through the canonical insert_validated_router_info, and learns the same records into the peer-profile store through the canonical learn_all. The three locks are taken in ONE ORDER and are NEVER NESTED, so no cycle is possible, and the peer-profile closure never awaits, so no lock is held across an await. Every outcome is counted by reason and a capacity refusal, a conflict and a stale replacement are COUNTED, NEVER FATAL -- deliberately unlike the startup seed, which treats a capacity refusal as fatal. THE RECONCILE WRITES PEER RECORDS, NEVER A SELECTION: Plan 491's version gate stays at selection, so a refreshed peer below the floor is still REFUSED and counted. THE CADENCE IS THE EXISTING NetDB participation maintenance period -- one source of truth, no second configuration knob -- and it is bounded on both sides; the configuration parser already bounds the same value to the same range, so the reconcile's own refusal cannot fire on a configured router. The reconcile adds NO task, NO timer, NO listener and NO socket: it is a step on the product's EXISTING tick. Plan 506 ALSO REMOVED A REAL DEFECT: the unsolicited store was ingested TWICE for every message the router did not serve as a floodfill, because the second site's condition was a strict SUBSET of the first's. The two remaining ingest sites sit in MUTUALLY EXCLUSIVE branches, so exactly one can run for any message. The counters are published through the inspection seam and carry counts and stable reason labels only -- no peer, address, key or payload -- and an unpublished slot is a GAP, never a fabricated zero. The surface is internal and non-advertised."
+evidence = [
+    "crates/i2pr-daemon/src/peer_reconcile.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/src/bootstrap.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/peer_reconcile_boundary.rs",
+    "crates/i2pr-daemon/tests/peer_reconcile_live.rs",
+    "plans/implementation/network-participation/506-peer-knowledge-reconcile.md",
+    "plans/closure/network-participation/506-status.md",
 ]
 advertised = false
 

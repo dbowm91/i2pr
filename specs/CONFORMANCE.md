@@ -1095,7 +1095,7 @@ claimed, and what is not:
   `FloodfillAdvertisementPermit`, and neither is reachable from this profile.
   `[ssu2] advertise = true` remains refused at parse time.
 - **It promotes no capability.** `specs/support.toml` is unchanged — 97
-  surfaces, 91 experimental, 5 deferred, 1 ready, and **0 advertised** —
+  surfaces, 92 experimental, 5 deferred, 1 ready, and **0 advertised** —
   `router.version` stays `0.9.62`, and the published RouterInfo capability set
   is unchanged.
 - **It is not a public transport activation.** Public transport activation
@@ -1197,7 +1197,7 @@ What is claimed, and what is not:
   from 14 to 30 and the raw-scan floor from 17 to 23 — rather than relaxing
   them.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 97 surfaces, 91 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 98 surfaces, 92 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, and the published RouterInfo
   capability set is unchanged. The routing table is **internal state**.
 - **The evidence is a private controlled mesh, not a public-network
@@ -1284,7 +1284,7 @@ What is claimed, and what is not:
   change to the runtime's authentication path. The runtime still has **no
   outbound relay queueing API**. **Plan 499 adds that API** — see below.
 - **Nothing is published and nothing is advertised.** `specs/support.toml` is
-  unchanged — 97 surfaces, 91 experimental, 5 deferred, 1 ready, and **0
+  unchanged — 98 surfaces, 92 experimental, 5 deferred, 1 ready, and **0
   advertised** — `router.version` stays `0.9.62`, `caps` and the published
   RouterInfo are unchanged, and `ssu2.advertise` stays refused. The role
   remains behind the existing default-off `ssu2.introducer_service` opt-in.
@@ -1421,7 +1421,7 @@ What is claimed, and what is not:
   now_secs)`** that binds a tag to a **caller-supplied** hash (pre-existing,
   Plan 490). Plan 499's live path binds the authenticated session peer and
   adds no such API, but the surface remains.
-- **Nothing is promoted.** `specs/support.toml` stays at **97 surfaces, 91
+- **Nothing is promoted.** `specs/support.toml` stays at **98 surfaces, 92
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version` stays
   `0.9.62`; `caps` and the published RouterInfo are unchanged; `ssu2.advertise`
   stays refused. The role stays behind the existing **default-off**
@@ -1489,7 +1489,7 @@ What is claimed, and what is not:
   wiring.
 - **There is no stock-peer evidence** for the new exhaustion, and this is a
   lookup-engine bound, not a network capability.
-- **Nothing is promoted.** `specs/support.toml` stays at **97 surfaces, 91
+- **Nothing is promoted.** `specs/support.toml` stays at **98 surfaces, 92
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged.
 
@@ -1557,7 +1557,7 @@ What is claimed, and what is not:
 - **There is no stock-peer evidence**, no LOCAL OBEP consumer (a LOCAL
   action refuses with the typed `NoLocalConsumer`), and no NTCP2 ingress.
 - **The transit role is still not advertised and still not claimed for the
-  public network.** `specs/support.toml` stays at **97 surfaces, 91
+  public network.** `specs/support.toml` stays at **98 surfaces, 92
   experimental, 5 deferred, 1 ready, and 0 advertised**; `router.version`
   stays `0.9.62`; `caps` and the published RouterInfo are unchanged. Plan 436
   stays **blocked** on Plan 433; this plan advances its source-side WP3 only.
@@ -1830,6 +1830,118 @@ Evidence: `crates/i2pr-daemon/src/exploratory_driver.rs`,
 `crates/i2pr-daemon/tests/exploratory_driver_live.rs`. The plan of record is
 `plans/implementation/network-participation/505-exploratory-build-driver-in-the-product-composition.md`;
 the closure record is `plans/closure/network-participation/505-status.md`.
+
+## The peer-knowledge reconcile (Plan 506)
+
+Plan 505 closed the exploratory build driver and left one thing open: the
+**population** the driver draws from. Plan 506 closes it.
+
+The gap, precisely:
+
+- the router accepts a peer's RouterInfo on a **live** session — three
+  production sites ingest an authenticated unsolicited `DatabaseStore` into the
+  bootstrap NetDB;
+- but the two stores the router actually **builds with** — the destination
+  coordinator's authoritative store and the peer-profile store — were seeded
+  **once at startup** and never again. `insert_validated_router_info` had
+  exactly one production caller, the startup seed, and `learn_bootstrap_peers`
+  had exactly one production caller, also at startup;
+- so a peer learned after startup was invisible to both, and the population
+  the driver selects from never grew.
+
+**The framing is narrower than it looks, and Plan 506 corrected it.** Plan
+505 recorded that "the validated store is still not refreshed from live NetDB
+lookups". That phrasing was wrong in a way that mattered: the router does
+**not** learn peers from a NetDB lookup at all. A `DatabaseStore` carries
+exactly one record, a `DatabaseSearchReply` carries peer **hashes only**, and
+the production router runs **no** RouterInfo-kind lookup — the only
+`begin_lookup` caller is Plan 433's never-constructed `NetDbTunnelCoordinator`.
+The live-learned RouterInfos the router holds are exactly the unsolicited
+`DatabaseStore`s. Plan 506's subject is therefore the **reconcile**, not a
+lookup, and adding a RouterInfo-kind lookup would have been a
+protocol-composition change with its own plan-of-record.
+
+What is claimed, and what is not:
+
+- **One bounded reconcile, owned by the product.** It snapshots the
+  bootstrap's validated RouterInfos under the bootstrap's lock and **releases**
+  that lock, inserts each record into the destination store through the
+  canonical `insert_validated_router_info`, and learns the same records into
+  the peer-profile store through the canonical `learn_all`. One snapshot, one
+  cadence, no skew between the two stores.
+- **The three locks are taken in one order and are never nested.** The
+  bootstrap's lock is released before the destination coordinator's lock is
+  taken, and the destination coordinator's lock is released before the
+  peer-profile store's lock is taken. The peer-profile closure never awaits,
+  so no lock is held across an await. The static guard asserts this
+  **structurally**: each step's body may not name another step's lock.
+- **Every outcome is counted by reason, and a refusal is never fatal.** A
+  capacity refusal, a conflict and a stale replacement are counted and the
+  batch continues — deliberately unlike the startup seed, which treats a
+  capacity refusal as fatal. One bad record never aborts the reconcile.
+- **The reconcile writes peer records, never a selection.** Plan 491's version
+  gate stays at **selection**, so a refreshed peer below the floor is still
+  refused there and counted. The reconcile does not weaken the gate; it feeds
+  it.
+- **The cadence is the existing NetDB participation maintenance period.** One
+  source of truth, and **no second configuration knob**: `config.rs` is
+  untouched and no new key is added. The reconcile's own bound is the same
+  range the configuration parser already enforces, so the reconcile's refusal
+  cannot fire on a configured router.
+- **No new task, no new timer, no new listener, no new socket.** The reconcile
+  is a step on the product's **existing** tick, beside the exploratory driver
+  whose population it grows.
+- **The counters are published through the inspection seam.** They carry
+  counts and stable reason labels only — no peer, address, key or payload — and
+  an unpublished or poisoned slot is a **gap**, never a fabricated zero.
+- **A real defect was fixed, not just recorded.** The unsolicited store was
+  ingested **twice** for every message the router did not serve as a
+  floodfill, because the second site's condition was a strict **subset** of
+  the first's. The two remaining ingest sites sit in **mutually exclusive**
+  branches, so exactly one can run for any message. The static guard asserts
+  that structurally: one ingest inside the `!ssu2_config.enabled` branch, one
+  outside it, and no more.
+- **The feasibility artefact is not vacuous, and that is measured.** It drives
+  the **real** `Bootstrap`, the **real** `DestinationTunnelCoordinator` and the
+  **real** `PeerParticipationDriver`, and the peer arrives through the
+  production unsolicited-store path. Removing the `learn_all` call fails four
+  tests, the first with "the peer must be selectable after the reconcile";
+  removing the `insert_validated_router_info` call fails five, the first with
+  "the peer must be insertable into the destination store by the reconcile";
+  raising the below-floor peer's published version to the floor fails the
+  refusal assertion.
+- **The selection set is recorded as a finding, not left to be discovered.**
+  The destination projection is a hash-ordered **256-prefix**, so adding peers
+  does not merely add candidates — it can change **which** peers the build path
+  sees. Changing the ordering is out of scope; recording the behaviour is not.
+- **No stock-peer evidence is claimed.** Whether an ordinary public router
+  sends unsolicited stores this router will accept is **unproven**. The
+  external lanes stay open until Plan 493's authorized topology exists.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock` are
+  byte-identical.
+
+**What Plan 506 does not close.** A **RouterInfo-kind NetDB lookup** — the
+router performs none in production, and adding one is a protocol-composition
+change with its own plan-of-record. Plan 497 limitation 5's **read** half: the
+routing table's only reader remains Plan 433's never-constructed
+`NetDbTunnelCoordinator`. The destination store's **capacity policy** — it
+refuses at capacity, and this plan adds no eviction. Plan 487 F3's
+destination-inbound half still needs tunnel rekeying, which the tree does not
+implement at all. Plan 491 F2 and F4, Plan 490 Medium #3, Plan 502 M1 and
+Plan 503's lookup-target API-version gate all stay open.
+
+Evidence: `crates/i2pr-daemon/src/peer_reconcile.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/lib.rs`, `crates/i2pr-daemon/src/bootstrap.rs`,
+`crates/i2pr-daemon/src/destination_tunnels.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-daemon/tests/peer_reconcile_boundary.rs`, and
+`crates/i2pr-daemon/tests/peer_reconcile_live.rs`. The plan of record is
+`plans/implementation/network-participation/506-peer-knowledge-reconcile.md`;
+the closure record is `plans/closure/network-participation/506-status.md`.
 
 ## Outbound proxy secret owner (Plan 341)
 
