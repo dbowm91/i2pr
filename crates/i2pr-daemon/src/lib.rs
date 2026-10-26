@@ -43,6 +43,7 @@ pub mod outbound_lookup;
 pub mod outbound_secret;
 pub mod outproxy_options;
 pub mod outproxy_route;
+pub mod peer_reconcile;
 pub mod peer_test;
 pub mod router_i2np;
 pub mod sam;
