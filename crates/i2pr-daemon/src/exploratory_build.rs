@@ -112,6 +112,18 @@ pub const BUILD_MESSAGE_REPLAY_RETENTION_MS: u64 = 15 * 60 * 1000;
 const MAX_BUILD_TUNNEL_LIFETIME_MS: u64 = 30 * 60 * 1000;
 const BUILD_TUNNEL_ID_RETENTION_MS: u64 =
     MAX_BUILD_TUNNEL_LIFETIME_MS + BUILD_MESSAGE_REPLAY_RETENTION_MS;
+/// Plan 508: the window a creator-correlated fact must survive.
+///
+/// A creator-correlated fact is installed while the coordinator's build is
+/// **pending**; the coordinator's own memory of that build's identifiers
+/// starts when the build is **retired**. The window is therefore the build
+/// deadline plus the coordinator's own longest identifier retention, so the
+/// fact outlives every reply the coordinator could still recognise.
+///
+/// The window is a function of constants the tree already enforces, so it
+/// cannot drift from them. It is not a new number and it is not
+/// configurable.
+pub const CREATOR_CORRELATION_RETENTION_MS: u64 = BUILD_DEADLINE_MS + BUILD_TUNNEL_ID_RETENTION_MS;
 /// Maximum established Destination materials awaiting owner registration.
 pub const MAX_DESTINATION_HANDOFFS: usize = MAX_PENDING_BUILDS;
 /// Maximum lifetime a tunnel is allowed to claim. Mirrors

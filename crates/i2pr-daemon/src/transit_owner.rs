@@ -34,7 +34,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +44,7 @@ use i2pr_transport::PeerId;
 use rand_core::{CryptoRng, RngCore, TryCryptoRng};
 use thiserror::Error;
 
+use crate::exploratory_build::CREATOR_CORRELATION_RETENTION_MS;
 use crate::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryService, RouterI2npKind, RouterI2npOutcome,
     dispatch_router_i2np_with_transit_bodies, extract_inner_short_build,
@@ -514,6 +515,21 @@ pub enum LiveInboundOutcome {
 pub type TransitLocalSink =
     Box<dyn FnMut(&i2pr_tunnel::RouterDeliveryAction) -> Result<(), TransitLiveError> + Send>;
 
+/// Plan 508: the number of creator-correlated facts the owner holds.
+///
+/// The counts are the observable evidence that the facts are bounded over
+/// the router's lifetime rather than growing with every build the router
+/// performs. They carry counts only: no peer, identifier or payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreatorCorrelationCounts {
+    /// The number of live creator-correlated build facts.
+    pub builds: usize,
+    /// The number of live creator-correlated TunnelData facts.
+    pub data: usize,
+    /// The number of live creator-correlated TunnelGateway facts.
+    pub gateways: usize,
+}
+
 /// The actual live authenticated SSU2/router-I2NP inbound owner for
 /// controlled transit (Plan 254 work packages C–G).
 ///
@@ -523,17 +539,19 @@ pub type TransitLocalSink =
 /// default-off `[transit] participation` opt-in.
 /// No public RouterInfo advertisement, no second socket or event
 /// loop, no public config surface. Creator/service ownership probes
-/// are typed `BTreeSet`s installed by the controlled harness; the
-/// production daemon installs its real coordinator/registry facts
-/// through the same narrow setters.
+/// are installed by the controlled harness; the production daemon
+/// installs its real coordinator/registry facts through the same narrow
+/// setters. Plan 508: each probe carries an **expiry** derived from the
+/// coordinator's own bounds, so the probes are bounded over the router's
+/// lifetime rather than growing with every build the router performs.
 pub struct TransitLiveOwner<R> {
     owner: TransitOwner,
     rng: R,
     delivery: RouterDeliveryService,
     cancellation: CancellationToken,
-    creator_builds: BTreeSet<(i2pr_proto::Hash, u32)>,
-    creator_data: BTreeSet<u32>,
-    creator_gateways: BTreeSet<u32>,
+    creator_builds: BTreeMap<(i2pr_proto::Hash, u32), u64>,
+    creator_data: BTreeMap<u32, u64>,
+    creator_gateways: BTreeMap<u32, u64>,
     local_sink: Option<TransitLocalSink>,
     /// Plan 492: the operator-opted participation posture the transit path
     /// is admitted against.
@@ -572,9 +590,9 @@ where
             rng,
             delivery,
             cancellation,
-            creator_builds: BTreeSet::new(),
-            creator_data: BTreeSet::new(),
-            creator_gateways: BTreeSet::new(),
+            creator_builds: BTreeMap::new(),
+            creator_data: BTreeMap::new(),
+            creator_gateways: BTreeMap::new(),
             local_sink: None,
             participation: TransitParticipationBinding::disabled(),
         }
@@ -617,20 +635,82 @@ where
 
     /// Records a creator-correlated `(peer, message_id)` build the
     /// live owner must bypass.
-    pub fn install_creator_build(&mut self, peer: PeerId, message_id: u32) {
-        self.creator_builds.insert((peer.hash(), message_id));
+    ///
+    /// Plan 508: the fact carries an **expiry**, derived from the
+    /// coordinator's own bounds, so the set is bounded over the router's
+    /// lifetime instead of growing with every build the router performs.
+    /// Re-installing a fact refreshes its expiry.
+    pub fn install_creator_build(&mut self, peer: PeerId, message_id: u32, now_ms: u64) {
+        self.creator_builds.insert(
+            (peer.hash(), message_id),
+            Self::creator_expiry_seconds(now_ms),
+        );
+    }
+
+    /// The expiry, in seconds, of a creator-correlated fact installed at
+    /// `now_ms`.
+    ///
+    /// Plan 508: the window is the coordinator's own bound, and the ceiling
+    /// keeps the stored second no earlier than the true millisecond expiry, so
+    /// a fact is never declined before it has expired. The rounding is always
+    /// in the **safe** direction: the bypass is a decline, and a fact kept one
+    /// second too long only makes the owner decline traffic it could have
+    /// relayed.
+    fn creator_expiry_seconds(now_ms: u64) -> u64 {
+        now_ms
+            .saturating_add(CREATOR_CORRELATION_RETENTION_MS)
+            .saturating_add(999)
+            / 1_000
     }
 
     /// Records a creator/service-owned TunnelData receive id that
     /// must never reach transit.
-    pub fn install_creator_data(&mut self, tunnel_id: u32) {
-        self.creator_data.insert(tunnel_id);
+    ///
+    /// Plan 508: the fact carries an **expiry**.
+    pub fn install_creator_data(&mut self, tunnel_id: u32, now_ms: u64) {
+        self.creator_data
+            .insert(tunnel_id, Self::creator_expiry_seconds(now_ms));
     }
 
     /// Records a creator/service-owned TunnelGateway tunnel id that
     /// must bypass transit.
-    pub fn install_creator_gateway(&mut self, tunnel_id: u32) {
-        self.creator_gateways.insert(tunnel_id);
+    ///
+    /// Plan 508: the fact carries an **expiry**.
+    pub fn install_creator_gateway(&mut self, tunnel_id: u32, now_ms: u64) {
+        self.creator_gateways
+            .insert(tunnel_id, Self::creator_expiry_seconds(now_ms));
+    }
+
+    /// Drops the creator-correlated facts that have expired.
+    ///
+    /// Plan 508: the sweep reclaims the memory the facts occupy. It rides
+    /// the pump tick that already installs them, so the owner gains no
+    /// second timer and no second task.
+    ///
+    /// The comparison reads the clock with a **floor**, so a fact is kept
+    /// for at least as long as its expiry allows. That is the safe
+    /// direction: the bypass is a *decline*, and a fact that is kept one
+    /// second too long only makes the owner decline traffic it could have
+    /// relayed.
+    pub fn expire_creator_correlation(&mut self, now_ms: u64) {
+        let now_seconds = now_ms / 1_000;
+        self.creator_builds
+            .retain(|_, expiry| *expiry > now_seconds);
+        self.creator_data.retain(|_, expiry| *expiry > now_seconds);
+        self.creator_gateways
+            .retain(|_, expiry| *expiry > now_seconds);
+    }
+
+    /// Returns the number of creator-correlated facts the owner holds.
+    ///
+    /// Plan 508: the counts are the observability seam the retention
+    /// lane reads. They carry counts only.
+    pub fn creator_correlation_counts(&self) -> CreatorCorrelationCounts {
+        CreatorCorrelationCounts {
+            builds: self.creator_builds.len(),
+            data: self.creator_data.len(),
+            gateways: self.creator_gateways.len(),
+        }
     }
 
     /// Installs the bounded LOCAL consumer for OBEP semantic
@@ -786,7 +866,11 @@ where
         // Creator correlation uses the inner build message id the
         // service recovered; a match means our own coordinator
         // originated this build and transit must not claim it.
-        if self.creator_builds.contains(&(peer.hash(), inner_msgid)) {
+        if self
+            .creator_builds
+            .get(&(peer.hash(), inner_msgid))
+            .is_some_and(|expiry| *expiry > now_seconds)
+        {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
@@ -939,7 +1023,11 @@ where
         message_id: u32,
         now_seconds: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self.creator_builds.contains(&(peer.hash(), message_id)) {
+        if self
+            .creator_builds
+            .get(&(peer.hash(), message_id))
+            .is_some_and(|expiry| *expiry > now_seconds)
+        {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         if !self.is_enabled() {
@@ -1019,7 +1107,11 @@ where
         // Ownership order: creator/service first, transit second,
         // unknown fail closed. The probe is consulted before any
         // transit state mutation.
-        if self.creator_data.contains(&tunnel_id) {
+        if self
+            .creator_data
+            .get(&tunnel_id)
+            .is_some_and(|expiry| *expiry > now_ms / 1_000)
+        {
             return Ok(LiveInboundOutcome::Data(
                 TransitDataDisposition::CreatorOwned,
             ));
@@ -1157,7 +1249,11 @@ where
         peer: PeerId,
         now_ms: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self.creator_gateways.contains(&parts.tunnel_id) {
+        if self
+            .creator_gateways
+            .get(&parts.tunnel_id)
+            .is_some_and(|expiry| *expiry > now_ms / 1_000)
+        {
             return Ok(LiveInboundOutcome::Gateway(
                 LiveGatewayOutcome::CreatorOwned,
             ));

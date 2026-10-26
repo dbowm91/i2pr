@@ -583,7 +583,7 @@ fn plan254_c16_peer_link_match_inbound() {
 fn plan254_c17_creator_bypass() {
     let mut owner = live_owner_for_test();
     owner.enable(service_for_test(), participation_for_test());
-    owner.install_creator_build(test_peer(), MESSAGE_ID);
+    owner.install_creator_build(test_peer(), MESSAGE_ID, NOW_MS);
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -670,7 +670,7 @@ fn plan254_c21_outer_cancellation_drains() {
 fn plan254_d22_creator_data_never_reaches_transit() {
     let mut owner = live_owner_for_test();
     owner.enable(service_for_test(), participation_for_test());
-    owner.install_creator_data(0x1000);
+    owner.install_creator_data(0x1000, NOW_MS);
     let cell = TunnelDataMessage {
         tunnel_id: 0x1000,
         data: [0xAA; 1024],
@@ -941,7 +941,7 @@ fn plan254_f33_unknown_gateway_fails_closed() {
 fn plan254_f35_creator_gateway_bypass() {
     let mut owner = live_owner_for_test();
     owner.enable(service_for_test(), participation_for_test());
-    owner.install_creator_gateway(0x4321);
+    owner.install_creator_gateway(0x4321, NOW_MS);
     let nested = I2npMessage::new_standard(
         0xC0DE,
         Date::from_millis(NOW_MS + 60_000),

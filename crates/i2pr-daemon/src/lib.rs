@@ -2352,15 +2352,19 @@ struct Ntcp2IngressOwner {
 fn install_transit_creator_correlation(
     transit: &mut TransitLiveOwner<ChaCha8Rng>,
     owner: &NormalSsu2Owner,
+    now_ms: u64,
 ) {
     let (builds, tunnel_ids) = owner.transit_creator_correlation();
     for (peer, message_id) in builds {
-        transit.install_creator_build(peer, message_id);
+        transit.install_creator_build(peer, message_id, now_ms);
     }
     for tunnel_id in tunnel_ids {
-        transit.install_creator_data(tunnel_id);
-        transit.install_creator_gateway(tunnel_id);
+        transit.install_creator_data(tunnel_id, now_ms);
+        transit.install_creator_gateway(tunnel_id, now_ms);
     }
+    // Plan 508: the sweep rides this tick, so the owner gains no second
+    // timer and the facts stay bounded over the router's lifetime.
+    transit.expire_creator_correlation(now_ms);
 }
 
 /// One inbound queue owner for the normal daemon. The group product wraps
@@ -4721,7 +4725,7 @@ fn register_ssu2_service(
                                 // work and spend the participation budget on
                                 // the router's own coordinator traffic.
                                 if let Some(transit) = transit_owner.as_mut() {
-                                    install_transit_creator_correlation(transit, &owner);
+                                    install_transit_creator_correlation(transit, &owner, now_ms);
                                 }
                                 if let Err(error) =
                                     owner.process_group_inbound(&inbound, outcome, message).await
