@@ -157,7 +157,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 6 786 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
 | `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
-| `src/lib.rs` | 5 770 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 6 076 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
@@ -187,13 +187,13 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/router_i2np.rs` | 3 689 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info` |
-| `src/exploratory_build.rs` | 2 201 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/exploratory_build.rs` | 4 514 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/exploratory_driver.rs` | 1 778 | **Plan 505** exploratory build driver: the router names a peer through Plan 491's version-gated selection, builds a one-hop exploratory tunnel toward it through the EXISTING `rebuild_exploratory` path, and records exactly one peer-level observation per terminal outcome -- a local condition produces none, so the router never blames a peer for a fault of its own | `PeerBuildIdentity`, `PeerMaterialError`, `PeerBuildIdentityResolver`, `ProfileStorePeerResolver`, `PeerObservation`, `observation_for_outcome`, `ExploratoryDriverCounters`, `ExploratoryDriverAction`, `SelectedPeer`, `ExploratoryDriverState`, `ExploratoryDriver` |
 | `src/peer_reconcile.rs` | 933 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS`, `RETENTION_WINDOW_MS` |
 | `src/destination_tunnels.rs` | 2 152 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
-| `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502) | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_owner.rs` | 1 616 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502) | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
 | `src/transit_composition.rs` | 668 | **Plan 502** M11 transit **product composition**: the derivation of the admission policy, hop material and participation binding from the normalized configuration, the owner's construction behind the operator's default-off `[transit] participation` opt-in, the inbound dispatch that makes the whole owner/no-owner choice internally, and the bounded peer-index reconcile against the live session set | `TransitCompositionInputs`, `TransitAdmissionDerivation`, `TransitCompositionError`, `derive_admission_policy`, `build_transit_owner`, `compose_transit_owner`, `dispatch_transit_inbound`, `reconcile_transit_peers` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
@@ -1914,6 +1914,58 @@ Plan 503's lookup-target API-version gate all stay open. **No stock-peer
 evidence is claimed**: whether an ordinary public router sends unsolicited
 stores this router will accept is **unproven**.
 
+### The transit creator-correlation retention window (Plan 508, `src/transit_owner.rs`)
+
+Plan 502 closed the **population** the transit owner must bypass; Plan 508
+closes its **shelf life**.
+
+**The gap.** The transit owner's `creator_builds`, `creator_data` and
+`creator_gateways` facts were `BTreeSet`s with only `insert`, and the
+production wiring installs them on **every** pump tick, so each build the
+router performs left one entry behind for ever. The code's own comment
+said so: *the number of facts is bounded by the coordinator's
+pending-build and tunnel-retention ceilings times the number of builds
+the router performs* — a bound **per build**, not over time. Plan 502
+recorded it as Finding M1 and deferred the fix as *a protocol decision*.
+
+**The decision, made on the record.** A creator-correlated fact is
+installed while the coordinator's build is **pending**; the coordinator's
+own memory of that build's identifiers starts when the build is
+**retired**. The window is therefore the build deadline plus the
+coordinator's own longest identifier retention —
+`BUILD_DEADLINE_MS + BUILD_TUNNEL_ID_RETENTION_MS`, 46 minutes — derived
+through a constant from bounds the tree already enforces. There is **one**
+source of truth and **no new configuration key**.
+
+**The expiry is checked at use time.** That is the **safe** direction: an
+expired fact is declined, and a live one never is, so the router's own
+traffic is never claimed as transit work — the invariant the facts exist
+for. The **sweep** rides the pump tick that already installs the facts,
+so the owner gains no second timer and no second task.
+
+**Every comparison rounds in the safe direction.** Two of the four use
+sites (`dispatch_router_garlic` and `dispatch_build_body`) carry seconds
+and two (`handle_tunnel_data_inner` and `handle_gateway_inner`) carry
+milliseconds. The window is stored in seconds with a **ceiling** at
+install time and a **floor** at comparison time, so a fact is never
+declined before it has expired.
+
+**The coordinator's own fact set is untouched.** It was already bounded
+and already expired; only the owner's **copy** was unbounded.
+
+**The controls are not vacuous, and that is measured.** Four mutations of
+the real tree, each applied, run against the real lanes, and reverted: a
+use site that stops consulting the expiry, a sweep that compares against
+nothing, a window that collapses to zero, and an install that drops the
+expiry. They fail six, eleven, eleven and eight tests respectively, and
+the tree was restored byte-for-byte after each. Two of them were found
+to be weaker than they looked and were fixed — see the closure record.
+
+**A documentation drift is recorded, not fixed.** The module table's
+per-file line counts above are stale for **33** of the 63 rows that carry
+one. Plan 508 measured 36, corrected the three it changed, and left the
+rest alone.
+
 ### The NetDB retention policy (Plan 507, `src/peer_reconcile.rs`)
 
 Plan 506 closed the **population** the router learns. Plan 507 closes the
@@ -2466,12 +2518,12 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**108 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+**112 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
 modules (notably `src/lib.rs:4890`, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 
-The area inventory below names **69** of the 108 files. The remaining 39 were
+The area inventory below names **72** of the 112 files. The remaining 39 were
 added by later plans and are not yet assigned an area; the inventory is not
 inflated to hide that.
 
@@ -2480,7 +2532,7 @@ inflated to hide that.
 | Area | Count | Representative files |
 | --- | --- | --- |
 | CLI | 1 | `cli.rs` |
-| NetDB | 9 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates, `peer_reconcile_boundary.rs` — the Plan 506 static guard: the reconcile's lock order, its canonical write APIs, its bounded cadence, the single unsolicited-store ingest and the version gate at selection, `peer_reconcile_live.rs` — the Plan 506 out-of-crate lane: a peer that arrives through the production unsolicited-store path becomes known to both build-with stores after one reconcile, `netdb_retention_feasibility.rs` — the Plan 507 feasibility artefact: a store at its quota refuses a new peer and accepts it after a prune, `netdb_retention_boundary.rs` — the Plan 507 static guard: the retention window is the router's own acceptance window, the prune is the tree's own explicit prune, the ordering is prune then snapshot, the locks are one at a time, every prune is counted and no configuration key appears, `netdb_retention_live.rs` — the Plan 507 out-of-crate lane: the product prunes both live stores, a store at its quota turns over, a poisoned lock is counted and the router's own RouterInfo is never a victim |
+| NetDB | 9 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates, `peer_reconcile_boundary.rs` — the Plan 506 static guard: the reconcile's lock order, its canonical write APIs, its bounded cadence, the single unsolicited-store ingest and the version gate at selection, `peer_reconcile_live.rs` — the Plan 506 out-of-crate lane: a peer that arrives through the production unsolicited-store path becomes known to both build-with stores after one reconcile, `netdb_retention_feasibility.rs` — the Plan 507 feasibility artefact: a store at its quota refuses a new peer and accepts it after a prune, `netdb_retention_boundary.rs` — the Plan 507 static guard: the retention window is the router's own acceptance window, the prune is the tree's own explicit prune, the ordering is prune then snapshot, the locks are one at a time, every prune is counted and no configuration key appears, `netdb_retention_live.rs` — the Plan 507 out-of-crate lane: the product prunes both live stores, a store at its quota turns over, a poisoned lock is counted and the router's own RouterInfo is never a victim, `transit_creator_retention_feasibility.rs` — the Plan 508 feasibility artefact: the window is derived from the coordinator's own bounds, the facts are bounded over many simulated builds and a live fact is never declined early, `transit_creator_retention_boundary.rs` — the Plan 508 static guard: the window is derived, every install carries an expiry, every use site consults it, the sweep drops the expired facts and no configuration key appears, `transit_creator_retention_live.rs` — the Plan 508 out-of-crate lane: a fact inside its window still bypasses transit, a fact at the last live instant still bypasses it, and an expired fact does not |
 | Exploratory tunnels / build / liveness | 4 | `exploratory_build_unit.rs`, `exploratory_build_live.rs`, `exploratory_tunnel_external.rs` |
 | Destinations (M6) | 3 | `destination_tunnel_unit.rs`, `destination_tunnel_live.rs`, `destination_tunnel_external.rs` |
 | Streaming (M6) | 3 | `streaming_tunnel_unit.rs`, `streaming_tunnel_live.rs`, `streaming_tunnel_external.rs` |

@@ -1943,6 +1943,77 @@ Evidence: `crates/i2pr-daemon/src/peer_reconcile.rs`,
 `plans/implementation/network-participation/506-peer-knowledge-reconcile.md`;
 the closure record is `plans/closure/network-participation/506-status.md`.
 
+## The transit creator-correlation retention window (Plan 508)
+
+Plan 502 gave the transit owner the creator-correlation facts it needs to
+keep the router's own coordinator traffic out of the transit path. It
+recorded, as Finding M1, that those facts **never expire**, and it
+deferred the fix as *a protocol decision*.
+
+**The decision, made here on the record.** A creator-correlated fact is
+installed while the coordinator's build is **pending**; the coordinator's
+own memory of that build's identifiers starts when the build is
+**retired**. The window is therefore the build deadline plus the
+coordinator's own longest identifier retention —
+`BUILD_DEADLINE_MS + BUILD_TUNNEL_ID_RETENTION_MS`, 46 minutes — a
+function of constants the tree already enforces. There is **one** source of
+truth and **no new configuration key**.
+
+What is claimed, and what is not:
+
+- **The facts are bounded over the router's lifetime.** The three sets are
+  `BTreeMap`s from a fact to its expiry, not insert-only `BTreeSet`s, and
+  the sweep drops the expired entries.
+- **The expiry is checked at use time.** That is the **safe** direction: an
+  expired fact is declined, and a live one never is. The router's own
+  traffic is therefore never claimed as transit work, which is the
+  invariant the facts exist for.
+- **The sweep rides the pump tick that already installs the facts.** The
+  owner gains no second timer and no second task.
+- **Every comparison rounds in the safe direction.** Two of the four use
+  sites carry seconds and two carry milliseconds; the window is stored in
+  seconds with a ceiling at install time and a floor at comparison time,
+  so a fact is never declined before it has expired.
+- **The counts are the observability seam**, and they carry counts only.
+- **The coordinator's own fact set is untouched.** It was already bounded
+  and already expired; only the owner's **copy** was unbounded.
+- **The controls are not vacuous, and that is measured.** Four mutations of
+  the real tree, each applied, run against the real lanes, and reverted: a
+  use site that stops consulting the expiry fails **six** tests, among them
+  `an_expired_fact_no_longer_bypasses_transit`; a sweep that compares
+  against nothing fails **eleven**, among them
+  `an_expired_fact_is_declined`; a window that collapses to zero fails
+  **eleven**, among them `the_window_must_be_the_trees_own_bound`; and an
+  install that drops the expiry fails **eight**, among them
+  `a_fact_inside_the_window_still_bypasses_transit`. The tree was restored
+  byte-for-byte after each control.
+- **No advertisement and no capability change.** `router.version` stays
+  `0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+  inventory's advertised count stays **zero** (100 surfaces, 94
+  experimental, 5 deferred, 1 ready); `Cargo.toml` and `Cargo.lock` are
+  byte-identical.
+
+**What Plan 508 does not close.** The **transit participation posture**,
+the relay accounting and the OBEP path stay with Plan 492. Plan 487 F3's
+**destination-inbound half** (which needs tunnel rekeying), Plan 497
+limitation 5's **read** half, Plan 503's **lookup-target API-version
+gate**, Plan 491 F2 and F4, Plan 490 Medium #3 and every externally-blocked
+plan stay open. **No stock-peer evidence is claimed**: whether an ordinary
+public router's own build replies still arrive inside a 46-minute window
+is **unproven**, and the external lanes stay open until Plan 493's
+authorized topology exists.
+
+Evidence:
+`crates/i2pr-daemon/src/transit_owner.rs`,
+`crates/i2pr-daemon/src/exploratory_build.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/tests/transit_creator_retention_feasibility.rs`,
+`crates/i2pr-daemon/tests/transit_creator_retention_boundary.rs`, and
+`crates/i2pr-daemon/tests/transit_creator_retention_live.rs`. The plan of
+record is
+`plans/implementation/network-participation/508-transit-creator-correlation-retention.md`;
+the closure record is `plans/closure/network-participation/508-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that
