@@ -68,6 +68,28 @@ pub const MIN_RECONCILE_PERIOD_MS: u64 = 1_000;
 /// reconcile cannot outlive the cadence it shares.
 pub const MAX_RECONCILE_PERIOD_MS: u64 = 3_600_000;
 
+/// The router's own RouterInfo **acceptance** window, in milliseconds.
+///
+/// Plan 507: the retention window is the acceptance window, read from the
+/// validation policy rather than restated, so the router retains exactly
+/// what it accepts. A second value would be a second source of truth and
+/// could disagree with the validator -- which is the defect this plan
+/// removes.
+///
+/// The window is derived through `as_secs`, which is a `const fn`, so the
+/// constant cannot drift from the policy without a compile error.
+pub const RETENTION_WINDOW_MS: u64 = acceptance_window_secs() * 1_000;
+
+/// The acceptance window in whole seconds.
+///
+/// The window is a whole number of seconds in the policy, so the
+/// millisecond conversion is exact.
+const fn acceptance_window_secs() -> u64 {
+    i2pr_netdb::ValidationPolicy::default_const()
+        .max_age
+        .as_secs()
+}
+
 /// Why a reconcile could not be constructed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PeerReconcileError {
@@ -123,6 +145,15 @@ pub struct PeerReconcileCounters {
     /// Records the peer-profile store refused because the profile tier was at
     /// capacity.
     pub learned_profile_capacity_exceeded: u64,
+    /// Plan 507 — records the bootstrap's NetDB dropped by a retention
+    /// prune.
+    pub pruned_bootstrap: u64,
+    /// Plan 507 — records the destination coordinator's store dropped by a
+    /// retention prune.
+    pub pruned_destination: u64,
+    /// Plan 507 — records a prune that could not run, so the store
+    /// kept its contents and the condition stayed visible.
+    pub prune_unavailable: u64,
 }
 
 impl PeerReconcileCounters {
@@ -190,6 +221,9 @@ impl PeerReconcileCounters {
             "learned-profile-capacity-exceeded",
             self.learned_profile_capacity_exceeded,
         );
+        counts.insert("pruned-bootstrap", self.pruned_bootstrap);
+        counts.insert("pruned-destination", self.pruned_destination);
+        counts.insert("prune-unavailable", self.prune_unavailable);
         counts
     }
 }
@@ -206,6 +240,24 @@ pub enum PeerReconcileAction {
         /// The number of peer records the snapshot carried.
         records: usize,
     },
+}
+
+/// Plan 507 — the outcome of one retention prune.
+///
+/// The prune either ran, had nothing to do, or could not run. A prune
+/// that could not run is **counted**, never reported as a prune that
+/// happened: the store keeps its contents and the condition is visible
+/// under a stable reason label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PruneOutcome {
+    /// The prune ran and removed the given number of records.
+    Removed(usize),
+    /// The store does not exist in this composition, so there was nothing
+    /// to prune and nothing was skipped.
+    NotApplicable,
+    /// The store's lock could not be taken, so the prune did not run and
+    /// the store keeps its contents.
+    Unavailable,
 }
 
 /// The Plan 506 peer-knowledge reconcile.
@@ -264,10 +316,22 @@ impl PeerReconcile {
         self.period_ms
     }
 
-    /// Runs one reconcile when the cadence is due.
+    /// Runs one peer-knowledge maintenance pass when its cadence is due.
     ///
     /// The method is a **step**, not a task: it holds no timer and owns no
     /// cancellation. The caller drives it from the product's existing tick.
+    ///
+    /// Plan 507: the pass prunes first. The router's peer records must not
+    /// outlive the router's own acceptance window, and a store that reaches
+    /// its quota must make room rather than refuse every new peer forever.
+    /// The prune is the tree's own explicit-prune operation (Plan 103
+    /// section 3.4), with the acceptance window as the retention window.
+    ///
+    /// The order is prune the bootstrap, prune the destination store,
+    /// snapshot, insert, learn. The locks are taken one at a time and never
+    /// nested: the bootstrap's lock is released before the destination
+    /// coordinator's lock is taken, and the destination coordinator's lock
+    /// is released before the peer-profile store's lock is taken.
     pub async fn run(&mut self, now_ms: u64) -> PeerReconcileAction {
         if !self.cadence_due(now_ms) {
             self.counters.cadence_skips = self.counters.cadence_skips.saturating_add(1);
@@ -275,6 +339,12 @@ impl PeerReconcile {
         }
         self.last_run_ms = Some(now_ms);
         self.counters.runs = self.counters.runs.saturating_add(1);
+        // Plan 507 - the retention prune runs first, on the same cadence
+        // as the reconcile, so the two can never drift apart in time. The
+        // prune makes room for the writes below, and the snapshot is the
+        // fresh set: a record the prune removed is never carried into the
+        // destination store.
+        self.prune_stores(now_ms);
         // Step 1 — the bootstrap's lock is taken for the snapshot and
         // released before any other lock is taken.
         let Some(records) = self.snapshot() else {
@@ -294,6 +364,82 @@ impl PeerReconcile {
         PeerReconcileAction::Reconciled {
             records: records.len(),
         }
+    }
+
+    /// Plan 507 — prunes the two live stores with the retention window.
+    ///
+    /// The bootstrap's lock is taken and released here, and the destination
+    /// coordinator's lock is taken and released after it. The two are never
+    /// held at once, and the peer-profile store's lock is not touched at
+    /// all: the profile store has its own eviction policy and self-corrects
+    /// through the observation tiers, so it needs no age prune.
+    ///
+    /// The method takes no await at all, so no lock is ever held across
+    /// one.
+    ///
+    /// A prune that cannot run is counted, never silently skipped: the
+    /// store keeps its contents and the condition is visible in the
+    /// counters under a stable reason label.
+    fn prune_stores(&mut self, now_ms: u64) {
+        match self.prune_bootstrap(now_ms) {
+            PruneOutcome::Removed(removed) => {
+                self.counters.pruned_bootstrap = self
+                    .counters
+                    .pruned_bootstrap
+                    .saturating_add(removed as u64);
+            }
+            PruneOutcome::Unavailable => {
+                self.counters.prune_unavailable = self.counters.prune_unavailable.saturating_add(1);
+            }
+            PruneOutcome::NotApplicable => {}
+        }
+        match self.prune_destinations(now_ms) {
+            PruneOutcome::Removed(removed) => {
+                self.counters.pruned_destination = self
+                    .counters
+                    .pruned_destination
+                    .saturating_add(removed as u64);
+            }
+            PruneOutcome::Unavailable => {
+                self.counters.prune_unavailable = self.counters.prune_unavailable.saturating_add(1);
+            }
+            PruneOutcome::NotApplicable => {}
+        }
+    }
+
+    /// Plan 507 — prunes the bootstrap's NetDB under its lock.
+    ///
+    /// The lock is released when this function returns, before the
+    /// destination coordinator's lock is taken.
+    ///
+    /// A poisoned lock is **not** skipped silently: the prune did not run,
+    /// the store keeps its contents, and the caller counts the condition.
+    fn prune_bootstrap(&self, now_ms: u64) -> PruneOutcome {
+        let Some(bootstrap) = self.bootstrap.as_ref() else {
+            return PruneOutcome::NotApplicable;
+        };
+        let Ok(mut guard) = bootstrap.lock() else {
+            return PruneOutcome::Unavailable;
+        };
+        PruneOutcome::Removed(guard.prune(now_ms, RETENTION_WINDOW_MS))
+    }
+
+    /// Plan 507 — prunes the destination coordinator's authoritative
+    /// store under its lock.
+    ///
+    /// The lock is released when this function returns.
+    ///
+    /// The lock is **tried**, never waited for: a store another task is
+    /// using is left alone for this pass, the prune is counted as
+    /// unavailable, and the reconcile still runs. The store turns over on
+    /// the next pass, and the router never reports a prune it did not
+    /// perform.
+    fn prune_destinations(&self, now_ms: u64) -> PruneOutcome {
+        let destinations = Arc::clone(&self.destinations);
+        let Ok(mut guard) = destinations.try_lock() else {
+            return PruneOutcome::Unavailable;
+        };
+        PruneOutcome::Removed(guard.prune(now_ms, RETENTION_WINDOW_MS))
     }
 
     /// Returns whether the cadence is due.

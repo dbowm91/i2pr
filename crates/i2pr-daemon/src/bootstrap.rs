@@ -262,6 +262,28 @@ impl Bootstrap {
         &self.store
     }
 
+    /// Prunes the store with the supplied retention window and returns the
+    /// number of records removed.
+    ///
+    /// Plan 507: the bootstrap's store is the router's NetDB. It is fed by
+    /// every accepted unsolicited `DatabaseStore` and by the reseed
+    /// pipeline, and `RouterInfoStore::insert` **refuses** at the quota and
+    /// never evicts -- so a NetDB that filled up would refuse every new
+    /// peer, permanently, and would keep a record the router's own
+    /// validation policy would refuse to accept today.
+    ///
+    /// The prune is the tree's own explicit-prune operation (Plan 103 §3.4:
+    /// *explicit prune over silent eviction*), and the reported snapshot is
+    /// refreshed so the router's own counts stay true. The window is
+    /// supplied by the caller so the daemon has exactly one retention
+    /// policy, derived from its own acceptance window. The operation is
+    /// deterministic: the caller supplies `now`.
+    pub fn prune(&mut self, now_ms: u64, window_ms: u64) -> usize {
+        let removed = self.store.prune(Date::from_millis(now_ms), window_ms);
+        self.refresh_snapshot();
+        removed
+    }
+
     /// Returns one peer's signing key from its **validated** RouterInfo.
     ///
     /// Plan 498: the SSU2 introducer (Bob) role owner must never trust a key

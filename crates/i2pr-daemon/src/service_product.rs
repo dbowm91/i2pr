@@ -3674,6 +3674,12 @@ impl ServiceProduct {
     /// into the two stores the router builds with, and counts every
     /// outcome by reason.
     ///
+    /// Plan 507: the same pass carries the NetDB retention prune, so the
+    /// prune and the reconcile can never drift apart in time and the router
+    /// needs no second cadence. The prune runs **before** the reconcile's
+    /// snapshot, so a record the prune removed is never copied forward, and
+    /// the prune makes room before the reconcile's writes.
+    ///
     /// The reconcile never fails the tick. A capacity refusal, a conflict
     /// and a stale replacement are counted, not fatal, and an unreadable
     /// source is counted as a gap.

@@ -79,7 +79,9 @@ use i2pr_netdb::{
     VersionGatedFloodfillSelection, router_hash_from_destination, select_floodfill_candidates,
     select_version_gated_floodfills,
 };
-use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_proto::{
+    Date, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE,
+};
 use i2pr_transport::Deadline;
 use i2pr_tunnel::data_plane_registry::{DataPlaneRegistry, InboundGatewayRoute};
 use i2pr_tunnel::roles::OutboundGatewayRole;
@@ -689,6 +691,23 @@ impl DestinationTunnelCoordinator {
     /// Returns the authoritative bounded RouterInfo store.
     pub fn store(&self) -> &RouterInfoStore {
         &self.store
+    }
+
+    /// Prunes the authoritative store with the supplied retention window
+    /// and returns the number of records removed.
+    ///
+    /// Plan 507: the coordinator's store is fed by the startup seed and by
+    /// the live peer-knowledge reconcile, and `RouterInfoStore::insert`
+    /// **refuses** at the quota and never evicts -- so a store that filled
+    /// up would refuse every new peer, permanently. The prune is the tree's
+    /// own explicit-prune operation (Plan 103 §3.4: *explicit prune over
+    /// silent eviction*), so the store turns over instead of freezing.
+    ///
+    /// The window is supplied by the caller so the daemon has exactly one
+    /// retention policy, derived from its own acceptance window. The
+    /// operation is deterministic: the caller supplies `now`.
+    pub fn prune(&mut self, now_ms: u64, window_ms: u64) -> usize {
+        self.store.prune(Date::from_millis(now_ms), window_ms)
     }
 
     /// Inserts a record that has already passed the canonical
