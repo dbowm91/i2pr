@@ -2014,6 +2014,94 @@ record is
 `plans/implementation/network-participation/508-transit-creator-correlation-retention.md`;
 the closure record is `plans/closure/network-participation/508-status.md`.
 
+## The lookup-target API-version posture (Plan 509)
+
+Plan 503 recorded as a Medium finding that *the router still asks a
+below-floor floodfill for a lookup*, and left it open: a `DatabaseLookup` is
+neither a tunnel build nor a DSM, so the API-version gate was never extended
+to the lookup path, and extending the floor to the lookup path would change
+which floodfills the router can ask at all — which is a product decision, and
+therefore a plan-of-record's work.
+
+**Plan 509 makes that decision: the lookup target is not version-gated.**
+
+What is claimed, and what is not:
+
+- **No floor is derivable, and a floor that cannot be derived may not be
+  invented.** The specification's API-version table attaches exactly two
+  duties to the `0.9.62` row — *minimum peers will build tunnels through, as
+  of 0.9.68* and *minimum floodfill peers will send DSM to, as of 0.9.68* —
+  and a `DatabaseLookup` is neither. `i2pr_proto::MinimumPeerObligation`
+  carries only `constrains_tunnel_peers` and `constrains_dsm_targets`,
+  `i2pr_proto::VersionFloors` carries only `min_peer_for_tunnel_build` and
+  `min_floodfill_for_dsm`, and `i2pr_netdb::VersionGate` has exactly two
+  variants. A lookup floor would have to be invented, and this repository's
+  rule is that a floor is **derived**, never hand-maintained.
+- **The two existing floors encode duties *on the peer*, and they do not
+  transfer.** Each floor says that a peer **will not** do something: a
+  below-floor peer will not build tunnels through the router, and will not
+  send the router's DSM onward. The router's refusal is therefore exactly
+  *do not ask a peer for something it will not do*. The specification imposes
+  no such duty for a lookup, so there is no peer-side behaviour to refuse
+  against.
+- **The responder's version buys no safety.** The lookup's answer is a
+  `DatabaseStore` the router **validates itself** before it trusts it. A
+  below-floor peer that answers correctly is answered to; one that answers
+  incorrectly is refused by the validation. The refusal is the router's own
+  answer check, not a verdict on the peer.
+- **The rotation absorbs an unhelpful candidate.** The state machine excludes
+  already-queried peers and re-selects from the store, so a silent candidate
+  costs one round trip and the lookup moves on. The rotation is bounded by the
+  policy's candidate ceiling and the peer budget, and it terminates.
+- **The two reference implementations disagree, so the router does not pick a
+  side.** i2pd refuses to *file* a floodfill below `0.9.62`; Java's `0.9.62`
+  is a **peer-exclusion** floor and its floodfill-profile predicate imposes no
+  version floor at all. Neither gates a lookup by version.
+- **The claim is proved, not asserted.** Five rows drive the real lease-set2
+  lookup path through its public surface: a below-floor floodfill's correct
+  answer completes the lookup; an incorrect answer is refused by the
+  validation rather than by the version; a silent below-floor floodfill is
+  skipped rather than re-asked, and the lookup completes; a peer that
+  publishes no version at all is asked too. The inverted probe shows the
+  claim is not vacuous — a version-gated selection **would have refused** the
+  very peer the lookup asked.
+- **The decision is structural, so it cannot drift.** A static guard asserts
+  that the lookup path selects through the nearest-floodfill selection and
+  takes no version decision at all; that the specification's obligation table
+  still carries no lookup duty, the derived floors still carry no lookup
+  floor, and the gate vocabulary still has exactly two variants; that the
+  answer path still validates; and that the rotation still skips what it has
+  already asked. Every rule carries its own inverted probe, and the guard is
+  fail-closed.
+- **No production behaviour changed.** The router asks the same floodfills,
+  in the same order, with the same messages. Nothing here changes
+  `router.version`, `caps`, the published RouterInfo, or any advertisement;
+  the support inventory's advertised count stays **zero** (101 surfaces, 95
+  experimental, 5 deferred, 1 ready); `Cargo.toml` and `Cargo.lock` are
+  byte-identical.
+- **No stock-peer evidence is claimed.** The decision is proved over the
+  tree's own deterministic surfaces. Whether a real network's floodfills
+  publish versions the router can compare is **unproven**, and the external
+  lanes stay open until Plan 493's authorized topology exists.
+
+**What Plan 509 does not close.** Plan 491 **F2** and **F4**, Plan 487 F3's
+**destination-inbound half** (which needs tunnel rekeying), Plan 497
+limitation 5's **read** half, Plan 490 Medium #3 and every externally-blocked
+plan stay open.
+
+Evidence:
+`crates/i2pr-proto/src/common/version.rs`,
+`crates/i2pr-netdb/src/selection.rs`,
+`crates/i2pr-netdb/src/lookup_policy.rs`,
+`crates/i2pr-netdb/src/lookup_engine.rs`,
+`crates/i2pr-daemon/src/destination_tunnels.rs`,
+`crates/i2pr-daemon/src/netdb_seam.rs`,
+`crates/i2pr-netdb/tests/lookup_target_version_decision.rs` and
+`crates/i2pr-daemon/tests/lookup_target_version_boundary.rs`. The plan of
+record is
+`plans/implementation/network-participation/509-lookup-target-api-version-decision.md`;
+the closure record is `plans/closure/network-participation/509-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

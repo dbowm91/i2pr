@@ -484,6 +484,9 @@ plan_507_status = "registered-netdb-retention-policy"
 plan_508_plan_of_record = "plans/implementation/network-participation/508-transit-creator-correlation-retention.md"
 plan_508_closure = "plans/closure/network-participation/508-status.md"
 plan_508_status = "registered-transit-creator-correlation-retention"
+plan_509_plan_of_record = "plans/implementation/network-participation/509-lookup-target-api-version-decision.md"
+plan_509_closure = "plans/closure/network-participation/509-status.md"
+plan_509_status = "registered-lookup-target-api-version-decision"
 m12_controlled_router_version = "0.9.62"
 m12_controlled_router_version_basis = "i2pr implements the complete I2NP message surface the pinned i2pd 2.61.0 reference enumerates, including TunnelTest (231); the value is pinned to that surface by a test and must not outrun it"
 m12_controlled_floodfill_qualification = "passed-one-family-via-plan306-requal: i2pd 2.61.0 controlled matrix green on the first fresh-budget attempt against the peer-test-confirmed fR record (681 bytes); Java second-family unmet (Plan 306 stopped at the bandwidth-tier selection boundary); normal-daemon caps advertisement still forbidden"
@@ -1039,6 +1042,27 @@ evidence = [
     "crates/i2pr-daemon/tests/netdb_retention_live.rs",
     "plans/implementation/network-participation/507-netdb-retention-policy.md",
     "plans/closure/network-participation/507-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.lookup-target-version-posture"
+protocol = "netdb"
+structure = "ungated-lookup-target-with-router-validated-answers-and-a-rotating-candidate-set"
+scope = "required"
+status = "experimental"
+notes = "Plan 509 closes Plan 503's recorded Medium finding: *the router still asks a below-floor floodfill for a lookup*. A `DatabaseLookup` is neither a tunnel build nor a DSM, so the API-version gate was never extended to the lookup path, and Plan 503 left the question open because extending the floor to the lookup path would change which floodfills the router can ask at all -- a product decision. **This plan makes that decision: the lookup target is NOT version-gated.** No floor is derivable: the specification's API-version table attaches exactly two duties to the `0.9.62` row -- *minimum peers will build tunnels through, as of 0.9.68* and *minimum floodfill peers will send DSM to, as of 0.9.68* -- a `DatabaseLookup` is neither, `i2pr_proto::MinimumPeerObligation` carries only `constrains_tunnel_peers` and `constrains_dsm_targets`, `i2pr_proto::VersionFloors` carries only `min_peer_for_tunnel_build` and `min_floodfill_for_dsm`, and `i2pr_netdb::VersionGate` has exactly two variants, so a lookup floor would have to be INVENTED, and this repository's rule is that a floor is derived, never hand-maintained. The two existing floors encode duties *on the peer* -- a below-floor peer will not build tunnels through the router and will not send its DSM onward -- and the specification imposes no such duty for a lookup, so there is no peer-side behaviour to refuse against. The responder's version buys NO safety: the lookup's answer is a `DatabaseStore` the router VALIDATES ITSELF before it trusts it, so a below-floor peer that answers correctly is answered to and one that answers incorrectly is refused by the validation -- the refusal is the router's own answer check, not a verdict on the peer. The rotation absorbs an unhelpful candidate: the state machine excludes already-queried peers and re-selects from the store, so a silent candidate costs one round trip and the lookup moves on, bounded by the policy ceiling and the peer budget. The two reference implementations DISAGREE about a version rule for floodfills -- i2pd refuses to *file* a floodfill below `0.9.62`, while Java's `0.9.62` is a peer-exclusion floor and its floodfill-profile predicate has no version floor at all -- and neither gates a lookup by version, so the router must not pick a side. The decision changes NO production behaviour: the router asks the same floodfills, in the same order, with the same messages. The surface is internal and non-advertised: nothing here changes `router.version`, `caps`, the published RouterInfo, or any advertisement, and no stock-peer evidence is claimed."
+evidence = [
+    "crates/i2pr-proto/src/common/version.rs",
+    "crates/i2pr-netdb/src/selection.rs",
+    "crates/i2pr-netdb/src/lookup_policy.rs",
+    "crates/i2pr-netdb/src/lookup_engine.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/src/netdb_seam.rs",
+    "crates/i2pr-netdb/tests/lookup_target_version_decision.rs",
+    "crates/i2pr-daemon/tests/lookup_target_version_boundary.rs",
+    "plans/implementation/network-participation/509-lookup-target-api-version-decision.md",
+    "plans/closure/network-participation/509-status.md",
 ]
 advertised = false
 

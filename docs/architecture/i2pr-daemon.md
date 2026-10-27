@@ -1914,6 +1914,56 @@ Plan 503's lookup-target API-version gate all stay open. **No stock-peer
 evidence is claimed**: whether an ordinary public router sends unsolicited
 stores this router will accept is **unproven**.
 
+### The lookup path's API-version posture (Plan 509, `src/destination_tunnels.rs`)
+
+**The decision: the lookup target is NOT version-gated.** The router asks
+the floodfills its own routing policy selects, and every answer is validated
+by the router before it is trusted.
+
+The decision is a **product decision**, and Plan 503 recorded it as an open
+finding because it changes which floodfills the router can ask at all. The
+reasons it is the right decision:
+
+- **No floor is derivable.** The specification's API-version table attaches
+  exactly two duties to the `0.9.62` row — *minimum peers will build tunnels
+  through* and *minimum floodfill peers will send DSM to*. A `DatabaseLookup`
+  is neither. `i2pr_proto::MinimumPeerObligation` carries only
+  `constrains_tunnel_peers` and `constrains_dsm_targets`, and
+  `i2pr_proto::VersionFloors` carries only `min_peer_for_tunnel_build` and
+  `min_floodfill_for_dsm`. A lookup floor would have to be **invented**, and
+  a floor is derived, never hand-maintained.
+- **The gate vocabulary already says so.** `i2pr_netdb::VersionGate` has
+  exactly two variants — `TunnelBuildPeer` and `DsmTarget` — because the
+  specification imposes exactly two duties. A lookup gate cannot be expressed
+  in the tree's own vocabulary without a third duty that does not exist.
+- **The two floors encode peer-side duties that do not transfer.** Each floor
+  says a peer **will not** do something, so the router's refusal is exactly
+  *do not ask a peer for something it will not do*. The specification imposes
+  no such duty for a lookup.
+- **The responder's version buys no safety.** The answer is a `DatabaseStore`
+  the router validates itself (`handle_database_store_lease_set2` runs it
+  through `ValidatedLeaseSet2::from_lease_set2`), so a below-floor peer that
+  answers correctly is answered to and one that answers incorrectly is
+  refused by the validation.
+- **The rotation absorbs an unhelpful candidate.** The state machine excludes
+  already-queried peers and re-selects from the store, so a silent candidate
+  costs one round trip and the lookup moves on.
+- **The two references disagree.** i2pd refuses to *file* a floodfill below
+  `0.9.62`; Java's `0.9.62` is a peer-exclusion floor and its floodfill
+  predicate has no version floor at all. Neither gates a lookup, so the
+  router does not pick a side.
+
+**The selection sites.** The lookup path's selections are the **ungated**
+nearest-floodfill selection: `src/destination_tunnels.rs`'s
+`begin_lease_lookup_inner`, and the state machine's `start`,
+`start_with_preferred` and `advance_active` in `i2pr-netdb`'s
+`lookup_engine.rs`. The version-gated selection appears only on the two DSM
+paths, which Plan 503 put there.
+
+**The guard.** `crates/i2pr-daemon/tests/lookup_target_version_boundary.rs`
+makes the decision structural, and
+`crates/i2pr-netdb/tests/lookup_target_version_decision.rs` proves it.
+
 ### The transit creator-correlation retention window (Plan 508, `src/transit_owner.rs`)
 
 Plan 502 closed the **population** the transit owner must bypass; Plan 508
