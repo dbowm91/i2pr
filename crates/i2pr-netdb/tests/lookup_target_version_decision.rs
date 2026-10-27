@@ -191,10 +191,13 @@ fn valid_ls2(signer: &RouterIdentityBundle) -> LeaseSet2 {
     )
 }
 
-/// A lease record that has already expired at [`NOW_SECONDS`].
+/// A lease record whose **own** expiry has passed at [`NOW_SECONDS`].
 ///
-/// The signature is genuine; only the record's freshness fails, so the
-/// refusal that follows is the freshness check's and nothing else's.
+/// The signature is genuine, the destination binds, and the lease inside the
+/// record is still live — so the record's own expiry is the **only** check
+/// that fails. The refusal that follows is therefore that check's and
+/// nothing else's, which is what makes it a test of the freshness check
+/// rather than of the lease check beside it.
 fn expired_ls2(signer: &RouterIdentityBundle) -> LeaseSet2 {
     build_signed_ls2(
         signer,
@@ -203,7 +206,7 @@ fn expired_ls2(signer: &RouterIdentityBundle) -> LeaseSet2 {
         vec![Lease2::new(
             Hash::from_bytes([0x22; 32]),
             7,
-            Date32::from_seconds(60),
+            Date32::from_seconds(PUBLISHED_SECONDS + 600),
         )],
     )
 }
@@ -484,6 +487,62 @@ fn a_peer_that_publishes_no_version_is_asked_for_a_lookup_too() {
         asked_peer(lookup.handle_pending_after_path(&store, &routing_key)),
         peer_key,
         "the candidate set is the nearest-floodfill set, unchanged by version"
+    );
+}
+
+#[test]
+fn an_answer_for_another_destination_is_refused() {
+    // The claim: the answer is bound to the destination the lookup asked
+    // for.
+    //
+    // The answer is filed under the lookup's **own** key, so the key check
+    // passes and the record is not merely misfiled — the record inside it
+    // is for a different destination. The router refuses it, and the
+    // refusal is the destination binding's.
+    let destination = bundle(SEED_BASE + 11);
+    let other = bundle(SEED_BASE + 12);
+    let peer = bundle(SEED_BASE + 13);
+    let peer_record = floodfill_at(&peer, BELOW_FLOOR_VERSION);
+    assert_below_the_floor(&peer_record);
+
+    let mut store = RouterInfoStore::default();
+    store.insert(peer_record.clone());
+    let peer_key = peer_record.key();
+
+    let target = lookup_target_for(&destination);
+    let routing_key = RouterHash::from_bytes([0x27; 32]);
+    let lookup_id = LookupId::new(REQUEST_ID, LookupKind::LeaseSet2, target);
+    let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+
+    let outcome = lookup.start(&store, lookup_id, &routing_key);
+    assert!(matches!(outcome, StartOutcome::NeedsReplyPath(_)));
+    assert!(lookup.accept_reply_path(lookup_id, reply_path()));
+    assert_eq!(
+        asked_peer(lookup.handle_pending_after_path(&store, &routing_key)),
+        peer_key,
+        "the peer is asked, whatever its version"
+    );
+
+    let mut lease_store = LeaseSet2Store::default();
+    // The record is for `other`, but it is filed under the lookup's own key.
+    let message = store_message(&target, valid_ls2(&other));
+    let outcome = handle_database_store_lease_set2(
+        &mut lookup,
+        &mut lease_store,
+        lookup_id,
+        &message,
+        LeaseSet2ValidationContext::new(NOW_SECONDS),
+    )
+    .expect("handle");
+    assert_eq!(
+        outcome,
+        ResponseOutcome::Continue,
+        "a record for another destination is refused"
+    );
+    assert_eq!(
+        lease_store.stats().record_count,
+        0,
+        "a refused record is never installed"
     );
 }
 
