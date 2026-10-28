@@ -667,3 +667,122 @@ gateway-addressed probe: a destination probe path that is systematically
 broken proves nothing, and therefore **fails nothing**. The rule is
 inherited by the destination population unchanged, and a static guard pins
 that there is exactly one such gate in the scheduler's production code.
+
+## 12. Finding a peer: the exploration and the RouterInfo lookup
+
+Plan 513 gives the router a live DHT discovery spine. This section records
+what the two pinned references do, because they are the design's source, and
+it records where the tree's own authority differs from them.
+
+### 12.1 What the router runs today, and what is missing
+
+The live router runs **one** kind of NetDB lookup: `LeaseSet2`
+(`crates/i2pr-daemon/src/netdb_seam.rs:362`). The **exploratory** lookup
+(wire type `3`) and the **RouterInfo** lookup (wire type `2`) exist in the
+source and have **no production caller**. The routing table is populated and
+persisted in a live daemon, and **no live lookup consults it**
+(`plans/closure/network-participation/497-status.md:342-348`, `:394-398`).
+
+A router that cannot find a peer can only talk to the peers it was handed:
+the seed file's floodfills plus unsolicited `DatabaseStore`s
+(`plans/closure/network-participation/506-status.md:92-97`).
+
+### 12.2 The dependency between the two kinds
+
+An exploratory lookup's answer is a `DatabaseSearchReply`, and that message
+carries peer **hashes**, not records:
+
+```
+pub struct DatabaseSearchReplyMessage {
+    pub key: Hash,
+    pub peer_hashes: Vec<Hash>,
+    pub from: Hash,
+}
+```
+
+(`crates/i2pr-proto/src/i2np/netdb.rs:223-230`.) A peer hash the router
+cannot resolve is a **name**, not a peer: the routing table's driver says so
+itself with `RoutingLookupOutcome::NeedsPeerResolution` —
+*"a peer without an address cannot be asked"*
+(`crates/i2pr-daemon/src/netdb_participation.rs:1689-1691`).
+
+So the **RouterInfo-kind resolution is the enabling half**, and it is also
+the half the support inventory names as deferred:
+`netdb.live-routerinfo-lookup`, structure *"live-standards-conformant-routerinfo-lookup-over-exploratory-tunnels"*
+(`specs/support.toml:1372-1379`).
+
+### 12.3 The tree's own authority: Plan 102's amendment
+
+`plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md`
+is a **closed authority amendment**:
+
+> Current I2P RouterInfo `DatabaseLookup` operation uses an outbound
+> exploratory tunnel and requests the response through an inbound
+> exploratory tunnel.
+
+> A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute for
+> the standard exploratory-tunnel path.
+
+This is binding on `i2pr`, and it is why the RouterInfo-kind lookup is
+composed on the exploratory pool's **outbound** role for the request and
+its **inbound** role for the reply. The reply-path seam exists:
+`ExploratoryPoolReplyPathProvider::provide_reply_path`
+(`crates/i2pr-tunnel/src/provider.rs:41`) asks the exploratory pool for its
+oldest valid **inbound** tunnel and translates it into a `ReplyPath`.
+
+### 12.4 i2pd 2.61.0 — the exploration
+
+Pin `635b013a612ff47278ef02acf8580a28e10e26c5` (tag `2.61.0`).
+
+`libi2pd/NetDbRequests.cpp:459-507` — `NetDbRequests::Explore`:
+
+- The exploratory pool's **next outbound** and **next inbound** tunnels are
+  taken, and `throughTunnels` is true when both exist (`:462-465`).
+- For each destination a **random 32-byte hash** is generated (`:472`) and
+  the request is created as an **exploratory** request (`:473`).
+- The floodfill is the **closest** one to that random hash
+  (`netdb.GetClosestFloodfill(randomHash, excluded)`, `:479`).
+- If the floodfill is **directly connected**, `throughTunnels` is set to
+  false (`:482-483`) and the request is sent **directly**
+  (`i2p::transport::transports.SendMessage(floodfill->GetIdentHash(), ...)`,
+  `:499-500`). Otherwise the request is sent **through the outbound
+  exploratory tunnel** (`:484-497`, delivered by
+  `outbound->SendTunnelDataMsgs(msgs)` at `:505-506`), and the floodfill is
+  told about the router with a `DatabaseStore` in the same tunnel (`:486-491`).
+- The exploration is **scheduled**, not run on demand
+  (`ScheduleExploratory`, `:509`; `HandleExploratoryTimer`, `:516`): the
+  interval grows with the number of known routers (`:521-522`), and the number of
+  destinations per round is bounded to between 1 and 9 (`:528-531`).
+
+`libi2pd/NetDbRequests.cpp:255-311` — `SendNextRequest` is the **non**
+exploratory path, and it applies the same rule: direct when the floodfill is
+reachable or connected (`:267-269`: *"floodfill can't be reached directly"*
+sets `direct = false`), sends directly (`:287`), or through the exploratory
+pool's **outbound** tunnel with the reply path on its **inbound** tunnel
+(`:291-303`); with no tunnels it refuses the request (`:305-310`).
+
+**The reference's rule is uniform: direct when the floodfill is reachable,
+through the exploratory tunnel otherwise.**
+
+### 12.5 The divergence the tree records
+
+`i2pr` sends the **exploratory** lookup **directly**. The reference's
+tunnel fallback exists for **reachability** — a floodfill the router cannot
+reach directly — and `i2pr`'s floodfills are reached over its established
+transport seam. The exploratory lookup is therefore always direct here, and
+the reference's fallback is **not** implemented.
+
+This is recorded as a divergence with its reason. It is **not** the same
+question as §12.3: Plan 102's amendment binds the **RouterInfo** kind, and
+that kind is composed on the exploratory tunnels, exactly as the amendment
+requires. The exploratory kind has no such authority in this repository.
+
+### 12.6 Provenance caveat, stated plainly
+
+The pinned Java reference is **2.13.0**
+(`9134f808337b401e8e53c73734c81fab04280c9d`). The Java **router** classes
+are **not installed** on this host — the local installation's jars carry no
+`router/netdb` package at all — so there is **no** Java reading of the
+exploration or of the RouterInfo request path to record. The **primary**
+derivation is i2pd's, whose checkout is at the exact pin, and the tree's own
+authority for the RouterInfo kind is Plan 102's closed amendment.
