@@ -123,10 +123,19 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
 /// (`33_000 + pid % 5_000`): the two lanes run as separate test binaries
 /// and may run concurrently, and a shared band would let one lane's
 /// listener steal the other's port.
+///
+/// The band also sits **below** the operating system's ephemeral range
+/// (`32768–60999` on Linux). A fixed port inside the ephemeral range can
+/// be handed out to an unrelated outbound connection on the same host,
+/// and the control's `await_port_release` would then wait up to two
+/// seconds for it before the staging binds. That wait is bounded, so the
+/// lane still passes — but it makes the lane's *duration* depend on
+/// unrelated host traffic. Keeping the band below the ephemeral range
+/// removes the dependency.
 fn distinct_port() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
     static BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    let base = *BASE.get_or_init(|| 41_000 + (std::process::id() % 5_000) as u16);
+    let base = *BASE.get_or_init(|| 20_000 + (std::process::id() % 5_000) as u16);
     base + NEXT.fetch_add(1, Ordering::Relaxed) * 37
 }
 
