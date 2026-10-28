@@ -79,19 +79,33 @@ pub struct ApiVersion {
 
 impl ApiVersion {
     /// Builds a three-component version.
+    ///
+    /// The array is built from the comparator's **ceiling**, not from a
+    /// four-element literal, so a wider recorded row widens the comparator
+    /// instead of breaking the build. The ceiling is at least four — the
+    /// specification's table contains a four-component row — so the third
+    /// component always fits.
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self {
-            components: [major, minor, patch, 0],
-            len: 3,
-        }
+        let mut components = [0u16; MAX_API_VERSION_COMPONENTS];
+        components[0] = major;
+        components[1] = minor;
+        components[2] = patch;
+        Self { components, len: 3 }
     }
 
     /// Builds a four-component version.
+    ///
+    /// The array is built from the comparator's **ceiling**, for the same
+    /// reason as [`ApiVersion::new`]. This constructor needs a ceiling of at
+    /// least four, which the specification's table's four-component row
+    /// guarantees.
     pub const fn new4(major: u16, minor: u16, patch: u16, build: u16) -> Self {
-        Self {
-            components: [major, minor, patch, build],
-            len: 4,
-        }
+        let mut components = [0u16; MAX_API_VERSION_COMPONENTS];
+        components[0] = major;
+        components[1] = minor;
+        components[2] = patch;
+        components[3] = build;
+        Self { components, len: 4 }
     }
 
     /// Parses a published version string.

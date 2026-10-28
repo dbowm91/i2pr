@@ -545,6 +545,32 @@ fn rule_the_refusal_is_typed_and_counted(tree: &Tree) -> Option<String> {
     None
 }
 
+/// Rule 11: the constructors build their array from the ceiling.
+///
+/// A constructor that filled a **four-element literal** would make a wider
+/// recorded row break the build instead of widening the comparator, which
+/// would defeat the derivation.
+fn rule_the_constructors_follow_the_ceiling(tree: &Tree) -> Option<String> {
+    let code = code_view(tree.source(PROTO));
+    for name in ["new", "new4"] {
+        let Some(body) = function_body(&code, name) else {
+            return Some(format!("`fn {name}` must exist in the production surface"));
+        };
+        let body = compact(body);
+        if !body.contains("[0u16;MAX_API_VERSION_COMPONENTS]") {
+            return Some(format!(
+                "`fn {name}` must build its array from the comparator's ceiling"
+            ));
+        }
+        if body.contains("major,minor,patch") {
+            return Some(format!(
+                "`fn {name}` must not fill a four-element literal: a wider recorded row would                  break the build"
+            ));
+        }
+    }
+    None
+}
+
 /// Rule 10: the ceiling equals the held row's width, in the compiled code.
 fn rule_the_ceiling_equals_the_held_row_width(_tree: &Tree) -> Option<String> {
     let ceiling = i2pr_proto::MAX_API_VERSION_COMPONENTS;
@@ -573,6 +599,7 @@ fn check_all(tree: &Tree) -> Vec<String> {
         ("rule 8", rule_there_is_no_peer_to_peer_ordering_path),
         ("rule 9", rule_the_refusal_is_typed_and_counted),
         ("rule 10", rule_the_ceiling_equals_the_held_row_width),
+        ("rule 11", rule_the_constructors_follow_the_ceiling),
     ];
     let mut violations = Vec::new();
     for (label, rule) in rules {
@@ -637,8 +664,9 @@ fn every_rule_is_reachable_and_the_tree_holds() {
         ("rule 8", rule_there_is_no_peer_to_peer_ordering_path),
         ("rule 9", rule_the_refusal_is_typed_and_counted),
         ("rule 10", rule_the_ceiling_equals_the_held_row_width),
+        ("rule 11", rule_the_constructors_follow_the_ceiling),
     ];
-    assert_eq!(rules.len(), 10);
+    assert_eq!(rules.len(), 11);
     for (label, rule) in rules {
         assert_eq!(rule(&tree), None, "{label} must hold on the landed tree");
     }
@@ -792,6 +820,20 @@ fn the_counting_rule_fires_when_the_uncomparable_counter_is_dropped() {
         "VersionEligibility::UncomparableVersion => {}",
     );
     assert!(rule_the_refusal_is_typed_and_counted(&mutated).is_some());
+}
+
+/// Rule 11's inverted probe: a constructor that fills a four-element literal
+/// must be reported.
+#[test]
+fn the_constructor_rule_fires_when_a_literal_returns() {
+    let tree = landed();
+    let mutated = mutate(
+        &tree,
+        PROTO,
+        "let mut components = [0u16; MAX_API_VERSION_COMPONENTS];\n        components[0] = major;\n        components[1] = minor;\n        components[2] = patch;\n        Self { components, len: 3 }",
+        "Self { components: [major, minor, patch, 0], len: 3 }",
+    );
+    assert!(rule_the_constructors_follow_the_ceiling(&mutated).is_some());
 }
 
 /// The guard must not report a construct that only appears in a comment or in
