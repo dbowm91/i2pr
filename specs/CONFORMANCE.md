@@ -2183,6 +2183,77 @@ record is
 `plans/implementation/core-router-recovery/510-managed-tunnel-staging-under-load.md`;
 the closure record is `plans/closure/core-router-recovery/510-status.md`.
 
+## The API-version comparator's component ceiling (Plan 511)
+
+Plan 491 recorded **F5**: *"The comparator's four-component ceiling is an
+unstated assumption in the specification's terms."* The specification's
+API-version table contains a four-component row (`0.6.1.10`), but this tree
+held only the table's **minimum-peer obligation** rows as data, so the row
+the ceiling depended on lived in a prose comment. Plan 511 makes that row a
+**held record** and the ceiling a **derivation** from it.
+
+What is claimed, and what is not:
+
+- **The ceiling has a source.** `i2pr_proto::SPECIFICATION_WIDEST_VERSION_ROW`
+  holds the specification's four-component row as data, and
+  `i2pr_proto::MAX_API_VERSION_COMPONENTS` is that row's **width** — through
+  `version_row_width` — rather than a literal beside it. The stored array's
+  width and the parser's bound are that same constant, so a version the
+  parser accepts is stored in full and the ordering stays **exact**.
+- **A wider row widens the comparator.** This is the point. If the
+  specification's table gains a five-component row, the held record becomes
+  that row, the ceiling follows it, and such a version becomes
+  **comparable** — which is exactly what F5 says the hard-coded ceiling
+  denies. The refusal is no longer a property of a literal.
+- **No production behaviour changes.** The record is four components wide, so
+  the constant is four, so the comparator accepts and refuses **exactly** the
+  versions it accepts and refuses today. `ApiVersion` stays 10 bytes and
+  `PublishedVersion` stays 12; the sizes were measured, not estimated. A
+  widening to an input-derived 128-component bound would have cost 26x on
+  both and about 1 MiB of profile-store memory, which is why the ceiling is
+  derived rather than raised.
+- **The references are recorded, for the first time here.** `i2pd 2.61.0`
+  (pin `635b013a612ff47278ef02acf8580a28e10e26c5`) reads `router.version` by
+  collapsing every digit into an `int` with **no component count**, so
+  `"0.9.62.1.2"` becomes `96212` and is **above** the floor `962`.
+  **Java I2P**'s `net.i2p.util.VersionComparator` walks both strings to
+  exhaustion with **no cap**, parsing components as `long`s. So `i2pr` is the
+  only one of the three that refuses such a version — a divergence that is
+  now recorded with its evidence rather than left implicit. The **Java
+  reading is from 2.13.1**, not the pinned **2.13.0**, and is labelled as
+  such; the primary derivation is i2pd's, at the exact pin.
+- **The divergence is safe.** The refusal is **typed**
+  (`PublishedVersion::Uncomparable` → `VersionEligibility::UncomparableVersion`),
+  **counted** (`VersionRefusalCounts::uncomparable_version`, published under
+  the stable label `uncomparable-version`), **fail-closed**, and **monotone**:
+  it can only exclude a peer both references would admit, never admit one
+  below a floor.
+- **The per-component width is recorded, not settled.** The router's `u16`
+  bound against Java's `long` is a second divergence, deferred to a successor.
+- **The decision is structural.** A guard pins the derivation, the held row,
+  the stored width, the parser's bound, the ordering's exactness, the
+  comparator's `const`, every floor's three-component width, the absence of a
+  peer-to-peer ordering path, and the refusal's counting in the live path.
+  Every rule carries an inverted probe.
+- **No advertisement.** `router.version` stays `0.9.62`; `caps` and the
+  published RouterInfo are unchanged; the support inventory's advertised
+  count stays **zero**; `Cargo.toml` and `Cargo.lock` are byte-identical.
+- **Plan 491's closure record is not rewritten.** The discharge lives here and
+  in the registry row.
+
+**What Plan 511 does not close.** Plan 491's **F2** (no stock-peer evidence)
+is blocked externally on Plan 493's authorized two-host topology. The
+per-component width divergence is recorded for a successor.
+
+Evidence:
+`crates/i2pr-proto/src/common/version.rs`,
+`crates/i2pr-proto/tests/version_ceiling_derivation.rs` and
+`crates/i2pr-daemon/tests/version_ceiling_boundary.rs`. The references'
+evidence is recorded in `specs/QUALIFICATION-GATES.md` §10. The plan of record
+is
+`plans/implementation/core-router-recovery/511-version-component-ceiling.md`;
+the closure record is `plans/closure/core-router-recovery/511-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

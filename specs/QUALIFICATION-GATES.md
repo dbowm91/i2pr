@@ -435,3 +435,113 @@ evidence file.** The checker's output is states, counts and digests.
   accommodate `i2pr`** beyond the recorded lab profile.
 - **A predicate the source does not determine is `unknown`, not `satisfied`.**
   The gate would rather refuse a verdict than guess one.
+
+## 10. The API-version component ceiling
+
+This section records what the two pinned references do with a published
+`router.version` that carries **more components than the specification's
+API-version table has ever used**. The router's own comparator refuses such
+a version, so the divergence is recorded here with the evidence behind it,
+rather than left implicit.
+
+### 10.1 What the specification's table says, and what the router holds
+
+The specification's API-version table contains a four-component row
+(`0.6.1.10`). `i2pr` holds the table's **minimum-peer obligation** rows as
+data (`i2pr_proto::MINIMUM_PEER_OBLIGATIONS`, six rows, every one of them
+three components); it does **not** hold the table's other rows. The
+four-component row the comparator's bound depends on was therefore held only
+as prose, and Plan 511 made it a **held record**
+(`i2pr_proto::SPECIFICATION_WIDEST_VERSION_ROW`) with the comparator's
+component ceiling **derived** from it
+(`i2pr_proto::MAX_API_VERSION_COMPONENTS`).
+
+### 10.2 i2pd 2.61.0 — no component count
+
+Pin `635b013a612ff47278ef02acf8580a28e10e26c5` (tag `2.61.0`).
+
+`libi2pd/RouterInfo.cpp` reads the `router.version` property by collapsing
+every digit into an `int`:
+
+```cpp
+m_Version = 0;
+for (auto ch: value)
+{
+    if (ch >= '0' && ch <= '9')
+    {
+        m_Version *= 10;
+        m_Version += (ch - '0');
+    }
+}
+```
+
+The separators are simply not digits and are skipped, so there is **no
+component count** in the parse. `libi2pd/version.h:18` defines
+
+```cpp
+#define MAKE_VERSION_NUMBER(a,b,c) ((a*100+b)*100+c)
+```
+
+so the floor `0.9.62` is the integer `962`
+(`libi2pd/NetDb.hpp:54-58` names `NETDB_MIN_HIGHBANDWIDTH_VERSION`,
+`NETDB_MIN_FLOODFILL_VERSION` and `NETDB_MIN_SHORT_TUNNEL_BUILD_VERSION`
+from it). `"0.9.62.1.2"` therefore collapses to `96212`, which is **above**
+`962`.
+
+**i2pd admits a five-component version and treats it as above the floor.**
+
+Note also what i2pd's model is *not*: it is **not** a component-wise
+comparison. It cannot distinguish `0.9.6.2` from `0.9.62` — both collapse to
+`962`. That is why the two references do not agree with each other on how a
+longer version compares, and why `i2pr` follows the specification's table
+rather than either oracle.
+
+### 10.3 Java I2P — no component count either
+
+`net.i2p.util.VersionComparator` walks both strings, extracts the components
+separated by `.`, `-` or `_`, parses each with `parseLong` — a **`long`**,
+not an `int` — and compares them left to right. The loop runs until **both**
+strings are exhausted: the implementation has **no component count cap**.
+When one side runs out of components and the other still has one, the
+exhausted side is **less** — the rule `i2pr`'s comparator already implements,
+and the rule the specification states.
+
+**Java admits a five-component version and orders it above a
+three-component version with the same prefix.**
+
+**Provenance caveat, stated plainly.** The pinned Java reference is
+**2.13.0** (`9134f808337b401e8e53c73734c81fab04280c9d`). The reading above
+was taken from a **2.13.1** installation, because the pinned artifact was not
+available on the host. It **corroborates** the behaviour this repository
+already records in `scripts/plan495-peer-eligibility.py` — a dotted version
+split into integer components, with no count cap — but it is **not** a
+reading of the pinned 2.13.0 artifact, and it is labelled as such wherever
+it is relied upon. The **primary** derivation is i2pd's, whose checkout is
+at the exact pin.
+
+### 10.4 The divergence, and why it is safe
+
+`i2pr` is the **only** one of the three that refuses a version with more
+than four components. The refusal is:
+
+- **typed** — `PublishedVersion::Uncomparable` maps to
+  `VersionEligibility::UncomparableVersion`, a distinct reason and not a
+  generic failure;
+- **counted** — `VersionRefusalCounts::record` keeps a separate
+  `uncomparable_version` counter, and `counts_by_reason` publishes it under
+  the stable label `uncomparable-version`;
+- **fail-closed** — the peer is excluded, never admitted;
+- **monotone** — a version with more components can only ever be **above** a
+  shorter version with the same prefix, so the refusal can only **exclude** a
+  peer both references would admit. It can never admit a peer below a floor.
+
+### 10.5 The per-component width, recorded but not settled
+
+The router's per-component bound is a `u16` (≤ 65535). Java parses components
+as `long`s and would accept a larger one; i2pd's collapse is an `int`. A
+version with a component above 65535 is therefore refused by `i2pr` and
+admitted by Java. That is a **second, separate divergence**. It is **not**
+settled here: widening the width would multiply the comparator's stored array
+again, and a version with a component above 65535 is not a version. It is
+recorded for a successor plan.
+

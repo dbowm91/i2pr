@@ -2296,3 +2296,20 @@ evidence = [
     "plans/closure/core-router-recovery/510-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "proto.api-version-component-ceiling"
+protocol = "common-structures"
+structure = "the-comparator-039s-component-ceiling-derived-from-the-specification-039s-widest-table-row"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 511 closes Plan 491's **F5**: *\"The comparator's four-component ceiling is an unstated assumption in the specification's terms.\"* The specification's API-version table contains a four-component row (`0.6.1.10`), but this tree held only the table's **minimum-peer obligation** rows as data, so the row the comparator's bound depended on lived in a prose comment. This surface makes that row a **held record** (`SPECIFICATION_WIDEST_VERSION_ROW`) and the comparator's component ceiling a **derivation** from it (`MAX_API_VERSION_COMPONENTS` is the held row's width, through `version_row_width`). The stored array's width and the parser's bound are that same constant, so a version the parser accepts is stored in full and the ordering stays **exact**. The consequence is the point: a future five-component row in the specification's table widens the comparator **by construction**, so such a version becomes **comparable** -- which is exactly what F5 says the hard-coded ceiling denies -- instead of becoming uncomparable behind a literal four. **No production behaviour changes**: the record is four components wide, so the comparator accepts and refuses exactly the versions it accepts and refuses today, `ApiVersion` stays 10 bytes and `PublishedVersion` stays 12 (measured, not estimated; a widening to an input-derived 128-component bound would have cost 26x on both and about 1 MiB of profile-store memory). The plan also records, **for the first time in this repository**, what the two **pinned references** do with a version that has more components than the specification's table has ever used: **i2pd 2.61.0** (pin `635b013a612ff47278ef02acf8580a28e10e26c5`) reads `router.version` by collapsing every digit into an `int` with **no component count**, so `\"0.9.62.1.2\"` becomes `96212` and is **above** the floor `962`; and **Java I2P**'s `net.i2p.util.VersionComparator` walks both strings to exhaustion with **no cap**, parsing components as `long`s. So `i2pr` is the only one of the three that refuses such a version, and the divergence is recorded with its safety argument -- **typed** (`Uncomparable` -> `UncomparableVersion`), **counted**, **fail-closed**, and **monotone**, so it can only exclude a peer both references would admit and never admit one below a floor. The **Java reading is from 2.13.1**, not the pinned **2.13.0**, and is labelled as such; the primary derivation is i2pd's, at the exact pin. The per-component **width** divergence (the parser's `u16` bound against Java's `long`) is recorded for a successor and not settled here. A static guard pins the derivation, the held row, the stored width, the parser's bound, the ordering's exactness, the comparator's `const`, every floor's three-component width, the absence of a peer-to-peer ordering path, and the refusal's counting in the live path; every rule carries an inverted probe. Nothing is advertised: `router.version` stays `0.9.62`, `caps` and the published RouterInfo are unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-proto/src/common/version.rs",
+    "crates/i2pr-proto/tests/version_ceiling_derivation.rs",
+    "crates/i2pr-daemon/tests/version_ceiling_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/core-router-recovery/511-version-component-ceiling.md",
+    "plans/closure/core-router-recovery/511-status.md",
+]
+advertised = false

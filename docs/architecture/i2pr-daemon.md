@@ -1964,6 +1964,21 @@ paths, which Plan 503 put there.
 makes the decision structural, and
 `crates/i2pr-netdb/tests/lookup_target_version_decision.rs` proves it.
 
+### The comparator's component ceiling (Plan 511)
+
+The I2PControl and NetDb eligibility gates refuse a peer whose published
+`router.version` cannot be compared. The comparator's component bound is
+**derived** from the specification's API-version table's widest row, which
+`i2pr-proto` holds as data (`SPECIFICATION_WIDEST_VERSION_ROW`), so a wider
+row in the specification's table widens the comparator by construction rather
+than leaving a version uncomparable behind a literal. The comparator's
+ordering stays **exact** — a version it accepts is stored in full — and the
+refusal stays **typed** (`UncomparableVersion`), **counted** by reason
+(`uncomparable-version`), and **fail-closed**: it can only exclude a peer
+that both pinned references would admit, never admit one below a floor. The
+references' own component handling, derived from their pinned source, is in
+`specs/QUALIFICATION-GATES.md` §10.
+
 ### The managed-tunnel staging path's reason classification (Plan 510, `src/i2pcontrol_tunnels.rs`)
 
 Plan 491's F4 was an intermittent managed-tunnel staging failure that

@@ -81,7 +81,7 @@ single-directory with **three** top-level submodules under `src/`
 | `common::router_info` | `src/common/router_info.rs` | 262 | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
 | `common::lease` | `src/common/lease.rs` | 299 | Classic `Lease`/`LeaseSet` plus explicit variant classification | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
 | `common::lease2` | `src/common/lease2.rs` | 1789 | Standard LeaseSet2 family: carrier, header, flags, keys, offline signature, MetaLeaseSet | `Lease2`, `LeaseSet2`, `LeaseSet2Header`, `LeaseSet2Flags`, `LeaseSet2EncryptionKey`, `OfflineSignature`, `MetaLease`, `MetaLeaseSet`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2EncryptionKeyError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `LEASE2_WIRE_SIZE`, `MAX_META_LEASES`, `MAX_LEASE_SET2_*` |
-| `common::version` | `src/common/version.rs` | 797 | Plan 491 typed comparator over published `router.version` strings: the specification's numeric rule, the `Unknown`/`Uncomparable` states, the API-version table's minimum-peer obligation rows, and the floor derivation | `ApiVersion`, `PublishedVersion`, `VersionEligibility`, `VersionFloors`, `MinimumPeerObligation`, `MINIMUM_PEER_OBLIGATIONS`, `SPECIFICATION_API_LEVEL`, `CATCH_ALL_VERSION`, `floors_in_force`, `MAX_API_VERSION_COMPONENTS` |
+| `common::version` | `src/common/version.rs` | 823 | Plan 491 typed comparator over published `router.version` strings: the specification's numeric rule, the `Unknown`/`Uncomparable` states, the API-version table's minimum-peer obligation rows, and the floor derivation | `ApiVersion`, `PublishedVersion`, `VersionEligibility`, `VersionFloors`, `MinimumPeerObligation`, `MINIMUM_PEER_OBLIGATIONS`, `SPECIFICATION_API_LEVEL`, `CATCH_ALL_VERSION`, `floors_in_force`, `MAX_API_VERSION_COMPONENTS` |
 | `common::base32` | `src/common/base32.rs` | 789 | RFC 4648 base 32, CRC-32, encrypted-service (`b33`) address form (Plan 332) | `EncryptedServiceAddress`, `Base32Error`, `crc32`, `base32_encode`, `base32_decode`, `is_encrypted_service_address`, `B32_SUFFIX`, `B32_HASH_CHARS`, `B32_SERVICE_CHARS`, `B32_SERVICE_WIDE_CHARS`, `B32_FLAG_*`, `B32_UNBLINDED_SIGTYPE_*`, `B32_BLINDED_SIGTYPE` |
 | `common::els2` | `src/common/els2.rs` | 662 | DatabaseStore type 5: encrypted-LeaseSet2 outer-layer framing, offline-key block, exact signature preimage (Plan 332) | `EncryptedLeaseSet2`, `EncryptedLeaseSet2Flags`, `EncryptedLeaseSet2OfflineKeys`, `ENCRYPTED_LEASE_SET2_STORE_TYPE`, `ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE`, `ENCRYPTED_LEASE_SET2_UNBLINDED_SIGTYPES`, `ENCRYPTED_LEASE_SET2_FLAG_OFFLINE_KEYS`, `ENCRYPTED_LEASE_SET2_FLAGS_RESERVED_MASK`, `ENCRYPTED_LEASE_SET2_MAX_EXPIRES_OFFSET`, `ENCRYPTED_LEASE_SET2_SALT_LENGTH`, `ENCRYPTED_LEASE_SET2_MIN_OUTER_CIPHERTEXT_LENGTH`, `INNER_LEASE_SET2_STORE_TYPE`, `INNER_META_LEASE_SET2_STORE_TYPE` |
 | `i2np` | `src/i2np/mod.rs` | 79 | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `SHORT_REQUEST_PLAINTEXT_SIZE`, `SHORT_REPLY_PLAINTEXT_SIZE`, `SHORT_BUILD_EPHEMERAL_KEY_LEN`, `SHORT_BUILD_NONCE_LEN`, `SHORT_BUILD_TAG_LEN`, `TUNNEL_DATA_PAYLOAD_SIZE`, `TUNNEL_TEST_BODY_SIZE` |
@@ -197,6 +197,50 @@ The comparator allocates nothing and never panics: a malformed string is a
 state, not an error. A deterministic corpus property test maps four thousand
 generated strings plus the interesting hand-picked ones onto a value or an
 explicit state, and checks the ordering is total over the comparable subset.
+
+### Plan 511: the component ceiling is derived, not asserted
+
+Plan 491's comparator's component bound rested on a **prose claim**: the
+specification's API-version table contains a four-component row (`0.6.1.10`),
+so the doc comment above `MAX_API_VERSION_COMPONENTS` said four components
+are accepted. The tree held only the table's **minimum-peer obligation** rows
+as data, so the row the bound depended on was not held at all.
+
+Plan 511 makes it a **held record** and the bound a **derivation**:
+
+```rust
+pub const SPECIFICATION_WIDEST_VERSION_ROW: &[u16] = &[0, 6, 1, 10];
+
+pub const MAX_API_VERSION_COMPONENTS: usize =
+    version_row_width(SPECIFICATION_WIDEST_VERSION_ROW);
+```
+
+The stored array's width (`[u16; MAX_API_VERSION_COMPONENTS]`) and the
+parser's bound are that same constant, so a version the parser accepts is
+stored in full and `cmp_to`'s ordering stays **exact** — no truncation, no
+lossy fallback.
+
+**The consequence is the point.** A future five-component row in the
+specification's table widens the comparator **by construction**: the held
+record becomes that row, the ceiling follows it, and such a version becomes
+**comparable** rather than uncomparable. Under the old hard-coded four it
+would have been refused. The guard pins the record, so a change to it is
+**reported** rather than absorbed.
+
+**No behaviour changes.** The record is four components wide, so the constant
+is four and the comparator accepts and refuses exactly the versions it accepts
+and refuses today. `ApiVersion` stays 10 bytes and `PublishedVersion` stays
+12.
+
+**The divergence from the references is recorded, not hidden.** Both pinned
+references admit a version with more components than the specification's
+table has ever used — i2pd 2.61.0 collapses `router.version`'s digits into an
+`int` with no component count, and Java I2P's `VersionComparator` walks both
+strings to exhaustion with no cap — so `i2pr` is the only one of the three
+that refuses one. The refusal is **typed**, **counted**, **fail-closed** and
+**monotone**: it can only exclude a peer both references would admit, never
+admit one below a floor. The full derivation, with the pins and the file and
+line for each reference, is in `specs/QUALIFICATION-GATES.md` §10.
 
 ## Public surface
 
