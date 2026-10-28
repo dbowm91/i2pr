@@ -590,6 +590,15 @@ fn the_destination_probe_is_composed_through_the_canonical_seam() {
         None,
         "the destination probe must use the canonical cell composition"
     );
+    assert_eq!(
+        check_body_contains(
+            &source,
+            "emit_destination_liveness_probe",
+            "deliver_with_ticket("
+        ),
+        None,
+        "the destination probe must be delivered through the canonical seam"
+    );
 }
 
 /// Rule 7: the destination probe is addressed to the inbound's gateway.
@@ -668,10 +677,10 @@ fn the_binding_table_is_bounded() {
         check_body_contains(
             &source,
             "record_destination_role_binding",
-            "MAX_DESTINATION_ROLE_BINDINGS"
+            ">= MAX_DESTINATION_ROLE_BINDINGS"
         ),
         None,
-        "the binding table must consult its ceiling"
+        "the binding table's ceiling must be the comparison, not a literal"
     );
 }
 
@@ -937,10 +946,28 @@ fn record_destination_role_binding(&mut self, binding: Binding) {
         check_body_contains(
             unbounded,
             "record_destination_role_binding",
-            "MAX_DESTINATION_ROLE_BINDINGS"
+            ">= MAX_DESTINATION_ROLE_BINDINGS"
         )
         .is_some(),
         "rule 12 must detect an unbounded binding table"
+    );
+
+    // Rule 6: an emission that composes the probe but never delivers it.
+    let never_delivered = "\
+fn emit_destination_liveness_probe(&mut self, slot: Slot) -> Result<(), Error> {
+    let cells = self.compose_destination_liveness_probe(slot)?;
+    let _ = cells;
+    Ok(())
+}
+";
+    assert!(
+        check_body_contains(
+            never_delivered,
+            "emit_destination_liveness_probe",
+            "deliver_with_ticket("
+        )
+        .is_some(),
+        "rule 6 must detect a probe that is never delivered"
     );
 
     // Rule 13: a decision that carries a peer identity.
