@@ -30,12 +30,40 @@
 
 use std::{cmp::Ordering, fmt};
 
+/// The specification's API-version table's widest row, as this tree holds it.
+///
+/// The specification's table contains a four-component row (`0.6.1.10`). This
+/// tree holds the table's **minimum-peer obligation** rows as data
+/// (`MINIMUM_PEER_OBLIGATIONS`); it does not hold the table's other rows, so
+/// the four-component row the comparator's bound depends on appeared here
+/// only as prose. Holding the row as **data** makes the comparator's bound a
+/// derivation rather than an assumption, and makes a future wider row in the
+/// specification's table widen the comparator by construction.
+pub const SPECIFICATION_WIDEST_VERSION_ROW: &[u16] = &[0, 6, 1, 10];
+
+/// The component count of one recorded version row.
+///
+/// The comparator's bound is the **width** of the specification's table's
+/// widest row, so the derivation is a width and not a literal.
+pub const fn version_row_width(row: &[u16]) -> usize {
+    row.len()
+}
+
 /// The maximum number of dotted components a published API version may carry.
 ///
-/// The specification's table contains a four-component row (`0.6.1.10`), so
-/// four components are accepted. A version with more components is
-/// uncomparable rather than truncated.
-pub const MAX_API_VERSION_COMPONENTS: usize = 4;
+/// The bound is **derived** from the specification's table's widest row, which
+/// this tree holds as data (`SPECIFICATION_WIDEST_VERSION_ROW`). The
+/// specification's table contains a four-component row (`0.6.1.10`), so four
+/// components are accepted. A version with more components is uncomparable
+/// rather than truncated.
+///
+/// **A wider row widens this bound.** If the specification's table gains a
+/// five-component row, the held record becomes that row, this constant
+/// follows it, and such a version becomes **comparable** rather than
+/// uncomparable. The stored array's width and the parser's bound are this
+/// same constant, so the ordering stays exact for every version the parser
+/// accepts.
+pub const MAX_API_VERSION_COMPONENTS: usize = version_row_width(SPECIFICATION_WIDEST_VERSION_ROW);
 
 /// A well-formed, comparable I2NP API version.
 ///
@@ -68,11 +96,12 @@ impl ApiVersion {
 
     /// Parses a published version string.
     ///
-    /// The grammar is strict: one to four dotted components, each a non-empty
-    /// run of ASCII digits whose value fits in a `u16`. Anything else — an
-    /// empty string, a trailing dot, a non-digit character, a component that
-    /// overflows — is *not* a version. It is reported as uncomparable rather
-    /// than being coerced, so a malformed value can never compare as "newest".
+    /// The grammar is strict: one to `MAX_API_VERSION_COMPONENTS` dotted
+    /// components, each a non-empty run of ASCII digits whose value fits in a
+    /// `u16`. Anything else — an empty string, a trailing dot, a non-digit
+    /// character, a component that overflows — is *not* a version. It is
+    /// reported as uncomparable rather than being coerced, so a malformed
+    /// value can never compare as "newest".
     pub const fn parse(text: &str) -> Option<Self> {
         let bytes = text.as_bytes();
         if bytes.is_empty() {
