@@ -5103,11 +5103,186 @@ fn unknown_or_startup(name: &str, startup: &ServiceTunnelSet) -> ControlError {
     }
 }
 
+/// Plan 510: the value-free classes of a manager configuration rejection.
+///
+/// Each entry is a **marker** — a stable phrase that appears inside the
+/// daemon's own `InvalidConfig` detail — and the **class** the operator
+/// sees. The marker carries no value: the service id, the socket address
+/// and the underlying error stay inside the daemon and are never put on the
+/// wire. The class is a short, stable, value-free phrase, exactly as the
+/// version receipts' reason labels are.
+///
+/// The order matters: a longer marker that *contains* a shorter one comes
+/// first, so the more specific class wins. Every marker is pinned by
+/// `tests/managed_tunnel_reason_boundary.rs`, which also asserts that each
+/// marker still appears in the daemon's own error construction — so a
+/// reworded message is reported rather than silently changing a class.
+const MANAGER_CONFIG_CLASSES: &[(&str, &str)] = &[
+    (
+        "candidate validation failed",
+        "candidate validation rejected",
+    ),
+    ("candidate bind collision", "candidate bind collision"),
+    (
+        "use_ssl requires a daemon TLS policy",
+        "server TLS policy missing",
+    ),
+    (
+        "Destination group missing from validated composition",
+        "destination group missing",
+    ),
+    (
+        "ephemeral identity generation failed",
+        "identity generation failed",
+    ),
+    ("fabric prepare failed", "lease set preparation failed"),
+    (
+        "LeaseSet2 encryption does not match its selected crypto policy",
+        "lease set crypto policy mismatch",
+    ),
+    (
+        "destination identity does not match its selected crypto policy",
+        "destination crypto policy mismatch",
+    ),
+    (
+        "destination reconstruction failed",
+        "destination reconstruction failed",
+    ),
+    (
+        "staging streaming listener could not bind",
+        "streaming listener bind failed",
+    ),
+    ("missing loopback listener", "loopback listener missing"),
+    ("missing client listener", "client listener missing"),
+    (
+        "server tunnel missing loopback target",
+        "loopback target missing",
+    ),
+    (
+        "targets Unix-domain sockets as not-yet-supported",
+        "unix socket target unsupported",
+    ),
+    ("diff missing next spec", "diff entry incomplete"),
+    (
+        "destination registry config rejected",
+        "destination registry rejected",
+    ),
+    (
+        "service count exceeds u16 capacity",
+        "service count over capacity",
+    ),
+    ("deferred activation", "deferred activation failed"),
+    (
+        "SAM destination registry poisoned",
+        "SAM destination registry poisoned",
+    ),
+    (
+        "destination registry poisoned",
+        "destination registry poisoned",
+    ),
+    (
+        "SAM bridge registry poisoned",
+        "SAM bridge registry poisoned",
+    ),
+    (
+        "SAM destination is already registered",
+        "destination already registered",
+    ),
+    (
+        "router-network SAM destination limit reached",
+        "SAM destination limit reached",
+    ),
+    (
+        "inbound owner already registered",
+        "inbound owner already registered",
+    ),
+    (
+        "inbound tunnel owners poisoned",
+        "inbound tunnel owners poisoned",
+    ),
+    (
+        "receive tunnel id must be non-zero",
+        "receive tunnel id invalid",
+    ),
+    (
+        "service destination not installed",
+        "service destination not installed",
+    ),
+    (
+        "router-backed owner generation is incomplete",
+        "owner generation incomplete",
+    ),
+    (
+        "router-backed owner generation contains duplicate receive ids",
+        "owner generation duplicated",
+    ),
+    (
+        "router-backed owner generation conflicts with a live receive id",
+        "owner generation conflicts",
+    ),
+    (
+        "router-backed refresh carries zero receive tunnel id",
+        "refresh receive tunnel id invalid",
+    ),
+    (
+        "router-backed refresh contains duplicate receive ids",
+        "refresh duplicated",
+    ),
+    (
+        "router-backed refresh conflicts with a live receive id",
+        "refresh conflicts",
+    ),
+    (
+        "router-backed refresh adds receive ids with no registered owner runtime",
+        "refresh has no owner runtime",
+    ),
+    ("spec missing for runtime", "spec missing for runtime"),
+    ("has no destination group", "destination group absent"),
+    ("is not a committed service spec", "spec not committed"),
+    (
+        "child scope rejected service delivery driver",
+        "delivery driver rejected",
+    ),
+    (
+        "child scope rejected service supervisor",
+        "supervisor rejected",
+    ),
+    (
+        "failed to register service tunnel manager",
+        "manager registration failed",
+    ),
+];
+
+/// The class a detail that matches no known marker keeps.
+///
+/// It is today's label, unchanged: a rejection the plan cannot classify is
+/// never reported as something it is not.
+const MANAGER_CONFIG_GENERIC: &str = "manager configuration rejected";
+
+/// Classifies a manager configuration rejection into a value-free class.
+///
+/// Plan 510: the daemon's `InvalidConfig` detail names its class in prose
+/// and the reason used to discard it, so a rejection could not be
+/// attributed. The classification reads the detail, matches a pinned
+/// marker, and returns the class. A detail that matches no marker keeps
+/// the generic label, so the change can never lose information.
+///
+/// The function is total: it cannot fail, it allocates nothing, and it
+/// never returns a value from the detail.
+pub fn manager_config_class(detail: &str) -> &'static str {
+    for (marker, class) in MANAGER_CONFIG_CLASSES {
+        if detail.contains(marker) {
+            return class;
+        }
+    }
+    MANAGER_CONFIG_GENERIC
+}
+
 /// Static reason for a daemon manager failure (never echoes values).
 fn static_manager_reason(error: &crate::service_tunnels::ServiceTunnelError) -> &'static str {
     use crate::service_tunnels::ServiceTunnelError as E;
     match error {
-        E::InvalidConfig(_) => "manager configuration rejected",
+        E::InvalidConfig(detail) => manager_config_class(detail),
         E::DestinationRuntime(_) => "destination runtime failed",
         E::Bind(_) => "listener bind failed",
         E::Storage(_) => "service storage failed",
