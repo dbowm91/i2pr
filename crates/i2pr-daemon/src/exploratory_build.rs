@@ -745,6 +745,21 @@ pub struct BuildCoordinatorCounters {
     /// The counter is the operator-visible signal that the probe path
     /// itself is not working; it never counts as a peer failure.
     pub liveness_probe_failures: u64,
+    /// Plan 512 — destination-role liveness probes the coordinator
+    /// composed and delivered through the canonical outbound path.
+    ///
+    /// A destination-role probe is addressed to the inbound tunnel's
+    /// gateway, so the answer returns through the inbound tunnel the
+    /// destination advertises.
+    pub liveness_destination_probes: u64,
+    /// Plan 512 — destination-role liveness probes the coordinator
+    /// could not deliver.
+    ///
+    /// Like the exploratory arm, the counter is the operator-visible
+    /// signal that the probe path itself is not working. It never
+    /// counts as a peer failure and never counts against a pair's
+    /// failure threshold.
+    pub liveness_destination_probe_failures: u64,
 }
 
 /// Attempt-scoped, count-only relationship between an authenticated inbound
@@ -1482,6 +1497,137 @@ impl ExploratoryBuildCoordinator {
             now_ms,
             rng,
         )
+    }
+
+    /// Composes one Plan 512 destination-role liveness probe through
+    /// the coordinator's real outbound path, without delivering it.
+    ///
+    /// Plan 512. The destination role's inbound tunnel does not live in
+    /// the exploratory pool: it is bound in the shared data-plane
+    /// registry under the destination-role slot namespace, so its
+    /// routing metadata comes from the registry's typed
+    /// `InboundGatewayRoute` rather than the pool's
+    /// `PublicTunnelRouting`.
+    ///
+    /// The probe is addressed to the inbound tunnel's **gateway**, the
+    /// way i2pd 2.61.0 addresses it (`libi2pd/TunnelPool.cpp:452`): the
+    /// outbound tunnel carries the message to a peer that can reach the
+    /// gateway, the gateway forwards it into the inbound tunnel, and the
+    /// answer comes back to the local destination. No remote
+    /// cooperation is required.
+    ///
+    /// The exploratory composition's same-peer precondition is
+    /// deliberately **not** imposed here. The exploratory pair's two
+    /// tunnels are built to one peer, so the rule holds naturally; the
+    /// destination role's two directions are built in separate rounds
+    /// from separate peer selections, so requiring one shared peer would
+    /// leave the destination population empty.
+    pub fn compose_destination_liveness_probe<R>(
+        &self,
+        outbound_slot: TunnelSlot,
+        local_receive: TunnelId,
+        probe_message_id: u32,
+        now_ms: u64,
+        rng: &mut R,
+    ) -> Result<Vec<(PeerId, Vec<u8>, u32)>, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if probe_message_id == 0 {
+            return Err(BuildCoordinatorError::Coordinator(
+                "destination liveness probe message id is zero",
+            ));
+        }
+        let route = self.registry.inbound_gateway_route(local_receive).ok_or(
+            BuildCoordinatorError::Coordinator(
+                "destination liveness probe has no inbound gateway route",
+            ),
+        )?;
+        let gateway = route.gateway_router;
+        let gateway_receive = route.gateway_receive_tunnel;
+        let outbound_role =
+            self.registry
+                .outbound(outbound_slot)
+                .ok_or(BuildCoordinatorError::Coordinator(
+                    "destination liveness probe has no installed outbound role",
+                ))?;
+        let expiration_ms =
+            now_ms.saturating_add(crate::tunnel_liveness::LIVENESS_RESPONSE_TIMEOUT_MS);
+        let inner_message_id = fresh_transport_message_id(rng)?;
+        let body = crate::tunnel_liveness::delivery_status_message(probe_message_id, now_ms);
+        let inner =
+            I2npMessage::new_standard(inner_message_id, Date::from_millis(expiration_ms), body)
+                .map_err(|_| {
+                    BuildCoordinatorError::Coordinator(
+                        "destination liveness probe I2NP framing failed",
+                    )
+                })?;
+        let wire = inner
+            .encode_standard_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| {
+                BuildCoordinatorError::Coordinator("destination liveness probe encoding failed")
+            })?;
+        compose_outbound_build_deliveries(
+            outbound_role,
+            DeliveryInstruction::Tunnel {
+                tunnel_id: gateway_receive.get(),
+                gateway,
+            },
+            inner_message_id,
+            expiration_ms,
+            &wire,
+            now_ms,
+            rng,
+        )
+    }
+
+    /// Emits one Plan 512 destination-role liveness probe through the
+    /// canonical outbound path.
+    ///
+    /// The emission reuses `compose_outbound_build_deliveries` — the
+    /// same outbound role, the same cell composition, the same delivery
+    /// seam as the exploratory probe. There is no private parallel
+    /// pipeline.
+    pub fn emit_destination_liveness_probe<R>(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        local_receive: TunnelId,
+        probe_message_id: u32,
+        now_ms: u64,
+        delivery: &RouterDeliveryService,
+        rng: &mut R,
+    ) -> Result<(), BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        let cells = self.compose_destination_liveness_probe(
+            outbound_slot,
+            local_receive,
+            probe_message_id,
+            now_ms,
+            rng,
+        )?;
+        for (target_peer, transport_wire, _) in cells {
+            let request =
+                RouterDeliveryRequest::new(target_peer, transport_wire, BUILD_DELIVERY_TIMEOUT)
+                    .map_err(|_| {
+                        BuildCoordinatorError::Coordinator("delivery request validation failed")
+                    })?;
+            let (result, _selected, _ticket) =
+                delivery.deliver_with_ticket(request, &i2pr_runtime::CancellationToken::new());
+            if !matches!(result, RouterDeliveryOutcome::Accepted) {
+                self.counters.liveness_destination_probe_failures = self
+                    .counters
+                    .liveness_destination_probe_failures
+                    .saturating_add(1);
+                return Err(BuildCoordinatorError::Coordinator(
+                    "destination liveness probe delivery was refused",
+                ));
+            }
+        }
+        self.counters.liveness_destination_probes =
+            self.counters.liveness_destination_probes.saturating_add(1);
+        Ok(())
     }
 
     /// Returns the data-plane registry holding the installed tunnel

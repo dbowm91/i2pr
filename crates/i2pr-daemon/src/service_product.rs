@@ -1207,6 +1207,17 @@ struct ProductInner {
     >,
     sam_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     sam_destination_slots: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>>,
+    /// Plan 512 — the destination-role bindings, keyed by the
+    /// coordinator's destination-role slot.
+    ///
+    /// The liveness scheduler tracks the coordinator's slot while a
+    /// failure has to be applied to the destination runtime's pool
+    /// slot. The binding keeps the two together with the destination
+    /// that owns the tunnel, so a failure is routed to the destination
+    /// that owns the failing inbound and never to another one.
+    destination_role_bindings: std::collections::BTreeMap<TunnelSlot, DestinationRoleBinding>,
+    /// Plan 512 — the destination-role liveness counters.
+    destination_liveness: DestinationLivenessCounters,
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     /// Plan 487 WP4 — destinations whose last lease-set refresh failed.
@@ -1362,6 +1373,182 @@ mod startup_inbound_replay_tests {
                 .contains("cancelled")
         );
     }
+}
+
+/// Plan 512 — hard ceiling on the destination-role bindings the product
+/// holds.
+///
+/// Each binding is one installed destination tunnel, so the ceiling is a
+/// bound on the product's own destination-tunnel population. A binding
+/// beyond the ceiling is refused and counted, never silently dropped.
+pub const MAX_DESTINATION_ROLE_BINDINGS: usize = 256;
+
+/// Plan 512 — one installed destination-role tunnel's binding.
+///
+/// The coordinator allocates the destination-role slot and the
+/// destination runtime allocates the pool slot. The liveness scheduler
+/// tracks the coordinator's slot, while a failure has to be applied to
+/// the destination runtime's pool slot, so the two are kept together
+/// here together with the destination that owns the tunnel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DestinationRoleBinding {
+    /// The destination that owns the tunnel.
+    pub destination_id: i2pr_client::DestinationId,
+    /// The destination runtime's pool slot for this tunnel.
+    pub pool_slot: TunnelSlot,
+    /// The direction the tunnel was built in.
+    pub direction: BuildDirection,
+    /// The local endpoint receive id, for an inbound role.
+    pub local_receive_tunnel: Option<TunnelId>,
+}
+
+/// Plan 512 — one destination-role liveness pair.
+///
+/// The pair is the destination's **outbound** role, which carries the
+/// probe out, and the destination's **inbound** role, which carries the
+/// answer back. The local receive id is the shared registry's key for
+/// the inbound role's typed gateway route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DestinationLivenessPair {
+    /// The coordinator's destination-role outbound slot.
+    pub outbound_slot: TunnelSlot,
+    /// The coordinator's destination-role inbound slot.
+    pub inbound_slot: TunnelSlot,
+    /// The local endpoint receive id of the inbound role.
+    pub local_receive_tunnel: TunnelId,
+}
+
+/// Plan 512 — the decision the destination liveness failure arm makes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationLivenessFailureDecision {
+    /// The failing inbound slot carries no destination-role binding, so
+    /// the failure belongs to another population.
+    Unbound,
+    /// The destination holds a single inbound tunnel. Failing it would
+    /// leave the destination with no path and no advertisement, so the
+    /// reference's "don't fail last tunnel" rule refuses the failure.
+    LastTunnelRefused,
+    /// The named pool slot must be failed.
+    Fail {
+        /// The destination runtime's pool slot to fail.
+        pool_slot: TunnelSlot,
+    },
+}
+
+/// Plan 512 — forms the destination-role liveness pairs.
+///
+/// The pairs are formed **within one destination**: the destination's
+/// outbound role carries the probe out and the same destination's
+/// inbound role carries the answer back. Pairing across destinations
+/// would let one destination's dead outbound fail another
+/// destination's inbound, which is a false failure this plan must not
+/// produce.
+///
+/// The function is pure and total. The result is sorted, so the
+/// population is stable across ticks, and it is bounded by the number
+/// of bindings the product holds.
+pub fn destination_liveness_pairs(
+    bindings: &std::collections::BTreeMap<TunnelSlot, DestinationRoleBinding>,
+) -> Vec<DestinationLivenessPair> {
+    let mut outbounds: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>> =
+        std::collections::HashMap::new();
+    let mut inbounds: std::collections::HashMap<
+        i2pr_client::DestinationId,
+        Vec<(TunnelSlot, TunnelId)>,
+    > = std::collections::HashMap::new();
+    for (role_slot, binding) in bindings {
+        match binding.direction {
+            BuildDirection::Outbound => outbounds
+                .entry(binding.destination_id)
+                .or_default()
+                .push(*role_slot),
+            BuildDirection::Inbound => {
+                let Some(local_receive) = binding.local_receive_tunnel else {
+                    continue;
+                };
+                inbounds
+                    .entry(binding.destination_id)
+                    .or_default()
+                    .push((*role_slot, local_receive));
+            }
+        }
+    }
+    let mut pairs = Vec::new();
+    for (destination_id, mut outbound_slots) in outbounds {
+        outbound_slots.sort_unstable();
+        let Some(mut inbound_entries) = inbounds.remove(&destination_id) else {
+            continue;
+        };
+        inbound_entries.sort_unstable();
+        for (outbound_slot, (inbound_slot, local_receive_tunnel)) in
+            outbound_slots.into_iter().zip(inbound_entries)
+        {
+            pairs.push(DestinationLivenessPair {
+                outbound_slot,
+                inbound_slot,
+                local_receive_tunnel,
+            });
+        }
+    }
+    pairs.sort_unstable_by_key(|pair| (pair.outbound_slot, pair.inbound_slot));
+    pairs
+}
+
+/// Plan 512 — decides what a destination liveness failure must do.
+///
+/// The decision is pure so the rule can be proved on its own surface.
+/// The last-tunnel rule is the reference's rule (i2pd 2.61.0,
+/// `libi2pd/TunnelPool.cpp:360` — *"don't fail last tunnel"*): a
+/// destination that holds a single inbound tunnel is not failed,
+/// because failing it would leave the destination with no path and no
+/// advertisement.
+pub fn destination_liveness_failure_decision(
+    binding: Option<&DestinationRoleBinding>,
+    inbound_len: usize,
+) -> DestinationLivenessFailureDecision {
+    let Some(binding) = binding else {
+        return DestinationLivenessFailureDecision::Unbound;
+    };
+    if inbound_len <= 1 {
+        return DestinationLivenessFailureDecision::LastTunnelRefused;
+    }
+    DestinationLivenessFailureDecision::Fail {
+        pool_slot: binding.pool_slot,
+    }
+}
+
+/// Plan 512 — bounded, secret-free counters for the destination-role
+/// liveness arm.
+///
+/// The counters name no peer, no tunnel, no address and no payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DestinationLivenessCounters {
+    /// Destination-role pairs the scheduler currently tracks.
+    pub tracked_pairs: usize,
+    /// Destination-role bindings the product holds.
+    pub bindings: usize,
+    /// Destination-role liveness failures applied to a destination's
+    /// inbound tunnel.
+    pub failures_applied: u64,
+    /// Failures refused because the destination held a single inbound
+    /// tunnel. The refusal is counted, never silent.
+    pub last_tunnel_refusals: u64,
+    /// Failures that found no binding for the failing inbound slot.
+    pub binding_misses: u64,
+    /// Bindings refused because the product's binding table was full.
+    pub binding_refusals: u64,
+    /// Failures refused because the destination runtime was gone.
+    pub runtime_missing: u64,
+}
+
+/// Plan 512 — the outcome of applying a destination liveness failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestinationLivenessFailureOutcome {
+    /// The destination holds a single inbound tunnel, so the failure
+    /// was refused.
+    LastTunnelRefused,
+    /// The failing inbound slot carried no destination-role binding.
+    Unbound,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2445,6 +2632,8 @@ impl ServiceProduct {
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
                 sam_destination_slots: std::collections::HashMap::new(),
+                destination_role_bindings: std::collections::BTreeMap::new(),
+                destination_liveness: DestinationLivenessCounters::default(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 lease_refresh_failures: std::collections::HashMap::new(),
@@ -2711,6 +2900,8 @@ impl ServiceProduct {
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
                 sam_destination_slots: std::collections::HashMap::new(),
+                destination_role_bindings: std::collections::BTreeMap::new(),
+                destination_liveness: DestinationLivenessCounters::default(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
                 lease_refresh_failures: std::collections::HashMap::new(),
@@ -2914,6 +3105,14 @@ impl ServiceProduct {
             coordinator_pending_publications: self.inner.publication_coordinator_pending,
             lease_refresh_failures: self.inner.lease_refresh_failures.len(),
         }
+    }
+
+    /// Plan 512 — secret-free counters for the destination-role liveness
+    /// arm.
+    ///
+    /// The counters name no peer, no tunnel, no address and no payload.
+    pub fn destination_liveness_snapshot(&self) -> DestinationLivenessCounters {
+        self.inner.destination_liveness
     }
 
     /// Returns bounded, secret-free pool readiness counts for one service.
@@ -3133,6 +3332,11 @@ impl ServiceProduct {
         self.inner
             .destination_build_progress
             .remove(&destination_id);
+        // Plan 512 — the destination's bindings go with it, so a stale
+        // binding can never fail a tunnel that has already gone.
+        self.inner
+            .destination_role_bindings
+            .retain(|_, binding| binding.destination_id != destination_id);
         self.inner
             .destination_ids
             .retain(|id| *id != destination_id);
@@ -3389,12 +3593,29 @@ impl ServiceProduct {
                     inbound_slot,
                     consecutive_failures,
                 } => {
-                    tracing::warn!(
-                        transition = "liveness_pair_unhealthy",
-                        consecutive_failures,
-                        "removing the unhealthy exploratory tunnel pair"
-                    );
-                    self.remove_liveness_pair(outbound_slot, inbound_slot).await;
+                    // Plan 512 — a destination-role pair's failure is
+                    // routed to the destination that owns the failing
+                    // inbound tunnel. The exploratory arm is unchanged.
+                    if self
+                        .inner
+                        .destination_role_bindings
+                        .contains_key(&inbound_slot)
+                    {
+                        tracing::warn!(
+                            transition = "destination_liveness_pair_unhealthy",
+                            consecutive_failures,
+                            "failing the unhealthy destination inbound tunnel"
+                        );
+                        self.fail_destination_liveness_pair(outbound_slot, inbound_slot)
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            transition = "liveness_pair_unhealthy",
+                            consecutive_failures,
+                            "removing the unhealthy exploratory tunnel pair"
+                        );
+                        self.remove_liveness_pair(outbound_slot, inbound_slot).await;
+                    }
                 }
                 crate::tunnel_liveness::LivenessAction::Idle { .. } => break,
             }
@@ -3407,8 +3628,16 @@ impl ServiceProduct {
     /// that went away.
     fn sync_liveness_pairs(&mut self) {
         let installed = self.inner.coordinator.exploratory_liveness_pairs();
-        let installed_outbound: std::collections::HashSet<TunnelSlot> =
-            installed.iter().map(|(outbound, _)| *outbound).collect();
+        // Plan 512 — the destination role is a second population. The
+        // two populations never share an outbound slot: the
+        // exploratory pool allocates upward from zero and the
+        // destination role upward from `DESTINATION_ROLE_SLOT_BASE`.
+        let destination_pairs = destination_liveness_pairs(&self.inner.destination_role_bindings);
+        let installed_outbound: std::collections::HashSet<TunnelSlot> = installed
+            .iter()
+            .map(|(outbound, _)| *outbound)
+            .chain(destination_pairs.iter().map(|pair| pair.outbound_slot))
+            .collect();
         for outbound in self.inner.liveness.tracked_outbound_slots() {
             if !installed_outbound.contains(&outbound) {
                 // Unregistering drops the pair's pending tests without
@@ -3425,6 +3654,33 @@ impl ServiceProduct {
                 );
             }
         }
+        for pair in &destination_pairs {
+            // A tracked pair whose inbound no longer matches the
+            // installed pairing is stale: it would probe a tunnel that
+            // is gone. Unregistering drops the pair's pending tests
+            // without counting a failure.
+            let stale = self
+                .inner
+                .liveness
+                .inbound_slot_for(pair.outbound_slot)
+                .is_some_and(|current| current != pair.inbound_slot);
+            if stale {
+                self.inner.liveness.unregister_pair(pair.outbound_slot);
+            }
+            if let Err(error) = self
+                .inner
+                .liveness
+                .register_pair(pair.outbound_slot, pair.inbound_slot)
+            {
+                tracing::debug!(
+                    transition = "liveness_pair_not_tracked",
+                    reason = %error,
+                    "the liveness pair ceiling rejected a destination pair"
+                );
+            }
+        }
+        self.inner.destination_liveness.tracked_pairs = destination_pairs.len();
+        self.inner.destination_liveness.bindings = self.inner.destination_role_bindings.len();
     }
 
     /// Plan 504 — emits one liveness probe through the coordinator's
@@ -3450,14 +3706,36 @@ impl ServiceProduct {
                 return;
             }
         };
-        if let Err(error) = self.inner.coordinator.emit_liveness_probe(
-            outbound_slot,
-            inbound_slot,
-            probe_message_id,
-            now_ms,
-            &delivery,
-            &mut rng,
-        ) {
+        // Plan 512 — a destination-role pair's probe is addressed to
+        // the inbound tunnel's gateway, the way i2pd 2.61.0 addresses
+        // it, so the answer returns through the inbound tunnel the
+        // destination advertises. The exploratory arm is unchanged.
+        let destination_receive = self
+            .inner
+            .destination_role_bindings
+            .get(&inbound_slot)
+            .copied()
+            .filter(|binding| binding.direction == BuildDirection::Inbound)
+            .and_then(|binding| binding.local_receive_tunnel);
+        let emitted = match destination_receive {
+            Some(local_receive) => self.inner.coordinator.emit_destination_liveness_probe(
+                outbound_slot,
+                local_receive,
+                probe_message_id,
+                now_ms,
+                &delivery,
+                &mut rng,
+            ),
+            None => self.inner.coordinator.emit_liveness_probe(
+                outbound_slot,
+                inbound_slot,
+                probe_message_id,
+                now_ms,
+                &delivery,
+                &mut rng,
+            ),
+        };
+        if let Err(error) = emitted {
             tracing::debug!(
                 transition = "liveness_probe_not_emitted",
                 reason = %error,
@@ -3465,6 +3743,167 @@ impl ServiceProduct {
             );
             self.inner.liveness.abandon_test(test_id);
         }
+    }
+
+    /// Plan 512 — fails a destination's inbound tunnel whose liveness
+    /// pair stopped answering.
+    ///
+    /// The failure is applied through the destination runtime's own
+    /// `mark_tunnel_failed` seam, so the pool drops the tunnel, the
+    /// daemon's tick notices the changed lease set and marks the
+    /// destination for republication, and the existing replenishment
+    /// builds the replacement. No second failure path is introduced.
+    ///
+    /// The reference's "don't fail last tunnel" rule is honoured: a
+    /// destination that holds a single inbound tunnel is not failed.
+    /// The refusal is counted, so the situation is observable rather
+    /// than silent.
+    ///
+    /// The failure is a **pair-level** fact and is never written into
+    /// a peer profile. The router's own counters carry it.
+    async fn fail_destination_liveness_pair(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+    ) {
+        // The pair's inbound is gone: the scheduler must stop tracking
+        // the pair. Unregistering drops the pair's pending tests
+        // without counting a failure.
+        self.inner.liveness.unregister_pair(outbound_slot);
+
+        let Some(binding) = self
+            .inner
+            .destination_role_bindings
+            .get(&inbound_slot)
+            .copied()
+        else {
+            self.inner.destination_liveness.binding_misses = self
+                .inner
+                .destination_liveness
+                .binding_misses
+                .saturating_add(1);
+            return;
+        };
+        let destination_id = binding.destination_id;
+        let local_receive = binding.local_receive_tunnel;
+
+        let outcome = self
+            .manager
+            .with_destination_runtime(destination_id, |runtime| {
+                let inbound_len = runtime.inbound_registrations().len();
+                match destination_liveness_failure_decision(Some(&binding), inbound_len) {
+                    DestinationLivenessFailureDecision::Fail { pool_slot } => {
+                        runtime.mark_tunnel_failed(pool_slot);
+                        Ok(())
+                    }
+                    DestinationLivenessFailureDecision::LastTunnelRefused => {
+                        Err(DestinationLivenessFailureOutcome::LastTunnelRefused)
+                    }
+                    DestinationLivenessFailureDecision::Unbound => {
+                        Err(DestinationLivenessFailureOutcome::Unbound)
+                    }
+                }
+            });
+        match outcome {
+            None => {
+                self.inner.destination_liveness.runtime_missing = self
+                    .inner
+                    .destination_liveness
+                    .runtime_missing
+                    .saturating_add(1);
+                tracing::debug!(
+                    transition = "destination_liveness_failure_not_applied",
+                    reason = "destination runtime missing",
+                    "the destination liveness failure was not applied"
+                );
+            }
+            Some(Ok(())) => {
+                self.inner.destination_liveness.failures_applied = self
+                    .inner
+                    .destination_liveness
+                    .failures_applied
+                    .saturating_add(1);
+                // The dead tunnel must stop receiving. The owner
+                // registration and the registry role are released
+                // exactly as the local activation-failure path
+                // releases them.
+                if let Some(local_receive) = local_receive {
+                    let _ = self
+                        .manager
+                        .unregister_inbound_tunnel_owner(local_receive.get());
+                }
+                let _ = self
+                    .inner
+                    .coordinator
+                    .registry_mut()
+                    .remove_slot(inbound_slot);
+                self.inner.destination_role_bindings.remove(&inbound_slot);
+                tracing::info!(
+                    transition = "destination_liveness_failure_applied",
+                    "the unhealthy destination inbound tunnel was failed and replaced"
+                );
+            }
+            Some(Err(DestinationLivenessFailureOutcome::LastTunnelRefused)) => {
+                self.inner.destination_liveness.last_tunnel_refusals = self
+                    .inner
+                    .destination_liveness
+                    .last_tunnel_refusals
+                    .saturating_add(1);
+                tracing::warn!(
+                    transition = "destination_liveness_last_tunnel_refused",
+                    "the destination holds one inbound tunnel; the failure was refused"
+                );
+            }
+            Some(Err(DestinationLivenessFailureOutcome::Unbound)) => {
+                self.inner.destination_liveness.binding_misses = self
+                    .inner
+                    .destination_liveness
+                    .binding_misses
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    /// Plan 512 — records one installed destination-role tunnel's
+    /// binding.
+    ///
+    /// The table is bounded. A binding beyond the ceiling is refused
+    /// and counted, never silently dropped.
+    fn record_destination_role_binding(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        direction: BuildDirection,
+        role_slot: TunnelSlot,
+        pool_slot: TunnelSlot,
+        local_receive_tunnel: Option<TunnelId>,
+    ) {
+        if self.inner.destination_role_bindings.len() >= MAX_DESTINATION_ROLE_BINDINGS
+            && !self
+                .inner
+                .destination_role_bindings
+                .contains_key(&role_slot)
+        {
+            self.inner.destination_liveness.binding_refusals = self
+                .inner
+                .destination_liveness
+                .binding_refusals
+                .saturating_add(1);
+            tracing::warn!(
+                transition = "destination_role_binding_refused",
+                limit = MAX_DESTINATION_ROLE_BINDINGS,
+                "the destination-role binding table is full"
+            );
+            return;
+        }
+        self.inner.destination_role_bindings.insert(
+            role_slot,
+            DestinationRoleBinding {
+                destination_id,
+                pool_slot,
+                direction,
+                local_receive_tunnel,
+            },
+        );
     }
 
     /// Plan 504 — removes an unhealthy exploratory pair from the
@@ -4601,6 +5040,17 @@ impl ServiceProduct {
                     }
                 };
                 self.record_destination_registration(destination_id, direction);
+                // Plan 512 — the liveness scheduler tracks the
+                // coordinator's destination-role slot, while a failure
+                // has to be applied to the destination runtime's pool
+                // slot. The binding keeps the two together.
+                self.record_destination_role_binding(
+                    destination_id,
+                    direction,
+                    binding.role_slot,
+                    binding.pool_slot,
+                    binding.local_receive_tunnel,
+                );
                 match direction {
                     BuildDirection::Outbound => {
                         if let Some(role) = self
@@ -4624,6 +5074,10 @@ impl ServiceProduct {
                                     .with_destination_runtime(destination_id, |runtime| {
                                         runtime.mark_tunnel_failed(binding.pool_slot)
                                     });
+                                // Plan 512 — the binding must not outlive the tunnel it names.
+                                self.inner
+                                    .destination_role_bindings
+                                    .remove(&binding.role_slot);
                             }
                         } else {
                             let _ = self
@@ -4631,6 +5085,10 @@ impl ServiceProduct {
                                 .with_destination_runtime(destination_id, |runtime| {
                                     runtime.mark_tunnel_failed(binding.pool_slot)
                                 });
+                            // Plan 512 — the binding must not outlive the tunnel it names.
+                            self.inner
+                                .destination_role_bindings
+                                .remove(&binding.role_slot);
                         }
                     }
                     BuildDirection::Inbound => {
@@ -4691,6 +5149,10 @@ impl ServiceProduct {
                                     .with_destination_runtime(destination_id, |runtime| {
                                         runtime.mark_tunnel_failed(binding.pool_slot)
                                     });
+                                // Plan 512 — the binding must not outlive the tunnel it names.
+                                self.inner
+                                    .destination_role_bindings
+                                    .remove(&binding.role_slot);
                             } else {
                                 self.record_destination_post_activation(
                                     destination_id,
@@ -4707,6 +5169,10 @@ impl ServiceProduct {
                                 .with_destination_runtime(destination_id, |runtime| {
                                     runtime.mark_tunnel_failed(binding.pool_slot)
                                 });
+                            // Plan 512 — the binding must not outlive the tunnel it names.
+                            self.inner
+                                .destination_role_bindings
+                                .remove(&binding.role_slot);
                         }
                     }
                 }
