@@ -906,6 +906,58 @@ loop with a single end-to-end test for every valid slot in `0..=7`.
     public transit participation stays disabled, non-advertised, and
     unclaimed.
 
+## The shared registry's role in the destination liveness probe (Plan 512)
+
+Plan 487's F3 recorded that the destination inbound pool has no transit-hop
+failure detection. Plan 512 gives it one, and the mechanism's placement
+depends on a distinction this crate already owns.
+
+### Two slot namespaces, two routing sources
+
+The registry in `src/data_plane_registry.rs` holds **both** the exploratory
+role's roles and the destination role's roles, in one bounded table, and the
+two are told apart **structurally** rather than textually: the coordinator
+allocates destination-role slots upward from `DESTINATION_ROLE_SLOT_BASE`
+(`0x8000_0000`), and `is_destination_role_slot` is the discriminator.
+
+Their **routing metadata lives in different places**, and that is the reason
+Plan 512's probe composition is a separate function:
+
+- The **exploratory** role's inbound tunnel lives in the exploratory pool
+  (`src/pool.rs`), so its routing comes from the pool's `PublicTunnelRouting`
+  (`first_hop_router`, `first_hop_receive_tunnel`, `local_inbound_receive`).
+- The **destination** role's inbound tunnel lives in the **registry** — it is
+  activated by `ExploratoryBuildCoordinator::activate_destination_tunnel` —
+  so its routing comes from the registry's typed `InboundGatewayRoute`, keyed
+  by the **local receive tunnel id**.
+
+`DataPlaneRegistry::inbound_gateway_route` returns that route; the
+destination composition reads it and addresses the probe to the gateway.
+
+### Why the addressing matters
+
+The probe is addressed to the inbound tunnel's **gateway**, not to the
+outbound tunnel's first hop. That is the reference's own addressing (i2pd
+2.61.0, `libi2pd/TunnelPool.cpp:452`): the outbound tunnel carries the
+message to a peer that can reach the gateway, the gateway forwards it into
+the inbound tunnel, and the answer comes back to the local destination. **No
+remote cooperation is required** — the gateway simply forwards, exactly as it
+forwards any tunnel's traffic.
+
+The **exploratory** composition keeps its opposite rule, because the
+exploratory pair's two tunnels are built to **one** peer: the probe is
+delivered to that peer, which forwards it into the inbound tunnel. Both rules
+are correct for their own population; the registry's two routing sources are
+what make them different.
+
+### The registry's removals
+
+`DataPlaneRegistry::remove_slot` releases a role's slot, its inbound
+endpoint and its gateway route together. The destination failure arm uses it
+when a liveness failure fails an inbound tunnel, so the failed role's route
+stops existing — and the next probe that names its receive id is refused
+rather than answered by a stale route.
+
 ## Cross-references
 
 Related deep dives — [`i2pr-netdb.md`](i2pr-netdb.md) (the `ReplyPath`

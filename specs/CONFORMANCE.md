@@ -2254,6 +2254,97 @@ is
 `plans/implementation/core-router-recovery/511-version-component-ceiling.md`;
 the closure record is `plans/closure/core-router-recovery/511-status.md`.
 
+
+## The destination inbound pool's failure detection (Plan 512)
+
+Plan 487 recorded, and left open, the finding that **the destination inbound
+pool has no transit-hop failure detection**: a dead transit hop is invisible
+to the router until the tunnel expires, so a destination whose tunnels die
+with a hop is not replenished until the lease expires.
+
+Plan 512 lands the mechanism.
+
+**What was already there.** The router had Plan 504's **pair-level** liveness
+scheduler: a probe leaves through one tunnel and must come back through the
+other, the answer is correlated on the **acknowledged** message id, and a pair
+that misses two consecutive responses is reported unhealthy. It was installed
+and driven — but its **population** was the exploratory role's alone. The
+consequences of a failure were already live too: failing a tunnel removes it
+from the destination's pool, the daemon's tick notices that the installed
+lease set no longer matches the pool's usable set and marks the destination
+for republication, the replenishment deficit grows, and the existing submit
+path builds the replacement. Only the **detection** and the **routing of the
+failure** were missing.
+
+**What Plan 512 adds.** Three things, and nothing else.
+
+- **The population.** A destination role's own **outbound** role is paired with
+  its own **inbound** role. The pairing is deliberately **within** one
+  destination: pairing across destinations would let one destination's dead
+  outbound fail another destination's inbound, which is a false failure the
+  plan must not produce.
+- **The composition.** The destination probe is addressed to the **inbound
+  tunnel's gateway**, the way **i2pd 2.61.0** addresses it at the exact pin
+  (`libi2pd/TunnelPool.cpp:452`), so the answer returns through the inbound
+  tunnel the destination advertises and **no remote cooperation** is
+  required. The destination role's routing comes from the shared data-plane
+  registry's typed gateway route, because that role does not live in the
+  exploratory pool. The exploratory composition keeps its same-peer
+  precondition unchanged.
+- **The failure arm.** An unhealthy destination pair fails the destination's
+  inbound tunnel through the runtime's own `mark_tunnel_failed` seam, so the
+  existing republication and replenishment paths are the ones that fire. i2pd's
+  **"don't fail last tunnel"** rule is adopted verbatim, and the refusal is
+  **counted** rather than silent.
+
+**What is not claimed.** The failure is a **pair-level** fact: the probe did
+not come back. The router does **not** attribute it to a hop, and **no peer
+profile is written** — the decision type names a pool slot and carries no
+peer identity. i2pd fails **both** sides of the pair; `i2pr` fails the
+**inbound** only, and the divergence and its cost are recorded. No stock-peer
+evidence is claimed, and no per-hop attribution is claimed.
+
+**The safety property is inherited, not relaxed.** Only an **authenticated**
+response proves a pair, and only a proven pair may be failed. A destination
+probe path that is systematically broken therefore proves nothing and fails
+nothing — which is what bounds the blast radius of the gateway-addressed
+probe.
+
+**The decision is structural.** A guard pins that the live tick registers the
+destination population, that the population is grouped by destination, that
+the tick routes the failure to the destination arm, that the arm reaches the
+pool's failure seam, that the last-tunnel rule is enforced, that the probe is
+composed through the canonical seam and addressed to the gateway route, that
+the destination probe does not read the exploratory pool, that the
+exploratory composition and population are unchanged, that the proven-pair
+gate appears exactly once in the scheduler's production code, that the
+binding table is bounded, that the failure decision carries no peer identity,
+and that **Plan 504's guard and lane stay byte-identical** — their SHA-256
+digests are pinned, so the claim is checkable rather than asserted. Every
+rule carries an inverted probe.
+
+**No advertisement.** `router.version` stays `0.9.62`; `caps` and the
+published RouterInfo are unchanged; the support inventory's advertised count
+stays **zero**; `Cargo.toml` and `Cargo.lock` are byte-identical. **Plan 487's
+closure record is not rewritten.**
+
+**What Plan 512 does not close.** Plan 491's **F2** (no stock-peer evidence)
+is blocked externally on Plan 493's authorized two-host topology, and the
+same applies to Plan 487's F3: the mechanism is landed and proven in-tree,
+but the stock-peer qualification that would exercise a real dead transit hop
+is external. The **per-component width** divergence (the parser's `u16` bound
+against Java's `long`) and the **routing table's live reader** (Plan 497
+limitation 5's read half) are recorded for their own successors.
+
+Evidence:
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/exploratory_build.rs`,
+`crates/i2pr-daemon/tests/destination_liveness_live.rs` and
+`crates/i2pr-daemon/tests/destination_liveness_boundary.rs`. The references'
+evidence is recorded in `specs/QUALIFICATION-GATES.md` §11. The plan of record
+is
+`plans/implementation/core-router-recovery/512-destination-inbound-liveness.md`;
+the closure record is `plans/closure/core-router-recovery/512-status.md`.
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

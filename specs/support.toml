@@ -2313,3 +2313,22 @@ evidence = [
     "plans/closure/core-router-recovery/511-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.destination-inbound-liveness"
+protocol = "tunnels"
+structure = "destination-role-pair-liveness-with-gateway-addressed-probe-and-pool-failure-routing"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 512 closes Plan 487's **F3**: *\\\"a controlled transit-peer loss destroys the live path; the destination inbound pool has no transit-hop failure detection\\\"*. Plan 487 recorded that *a dead transit hop is invisible to the router until the tunnel expires*, so a destination whose tunnels die with a hop is not replenished until the lease expires. The tree already had the reference's **pair-level** mechanism -- Plan 504's liveness scheduler, where a probe leaves through one tunnel and must come back through the other, the answer is correlated on the **acknowledged** message id, and a pair that misses two consecutive responses is reported unhealthy -- and already had every **consequence** of a failure: the pool's failure seam removes the tunnel, the daemon's tick notices that the installed lease set no longer matches the pool's usable set and marks the destination for republication, the replenishment deficit grows, and the existing submit path builds the replacement. Only the **detection** and the **routing of the failure** were missing, and this plan delivers exactly those three pieces. **The population:** a destination role's own **outbound** role is paired with its own **inbound** role; the pairing is deliberately **within** one destination, because pairing across destinations would let one destination's dead outbound fail another destination's inbound, which is a false failure the plan must not produce. **The composition:** the destination probe is addressed to the **inbound tunnel's gateway**, the way **i2pd 2.61.0** addresses it at the exact pin (`libi2pd/TunnelPool.cpp:452`), so the answer returns through the inbound tunnel the destination advertises and **no remote cooperation** is required; the destination role's routing comes from the shared data-plane registry's typed gateway route, because that role does not live in the exploratory pool. **The failure arm:** an unhealthy destination pair fails the destination's inbound tunnel through the runtime's own `mark_tunnel_failed` seam, so the **existing** republication and replenishment paths are the ones that fire, and i2pd's **\\\"don't fail last tunnel\\\"** rule (`libi2pd/TunnelPool.cpp:360`) is adopted verbatim with the refusal **counted**. The exploratory composition keeps its same-peer precondition and the exploratory population keeps reporting no destination role, so Plan 504's guard and lane stay **byte-identical** -- their SHA-256 digests are pinned by the new guard, which makes the claim checkable rather than asserted. The failure is a **pair-level** fact and is never written into a peer profile: the decision type names a pool slot and carries no peer identity, and no per-hop attribution is claimed. i2pd fails **both** sides of the pair; `i2pr` fails the **inbound** only, and the divergence and its cost are recorded in the closure record. The **proven-pair gate** Plan 504 established is **inherited rather than relaxed**: only an authenticated response proves a pair, and only a proven pair may be failed, so a systematically broken destination probe path proves nothing and fails nothing. The mechanism is landed and proven in-tree; the **stock-peer qualification** that would exercise a real dead transit hop is blocked externally on Plan 493's authorized two-host topology, and no stock-peer evidence is claimed. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/exploratory_build.rs",
+    "crates/i2pr-daemon/src/tunnel_liveness.rs",
+    "crates/i2pr-daemon/tests/destination_liveness_live.rs",
+    "crates/i2pr-daemon/tests/destination_liveness_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/core-router-recovery/512-destination-inbound-liveness.md",
+    "plans/closure/core-router-recovery/512-status.md",
+]
+advertised = false

@@ -187,7 +187,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/router_i2np.rs` | 3 689 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info` |
-| `src/exploratory_build.rs` | 4 514 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/exploratory_build.rs` | 4 660 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/exploratory_driver.rs` | 1 778 | **Plan 505** exploratory build driver: the router names a peer through Plan 491's version-gated selection, builds a one-hop exploratory tunnel toward it through the EXISTING `rebuild_exploratory` path, and records exactly one peer-level observation per terminal outcome -- a local condition produces none, so the router never blames a peer for a fault of its own | `PeerBuildIdentity`, `PeerMaterialError`, `PeerBuildIdentityResolver`, `ProfileStorePeerResolver`, `PeerObservation`, `observation_for_outcome`, `ExploratoryDriverCounters`, `ExploratoryDriverAction`, `SelectedPeer`, `ExploratoryDriverState`, `ExploratoryDriver` |
 | `src/peer_reconcile.rs` | 933 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS`, `RETENTION_WINDOW_MS` |
@@ -403,7 +403,7 @@ under Key contracts for the lifecycle detail.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
-| `src/service_product.rs` | 9 523 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2040`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_product.rs` | 9 989 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2364`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
 | `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
@@ -751,7 +751,7 @@ secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }
 **not** synchronous; it hands an `async fn` to the runtime owner.
 
 `ServiceProduct` has exactly **one** `pub` entry point, `ServiceProduct::start`
-(`src/service_product.rs:2040`); `ServiceProduct::start_over_existing_daemon` is
+(`src/service_product.rs:2364`); `ServiceProduct::start_over_existing_daemon` is
 `pub(crate)`, the normal-daemon adapter that reuses an already-running SSU2 owner. Build the
 one shared `ServiceTunnelManager` with `build_shared_service_manager` (Plan 337) and inject
 the same `Arc` into both the control state and the destination-group product.
@@ -1114,11 +1114,11 @@ enforced **nowhere in production**.
 The router's two live `DatabaseStore` sends selected floodfills by XOR distance
 alone and never consulted `dsm_target_eligibility`:
 
-- the **creator RouterInfo** publication (`src/service_product.rs:6497`,
+- the **creator RouterInfo** publication (`src/service_product.rs:7619`,
   reached from the live composition through `src/lib.rs:3991`) sorted the
   floodfill advertisers itself and truncated to three;
-- the **service LeaseSet2** publication (`src/service_product.rs:8222`,
-  reached from `src/service_product.rs:3008`/`:3606`/`:7586`) went through
+- the **service LeaseSet2** publication (`src/service_product.rs:9358`,
+  reached from `src/service_product.rs:3429`/`:4661`/`:8722`) went through
   `DestinationTunnelCoordinator::candidate_hashes` →
   `i2pr_netdb::lookup_policy::select_floodfill_candidates`, a selection that
   filters on nothing but distance and exclusion.
@@ -1202,7 +1202,7 @@ of every `pub mod` in `src/lib.rs` — in-crate production references against
 out-of-crate test references — returned exactly one module with no
 production consumer: `tunnel_liveness` (prod = 0, tests = 11). The live
 inbound path called the coordinator's dispatcher directly
-(`src/service_product.rs:3957`, `:6177`, `:7227`, `:7450`), never the
+(`src/service_product.rs:4978`, `:7258`, `:8317`, `:8547`), never the
 existing `route_inbound_with_liveness` seam, so every inbound
 `DeliveryStatus` echo was **discarded**: nothing correlated it, because
 there was no pending test.
@@ -1504,7 +1504,7 @@ prescription on the way.
 
 **The correction is the point.** Plan 490's finding prescribed adding the
 drain to `ServiceProduct::poll_inbound`. The daemon's own source says
-otherwise (`src/service_product.rs:3664-3665`): *"advance runs via the daemon
+otherwise (`src/service_product.rs:4739-4740`): *"advance runs via the daemon
 loop; poll_inbound is not on the live path"*. The live inbound pump is the
 daemon loop in `src/lib.rs`, whose `tokio::select!` awaits the SSU2 I2NP
 handoff and the NTCP2 ingress and arms the `group_tick` and `relay_tick`
@@ -1517,7 +1517,7 @@ either `Router(Ssu2DaemonHandle)` — no destination groups configured — or
 `Groups(Box<ServiceProduct>)`. The live loop drains through whichever holds
 the handle: `Ssu2DaemonHandle::try_next_relay_event`
 (`src/router_i2np.rs:2225`) or `ServiceProduct::try_next_relay_event`
-(`src/service_product.rs:3104`), and `NormalSsu2Owner` is itself the drain's
+(`src/service_product.rs:3545`), and `NormalSsu2Owner` is itself the drain's
 `RelayEventSource` (`src/lib.rs:2357-2361`). The product exposes the **pull
 only**; it does not own a role owner. Two owners would mean two sets of
 counters and an ambiguity about which one is authoritative.
@@ -2990,6 +2990,102 @@ No daily rollover re-resolution, no cross-router result, no Java or i2pd directi
 blinding rotates daily and there is no periodic re-resolution, so a resolution computed before a
 midnight boundary addresses the **wrong DHT key**. Type 5 stays `advertised = false`, and Plan 380
 adds no support surface: the credential is i2pr-local configuration, not an advertised capability.
+
+## The destination role in the tunnel liveness scheduler (Plan 512)
+
+Plan 487 recorded, and left open, the finding that **the destination inbound
+pool has no transit-hop failure detection**: a dead transit hop is invisible
+to the router until the tunnel expires, so a destination whose tunnels die
+with a hop is not replenished until the lease expires.
+
+Plan 512 lands the mechanism. It is worth being precise about what was
+already there, because the gap was **not** a missing scheduler.
+
+### What was already there
+
+- `src/tunnel_liveness.rs` — Plan 504's **pair-level** scheduler. A probe
+  leaves through one tunnel and must come back through the other; the answer
+  is correlated on the **acknowledged** message id; and a pair that misses
+  **two consecutive** responses is reported unhealthy. The scheduler itself
+  is **role-agnostic**: `register_pair` checks only the pair ceiling, the
+  slot inequality and the duplicate key.
+- `src/exploratory_build.rs` — the **exploratory** population,
+  `exploratory_liveness_pairs`, which pairs the exploratory pool's outbound
+  registrations with the inbound registration whose gateway is the **same
+  peer**.
+- `src/service_product.rs` — `sync_liveness_pairs`, which registers exactly
+  that population, and `drive_tunnel_liveness`, which drives the scheduler on
+  the existing tick.
+- Every **consequence** of a failure: the pool's failure seam
+  (`DestinationRuntime::mark_tunnel_failed`), the changed lease set, the
+  daemon tick's republication trigger, the replenishment deficit, and the
+  existing submit path that builds the replacement.
+
+So the detection existed and the consequences existed. What did not exist was
+the **population** for the destination role and the **routing** of its
+failure.
+
+### What Plan 512 adds
+
+**The population** is a separate function,
+`service_product::destination_liveness_pairs`, over a bounded binding table
+(`destination_role_bindings`) that maps a coordinator destination-role slot to
+the destination that owns it, the destination runtime's pool slot, the
+direction, and the inbound's local receive id.
+
+The pairing is deliberately **within one destination**: the destination's
+outbound role carries the probe out and the same destination's inbound role
+carries the answer back. Pairing across destinations would let one
+destination's dead outbound fail **another** destination's inbound, which is
+a false failure the plan must not produce.
+
+**The composition** is `ExploratoryBuildCoordinator::compose_destination_liveness_probe`.
+The destination role's inbound tunnel does not live in the exploratory pool —
+it is bound in the shared data-plane registry under the destination-role slot
+namespace — so its routing comes from the registry's typed
+`InboundGatewayRoute` rather than the pool's `PublicTunnelRouting`. The
+probe is addressed to the inbound tunnel's **gateway**, the way i2pd 2.61.0
+addresses it at the exact pin (`libi2pd/TunnelPool.cpp:452`), so the answer
+returns through the inbound tunnel the destination advertises and **no remote
+cooperation** is required.
+
+The exploratory composition keeps its **same-peer** precondition unchanged.
+That rule is correct for the exploratory population — both its tunnels are
+built to one peer — and would leave the destination population empty, because
+the destination role's two directions are built in separate rounds from
+separate peer selections.
+
+**The failure arm** is `ServiceProduct::fail_destination_liveness_pair`. An
+unhealthy destination pair fails the destination's inbound tunnel through the
+runtime's own `mark_tunnel_failed` seam, so the **existing** republication
+and replenishment paths are the ones that fire. i2pd's **"don't fail last
+tunnel"** rule is adopted verbatim, and the refusal is **counted** rather
+than silent.
+
+### The safety property is inherited, not relaxed
+
+Only an **authenticated** response proves a pair, and only a **proven** pair
+may be failed. That is Plan 504's gate, and the destination population
+inherits it unchanged. It is the property that bounds the blast radius of
+the gateway-addressed probe: a destination probe path that is systematically
+broken proves nothing, and therefore **fails nothing**.
+
+### What is deliberately not claimed
+
+- **Per-hop attribution.** The failure is a **pair-level** fact: the probe
+  did not come back. No peer profile is written, and the decision type
+  carries a pool slot and no peer identity.
+- **i2pd's both-sides failure.** i2pd fails the outbound and the inbound of
+  the pair; `i2pr` fails the **inbound** only. The divergence and its cost
+  are recorded in the closure record.
+- **Stock-peer evidence.** The mechanism is landed and proven in-tree. The
+  qualification that would exercise a real dead transit hop is blocked
+  externally on Plan 493's authorized two-host topology.
+
+The static guard is `crates/i2pr-daemon/tests/destination_liveness_boundary.rs`;
+the lane is `crates/i2pr-daemon/tests/destination_liveness_live.rs`. Plan
+504's guard and lane stay **byte-identical**, and their SHA-256 digests are
+pinned by the new guard, so the claim is checkable rather than asserted.
 
 ## Cross-references
 

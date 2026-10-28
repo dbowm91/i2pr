@@ -912,6 +912,59 @@ refresh.**
   without an API review. The narrow-accessor rule for the identity is
   otherwise intact.
 
+## The destination pool's failure path (Plan 512)
+
+Plan 487's F3 recorded that the destination inbound pool has no transit-hop
+failure detection: a dead transit hop is invisible to the router until the
+tunnel expires, so a destination whose tunnels die with a hop is not
+replenished until the lease expires.
+
+The **consequences** of a failure were already implemented in this crate
+before Plan 512. The plan adds the **detection** and the **routing**.
+
+### The path a failed tunnel takes
+
+1. `DestinationRuntime::mark_tunnel_failed` removes the tunnel from the
+   pool's usable set (`DestinationTunnelPool::mark_failed`). The runtime's
+   own state becomes `Degraded`.
+2. `DestinationRuntime::inbound_lease_sources` no longer yields the failed
+   tunnel, so the **advertised** lease set changes.
+3. `LeaseSetLifecycle::refresh` classifies the change as
+   `LeaseSetRotationCause::TunnelSetChanged` — an ordinary tunnel set change,
+   a tunnel failed or withdrawn — and returns
+   `LeaseSetDecision::Regenerate`. The daemon's tick notices that the
+   installed lease set no longer matches the pool's usable set and marks the
+   destination for republication.
+4. `DestinationRuntime::inbound_replenishment_deficit` grows, and the
+   existing submit path builds the replacement.
+
+Step 2 is the hinge: a failed tunnel is *not* advertised, so a peer that
+learns the new lease set stops sending into the dead tunnel. That is the
+whole of the republication mechanism, and it was already here.
+
+### What Plan 512 adds on top
+
+- The **detection**: the daemon's tunnel liveness scheduler now tracks the
+  destination role's pairs, and a pair that has been **proven** and then
+  misses **two consecutive** responses fails the destination's inbound
+  tunnel through `mark_tunnel_failed`.
+- The **routing**: the failure reaches the right destination. The binding
+  that maps the coordinator's destination-role slot to the destination
+  runtime's pool slot lives in the daemon, because the pool slot is the
+  client's and the coordinator slot is the daemon's.
+- The **last-tunnel rule**: i2pd's *"don't fail last tunnel"* rule is adopted
+  verbatim. A destination that holds a single inbound tunnel is not failed,
+  because failing it would leave the destination with no path and no
+  advertisement. The refusal is **counted**, so the situation is observable
+  rather than silent.
+
+### What is deliberately not claimed
+
+The failure is a **pair-level** fact: the probe did not come back. This crate
+carries no peer profile for the failure and no per-hop attribution — the
+decision names a pool slot and nothing else. Neither reference attributes
+the fault to a hop either.
+
 ## Cross-references
 
 ### ADRs

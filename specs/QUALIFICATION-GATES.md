@@ -545,3 +545,125 @@ settled here: widening the width would multiply the comparator's stored array
 again, and a version with a component above 65535 is not a version. It is
 recorded for a successor plan.
 
+
+## 11. When one of the router's own tunnels stops answering
+
+Plan 512 gives the router's **destination** inbound pool the failure detection
+it did not have. Plan 487 recorded the gap: *a dead transit hop is invisible
+to the router until the tunnel expires*, so a destination whose tunnels die
+with a hop is not replenished until the lease expires. This section records
+what the two pinned references do when a tunnel stops answering, because they
+are the design's source.
+
+### 11.1 What the router had, and what it lacked
+
+The router already had a **pair-level** liveness scheduler (Plan 504). A probe
+leaves through one tunnel and must come back through the other; the answer is
+correlated on the **acknowledged** message id; and a pair that misses two
+consecutive responses is reported unhealthy. That scheduler was installed and
+driven, but its **population** was the exploratory role's alone — the
+destination role's tunnels were never tracked.
+
+The consequences of a failure were already live: failing a tunnel removes it
+from the destination's pool, the daemon's tick notices that the installed
+lease set no longer matches the pool's usable set and marks the destination
+for republication, the replenishment deficit grows, and the existing submit
+path builds the replacement. Only the **detection** and the **routing of the
+failure** were missing.
+
+### 11.2 i2pd 2.61.0 — the pair test
+
+Pin `635b013a612ff47278ef02acf8580a28e10e26c5` (tag `2.61.0`).
+
+`libi2pd/TunnelPool.cpp` runs `TestTunnels` on the pool's manage tick
+(`libi2pd/TunnelPool.h:32`, `TUNNEL_POOL_MANAGE_INTERVAL = 10` seconds,
+dispatched from `libi2pd/TunnelPool.cpp:462-475`).
+
+**The pairing** (`libi2pd/TunnelPool.cpp:400-430`) shuffles the established
+**outbound** list and the established **inbound** list and pairs them **one to
+one**. There is **no shared-hop requirement**.
+
+**The probe** (`libi2pd/TunnelPool.cpp:428-458`) is a garlic-wrapped
+tunnel-test message, sent **out** through the **outbound** tunnel and
+**addressed to the inbound tunnel's gateway**:
+
+```cpp
+outbound->SendTunnelDataMsgTo (it.second->GetNextIdentHash (),
+    it.second->GetNextTunnelID (), msg);
+```
+
+The gateway forwards the message into the inbound tunnel and it comes back to
+the local destination. **No remote cooperation is required** — the gateway
+simply forwards, exactly as it forwards any tunnel's traffic.
+
+**The miss** (`libi2pd/TunnelPool.cpp:342-345`) is a pending test that has not
+answered when the next tick swaps the table. The **first** miss sets
+`eTunnelStateTestFailed` (`libi2pd/TunnelPool.cpp:356`, `:369`;
+`libi2pd/Tunnel.h:63`) and is **not** fatal. The **second** consecutive miss
+sets `eTunnelStateFailed` (`libi2pd/Tunnel.h:64`) and the tunnel is **erased
+from the pool** (`libi2pd/TunnelPool.cpp:357-366`, `:374-386`) — unless it is
+the **last** one, in which case a replacement is created immediately
+(`libi2pd/TunnelPool.cpp:360`, `:377`: *"don't fail last tunnel"*).
+
+**The republication** is explicit: when the **inbound** tunnel fails,
+`m_LocalDestination->SetLeaseSetUpdated(true)` is called
+(`libi2pd/TunnelPool.cpp:389-393`, `:394`), which republishes the lease set.
+
+**The reply** (`libi2pd/TunnelPool.cpp:493-537`, `ProcessTunnelTest`) matches
+the answer and restores `eTunnelStateEstablished` from
+`eTunnelStateTestFailed`.
+
+**The local drop** (`libi2pd/TunnelPool.cpp:439-451`) blames the **outbound**
+tunnel: a probe dropped locally never reached the gateway.
+
+**What the reference does not do.** It does not attribute the failure to a
+**hop**. The fault is a property of the **pair**; the router learns that the
+path did not answer, not which router on it stopped.
+
+### 11.3 Java I2P — the same shape
+
+**Provenance caveat, stated plainly.** The pinned Java reference is **2.13.0**
+(`9134f808337b401e8e53c73734c81fab04280c9d`). The reading below was taken
+from a **2.13.1** installation, because the pinned artifact was not available
+on the host, and the shipped jar carries **no `.java` sources** — so the
+reading is **class and method from `javap`**, not `file:line`. It is labelled
+as such wherever it is relied upon. The **primary** derivation is i2pd's,
+whose checkout is at the exact pin.
+
+`net.i2p.router.tunnel.pool.TestJob` is the analogue of `TestTunnels`;
+`TunnelPool.tunnelFailed(TunnelInfo)` calls `fail(TunnelInfo)`; and for an
+**inbound, non-exploratory** pool, `fail` calls `locked_buildNewLeaseSet()`
+and then `requestLeaseSet(LeaseSet)` — the direct analogue of i2pd's
+`SetLeaseSetUpdated(true)`.
+
+### 11.4 What `i2pr` takes from them, and what it does not
+
+`i2pr` takes the **pair-level** granularity, the **two consecutive misses**
+before anything is failed, the **gateway addressing**, and the **"don't fail
+last tunnel"** rule.
+
+It does **not** take:
+
+- **per-hop attribution.** The tree has no per-hop delivery-success signal,
+  and the tunnel layer's IV and key state are end-to-end. Both references
+  treat the fault as pair-level.
+- **i2pd's both-sides failure.** i2pd fails the outbound and the inbound of
+  the pair. `i2pr` fails the **inbound** only: the recorded gap is about the
+  inbound pool and its advertised lease, the inbound's failure already
+  produces both a replacement and a republication, and the outbound is the
+  router's path to the remote service, whose failure is a **different** gap.
+  The cost — a dead outbound produces repeated inbound rebuilds rather than
+  one outbound rebuild — is recorded in the closure record.
+- **any new wire mechanism.** The probe is the router's existing
+  `DeliveryStatus` with the existing correlation id.
+
+### 11.5 The safety property that is inherited, not relaxed
+
+The router's scheduler refuses to tear down a pair that has **never**
+answered: only an **authenticated** response proves a pair, and only a proven
+pair may be failed. This is the reference's two-miss rule's own safety
+margin, and it is the property that bounds the blast radius of the
+gateway-addressed probe: a destination probe path that is systematically
+broken proves nothing, and therefore **fails nothing**. The rule is
+inherited by the destination population unchanged, and a static guard pins
+that there is exactly one such gate in the scheduler's production code.
