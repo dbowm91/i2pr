@@ -2102,6 +2102,87 @@ record is
 `plans/implementation/network-participation/509-lookup-target-api-version-decision.md`;
 the closure record is `plans/closure/network-participation/509-status.md`.
 
+## The managed-tunnel staging path's reason classification (Plan 510)
+
+Plan 491 recorded F4: an intermittent `i2pcontrol_tunnels` managed-tunnel
+staging failure — *"runtime transition failed: manager configuration
+rejected"* — that did not reproduce in three isolated runs, in the
+`--no-fail-fast` workspace sweep, or in two later floor runs. The residual
+risk was named as *"a load-sensitive race in the managed-service staging
+path"*, and the failure was undiagnosable: every manager rejection
+collapsed into one static label, so an occurrence could not be attributed.
+
+Plan 491's own words named two things, and the plan delivers both.
+
+What is claimed, and what is not:
+
+- **The rejection now names its class.** The daemon's `InvalidConfig`
+  detail is classified into a **value-free class** through a pinned list of
+  forty (marker, class) pairs. The marker is a stable phrase *inside* the
+  detail — the service id is embedded at the front of most messages, so a
+  prefix match would have to know the id, and a class that depends on the id
+  is not a class — and the class is a short label of letters and spaces.
+- **The change can never lose information.** The mapping is **total**: every
+  detail yields a label. A detail that matches no marker keeps today's
+  single generic label, so a rejection can never become *less* informative
+  than it was before the change.
+- **No value can reach the wire.** Both the classifier and the reason mapper
+  return `&'static str`, so the **type system** — not a review — forbids a
+  detail from reaching the operator. The service id, the socket address and
+  the underlying error stay inside the daemon. The reason template is fixed:
+  a class plus the prefix `runtime transition failed: `, nothing else.
+- **The staging path now has a load-sensitive lane.** The path had none.
+  `crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs` drives **eight
+  concurrent** managed-tunnel creates against one real daemon, each with its
+  own name, its own loopback port and its own target destination, and each
+  generating a destination identity, building a lease set and binding a
+  listener. The load is **real work**, never a sleep; every wait is an
+  explicit bounded deadline, and the concurrency is bounded.
+- **The reject path is exercised, not assumed.** The same lane creates a
+  server kind with `UseSSL` and no daemon TLS policy — a configuration the
+  request envelope and the control spec build both admit, and which is
+  refused later, while the shared manager stages the runtime. That is the
+  exact path F4 failed on. The lane asserts that the reason names a class
+  and carries no value, and that the shared manager still stages a runtime
+  afterwards, so a rejection cannot quietly poison the path.
+- **The decision is structural, so it cannot drift.** A static guard pins the
+  table (non-empty, no duplicate marker or class, no shadowed marker), the
+  classification's totality, the agreement between the pinned table and the
+  production function, the value-freeness of every class, the **liveness** of
+  every marker in the daemon's own error construction, the `&'static str`
+  signatures, the fixed reason template, and the lane's boundedness,
+  concurrency and freedom from sleeps. Every rule carries an inverted probe,
+  and the guard is fail-closed.
+- **No production behaviour beyond the reason string changed.** The staging
+  path is not made faster, lazier or more tolerant; it is observed and
+  reported. Nothing here changes `router.version`, `caps`, the published
+  RouterInfo, or any advertisement; the support inventory's advertised
+  count stays **zero** (102 surfaces, 96 experimental); `Cargo.toml` and
+  `Cargo.lock` are byte-identical.
+- **The original failure did NOT reproduce.** The lane is the plan's
+  contribution whether or not it reproduces: if it reproduces, the plan has
+  found the defect; if it does not, the path is under a load-sensitive lane
+  that did not exist before, and the reason is diagnosable if it ever does.
+  Plan 491's F4 is therefore closed **conditionally**, and the closure record
+  names the condition and the exact future evidence that would close it
+  unconditionally.
+- **No stock-peer evidence is claimed.** The lane is over the tree's own
+  deterministic surfaces.
+
+**What Plan 510 does not close.** Plan 491 **F2** (no stock-peer evidence)
+and **F5** (the comparator's four-component ceiling), Plan 487 **F3** (the
+transit-hop failure detection), Plan 497 limitation 5's **read** half, Plan
+490 Medium #3 and every externally-blocked plan stay open.
+
+Evidence:
+`crates/i2pr-daemon/src/i2pcontrol_tunnels.rs`,
+`crates/i2pr-daemon/src/service_tunnels.rs`,
+`crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs` and
+`crates/i2pr-daemon/tests/managed_tunnel_reason_boundary.rs`. The plan of
+record is
+`plans/implementation/core-router-recovery/510-managed-tunnel-staging-under-load.md`;
+the closure record is `plans/closure/core-router-recovery/510-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

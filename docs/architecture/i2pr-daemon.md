@@ -1964,6 +1964,59 @@ paths, which Plan 503 put there.
 makes the decision structural, and
 `crates/i2pr-netdb/tests/lookup_target_version_decision.rs` proves it.
 
+### The managed-tunnel staging path's reason classification (Plan 510, `src/i2pcontrol_tunnels.rs`)
+
+Plan 491's F4 was an intermittent managed-tunnel staging failure that
+never reproduced again, and it was undiagnosable: `static_manager_reason`
+collapsed **every** `ServiceTunnelError::InvalidConfig` into the single
+label *"manager configuration rejected"*. Plan 510 makes the rejection
+name its class and puts the path under a load-sensitive lane.
+
+**The classification.** The daemon's `InvalidConfig` detail is mapped to a
+**value-free class** through `MANAGER_CONFIG_CLASSES`, a pinned list of
+forty (marker, class) pairs.
+
+- The **marker** is a stable phrase that appears *inside* the detail. The
+  service id is embedded at the front of most messages — *"canonical
+  use_ssl requires a daemon TLS policy"* — so a prefix match would have to
+  know the id, and a class that depends on the id is not a class. The
+  marker carries no value: it is a constant phrase in the daemon's own
+  error construction.
+- The **class** is a short label of letters and spaces: *"server TLS policy
+  missing"*, *"candidate bind collision"*, *"destination registry
+  poisoned"*. It never names an id, a socket, a port, a key or a payload.
+- The order matters: a longer marker that *contains* a shorter one comes
+  first, so the more specific class wins. The guard asserts that no marker
+  is shadowed by an earlier one.
+- The mapping is **total**. A detail that matches no marker keeps
+  `MANAGER_CONFIG_GENERIC` — today's label, unchanged — so a new rejection
+  can never make the operator's view worse, and a new marker can be added
+  deliberately with its own guard entry.
+- **No value can reach the wire.** `manager_config_class` and
+  `static_manager_reason` both return `&'static str`, so the type system
+  forbids a detail from escaping. The reason template is fixed:
+  `runtime transition failed: {reason}` — a class plus a prefix, nothing
+  else.
+
+**The load lane.** `crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs`
+drives eight **concurrent** managed-tunnel creates against one real daemon,
+each with its own name, loopback port and target destination, and each
+generating a destination identity, building a lease set and binding a
+listener. The load is real work, never a sleep, and every wait is an
+explicit bounded deadline. The same lane exercises the **reject** path — a
+server kind with `UseSSL` and no daemon TLS policy, refused while the
+shared manager stages the runtime — and asserts that the reason names a
+class and carries no value, and that the shared manager still stages a
+runtime afterwards.
+
+**The guard.** `crates/i2pr-daemon/tests/managed_tunnel_reason_boundary.rs`
+pins the table, the classification's totality, the agreement between the
+pinned table and the production function, the value-freeness of every
+class, the liveness of every marker in `src/service_tunnels.rs`, the
+`&'static str` signatures, the fixed reason template, and the lane's
+boundedness, concurrency and freedom from sleeps. Every rule carries an
+inverted probe.
+
 ### The transit creator-correlation retention window (Plan 508, `src/transit_owner.rs`)
 
 Plan 502 closed the **population** the transit owner must bypass; Plan 508

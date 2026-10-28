@@ -2279,3 +2279,20 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/297-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "service-tunnels.managed-staging-reason-classification"
+protocol = "service-tunnels"
+structure = "value-free-class-per-manager-configuration-rejection-with-a-load-sensitive-black-box-lane"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 510 closes Plan 491's **F4**: an intermittent `i2pcontrol_tunnels` managed-tunnel staging failure -- *\"runtime transition failed: manager configuration rejected\"* -- that never reproduced again. The residual risk was named as *a load-sensitive race in the managed-service staging path*, and the failure was undiagnosable because `static_manager_reason` collapsed **every** `ServiceTunnelError::InvalidConfig` into one static label. This plan delivers both halves. **The classification:** the daemon's `InvalidConfig` detail is classified into a **value-free class** through a pinned list of forty (marker, class) pairs. The marker is a stable phrase *inside* the detail -- the service id is embedded at the front of most messages, so a prefix match would have to know the id, and a class that depends on the id is not a class -- and the class is a short label of letters and spaces. A detail that matches no marker keeps today's single generic label, so the change can never make a rejection *less* informative than it is now, and the mapping is total: every detail yields a label. Both the classifier and the reason mapper return `&'static str`, so the **type system** forbids a detail from reaching the wire -- the id, the socket address and the underlying error stay inside the daemon. The reason template is fixed (`runtime transition failed: {reason}`): a class plus a prefix, nothing else. **The load lane:** `crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs` drives **eight concurrent** managed-tunnel creates against one real daemon, each with its own name, loopback port and target destination, and each generating a destination identity, building a lease set and binding a listener. The load is **real work**, never a sleep, and every wait is an explicit bounded deadline; the concurrency is bounded. The same lane exercises the **reject** path -- a server kind with `UseSSL` and no daemon TLS policy is refused while the shared manager stages the runtime -- and asserts that the reason names a class and carries no value, and that the shared manager still stages a runtime afterwards. **The guard:** `crates/i2pr-daemon/tests/managed_tunnel_reason_boundary.rs` pins the table (non-empty, no duplicate marker or class, no shadowed marker), the classification's totality, the agreement between the pinned table and the production function, the value-freeness of every class, the liveness of every marker in the daemon's own error construction, the `&'static str` signatures, the fixed reason template, and the lane's boundedness, concurrency and freedom from sleeps. Every rule carries an inverted probe. **What is NOT claimed:** the original failure did **not** reproduce under the lane, so Plan 491's F4 is closed **conditionally** -- the path now has a load-sensitive lane and a diagnosable reason, and the exact future evidence that would close it unconditionally is named in the closure record. No stock-peer evidence is claimed. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs",
+    "crates/i2pr-daemon/tests/managed_tunnel_reason_boundary.rs",
+    "plans/implementation/core-router-recovery/510-managed-tunnel-staging-under-load.md",
+    "plans/closure/core-router-recovery/510-status.md",
+]
+advertised = false
