@@ -1513,6 +1513,8 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v214() {
         bootstrap: None,
         peer_profiles: None,
         reconcile_period_ms: i2pr_daemon::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+        // Plan 513: the qualification lane owns no discovery spine.
+        discovery: None,
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

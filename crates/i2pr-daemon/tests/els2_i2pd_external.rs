@@ -507,6 +507,8 @@ async fn els2_i2pr_consumes_reference_published_els2() {
         bootstrap: None,
         peer_profiles: None,
         reconcile_period_ms: i2pr_daemon::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+        // Plan 513: the qualification lane owns no discovery spine.
+        discovery: None,
     };
 
     let mut product = ServiceProduct::start(spec)

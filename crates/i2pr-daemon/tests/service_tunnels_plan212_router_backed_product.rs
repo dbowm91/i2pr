@@ -611,6 +611,8 @@ async fn plan212_router_backed_generic_directions() {
         bootstrap: None,
         peer_profiles: None,
         reconcile_period_ms: i2pr_daemon::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+        // Plan 513: the qualification lane owns no discovery spine.
+        discovery: None,
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

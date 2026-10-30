@@ -1310,6 +1310,44 @@ impl ExploratoryBuildCoordinator {
         self.registry.usable_outbound_slots(self.now_ms)
     }
 
+    /// Plan 513: returns the exploratory pool's oldest valid **inbound**
+    /// tunnel as the reply path a discovery request carries.
+    ///
+    /// The pool's own registrations are consulted, not the shared
+    /// data-plane registry: a destination-role slot lives in the registry
+    /// but never in the pool's registration list, so it can never be
+    /// handed out as the discovery reply path. The selection is the
+    /// pool's own rule — the **oldest** established and unexpired inbound
+    /// tunnel — so the reply path is stable while that tunnel lives.
+    pub fn exploratory_reply_path(&self, now_seconds: u64) -> Option<i2pr_netdb::ReplyPath> {
+        self.pool
+            .select_inbound_reply_path(now_seconds)
+            .and_then(|inner| inner.ok())
+    }
+
+    /// Plan 513: returns the exploratory pool's usable **outbound** role.
+    ///
+    /// The role is the request half of Plan 102's exploratory-tunnel
+    /// dependency: a RouterInfo-kind lookup leaves through it. The pool's
+    /// own registrations are consulted, so a destination-role outbound
+    /// slot is never returned; the exploratory distinction is structural,
+    /// not a slot-number test.
+    pub fn exploratory_outbound_role(
+        &self,
+        now_ms: u64,
+    ) -> Option<&i2pr_tunnel::roles::OutboundGatewayRole> {
+        for registration in self.pool.outbound_registrations() {
+            let slot = registration.slot();
+            let Some(role) = self.registry.outbound(slot) else {
+                continue;
+            };
+            if role.is_usable(now_ms) {
+                return Some(role);
+            }
+        }
+        None
+    }
+
     /// Returns the installed **exploratory** tunnel pairs the Plan 504
     /// liveness scheduler may track.
     ///

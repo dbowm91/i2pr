@@ -61,6 +61,15 @@ pub const DEFAULT_MAX_RECEIPTS: usize = 256;
 /// The largest maintenance period the daemon accepts.
 pub const MAX_MAINTENANCE_PERIOD: Duration = Duration::from_secs(3600);
 
+/// Plan 513: the maximum number of unresolved peers the discovery spine
+/// remembers.
+///
+/// The spine names peers an exploration found; each named peer then needs
+/// a RouterInfo-kind lookup before the router can ask it. The queue of
+/// unresolved peers is bounded so a long exploration cannot make the
+/// spine's memory grow without bound.
+pub const MAX_PENDING_RESOLUTIONS: usize = 64;
+
 /// The kind of event a receipt describes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParticipationReceiptKind {
@@ -766,6 +775,28 @@ impl RoutingTableConsumer {
         }
     }
 
+    /// Returns the table's **evidence split**: the peers it holds with
+    /// signed evidence and the peers it holds only as suggestions.
+    ///
+    /// The split is what distinguishes a peer the router may use as
+    /// evidence from a peer it merely heard about. A poisoned table
+    /// reports no peers at all: a caller must never see evidence it
+    /// cannot vouch for.
+    pub fn evidence_counts(&self) -> (usize, usize) {
+        self.inner
+            .lock()
+            .map(|guard| guard.driver.table().evidence_counts())
+            .unwrap_or((0, 0))
+    }
+
+    /// Returns whether the table holds the peer.
+    pub fn contains(&self, key: &RouterHash) -> bool {
+        self.inner
+            .lock()
+            .map(|guard| guard.driver.table().contains(key))
+            .unwrap_or(false)
+    }
+
     /// Returns the number of peers the table currently holds.
     pub fn len(&self) -> usize {
         self.inner
@@ -818,6 +849,796 @@ impl RoutingTableConsumer {
             fell_back_no_candidate: self.fell_back_no_candidate.load(Ordering::Relaxed),
             fell_back_unavailable: self.fell_back_unavailable.load(Ordering::Relaxed),
         }
+    }
+
+    /// Plan 513: sets the reply path the consumer's requests carry.
+    ///
+    /// The reply path is the **inbound** exploratory tunnel: the answer
+    /// to an exploratory request and to a peer resolution travels it. The
+    /// request itself travels the **outbound** exploratory tunnel, which
+    /// the caller composes.
+    ///
+    /// Without a reply path the lookup state machines refuse to emit a
+    /// `DatabaseLookup`: a direct peer link is not a reply path.
+    pub fn set_reply_path(&self, path: Option<ReplyPath>) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.driver.set_reply_path(path);
+        }
+    }
+
+    /// Plan 513: starts one exploration on the consumer's private driver.
+    ///
+    /// The driver is private inside [`RoutingTableConsumerState`], so this
+    /// is the production entry point that reaches it. The request is an
+    /// exploratory `DatabaseLookup` — wire lookup type `3` — whose key is
+    /// the supplied random search key, and the dispatch names the peer the
+    /// exploration asks.
+    ///
+    /// A table that cannot be reached is counted under
+    /// [`RoutingTableFallback::Unavailable`]: the exploration terminates
+    /// honestly rather than silently doing nothing.
+    pub fn begin_exploration(
+        &self,
+        store: &RouterInfoStore,
+        search_key: RouterHash,
+        routing_key: RouterHash,
+    ) -> RoutingDispatch {
+        let Ok(mut guard) = self.inner.lock() else {
+            self.fell_back_unavailable.fetch_add(1, Ordering::Relaxed);
+            return RoutingDispatch::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::Exploratory, search_key),
+                final_state: LookupFinalState::Cancelled,
+            };
+        };
+        guard
+            .driver
+            .begin_exploration(store, search_key, routing_key)
+    }
+
+    /// Plan 513: advances the active exploration to its next peer.
+    ///
+    /// The exploration's peer budget and deadline gate the advance, exactly
+    /// as they gate the driver's own advance.
+    pub fn exploration_next(&self, store: &RouterInfoStore) -> RoutingDispatch {
+        let Ok(mut guard) = self.inner.lock() else {
+            self.fell_back_unavailable.fetch_add(1, Ordering::Relaxed);
+            return RoutingDispatch::Terminal {
+                lookup_id: LookupId::new(
+                    0,
+                    LookupKind::Exploratory,
+                    RouterHash::from_bytes([0; 32]),
+                ),
+                final_state: LookupFinalState::Cancelled,
+            };
+        };
+        guard.driver.exploration_next(store)
+    }
+
+    /// Plan 513: ingests one exploration reply.
+    ///
+    /// The reply's peers are offered to the routing table as
+    /// **suggestions**. A suggestion is never evidence: the suggesting peer
+    /// must itself be indexed with signed evidence, or the table refuses
+    /// the suggestion.
+    pub fn ingest_search_reply(
+        &self,
+        lookup_id: LookupId,
+        reply: &DatabaseSearchReplyMessage,
+    ) -> Result<RoutingDiscovery, LookupEngineError> {
+        let Ok(mut guard) = self.inner.lock() else {
+            self.fell_back_unavailable.fetch_add(1, Ordering::Relaxed);
+            return Err(LookupEngineError::LookupTerminal);
+        };
+        guard.driver.ingest_search_reply(lookup_id, reply)
+    }
+
+    /// Plan 513: the peer-resolution path.
+    ///
+    /// This answers [`RoutingLookupOutcome::NeedsPeerResolution`]: the
+    /// table holds peers whose records the router has not resolved, so the
+    /// router asks a floodfill it already knows for one of those peers'
+    /// `RouterInfo`.
+    ///
+    /// The candidates come from the **authoritative flat store**, never from
+    /// the table: the table's pending peers are exactly the ones the router
+    /// cannot reach yet, so asking the table for the candidates to resolve
+    /// them would never terminate.
+    pub fn resolve_peer(
+        &self,
+        store: &RouterInfoStore,
+        target: RouterHash,
+        routing_key: RouterHash,
+    ) -> RoutingLookupOutcome {
+        let Ok(mut guard) = self.inner.lock() else {
+            self.fell_back_unavailable.fetch_add(1, Ordering::Relaxed);
+            return RoutingLookupOutcome::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::RouterInfo, target),
+                final_state: LookupFinalState::Cancelled,
+            };
+        };
+        guard
+            .driver
+            .begin_peer_resolution(store, target, routing_key)
+    }
+
+    /// Plan 513: the exploration budget and deadline policy the consumer's
+    /// private driver was configured with.
+    pub fn exploration_policy(&self) -> ExplorationPolicy {
+        self.inner
+            .lock()
+            .map(|guard| guard.driver.exploration_policy)
+            .unwrap_or_default()
+    }
+
+    /// Plan 513: the routing table's **preference** over a candidate list.
+    ///
+    /// The returned list is the table's closest-first answer. The caller
+    /// hands it to the lookup state machine's preferred start, which
+    /// **reorders** the flat store's own selection and never narrows it: a
+    /// peer the flat store could serve is still served, and a peer the flat
+    /// store would not have served is ignored.
+    ///
+    /// A table that cannot answer yields an empty preference and the
+    /// fallback is counted by reason — the flat store's own order then
+    /// stands. A preference is never a silent fallback.
+    pub fn preferred_peers(
+        &self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+        excluded: &[RouterHash],
+    ) -> Vec<RouterHash> {
+        match self.candidates(store, routing_key, excluded) {
+            RoutingTableCandidates::Table(preferred) => preferred,
+            RoutingTableCandidates::Fallback(_) => Vec::new(),
+        }
+    }
+}
+
+/// Plan 513: how one discovery request must be delivered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryDelivery {
+    /// The request rides the **outbound** exploratory tunnel to the named
+    /// peer, and the reply travels the **inbound** exploratory tunnel.
+    ///
+    /// This is the only delivery a RouterInfo-kind lookup may take: Plan
+    /// 102's authority amendment forbids substituting a direct peer link
+    /// for the exploratory tunnel.
+    OutboundExploratoryTunnel,
+    /// The request is delivered **directly** to the named floodfill.
+    ///
+    /// This is the only delivery an exploratory lookup may take: the
+    /// specification addresses an exploratory request straight at the
+    /// floodfill being asked.
+    Direct,
+}
+
+/// Plan 513: one discovery request the spine has composed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoveryDispatch {
+    /// The request must reach the named peer.
+    Send {
+        /// The lookup identity the request belongs to.
+        lookup_id: LookupId,
+        /// The peer the request is addressed to.
+        peer: RouterHash,
+        /// The request body.
+        message: DatabaseLookupMessage,
+        /// How the request must be delivered.
+        delivery: DiscoveryDelivery,
+    },
+    /// The request cannot be composed yet: the spine has no reply path.
+    NeedsReplyPath {
+        /// The lookup identity the request belongs to.
+        lookup_id: LookupId,
+    },
+    /// The request is terminal.
+    Terminal {
+        /// The lookup identity the request belongs to.
+        lookup_id: LookupId,
+        /// Why the request ended.
+        final_state: LookupFinalState,
+    },
+}
+
+/// Plan 513: the counted outcomes of the live discovery spine.
+///
+/// Every refusal is counted by reason. A fallback that is not counted here
+/// is a defect, not a fallback.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NetDbDiscoveryCounters {
+    /// Exploratory requests the spine composed.
+    pub explorations_started: u64,
+    /// Peer-resolution requests the spine composed.
+    pub resolutions_started: u64,
+    /// Exploratory replies the spine ingested.
+    pub search_replies_ingested: u64,
+    /// Named peers the spine offered to the routing table as suggestions.
+    pub suggestions_offered: u64,
+    /// Named peers the routing table refused as suggestions.
+    pub suggestions_refused: u64,
+    /// Requests whose candidate preference fell back to the flat store's
+    /// own selection because the routing table was off.
+    pub fell_back_disabled: u64,
+    /// Requests whose candidate preference fell back to the flat store's
+    /// own selection because the table held no candidate.
+    pub fell_back_no_candidate: u64,
+    /// Requests whose candidate preference fell back to the flat store's
+    /// own selection because the table could not be reached.
+    pub fell_back_unavailable: u64,
+    /// Requests the spine could not compose because the router holds no
+    /// inbound exploratory tunnel to take the reply.
+    pub fell_back_no_reply_path: u64,
+    /// Requests the transport accepted and carried to the wire.
+    pub requests_delivered: u64,
+    /// Requests the transport refused, or the delivery could not be
+    /// composed at all.
+    pub delivery_failures: u64,
+    /// Signed records a RouterInfo-kind lookup returned and the router
+    /// ingested into its NetDB.
+    pub records_ingested: u64,
+    /// Explorations the wire never answered before the exploration's own
+    /// deadline passed.
+    pub explorations_expired: u64,
+    /// RouterInfo-kind lookups the wire never answered before the lookup
+    /// policy's total deadline passed.
+    pub resolutions_expired: u64,
+}
+
+/// Plan 513: the live NetDB discovery spine.
+///
+/// One bounded owner of the router's DHT discovery:
+///
+/// 1. the **exploratory lookup** — wire type `3` — that asks one named
+///    floodfill for the peers closest to a random search key;
+/// 2. the **RouterInfo-kind lookup** — wire type `2` — that resolves a
+///    named peer into a `RouterInfo`.
+///
+/// The spine owns no task, no timer, no listener and no socket. The
+/// daemon's existing tick drives it. Every refusal it records is counted
+/// by reason.
+pub struct NetDbDiscoverySpine {
+    inner: Mutex<NetDbDiscoveryState>,
+}
+
+/// The spine's mutable state.
+struct NetDbDiscoveryState {
+    /// The live seam: the RouterInfo-kind and Exploratory-kind starts.
+    seam: crate::netdb_seam::NetDbSeam,
+    /// The routing table: the candidate preference and the suggestion sink.
+    table: Arc<RoutingTableConsumer>,
+    /// The active exploration's budget authority.
+    exploration: Option<ExplorationState>,
+    /// The counted outcomes.
+    counters: NetDbDiscoveryCounters,
+    /// The next request identity the spine allocates.
+    next_request_id: u64,
+    /// The moment the spine last advanced, in milliseconds.
+    now_ms: u64,
+    /// The inbound exploratory tunnel's reply path, refreshed by the
+    /// owner that holds the exploratory pool. The reply to every request
+    /// the spine composes travels it.
+    reply_path: Option<ReplyPath>,
+    /// The request the spine composed and the transport owner has not
+    /// delivered yet.
+    ///
+    /// The slot holds **one** request. A request that is still waiting when
+    /// the next request starts is dropped: the spine never queues without
+    /// bound.
+    dispatch: Option<DiscoveryDispatch>,
+    /// The named peers an exploration named that the router has not
+    /// resolved yet.
+    ///
+    /// A named peer is a **name**, not a peer: the router cannot ask it
+    /// until a RouterInfo-kind lookup has returned its signed record. The
+    /// queue is bounded by [`MAX_PENDING_RESOLUTIONS`].
+    pending_resolutions: VecDeque<RouterHash>,
+    /// The peer the active RouterInfo-kind lookup is resolving.
+    ///
+    /// One resolution at a time: the router asks one peer at a time, so the
+    /// request it owes the wire is never ambiguous.
+    resolving: Option<RouterHash>,
+    /// The moment the active RouterInfo-kind lookup expires, in
+    /// milliseconds.
+    ///
+    /// A lookup the wire never answered is abandoned when its deadline
+    /// passes, so one unanswered request cannot stall the discovery cycle
+    /// forever.
+    resolving_expires_ms: u64,
+}
+
+/// Plan 513: the active exploration's bounded state.
+struct ExplorationState {
+    /// The peer budget and deadline authority.
+    job: ExplorationJob,
+    /// The peer the exploration asked. Only this peer's reply may
+    /// introduce new peers.
+    asked: Option<RouterHash>,
+}
+
+/// Plan 513: the outcome of one ingested exploratory reply.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveryOutcome {
+    /// The named peers the reply carried.
+    pub suggested: usize,
+    /// The named peers the routing table accepted as suggestions.
+    pub indexed: usize,
+    /// The named peers the routing table refused as suggestions.
+    pub refused: usize,
+    /// The named peers the reply's ceiling dropped.
+    pub dropped: usize,
+    /// `true` when the reply came from a peer the exploration never asked.
+    pub unknown_peer: bool,
+    /// `true` when the ingested record completed a RouterInfo-kind lookup.
+    pub resolved: bool,
+}
+
+/// Plan 513: the failure modes of the live discovery spine.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoveryError {
+    /// No exploratory lookup is active, so the reply has nowhere to go.
+    NoActiveExploration,
+    /// The live seam refused the reply.
+    Seam(crate::netdb_seam::NetDbSeamError),
+}
+
+impl std::fmt::Display for DiscoveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoActiveExploration => formatter.write_str("no active exploration"),
+            Self::Seam(error) => write!(formatter, "netdb seam: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DiscoveryError {}
+
+impl NetDbDiscoverySpine {
+    /// Constructs a spine over the shared routing table.
+    pub fn new(table: Arc<RoutingTableConsumer>, policy: LookupPolicy) -> Self {
+        Self {
+            inner: Mutex::new(NetDbDiscoveryState {
+                seam: crate::netdb_seam::NetDbSeam::new(policy),
+                table,
+                exploration: None,
+                counters: NetDbDiscoveryCounters::default(),
+                next_request_id: 1,
+                now_ms: 0,
+                reply_path: None,
+                dispatch: None,
+                pending_resolutions: VecDeque::new(),
+                resolving: None,
+                resolving_expires_ms: 0,
+            }),
+        }
+    }
+
+    /// Plan 513: records the inbound exploratory tunnel's reply path.
+    ///
+    /// The reply to every request the spine composes travels this tunnel.
+    /// The owner that holds the exploratory pool refreshes it; `None` means
+    /// the router holds no inbound exploratory tunnel, and every request
+    /// the spine composes is then refused and counted.
+    pub fn set_reply_path(&self, path: Option<ReplyPath>) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.reply_path = path;
+        }
+    }
+
+    /// Plan 513: returns the inbound exploratory tunnel's reply path.
+    pub fn reply_path(&self) -> Option<ReplyPath> {
+        self.inner.lock().ok().and_then(|guard| guard.reply_path)
+    }
+
+    /// Plan 513: records the request the transport owner has not delivered
+    /// yet.
+    ///
+    /// The slot holds **one** request. A request that is still waiting when
+    /// the next request is recorded is dropped: the spine never queues
+    /// without bound.
+    pub fn set_dispatch(&self, dispatch: DiscoveryDispatch) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.dispatch = Some(dispatch);
+        }
+    }
+
+    /// Plan 513: returns the request the transport owner has not delivered
+    /// yet, and clears the slot.
+    pub fn take_dispatch(&self) -> Option<DiscoveryDispatch> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.dispatch.take())
+    }
+
+    /// Advances the spine's clock to `now_ms`.
+    ///
+    /// The spine has no timer of its own: the daemon's existing tick calls
+    /// this.
+    ///
+    /// A request the wire never answered is abandoned here when its
+    /// deadline passes: the exploration's own deadline for an exploration,
+    /// and the lookup policy's total deadline for a RouterInfo-kind
+    /// lookup. An abandoned request is counted, never retried in a loop,
+    /// and the discovery cycle moves on.
+    pub fn advance_time(&self, now_ms: u64) {
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        guard.now_ms = now_ms;
+        let exploration_expired = guard
+            .exploration
+            .as_ref()
+            .is_some_and(|exploration| exploration.job.is_expired(now_ms));
+        if exploration_expired {
+            guard.exploration = None;
+            guard.counters.explorations_expired += 1;
+        }
+        let resolution_expired = guard.resolving.is_some() && now_ms >= guard.resolving_expires_ms;
+        if resolution_expired {
+            guard.resolving = None;
+            guard.resolving_expires_ms = 0;
+            guard.counters.resolutions_expired += 1;
+        }
+    }
+
+    /// Returns the counted outcomes.
+    pub fn counters(&self) -> NetDbDiscoveryCounters {
+        self.inner
+            .lock()
+            .map(|guard| guard.counters)
+            .unwrap_or_default()
+    }
+
+    /// Plan 513: advances the seam's RouterInfo-kind validation clock.
+    ///
+    /// A RouterInfo record is validated against the clock the caller
+    /// supplies. A stale clock would refuse every record the router
+    /// resolves, so the transport owner advances it on every tick.
+    pub fn set_routerinfo_now_seconds(&self, now_seconds: u32) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.seam.set_routerinfo_now_seconds(now_seconds);
+        }
+    }
+
+    /// Plan 513: records the outcome of one delivery attempt.
+    ///
+    /// The transport owner calls this after it hands a composed request to
+    /// the transport. A refusal is counted: a request that never reached
+    /// the wire is not a delivered request, and the difference must be
+    /// visible.
+    pub fn record_delivery(&self, delivered: bool) {
+        if let Ok(mut guard) = self.inner.lock() {
+            if delivered {
+                guard.counters.requests_delivered =
+                    guard.counters.requests_delivered.saturating_add(1);
+            } else {
+                guard.counters.delivery_failures =
+                    guard.counters.delivery_failures.saturating_add(1);
+            }
+        }
+    }
+
+    /// Plan 513: returns `true` while an exploration awaits its reply.
+    ///
+    /// One exploration at a time: a new exploration replaces a finished
+    /// one, never a running one. The router therefore never owes the wire
+    /// two exploratory requests at once.
+    pub fn exploration_in_flight(&self) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.exploration.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Plan 513: returns `true` while a RouterInfo-kind lookup awaits its
+    /// reply.
+    pub fn resolution_in_flight(&self) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.resolving.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Plan 513: returns the named peer the router should resolve next.
+    ///
+    /// The peer is one an exploration named and the router has not yet
+    /// resolved. A peer already in the store is not returned: the router
+    /// does not ask for a record it already holds.
+    pub fn pending_resolution_target(&self, store: &RouterInfoStore) -> Option<RouterHash> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .pending_resolutions
+            .iter()
+            .copied()
+            .find(|peer| !store.contains(peer))
+    }
+
+    /// Plan 513: the unresolved peers the spine remembers.
+    pub fn pending_resolutions(&self) -> Vec<RouterHash> {
+        self.inner
+            .lock()
+            .map(|guard| guard.pending_resolutions.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Plan 513: starts the **exploratory lookup** against the named
+    /// floodfill.
+    ///
+    /// The request is an exploratory `DatabaseLookup` — wire lookup type
+    /// `3` — whose key is the supplied random search key. The named
+    /// floodfill is the peer being asked, and the request is delivered
+    /// **directly** to it, which is the specification's path for an
+    /// exploratory lookup.
+    ///
+    /// The exploration's peer budget and deadline gate the request. The
+    /// reply travels the **inbound** exploratory tunnel `reply_path` names;
+    /// without one the request is refused and counted.
+    pub fn begin_exploration(
+        &self,
+        floodfill: RouterHash,
+        search_key: RouterHash,
+        routing_key: RouterHash,
+        reply_path: Option<ReplyPath>,
+    ) -> DiscoveryDispatch {
+        let Ok(mut guard) = self.inner.lock() else {
+            return DiscoveryDispatch::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::Exploratory, search_key),
+                final_state: LookupFinalState::Cancelled,
+            };
+        };
+        let now_ms = guard.now_ms;
+        // The exploration's budget and deadline gate the request.
+        let job = ExplorationJob::begin(
+            search_key,
+            routing_key,
+            guard.table.exploration_policy(),
+            now_ms,
+        );
+        if job.budget_exhausted() || job.is_expired(now_ms) {
+            guard.counters.fell_back_no_candidate += 1;
+            return DiscoveryDispatch::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::Exploratory, search_key),
+                final_state: LookupFinalState::NoEligibleCandidates,
+            };
+        }
+        let request_id = guard.next_request_id;
+        guard.next_request_id = guard.next_request_id.saturating_add(1);
+        let reply_path = reply_path.or(guard.reply_path);
+        let action = guard
+            .seam
+            .begin_exploratory_lookup(request_id, search_key, floodfill, reply_path);
+        let dispatch = discovery_dispatch_from_action(action, DiscoveryDelivery::Direct);
+        if let DiscoveryDispatch::Send { peer, .. } = &dispatch {
+            let mut job = job;
+            job.record_issued(peer);
+            guard.exploration = Some(ExplorationState {
+                job,
+                asked: Some(*peer),
+            });
+            guard.counters.explorations_started += 1;
+        } else if let DiscoveryDispatch::NeedsReplyPath { .. } = &dispatch {
+            guard.counters.fell_back_no_reply_path += 1;
+        }
+        dispatch
+    }
+
+    /// Plan 513: starts the **RouterInfo-kind lookup** that resolves the
+    /// named peer.
+    ///
+    /// The request is a RouterInfo `DatabaseLookup` — wire lookup type `2`
+    /// — and it rides the **outbound** exploratory tunnel. The reply
+    /// travels the **inbound** exploratory tunnel `reply_path` names.
+    ///
+    /// The candidate selection is the flat store's own selection, reordered
+    /// by the routing table's answer. The table may only **reorder** that
+    /// selection: it never narrows it and never adds a peer the flat store
+    /// would not have served.
+    pub fn begin_peer_resolution(
+        &self,
+        store: &RouterInfoStore,
+        target: RouterHash,
+        routing_key: RouterHash,
+        reply_path: Option<ReplyPath>,
+    ) -> DiscoveryDispatch {
+        let Ok(mut guard) = self.inner.lock() else {
+            return DiscoveryDispatch::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::RouterInfo, target),
+                final_state: LookupFinalState::Cancelled,
+            };
+        };
+        // The table's answer is a preference, never a replacement. A
+        // fallback is counted by reason: the request still starts, on the
+        // flat store's own selection, but the fallback is never silent.
+        let preferred = match guard.table.candidates(store, &routing_key, &[]) {
+            RoutingTableCandidates::Table(preferred) => preferred,
+            RoutingTableCandidates::Fallback(reason) => {
+                match reason {
+                    RoutingTableFallback::Disabled => {
+                        guard.counters.fell_back_disabled = guard.counters.fell_back_disabled.saturating_add(1);
+                    }
+                    RoutingTableFallback::NoCandidate => {
+                        guard.counters.fell_back_no_candidate = guard.counters.fell_back_no_candidate.saturating_add(1);
+                    }
+                    RoutingTableFallback::Unavailable => {
+                        guard.counters.fell_back_unavailable = guard.counters.fell_back_unavailable.saturating_add(1);
+                    }
+                }
+                Vec::new()
+            }
+        };
+        let request_id = guard.next_request_id;
+        guard.next_request_id = guard.next_request_id.saturating_add(1);
+        let reply_path = reply_path.or(guard.reply_path);
+        let action = guard.seam.begin_routerinfo_lookup(
+            store,
+            request_id,
+            target,
+            &routing_key,
+            Some(&preferred),
+            reply_path,
+        );
+        let dispatch =
+            discovery_dispatch_from_action(action, DiscoveryDelivery::OutboundExploratoryTunnel);
+        match &dispatch {
+            DiscoveryDispatch::Send { .. } => {
+                guard.counters.resolutions_started += 1;
+                // One resolution at a time: the peer this lookup is
+                // resolving is remembered until its record arrives, and
+                // the lookup is abandoned when its deadline passes.
+                guard.resolving = Some(target);
+                guard.resolving_expires_ms = guard
+                    .now_ms
+                    .saturating_add(guard.seam.policy().total_deadline_ms());
+            }
+            DiscoveryDispatch::NeedsReplyPath { .. } => {
+                guard.counters.fell_back_no_reply_path += 1;
+            }
+            DiscoveryDispatch::Terminal { .. } => guard.counters.fell_back_no_candidate += 1,
+        }
+        dispatch
+    }
+
+    /// Plan 513: ingests one `DatabaseStore` into the active RouterInfo-kind
+    /// lookup.
+    ///
+    /// The record is validated by the lookup engine's own rules and
+    /// inserted into the router's NetDB store, so the named peer becomes a
+    /// peer the router can ask. The peer leaves the unresolved queue only
+    /// when its record actually arrived: a store the router already holds
+    /// is not re-resolved, and a record that failed validation changes
+    /// nothing.
+    pub fn ingest_routerinfo_store(
+        &self,
+        store: &mut RouterInfoStore,
+        store_message: &DatabaseStoreMessage,
+    ) -> Result<DiscoveryOutcome, DiscoveryError> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return Err(DiscoveryError::NoActiveExploration);
+        };
+        let target = guard.resolving;
+        let outcome = guard
+            .seam
+            .ingest_routerinfo_store(store, store_message)
+            .map_err(DiscoveryError::Seam)?;
+        let resolved = matches!(outcome, i2pr_netdb::ResponseOutcome::Completed(_));
+        if resolved {
+            guard.counters.records_ingested += 1;
+            if let Some(target) = target {
+                guard.pending_resolutions.retain(|peer| *peer != target);
+            }
+        }
+        guard.resolving = None;
+        Ok(DiscoveryOutcome {
+            resolved,
+            ..DiscoveryOutcome::default()
+        })
+    }
+
+    /// Plan 513: ingests one exploratory `DatabaseSearchReply`.
+    ///
+    /// The reply's named peers are merged into the lookup's bounded
+    /// suggestion buffer and offered to the routing table as
+    /// **suggestions**. A suggestion is never evidence: the suggesting peer
+    /// must itself be indexed with signed evidence, or the table refuses
+    /// the suggestion. A reply from a peer the exploration never asked
+    /// introduces nothing.
+    pub fn ingest_search_reply(
+        &self,
+        reply: &DatabaseSearchReplyMessage,
+    ) -> Result<DiscoveryOutcome, DiscoveryError> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return Err(DiscoveryError::NoActiveExploration);
+        };
+        let source = RouterHash::from_hash(reply.from);
+        let suggested: Vec<RouterHash> = reply
+            .peer_hashes
+            .iter()
+            .map(|hash| RouterHash::from_hash(*hash))
+            .collect();
+        guard
+            .seam
+            .ingest_exploratory_search_reply(reply)
+            .map_err(DiscoveryError::Seam)?;
+        guard.counters.search_replies_ingested += 1;
+        let (accepted, dropped, unknown_peer) = match guard.exploration.as_mut() {
+            Some(exploration) => {
+                let result = exploration.job.record_reply(&source, &suggested);
+                // Plan 489: only a peer the exploration actually asked may
+                // introduce new peers. The job already flags an unknown
+                // peer; the spine refuses the named peers outright.
+                let known = exploration.asked == Some(source);
+                if known {
+                    (result.accepted, result.dropped, result.unknown_peer)
+                } else {
+                    (Vec::new(), suggested.len(), true)
+                }
+            }
+            None => (Vec::new(), suggested.len(), true),
+        };
+        // The exploration asked one peer and got its answer: it is
+        // finished. A finished exploration never blocks the next round.
+        guard.exploration = None;
+        let mut indexed = 0usize;
+        let mut refused = 0usize;
+        for candidate in &accepted {
+            guard.counters.suggestions_offered += 1;
+            match guard.table.index_suggested(*candidate, &source) {
+                Some(TableInsertOutcome::Inserted) | Some(TableInsertOutcome::Upgraded) => {
+                    indexed += 1;
+                }
+                Some(TableInsertOutcome::Idempotent) => {}
+                _ => refused += 1,
+            }
+        }
+        guard.counters.suggestions_refused += refused as u64;
+        // The named peers are queued for resolution. A named peer is a
+        // **name**: the router cannot ask it until a RouterInfo-kind
+        // lookup has returned its signed record.
+        for candidate in &accepted {
+            if guard.pending_resolutions.contains(candidate) {
+                continue;
+            }
+            if guard.pending_resolutions.len() >= MAX_PENDING_RESOLUTIONS {
+                break;
+            }
+            guard.pending_resolutions.push_back(*candidate);
+        }
+        Ok(DiscoveryOutcome {
+            suggested: suggested.len(),
+            indexed,
+            refused,
+            dropped,
+            unknown_peer,
+            resolved: false,
+        })
+    }
+}
+
+/// Maps a lookup action onto a discovery dispatch.
+fn discovery_dispatch_from_action(
+    action: LookupAction,
+    delivery: DiscoveryDelivery,
+) -> DiscoveryDispatch {
+    match action {
+        LookupAction::SendDatabaselookup {
+            lookup_id,
+            peer,
+            message,
+        } => DiscoveryDispatch::Send {
+            lookup_id,
+            peer,
+            message,
+            delivery,
+        },
+        LookupAction::NeedExploratoryReplyPath { lookup_id } => {
+            DiscoveryDispatch::NeedsReplyPath { lookup_id }
+        }
+        LookupAction::Complete { lookup_id, outcome } => DiscoveryDispatch::Terminal {
+            lookup_id,
+            final_state: outcome.final_state(),
+        },
     }
 }
 
@@ -1693,6 +2514,62 @@ impl RoutingTableDriver {
         let lookup_id = self.next_lookup_id(LookupKind::RouterInfo, target);
         let candidates = plan.queryable_hashes();
         let outcome = self.lookup.start_with_candidates(lookup_id, &candidates);
+        self.emit_receipt(RoutingReceiptKind::LookedUp, 0);
+        match resolve_dispatch(
+            &mut self.lookup,
+            self.reply_path,
+            self.active_routing_key,
+            outcome,
+            lookup_id,
+        ) {
+            RoutingDispatch::Send {
+                lookup_id,
+                peer,
+                message,
+            } => RoutingLookupOutcome::Send {
+                lookup_id,
+                peer,
+                message,
+            },
+            RoutingDispatch::NeedsReplyPath { lookup_id } => {
+                RoutingLookupOutcome::NeedsReplyPath { lookup_id }
+            }
+            RoutingDispatch::Terminal {
+                lookup_id,
+                final_state,
+            } => {
+                self.record_terminal(final_state);
+                RoutingLookupOutcome::Terminal {
+                    lookup_id,
+                    final_state,
+                }
+            }
+        }
+    }
+
+    /// Plan 513: starts the `LookupKind::RouterInfo` lookup that resolves
+    /// a named peer the table holds but the router has not resolved.
+    ///
+    /// This is the **peer-resolution path**. [`Self::begin_lookup`] refuses
+    /// to start while the table's peers are all *pending*: their records
+    /// are exactly the ones the router is missing, so asking the table for
+    /// the candidates to resolve them would never terminate. The
+    /// candidates for a resolution therefore come from the
+    /// **authoritative flat store** — the router asks the floodfills it
+    /// already knows for the named peer's record.
+    ///
+    /// The reply travels the inbound exploratory tunnel the driver was
+    /// given through [`Self::set_reply_path`]; the request travels the
+    /// outbound exploratory tunnel the caller composes it through.
+    pub fn begin_peer_resolution(
+        &mut self,
+        store: &RouterInfoStore,
+        target: RouterHash,
+        routing_key: RouterHash,
+    ) -> RoutingLookupOutcome {
+        self.active_routing_key = routing_key;
+        let lookup_id = self.next_lookup_id(LookupKind::RouterInfo, target);
+        let outcome = self.lookup.start(store, lookup_id, &routing_key);
         self.emit_receipt(RoutingReceiptKind::LookedUp, 0);
         match resolve_dispatch(
             &mut self.lookup,

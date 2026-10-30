@@ -319,6 +319,19 @@ const MAX_STARTUP_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 /// unbounded burst of tunnel traffic.
 const MAX_LIVENESS_DRIVES_PER_TICK: usize = 8;
 
+/// Plan 513 — the I2NP message identifier the discovery requests carry.
+///
+/// The identifier is a fixed, non-secret value: the discovery requests are
+/// ordinary I2NP `DatabaseLookup` messages, and the identifier only needs
+/// to be unique within the router's own replay window.
+const DISCOVERY_MESSAGE_ID: u32 = 0x5130_0D01;
+
+/// Plan 513 — the lifetime the discovery requests carry.
+///
+/// A discovery request is a single attempt against one peer. It expires
+/// quickly so a request the peer never answered cannot be replayed.
+const DISCOVERY_MESSAGE_LIFETIME_MS: u64 = 60_000;
+
 /// Tunable bound for the production composition.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceProductOptions {
@@ -442,6 +455,15 @@ pub struct ServiceProductSpec {
     /// the router has no second cadence knob. The reconcile refuses an
     /// out-of-range cadence at construction.
     pub reconcile_period_ms: u64,
+    /// Plan 513 — the live NetDB discovery spine, when the composition root
+    /// built one.
+    ///
+    /// The product's tick drives the spine: it refreshes the inbound
+    /// exploratory tunnel's reply path and delivers the exploratory request
+    /// the NetDB participation owner composed. The spine shares the one
+    /// routing table with that owner, so the table's preference and the
+    /// exploration's suggestions are the same state.
+    pub discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -621,6 +643,9 @@ mod normal_daemon_owner_tests {
             bootstrap: None,
             peer_profiles: None,
             reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let product = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -706,6 +731,9 @@ mod normal_daemon_owner_tests {
             bootstrap: None,
             peer_profiles: None,
             reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let result = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -793,6 +821,9 @@ mod normal_daemon_owner_tests {
             bootstrap: None,
             peer_profiles: None,
             reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let router_infos = Vec::new();
         let mut product = ServiceProduct::start_over_existing_daemon(
@@ -1196,6 +1227,18 @@ struct ProductInner {
     peer_reconcile_counters_cell: Arc<crate::i2pcontrol_inspection::PeerReconcileCounterCell>,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
+    /// Plan 513 — the live NetDB discovery spine.
+    ///
+    /// The spine owns no task, no timer, no listener and no socket: the
+    /// product's existing tick drives it.
+    discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
+    /// Plan 513 — the live bootstrap store the discovery spine writes a
+    /// resolved record into.
+    ///
+    /// The spine's RouterInfo-kind lookup inserts the signed record it
+    /// resolved into this store, so the peer an exploration named becomes
+    /// a peer the router can ask.
+    bootstrap: Option<Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
     /// Plan 503 — the live owner of the peer-eligibility receipts. The
     /// destination coordinator records one receipt per live
     /// peer-eligibility decision through this owner.
@@ -2621,6 +2664,13 @@ impl ServiceProduct {
                 exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::exploratory_driver::ExploratoryDriverCounters::default(),
                 )),
+                // Plan 513 — the live NetDB discovery spine. The product's
+                // tick drives it: it refreshes the inbound exploratory
+                // tunnel's reply path and delivers the composed request.
+                discovery: spec.discovery,
+                // Plan 513 — the live bootstrap store a resolved record is
+                // written into.
+                bootstrap: spec.bootstrap.clone(),
                 peer_reconcile: Some(peer_reconcile),
                 peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::peer_reconcile::PeerReconcileCounters::default(),
@@ -2889,6 +2939,13 @@ impl ServiceProduct {
                 exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::exploratory_driver::ExploratoryDriverCounters::default(),
                 )),
+                // Plan 513 — the live NetDB discovery spine. The product's
+                // tick drives it: it refreshes the inbound exploratory
+                // tunnel's reply path and delivers the composed request.
+                discovery: spec.discovery,
+                // Plan 513 — the live bootstrap store a resolved record is
+                // written into.
+                bootstrap: spec.bootstrap.clone(),
                 peer_reconcile: Some(peer_reconcile),
                 peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::peer_reconcile::PeerReconcileCounters::default(),
@@ -4069,6 +4126,243 @@ impl ServiceProduct {
         self.publish_exploratory_driver_counters();
     }
 
+    /// Plan 513 — ingests the reply to an exploratory lookup.
+    ///
+    /// The reply's named peers are offered to the routing table as
+    /// **suggestions** and queued for resolution. A suggestion is never
+    /// evidence: the suggesting peer must itself be indexed with signed
+    /// evidence, or the table refuses the suggestion. A reply from a peer
+    /// the exploration never asked introduces nothing.
+    fn ingest_discovery_search_reply(&self, reply: &i2pr_proto::DatabaseSearchReplyMessage) {
+        let Some(spine) = self.inner.discovery.as_ref() else {
+            return;
+        };
+        if let Err(error) = spine.ingest_search_reply(reply) {
+            tracing::debug!(
+                transition = "netdb_discovery_search_reply_refused",
+                reason = %error,
+                "an exploratory reply was refused by the discovery spine"
+            );
+        }
+    }
+
+    /// Plan 513 — ingests the reply to a RouterInfo-kind lookup.
+    ///
+    /// The record is validated by the lookup engine and inserted into the
+    /// router's NetDB, so the named peer becomes a peer the router can
+    /// ask. A record that does not name the lookup's target changes
+    /// nothing, and the router's peer population is never widened by an
+    /// unrelated record.
+    fn ingest_discovery_routerinfo_store(
+        &self,
+        store_message: &i2pr_proto::DatabaseStoreMessage,
+        now_ms: u64,
+    ) {
+        let Some(spine) = self.inner.discovery.as_ref() else {
+            return;
+        };
+        let Some(bootstrap) = self.inner.bootstrap.as_ref() else {
+            return;
+        };
+        let Ok(mut bootstrap) = bootstrap.lock() else {
+            return;
+        };
+        if let Err(error) = spine.ingest_routerinfo_store(bootstrap.store_mut(), store_message) {
+            tracing::debug!(
+                transition = "netdb_discovery_routerinfo_refused",
+                reason = %error,
+                "a RouterInfo reply was refused by the discovery spine"
+            );
+            return;
+        }
+        let _ = now_ms;
+    }
+
+    /// Plan 513 — delivers the discovery request the NetDB participation
+    /// owner composed.
+    ///
+    /// The step is a plain value the tick advances, beside Plan 505's
+    /// exploratory driver. It owns no task, no timer, no listener and no
+    /// socket: it refreshes the inbound exploratory tunnel's reply path
+    /// and hands the composed request to the transport.
+    ///
+    /// The two deliveries are distinct and neither substitutes for the
+    /// other:
+    ///
+    /// - an **exploratory** request is delivered **directly** to the
+    ///   floodfill being asked;
+    /// - a **RouterInfo**-kind request rides the **outbound** exploratory
+    ///   tunnel, because Plan 102's closed amendment forbids substituting
+    ///   a direct peer link for the exploratory-tunnel path.
+    ///
+    /// A router that owns no discovery spine does nothing here.
+    fn drive_netdb_discovery(&mut self, now_ms: u64) {
+        let Some(spine) = self.inner.discovery.clone() else {
+            return;
+        };
+        // Advance the RouterInfo-kind validation clock: a record the
+        // router resolves is validated against it, and a stale clock would
+        // refuse every record.
+        spine.set_routerinfo_now_seconds((now_ms / 1000) as u32);
+        // Refresh the reply path: the answer to every request the spine
+        // composes travels the exploratory pool's oldest valid inbound
+        // tunnel. A router that holds none refuses every request, and the
+        // refusal is counted by the spine.
+        spine.set_reply_path(self.inner.coordinator.exploratory_reply_path(now_ms / 1000));
+        let Some(dispatch) = spine.take_dispatch() else {
+            return;
+        };
+        let crate::netdb_participation::DiscoveryDispatch::Send {
+            peer,
+            message,
+            delivery,
+            ..
+        } = dispatch
+        else {
+            // A request that still needs a reply path, or one that has
+            // already ended, is counted by the spine. There is nothing to
+            // deliver.
+            return;
+        };
+        let delivered = match delivery {
+            crate::netdb_participation::DiscoveryDelivery::Direct => {
+                self.deliver_discovery_direct(&spine, peer, &message, now_ms)
+            }
+            crate::netdb_participation::DiscoveryDelivery::OutboundExploratoryTunnel => {
+                self.deliver_discovery_via_outbound_tunnel(&spine, peer, &message, now_ms)
+            }
+        };
+        spine.record_delivery(delivered);
+    }
+
+    /// Plan 513 — delivers one discovery request **directly** to the named
+    /// peer.
+    ///
+    /// The direct path is the exploratory lookup's own path: the request is
+    /// addressed straight at the floodfill being asked. The reply travels the
+    /// inbound exploratory tunnel the spine holds, so the reply path is
+    /// already fixed in the composed request.
+    ///
+    /// The delivery is the router's own transport seam. A peer with no
+    /// established session reports `NoActiveSession` explicitly, and the
+    /// refusal is counted.
+    fn deliver_discovery_direct(
+        &self,
+        spine: &crate::netdb_participation::NetDbDiscoverySpine,
+        peer: i2pr_netdb::RouterHash,
+        message: &i2pr_proto::DatabaseLookupMessage,
+        now_ms: u64,
+    ) -> bool {
+        let bytes = match crate::outbound_lookup::encode_standard_envelope(
+            message,
+            DISCOVERY_MESSAGE_ID,
+            now_ms.saturating_add(DISCOVERY_MESSAGE_LIFETIME_MS),
+        ) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+        let request = match crate::router_i2np::RouterDeliveryRequest::new(
+            i2pr_transport::PeerId::from_hash(*peer.as_hash()),
+            bytes,
+            self.inner.options.delivery_timeout,
+        ) {
+            Ok(request) => request,
+            Err(_) => return false,
+        };
+        let outcome = self
+            .inner
+            .ssu2_handle
+            .delivery()
+            .deliver(request, &self.token);
+        let delivered = matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted);
+        if !delivered {
+            tracing::debug!(
+                transition = "netdb_discovery_direct_delivery_refused",
+                delivery_outcome = ?outcome,
+                "a discovery request was refused by the transport"
+            );
+        }
+        let _ = spine;
+        delivered
+    }
+
+    /// Plan 513 — delivers one discovery request through the **outbound**
+    /// exploratory tunnel.
+    ///
+    /// This is the RouterInfo-kind lookup's only delivery path. Plan 102's
+    /// closed amendment forbids substituting a direct peer link for the
+    /// exploratory-tunnel path, so a router that holds no usable outbound
+    /// exploratory role refuses the request rather than sending it directly.
+    ///
+    /// The composition is the canonical one — the same cells the coordinator
+    /// composes — so there is one composition and not two.
+    fn deliver_discovery_via_outbound_tunnel(
+        &self,
+        spine: &crate::netdb_participation::NetDbDiscoverySpine,
+        peer: i2pr_netdb::RouterHash,
+        message: &i2pr_proto::DatabaseLookupMessage,
+        now_ms: u64,
+    ) -> bool {
+        let Some(role) = self.inner.coordinator.exploratory_outbound_role(now_ms) else {
+            // No usable outbound exploratory role: the request is refused,
+            // never downgraded to a direct send.
+            tracing::debug!(
+                transition = "netdb_discovery_outbound_role_unavailable",
+                "a discovery request was refused: no usable outbound exploratory role"
+            );
+            return false;
+        };
+        let Ok(deadline) = Deadline::new(self.inner.options.tunnel_deadline) else {
+            return false;
+        };
+        let Ok(mut rng) = ChaCha8Rng::try_from_os_rng() else {
+            return false;
+        };
+        let action = i2pr_netdb::LookupAction::SendDatabaselookup {
+            lookup_id: i2pr_netdb::LookupId::new(0, i2pr_netdb::LookupKind::RouterInfo, peer),
+            peer,
+            message: message.clone(),
+        };
+        let Ok((dispatch, _proof)) = crate::netdb_tunnels::compose_lookup_via_outbound_tunnel(
+            &action,
+            role,
+            DISCOVERY_MESSAGE_ID,
+            now_ms.saturating_add(DISCOVERY_MESSAGE_LIFETIME_MS),
+            deadline,
+            &mut rng,
+            now_ms,
+        ) else {
+            return false;
+        };
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let mut delivered = true;
+        for cell_delivery in &dispatch.deliveries {
+            let request = match crate::router_i2np::RouterDeliveryRequest::new(
+                cell_delivery.target(),
+                cell_delivery.message_bytes().to_vec(),
+                self.inner.options.delivery_timeout,
+            ) {
+                Ok(request) => request,
+                Err(_) => {
+                    delivered = false;
+                    break;
+                }
+            };
+            let outcome = delivery.deliver(request, &self.token);
+            if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                tracing::debug!(
+                    transition = "netdb_discovery_tunnel_delivery_refused",
+                    delivery_outcome = ?outcome,
+                    "a discovery request was refused by the transport"
+                );
+                delivered = false;
+                break;
+            }
+        }
+        let _ = spine;
+        delivered
+    }
+
     /// Plan 505 — records one terminal build outcome with the exploratory
     /// build driver.
     ///
@@ -4361,6 +4655,11 @@ impl ServiceProduct {
         // population the scheduler watches: without it the scheduler has no
         // pair to observe. No new task, no new timer.
         self.drive_exploratory_builds(now_ms);
+        // Plan 513 — the live NetDB discovery spine is driven on the same
+        // tick. It refreshes the inbound exploratory tunnel's reply path
+        // and delivers the request the NetDB participation owner composed.
+        // No new task, no new timer.
+        self.drive_netdb_discovery(now_ms);
         // Plan 506 — the peer-knowledge reconcile is driven on the same
         // tick, behind its own bounded cadence. It carries the bootstrap's
         // validated RouterInfos into the two stores the router builds with,
@@ -5374,17 +5673,31 @@ impl ServiceProduct {
         let now_secs = wall_secs() as u32;
         let now_ms = wall_ms();
         match envelope.body() {
-            I2npBody::DatabaseStore(_) => {
+            I2npBody::DatabaseStore(store_message) => {
                 // Plan 201 §G — the coordinator's typed seam is
                 // the single sanctioned producer of lookup state.
                 // The production composition drives it; the driver
                 // never sees the seam.
                 let mut coord_guard = self.inner.destination_tunnels.lock().await;
                 coord_guard.advance_time(now_secs as u64 * 1000);
+                drop(coord_guard);
+                // Plan 513 — the reply to a RouterInfo-kind lookup. The
+                // record is validated by the lookup engine and inserted
+                // into the router's NetDB, so the named peer becomes a
+                // peer the router can ask. A record that does not name
+                // the lookup's target changes nothing.
+                self.ingest_discovery_routerinfo_store(store_message, now_ms);
             }
-            I2npBody::DatabaseSearchReply(_) => {
+            I2npBody::DatabaseSearchReply(reply) => {
                 let mut coord_guard = self.inner.destination_tunnels.lock().await;
                 coord_guard.advance_time(now_secs as u64 * 1000);
+                drop(coord_guard);
+                // Plan 513 — the reply to an exploratory lookup. Its named
+                // peers are offered to the routing table as
+                // **suggestions**: a suggestion is never evidence, and the
+                // suggesting peer must itself be indexed with signed
+                // evidence before the table accepts it.
+                self.ingest_discovery_search_reply(reply);
             }
             I2npBody::Garlic(_) => {
                 // Plan 210 §F + Plan 212 §14 — resolve the owning

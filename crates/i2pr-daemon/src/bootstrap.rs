@@ -262,6 +262,16 @@ impl Bootstrap {
         &self.store
     }
 
+    /// Borrows the bounded NetDB mutably.
+    ///
+    /// Plan 513: the live NetDB discovery spine's RouterInfo-kind lookup
+    /// inserts the signed record it resolved into this store, so the peer
+    /// the exploration named becomes a peer the router can ask. The caller
+    /// holds the bootstrap lock, so the store is never mutated concurrently.
+    pub fn store_mut(&mut self) -> &mut RouterInfoStore {
+        &mut self.store
+    }
+
     /// Prunes the store with the supplied retention window and returns the
     /// number of records removed.
     ///

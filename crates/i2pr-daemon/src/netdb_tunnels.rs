@@ -270,6 +270,86 @@ pub struct NetDbTunnelCoordinator {
     routing_table: Option<Arc<crate::netdb_participation::RoutingTableConsumer>>,
 }
 
+/// Plan 513: composes one outbound `DatabaseLookup` dispatch through the
+/// supplied outbound exploratory role and proves the dispatch traversed the
+/// tunnel path.
+///
+/// This is the coordinator's own outbound composition, factored out of
+/// [`NetDbTunnelCoordinator::compose_lookup_via_tunnel`] so Plan 513's live
+/// discovery spine can compose its outbound exploratory dispatch **without**
+/// constructing the coordinator. There is one composition, not two, and no
+/// second delivery path is introduced: the dispatch travels the canonical
+/// [`crate::outbound_lookup::compose_outbound_lookup`] cells.
+///
+/// Direct SSU2 `DatabaseLookup` delivery is never a counted path. The proof
+/// exists so a caller cannot substitute a direct-transport send for a
+/// counted row.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_lookup_via_outbound_tunnel<R: CryptoRng + RngCore>(
+    action: &LookupAction,
+    role: &OutboundGatewayRole,
+    message_id: u32,
+    expiration_ms: u64,
+    deadline: Deadline,
+    rng: &mut R,
+    now_ms: u64,
+) -> Result<
+    (
+        crate::outbound_lookup::OutboundLookupDispatch,
+        TunnelPathProof,
+    ),
+    NetDbTunnelError,
+> {
+    let (peer, lookup_key) = match action {
+        LookupAction::SendDatabaselookup { peer, message, .. } => {
+            (*peer, Hash::from_bytes(*message.key.as_bytes()))
+        }
+        _ => return Err(NetDbTunnelError::Outbound("not a send action".to_owned())),
+    };
+    let dispatch = crate::outbound_lookup::compose_outbound_lookup(
+        action,
+        role,
+        message_id,
+        expiration_ms,
+        deadline,
+        rng,
+        now_ms,
+    )
+    .map_err(|e| NetDbTunnelError::Outbound(e.to_string()))?;
+    // Prove the dispatch traversed the tunnel path: every delivery
+    // must decode as a complete short-transport TunnelData cell,
+    // the delivery target must equal the role's first hop, and the
+    // nested DatabaseLookup key must remain K.
+    let first = dispatch
+        .first()
+        .ok_or_else(|| NetDbTunnelError::Outbound("no delivery in dispatch".to_owned()))?;
+    let outer = I2npMessage::decode_short_transport(first.message_bytes(), MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|e| NetDbTunnelError::Outbound(format!("{e:?}")))?;
+    match outer.body() {
+        I2npBody::TunnelData(_) => {}
+        other => {
+            return Err(NetDbTunnelError::Outbound(format!(
+                "outer is not TunnelData: {:?}",
+                other.message_type()
+            )));
+        }
+    }
+    let expected_first = role.established().first_hop_router().hash();
+    if first.target() != i2pr_transport::PeerId::from_hash(expected_first) {
+        return Err(NetDbTunnelError::Outbound(
+            "delivery target is not the outbound first hop".to_owned(),
+        ));
+    }
+    let proof = TunnelPathProof {
+        cell_count: dispatch.cell_count,
+        first_hop: expected_first,
+        floodfill: Hash::from_bytes(*peer.as_bytes()),
+        lookup_key,
+        via_tunnel: true,
+    };
+    Ok((dispatch, proof))
+}
+
 impl NetDbTunnelCoordinator {
     /// Constructs a coordinator with the supplied bounded policy and
     /// authoritative store configuration.
@@ -501,6 +581,11 @@ impl NetDbTunnelCoordinator {
     /// supplied outbound role. The helper is the only counted lookup
     /// path; direct SSU2 `DatabaseLookup` delivery is never a counted
     /// success (see [`Self::note_direct_transport_attempt`]).
+    ///
+    /// The body is the coordinator's own composition, factored into
+    /// [`compose_lookup_via_outbound_tunnel`] so Plan 513's live discovery
+    /// spine can compose its outbound exploratory dispatch **without**
+    /// constructing this coordinator. There is one composition, not two.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_lookup_via_tunnel<R: CryptoRng + RngCore>(
         &self,
@@ -518,13 +603,7 @@ impl NetDbTunnelCoordinator {
         ),
         NetDbTunnelError,
     > {
-        let (peer, lookup_key) = match action {
-            LookupAction::SendDatabaselookup { peer, message, .. } => {
-                (*peer, Hash::from_bytes(*message.key.as_bytes()))
-            }
-            _ => return Err(NetDbTunnelError::Outbound("not a send action".to_owned())),
-        };
-        let dispatch = crate::outbound_lookup::compose_outbound_lookup(
+        compose_lookup_via_outbound_tunnel(
             action,
             role,
             message_id,
@@ -533,40 +612,6 @@ impl NetDbTunnelCoordinator {
             rng,
             now_ms,
         )
-        .map_err(|e| NetDbTunnelError::Outbound(e.to_string()))?;
-        // Prove the dispatch traversed the tunnel path: every delivery
-        // must decode as a complete short-transport TunnelData cell,
-        // the delivery target must equal the role's first hop, and the
-        // nested DatabaseLookup key must remain K.
-        let first = dispatch
-            .first()
-            .ok_or_else(|| NetDbTunnelError::Outbound("no delivery in dispatch".to_owned()))?;
-        let outer =
-            I2npMessage::decode_short_transport(first.message_bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                .map_err(|e| NetDbTunnelError::Outbound(format!("{e:?}")))?;
-        match outer.body() {
-            I2npBody::TunnelData(_) => {}
-            other => {
-                return Err(NetDbTunnelError::Outbound(format!(
-                    "outer is not TunnelData: {:?}",
-                    other.message_type()
-                )));
-            }
-        }
-        let expected_first = role.established().first_hop_router().hash();
-        if first.target() != i2pr_transport::PeerId::from_hash(expected_first) {
-            return Err(NetDbTunnelError::Outbound(
-                "delivery target is not the outbound first hop".to_owned(),
-            ));
-        }
-        let proof = TunnelPathProof {
-            cell_count: dispatch.cell_count,
-            first_hop: expected_first,
-            floodfill: Hash::from_bytes(*peer.as_bytes()),
-            lookup_key,
-            via_tunnel: true,
-        };
-        Ok((dispatch, proof))
     }
 
     /// Ingests one recovered `DatabaseStore` envelope into the lookup

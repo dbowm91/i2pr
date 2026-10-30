@@ -1020,6 +1020,11 @@ fn build_daemon_graph_inner(
             // driver selects its peers through and records its
             // observations into.
             participation.profiles.clone(),
+            // Plan 513: the live NetDB discovery spine. The group's
+            // product tick delivers the request the NetDB participation
+            // owner composes, and the two owners share one routing
+            // table.
+            Some(participation.discovery()),
         )?;
     }
 
@@ -1859,6 +1864,10 @@ struct NetDbParticipation {
     profiles: crate::netdb_participation::PeerParticipationHandle,
     /// The shared routing-table consumer the lookup path consults.
     routing_table: Arc<crate::netdb_participation::RoutingTableConsumer>,
+    /// Plan 513: the live NetDB discovery spine. The owner starts an
+    /// exploration on its existing cadence and hands the composed request
+    /// to the transport owner.
+    discovery: Arc<crate::netdb_participation::NetDbDiscoverySpine>,
     /// The number of projections the startup load applied.
     restored_projections: AtomicU32,
     /// The number of projections the startup load refused to apply.
@@ -1904,14 +1913,23 @@ impl NetDbParticipation {
                 ..crate::netdb_participation::RoutingTableConfig::default()
             },
         );
+        let routing_table = Arc::new(crate::netdb_participation::RoutingTableConsumer::new(
+            driver,
+            config.netdb.routing_table_enabled,
+        ));
+        // Plan 513: the discovery spine shares the **one** routing table with
+        // the participation owner, so the table's preference and the
+        // exploration's suggestions are the same state.
+        let discovery = Arc::new(crate::netdb_participation::NetDbDiscoverySpine::new(
+            Arc::clone(&routing_table),
+            i2pr_netdb::LookupPolicy::default(),
+        ));
         Self {
             profiles: crate::netdb_participation::PeerParticipationHandle::new(
                 crate::netdb_participation::PeerParticipationDriver::new(profile_store),
             ),
-            routing_table: Arc::new(crate::netdb_participation::RoutingTableConsumer::new(
-                driver,
-                config.netdb.routing_table_enabled,
-            )),
+            routing_table,
+            discovery,
             restored_projections: AtomicU32::new(0),
             discarded_projections: AtomicU32::new(0),
         }
@@ -1986,6 +2004,11 @@ impl NetDbParticipation {
                         // The clock moves first, so the peers the table
                         // holds are indexed with today's date.
                         participation.routing_table.advance_time(now_ms);
+                        participation.discovery.advance_time(now_ms);
+                        // Plan 513: the owner advances the discovery spine
+                        // on its existing cadence. The composed request
+                        // waits in a bounded slot for the transport owner.
+                        participation.drive_discovery(bootstrap.as_ref(), now_ms);
                         participation.populate_routing_table(bootstrap.as_ref(), &[]);
                         participation.persist_projection(&projection_directory, now_ms);
                     }
@@ -1994,6 +2017,86 @@ impl NetDbParticipation {
         }) {
             tracing::warn!("the NetDB routing-table owner was not registered: {error}");
         }
+    }
+
+    /// Plan 513: advances the live NetDB discovery spine.
+    ///
+    /// The spine's cycle is bounded and one step at a time:
+    ///
+    /// 1. a RouterInfo-kind lookup that is in flight is awaited;
+    /// 2. an exploration that is in flight is awaited;
+    /// 3. a named peer an earlier exploration found is resolved;
+    /// 4. otherwise a new exploration starts.
+    ///
+    /// The order is not arbitrary. An exploration's answer is peer
+    /// **hashes**, and a hash the router cannot resolve is a name, not a
+    /// peer: so the resolution is the enabling half, and the exploration
+    /// that produces names to resolve comes first in the cycle.
+    ///
+    /// The composed request waits in a bounded slot for the transport
+    /// owner. A request that is still waiting when the next request starts
+    /// is dropped: the owner never queues without bound.
+    ///
+    /// The exploration needs an **inbound** exploratory tunnel to take the
+    /// reply. When the router holds none, the request is refused and the
+    /// refusal is counted by the spine.
+    fn drive_discovery(&self, bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>, now_ms: u64) {
+        let Some(bootstrap) = bootstrap else {
+            return;
+        };
+        let Ok(bootstrap) = bootstrap.lock() else {
+            return;
+        };
+        // One request at a time: a request the wire has not answered yet
+        // is awaited, never replaced.
+        if self.discovery.resolution_in_flight() || self.discovery.exploration_in_flight() {
+            return;
+        }
+        let store = bootstrap.store();
+        // Resolve a named peer an earlier exploration found. The router
+        // asks a floodfill it already knows for that peer's record.
+        if let Some(target) = self.discovery.pending_resolution_target(store) {
+            let routing_key =
+                match i2pr_netdb::daily_routing_key(&target, Date::from_millis(now_ms)) {
+                    Ok(hash) => RouterHash::from_hash(hash),
+                    Err(_) => return,
+                };
+            let dispatch = self
+                .discovery
+                .begin_peer_resolution(store, target, routing_key, None);
+            self.discovery.set_dispatch(dispatch);
+            return;
+        }
+        // Start an exploration. The request is an exploratory
+        // `DatabaseLookup` — wire lookup type `3` — whose key is a fresh
+        // random search key. It is addressed **directly** to the floodfill
+        // being asked.
+        let Some(floodfill) = store.floodfill_advertisers().next().map(|peer| peer.key()) else {
+            return;
+        };
+        let mut bytes = [0_u8; 32];
+        if i2pr_crypto::OsRng.try_fill_bytes(&mut bytes).is_err() {
+            return;
+        }
+        let search_key = RouterHash::from_hash(i2pr_proto::Hash::from_bytes(bytes));
+        let routing_key =
+            match i2pr_netdb::daily_routing_key(&search_key, Date::from_millis(now_ms)) {
+                Ok(hash) => RouterHash::from_hash(hash),
+                Err(_) => return,
+            };
+        let dispatch = self
+            .discovery
+            .begin_exploration(floodfill, search_key, routing_key, None);
+        self.discovery.set_dispatch(dispatch);
+    }
+
+    /// Plan 513: returns the live NetDB discovery spine.
+    ///
+    /// The composition root hands this exact spine to the product, so the
+    /// product's tick delivers the request the owner composes and the two
+    /// owners share **one** routing table.
+    pub(crate) fn discovery(&self) -> Arc<crate::netdb_participation::NetDbDiscoverySpine> {
+        Arc::clone(&self.discovery)
     }
 
     /// Populates the routing table from the daemon's own NetDB.
@@ -3455,6 +3558,9 @@ fn register_ssu2_service(
     // driver selects its peers through it and records its observations back
     // into it, so the store is no longer empty in a live router.
     peer_profiles: crate::netdb_participation::PeerParticipationHandle,
+    // Plan 513: the live NetDB discovery spine. The group's product tick
+    // delivers the request the NetDB participation owner composes.
+    discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, decode_authenticated_router_i2np, floodfill_body_from_message,
@@ -3554,6 +3660,9 @@ fn register_ssu2_service(
                 // Plan 505: the closure is `Fn`, so the peer-profile handle
                 // is cloned into the async block rather than consumed.
                 let peer_profiles = peer_profiles.clone();
+                // Plan 513: the closure is `Fn`, so the discovery spine is
+                // cloned into the async block rather than consumed.
+                let discovery = discovery.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -4100,6 +4209,11 @@ fn register_ssu2_service(
                             bootstrap: live_bootstrap.clone(),
                             peer_profiles: Some(peer_profiles.clone()),
                             reconcile_period_ms,
+                            // Plan 513: the live NetDB discovery spine. The
+                            // product's tick delivers the request the NetDB
+                            // participation owner composes, and the two
+                            // owners share one routing table.
+                            discovery: discovery.clone(),
                         };
                         match crate::service_product::ServiceProduct::start_over_existing_daemon(
                             spec,
