@@ -76,6 +76,13 @@ const SUPPORT_INVENTORY: &str = "specs/support.toml";
 /// The support-inventory surface key for the live RouterInfo lookup.
 const DISCOVERY_SURFACE_KEY: &str = "netdb.live-routerinfo-lookup";
 
+/// Plan 513's own surface. The inventory carries **two** Plan 513
+/// surfaces: the pre-existing `netdb.live-routerinfo-lookup`, which moves
+/// from `deferred` to `experimental` when the lane has proved it, and the
+/// plan's own `daemon.netdb-discovery-spine`. Both must stay
+/// non-advertised, so the rule reads both.
+const DISCOVERY_SPINE_SURFACE_KEY: &str = "daemon.netdb-discovery-spine";
+
 /// The bound the spine's pending-resolution queue must respect.
 const PENDING_RESOLUTION_BOUND: &str = "MAX_PENDING_RESOLUTIONS";
 
@@ -751,20 +758,20 @@ fn check_routerinfo_record_is_ingested_into_the_netdb(
 /// dependency. The `[[surface]]` block for the live RouterInfo lookup must
 /// exist, must not be advertised, and must not claim readiness.
 fn check_discovery_surface_is_not_advertised(inventory: &str) -> Option<String> {
-    let Some(block) = surface_block(inventory, DISCOVERY_SURFACE_KEY) else {
-        return Some(format!(
-            "the support inventory must carry a `[[surface]]` block for `{DISCOVERY_SURFACE_KEY}`"
-        ));
-    };
-    if !block_declares(&block, "advertised", "false") {
-        return Some(format!(
-            "the `{DISCOVERY_SURFACE_KEY}` surface must not be advertised (`advertised = false`)"
-        ));
-    }
-    if block_declares(&block, "status", "ready") {
-        return Some(format!(
-            "the `{DISCOVERY_SURFACE_KEY}` surface must not claim `status = \"ready\"`"
-        ));
+    for key in [DISCOVERY_SURFACE_KEY, DISCOVERY_SPINE_SURFACE_KEY] {
+        let Some(block) = surface_block(inventory, key) else {
+            return Some(format!(
+                "the support inventory must carry a `[[surface]]` block for `{key}`"
+            ));
+        };
+        if !block_declares(&block, "advertised", "false") {
+            return Some(format!(
+                "the `{key}` surface must not be advertised (`advertised = false`)"
+            ));
+        }
+        if block_declares(&block, "status", "ready") {
+            return Some(format!("the `{key}` surface must not claim `status = \"ready\"`"));
+        }
     }
     None
 }
@@ -1197,6 +1204,11 @@ id = \"netdb.live-routerinfo-lookup\"
 status = \"ready\"
 notes = \"the prose says `advertised = false` but the table says otherwise\"
 advertised = true
+
+[[surface]]
+id = \"daemon.netdb-discovery-spine\"
+status = \"experimental\"
+advertised = false
 ";
     let reason = check_discovery_surface_is_not_advertised(advertised);
     assert!(
@@ -1204,10 +1216,32 @@ advertised = true
         "an advertised discovery surface must be reported: {reason:?}"
     );
 
+    let spine_advertised = "\
+[[surface]]
+id = \"netdb.live-routerinfo-lookup\"
+status = \"experimental\"
+advertised = false
+
+[[surface]]
+id = \"daemon.netdb-discovery-spine\"
+status = \"experimental\"
+advertised = true
+";
+    let reason = check_discovery_surface_is_not_advertised(spine_advertised);
+    assert!(
+        reason.is_some(),
+        "an advertised discovery spine must be reported: {reason:?}"
+    );
+
     let prose_only = "\
 [[surface]]
 id = \"netdb.live-routerinfo-lookup\"
-notes = \"the prose says `advertised = false` but the table says otherwise\"
+notes = \"the prose says `advertised = false` but the table does not declare it\"
+
+[[surface]]
+id = \"daemon.netdb-discovery-spine\"
+status = \"experimental\"
+advertised = false
 ";
     let reason = check_discovery_surface_is_not_advertised(prose_only);
     assert!(
