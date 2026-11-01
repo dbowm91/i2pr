@@ -868,8 +868,8 @@ impl RoutingTableConsumer {
 
     /// Plan 513: starts one exploration on the consumer's private driver.
     ///
-    /// The driver is private inside [`RoutingTableConsumerState`], so this
-    /// is the production entry point that reaches it. The request is an
+    /// The driver is private inside the consumer's own state, so this is
+    /// the production entry point that reaches it. The request is an
     /// exploratory `DatabaseLookup` — wire lookup type `3` — whose key is
     /// the supplied random search key, and the dispatch names the peer the
     /// exploration asks.

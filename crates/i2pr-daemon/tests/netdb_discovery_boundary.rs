@@ -770,7 +770,9 @@ fn check_discovery_surface_is_not_advertised(inventory: &str) -> Option<String> 
             ));
         }
         if block_declares(&block, "status", "ready") {
-            return Some(format!("the `{key}` surface must not claim `status = \"ready\"`"));
+            return Some(format!(
+                "the `{key}` surface must not claim `status = \"ready\"`"
+            ));
         }
     }
     None
