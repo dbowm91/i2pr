@@ -1456,13 +1456,16 @@ impl NetDbDiscoverySpine {
             RoutingTableCandidates::Fallback(reason) => {
                 match reason {
                     RoutingTableFallback::Disabled => {
-                        guard.counters.fell_back_disabled = guard.counters.fell_back_disabled.saturating_add(1);
+                        guard.counters.fell_back_disabled =
+                            guard.counters.fell_back_disabled.saturating_add(1);
                     }
                     RoutingTableFallback::NoCandidate => {
-                        guard.counters.fell_back_no_candidate = guard.counters.fell_back_no_candidate.saturating_add(1);
+                        guard.counters.fell_back_no_candidate =
+                            guard.counters.fell_back_no_candidate.saturating_add(1);
                     }
                     RoutingTableFallback::Unavailable => {
-                        guard.counters.fell_back_unavailable = guard.counters.fell_back_unavailable.saturating_add(1);
+                        guard.counters.fell_back_unavailable =
+                            guard.counters.fell_back_unavailable.saturating_add(1);
                     }
                 }
                 Vec::new()
@@ -1582,21 +1585,31 @@ impl NetDbDiscoverySpine {
         guard.exploration = None;
         let mut indexed = 0usize;
         let mut refused = 0usize;
+        // The peers the table **accepted**. A refused suggestion names a
+        // peer the router does not act on: the table's refusal is a
+        // judgement about the source, and a judgement with no consequence
+        // is a decoration. Only the accepted peers are queued.
+        let mut queueable: Vec<RouterHash> = Vec::new();
         for candidate in &accepted {
             guard.counters.suggestions_offered += 1;
             match guard.table.index_suggested(*candidate, &source) {
                 Some(TableInsertOutcome::Inserted) | Some(TableInsertOutcome::Upgraded) => {
                     indexed += 1;
+                    queueable.push(*candidate);
                 }
-                Some(TableInsertOutcome::Idempotent) => {}
+                Some(TableInsertOutcome::Idempotent) => {
+                    // The table already holds the peer, so the router
+                    // knows it. Its name may be resolved.
+                    queueable.push(*candidate);
+                }
                 _ => refused += 1,
             }
         }
         guard.counters.suggestions_refused += refused as u64;
-        // The named peers are queued for resolution. A named peer is a
-        // **name**: the router cannot ask it until a RouterInfo-kind
+        // The accepted named peers are queued for resolution. A named peer
+        // is a **name**: the router cannot ask it until a RouterInfo-kind
         // lookup has returned its signed record.
-        for candidate in &accepted {
+        for candidate in &queueable {
             if guard.pending_resolutions.contains(candidate) {
                 continue;
             }

@@ -2345,6 +2345,104 @@ evidence is recorded in `specs/QUALIFICATION-GATES.md` §11. The plan of record
 is
 `plans/implementation/core-router-recovery/512-destination-inbound-liveness.md`;
 the closure record is `plans/closure/core-router-recovery/512-status.md`.
+## The live NetDB discovery spine (Plan 513)
+
+Plan 497 recorded, and left open, the finding that **the shared routing
+table has no production reader**: the daemon populates and persists the
+table, and the coordinator asks it, but the coordinator was never in the
+daemon's service graph. A table nothing reads is a table whose answers
+cannot change the router's behaviour.
+
+Plan 513 lands the spine.
+
+**The order of the two halves is not arbitrary.** An exploration's answer
+is peer **hashes**, and a hash the router cannot resolve is a name, not a
+peer. So the **RouterInfo-kind resolution** is the enabling half, and the
+exploration that produces names to resolve comes first in the cycle. A
+router that could only explore would accumulate names it could never ask.
+
+**The cycle is bounded and one step at a time.** A RouterInfo-kind lookup
+that is in flight is awaited; an exploration that is in flight is awaited; a
+named peer an earlier exploration found is resolved; otherwise a new
+exploration starts. A request the wire never answered is **abandoned** when
+its deadline passes and **counted** — it is never retried in a loop.
+
+**Two deliveries, and neither substitutes for the other.**
+
+- An **exploratory** request (wire lookup type `3`) is delivered
+  **directly** to the floodfill being asked. This is the specification's
+  addressing for an exploratory lookup, and it is the one place `i2pr`
+  diverges from the reference: i2pd 2.61.0 sends the exploratory request
+  through the exploratory tunnels and falls back to a **direct RouterInfo**
+  lookup (wire type `2`) when it cannot. The divergence, its reason, and the
+  reference's exact behaviour at the pin are recorded in
+  `specs/QUALIFICATION-GATES.md` §12.
+- A **RouterInfo-kind** request (wire lookup type `2`) rides the
+  **outbound** exploratory tunnel and takes its reply through the
+  **inbound** exploratory tunnel. Plan 102's closed authority amendment
+  forbids substituting a direct peer link for the exploratory-tunnel path,
+  so a router that holds no usable outbound exploratory role **refuses** the
+  request rather than sending it directly. The refusal is counted.
+
+**The routing table's answer is a preference, never a replacement.** It
+reorders the flat store's own selection: a peer the flat store could serve
+is never dropped, and a peer the flat store would not have served is
+ignored. Every fallback — the table off, the table empty, the table
+unreachable — is counted **by reason** on both the table's own counters and
+the spine's.
+
+**A suggestion is never evidence.** The peers an exploration names enter
+the routing table as **suggestions**, and the table accepts a suggestion
+only from a peer it already holds with signed evidence. A named peer is
+then queued for resolution, and the RouterInfo-kind reply's signed record is
+validated by the lookup engine's own rules and inserted into the router's
+NetDB — so the named peer becomes a peer the router can ask. A reply from a
+peer the exploration never asked introduces **nothing**: the reply's sender
+is unauthenticated.
+
+**The spine owns no task, no timer, no listener and no socket.** The
+daemon's existing tick drives it: the tick advances the RouterInfo-kind
+validation clock, refreshes the inbound exploratory tunnel's reply path,
+and hands the composed request to the transport. The delivery outcome is
+counted as delivered or failed — never silently.
+
+**The version gate is inherited, and the reason is stated.** Plan 491's
+DSM version gate is scoped by its own definition — `dsm_target_eligibility`
+— to the peers the router sends a **DSM** to: the two **publication**
+paths. Plan 513 adds no DSM and changes neither publication path, and
+neither publication path consults the routing table, so no gated candidate
+can be bypassed by the table's preference. The lookup paths — the live
+LeaseSet2 lookup and this plan's new RouterInfo-kind lookup — were never
+version-gated, and this plan does not change that. The gate's scope is
+recorded rather than assumed.
+
+**No advertisement.** `router.version` stays `0.9.62`; `caps` and the
+published RouterInfo are unchanged; the support inventory's advertised count
+stays **zero**; `Cargo.toml` and `Cargo.lock` are byte-identical. The
+`netdb.live-routerinfo-lookup` surface moves from `deferred` to
+`experimental` because the lane has proved it; it stays
+`advertised = false`. **Plan 497's closure record is not rewritten.**
+
+**What Plan 513 does not close.** The **stock-peer** half — a run against a
+pinned stock router that answers a real exploration and a real RouterInfo
+lookup — is blocked externally on Plan 493's authorized two-host topology.
+Plan 497's **limitation 5**'s read half is discharged here; its stock-peer
+half is not. The reference's **direct** fallback (a type-2 lookup when the
+exploratory tunnels are unavailable) is **not** implemented, and the
+difference is recorded.
+
+Evidence:
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/netdb_seam.rs`,
+`crates/i2pr-daemon/src/netdb_tunnels.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/tests/netdb_discovery_live.rs` and
+`crates/i2pr-daemon/tests/netdb_discovery_boundary.rs`. The references'
+evidence is recorded in `specs/QUALIFICATION-GATES.md` §12. The plan of
+record is
+`plans/implementation/network-participation/513-live-netdb-discovery-spine.md`;
+the closure record is `plans/closure/network-participation/513-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

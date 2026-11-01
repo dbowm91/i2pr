@@ -1374,8 +1374,16 @@ id = "netdb.live-routerinfo-lookup"
 protocol = "reseed-netdb"
 structure = "live-standards-conformant-routerinfo-lookup-over-exploratory-tunnels"
 scope = "required-later"
-status = "deferred"
-evidence = ["plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md"]
+status = "experimental"
+notes = "Plan 513 moves this surface from `deferred` to `experimental`: the live RouterInfo-kind lookup is now driven in the product composition. The request rides the **outbound** exploratory tunnel and takes its reply through the **inbound** exploratory tunnel, because Plan 102's closed authority amendment forbids substituting a direct peer link for the exploratory-tunnel path; a router that holds no usable outbound exploratory role **refuses** the request and counts the refusal. The reply's signed record is validated by the lookup engine's own rules and inserted into the router's NetDB. The surface stays `advertised = false`: the stock-peer qualification that would exercise it against a pinned stock router is blocked externally on Plan 493's authorized two-host topology, and no stock-peer evidence is claimed. The reference's own **direct** fallback -- i2pd 2.61.0 downgrades the exploratory request to a type-2 RouterInfo lookup when the exploratory tunnels are unavailable -- is **not** implemented; the divergence is recorded in `specs/QUALIFICATION-GATES.md` section 12."
+evidence = [
+    "plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/src/netdb_seam.rs",
+    "crates/i2pr-daemon/tests/netdb_discovery_live.rs",
+    "crates/i2pr-daemon/tests/netdb_discovery_boundary.rs",
+    "plans/closure/network-participation/513-status.md",
+]
 advertised = false
 
 [[surface]]
@@ -2330,5 +2338,26 @@ evidence = [
     "specs/QUALIFICATION-GATES.md",
     "plans/implementation/core-router-recovery/512-destination-inbound-liveness.md",
     "plans/closure/core-router-recovery/512-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "daemon.netdb-discovery-spine"
+protocol = "reseed-netdb"
+structure = "live-exploration-and-routerinfo-resolution-over-the-shared-routing-table"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 513 discharges Plan 497's **M2** (*\"the shared routing-table consumer has no production reader\"*) and limitation 5's read half. The **spine** is one bounded owner of the router's DHT discovery: an **exploratory** lookup (wire type `3`) that asks one named floodfill for the peers closest to a random search key, and a **RouterInfo-kind** lookup (wire type `2`) that resolves a named peer into a `RouterInfo`. The order of the two halves is not arbitrary: an exploration's answer is peer **hashes**, and a hash the router cannot resolve is a name, not a peer, so the resolution is the enabling half and the exploration that produces names to resolve comes first in the cycle. The spine owns **no task, no timer, no listener and no socket** -- the daemon's existing tick drives it, advancing the RouterInfo-kind validation clock, refreshing the inbound exploratory tunnel's reply path, and handing the composed request to the transport. The routing table's answer is a **preference**: it reorders the flat store's own selection and never narrows it, and every fallback -- the table off, the table empty, the table unreachable -- is counted **by reason**. A named peer enters the table as a **suggestion**, never as signed evidence: the table accepts a suggestion only from a peer it already holds with signed evidence. One request, one exploration and one resolution at a time; a request the wire never answered is abandoned when its deadline passes and counted, never retried in a loop. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/src/netdb_seam.rs",
+    "crates/i2pr-daemon/src/netdb_tunnels.rs",
+    "crates/i2pr-daemon/src/exploratory_build.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/tests/netdb_discovery_live.rs",
+    "crates/i2pr-daemon/tests/netdb_discovery_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/513-live-netdb-discovery-spine.md",
+    "plans/closure/network-participation/513-status.md",
 ]
 advertised = false

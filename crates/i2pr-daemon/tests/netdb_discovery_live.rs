@@ -35,7 +35,13 @@
 //! 9. a reply from a peer the exploration never asked introduces nothing;
 //! 10. the resolved record is ingested into the router's NetDB;
 //! 11. the spine's unresolved-peer queue is bounded;
-//! 12. a delivery is counted as delivered or failed — never silently.
+//! 12. a delivery is counted as delivered or failed — never silently;
+//! 13. an exploration is **finished** once its reply arrives, so one
+//!     answered exploration cannot stall the cycle;
+//! 14. a request the wire never answered is **abandoned** when its
+//!     deadline passes, and counted — never retried in a loop;
+//! 15. a suggestion from a peer the table does **not** hold with signed
+//!     evidence is refused, and the refusal is counted.
 //!
 //! One behaviour is **not** drivable through the public API and is reported
 //! rather than papered over: the product's tick that drives the spine needs a
@@ -84,7 +90,7 @@ const MAX_ROUTER_INFO_BYTES: usize = 16 * 1024;
 const REPLY_GATEWAY_BYTE: u8 = 0x51;
 
 /// The tunnel id of the lane's inbound exploratory tunnel.
-const REPLY_TUNNEL_ID: u32 = 0x5130_07;
+const REPLY_TUNNEL_ID: u32 = 0x0051_3007;
 
 /// The lane's own identity.
 fn bundle(seed: u64) -> RouterIdentityBundle {
@@ -117,8 +123,11 @@ fn routing_key_for(hash: &RouterHash) -> RouterHash {
 
 /// The lane's inbound exploratory tunnel's reply path.
 fn reply_path() -> ReplyPath {
-    ReplyPath::new(RouterHash::from_bytes([REPLY_GATEWAY_BYTE; 32]), REPLY_TUNNEL_ID)
-        .expect("reply path")
+    ReplyPath::new(
+        RouterHash::from_bytes([REPLY_GATEWAY_BYTE; 32]),
+        REPLY_TUNNEL_ID,
+    )
+    .expect("reply path")
 }
 
 /// Compresses bytes the way a `DatabaseStore` carries a RouterInfo.
@@ -220,9 +229,9 @@ fn the_exploration_names_the_peer_and_the_transport_seam() {
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let routing_key = routing_key_for(&search_key);
 
-    let dispatch = mesh
-        .spine
-        .begin_exploration(mesh.alpha, search_key, routing_key, Some(reply_path()));
+    let dispatch =
+        mesh.spine
+            .begin_exploration(mesh.alpha, search_key, routing_key, Some(reply_path()));
     let (peer, message) = sent(&dispatch);
 
     assert!(
@@ -239,11 +248,18 @@ fn the_exploration_names_the_peer_and_the_transport_seam() {
     );
     assert_eq!(message.key, *search_key.as_hash());
     assert!(
-        matches!(dispatch, DiscoveryDispatch::Send { delivery: DiscoveryDelivery::Direct, .. }),
+        matches!(
+            dispatch,
+            DiscoveryDispatch::Send {
+                delivery: DiscoveryDelivery::Direct,
+                ..
+            }
+        ),
         "an exploratory request is delivered directly: {dispatch:?}"
     );
     assert_eq!(
-        mesh.spine.counters().explorations_started, 1,
+        mesh.spine.counters().explorations_started,
+        1,
         "the composed request is counted"
     );
 }
@@ -258,12 +274,9 @@ fn the_routerinfo_request_rides_the_outbound_exploratory_tunnel() {
     let mesh = mesh();
     let routing_key = routing_key_for(&mesh.theta);
 
-    let dispatch = mesh.spine.begin_peer_resolution(
-        &mesh.store,
-        mesh.theta,
-        routing_key,
-        Some(reply_path()),
-    );
+    let dispatch =
+        mesh.spine
+            .begin_peer_resolution(&mesh.store, mesh.theta, routing_key, Some(reply_path()));
     let (_peer, message) = sent(&dispatch);
 
     assert_eq!(
@@ -281,7 +294,8 @@ fn the_routerinfo_request_rides_the_outbound_exploratory_tunnel() {
         "a RouterInfo request must ride the outbound exploratory tunnel: {dispatch:?}"
     );
     assert_eq!(
-        mesh.spine.counters().resolutions_started, 1,
+        mesh.spine.counters().resolutions_started,
+        1,
         "the composed request is counted"
     );
 }
@@ -296,12 +310,9 @@ fn the_routerinfo_request_carries_the_inbound_exploratory_tunnels_reply_path() {
     let mesh = mesh();
     let routing_key = routing_key_for(&mesh.theta);
 
-    let dispatch = mesh.spine.begin_peer_resolution(
-        &mesh.store,
-        mesh.theta,
-        routing_key,
-        Some(reply_path()),
-    );
+    let dispatch =
+        mesh.spine
+            .begin_peer_resolution(&mesh.store, mesh.theta, routing_key, Some(reply_path()));
     let (_peer, message) = sent(&dispatch);
 
     assert!(
@@ -417,27 +428,26 @@ fn every_fallback_is_counted_by_reason() {
     let mut store = RouterInfoStore::with_config(RouterInfoStoreConfig::new(64, 1 << 20));
     let _ = store.insert(validated(&alpha, "Nf"));
     let target = RouterHash::from_bytes([0x11; 32]);
-    let dispatch = spine.begin_peer_resolution(
-        &store,
-        target,
-        routing_key_for(&target),
-        Some(reply_path()),
-    );
+    let dispatch =
+        spine.begin_peer_resolution(&store, target, routing_key_for(&target), Some(reply_path()));
 
     assert!(
         matches!(dispatch, DiscoveryDispatch::Send { .. }),
         "a table that is switched off does not stop the request: the flat store's own selection stands: {dispatch:?}"
     );
     assert_eq!(
-        spine.counters().fell_back_disabled, 1,
+        spine.counters().fell_back_disabled,
+        1,
         "the fallback must be counted under its own reason"
     );
     assert_eq!(
-        spine.counters().resolutions_started, 1,
+        spine.counters().resolutions_started,
+        1,
         "the request still starts on the flat store's own selection"
     );
     assert_eq!(
-        table.counters().fell_back_disabled, 1,
+        table.counters().fell_back_disabled,
+        1,
         "the table counts its own fallback too"
     );
 }
@@ -454,23 +464,22 @@ fn an_exploration_without_a_reply_path_is_refused_and_counted() {
     mesh.spine.set_reply_path(None);
     let search_key = RouterHash::from_bytes([0x5e; 32]);
 
-    let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
-        search_key,
-        routing_key_for(&search_key),
-        None,
-    );
+    let dispatch =
+        mesh.spine
+            .begin_exploration(mesh.alpha, search_key, routing_key_for(&search_key), None);
 
     assert!(
         matches!(dispatch, DiscoveryDispatch::NeedsReplyPath { .. }),
         "without a reply path the request must not be composed: {dispatch:?}"
     );
     assert_eq!(
-        mesh.spine.counters().fell_back_no_reply_path, 1,
+        mesh.spine.counters().fell_back_no_reply_path,
+        1,
         "the refusal must be counted"
     );
     assert_eq!(
-        mesh.spine.counters().explorations_started, 0,
+        mesh.spine.counters().explorations_started,
+        0,
         "a refused request is not a started request"
     );
 }
@@ -503,14 +512,18 @@ fn the_explorations_answer_queues_the_named_peer_for_resolution() {
         .expect("the exploration reply is ingested");
 
     assert_eq!(outcome.suggested, 1);
-    assert!(!outcome.unknown_peer, "alpha is the peer the exploration asked");
+    assert!(
+        !outcome.unknown_peer,
+        "alpha is the peer the exploration asked"
+    );
     assert_eq!(
         mesh.spine.pending_resolutions(),
         vec![mesh.delta],
         "the named peer must be queued for resolution"
     );
     assert_eq!(
-        mesh.spine.counters().search_replies_ingested, 1,
+        mesh.spine.counters().search_replies_ingested,
+        1,
         "the ingested reply is counted"
     );
 }
@@ -556,7 +569,8 @@ fn a_named_peer_is_offered_to_the_table_as_a_suggestion_not_as_evidence() {
         "the named peer must enter the table as a suggestion"
     );
     assert_eq!(
-        mesh.spine.counters().suggestions_offered, 1,
+        mesh.spine.counters().suggestions_offered,
+        1,
         "the offered suggestion is counted"
     );
 }
@@ -613,12 +627,9 @@ fn the_resolved_record_is_ingested_into_the_netdb() {
     // refused as being from the future.
     mesh.spine.set_routerinfo_now_seconds((T0 / 1000) as u32);
     let routing_key = routing_key_for(&mesh.theta);
-    let dispatch = mesh.spine.begin_peer_resolution(
-        &mesh.store,
-        mesh.theta,
-        routing_key,
-        Some(reply_path()),
-    );
+    let dispatch =
+        mesh.spine
+            .begin_peer_resolution(&mesh.store, mesh.theta, routing_key, Some(reply_path()));
     let _ = sent(&dispatch);
 
     assert!(
@@ -651,7 +662,8 @@ fn the_resolved_record_is_ingested_into_the_netdb() {
         "the resolved peer must enter the router's NetDB"
     );
     assert_eq!(
-        mesh.spine.counters().records_ingested, 1,
+        mesh.spine.counters().records_ingested,
+        1,
         "the ingested record is counted"
     );
 }
@@ -703,7 +715,145 @@ fn a_delivery_is_counted_as_delivered_or_failed() {
     mesh.spine.record_delivery(false);
     assert_eq!(mesh.spine.counters().requests_delivered, 1);
     assert_eq!(
-        mesh.spine.counters().delivery_failures, 1,
+        mesh.spine.counters().delivery_failures,
+        1,
         "a refused delivery must be counted"
+    );
+}
+
+/// Plan 513 requirement 13: an exploration is finished once its reply
+/// arrives.
+///
+/// One exploration at a time means the next round may only start once the
+/// previous one is over. An exploration that is never finished would stall
+/// the cycle for good.
+#[test]
+fn an_exploration_is_finished_once_its_reply_arrives() {
+    let mesh = mesh();
+    let search_key = RouterHash::from_bytes([0x5e; 32]);
+    let dispatch = mesh.spine.begin_exploration(
+        mesh.alpha,
+        search_key,
+        routing_key_for(&search_key),
+        Some(reply_path()),
+    );
+    let _ = sent(&dispatch);
+
+    assert!(
+        mesh.spine.exploration_in_flight(),
+        "the exploration is in flight until its reply arrives"
+    );
+
+    let reply = DatabaseSearchReplyMessage {
+        key: *search_key.as_hash(),
+        peer_hashes: vec![*mesh.delta.as_hash()],
+        from: *mesh.alpha.as_hash(),
+    };
+    mesh.spine
+        .ingest_search_reply(&reply)
+        .expect("the exploration reply is ingested");
+
+    assert!(
+        !mesh.spine.exploration_in_flight(),
+        "the answered exploration must be finished"
+    );
+}
+
+/// Plan 513 requirement 14: a request the wire never answered is abandoned
+/// when its deadline passes, and counted.
+///
+/// A request that is never retried in a loop is what keeps the discovery
+/// cycle alive when a peer goes silent.
+#[test]
+fn a_request_the_wire_never_answered_is_abandoned_when_its_deadline_passes() {
+    let mesh = mesh();
+    let search_key = RouterHash::from_bytes([0x5e; 32]);
+    let dispatch = mesh.spine.begin_exploration(
+        mesh.alpha,
+        search_key,
+        routing_key_for(&search_key),
+        Some(reply_path()),
+    );
+    let _ = sent(&dispatch);
+
+    // A day is past every legal exploration deadline.
+    mesh.spine.advance_time(T0 + 86_400_000);
+
+    assert!(
+        !mesh.spine.exploration_in_flight(),
+        "an unanswered exploration must be abandoned"
+    );
+    assert_eq!(
+        mesh.spine.counters().explorations_expired,
+        1,
+        "the abandoned request must be counted"
+    );
+
+    // The resolution's own deadline is the lookup policy's total deadline.
+    let target = RouterHash::from_bytes([0x11; 32]);
+    let dispatch = mesh.spine.begin_peer_resolution(
+        &mesh.store,
+        target,
+        routing_key_for(&target),
+        Some(reply_path()),
+    );
+    let _ = sent(&dispatch);
+    assert!(
+        mesh.spine.resolution_in_flight(),
+        "the resolution is in flight until its reply arrives"
+    );
+    // The clock has already moved on, so the resolution's own deadline is
+    // later than the exploration's was. A second day passes it too.
+    mesh.spine.advance_time(T0 + 172_800_000);
+    assert!(
+        !mesh.spine.resolution_in_flight(),
+        "an unanswered resolution must be abandoned"
+    );
+    assert_eq!(
+        mesh.spine.counters().resolutions_expired,
+        1,
+        "the abandoned request must be counted"
+    );
+}
+
+/// Plan 513 requirement 15: a suggestion from a peer the table does not
+/// hold with signed evidence is refused.
+///
+/// A suggestion is never evidence. The table accepts a suggestion only from
+/// a peer it already holds with **signed** evidence, so a peer that is
+/// merely in the flat store cannot introduce new peers.
+#[test]
+fn a_suggestion_from_a_peer_the_table_does_not_hold_is_refused() {
+    let mesh = mesh();
+    let search_key = RouterHash::from_bytes([0x5e; 32]);
+    // Beta is in the flat store but **not** in the routing table: it is in
+    // the store only, so the table holds no signed evidence for it.
+    let dispatch = mesh.spine.begin_exploration(
+        mesh.beta,
+        search_key,
+        routing_key_for(&search_key),
+        Some(reply_path()),
+    );
+    let _ = sent(&dispatch);
+
+    let reply = DatabaseSearchReplyMessage {
+        key: *search_key.as_hash(),
+        peer_hashes: vec![*mesh.delta.as_hash()],
+        from: *mesh.beta.as_hash(),
+    };
+    let outcome = mesh
+        .spine
+        .ingest_search_reply(&reply)
+        .expect("the exploration reply is ingested");
+
+    assert_eq!(outcome.suggested, 1, "the reply named one peer");
+    assert_eq!(
+        outcome.indexed, 0,
+        "a suggestion from a peer the table cannot vouch for must be refused"
+    );
+    assert_eq!(outcome.refused, 1, "the refusal must be counted");
+    assert!(
+        mesh.spine.pending_resolutions().is_empty(),
+        "a refused suggestion must not be queued for resolution"
     );
 }
