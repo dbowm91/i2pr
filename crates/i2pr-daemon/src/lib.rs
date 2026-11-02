@@ -1868,6 +1868,14 @@ struct NetDbParticipation {
     /// exploration on its existing cadence and hands the composed request
     /// to the transport owner.
     discovery: Arc<crate::netdb_participation::NetDbDiscoverySpine>,
+    /// Plan 514: whether the router runs exploratory lookups.
+    ///
+    /// This is `netdb.exploration_enabled`, and it was **never read**:
+    /// the key was parsed, defaulted and cross-validated, and the
+    /// exploration ran whenever the routing table was on. The switch now
+    /// gates the exploratory request, exactly as the key's own doc
+    /// comment says it should.
+    exploration_enabled: bool,
     /// The number of projections the startup load applied.
     restored_projections: AtomicU32,
     /// The number of projections the startup load refused to apply.
@@ -1930,6 +1938,7 @@ impl NetDbParticipation {
             ),
             routing_table,
             discovery,
+            exploration_enabled: config.netdb.exploration_enabled,
             restored_projections: AtomicU32::new(0),
             discarded_projections: AtomicU32::new(0),
         }
@@ -2067,13 +2076,21 @@ impl NetDbParticipation {
             self.discovery.set_dispatch(dispatch);
             return;
         }
+        // Plan 514: the exploratory request is the operator's to switch.
+        // `netdb.exploration_enabled` says whether the router runs
+        // exploratory lookups; until this plan the key was read by
+        // nothing and the exploration ran whenever the routing table was
+        // on. The switch gates the **exploratory request** only — the
+        // RouterInfo-kind resolution above stays live, so the routing
+        // table keeps its production reader.
+        if !self.exploration_enabled {
+            return;
+        }
         // Start an exploration. The request is an exploratory
         // `DatabaseLookup` — wire lookup type `3` — whose key is a fresh
         // random search key. It is addressed **directly** to the floodfill
-        // being asked.
-        let Some(floodfill) = store.floodfill_advertisers().next().map(|peer| peer.key()) else {
-            return;
-        };
+        // being asked, and Plan 514 picks that floodfill from the routing
+        // table's **closest** verified answer for the key's routing key.
         let mut bytes = [0_u8; 32];
         if i2pr_crypto::OsRng.try_fill_bytes(&mut bytes).is_err() {
             return;
@@ -2086,7 +2103,7 @@ impl NetDbParticipation {
             };
         let dispatch = self
             .discovery
-            .begin_exploration(floodfill, search_key, routing_key, None);
+            .begin_exploration(store, search_key, routing_key, None);
         self.discovery.set_dispatch(dispatch);
     }
 
@@ -5932,6 +5949,77 @@ mod tests {
         let participation =
             NetDbParticipation::new(&config, RouterHash::from_bytes([7u8; 32]), 1_000);
         (config, participation)
+    }
+
+    /// Plan 514: the operator's switch is real.
+    ///
+    /// `netdb.exploration_enabled` says whether the router runs exploratory
+    /// lookups. Until this plan the key was read by **nothing** — it was
+    /// parsed, defaulted and cross-validated, and the exploration ran
+    /// whenever the routing table was on.
+    #[test]
+    fn the_operator_switch_starts_and_stops_the_exploratory_request() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let base = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[netdb]\nrouting_table_enabled = true\n",
+            path.to_string_lossy()
+        );
+
+        /// A bootstrap that holds one validated floodfill, so the routing
+        /// table has a peer to name.
+        fn bootstrap_with_a_floodfill(config: &Config) -> Arc<Mutex<bootstrap::Bootstrap>> {
+            let mut bootstrap =
+                bootstrap::Bootstrap::new(RouterInfoStoreConfig::default(), config.reseed.clone());
+            let _ = bootstrap
+                .store_mut()
+                .insert(participation_floodfill(0x5140_0001));
+            Arc::new(Mutex::new(bootstrap))
+        }
+
+        // The switch off — the documented default: no exploratory request.
+        let config = Config::parse(&base).expect("valid configuration");
+        assert!(
+            !config.netdb.exploration_enabled,
+            "the exploration must be off by default"
+        );
+        let bootstrap = bootstrap_with_a_floodfill(&config);
+        let (_config, participation) = participation_for(&base);
+        participation.populate_routing_table(Some(&bootstrap), &[]);
+        participation.drive_discovery(Some(&bootstrap), 1_000);
+        assert!(
+            participation.discovery.take_dispatch().is_none(),
+            "the operator switched the exploration off, so no request is composed"
+        );
+
+        // The switch on: the exploratory request is composed.
+        let enabled = format!("{base}exploration_enabled = true\n");
+        let config = Config::parse(&enabled).expect("valid configuration");
+        assert!(config.netdb.exploration_enabled);
+        let bootstrap = bootstrap_with_a_floodfill(&config);
+        let (_, participation) = participation_for(&enabled);
+        participation.discovery.set_reply_path(Some(
+            i2pr_netdb::ReplyPath::new(RouterHash::from_bytes([0x52; 32]), 0x0051_4007)
+                .expect("reply path"),
+        ));
+        participation.populate_routing_table(Some(&bootstrap), &[]);
+        participation.drive_discovery(Some(&bootstrap), 1_000);
+        let dispatch = participation
+            .discovery
+            .take_dispatch()
+            .expect("the switched-on exploration must compose a request");
+        assert!(
+            matches!(
+                dispatch,
+                crate::netdb_participation::DiscoveryDispatch::Send { .. }
+            ),
+            "the request must be dispatchable: {dispatch:?}"
+        );
+        assert_eq!(
+            participation.discovery.counters().explorations_started,
+            1,
+            "one exploratory request must have been composed"
+        );
     }
 
     /// Plan 497: with the routing table off — the shipped default — the

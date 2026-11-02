@@ -82,6 +82,9 @@ const DISCOVERY_SURFACE_KEY: &str = "netdb.live-routerinfo-lookup";
 /// plan's own `daemon.netdb-discovery-spine`. Both must stay
 /// non-advertised, so the rule reads both.
 const DISCOVERY_SPINE_SURFACE_KEY: &str = "daemon.netdb-discovery-spine";
+/// Plan 514's surface: the exploratory request's target and the operator's
+/// switch over it.
+const EXPLORATORY_TARGET_SURFACE_KEY: &str = "daemon.netdb-exploratory-target";
 
 /// The bound the spine's pending-resolution queue must respect.
 const PENDING_RESOLUTION_BOUND: &str = "MAX_PENDING_RESOLUTIONS";
@@ -758,7 +761,11 @@ fn check_routerinfo_record_is_ingested_into_the_netdb(
 /// dependency. The `[[surface]]` block for the live RouterInfo lookup must
 /// exist, must not be advertised, and must not claim readiness.
 fn check_discovery_surface_is_not_advertised(inventory: &str) -> Option<String> {
-    for key in [DISCOVERY_SURFACE_KEY, DISCOVERY_SPINE_SURFACE_KEY] {
+    for key in [
+        DISCOVERY_SURFACE_KEY,
+        DISCOVERY_SPINE_SURFACE_KEY,
+        EXPLORATORY_TARGET_SURFACE_KEY,
+    ] {
         let Some(block) = surface_block(inventory, key) else {
             return Some(format!(
                 "the support inventory must carry a `[[surface]]` block for `{key}`"

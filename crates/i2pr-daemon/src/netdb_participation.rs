@@ -877,6 +877,20 @@ impl RoutingTableConsumer {
     /// A table that cannot be reached is counted under
     /// [`RoutingTableFallback::Unavailable`]: the exploration terminates
     /// honestly rather than silently doing nothing.
+    ///
+    /// Plan 514: the peer the exploration asks is the routing table's
+    /// **closest** verified floodfill for the search key's routing key.
+    /// The flat store's iteration order is not a selection: it named the
+    /// same peer for every exploration, so a peer that did not answer was
+    /// asked again and again. The reference asks the same question of its
+    /// own floodfill bucket set (`libi2pd/NetDbRequests.cpp:479`, at the
+    /// exact pin).
+    ///
+    /// A table that names **no** floodfill ends the request, counted under
+    /// [`NetDbDiscoveryCounters::explorations_refused_no_target`]. The
+    /// request is never redirected to an arbitrary substitute — the
+    /// reference ends its request too, rather than asking one
+    /// (`libi2pd/NetDbRequests.cpp:502-503`).
     pub fn begin_exploration(
         &self,
         store: &RouterInfoStore,
@@ -968,6 +982,31 @@ impl RoutingTableConsumer {
             .lock()
             .map(|guard| guard.driver.exploration_policy)
             .unwrap_or_default()
+    }
+
+    /// Plan 514: the routing table's **closest** verified floodfill.
+    ///
+    /// The answer is the table's closest-first selection for the key,
+    /// restricted to the peers that advertise `f` and that the flat store
+    /// holds. The reference asks the same question of its own floodfill
+    /// bucket set (`libi2pd/NetDbRequests.cpp:479`, at the exact pin).
+    ///
+    /// Unlike [`Self::preferred_peers`], the answer is a **target**, not a
+    /// preference: the caller asks this peer or asks nobody. A table that
+    /// cannot answer yields `None`, and the reason is counted by reason —
+    /// `Disabled`, `NoCandidate` or `Unavailable` — exactly as a
+    /// preference's fallback is. A table that cannot answer never sends the
+    /// caller to an arbitrary substitute.
+    pub fn closest_floodfill(
+        &self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+        excluded: &[RouterHash],
+    ) -> Option<RouterHash> {
+        match self.candidates(store, routing_key, excluded) {
+            RoutingTableCandidates::Table(candidates) => candidates.into_iter().next(),
+            RoutingTableCandidates::Fallback(_) => None,
+        }
     }
 
     /// Plan 513: the routing table's **preference** over a candidate list.
@@ -1082,6 +1121,13 @@ pub struct NetDbDiscoveryCounters {
     /// RouterInfo-kind lookups the wire never answered before the lookup
     /// policy's total deadline passed.
     pub resolutions_expired: u64,
+    /// Plan 514: exploratory requests the routing table named **no**
+    /// floodfill to ask.
+    ///
+    /// The request is refused when this counter moves. It is never
+    /// redirected to an arbitrary peer: a router that asks somebody it did
+    /// not choose is not exploring, it is probing.
+    pub explorations_refused_no_target: u64,
 }
 
 /// Plan 513: the live NetDB discovery spine.
@@ -1377,7 +1423,7 @@ impl NetDbDiscoverySpine {
     /// without one the request is refused and counted.
     pub fn begin_exploration(
         &self,
-        floodfill: RouterHash,
+        store: &RouterInfoStore,
         search_key: RouterHash,
         routing_key: RouterHash,
         reply_path: Option<ReplyPath>,
@@ -1389,6 +1435,20 @@ impl NetDbDiscoverySpine {
             };
         };
         let now_ms = guard.now_ms;
+        // Plan 514: the peer the exploration asks is the routing table's
+        // **closest** verified floodfill for the search key's routing key.
+        // The flat store's iteration order is not a selection -- it named
+        // the same peer for every exploration.
+        //
+        // A table that names no floodfill ends the request, counted. The
+        // request is never redirected to an arbitrary substitute.
+        let Some(floodfill) = guard.table.closest_floodfill(store, &routing_key, &[]) else {
+            guard.counters.explorations_refused_no_target += 1;
+            return DiscoveryDispatch::Terminal {
+                lookup_id: LookupId::new(0, LookupKind::Exploratory, search_key),
+                final_state: LookupFinalState::NoEligibleCandidates,
+            };
+        };
         // The exploration's budget and deadline gate the request.
         let job = ExplorationJob::begin(
             search_key,

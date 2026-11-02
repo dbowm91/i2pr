@@ -2443,6 +2443,92 @@ record is
 `plans/implementation/network-participation/513-live-netdb-discovery-spine.md`;
 the closure record is `plans/closure/network-participation/513-status.md`.
 
+## The exploratory request's target (Plan 514)
+
+Plan 513 landed the spine, but the request it sent was **aimed wrongly**, and
+the operator could not switch it off.
+
+**The aim was wrong.** The live path picked the **lowest-hash** floodfill
+advertiser in the flat store and addressed the request to it. The store is a
+`BTreeMap` keyed by the peer's hash, so its first advertiser is the
+lowest-hash one, and the choice did not depend on the search key at all:
+**every** exploration asked the **same** peer, until a smaller-hash floodfill
+entered the store. A peer that did not answer was asked again and again. The
+routing table's closest-first selection — the mechanism Plan 489 built and
+Plan 513 gave a reader — was **not consulted** on that path at all, and the
+table's own exploration entry point had no production caller.
+
+The reference asks the same question of its own floodfill bucket set: i2pd
+2.61.0 derives the random search key's routing key and runs the bucket set's
+closest-first search for it (`libi2pd/NetDbRequests.cpp:479`, at the exact
+pin; `libi2pd/NetDb.cpp:1312-1316`). The reference's exact behaviour, and the
+divergence, are recorded in `specs/QUALIFICATION-GATES.md` §13.
+
+**The switch was inert.** `netdb.exploration_enabled` was parsed, defaulted to
+`false`, and cross-validated against `netdb.routing_table_enabled` — and **no
+production code read it**. The exploration ran whenever the routing table was
+on. The key's own documentation had already stated the contract: *"whether the
+router runs exploratory lookups"*, and *"Exploration is **off by default**, and
+it cannot be enabled while the routing table is off"*. The wiring was missing,
+not the design.
+
+**What changed.** The peer the exploratory request is addressed to is the
+routing table's **closest** verified floodfill for the search key's daily
+routing key. The router already computed that routing key for the request, so
+nothing new had to be derived — the fix was to *use* it.
+
+**A request the table cannot target is refused, not redirected.** A table that
+names no floodfill — off, empty, or unreachable — ends the request, counted
+under its own reason, and the request is never redirected to an arbitrary
+substitute. The reference ends its request too, rather than asking one
+(`libi2pd/NetDbRequests.cpp:502-503`).
+
+**The switch is honoured, and its default does not move.** The switch gates the
+**exploratory request** only. The RouterInfo-kind resolution stays above it,
+so the routing table keeps its production reader and Plan 497's **M2** is not
+reopened. The posture is:
+
+| `routing_table_enabled` | `exploration_enabled` | What runs |
+| --- | --- | --- |
+| `false` (the default) | anything | no table, no participation owner, no spine, no exploration |
+| `true` | `false` (the default) | the table is maintained and persisted; **no** exploration |
+| `true` | `true` | the full discovery spine |
+
+The second row is the one behaviour that changed, and it **is** the defect:
+the exploration ran there anyway, against the key's documented contract.
+
+**The lookup target stays unversion-gated.** Plan 509 decided that the lookup
+target is not version-gated, and made the decision structural by naming the
+selection sites. The two live lookup paths Plan 513 added — the RouterInfo-kind
+resolution and the exploratory request — were **not** named, so the decision
+was unenforced on exactly the paths added since it was recorded. All of them
+are named now, and this plan's own selection is named too.
+
+**No advertisement.** `router.version` stays `0.9.62`; `caps` and the published
+RouterInfo are unchanged; the support inventory's advertised count stays
+**zero**; `Cargo.toml` and `Cargo.lock` are byte-identical. The inventory holds
+**106 surfaces, 101 experimental, 4 deferred, 1 ready, 0 advertised**. **Plan
+497's closure record is not rewritten**, and Plan 513's closure record is not
+rewritten either: the correction to Plan 513's claim lives here and in Plan
+513's registry row.
+
+**What Plan 514 does not close.** The **stock-peer** half remains blocked
+externally on Plan 493's authorized two-host topology. The reference's **peer
+exclusion** — it never asks a peer it has already asked
+(`dest->GetExcludedPeers()`) — is **not** implemented, and the exploration
+still asks **one** peer per exploration rather than advancing within one; the
+exploration's budget and advance belong to Plan 489/500/512, and the gap is
+recorded as a finding for a successor.
+
+Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/lib.rs`, `crates/i2pr-daemon/src/config.rs`,
+`crates/i2pr-daemon/tests/netdb_exploration_target.rs` and
+`crates/i2pr-daemon/tests/netdb_exploration_target_boundary.rs`. The
+references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §13. The
+plan of record is
+`plans/implementation/network-participation/514-live-exploratory-request.md`;
+the closure record is `plans/closure/network-participation/514-status.md`.
+
 ## The NetDB retention policy (Plan 507)
 
 Plan 506 gave the router a **population** it could grow. Plan 507 gives that

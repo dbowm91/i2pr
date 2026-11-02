@@ -231,7 +231,7 @@ fn the_exploration_names_the_peer_and_the_transport_seam() {
 
     let dispatch =
         mesh.spine
-            .begin_exploration(mesh.alpha, search_key, routing_key, Some(reply_path()));
+            .begin_exploration(&mesh.store, search_key, routing_key, Some(reply_path()));
     let (peer, message) = sent(&dispatch);
 
     assert!(
@@ -466,7 +466,7 @@ fn an_exploration_without_a_reply_path_is_refused_and_counted() {
 
     let dispatch =
         mesh.spine
-            .begin_exploration(mesh.alpha, search_key, routing_key_for(&search_key), None);
+            .begin_exploration(&mesh.store, search_key, routing_key_for(&search_key), None);
 
     assert!(
         matches!(dispatch, DiscoveryDispatch::NeedsReplyPath { .. }),
@@ -494,7 +494,7 @@ fn the_explorations_answer_queues_the_named_peer_for_resolution() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -538,7 +538,7 @@ fn a_named_peer_is_offered_to_the_table_as_a_suggestion_not_as_evidence() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -585,7 +585,7 @@ fn a_reply_from_a_peer_the_exploration_never_asked_introduces_nothing() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -674,7 +674,7 @@ fn the_spine_is_bounded() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -732,7 +732,7 @@ fn an_exploration_is_finished_once_its_reply_arrives() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -769,7 +769,7 @@ fn a_request_the_wire_never_answered_is_abandoned_when_its_deadline_passes() {
     let mesh = mesh();
     let search_key = RouterHash::from_bytes([0x5e; 32]);
     let dispatch = mesh.spine.begin_exploration(
-        mesh.alpha,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
@@ -822,6 +822,15 @@ fn a_request_the_wire_never_answered_is_abandoned_when_its_deadline_passes() {
 /// A suggestion is never evidence. The table accepts a suggestion only from
 /// a peer it already holds with **signed** evidence, so a peer that is
 /// merely in the flat store cannot introduce new peers.
+///
+/// Plan 514 re-scoped this test. The exploratory request's target now comes
+/// from the routing table, so the peer the exploration asks is a peer the
+/// table holds — and the scenario this test used to drive, an exploration
+/// that asks a peer the table cannot vouch for, is no longer reachable
+/// through the public path. The rule is therefore asserted **where it
+/// lives**, on the table's own public entry point, and the new structural
+/// property is asserted beside it. The rule is also pinned by the table's
+/// own unit test and by Plan 513's structural guard.
 #[test]
 fn a_suggestion_from_a_peer_the_table_does_not_hold_is_refused() {
     let mesh = mesh();
@@ -829,29 +838,24 @@ fn a_suggestion_from_a_peer_the_table_does_not_hold_is_refused() {
     // Beta is in the flat store but **not** in the routing table: it is in
     // the store only, so the table holds no signed evidence for it.
     let dispatch = mesh.spine.begin_exploration(
-        mesh.beta,
+        &mesh.store,
         search_key,
         routing_key_for(&search_key),
         Some(reply_path()),
     );
-    let _ = sent(&dispatch);
+    let (peer, _) = sent(&dispatch);
+    assert_ne!(
+        peer, mesh.beta,
+        "the table holds no signed evidence for beta, so the table cannot name it"
+    );
 
-    let reply = DatabaseSearchReplyMessage {
-        key: *search_key.as_hash(),
-        peer_hashes: vec![*mesh.delta.as_hash()],
-        from: *mesh.beta.as_hash(),
-    };
-    let outcome = mesh
-        .spine
-        .ingest_search_reply(&reply)
-        .expect("the exploration reply is ingested");
-
-    assert_eq!(outcome.suggested, 1, "the reply named one peer");
+    // The rule itself, on the table's public entry point: a suggestion
+    // whose source the table cannot vouch for is refused.
     assert_eq!(
-        outcome.indexed, 0,
+        mesh.table.index_suggested(mesh.delta, &mesh.beta),
+        Some(i2pr_netdb::TableInsertOutcome::RejectedUnverifiedSource),
         "a suggestion from a peer the table cannot vouch for must be refused"
     );
-    assert_eq!(outcome.refused, 1, "the refusal must be counted");
     assert!(
         mesh.spine.pending_resolutions().is_empty(),
         "a refused suggestion must not be queued for resolution"

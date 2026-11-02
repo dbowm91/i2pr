@@ -376,6 +376,29 @@ const GATED_SELECTION_BODIES: &[(&str, &str)] = &[
         "start_with_preferred",
     ),
     ("crates/i2pr-netdb/src/lookup_engine.rs", "advance_active"),
+    // Plan 514: the two live lookup paths Plan 513 added, and the
+    // exploratory request's target selection Plan 514 added. The
+    // decision -- the lookup target is **not** version-gated -- was
+    // recorded before these paths existed, so it was unenforced on
+    // exactly the paths added since. A gated selection in any of them
+    // would change which floodfills the router can ask, silently, with
+    // every guard green.
+    (
+        "crates/i2pr-daemon/src/netdb_seam.rs",
+        "begin_routerinfo_lookup",
+    ),
+    (
+        "crates/i2pr-daemon/src/netdb_seam.rs",
+        "begin_exploratory_lookup",
+    ),
+    (
+        "crates/i2pr-netdb/src/lookup_engine.rs",
+        "start_with_candidates",
+    ),
+    (
+        "crates/i2pr-daemon/src/netdb_participation.rs",
+        "closest_floodfill",
+    ),
 ];
 
 /// The version decisions the daemon's lookup body must not take.
@@ -394,6 +417,7 @@ const TREE_FILES: &[&str] = &[
     "crates/i2pr-netdb/src/lookup_engine.rs",
     "crates/i2pr-daemon/src/destination_tunnels.rs",
     "crates/i2pr-daemon/src/netdb_seam.rs",
+    "crates/i2pr-daemon/src/netdb_participation.rs",
 ];
 
 /// The real tree, read once.
@@ -655,6 +679,44 @@ fn the_version_decision_rule_fires_when_the_lookup_asks_for_one() {
         "        let _ = dsm_target_eligibility;\n        let candidates =\n            select_floodfill_candidates(",
     );
     assert!(rule_the_lookup_body_takes_no_version_decision(&mutated).is_some());
+}
+
+/// Plan 514's inverted probe: the exploratory request's target selection
+/// must be covered by the decision too.
+///
+/// The probe replaces the routing table's answer with the version-gated
+/// selection inside the accessor Plan 514 added. The rule must report it,
+/// or the decision is unenforced on the path Plan 514 built.
+#[test]
+fn the_ungated_rule_fires_when_the_exploratory_target_is_version_gated() {
+    let tree = landed();
+    let mutated = mutate(
+        &tree,
+        "crates/i2pr-daemon/src/netdb_participation.rs",
+        "match self.candidates(store, routing_key, excluded) {",
+        "match select_version_gated_floodfills(store, routing_key, excluded) {",
+    );
+    assert!(
+        rule_the_lookup_path_avoids_the_gated_selection(&mutated).is_some(),
+        "a version-gated exploratory target must be reported"
+    );
+}
+
+/// Plan 514's second inverted probe: the RouterInfo-kind resolution must be
+/// covered by the decision too.
+#[test]
+fn the_ungated_rule_fires_when_the_routerinfo_resolution_is_version_gated() {
+    let tree = landed();
+    let mutated = mutate(
+        &tree,
+        "crates/i2pr-daemon/src/netdb_seam.rs",
+        ".start_with_preferred(store, lookup_id, routing_key, preferred)",
+        ".select_version_gated_floodfills(store, lookup_id, routing_key, preferred)",
+    );
+    assert!(
+        rule_the_lookup_path_avoids_the_gated_selection(&mutated).is_some(),
+        "a version-gated RouterInfo-kind resolution must be reported"
+    );
 }
 
 /// Rule 2's inverted probe: an obligation row that names a lookup duty must

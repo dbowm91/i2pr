@@ -786,3 +786,84 @@ are **not installed** on this host — the local installation's jars carry no
 exploration or of the RouterInfo request path to record. The **primary**
 derivation is i2pd's, whose checkout is at the exact pin, and the tree's own
 authority for the RouterInfo kind is Plan 102's closed amendment.
+
+## 13. Which floodfill an exploratory request asks
+
+### 13.1 The question
+
+An exploratory lookup asks a floodfill for the peers closest to a **random**
+search key. The random key changes every time, so the answer the router wants
+changes every time too — and the *choice of floodfill* is part of the
+question, not a detail of it.
+
+Before Plan 514, `i2pr` answered that question with the flat store's
+**first** floodfill advertiser. The store is a `BTreeMap` keyed by the peer's
+hash, so that is the **lowest-hash** floodfill, and the answer did not depend
+on the search key at all: every exploration asked the same peer.
+
+### 13.2 i2pd 2.61.0 — the closest floodfill
+
+At the exact pin (`635b013a612ff47278ef02acf8580a28e10e26c5`):
+
+- `libi2pd/NetDbRequests.cpp:472` — the exploration draws a **fresh random
+  hash** per destination: `RAND_bytes (randomHash, 32);`
+- `libi2pd/NetDbRequests.cpp:479` — and asks the **closest** floodfill for
+  that hash: `auto floodfill = netdb.GetClosestFloodfill (randomHash,
+  dest->GetExcludedPeers ());`
+- `libi2pd/NetDb.cpp:1308` — `GetClosestFloodfills` is the underlying
+  question, over the floodfill bucket set.
+- `libi2pd/NetDb.cpp:1312` — the target's **routing key** is what the search
+  runs on: `IdentHash destKey = CreateRoutingKey (destination);`
+- `libi2pd/NetDb.cpp:1316` — and the bucket set's closest-first search runs
+  on it: `v = m_Floodfills.FindClosest (destKey, num, ...)`.
+
+So the reference's rule is: **derive the random search key's routing key, and
+ask the floodfill whose own position is closest to it.** A different random key
+gives a different closest floodfill, and the reference excludes the peers it
+has already asked (`dest->GetExcludedPeers()`).
+
+### 13.3 The reference ends the request rather than asking a substitute
+
+`libi2pd/NetDbRequests.cpp:502-503` — when the bucket set names no
+floodfill, the reference **completes the request with nothing**:
+
+```cpp
+else
+    RequestComplete (randomHash, nullptr);
+```
+
+It does **not** fall back to an arbitrary peer it happens to know. `i2pr`
+behaves the same way: a table that names no floodfill ends the request, the
+refusal is counted under its own reason, and the request is never redirected.
+
+### 13.4 The divergence the tree records, and the one it does not
+
+**Not a divergence — the selection.** `i2pr` now derives the search key's
+routing key with the same public `daily_routing_key` the reference's
+`CreateRoutingKey` corresponds to, and asks the floodfill whose own daily
+routing key is the smallest XOR distance from it. The tree's routing table
+already ranked its peers that way; the request simply consults it now.
+
+**A divergence — the exclusion.** The reference never asks a peer it has
+already asked (`dest->GetExcludedPeers()`). `i2pr` does **not** implement
+that: the exploratory lookup is given a single candidate
+(`crates/i2pr-daemon/src/netdb_seam.rs`), and the exploration asks one peer
+per exploration rather than advancing within one. This is recorded as a
+finding for a successor, not as a claim of conformance.
+
+### 13.5 Provenance caveat, stated plainly
+
+The same caveat as §12.6, and for the same reason: the pinned Java reference
+is **2.13.0** (`9134f808337b401e8e53c73734c81fab04280c9d`), the Java
+**router** classes are **not installed** on this host, and the local jars carry
+no `router/netdb` package at all. There is therefore **no** Java reading of
+how Java chooses the floodfill for an exploratory request, and none is
+claimed. The **primary** derivation is i2pd's, at the exact pin.
+
+The pinned Java reference is **2.13.0**
+(`9134f808337b401e8e53c73734c81fab04280c9d`). The Java **router** classes
+are **not installed** on this host — the local installation's jars carry no
+`router/netdb` package at all — so there is **no** Java reading of the
+exploration or of the RouterInfo request path to record. The **primary**
+derivation is i2pd's, whose checkout is at the exact pin, and the tree's own
+authority for the RouterInfo kind is Plan 102's closed amendment.
