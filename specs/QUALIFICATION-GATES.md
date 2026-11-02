@@ -881,3 +881,79 @@ are **not installed** on this host — the local installation's jars carry no
 exploration or of the RouterInfo request path to record. The **primary**
 derivation is i2pd's, whose checkout is at the exact pin, and the tree's own
 authority for the RouterInfo kind is Plan 102's closed amendment.
+
+## 14. How often the router republishes its own RouterInfo
+
+### 14.1 The question
+
+A `RouterInfo` is a record with a lifetime. The network keeps it for a
+while and then it stops being served, and a router whose record has aged
+out cannot be found by a peer that wants to reach it — however long the
+router itself has been running.
+
+So the question is not *whether* the router publishes its record, but *how
+often* it publishes it again.
+
+### 14.2 i2pd 2.61.0 — the publication timer
+
+At the exact pin (`635b013a612ff47278ef02acf8580a28e10e26c5`):
+
+- `libi2pd/RouterContext.cpp:1456` — `SchedulePublish()`; the timer expires
+  after `ROUTER_INFO_PUBLISH_INTERVAL + rng % ROUTER_INFO_PUBLISH_INTERVAL_VARIANCE`
+  seconds (`:1461-1462`).
+- `libi2pd/RouterContext.h:34` — `ROUTER_INFO_PUBLISH_INTERVAL = 39 * 60`
+  seconds; `:36` — `ROUTER_INFO_PUBLISH_INTERVAL_VARIANCE = 105` seconds.
+- `libi2pd/RouterContext.cpp:1470` — `HandlePublishTimer()`; it clears the
+  per-cycle exclusion set (`:1477`), updates the record's timestamp, and
+  publishes.
+- `libi2pd/RouterContext.cpp:1492` — `Publish()`; it asks the **closest**
+  floodfill that has not already been asked this cycle
+  (`:1502`, derived by `libi2pd/NetDb.cpp:1296`), sends a `DatabaseStore`
+  with a fresh reply token — directly when the peer is connected or
+  reachable, otherwise through an exploratory tunnel — and adds the peer to
+  the exclusion set.
+- `libi2pd/RouterContext.cpp:1547` — `SchedulePublishResend()`;
+  `libi2pd/RouterContext.h:37` — `ROUTER_INFO_CONFIRMATION_TIMEOUT = 1600`
+  milliseconds; `:38` —
+  `ROUTER_INFO_MAX_PUBLISH_EXCLUDED_FLOODFILLS = 15`.
+
+### 14.3 What this tree does
+
+`i2pr` published its own record **once**, from the service-tunnel
+provisioning path, and never again. Plan 515 changes that:
+
+- a **runtime-neutral schedule** owns the period, the due test and the
+  counted outcomes. It takes `now_ms` from its caller and never reads a
+  clock, which is what makes the cadence provable without a wall clock, a
+  socket, or a sleep;
+- a **router-level refresh** republishes the record on that period. It is
+  the router's own, so it does not depend on a service tunnel being
+  provisioned;
+- the refresh and the one-shot publication select through the **same
+  version-gated function** — the coordinator over its own store, where it
+  leaves a DSM receipt, and the refresh over the router-wide bootstrap's
+  store — so Plan 503's API-version floor holds for every publication. They
+  share **one** store construction and **one** delivery path;
+- the fan-out is bounded at the closest three floodfills, and every outcome
+  is counted by reason.
+
+### 14.4 The divergence this tree records
+
+The reference's resend burst is **not** adopted. The reference asks **one**
+floodfill and then, every `1600` milliseconds, the next closest ones — up to
+fifteen. This tree asks the closest three in **one** pass, once per period.
+One pass is not weaker in reach — it asks three peers immediately where the
+reference asks one and then waits — but it does not re-ask on failure, and
+it asks three where the reference may reach fifteen. The reference's
+`105` seconds of variance is also not adopted: a deterministic period is
+testable, and the variance exists to de-synchronise a floodfill with the
+network, which a router that is not a floodfill has no need for.
+
+### 14.5 Provenance caveat, stated plainly
+
+The pinned i2pd checkout is at the exact pin and the derivation above is
+from that checkout. The pinned Java reference is **2.13.0**
+(`9134f808337b401e8e53c73734c81fab04280c9d`); the Java **router** classes are
+**not installed** on this host — the local installation's jars carry no
+`router/netdb` package at all — so there is **no** Java reading of the
+publication timer to record. The **primary** derivation is i2pd's.

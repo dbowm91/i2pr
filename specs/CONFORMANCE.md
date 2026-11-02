@@ -2512,6 +2512,11 @@ RouterInfo are unchanged; the support inventory's advertised count stays
 rewritten either: the correction to Plan 513's claim lives here and in Plan
 513's registry row.
 
+**Plan 515 adds one surface** — `daemon.router-info-publication` — so the
+inventory holds **107 surfaces, 102 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 515 refreshes the
+router's own record, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -2530,6 +2535,48 @@ references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §13. The
 plan of record is
 `plans/implementation/network-participation/514-live-exploratory-request.md`;
 the closure record is `plans/closure/network-participation/514-status.md`.
+
+## The router republishes its own RouterInfo (Plan 515)
+
+Until Plan 515 the router published its own RouterInfo to the network
+**once**, from the service-tunnel provisioning path
+(`crates/i2pr-daemon/src/service_product.rs:7932`, called at `:8122`), and
+never again. The local RouterInfo was read in exactly two places in the
+whole tree: that publication, and the SSU2 service installing the record for
+handshakes.
+
+**Two consequences, both core-router defects.** A record that is never
+refreshed ages out of the network's view, so a peer that wanted to reach
+`i2pr` could not find it however long the router had been running. And
+because the publication was a side effect of building service tunnels, a
+router with **no** service tunnels never published at all.
+
+The reference republishes on a timer — every `ROUTER_INFO_PUBLISH_INTERVAL`
+seconds (`39 * 60`, `libi2pd/RouterContext.h:34`), plus up to `105` seconds
+of variance (`:36`) — to the **closest** floodfill it has not already asked
+that cycle (`libi2pd/RouterContext.cpp:1502`), with a `1600` millisecond
+resend burst (`:37`) up to fifteen floodfills (`:38`).
+
+**What this tree now does.** A runtime-neutral schedule owns the period, the
+due test and the counted outcomes; it takes `now_ms` from its caller and
+never reads a clock. A router-level refresh — driven by the router's own
+tick, not by the service product — republishes the record on that period.
+The refresh and the service product's one-shot publication select through
+the **same version-gated function** — the coordinator over its own store,
+where it leaves a DSM receipt, and the refresh over the router-wide
+bootstrap's store — so Plan 503's API-version floor holds for every
+publication. They share **one** store construction and **one** delivery
+path, so they cannot drift apart. The fan-out stays bounded at the closest three
+floodfills, and every outcome — published, no local record, no eligible
+target, delivery refused, cancelled — is counted by reason.
+
+**What is not claimed.** The reference's resend burst is **not** adopted: one
+pass reaches several peers immediately where the reference reaches one and
+then waits, and the divergence — three targets per period against the
+reference's fifteen — is recorded as a finding, not as parity. The period is
+a constant, not a configuration key. Nothing here is advertised:
+`router.version` stays `0.9.62`, `caps` and the published RouterInfo are
+unchanged, and the inventory's advertised count stays zero.
 
 ## The NetDB retention policy (Plan 507)
 

@@ -2362,6 +2362,23 @@ evidence = [
 ]
 advertised = false
 [[surface]]
+id = "daemon.router-info-publication"
+protocol = "reseed-netdb"
+structure = "the-router-republishes-its-own-routerinfo"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 515 makes the router's **own** RouterInfo a refreshed record rather than a one-shot announcement. Until this plan the router published its own RouterInfo **once**, from the service-tunnel provisioning path (`crates/i2pr-daemon/src/service_product.rs:7932`, called at `:8122` inside `provision_all_service_router_material`), and never again; the local RouterInfo was read in exactly two places in the whole tree, that publication and the SSU2 service installing it for handshakes. A record that is never refreshed ages out of the network's view, so no peer could find the router however long it ran, and a router with **no** service tunnels never published at all -- the publication was a side effect of building service tunnels rather than a router behaviour. The reference republishes on a timer: every `ROUTER_INFO_PUBLISH_INTERVAL` seconds -- `39 * 60` (`libi2pd/RouterContext.h:34`) -- plus up to `105` seconds of variance (`libi2pd/RouterContext.h:36`, applied at `libi2pd/RouterContext.cpp:1461`), to the **closest** floodfill it has not already asked that cycle (`libi2pd/RouterContext.cpp:1502`, derived by `libi2pd/NetDb.cpp:1296`), with a `1600` millisecond resend burst (`libi2pd/RouterContext.h:37`, `libi2pd/RouterContext.cpp:1547`) up to `15` floodfills (`libi2pd/RouterContext.h:38`). This surface adds a **runtime-neutral** schedule -- a period, a due test and the counted outcomes, with no clock of its own -- and a **router-level** refresh driven by the router's own tick, so the publication no longer depends on a service tunnel being provisioned. The refresh and the service product's one-shot publication select through the **same version-gated function** (`select_version_gated_floodfills`): the coordinator applies it over its own store and leaves a DSM receipt, the refresh applies it over the router-wide bootstrap's store, and Plan 503's API-version floor therefore holds for every publication. They share **one** store construction and **one** delivery path; the fan-out stays bounded at the closest three floodfills, and every outcome -- published, no local record, no eligible target, delivery refused, cancelled -- is counted by reason. This surface does **not** adopt the reference's resend burst: one pass reaches several peers immediately where the reference reaches one and then waits, and the divergence -- three targets per period against the reference's fifteen -- is recorded as a finding. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-daemon/src/router_info_publication.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/destination_tunnels.rs",
+    "crates/i2pr-daemon/tests/router_info_publication.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/515-router-info-publication-refresh.md",
+]
+[[surface]]
 id = "daemon.netdb-exploratory-target"
 protocol = "reseed-netdb"
 structure = "table-directed-exploratory-target-and-the-operator-switch"
