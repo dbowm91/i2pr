@@ -2513,11 +2513,13 @@ rewritten either: the correction to Plan 513's claim lives here and in Plan
 513's registry row.
 
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
-externally on Plan 493's authorized two-host topology. The reference's **peer
-exclusion** — it never asks a peer it has already asked
-(`dest->GetExcludedPeers()`) — is **not** implemented, and the exploration
-still asks **one** peer per exploration rather than advancing within one; the
-exploration's budget and advance belong to Plan 489/500/512, and the gap is
+externally on Plan 493's authorized two-host topology. The **rate** is
+still below the reference's: the reference asks `1..9` exploratory requests
+per `27..55` seconds, and `i2pr` asks **one** per participation tick — `60`
+seconds by default. The structure matches — one exploratory request, one
+random key, one closest floodfill, and the reference's exploratory request
+does not advance to the next closest either
+(`libi2pd/NetDbRequests.cpp:261`) — but the rate does not, and it is
 recorded as a finding for a successor.
 
 Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,

@@ -820,7 +820,7 @@ At the exact pin (`635b013a612ff47278ef02acf8580a28e10e26c5`):
 So the reference's rule is: **derive the random search key's routing key, and
 ask the floodfill whose own position is closest to it.** A different random key
 gives a different closest floodfill, and the reference excludes the peers it
-has already asked (`dest->GetExcludedPeers()`).
+has already asked — within that one request (`dest->GetExcludedPeers()`).
 
 ### 13.3 The reference ends the request rather than asking a substitute
 
@@ -844,12 +844,26 @@ routing key with the same public `daily_routing_key` the reference's
 routing key is the smallest XOR distance from it. The tree's routing table
 already ranked its peers that way; the request simply consults it now.
 
-**A divergence — the exclusion.** The reference never asks a peer it has
-already asked (`dest->GetExcludedPeers()`). `i2pr` does **not** implement
-that: the exploratory lookup is given a single candidate
-(`crates/i2pr-daemon/src/netdb_seam.rs`), and the exploration asks one peer
-per exploration rather than advancing within one. This is recorded as a
-finding for a successor, not as a claim of conformance.
+**Not a divergence — one peer per exploratory request.** The reference's
+excluded set is **per request** (`libi2pd/NetDbRequests.h:50`, `:76`): it
+holds the router itself when it is a floodfill
+(`libi2pd/NetDbRequests.cpp:29`), the routers that answered (`:48`) and the
+floodfill that was asked (`:59`), and it is cleared on reset (`:73`). The
+advance to the **next closest** floodfill is gated on a destination that is
+**not** exploratory (`libi2pd/NetDbRequests.cpp:261`:
+`if (!dest->IsExploratory () && count < MAX_NUM_REQUEST_ATTEMPTS)`). So the
+reference's **exploratory** request asks exactly **one** floodfill — the
+closest for its random key — and does not advance. `i2pr`, after Plan 514,
+does exactly that too.
+
+**A divergence — the rate.** The reference asks `1..9` exploratory requests
+per `27..55` seconds (`libi2pd/NetDbRequests.cpp:521-531`:
+`numRouters = 800/numRouters`, clamped to `9`, with
+`EXPLORATORY_REQUEST_INTERVAL = 55` at `libi2pd/NetDbRequests.h:32`).
+`i2pr` asks **one** per participation tick, and the tick is
+`netdb.participation_maintenance_period_ms` — `60` seconds by default. The
+structure is the same; the rate is not. This is recorded as a finding for a
+successor, not as a claim of conformance.
 
 ### 13.5 Provenance caveat, stated plainly
 
