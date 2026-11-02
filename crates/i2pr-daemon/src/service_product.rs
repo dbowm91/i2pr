@@ -61,7 +61,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use i2pr_crypto::RouterIdentityBundle;
 use i2pr_netdb::{
     DestinationHash, LeaseSet2ValidationContext, LookupPolicy, RouterHash, RouterInfoStoreConfig,
-    ValidatedLeaseSet2,
+    ValidatedLeaseSet2, ValidatedRouterInfo,
 };
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
@@ -6096,7 +6096,7 @@ fn wall_ms() -> u64 {
         .unwrap_or(1_700_000_000_000)
 }
 
-fn wall_secs() -> u64 {
+pub(crate) fn wall_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|v| v.as_secs())
@@ -7049,7 +7049,7 @@ async fn submit_destination_replacement(
 /// authority names an explicit floodfill hash and never derives from
 /// a gateway or path role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DestinationDialPurpose {
+pub(crate) enum DestinationDialPurpose {
     RouterBootstrapFirstHop,
     OutboundTunnelFirstHop,
     CreatorRouterInfoPublication,
@@ -7085,16 +7085,6 @@ fn destination_build_dial_authority(
     }
 }
 
-/// Names an explicit floodfill for creator-RouterInfo publication.
-/// The hash is caller-supplied (nearest-floodfill selection); it is
-/// never derived from a gateway, path role, or tunnel identifier.
-fn creator_router_info_publication_authority(floodfill: Hash) -> DestinationDialAuthority {
-    DestinationDialAuthority {
-        router_hash: floodfill,
-        purpose: DestinationDialPurpose::CreatorRouterInfoPublication,
-    }
-}
-
 /// Names an explicit floodfill for direct service-LeaseSet
 /// publication. Same explicit-selection rule as the creator-RI
 /// purpose: never derived from a gateway or path role.
@@ -7108,9 +7098,8 @@ fn service_lease_set_publication_authority(floodfill: Hash) -> DestinationDialAu
 #[cfg(test)]
 mod plan482_destination_dial_authority_tests {
     use super::{
-        DestinationDialPurpose, creator_router_info_publication_authority,
-        destination_build_dial_authority, dial_destination_peer,
-        service_lease_set_publication_authority,
+        DestinationDialAuthority, DestinationDialPurpose, destination_build_dial_authority,
+        dial_destination_peer, service_lease_set_publication_authority,
     };
     use crate::exploratory_build::BuildDirection;
     use i2pr_proto::Hash;
@@ -7195,7 +7184,10 @@ mod plan482_destination_dial_authority_tests {
     #[test]
     fn creator_publication_names_an_explicit_floodfill_purpose() {
         let floodfill = hash(0xF0);
-        let authority = creator_router_info_publication_authority(floodfill);
+        let authority = DestinationDialAuthority {
+            router_hash: floodfill,
+            purpose: DestinationDialPurpose::CreatorRouterInfoPublication,
+        };
         assert_eq!(authority.router_hash, floodfill);
         assert_eq!(
             authority.purpose,
@@ -7423,6 +7415,35 @@ async fn ensure_selected_peer_session(
             "selected first hop is absent from the validated RouterInfo store".to_owned(),
         )
     })?;
+    ensure_peer_session_for_record(
+        &record,
+        ssu2_handle,
+        router_hash,
+        purpose,
+        dial_timeout,
+        qualification_profile,
+        cancellation,
+    )
+    .await
+}
+
+/// Plan 515: dials a named peer through **its own** validated SSU2
+/// address, so a publication can reach a peer the router has never
+/// dialled.
+///
+/// The peer is named explicitly by the caller. It is never derived from a
+/// gateway, a path role, or a tunnel identifier, and the purpose records
+/// why the dial happened.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ensure_peer_session_for_record(
+    record: &ValidatedRouterInfo,
+    ssu2_handle: &Ssu2DaemonHandle,
+    router_hash: Hash,
+    purpose: DestinationDialPurpose,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    cancellation: &CancellationToken,
+) -> Result<(), ServiceProductError> {
     let target_material = record
         .router_info()
         .addresses()
@@ -7858,12 +7879,6 @@ mod inbound_retry_tests {
     }
 }
 
-/// Floodfills receiving one creator RouterInfo publication per
-/// provisioning pass. Mirrors the reference closest-floodfill lookup
-/// width so any standard lookup walk for our key intersects the
-/// publication set.
-const CREATOR_RI_PUBLICATION_FLOODFILLS: usize = 3;
-
 /// How many nearest floodfills receive a destination's LeaseSet2.
 ///
 /// A stock peer resolves a LeaseSet2 by asking the floodfills it
@@ -7891,32 +7906,6 @@ fn bounded_publication_floodfills(
 /// RouterInfo. Pure constructor for deterministic coverage; the bytes
 /// are the same public record future handshakes emit, never key
 /// material.
-fn creator_router_info_store(
-    local_hash: Hash,
-    router_info: Vec<u8>,
-) -> Result<i2pr_proto::DatabaseStoreMessage, ServiceProductError> {
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut encoder, &router_info).map_err(|_| {
-        ServiceProductError::Provisioning("creator RouterInfo compression failed".to_owned())
-    })?;
-    let compressed = encoder.finish().map_err(|_| {
-        ServiceProductError::Provisioning("creator RouterInfo compression failed".to_owned())
-    })?;
-    let payload =
-        i2pr_proto::DeferredPayload::new(compressed, MAX_I2NP_PAYLOAD_SIZE).map_err(|_| {
-            ServiceProductError::Provisioning(
-                "creator RouterInfo exceeds the bounded store payload".to_owned(),
-            )
-        })?;
-    Ok(i2pr_proto::DatabaseStoreMessage {
-        key: local_hash,
-        reply_token: 0,
-        reply_tunnel_id: None,
-        reply_gateway: None,
-        data: i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload),
-    })
-}
-
 /// Publishes our creator RouterInfo to the nearest known floodfills
 /// before any build is submitted. Short-build endpoints reply
 /// directly to the creator (Plan 114 direct-to-creator reply
@@ -7950,15 +7939,31 @@ async fn publish_creator_router_info(
     // LeaseSet2 publication. A floodfill that publishes no version, an
     // uncomparable version, or a version below the floor is never a target;
     // every refusal is counted by reason and leaves a receipt.
-    let floodfills = {
+    //
+    // Plan 515: the selection, the store and the delivery are now the
+    // **shared** publication path, so the one-shot publication and the
+    // router-level refresh cannot disagree about the rule, the envelope
+    // or the counting.
+    let (floodfills, records) = {
         let guard = destination_tunnels.lock().await;
         let selection = guard.version_gated_publication_floodfills(&our_router_hash);
-        selection
+        let floodfills = selection
             .targets()
             .iter()
-            .take(CREATOR_RI_PUBLICATION_FLOODFILLS)
-            .map(|hash| Hash::from_bytes(*hash.as_bytes()))
-            .collect::<Vec<_>>()
+            .copied()
+            .take(crate::router_info_publication::PUBLICATION_FLOODFILLS)
+            .collect::<Vec<_>>();
+        let records = floodfills
+            .iter()
+            .filter_map(|hash| {
+                guard
+                    .store()
+                    .get(hash)
+                    .cloned()
+                    .map(|record| (*hash, record))
+            })
+            .collect::<Vec<_>>();
+        (floodfills, records)
     };
     if floodfills.is_empty() {
         tracing::debug!(
@@ -7967,7 +7972,9 @@ async fn publish_creator_router_info(
         );
         return;
     }
-    let Ok(store) = creator_router_info_store(local_hash, router_info) else {
+    let Ok(store) =
+        crate::router_info_publication::router_info_store_message(local_hash, router_info)
+    else {
         tracing::debug!(
             transition = "creator_ri_publication_skipped",
             "creator RouterInfo store composition failed",
@@ -7984,53 +7991,24 @@ async fn publish_creator_router_info(
             return;
         }
     };
-    let mut stores_accepted = 0usize;
-    for floodfill in &floodfills {
-        if cancellation.is_cancelled() {
-            break;
-        }
-        let authority = creator_router_info_publication_authority(*floodfill);
-        if ensure_selected_peer_session(
-            destination_tunnels,
-            ssu2_handle,
-            authority,
-            dial_timeout,
-            qualification_profile,
-            cancellation,
-        )
-        .await
-        .is_err()
-        {
-            continue;
-        }
-        let Ok(message_id) = fresh_message_id(&mut rng, &[]) else {
-            continue;
-        };
-        let wire = match crate::outbound_lookup::encode_store_envelope_short(
-            &store,
-            message_id,
-            // Same 60-second lifetime policy as before, in the
-            // seconds the direct short envelope carries.
-            wall_secs().saturating_add(60) as u32,
-        ) {
-            Ok(wire) => wire,
-            Err(_) => continue,
-        };
-        let request = match crate::router_i2np::RouterDeliveryRequest::new(
-            i2pr_transport::PeerId::from_hash(*floodfill),
-            wire,
-            dial_timeout,
-        ) {
-            Ok(request) => request,
-            Err(_) => continue,
-        };
-        if matches!(
-            ssu2_handle.delivery().deliver(request, cancellation),
-            crate::router_i2np::RouterDeliveryOutcome::Accepted
-        ) {
-            stores_accepted = stores_accepted.saturating_add(1);
-        }
-    }
+    let outcome = crate::router_info_publication::publish_router_info(
+        &floodfills,
+        &store,
+        &records,
+        ssu2_handle,
+        dial_timeout,
+        qualification_profile,
+        &mut rng,
+        cancellation,
+    )
+    .await;
+    let stores_accepted = match outcome {
+        crate::router_info_publication::RouterInfoPublicationOutcome::Published {
+            accepted,
+            ..
+        } => accepted,
+        _ => 0,
+    };
     tracing::info!(
         floodfills_targeted = floodfills.len(),
         stores_accepted,
@@ -8073,7 +8051,7 @@ mod ls2_publication_fanout_tests {
 
 #[cfg(test)]
 mod creator_router_info_publication_tests {
-    use super::creator_router_info_store;
+    use crate::router_info_publication::router_info_store_message;
     use i2pr_proto::Hash;
 
     #[test]
@@ -8081,7 +8059,7 @@ mod creator_router_info_publication_tests {
         let local = Hash::from_bytes([0x77; 32]);
         let router_info = vec![0xA5u8; 128];
         let store =
-            creator_router_info_store(local, router_info.clone()).expect("creator store composes");
+            router_info_store_message(local, router_info.clone()).expect("creator store composes");
         assert_eq!(store.key, local);
         assert_eq!(store.reply_token, 0);
         assert!(store.reply_tunnel_id.is_none());

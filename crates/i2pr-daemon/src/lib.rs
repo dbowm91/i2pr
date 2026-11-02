@@ -46,6 +46,7 @@ pub mod outproxy_route;
 pub mod peer_reconcile;
 pub mod peer_test;
 pub mod router_i2np;
+pub mod router_info_publication;
 pub mod sam;
 pub mod service_delivery;
 pub mod service_els2;
@@ -95,7 +96,7 @@ use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
 use rand_chacha::ChaCha8Rng;
-use rand_core::TryRngCore;
+use rand_core::{SeedableRng, TryRngCore};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -4104,6 +4105,33 @@ fn register_ssu2_service(
                     // introducer (Bob) role owner.
                     let mut relay_tick = tokio::time::interval(Duration::from_millis(100));
                     relay_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Plan 515: the router's own RouterInfo is republished
+                    // on a period, so the record does not age out of the
+                    // network's view and a peer can keep finding the
+                    // router. The refresh is the **router's own**: it does
+                    // not depend on a service tunnel being provisioned.
+                    let publication_dial_timeout =
+                        crate::service_product::ServiceProductOptions::default().dial_timeout;
+                    let mut publication_tick = tokio::time::interval(Duration::from_millis(
+                        crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+                    ));
+                    publication_tick
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut publication_owner =
+                        i2pr_netdb::router_hash(bundle.identity()).ok().map(|hash| {
+                            crate::router_info_publication::RouterInfoPublicationOwner::new(
+                                hash,
+                                crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+                            )
+                        });
+                    let mut publication_rng = match ChaCha8Rng::try_from_os_rng() {
+                        Ok(rng) => rng,
+                        // The publication's message id is the only
+                        // randomness it needs, and a router that cannot
+                        // reach the operating system's entropy still
+                        // publishes; it simply never reuses an id.
+                        Err(_) => ChaCha8Rng::seed_from_u64(0),
+                    };
                     let pump_started = tokio::time::Instant::now();
                     let mut reply_token_probe_sent = HashSet::new();
                     let mut pending_reply_token_probes = HashMap::new();
@@ -4981,6 +5009,37 @@ fn register_ssu2_service(
                                             i2pr_core::ServiceFailureCategory::Internal,
                                             detail,
                                         ),
+                                    );
+                                }
+                            }
+
+                            _ = publication_tick.tick() => {
+                                // Plan 515: one republication, when the
+                                // schedule says it is due. Every outcome is
+                                // counted by reason, and a refusal never
+                                // stops the router.
+                                let now_ms = wall_clock_ms();
+                                if let Some(publication_owner) = publication_owner.as_mut()
+                                    && publication_owner.is_due(now_ms)
+                                {
+                                    let local_record =
+                                        owner.handle().service().installed_local_router_info();
+                                    let outcome = crate::router_info_publication::refresh_router_info(
+                                        publication_owner,
+                                        owner.handle(),
+                                        live_bootstrap.as_ref(),
+                                        local_record,
+                                        publication_dial_timeout,
+                                        ssu2_config.qualification_profile,
+                                        &mut publication_rng,
+                                        &cancellation,
+                                        now_ms,
+                                    )
+                                    .await;
+                                    tracing::info!(
+                                        transition = "router_info_publication",
+                                        outcome = ?outcome,
+                                        "router RouterInfo publication",
                                     );
                                 }
                             }
