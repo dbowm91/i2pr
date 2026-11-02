@@ -137,11 +137,31 @@ the reference's "direct reply" form, and the decoder reads it back as
 `Some(0)` (`crates/i2pr-proto/src/i2np/message.rs:602-606`). No codec change
 is required.
 
-**The live inbound path drops the answer.** The exploratory driver consumes
-the inbound stream and matches only `ShortTunnelBuild`
-(`crates/i2pr-daemon/src/exploratory_driver.rs:1165-1173`); a `DeliveryStatus`
-falls through the `continue`. The dispatcher already classifies it — the
-answer reaches the daemon, and nothing routes it to the correlator.
+**The inbound owner already handles the answer — for another transport.**
+The SSU2 service's own loop is the **inbound owner**
+(`crates/i2pr-daemon/src/lib.rs:4606-4619`): it reads the inbound stream,
+decodes it, and hands the outcome to the dispatchers. It already recognises
+a `DeliveryStatus` — but only for the controlled NTCP2 probe path
+(`crates/i2pr-daemon/src/lib.rs:4708-4729`), and only against that path's
+own pending-token table. The publication's answer arrives over **SSU2**,
+and no path routes it anywhere.
+
+**The correlator is not in the production composition.**
+`NetDbTunnelCoordinator::new` — which owns the `PublicationCoordinator` —
+is called only from the test module
+(`crates/i2pr-daemon/src/netdb_tunnels.rs:1003`, `:1038`, `:1067`,
+`:1125`). The `PublicationCoordinator` itself is a bounded, runtime-neutral
+correlator that the production composition never constructs, so Plan 516 has
+to **wire it in** rather than merely repair it.
+
+**The key is the identity's, not the signed bytes'.**
+`ValidatedRouterInfo::from_router_info` derives the key from the **router
+identity** (`crates/i2pr-netdb/src/router_info.rs:247`), so the installed
+record and the bootstrap's local snapshot share one RouterHash while
+differing in their bytes. The publication must carry the **installed**
+bytes — the record that names the router's address — and the correlator
+must be given that record explicitly, so the key, the gateway and the
+payload are provably one record.
 
 **The router's own publication builds its own store.**
 `crates/i2pr-daemon/src/router_info_publication.rs`, `router_info_store_message`,
@@ -203,7 +223,7 @@ hard-codes `reply_token: 0`, `reply_tunnel_id: None`, `reply_gateway: None`.
 
 | File | Change |
 | --- | --- |
-| `crates/i2pr-netdb/src/publication.rs` | the reply route becomes an explicit input; `begin_attempt` puts the minted token on the wire in the route's form; a confirmed attempt is distinguishable from a delivered one |
+| `crates/i2pr-netdb/src/publication.rs` | the correlator publishes an explicitly registered record; `begin_attempt` puts the minted token on the wire in the reference's direct-reply form; a confirmed attempt is distinguishable from a delivered one |
 | `crates/i2pr-proto/src/i2np/netdb.rs` | the reply-route form's documentation, if the codec's own docs need it (no wire change) |
 | `crates/i2pr-daemon/src/router_info_publication.rs` | the refresh publishes through the tracked path, so the confirmation reaches the outcome; the outcome enum gains `Confirmed` |
 | `crates/i2pr-daemon/src/netdb_tunnels.rs` | the coordinator's publication path passes the reply route; the inbound join lands in the daemon's inbound owner |
@@ -247,6 +267,28 @@ hard-codes `reply_token: 0`, `reply_tunnel_id: None`, `reply_gateway: None`.
   correlator never retains an attempt forever.
 - **D7 — The resend burst is not adopted here.** Plan 515's finding **F1**
   stays open and becomes the successor's subject.
+- **D8 — The correlator publishes an explicitly registered record.** The
+  coordinator's snapshot becomes a **record** — the local RouterHash and the
+  encoded bytes, taken together — rather than a `LocalRouterInfo` it
+  re-encodes for itself. The daemon registers the **installed** record: the
+  bytes the router hands to its peers' handshakes, which are the bytes that
+  name the router's address. `register_local` stays, and derives the record
+  from a `LocalRouterInfo`, so the existing coordinator and its tests are
+  untouched. The key, the gateway and the payload then come from **one**
+  record by construction, which is D3's invariant.
+- **D9 — The correlator is owned by the SSU2 service's loop.** The
+  refresh's tick and the inbound owner are two arms of the **same**
+  `tokio::select!` in the SSU2 service's function
+  (`crates/i2pr-daemon/src/lib.rs:4606`, `:5016`), so one coordinator
+  reachable from both is reachable from the production composition without
+  a new service, a new channel or a new lock. The coordinator is not
+  published in a new crate and is not shared across processes.
+- **D10 — The inbound owner joins the SSU2 transport.** The existing
+  `DeliveryStatus` handling at `crates/i2pr-daemon/src/lib.rs:4708-4729` is
+  extended to the publication's transport. The controlled NTCP2 probe path
+  keeps its own table and its own behaviour; the publication's correlation
+  is a **separate** match, so neither path can consume the other's
+  answer.
 
 ## 8. Work packages
 
