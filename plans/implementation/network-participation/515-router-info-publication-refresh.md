@@ -161,8 +161,8 @@ resend exists anywhere in the daemon for the router's own RouterInfo.
 **Does not land:**
 
 - the reference's **resend burst** (the 1.6 s republish to the next
-  closest floodfills) unless WP2 shows it is cheap; it is recorded as a
-  limitation otherwise.
+  closest floodfills). D7 decides against it, and the divergence is
+  recorded as a finding.
 - any change to the **one-shot** publication's targets, its fan-out bound,
   or its best-effort character.
 - any change to the RouterInfo's **content**.
@@ -194,13 +194,29 @@ already exists and is correct.
 - **D3 — The clock.** The schedule takes `now_ms` from its caller. It
   never reads a clock itself. This is the tree's rule for state machines
   and it is what makes the lane deterministic.
-- **D4 — The coupling.** Whether the refresh can reach the publication's
-  transport **without** a service tunnel being provisioned is the
-  central design question of this plan. The plan must answer it with a
-  citation, not an assertion. If the answer is that the transport is
-  reachable, the refresh is a router-level owner. If it is not, the
-  coupling is recorded as a limitation and the refresh lives where the
-  transport lives — and the record says so plainly.
+- **D4 — The coupling. Answered: the refresh is a router-level owner.**
+  The publication's **transport** is router-wide. The service product
+  attaches to the router's *existing* SSU2 daemon
+  (`crates/i2pr-daemon/src/lib.rs:4235`, `start_over_existing_daemon`),
+  and the router's own owner reads the installed local RouterInfo from
+  that daemon (`crates/i2pr-daemon/src/lib.rs:4525`). A router-level
+  owner can therefore reach both the transport and the local record
+  without a service tunnel existing.
+  The **selection** needs the router's own store of floodfills. The
+  service product's `DestinationTunnelCoordinator` holds one
+  (`crates/i2pr-daemon/src/service_product.rs:2766`), but that coordinator
+  is service-product-scoped, so it is the wrong owner. The router-wide
+  **bootstrap's** store is the right one: it is the store the live
+  discovery spine already selects from
+  (`crates/i2pr-daemon/src/lib.rs:2064`, `bootstrap.store()`), and the
+  version gate is a **free function over a store**
+  (`i2pr_netdb::select_version_gated_floodfills`, used at
+  `crates/i2pr-daemon/src/destination_tunnels.rs:1004` and `:1021`), so
+  Plan 503's DSM floor applies to it unchanged.
+  **Therefore:** the refresh is a router-level periodic owner that
+  selects through the same gated function over the router-wide store, and
+  the coupling to service tunnels is **removed** — a router with no
+  service tunnels publishes.
 - **D5 — The counters.** The outcome type names every outcome, and the
   counters are per reason. A publication that refused is not a
   publication.
@@ -209,10 +225,17 @@ already exists and is correct.
   publishes on its first cycle after the router is up; `i2pr`'s existing
   one-shot already publishes at provisioning, so the refresh's first
   publication may wait a full period without a loss.
-- **D7 — The resend.** The reference's resend burst asks the next closest
-  floodfills when one refuses. `i2pr`'s one-shot asks the three closest in
-  one pass. Whether the refresh keeps that shape or adopts the reference's
-  is recorded, with the reason.
+- **D7 — The resend. Answered: keep the bounded one-pass fan-out.** The
+  reference publishes to **one** floodfill and then, every `1600`
+  milliseconds, to the next closest ones — up to fifteen
+  (`libi2pd/RouterContext.cpp:1560`, `libi2pd/RouterContext.h:37`, `:38`).
+  `i2pr` asks the **three** closest in one pass
+  (`crates/i2pr-daemon/src/service_product.rs:7865`). One pass is not
+  weaker: it asks three peers immediately where the reference asks one
+  and then waits. This plan keeps the one-pass shape, keeps the bound at
+  three, and does **not** adopt the reference's resend burst. The
+  divergence — three targets per period where the reference may reach
+  fifteen — is recorded as a finding, not a defect.
 
 ## 8. Work packages
 
@@ -221,10 +244,12 @@ due test, the per-cycle state and the counters. No I/O, no clock, no
 transport. Its lane proves the cadence and the accounting with fixed seeds
 and an explicit `now_ms`.
 
-**WP2 — The placement.** Answer D4 with citations: where the publication's
-transport and its selection live in the **production** composition, and
-whether a router-level periodic owner can reach them. The answer decides
-whether the refresh is a router-level service or a service-product owner.
+**WP2 — The placement. Decided by D4: a router-level owner.** The
+transport and the local RouterInfo are router-wide; the selection comes
+from the router-wide bootstrap's store through the same gated function
+the coordinator uses. The owner is registered in the service graph beside
+the other periodic owners, and it does not depend on a service tunnel
+being provisioned.
 
 **WP3 — The periodic owner.** An owned, cancellable, periodic owner that
 calls the publication when the schedule says it is due, and records the
