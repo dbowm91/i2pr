@@ -1163,7 +1163,17 @@ and the module holds no key.
 *Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
 `the_module_stays_runtime_neutral`.
 
-### 17.9 What this section does **not** gate
+### 17.9 The rungs must publish the cycle's record
+
+A rung must not read a copy of the record back out of the runtime. The
+cycle's record lives in the owner, so the record is decided once, at the
+cycle's start, and the acknowledgement the correlator matches names the record
+the rung published.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_rungs_publish_the_cycle_record` and `the_cycle_record_is_the_owners`.
+
+### 17.10 What this section does **not** gate
 
 The **stock-peer** half. That a pinned stock floodfill accepts the re-dated
 record in the live network is still blocked on Plan 493's authorized two-host

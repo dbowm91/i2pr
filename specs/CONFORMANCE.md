@@ -2613,8 +2613,10 @@ validator refuses the stale record and accepts the re-dated one at the same
 reading; the re-dated record keeps the content and the router hash, and keeps a
 peer; the re-dated record's signature verifies and the original's does not cover
 the new date; a record that cannot be re-dated is refused; the staleness refusal
-is counted under its own reason; the re-dating is deterministic; and the
-re-dating happens once per cycle, at the cycle's start, and not per rung.
+is counted under its own reason; the re-dating is deterministic; the
+re-dating happens once per cycle, at the cycle's start, and not per rung; and
+every rung of a cycle publishes the cycle's **one** record, because the
+record lives in the owner rather than being read back out of the runtime.
 
 **Not proved here, and not claimed:** that a **stock** floodfill accepts the
 re-dated record in the live network. That half needs Plan 493's authorized

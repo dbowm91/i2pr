@@ -49,6 +49,15 @@ each publish. This plan makes the tree do the same.
 
 ## 3. Current implementation evidence
 
+> **The line numbers in this section are the survey-time ones**, recorded
+> before this plan's implementation moved the code. After the implementation:
+> `generate_identity_with_keys` is at
+> `crates/i2pr-daemon/src/router_i2np.rs:2000` and its frozen startup date at
+> `:2054`; the install is still at
+> `crates/i2pr-daemon/src/lib.rs:4013`; and Plan 515's refresh now reads the
+> **cycle's record** from the owner at `crates/i2pr-daemon/src/lib.rs:5089`,
+> not the installed copy.
+
 ### The gap
 
 - `crates/i2pr-daemon/src/router_i2np.rs:1951` (`generate_identity_with_keys`)
@@ -243,6 +252,9 @@ each publish. This plan makes the tree do the same.
   correlator does not change between rungs;
 - the re-dating is **deterministic** in its content: two re-datings of the
   same record at the same reading produce the same content.
+- the cycle's **one record** is held: the first batch and every rung publish
+  the same bytes, and the record is the owner's rather than a copy read back
+  out of the runtime;
 
 **The guard** (`crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`):
 
@@ -256,7 +268,9 @@ each publish. This plan makes the tree do the same.
 - the re-dating **never logs** a key, a signature or the record's bytes;
 - the proto's re-encode preserves the record's **content**;
 - the crypto's re-sign **verifies** its own result;
-- the module stays **runtime-neutral**: it reads no clock and holds no key.
+- the module stays **runtime-neutral**: it reads no clock and holds no key;
+- the **rungs** publish the cycle's record and do not re-read the installed
+  copy, and that record is the **owner's**.
 
 ## 12. Exact verification commands
 
@@ -325,7 +339,34 @@ The plan is complete when:
 - the invariant, failure, migration and security reviews;
 - the findings by severity, the roadmap disposition and the unblock audit.
 
-## 16. Handoff notes
+## 16. Amendment log
+
+**Amended during implementation, 2026-11-03.** Section 11's required tests
+gained the cycle's **one record** — the lane test
+`the_cycle_holds_one_record_for_every_rung` and the guard's two rules
+`the_rungs_publish_the_cycle_record` and `the_cycle_record_is_the_owners`.
+
+**Why.** The first implementation kept invariant 7 true only *by accident*.
+The cycle's first batch published the fresh record the composition root had
+just re-dated, but every **rung** read the record back out of the runtime's
+installed copy. Those are the same bytes only while the install succeeded,
+and the proof that a re-dated record always installs is a reading of the
+runtime's code rather than a test. Had the install failed, a rung would have
+published the **stale** record while the correlator held the **fresh** one,
+so the acknowledgement the correlator matched would have named a record the
+cycle had stopped publishing.
+
+**What changed.** The cycle's record moved into the owner
+(`set_cycle_record` / `cycle_record`), and `refresh_router_info` and
+`advance_publication_cycle` read it from there rather than taking it as a
+parameter — so there is one source of truth rather than two. The composition
+root sets it once, at the cycle's start; the relay arm no longer re-reads the
+installed copy at all.
+
+The plan number, the objective, the nine invariants and the decisions
+**D1**–**D9** are unchanged.
+
+## 17. Handoff notes
 
 - Plan 517's closure record is **not** rewritten. This plan closes the
   **next** defect in the same path: Plan 517 made the publication retry,
