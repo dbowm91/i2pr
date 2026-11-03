@@ -73,6 +73,22 @@ pub const PUBLICATION_INTERVAL_MS: u64 = 39 * 60 * 1_000;
 /// the reference reaches one and then waits.
 pub const PUBLICATION_FLOODFILLS: usize = 3;
 
+/// The netdb's acceptance window for a published record, in milliseconds.
+///
+/// Plan 518: this is the netdb's **own** window
+/// (`i2pr_netdb::DEFAULT_MAX_AGE`), not a second constant. The refusal must
+/// fire exactly when a peer would refuse the record, so the two may not
+/// drift apart.
+pub const PUBLICATION_MAX_RECORD_AGE_MS: u64 = i2pr_netdb::DEFAULT_MAX_AGE.as_secs() * 1_000;
+
+/// The netdb's tolerated clock skew, in milliseconds.
+///
+/// Plan 518: a record dated too far in the future is refused for the same
+/// reason a stale one is: the netdb rejects it too
+/// (`i2pr_netdb::DEFAULT_MAX_FUTURE_SKEW`).
+pub const PUBLICATION_MAX_FUTURE_SKEW_MS: u64 =
+    i2pr_netdb::DEFAULT_MAX_FUTURE_SKEW.as_secs() * 1_000;
+
 /// The reference's confirmation timeout:
 /// `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds
 /// (`libi2pd/RouterContext.h:37`).
@@ -124,6 +140,13 @@ pub enum RouterInfoPublicationOutcome {
     /// floodfill capability, or every one of them was refused by the
     /// API-version floor.
     RefusedNoTarget,
+    /// The record was older than the netdb's acceptance window, so it was
+    /// not published.
+    ///
+    /// Plan 518: publishing a record the network would refuse wastes a
+    /// delivery and hides the fault, so the record is refused and counted
+    /// under its own reason.
+    RefusedStaleRecord,
     /// The transport refused every delivery.
     DeliveryRefused {
         /// The number of targets the publication named.
@@ -152,6 +175,11 @@ pub struct RouterInfoPublicationCounters {
     pub refused_no_local_record: u64,
     /// The number of attempts refused because no target was eligible.
     pub refused_no_target: u64,
+    /// The number of attempts refused because the record was older than the
+    /// netdb's acceptance window.
+    ///
+    /// Plan 518.
+    pub refused_stale_record: u64,
     /// The number of attempts refused by the transport.
     pub deliveries_refused: u64,
     /// The number of attempts cancelled before they completed.
@@ -278,6 +306,25 @@ pub enum RouterInfoPublicationStep {
     NoTarget,
 }
 
+/// Whether a record may be published.
+///
+/// Plan 518: a record older than the netdb's acceptance window is refused.
+/// The network would not accept it, so publishing it wastes a delivery and
+/// hides the fault. A record dated too far in the future is refused for the
+/// same reason: the netdb rejects it too.
+///
+/// The rule is **runtime-neutral**: it takes the record's bytes and a clock
+/// reading, and never reads a clock itself.
+pub fn record_is_publishable(encoded: &[u8], now_ms: u64) -> bool {
+    let Ok(info) = i2pr_proto::RouterInfo::decode(encoded, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+    else {
+        return false;
+    };
+    let published = info.published().as_millis();
+    now_ms.saturating_sub(published) <= PUBLICATION_MAX_RECORD_AGE_MS
+        && published <= now_ms.saturating_add(PUBLICATION_MAX_FUTURE_SKEW_MS)
+}
+
 /// The runtime-neutral publication schedule.
 ///
 /// The schedule owns the period, the last attempt's clock reading, and the
@@ -373,6 +420,10 @@ impl RouterInfoPublicationSchedule {
             }
             RouterInfoPublicationOutcome::RefusedNoTarget => {
                 self.counters.refused_no_target = self.counters.refused_no_target.saturating_add(1);
+            }
+            RouterInfoPublicationOutcome::RefusedStaleRecord => {
+                self.counters.refused_stale_record =
+                    self.counters.refused_stale_record.saturating_add(1);
             }
             RouterInfoPublicationOutcome::DeliveryRefused { .. } => {
                 self.counters.deliveries_refused =
@@ -842,18 +893,30 @@ async fn publish_once<R: RngCore>(
     cancellation: &i2pr_runtime::CancellationToken,
     clock: &PublicationClock,
 ) -> RouterInfoPublicationOutcome {
-    let outcome = publish_once_inner(
-        owner,
-        ssu2_handle,
-        bootstrap,
-        local_record,
-        dial_timeout,
-        qualification_profile,
-        rng,
-        cancellation,
-        clock,
-    )
-    .await;
+    // Plan 518: a record the network would refuse is never published. The
+    // refusal is counted under its own reason, so the fault is visible
+    // rather than silent, and it ends the cycle through the same decision
+    // every other refusal uses.
+    let stale = match local_record.as_ref() {
+        Some(record) => !record_is_publishable(record, clock()),
+        None => false,
+    };
+    let outcome = if stale {
+        RouterInfoPublicationOutcome::RefusedStaleRecord
+    } else {
+        publish_once_inner(
+            owner,
+            ssu2_handle,
+            bootstrap,
+            local_record,
+            dial_timeout,
+            qualification_profile,
+            rng,
+            cancellation,
+            clock,
+        )
+        .await
+    };
     match outcome {
         RouterInfoPublicationOutcome::Published { .. } => {}
         RouterInfoPublicationOutcome::DeliveryRefused { .. } => {

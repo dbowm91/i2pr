@@ -186,8 +186,8 @@ pub use resource::{
 };
 pub use router_info::RouterInfoValidationPolicy as ValidationPolicy;
 pub use router_info::{
-    RouterHash, RouterInfoValidationError, RouterInfoValidationPolicy, ValidatedRouterInfo,
-    ValidationContext, router_hash,
+    DEFAULT_MAX_AGE, DEFAULT_MAX_FUTURE_SKEW, RouterHash, RouterInfoValidationError,
+    RouterInfoValidationPolicy, ValidatedRouterInfo, ValidationContext, router_hash,
 };
 pub use routing::{
     NearestSelection, RoutingKeyError, daily_routing_key, format_daily_key, xor_distance,

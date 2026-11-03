@@ -1687,6 +1687,55 @@ pub fn generate_controlled_identity_with_keys(
     generate_identity_with_keys(bundle, host, port, transport, false)
 }
 
+/// Re-dates and re-signs the router's own RouterInfo, and installs it.
+///
+/// Plan 518: the record the router publishes carries the publication date
+/// the router signed at **startup**, so it ages out of the network's view.
+/// The netdb's acceptance window is 24 hours
+/// (`i2pr_netdb::DEFAULT_MAX_AGE`), and the reference's own netdb expires
+/// routers between one and a half and twenty-seven hours
+/// (`libi2pd/NetDb.hpp:49-51`), so a router that never re-dates publishes a
+/// record the network will not accept.
+///
+/// The reference re-dates and re-signs its record before each publish
+/// (`libi2pd/RouterInfo.cpp:1218`, `libi2pd/RouterContext.cpp:1474`). This
+/// does the same: the **fresh** record is returned and installed, so the
+/// record the router hands out in `SessionConfirmed` carries the fresh date
+/// too.
+///
+/// When the record cannot be re-dated, the installed record is returned
+/// unchanged: the publication's staleness rule then refuses it and counts
+/// the refusal, so the fault is visible rather than silent.
+pub fn refresh_local_router_info_record(
+    bundle: &RouterIdentityBundle,
+    handle: &Ssu2DaemonHandle,
+    now_ms: u64,
+) -> Option<Vec<u8>> {
+    let installed = handle.service().installed_local_router_info()?;
+    match i2pr_crypto::resign_router_info_with_published(
+        bundle,
+        &installed,
+        Date::from_millis(now_ms),
+    ) {
+        Ok(fresh) => {
+            if let Err(error) = handle
+                .service()
+                .install_local_router_info(fresh.clone(), now_ms)
+            {
+                tracing::warn!(
+                    reason = ?error,
+                    "the re-dated RouterInfo was not installed"
+                );
+            }
+            Some(fresh)
+        }
+        Err(error) => {
+            tracing::warn!(reason = %error, "the local RouterInfo could not be re-dated");
+            Some(installed)
+        }
+    }
+}
+
 /// Builds a fresh, signed NTCP2 RouterInfo for the explicit loopback profile.
 ///
 /// The persisted static key must already be bound to the supplied RouterIdentity.

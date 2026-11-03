@@ -5068,8 +5068,19 @@ fn register_ssu2_service(
                                     && publication_owner.is_due(now_ms)
                                     && publication_owner.begin_cycle()
                                 {
-                                    let local_record =
-                                        owner.handle().service().installed_local_router_info();
+                                    // Plan 518: the cycle's record is
+                                    // re-dated and re-signed **once**, here,
+                                    // so every rung of the cycle publishes
+                                    // the same bytes. The reference dates
+                                    // the record before each publish cycle
+                                    // (`libi2pd/RouterContext.cpp:1474`) and
+                                    // its resend rungs publish that same
+                                    // record.
+                                    let local_record = crate::router_i2np::refresh_local_router_info_record(
+                                        &bundle,
+                                        owner.handle(),
+                                        now_ms,
+                                    );
                                     let outcome = crate::router_info_publication::refresh_router_info(
                                         publication_owner,
                                         owner.handle(),
