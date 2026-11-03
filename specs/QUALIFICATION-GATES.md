@@ -1023,3 +1023,64 @@ The **stock-peer** half. That a pinned stock floodfill answers a
 publication is still blocked on Plan 493's authorized two-host topology, and
 no live claim is made. Plan 515's finding **F1** — the reference's resend
 burst — is still open and is a successor's subject.
+## 16. How the router retries a publication the network did not acknowledge (Plan 517)
+
+### 16.1 The retry must ride the loop's existing tick
+
+The confirmation deadline is the reference's `ROUTER_INFO_CONFIRMATION_TIMEOUT`
+(`libi2pd/RouterContext.h:37`). It is observed on the SSU2 service's existing
+`100` millisecond tick, so the retry must be driven from that tick and must not
+arm a timer of its own.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_retry_rides_the_existing_tick`.
+
+### 16.2 The deadline must be the reference's constant
+
+The deadline is `1600` milliseconds, measured from the moment the batch went
+out. A different timeout would be a different protocol.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_deadline_is_the_reference_constant`.
+
+### 16.3 The exclusion set must reach the selection
+
+A target the cycle has already asked must never be asked twice, so the
+exclusion set has to reach the **selection** -- and the selection has to keep
+going through the version gate, so Plan 503's API-version floor holds for
+every target of every batch.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_exclusion_set_reaches_the_selection`.
+
+### 16.4 The cycle must be bounded
+
+The cycle's bound is the reference's
+`ROUTER_INFO_MAX_PUBLISH_EXCLUDED_FLOODFILLS` (`libi2pd/RouterContext.h:38`),
+and the fan-out stays bounded at the tree's three.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_bound_is_the_reference_constant` and `the_fan_out_stays_bounded`.
+
+### 16.5 A confirmation must end the cycle
+
+The reference clears its exclusion set and schedules the next publish at the
+full interval (`libi2pd/RouterContext.cpp:1321-1328`). A confirmed publication
+is not retried.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`a_confirmation_ends_the_cycle`.
+
+### 16.6 The cycle must never read a clock
+
+The cycle takes the reading from its caller, so the whole ladder is provable
+without a wall clock, a socket or a sleep.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_cycle_never_reads_a_clock`.
+
+### 16.7 What this section does **not** gate
+
+The **stock-peer** half. That a pinned stock floodfill answers a publication,
+and that the retry therefore reaches one, is still blocked on Plan 493's
+authorized two-host topology, and no live claim is made.

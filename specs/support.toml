@@ -2396,6 +2396,21 @@ evidence = [
     "plans/implementation/network-participation/516-router-info-publication-confirmation.md",
 ]
 [[surface]]
+id = "daemon.router-info-publication-retry"
+protocol = "reseed-netdb"
+structure = "the-publication-retries-an-unacknowledged-record-at-the-next-closest-floodfill"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 517 makes an **unconfirmed** publication **retried**. Plan 515 made the publication periodic and Plan 516 made it confirmable -- the store message carried the correlator's minted token, so a floodfill answers with a `DeliveryStatus` the router correlates -- but the tree still published **once per period**: a publication the network never acknowledged simply waited for the next period, `39` minutes away (`libi2pd/RouterContext.h:34`). The reference does not wait. It publishes, and while the answer has not arrived it asks the **next closest** floodfill: `libi2pd/RouterContext.cpp:1470` (`HandlePublishTimer`) starts the cycle by clearing the exclusion set and arming the resend timer; `:1492` (`Publish`) picks the closest eligible floodfill **not** in the exclusion set (`:1502`), sends it with a fresh token and **inserts it into the exclusion set** (`:1540`); `:1560` (`HandlePublishResendTimer`) repeats every `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds (`:37` -- `1600`), and a **drop** triggers it at once (`:1516-1521`); `:1321` (`PostDeliveryStatusMessage`) reports 'Publishing confirmed', clears the exclusion set and schedules the next publish at the full interval. This surface adds the **cycle**: a bounded ladder of **batches**; the cycle's **exclusion set**, so a target is never asked twice; the **confirmation deadline** -- the reference's `1600` milliseconds, measured from the moment the batch went out, exactly as the reference arms its resend timer after the publish returns (`:1476`); and the **retry** itself. Two divergences from the reference are recorded rather than imitated: the tree's batch is Plan 515's fan-out of **three** rather than the reference's one target at a time (decision **D1**), and a cycle that reaches the reference's bound of **fifteen** asked targets **ends** and lets the next period start a fresh one (**D4**) where the reference clears the set and publishes again inside the same period. The deadline rides the composition root's **existing** `100` millisecond tick, so **no new timer** is introduced (**D7**), and the cycle is **runtime-neutral**: it takes the reading from its caller through a `PublicationClock` and never reads a clock itself (**D8**), so the whole ladder is provable without a wall clock, a socket or a sleep. Every rung is counted under its own reason: `retries` for a batch beyond the first, `cycles_exhausted` for a cycle that reached the reference's bound, and the existing per-outcome counters beside them. Nothing is advertised: `router.version` stays `0.9.62`, `caps` and the published RouterInfo are unchanged, and the advertised count stays **zero**."
+evidence = [
+    "crates/i2pr-daemon/src/router_info_publication.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_retry.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/517-router-info-publication-retry.md",
+]
+[[surface]]
 id = "daemon.netdb-exploratory-target"
 protocol = "reseed-netdb"
 structure = "table-directed-exploratory-target-and-the-operator-switch"

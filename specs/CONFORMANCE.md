@@ -2522,6 +2522,11 @@ router's own record, and advertises nothing new.
 ready, 0 advertised**. The advertised count stays **zero**: Plan 516 makes
 the publication *confirmable*, and advertises nothing new.
 
+**Plan 517 adds one surface** — `daemon.router-info-publication-retry` —
+so the inventory holds **109 surfaces, 104 experimental, 4 deferred, 1 ready,
+0 advertised**. The advertised count stays **zero**: Plan 517 makes the
+publication *retry*, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -2570,6 +2575,46 @@ That half needs Plan 493's authorized two-host topology, and the
 stock-peer evidence remains blocked on it. Nothing is advertised: the
 inventory's advertised count stays zero, `router.version` stays `0.9.62`,
 and the published RouterInfo is unchanged.
+
+## The router retries a publication the network did not acknowledge (Plan 517)
+
+Plan 515 made the publication repeatable. Plan 516 made it confirmable. Neither
+made it **retry**.
+
+A publication the network never acknowledged was simply unconfirmed: the next
+attempt was `39` minutes away, the reference's publish interval
+(`libi2pd/RouterContext.h:34`). The reference does not wait. It publishes, and
+while the answer has not arrived it asks the **next closest** floodfill
+(`libi2pd/RouterContext.cpp:1492`, `:1502`), excluding the ones it has already
+asked (`:1540`) and repeating every `ROUTER_INFO_CONFIRMATION_TIMEOUT`
+milliseconds (`:37`, `:1560`) until one acknowledges (`:1321-1328`) or the
+exclusion set reaches its bound of fifteen (`:38`).
+
+**A publication is now a cycle.** One cycle is a bounded ladder of **batches**;
+each batch is the closest eligible targets the cycle has not already asked. The
+cycle carries an **exclusion set**, so a target is never asked twice, a
+**confirmation deadline** — the reference's `1600` milliseconds, measured from
+the moment the batch went out — and a **bound** of fifteen asked targets. A
+confirmation ends the cycle; a delivery refusal advances at once; a cycle that
+reaches the bound ends and the next period starts a fresh one.
+
+**Proved here:** the cycle asks the closest eligible targets and the next batch
+excludes the ones already asked; a cycle is not retried before the reference's
+timeout and is retried once it passes; a confirmation ends the cycle; a delivery
+refusal advances at once; the cycle is bounded by the reference's fifteen and
+the fan-out by the tree's three; the retry rides the loop's **existing** tick,
+and no new timer is introduced; the cycle never reads a clock.
+
+**Two divergences are recorded rather than imitated.** The tree's batch is
+Plan 515's fan-out of **three** rather than the reference's one target at a
+time, and a cycle that reaches the bound **ends** where the reference clears
+its exclusion set and publishes again inside the same period.
+
+**Not proved here, and not claimed:** that a **stock** floodfill answers and
+that the retry therefore reaches one. That half needs Plan 493's authorized
+two-host topology, and the stock-peer evidence remains blocked on it. Nothing
+is advertised: the inventory's advertised count stays zero, `router.version`
+stays `0.9.62`, and the published RouterInfo is unchanged.
 
 ## The router republishes its own RouterInfo (Plan 515)
 
