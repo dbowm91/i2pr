@@ -4727,6 +4727,46 @@ fn register_ssu2_service(
                                         "controlled NTCP2 RouterInfo DeliveryStatus correlation completed"
                                     );
                                 }
+                                // Plan 516: the publication's acknowledgement.
+                                // The store the publication put on the wire
+                                // carries the correlator's minted reply
+                                // token, so the floodfill answers with a
+                                // `DeliveryStatus` that carries it back --
+                                // and the router learns that the **network
+                                // holds** its record, which is a different
+                                // fact from the transport having accepted
+                                // the store.
+                                //
+                                // The controlled NTCP2 probe path above
+                                // keeps its own table and its own
+                                // behaviour. This is a **separate** match,
+                                // scoped to the transport the publication
+                                // actually uses, so neither path can consume
+                                // the other's answer. An answer that matches
+                                // no live attempt is refused and counted
+                                // under its own reason; it never confirms
+                                // anything.
+                                if transport == AuthenticatedRouterTransport::Ssu2
+                                    && let Some(i2pr_proto::I2npBody::DeliveryStatus(status)) =
+                                        message.map(i2pr_proto::I2npMessage::body)
+                                    && let Some(publication_owner) = publication_owner.as_mut()
+                                {
+                                    match publication_owner.confirm(status.message_id) {
+                                        crate::router_info_publication::PublicationConfirmation::Confirmed {
+                                            request_id,
+                                        } => {
+                                            tracing::info!(
+                                                request_id,
+                                                "router RouterInfo publication acknowledged by the network"
+                                            );
+                                        }
+                                        crate::router_info_publication::PublicationConfirmation::Unmatched => {
+                                            tracing::debug!(
+                                                "router RouterInfo publication acknowledgement matched no live attempt"
+                                            );
+                                        }
+                                    }
+                                }
                                 let mut served = false;
                                 if let Some(state) = floodfill.as_mut() {
                                     let time = i2pr_netdb::FloodfillTime {

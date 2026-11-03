@@ -152,10 +152,41 @@ pub struct PublicationSnapshot {
     pub cancelled: usize,
 }
 
+/// The record a publication publishes: the local RouterHash and the
+/// encoded RouterInfo bytes, taken from **one** record.
+///
+/// Plan 516: the store message's key, its reply gateway and its payload
+/// must all describe the same record. Registering the record explicitly,
+/// rather than re-encoding a snapshot at attempt time, is what makes that
+/// provable rather than incidental.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationLocalRecord {
+    hash: RouterHash,
+    encoded: Vec<u8>,
+}
+
+impl PublicationLocalRecord {
+    /// Builds a record from the local RouterHash and the encoded bytes.
+    pub fn new(hash: RouterHash, encoded: Vec<u8>) -> Self {
+        Self { hash, encoded }
+    }
+
+    /// The local RouterHash the record is published under.
+    pub const fn hash(&self) -> RouterHash {
+        self.hash
+    }
+
+    /// The encoded RouterInfo bytes.
+    pub fn encoded(&self) -> &[u8] {
+        &self.encoded
+    }
+}
+
 /// Plan 105 §10 publication coordinator.
+#[derive(Clone, Debug)]
 pub struct PublicationCoordinator {
     policy: LookupPolicy,
-    local_snapshot: Option<LocalRouterInfo>,
+    local_record: Option<PublicationLocalRecord>,
     attempts: BTreeMap<u64, PublicationAttempt>,
     tokens_by_value: BTreeMap<u32, u64>,
     next_request_id: u64,
@@ -167,7 +198,7 @@ impl PublicationCoordinator {
     pub fn new(policy: LookupPolicy) -> Self {
         Self {
             policy,
-            local_snapshot: None,
+            local_record: None,
             attempts: BTreeMap::new(),
             tokens_by_value: BTreeMap::new(),
             next_request_id: 1,
@@ -179,8 +210,29 @@ impl PublicationCoordinator {
     /// coordinator will publish. The coordinator never re-signs the
     /// record; retried publication attempts reuse the supplied
     /// bytes.
+    ///
+    /// Plan 516: the snapshot becomes the coordinator's **record**, so the
+    /// key, the reply gateway and the payload are one record by
+    /// construction. A record that cannot be encoded leaves the
+    /// coordinator without one, and every attempt is refused — the
+    /// coordinator never publishes a partial record.
     pub fn register_local(&mut self, local: LocalRouterInfo) {
-        self.local_snapshot = Some(local);
+        let hash = local.router_hash();
+        self.local_record = local
+            .encoded(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .ok()
+            .map(|encoded| PublicationLocalRecord::new(hash, encoded));
+    }
+
+    /// Registers the record a publication publishes.
+    ///
+    /// Plan 516: the router registers the record it **installed** — the
+    /// bytes it hands to its peers' handshakes, which are the bytes that
+    /// name the router's address — rather than a re-encoded copy of a
+    /// different record. The key, the reply gateway and the payload then
+    /// all come from this one record.
+    pub fn register_record(&mut self, record: PublicationLocalRecord) {
+        self.local_record = Some(record);
     }
 
     /// Returns the closest eligible floodfill set for the local
@@ -209,10 +261,10 @@ impl PublicationCoordinator {
     /// implementation. The routing key is the local RouterHash and the local
     /// RouterHash is excluded, exactly as the hand-rolled selection did.
     pub fn nearest_eligible_floodfills(&self, store: &RouterInfoStore) -> FloodfillTargetSelection {
-        let Some(local) = self.local_snapshot.as_ref() else {
+        let Some(local) = self.local_record.as_ref() else {
             return FloodfillTargetSelection::default();
         };
-        let local_key = local.router_hash();
+        let local_key = local.hash();
         let selection = crate::lookup_policy::select_version_gated_floodfills(
             store,
             &local_key,
@@ -236,7 +288,7 @@ impl PublicationCoordinator {
         store: &RouterInfoStore,
     ) -> Result<PublicationAttemptRecord, PublicationError> {
         let local = self
-            .local_snapshot
+            .local_record
             .as_ref()
             .ok_or(PublicationError::NoLocalSnapshot)?;
         if self.attempts.len() >= MAX_PUBLICATION_ATTEMPTS {
@@ -255,27 +307,28 @@ impl PublicationCoordinator {
             .next_reply_token
             .checked_add(1)
             .expect("reply token overflow");
-        let encoded = local
-            .encoded(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(|_| PublicationError::NoLocalSnapshot)?;
+        let encoded = local.encoded().to_vec();
         if encoded.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
             return Err(PublicationError::NoLocalSnapshot);
         }
-        // Publication uses reply_token=0 because the local router
-        // does not request a DeliveryStatus acknowledgement for the
-        // initial store-and-forget publish. The correlation token is
-        // reserved for the optional verification path; when a
-        // nonzero token is set, both reply_tunnel_id and
-        // reply_gateway must be present.
+        // Plan 516: the correlation token reaches the wire, so the peer can
+        // answer with the DeliveryStatus that carries it. The reply form
+        // is the reference's **direct** reply: a zero reply tunnel id
+        // means "send the DeliveryStatus straight back to me"
+        // (`libi2pd/I2NPProtocol.cpp:285`), and the gateway is the local
+        // hash (`:287-289`). The token is the correlator's own, minted
+        // above, so the wire token and the correlation key are the same
+        // value by construction.
         let gzip_payload = gzip_encode(&encoded).map_err(|_| PublicationError::NoLocalSnapshot)?;
         if gzip_payload.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
             return Err(PublicationError::NoLocalSnapshot);
         }
+        let local_hash = Hash::from_bytes(*local.hash().as_bytes());
         let store_message = DatabaseStoreMessage {
-            key: Hash::from_bytes(*local.router_hash().as_bytes()),
-            reply_token: 0,
-            reply_tunnel_id: None,
-            reply_gateway: None,
+            key: local_hash,
+            reply_token,
+            reply_tunnel_id: Some(0),
+            reply_gateway: Some(local_hash),
             data: DatabaseStoreData::RouterInfoCompressed(
                 DeferredPayload::new(gzip_payload, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
                     .map_err(|_| PublicationError::NoLocalSnapshot)?,
@@ -434,7 +487,7 @@ impl PublicationCoordinator {
     /// `DatabaseLookup` over an exploratory reply path before the
     /// publication can be considered complete.
     pub fn needs_verification_lookup(&self) -> bool {
-        self.local_snapshot.is_some()
+        self.local_record.is_some()
     }
 
     /// Returns the bounded default policy used by callers that do not

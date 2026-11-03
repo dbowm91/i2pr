@@ -167,7 +167,7 @@ pub use provenance::{
 pub use publication::{
     FloodfillTargetSelection, MAX_PUBLICATION_ATTEMPTS, PublicationAttempt,
     PublicationAttemptRecord, PublicationAttemptState, PublicationCoordinator,
-    PublicationCorrelation, PublicationError, PublicationSnapshot,
+    PublicationCorrelation, PublicationError, PublicationLocalRecord, PublicationSnapshot,
 };
 pub use replication::{
     DirectFloodAction, FloodfillPeerView, ReplicationError, ReplicationPlan, ReplicationPlanner,

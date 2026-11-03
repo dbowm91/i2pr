@@ -202,7 +202,7 @@ fn the_plan_names_the_closest_eligible_floodfills() {
     let (store, local_hash) = store_with_eligible_floodfills();
     let owner = RouterInfoPublicationOwner::new(local_hash, PUBLICATION_INTERVAL_MS);
     let plan = owner.plan(&store, Some(b"router info bytes"));
-    let RouterInfoPublicationPlan::Publish { targets, store: _ } = &plan else {
+    let RouterInfoPublicationPlan::Publish { targets, record: _ } = &plan else {
         panic!("the plan must publish when a record and a floodfill exist");
     };
     let expected = expected_closest(&store, &local_hash);
@@ -257,7 +257,7 @@ fn a_floodfill_that_publishes_no_version_is_never_a_target() {
     let _ = store.insert(validated(&unversioned, None));
     let owner = RouterInfoPublicationOwner::new(local_hash, PUBLICATION_INTERVAL_MS);
     let plan = owner.plan(&store, Some(b"router info bytes"));
-    let RouterInfoPublicationPlan::Publish { targets, store: _ } = &plan else {
+    let RouterInfoPublicationPlan::Publish { targets, record: _ } = &plan else {
         panic!("the eligible floodfills must still be publishable");
     };
     let unversioned_hash = router_hash(unversioned.identity()).expect("hash");

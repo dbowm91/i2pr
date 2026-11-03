@@ -7944,7 +7944,12 @@ async fn publish_creator_router_info(
     // **shared** publication path, so the one-shot publication and the
     // router-level refresh cannot disagree about the rule, the envelope
     // or the counting.
-    let (floodfills, records) = {
+    // Plan 516: the store message is composed by the correlator, with the
+    // minted reply token on the wire, so the one-shot publication and the
+    // router-level refresh share one builder and one set of rules.
+    let mut coordinator =
+        i2pr_netdb::PublicationCoordinator::new(i2pr_netdb::LookupPolicy::default());
+    let (floodfills, records, attempts) = {
         let guard = destination_tunnels.lock().await;
         let selection = guard.version_gated_publication_floodfills(&our_router_hash);
         let floodfills = selection
@@ -7963,7 +7968,20 @@ async fn publish_creator_router_info(
                     .map(|record| (*hash, record))
             })
             .collect::<Vec<_>>();
-        (floodfills, records)
+        let plan = crate::router_info_publication::RouterInfoPublicationPlan::publish(
+            floodfills.clone(),
+            router_info.clone(),
+        );
+        // The attempts are begun under the store's lock and sent outside
+        // it: a publication that dials a peer can take seconds, and the
+        // store must not be held for that long.
+        let attempts = crate::router_info_publication::begin_attempts(
+            &mut coordinator,
+            our_router_hash,
+            &plan,
+            guard.store(),
+        );
+        (floodfills, records, attempts)
     };
     if floodfills.is_empty() {
         tracing::debug!(
@@ -7972,15 +7990,7 @@ async fn publish_creator_router_info(
         );
         return;
     }
-    let Ok(store) =
-        crate::router_info_publication::router_info_store_message(local_hash, router_info)
-    else {
-        tracing::debug!(
-            transition = "creator_ri_publication_skipped",
-            "creator RouterInfo store composition failed",
-        );
-        return;
-    };
+
     let mut rng = match ChaCha8Rng::try_from_os_rng() {
         Ok(rng) => rng,
         Err(_) => {
@@ -7992,8 +8002,8 @@ async fn publish_creator_router_info(
         }
     };
     let outcome = crate::router_info_publication::publish_router_info(
-        &floodfills,
-        &store,
+        &mut coordinator,
+        &attempts,
         &records,
         ssu2_handle,
         dial_timeout,
@@ -8046,32 +8056,6 @@ mod ls2_publication_fanout_tests {
     #[test]
     fn an_empty_candidate_list_stays_empty() {
         assert!(bounded_publication_floodfills(Vec::new()).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod creator_router_info_publication_tests {
-    use crate::router_info_publication::router_info_store_message;
-    use i2pr_proto::Hash;
-
-    #[test]
-    fn store_keys_us_and_round_trips_public_bytes() {
-        let local = Hash::from_bytes([0x77; 32]);
-        let router_info = vec![0xA5u8; 128];
-        let store =
-            router_info_store_message(local, router_info.clone()).expect("creator store composes");
-        assert_eq!(store.key, local);
-        assert_eq!(store.reply_token, 0);
-        assert!(store.reply_tunnel_id.is_none());
-        assert!(store.reply_gateway.is_none());
-        let i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload) = &store.data else {
-            panic!("creator store must carry RouterInfo bytes");
-        };
-        let mut decoder = flate2::read::GzDecoder::new(payload.as_bytes());
-        let mut recovered = Vec::new();
-        std::io::Read::read_to_end(&mut decoder, &mut recovered)
-            .expect("creator store decompresses");
-        assert_eq!(recovered, router_info);
     }
 }
 

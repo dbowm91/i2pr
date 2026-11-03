@@ -26,6 +26,13 @@
 //!    router-level refresh, so there is one publication and one set of
 //!    rules rather than two.
 //!
+//! Plan 516 adds the **acknowledgement**. The store message carries the
+//! correlator's minted reply token, in the reference's direct-reply form,
+//! so the floodfill answers with a `DeliveryStatus` that carries the token
+//! back. The publication's outcome stays a **delivery** outcome; the
+//! acknowledgement is a separate fact, counted separately, and it arrives
+//! on the inbound path rather than inside the publication's own call.
+//!
 //! Nothing here advertises anything: `router.version` stays `0.9.62`, the
 //! published RouterInfo's content is unchanged, and the inventory's
 //! advertised count stays zero.
@@ -34,10 +41,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use i2pr_netdb::{
-    LookupPolicy, RouterHash, RouterInfoStore, ValidatedRouterInfo, VersionGatedFloodfillSelection,
-    select_version_gated_floodfills,
+    LookupPolicy, PublicationCoordinator, PublicationLocalRecord, RouterHash, RouterInfoStore,
+    ValidatedRouterInfo, VersionGatedFloodfillSelection, select_version_gated_floodfills,
 };
-use i2pr_proto::Hash;
 use rand_core::RngCore;
 
 /// The reference's publication interval: `39 * 60` seconds
@@ -111,6 +117,50 @@ pub struct RouterInfoPublicationCounters {
     pub deliveries_refused: u64,
     /// The number of attempts cancelled before they completed.
     pub cancelled: u64,
+    /// The number of publications the network acknowledged.
+    ///
+    /// Plan 516: an acknowledgement is a **separate** fact from a delivery.
+    /// A store the transport accepted is not a record the network holds.
+    pub confirmed: u64,
+    /// The number of acknowledgements that matched no live attempt.
+    ///
+    /// Plan 516: an unmatched acknowledgement is refused and counted under
+    /// its own reason. It never confirms anything and is never dropped
+    /// silently.
+    pub unmatched: u64,
+}
+
+/// The outcome of one inbound acknowledgement.
+///
+/// Plan 516.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicationConfirmation {
+    /// The acknowledgement matched a live attempt.
+    Confirmed {
+        /// The request identifier of the confirmed attempt.
+        request_id: u64,
+    },
+    /// The acknowledgement matched no live attempt, and was refused.
+    Unmatched,
+}
+
+/// Correlates one inbound `DeliveryStatus` with the live attempts.
+///
+/// Plan 516: this is the runtime-neutral seam between the inbound path
+/// and the correlator. An acknowledgement whose token matches no live
+/// attempt is **refused** — it confirms nothing, and it is reported as
+/// [`PublicationConfirmation::Unmatched`] so the caller can count it under
+/// its own reason rather than drop it.
+pub fn confirm_publication(
+    coordinator: &mut PublicationCoordinator,
+    message_id: u32,
+) -> PublicationConfirmation {
+    match coordinator.correlate_delivery_status(message_id) {
+        Ok(correlation) => PublicationConfirmation::Confirmed {
+            request_id: correlation.request_id,
+        },
+        Err(_) => PublicationConfirmation::Unmatched,
+    }
 }
 
 /// The runtime-neutral publication schedule.
@@ -150,6 +200,22 @@ impl RouterInfoPublicationSchedule {
         match self.last_attempt_ms {
             None => true,
             Some(last) => now_ms.saturating_sub(last) >= self.period_ms,
+        }
+    }
+
+    /// Records one inbound acknowledgement.
+    ///
+    /// Plan 516: a confirmed acknowledgement and an unmatched one are
+    /// counted under their own reasons, and neither is counted as a
+    /// publication.
+    pub fn record_confirmation(&mut self, outcome: PublicationConfirmation) {
+        match outcome {
+            PublicationConfirmation::Confirmed { .. } => {
+                self.counters.confirmed = self.counters.confirmed.saturating_add(1);
+            }
+            PublicationConfirmation::Unmatched => {
+                self.counters.unmatched = self.counters.unmatched.saturating_add(1);
+            }
         }
     }
 
@@ -218,11 +284,26 @@ pub enum RouterInfoPublicationPlan {
     Publish {
         /// The targets, nearest first, bounded by [`PUBLICATION_FLOODFILLS`].
         targets: Vec<RouterHash>,
-        /// The `DatabaseStore` that carries the router's own RouterInfo.
-        store: i2pr_proto::DatabaseStoreMessage,
+        /// The encoded RouterInfo the publication publishes.
+        ///
+        /// Plan 516: the plan names the **record**, not the store message.
+        /// The store message is composed by the correlator, once per
+        /// target, with that target's own minted reply token.
+        record: Vec<u8>,
     },
     /// The publication is refused, with the reason.
     Refused(RouterInfoPublicationOutcome),
+}
+
+impl RouterInfoPublicationPlan {
+    /// Builds the publication plan for a named target set and record.
+    ///
+    /// Plan 516: the plan names the **record**, not the store message. The
+    /// store message is composed by the correlator, once per target, with
+    /// that target's own minted reply token.
+    pub fn publish(targets: Vec<RouterHash>, record: Vec<u8>) -> Self {
+        Self::Publish { targets, record }
+    }
 }
 
 impl RouterInfoPublicationPlan {
@@ -254,6 +335,9 @@ pub struct RouterInfoPublicationOwner {
     schedule: RouterInfoPublicationSchedule,
     local_hash: RouterHash,
     policy: LookupPolicy,
+    /// Plan 516: the correlator that mints the reply token, composes the
+    /// store message and holds the bounded attempt book.
+    coordinator: PublicationCoordinator,
 }
 
 impl RouterInfoPublicationOwner {
@@ -263,7 +347,28 @@ impl RouterInfoPublicationOwner {
             schedule: RouterInfoPublicationSchedule::new(period_ms),
             local_hash,
             policy: LookupPolicy::default(),
+            coordinator: PublicationCoordinator::new(LookupPolicy::default()),
         }
+    }
+
+    /// The owner's correlator, mutably.
+    ///
+    /// Plan 516: the correlator owns the minted tokens and the bounded
+    /// attempt book, so the publication's delivery outcomes and the
+    /// inbound acknowledgements are recorded in one place.
+    pub fn coordinator_mut(&mut self) -> &mut PublicationCoordinator {
+        &mut self.coordinator
+    }
+
+    /// Correlates one inbound acknowledgement with the live attempts.
+    ///
+    /// Plan 516: an acknowledgement that matches no live attempt is
+    /// refused and counted under its own reason. It never confirms
+    /// anything, and it is never dropped silently.
+    pub fn confirm(&mut self, message_id: u32) -> PublicationConfirmation {
+        let outcome = confirm_publication(&mut self.coordinator, message_id);
+        self.schedule.record_confirmation(outcome);
+        outcome
     }
 
     /// The owner's schedule.
@@ -312,16 +417,9 @@ impl RouterInfoPublicationOwner {
                 RouterInfoPublicationOutcome::RefusedNoTarget,
             );
         }
-        let Ok(store_message) =
-            router_info_store_message(*self.local_hash.as_hash(), record.to_vec())
-        else {
-            return RouterInfoPublicationPlan::Refused(
-                RouterInfoPublicationOutcome::RefusedNoLocalRecord,
-            );
-        };
         RouterInfoPublicationPlan::Publish {
             targets,
-            store: store_message,
+            record: record.to_vec(),
         }
     }
 }
@@ -366,7 +464,7 @@ pub async fn refresh_router_info<R: RngCore>(
 /// Publishes once, without touching the schedule.
 #[allow(clippy::too_many_arguments)]
 async fn publish_once<R: RngCore>(
-    owner: &RouterInfoPublicationOwner,
+    owner: &mut RouterInfoPublicationOwner,
     ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
     local_record: Option<Vec<u8>>,
@@ -381,17 +479,16 @@ async fn publish_once<R: RngCore>(
     let Some(bootstrap) = bootstrap else {
         return RouterInfoPublicationOutcome::RefusedNoTarget;
     };
-    let (targets, store_message, records) = {
+    let local_hash = *owner.local_hash();
+    let (attempts, records) = {
         let Ok(guard) = bootstrap.lock() else {
             return RouterInfoPublicationOutcome::RefusedNoTarget;
         };
         let plan = owner.plan(guard.store(), Some(local_record.as_slice()));
-        let RouterInfoPublicationPlan::Publish {
-            targets,
-            store: store_message,
-        } = plan
-        else {
-            return RouterInfoPublicationOutcome::RefusedNoTarget;
+        let RouterInfoPublicationPlan::Publish { targets, .. } = &plan else {
+            return plan
+                .refusal()
+                .unwrap_or(RouterInfoPublicationOutcome::RefusedNoTarget);
         };
         let records = targets
             .iter()
@@ -403,11 +500,12 @@ async fn publish_once<R: RngCore>(
                     .map(|record| (*hash, record))
             })
             .collect::<Vec<_>>();
-        (targets, store_message, records)
+        let attempts = begin_attempts(owner.coordinator_mut(), local_hash, &plan, guard.store());
+        (attempts, records)
     };
     publish_router_info(
-        &targets,
-        &store_message,
+        owner.coordinator_mut(),
+        &attempts,
         &records,
         ssu2_handle,
         dial_timeout,
@@ -418,42 +516,30 @@ async fn publish_once<R: RngCore>(
     .await
 }
 
-/// Builds the `DatabaseStore` that carries the router's own RouterInfo.
+/// The attempts of one publication, begun against the store.
 ///
-/// The payload is the compressed RouterInfo, bounded by the protocol's
-/// maximum I2NP payload size. The store names our own hash and carries no
-/// reply token: the publication is a one-way announcement.
-pub fn router_info_store_message(
-    local_hash: Hash,
-    router_info: Vec<u8>,
-) -> Result<i2pr_proto::DatabaseStoreMessage, RouterInfoPublicationError> {
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut encoder, &router_info)
-        .map_err(|_| RouterInfoPublicationError::Compression)?;
-    let compressed = encoder
-        .finish()
-        .map_err(|_| RouterInfoPublicationError::Compression)?;
-    let payload = i2pr_proto::DeferredPayload::new(compressed, MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(|_| RouterInfoPublicationError::PayloadTooLarge)?;
-    Ok(i2pr_proto::DatabaseStoreMessage {
-        key: local_hash,
-        reply_token: 0,
-        reply_tunnel_id: None,
-        reply_gateway: None,
-        data: i2pr_proto::DatabaseStoreData::RouterInfoCompressed(payload),
-    })
-}
-
-/// The bounded I2NP payload size, matching the protocol's own ceiling.
-const MAX_I2NP_PAYLOAD_SIZE: usize = 32 * 1024;
-
-/// The typed failure of building the publication's store.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RouterInfoPublicationError {
-    /// The RouterInfo could not be compressed.
-    Compression,
-    /// The compressed RouterInfo exceeds the bounded store payload.
-    PayloadTooLarge,
+/// Plan 516: the correlator composes each target's `DatabaseStore`, with
+/// that target's own minted reply token on the wire. The attempts are
+/// begun under the store's lock and sent outside it, because a publication
+/// that dials a peer can take seconds and the store must not be held for
+/// that long.
+pub fn begin_attempts(
+    coordinator: &mut PublicationCoordinator,
+    local_hash: RouterHash,
+    plan: &RouterInfoPublicationPlan,
+    store: &RouterInfoStore,
+) -> Vec<i2pr_netdb::PublicationAttemptRecord> {
+    let RouterInfoPublicationPlan::Publish { targets, record } = plan else {
+        return Vec::new();
+    };
+    // The plan's record is the record that is published, so the store
+    // message's key, its reply gateway and its payload are one record by
+    // construction.
+    coordinator.register_record(PublicationLocalRecord::new(local_hash, record.clone()));
+    targets
+        .iter()
+        .filter_map(|target| coordinator.begin_attempt(*target, store).ok())
+        .collect()
 }
 
 /// Puts a publication on the wire.
@@ -469,8 +555,8 @@ pub enum RouterInfoPublicationError {
 /// peer that already has a session needs no record at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn publish_router_info<R: RngCore>(
-    targets: &[RouterHash],
-    store_message: &i2pr_proto::DatabaseStoreMessage,
+    coordinator: &mut PublicationCoordinator,
+    attempts: &[i2pr_netdb::PublicationAttemptRecord],
     records: &[(RouterHash, ValidatedRouterInfo)],
     ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
     dial_timeout: Duration,
@@ -479,13 +565,20 @@ pub async fn publish_router_info<R: RngCore>(
     cancellation: &i2pr_runtime::CancellationToken,
 ) -> RouterInfoPublicationOutcome {
     let mut accepted = 0usize;
-    for target in targets {
+    for attempt in attempts {
         if cancellation.is_cancelled() {
             return RouterInfoPublicationOutcome::Cancelled;
         }
+        // Plan 516: the store message was composed by the correlator, so
+        // the wire message carries this target's own minted reply token and
+        // the attempt was already in the bounded book before anything was
+        // sent.
+        let target = &attempt.attempt.peer();
+        let request_id = attempt.attempt.request_id();
         let peer_id = i2pr_transport::PeerId::from_hash(*target.as_hash());
         if ssu2_handle.service().session_peer_links(peer_id).is_empty() {
             let Some((_, record)) = records.iter().find(|(hash, _)| hash == target) else {
+                let _ = coordinator.mark_delivery_failed(request_id);
                 continue;
             };
             if crate::service_product::ensure_peer_session_for_record(
@@ -500,14 +593,16 @@ pub async fn publish_router_info<R: RngCore>(
             .await
             .is_err()
             {
+                let _ = coordinator.mark_delivery_failed(request_id);
                 continue;
             }
         }
         let Some(message_id) = fresh_message_id(rng) else {
+            let _ = coordinator.mark_delivery_failed(request_id);
             continue;
         };
         let Ok(wire) = crate::outbound_lookup::encode_store_envelope_short(
-            store_message,
+            &attempt.store_message,
             message_id,
             // The same 60-second lifetime policy the one-shot publication
             // carries, in the seconds the direct short envelope holds.
@@ -518,23 +613,30 @@ pub async fn publish_router_info<R: RngCore>(
         let Ok(request) =
             crate::router_i2np::RouterDeliveryRequest::new(peer_id, wire, dial_timeout)
         else {
+            let _ = coordinator.mark_delivery_failed(request_id);
             continue;
         };
         if matches!(
             ssu2_handle.delivery().deliver(request, cancellation),
             crate::router_i2np::RouterDeliveryOutcome::Accepted
         ) {
+            // A **delivery** admission, not an acknowledgement. The attempt
+            // is delivered; only the network's `DeliveryStatus` makes it
+            // acknowledged.
+            let _ = coordinator.mark_delivered(request_id);
             accepted = accepted.saturating_add(1);
+        } else {
+            let _ = coordinator.mark_delivery_failed(request_id);
         }
     }
     if accepted > 0 {
         RouterInfoPublicationOutcome::Published {
-            targets: targets.len(),
+            targets: attempts.len(),
             accepted,
         }
     } else {
         RouterInfoPublicationOutcome::DeliveryRefused {
-            targets: targets.len(),
+            targets: attempts.len(),
         }
     }
 }
