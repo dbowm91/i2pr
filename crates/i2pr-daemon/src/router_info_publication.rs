@@ -33,6 +33,13 @@
 //! acknowledgement is a separate fact, counted separately, and it arrives
 //! on the inbound path rather than inside the publication's own call.
 //!
+//! Plan 517 adds the **retry**. One publication is a **cycle**: a bounded
+//! ladder of **batches**, each batch being the closest eligible targets the
+//! cycle has not already asked. A batch the network does not acknowledge
+//! within the reference's `ROUTER_INFO_CONFIRMATION_TIMEOUT` is followed by
+//! the next one, and a confirmation ends the cycle. The deadline rides the
+//! composition root's existing tick, so no new timer is introduced.
+//!
 //! Nothing here advertises anything: `router.version` stays `0.9.62`, the
 //! published RouterInfo's content is unchanged, and the inventory's
 //! advertised count stays zero.
@@ -65,6 +72,38 @@ pub const PUBLICATION_INTERVAL_MS: u64 = 39 * 60 * 1_000;
 /// pass, which is not weaker: it reaches several peers immediately where
 /// the reference reaches one and then waits.
 pub const PUBLICATION_FLOODFILLS: usize = 3;
+
+/// The reference's confirmation timeout:
+/// `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds
+/// (`libi2pd/RouterContext.h:37`).
+///
+/// The reference waits this long for a floodfill's `DeliveryStatus` before
+/// it asks the next closest one
+/// (`libi2pd/RouterContext.cpp:1560`).
+pub const PUBLICATION_CONFIRMATION_TIMEOUT_MS: u64 = 1_600;
+
+/// The reference's bound on the targets one cycle may ask:
+/// `ROUTER_INFO_MAX_PUBLISH_EXCLUDED_FLOODFILLS`
+/// (`libi2pd/RouterContext.h:38`).
+///
+/// The reference clears its exclusion set and starts again when the set
+/// grows past this (`libi2pd/RouterContext.cpp:1495-1498`), so a cycle
+/// never asks more than this many targets.
+pub const PUBLICATION_CYCLE_TARGETS: usize = 15;
+
+/// A reading of the current time, in milliseconds.
+///
+/// Plan 517: the confirmation deadline is measured from the moment the
+/// batch went **out**, exactly as the reference arms its resend timer after
+/// the publish returns (`libi2pd/RouterContext.cpp:1476`). The module
+/// therefore asks its **caller** for the reading rather than reading a
+/// clock itself, so the whole ladder stays provable without a wall clock, a
+/// socket or a sleep.
+///
+/// The clock is `Sync` so the composition root's future stays `Send`: the
+/// reading is taken across an `await`, and a shared reference is only
+/// `Send` when its referent is `Sync`.
+pub type PublicationClock = dyn Fn() -> u64 + Sync;
 
 /// The outcome of one publication attempt.
 ///
@@ -128,6 +167,16 @@ pub struct RouterInfoPublicationCounters {
     /// its own reason. It never confirms anything and is never dropped
     /// silently.
     pub unmatched: u64,
+    /// The number of publication batches asked beyond the first.
+    ///
+    /// Plan 517: a batch that the network did not acknowledge within the
+    /// reference's confirmation timeout is followed by the next batch.
+    pub retries: u64,
+    /// The number of cycles that reached the reference's bound without an
+    /// acknowledgement.
+    ///
+    /// Plan 517: the cycle ends and the next period starts a fresh one.
+    pub cycles_exhausted: u64,
 }
 
 /// The outcome of one inbound acknowledgement.
@@ -161,6 +210,72 @@ pub fn confirm_publication(
         },
         Err(_) => PublicationConfirmation::Unmatched,
     }
+}
+
+/// One publication cycle: the ladder of batches a single publication
+/// makes.
+///
+/// Plan 517. The reference asks one floodfill at a time, waits
+/// `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds for the answer, and asks
+/// the next closest one if the answer has not arrived
+/// (`libi2pd/RouterContext.cpp:1560`). This tree asks a **batch** at a
+/// time -- Plan 515's fan-out of three -- so the batch is the ladder's
+/// rung. The targets already asked are the cycle's **exclusion set**, and
+/// a target is never asked twice in one cycle.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RouterInfoPublicationCycle {
+    asked: Vec<RouterHash>,
+    deadline_ms: Option<u64>,
+    /// The number of batches the cycle has asked.
+    batches: usize,
+    /// Whether a cycle is running.
+    ///
+    /// A running cycle holds the publication: the periodic tick does not
+    /// start a second one over it, and a cycle that is halted keeps its
+    /// exclusion set so the targets it asked can be counted.
+    active: bool,
+}
+
+impl RouterInfoPublicationCycle {
+    /// The targets the cycle has already asked.
+    pub fn asked(&self) -> &[RouterHash] {
+        &self.asked
+    }
+
+    /// The confirmation deadline, if a batch is awaited.
+    pub const fn deadline_ms(&self) -> Option<u64> {
+        self.deadline_ms
+    }
+
+    /// The number of batches the cycle has asked.
+    pub const fn batches(&self) -> usize {
+        self.batches
+    }
+
+    /// Whether a cycle is running.
+    pub const fn active(&self) -> bool {
+        self.active
+    }
+}
+
+/// The cycle's next step.
+///
+/// Plan 517: the decision is **runtime-neutral**. It reads the store and
+/// the cycle's own state and never a clock, so the whole retry decision is
+/// provable without a socket, a wall clock or a sleep.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouterInfoPublicationStep {
+    /// The batch to ask: the closest eligible targets the cycle has not
+    /// already asked.
+    Ask(Vec<RouterHash>),
+    /// The cycle reached the reference's bound of asked targets.
+    ///
+    /// The cycle ends, and the next period starts a fresh one.
+    Exhausted,
+    /// No eligible target is left that the cycle has not already asked.
+    ///
+    /// The cycle ends, and the next period starts a fresh one.
+    NoTarget,
 }
 
 /// The runtime-neutral publication schedule.
@@ -203,6 +318,11 @@ impl RouterInfoPublicationSchedule {
         }
     }
 
+    /// The schedule's counters, mutably.
+    pub const fn counters_mut(&mut self) -> &mut RouterInfoPublicationCounters {
+        &mut self.counters
+    }
+
     /// Records one inbound acknowledgement.
     ///
     /// Plan 516: a confirmed acknowledgement and an unmatched one are
@@ -226,6 +346,22 @@ impl RouterInfoPublicationSchedule {
     /// after this one.
     pub fn record(&mut self, now_ms: u64, outcome: RouterInfoPublicationOutcome) {
         self.last_attempt_ms = Some(now_ms);
+        self.count_attempt(outcome);
+    }
+
+    /// Records one **retry** and its outcome.
+    ///
+    /// Plan 517: a retry is an attempt, so it is counted under its own
+    /// outcome like any other. The **period is not moved**: the reference
+    /// arms its publish timer once, at the cycle's start
+    /// (`libi2pd/RouterContext.cpp:1470-1476`), so the next period is
+    /// anchored to the cycle and not to the last rung of the ladder.
+    pub fn record_retry(&mut self, outcome: RouterInfoPublicationOutcome) {
+        self.count_attempt(outcome);
+    }
+
+    /// Counts one attempt under its own outcome.
+    fn count_attempt(&mut self, outcome: RouterInfoPublicationOutcome) {
         self.counters.attempts = self.counters.attempts.saturating_add(1);
         match outcome {
             RouterInfoPublicationOutcome::Published { .. } => {
@@ -272,6 +408,24 @@ pub fn publication_targets(
     policy: &LookupPolicy,
 ) -> VersionGatedFloodfillSelection {
     select_version_gated_floodfills(store, local_hash, &[*local_hash], policy)
+}
+
+/// The publication's selection, with the cycle's exclusion set.
+///
+/// Plan 517: the targets a cycle has already asked are excluded, so a
+/// target is never asked twice in one cycle. The version gate is the same
+/// function, so Plan 503's API-version floor holds for every target of
+/// every batch.
+pub fn publication_targets_excluding(
+    store: &RouterInfoStore,
+    local_hash: &RouterHash,
+    excluded: &[RouterHash],
+    policy: &LookupPolicy,
+) -> VersionGatedFloodfillSelection {
+    let mut exclusions = Vec::with_capacity(excluded.len() + 1);
+    exclusions.push(*local_hash);
+    exclusions.extend_from_slice(excluded);
+    select_version_gated_floodfills(store, local_hash, &exclusions, policy)
 }
 
 /// The plan for one publication: the targets and the store, or the refusal.
@@ -338,6 +492,9 @@ pub struct RouterInfoPublicationOwner {
     /// Plan 516: the correlator that mints the reply token, composes the
     /// store message and holds the bounded attempt book.
     coordinator: PublicationCoordinator,
+    /// Plan 517: the cycle -- the exclusion set of the targets already
+    /// asked, and the confirmation deadline.
+    cycle: RouterInfoPublicationCycle,
 }
 
 impl RouterInfoPublicationOwner {
@@ -348,6 +505,7 @@ impl RouterInfoPublicationOwner {
             local_hash,
             policy: LookupPolicy::default(),
             coordinator: PublicationCoordinator::new(LookupPolicy::default()),
+            cycle: RouterInfoPublicationCycle::default(),
         }
     }
 
@@ -368,6 +526,12 @@ impl RouterInfoPublicationOwner {
     pub fn confirm(&mut self, message_id: u32) -> PublicationConfirmation {
         let outcome = confirm_publication(&mut self.coordinator, message_id);
         self.schedule.record_confirmation(outcome);
+        if matches!(outcome, PublicationConfirmation::Confirmed { .. }) {
+            // Plan 517: a confirmation ends the cycle. The reference clears
+            // its exclusion set and schedules the next publish at the full
+            // interval (`libi2pd/RouterContext.cpp:1321-1328`).
+            self.end_cycle();
+        }
         outcome
     }
 
@@ -389,6 +553,150 @@ impl RouterInfoPublicationOwner {
     /// Whether a publication is due at `now_ms`.
     pub fn is_due(&self, now_ms: u64) -> bool {
         self.schedule.is_due(now_ms)
+    }
+
+    /// Starts a publication cycle, if none is in progress.
+    ///
+    /// Plan 517: a cycle is the ladder of batches one publication makes.
+    /// Only one cycle is in progress at a time, and a cycle that is already
+    /// running is **left alone** -- the periodic tick must not start a
+    /// second one over the first.
+    pub fn begin_cycle(&mut self) -> bool {
+        if self.cycle_in_progress() {
+            return false;
+        }
+        self.cycle = RouterInfoPublicationCycle::default();
+        self.cycle.active = true;
+        true
+    }
+
+    /// Whether a cycle is in progress.
+    pub const fn cycle_in_progress(&self) -> bool {
+        self.cycle.active
+    }
+
+    /// The cycle's state.
+    pub const fn cycle(&self) -> &RouterInfoPublicationCycle {
+        &self.cycle
+    }
+
+    /// Whether the cycle reached the reference's bound of asked targets.
+    pub fn cycle_reached_bound(&self) -> bool {
+        self.cycle.asked.len() >= PUBLICATION_CYCLE_TARGETS
+    }
+
+    /// The cycle's next step.
+    ///
+    /// Plan 517: the step is runtime-neutral -- it reads the store and the
+    /// cycle's own state, and never a clock -- so the whole retry decision
+    /// is provable without a socket, a wall clock or a sleep.
+    pub fn cycle_step(&self, store: &RouterInfoStore) -> RouterInfoPublicationStep {
+        if self.cycle_reached_bound() {
+            return RouterInfoPublicationStep::Exhausted;
+        }
+        match self.cycle_batch(store) {
+            Some(targets) => RouterInfoPublicationStep::Ask(targets),
+            None => RouterInfoPublicationStep::NoTarget,
+        }
+    }
+
+    /// The next batch of targets for the cycle.
+    ///
+    /// `None` when the cycle has reached the reference's bound, or when no
+    /// eligible target is left that the cycle has not already asked.
+    pub fn cycle_batch(&self, store: &RouterInfoStore) -> Option<Vec<RouterHash>> {
+        if self.cycle_reached_bound() {
+            return None;
+        }
+        let remaining = PUBLICATION_CYCLE_TARGETS - self.cycle.asked.len();
+        let selection =
+            publication_targets_excluding(store, &self.local_hash, &self.cycle.asked, &self.policy);
+        let targets: Vec<RouterHash> = selection
+            .targets()
+            .iter()
+            .copied()
+            .take(PUBLICATION_FLOODFILLS)
+            .take(remaining)
+            .collect();
+        if targets.is_empty() {
+            None
+        } else {
+            Some(targets)
+        }
+    }
+
+    /// Records a batch that was sent, and arms the confirmation deadline.
+    ///
+    /// Plan 517: the deadline is the reference's
+    /// `ROUTER_INFO_CONFIRMATION_TIMEOUT` from the moment the batch went
+    /// out (`libi2pd/RouterContext.h:37`).
+    pub fn record_batch(&mut self, now_ms: u64, targets: &[RouterHash]) {
+        if targets.is_empty() {
+            // Nothing was asked, so nothing is awaited.
+            return;
+        }
+        for target in targets {
+            if !self.cycle.asked.contains(target) {
+                self.cycle.asked.push(*target);
+            }
+        }
+        if self.cycle.batches > 0 {
+            let retries = self.schedule.counters().retries.saturating_add(1);
+            self.schedule.counters_mut().retries = retries;
+        }
+        self.cycle.batches = self.cycle.batches.saturating_add(1);
+        self.cycle.deadline_ms = Some(now_ms.saturating_add(PUBLICATION_CONFIRMATION_TIMEOUT_MS));
+        self.cycle.active = true;
+    }
+
+    /// Whether the awaited confirmation's deadline has passed.
+    pub fn cycle_expired(&self, now_ms: u64) -> bool {
+        match self.cycle.deadline_ms {
+            Some(deadline) => now_ms >= deadline,
+            None => false,
+        }
+    }
+
+    /// Abandons the awaited batch, so the next one may be asked.
+    ///
+    /// Plan 517: a batch the network did not acknowledge within the
+    /// reference's timeout is followed by the next batch, and a batch the
+    /// transport refused is followed at once. The **retry** itself is
+    /// counted when the next batch is asked, not here, so the counter
+    /// counts batches and not abandonments.
+    pub fn abandon_batch(&mut self, now_ms: u64) -> bool {
+        if self.cycle.deadline_ms.is_none() {
+            return false;
+        }
+        self.cycle.deadline_ms = Some(now_ms);
+        true
+    }
+
+    /// Ends the cycle: the next period starts a fresh one.
+    ///
+    /// Plan 517: a confirmation ends the cycle -- the reference clears its
+    /// exclusion set and schedules the next publish at the full interval
+    /// (`libi2pd/RouterContext.cpp:1321-1328`).
+    pub fn end_cycle(&mut self) {
+        self.cycle = RouterInfoPublicationCycle::default();
+    }
+
+    /// Halts the cycle, keeping the targets it asked for the record.
+    ///
+    /// Plan 517: a cycle that reached the reference's bound, or one with
+    /// no eligible target left, is over. Its exclusion set is **kept** so
+    /// the targets it asked can be counted, and the next period starts a
+    /// fresh cycle.
+    pub fn halt_cycle(&mut self) {
+        self.cycle.deadline_ms = None;
+        self.cycle.active = false;
+    }
+
+    /// Records that a cycle reached the reference's bound without an
+    /// acknowledgement.
+    pub fn record_cycle_exhausted(&mut self) {
+        self.schedule.counters_mut().cycles_exhausted =
+            self.schedule.counters().cycles_exhausted.saturating_add(1);
     }
 
     /// Plans one publication.
@@ -444,8 +752,12 @@ pub async fn refresh_router_info<R: RngCore>(
     qualification_profile: crate::config::Ssu2QualificationProfile,
     rng: &mut R,
     cancellation: &i2pr_runtime::CancellationToken,
-    now_ms: u64,
+    clock: &PublicationClock,
 ) -> RouterInfoPublicationOutcome {
+    // Plan 515: the attempt's clock reading is taken **before** the send,
+    // so the period stays anchored to the attempt and not to the moment
+    // the delivery finished.
+    let attempt_ms = clock();
     let outcome = publish_once(
         owner,
         ssu2_handle,
@@ -455,10 +767,58 @@ pub async fn refresh_router_info<R: RngCore>(
         qualification_profile,
         rng,
         cancellation,
+        clock,
     )
     .await;
-    owner.schedule_mut().record(now_ms, outcome);
+    owner.schedule_mut().record(attempt_ms, outcome);
     outcome
+}
+
+/// Advances the publication cycle: asks the next batch when the awaited
+/// confirmation's deadline has passed.
+///
+/// Plan 517. The reference asks the next closest floodfill every
+/// `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds
+/// (`libi2pd/RouterContext.cpp:1560`) until one of them acknowledges
+/// (`libi2pd/RouterContext.cpp:1321-1328`) or the exclusion set reaches
+/// its bound (`libi2pd/RouterContext.h:38`).
+#[allow(clippy::too_many_arguments)]
+pub async fn advance_publication_cycle<R: RngCore>(
+    owner: &mut RouterInfoPublicationOwner,
+    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
+    local_record: Option<Vec<u8>>,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    rng: &mut R,
+    cancellation: &i2pr_runtime::CancellationToken,
+    clock: &PublicationClock,
+) -> Option<RouterInfoPublicationOutcome> {
+    if !owner.cycle_in_progress() {
+        // Nothing is awaited, so there is no ladder to advance, no attempt
+        // is made, and no counter moves.
+        return None;
+    }
+    let attempt_ms = clock();
+    // The awaited batch is abandoned; the next one is asked.
+    owner.abandon_batch(attempt_ms);
+    let outcome = publish_once(
+        owner,
+        ssu2_handle,
+        bootstrap,
+        local_record,
+        dial_timeout,
+        qualification_profile,
+        rng,
+        cancellation,
+        clock,
+    )
+    .await;
+    // A retry is an attempt, but the **period is not moved**: the
+    // reference arms its publish timer once, at the cycle's start
+    // (`libi2pd/RouterContext.cpp:1470-1476`).
+    owner.schedule_mut().record_retry(outcome);
+    Some(outcome)
 }
 
 /// Publishes once, without touching the schedule.
@@ -472,6 +832,7 @@ async fn publish_once<R: RngCore>(
     qualification_profile: crate::config::Ssu2QualificationProfile,
     rng: &mut R,
     cancellation: &i2pr_runtime::CancellationToken,
+    clock: &PublicationClock,
 ) -> RouterInfoPublicationOutcome {
     let Some(local_record) = local_record else {
         return RouterInfoPublicationOutcome::RefusedNoLocalRecord;
@@ -480,16 +841,29 @@ async fn publish_once<R: RngCore>(
         return RouterInfoPublicationOutcome::RefusedNoTarget;
     };
     let local_hash = *owner.local_hash();
-    let (attempts, records) = {
+    let (attempts, records, targets) = {
         let Ok(guard) = bootstrap.lock() else {
             return RouterInfoPublicationOutcome::RefusedNoTarget;
         };
-        let plan = owner.plan(guard.store(), Some(local_record.as_slice()));
-        let RouterInfoPublicationPlan::Publish { targets, .. } = &plan else {
-            return plan
-                .refusal()
-                .unwrap_or(RouterInfoPublicationOutcome::RefusedNoTarget);
+        // Plan 517: the batch is the cycle's next set of targets, and the
+        // targets the cycle has already asked are excluded from it.
+        let targets = match owner.cycle_step(guard.store()) {
+            RouterInfoPublicationStep::Ask(targets) => targets,
+            // Either the cycle reached the reference's bound, or no
+            // eligible target is left that the cycle has not already
+            // asked. Either way the cycle is over, and the next period
+            // starts a fresh one.
+            RouterInfoPublicationStep::Exhausted => {
+                owner.record_cycle_exhausted();
+                owner.halt_cycle();
+                return RouterInfoPublicationOutcome::RefusedNoTarget;
+            }
+            RouterInfoPublicationStep::NoTarget => {
+                owner.halt_cycle();
+                return RouterInfoPublicationOutcome::RefusedNoTarget;
+            }
         };
+        let plan = RouterInfoPublicationPlan::publish(targets.clone(), local_record.clone());
         let records = targets
             .iter()
             .filter_map(|hash| {
@@ -501,9 +875,9 @@ async fn publish_once<R: RngCore>(
             })
             .collect::<Vec<_>>();
         let attempts = begin_attempts(owner.coordinator_mut(), local_hash, &plan, guard.store());
-        (attempts, records)
+        (attempts, records, targets)
     };
-    publish_router_info(
+    let outcome = publish_router_info(
         owner.coordinator_mut(),
         &attempts,
         &records,
@@ -513,7 +887,20 @@ async fn publish_once<R: RngCore>(
         rng,
         cancellation,
     )
-    .await
+    .await;
+    // Plan 517: the deadline is armed from the moment the batch went out.
+    // The reading is the one taken **after** the send, exactly as the
+    // reference arms its resend timer after the publish returns
+    // (`libi2pd/RouterContext.cpp:1476`). A batch the transport refused is
+    // abandoned at once rather than waiting out the timeout.
+    owner.record_batch(clock(), &targets);
+    if matches!(
+        outcome,
+        RouterInfoPublicationOutcome::DeliveryRefused { .. }
+    ) {
+        owner.abandon_batch(clock());
+    }
+    outcome
 }
 
 /// The attempts of one publication, begun against the store.

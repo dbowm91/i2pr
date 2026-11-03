@@ -5058,9 +5058,15 @@ fn register_ssu2_service(
                                 // schedule says it is due. Every outcome is
                                 // counted by reason, and a refusal never
                                 // stops the router.
+                                //
+                                // Plan 517: the publication is a **cycle**,
+                                // and a cycle that is already running is
+                                // left alone -- the periodic tick must not
+                                // start a second one over the first.
                                 let now_ms = wall_clock_ms();
                                 if let Some(publication_owner) = publication_owner.as_mut()
                                     && publication_owner.is_due(now_ms)
+                                    && publication_owner.begin_cycle()
                                 {
                                     let local_record =
                                         owner.handle().service().installed_local_router_info();
@@ -5073,7 +5079,7 @@ fn register_ssu2_service(
                                         ssu2_config.qualification_profile,
                                         &mut publication_rng,
                                         &cancellation,
-                                        now_ms,
+                                        &wall_clock_ms,
                                     )
                                     .await;
                                     tracing::info!(
@@ -5125,6 +5131,42 @@ fn register_ssu2_service(
                                             carried = drained.carried,
                                             carriage_refused = carriage_refused,
                                             "SSU2 introducer relay handoff drained"
+                                        );
+                                    }
+                                }
+
+                                // Plan 517: the publication's confirmation
+                                // deadline rides **this** tick -- the loop's
+                                // existing 100 millisecond cadence -- so no
+                                // new timer is introduced. A batch the
+                                // network did not acknowledge within the
+                                // reference's timeout is followed by the next
+                                // batch, and a delivery refusal is followed
+                                // at once.
+                                let publication_now_ms = wall_clock_ms();
+                                if let Some(publication_owner) = publication_owner.as_mut()
+                                    && publication_owner.cycle_expired(publication_now_ms)
+                                {
+                                    let local_record =
+                                        owner.handle().service().installed_local_router_info();
+                                    if let Some(outcome) =
+                                        crate::router_info_publication::advance_publication_cycle(
+                                            publication_owner,
+                                            owner.handle(),
+                                            live_bootstrap.as_ref(),
+                                            local_record,
+                                            publication_dial_timeout,
+                                            ssu2_config.qualification_profile,
+                                            &mut publication_rng,
+                                            &cancellation,
+                                            &wall_clock_ms,
+                                        )
+                                        .await
+                                    {
+                                        tracing::info!(
+                                            transition = "router_info_publication_retry",
+                                            outcome = ?outcome,
+                                            "router RouterInfo publication retry",
                                         );
                                     }
                                 }
