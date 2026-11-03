@@ -86,6 +86,9 @@ so a cycle's exclusion set is the same mechanism with a longer slice.
    same version-gated function.
 7. **Nothing is advertised.** `router.version` stays `0.9.62`; the
    published RouterInfo is unchanged; the advertised count stays zero.
+8. **The cycle cannot get stuck.** An outcome that leaves nothing to await
+   halts the cycle, so the ladder always advances or ends, and the next
+   period's cycle is never held out.
 
 ## 5. Scope
 
@@ -157,6 +160,14 @@ so a cycle's exclusion set is the same mechanism with a longer slice.
 - **D8 — The cycle's state is runtime-neutral.** It takes `now_ms` from
   its caller and never reads a clock, like the schedule it extends, so the
   whole ladder is provable without a wall clock, a socket or a sleep.
+- **D9 — The cycle's outcome is decided in one place, and a cycle that
+  cannot proceed is halted.** A batch that went out is awaited, a refused
+  delivery is abandoned at once, and **anything else halts the cycle**. A
+  cycle that is running with nothing to await would never advance, and it
+  would hold the next period's cycle out, so the router would stop
+  publishing entirely. Decision D9 was added after the negative controls
+  found that hole; it is recorded here rather than left implicit in the
+  code.
 
 ## 8. Work packages
 
@@ -171,6 +182,9 @@ so a cycle's exclusion set is the same mechanism with a longer slice.
 ## 9. Failure, cancellation, restart, and contention semantics
 
 - A cycle that is cancelled mid-flight is `Cancelled`, never confirmed.
+- An outcome that leaves nothing to await **halts** the cycle (decision
+  **D9**), so a cycle is never left running with nothing to advance and
+  never holds the next period's cycle out.
 - A router that restarts loses its cycle, and a confirmation for a previous
   process is never counted: the token space is per-process.
 - Two cycles cannot overlap: a cycle in progress holds the publication, and
@@ -194,8 +208,10 @@ so a cycle's exclusion set is the same mechanism with a longer slice.
 - a cycle is **not** retried before the reference's deadline;
 - a cycle **is** retried when the deadline passes with no confirmation;
 - a confirmation **ends** the cycle;
-- a delivery refusal advances **immediately**;
+- a **delivery refusal** advances **immediately**;
 - the cycle is **bounded** by the reference's fifteen;
+- the cycle **cannot get stuck**: an outcome that leaves nothing to await
+  halts it;
 - a target is **never** asked twice in one cycle;
 - the fan-out stays bounded at three;
 - the cycle never reads a clock.
