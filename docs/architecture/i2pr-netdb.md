@@ -283,7 +283,7 @@ enforces the Plan 103 §2.3 fail-closed order
 `ExcessiveFuture { skew_secs, max_skew_secs }`, `ArithmeticOverflow`,
 `Crypto(CryptoError)`.
 
-Defaults (`router_info.rs:20-30`): `DEFAULT_MAX_AGE` = 24 h,
+Defaults (`router_info.rs:20-30`): `DEFAULT_MAX_AGE` = 24 h. **Plan 518** re-exports `DEFAULT_MAX_AGE` and `DEFAULT_MAX_FUTURE_SKEW` at the crate root, so the daemon's publication staleness rule uses **this** window rather than a second constant:
 `DEFAULT_MAX_FUTURE_SKEW` = 1 h, `DEFAULT_MAX_ENCODED_LEN` = 16 KiB.
 `RouterInfoValidationPolicy::default_const()` is `const`-evaluable.
 

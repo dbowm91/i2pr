@@ -2527,6 +2527,11 @@ so the inventory holds **109 surfaces, 104 experimental, 4 deferred, 1 ready,
 0 advertised**. The advertised count stays **zero**: Plan 517 makes the
 publication *retry*, and advertises nothing new.
 
+**Plan 518 adds one surface** — `daemon.router-info-publication-freshness` —
+so the inventory holds **110 surfaces, 105 experimental, 4 deferred, 1 ready,
+0 advertised**. The advertised count stays **zero**: Plan 518 makes the
+published record *current*, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -2575,6 +2580,47 @@ That half needs Plan 493's authorized two-host topology, and the
 stock-peer evidence remains blocked on it. Nothing is advertised: the
 inventory's advertised count stays zero, `router.version` stays `0.9.62`,
 and the published RouterInfo is unchanged.
+
+## The router's own record carries a fresh date (Plan 518)
+
+Plan 515 made the publication periodic. Plan 516 made it confirmable. Plan 517
+made it retry. All three re-send the **same bytes** — and those bytes carry the
+publication date the router signed at **startup**.
+
+So the record ages. The netdb's acceptance window is `DEFAULT_MAX_AGE`, 24 hours
+(`crates/i2pr-netdb/src/router_info.rs:20`), and the reference's own netdb
+expires routers between one and a half and twenty-seven hours
+(`libi2pd/NetDb.hpp:49-51`). After a day of uptime the router keeps
+republishing a record the network will not accept, every 39 minutes, with no
+counter and no diagnostic. The publication is not slow: it is **dead**.
+
+The reference avoids this by re-dating and re-signing its record before each
+publish (`libi2pd/RouterInfo.cpp:1218`, `libi2pd/RouterContext.cpp:1474`,
+`libi2pd/RouterContext.h:33`).
+
+**The record is now re-dated and re-signed, once per cycle.** The composition
+root re-dates the record at the cycle's start, installs the fresh record — so
+the RouterInfo the router hands out in `SessionConfirmed` carries the fresh date
+too — and publishes it. Only the date and the signature change: the signed
+region is re-encoded from the record's own decoded parts, so the addresses, the
+peers and the options are preserved, and the router's **hash** does not change,
+because a RouterInfo's key is derived from the router identity rather than from
+the signed bytes.
+
+**Proved here:** a record is publishable when it is fresh and refused when it is
+stale, and a record dated too far in the future is refused too; the netdb's own
+validator refuses the stale record and accepts the re-dated one at the same
+reading; the re-dated record keeps the content and the router hash, and keeps a
+peer; the re-dated record's signature verifies and the original's does not cover
+the new date; a record that cannot be re-dated is refused; the staleness refusal
+is counted under its own reason; the re-dating is deterministic; and the
+re-dating happens once per cycle, at the cycle's start, and not per rung.
+
+**Not proved here, and not claimed:** that a **stock** floodfill accepts the
+re-dated record in the live network. That half needs Plan 493's authorized
+two-host topology, and the stock-peer evidence remains blocked on it. Nothing
+is advertised: the inventory's advertised count stays zero, `router.version`
+stays `0.9.62`, and the published RouterInfo's content is unchanged.
 
 ## The router retries a publication the network did not acknowledge (Plan 517)
 

@@ -1094,3 +1094,77 @@ without a wall clock, a socket or a sleep.
 The **stock-peer** half. That a pinned stock floodfill answers a publication,
 and that the retry therefore reaches one, is still blocked on Plan 493's
 authorized two-host topology, and no live claim is made.
+## 17. How the router's own record stays current (Plan 518)
+
+### 17.1 The re-dating must happen once per cycle
+
+The reference dates the record in `HandlePublishTimer`
+(`libi2pd/RouterContext.cpp:1474`), once per cycle, and its resend rungs publish
+that same record. The re-dating must therefore happen at the cycle's start and
+**not** per rung.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_re_dating_happens_once_per_cycle`.
+
+### 17.2 The publication must publish the re-dated record
+
+The publication tick must not read the installed record directly: it must
+publish the record the cycle re-dated, or the freshness the cycle established
+is lost at the last step.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_publication_uses_the_re_dated_record`.
+
+### 17.3 The staleness rule must use the netdb's own window
+
+The window is the netdb's `DEFAULT_MAX_AGE`, not a second constant: the refusal
+must fire exactly when a peer would refuse the record, so the two may not drift
+apart.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_staleness_rule_uses_the_netdb_window`.
+
+### 17.4 A stale record must be refused, never published
+
+A record the network would refuse wastes a delivery and hides the fault, so it
+is refused and counted under its own reason.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`a_stale_record_is_refused`.
+
+### 17.5 The re-dating must not log a secret
+
+The re-dating's diagnostics carry a reason only. No key, no signature, and not
+the record's bytes.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_re_dating_logs_no_secret`.
+
+### 17.6 The proto's re-encode must preserve the content
+
+The signed region is re-encoded from the record's own parts, so the addresses,
+the peers and the options cannot drift.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_proto_preserves_the_content`.
+
+### 17.7 The crypto's re-sign must verify its own result
+
+A caller must never publish a record the crypto layer could not prove.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_crypto_verifies_its_result`.
+
+### 17.8 The publication module must stay runtime-neutral
+
+The staleness rule takes the reading from its caller and never reads a clock,
+and the module holds no key.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_refresh_boundary.rs`,
+`the_module_stays_runtime_neutral`.
+
+### 17.9 What this section does **not** gate
+
+The **stock-peer** half. That a pinned stock floodfill accepts the re-dated
+record in the live network is still blocked on Plan 493's authorized two-host
+topology, and no live claim is made.

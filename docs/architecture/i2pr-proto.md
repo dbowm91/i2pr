@@ -78,7 +78,7 @@ single-directory with **three** top-level submodules under `src/`
 | `common::certificate` | `src/common/certificate.rs` | 194 | `Certificate` enum and `KeyCertificate` | `Certificate`, `KeyCertificate` |
 | `common::identity` | `src/common/identity.rs` | 368 | `KeyAndCert` plus `RouterIdentity`/`Destination` | `KeyAndCert`, `RouterIdentity`, `Destination` |
 | `common::router_address` | `src/common/router_address.rs` | 78 | Transport-address record | `RouterAddress` |
-| `common::router_info` | `src/common/router_info.rs` | 262 | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
+| `common::router_info` | `src/common/router_info.rs` | 284 | Signed descriptor with retained `signed_bytes`, and the **Plan 518** re-encode of the signed region with a fresh publication date | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
 | `common::lease` | `src/common/lease.rs` | 299 | Classic `Lease`/`LeaseSet` plus explicit variant classification | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
 | `common::lease2` | `src/common/lease2.rs` | 1789 | Standard LeaseSet2 family: carrier, header, flags, keys, offline signature, MetaLeaseSet | `Lease2`, `LeaseSet2`, `LeaseSet2Header`, `LeaseSet2Flags`, `LeaseSet2EncryptionKey`, `OfflineSignature`, `MetaLease`, `MetaLeaseSet`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2EncryptionKeyError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `LEASE2_WIRE_SIZE`, `MAX_META_LEASES`, `MAX_LEASE_SET2_*` |
 | `common::version` | `src/common/version.rs` | 823 | Plan 491 typed comparator over published `router.version` strings: the specification's numeric rule, the `Unknown`/`Uncomparable` states, the API-version table's minimum-peer obligation rows, and the floor derivation | `ApiVersion`, `PublishedVersion`, `VersionEligibility`, `VersionFloors`, `MinimumPeerObligation`, `MINIMUM_PEER_OBLIGATIONS`, `SPECIFICATION_API_LEVEL`, `CATCH_ALL_VERSION`, `floors_in_force`, `MAX_API_VERSION_COMPONENTS` |
@@ -241,6 +241,34 @@ that refuses one. The refusal is **typed**, **counted**, **fail-closed** and
 **monotone**: it can only exclude a peer both references would admit, never
 admit one below a floor. The full derivation, with the pins and the file and
 line for each reference, is in `specs/QUALIFICATION-GATES.md` §10.
+
+### Plan 518: the signed region is re-encoded, not re-derived
+
+A RouterInfo's signature covers the record's **signed region** -- the identity, the
+addresses, the peers and the options -- and the **date** is part of that region. So
+re-dating a record means re-signing it, and a re-sign means the signed region has to
+be produced again.
+
+`RouterInfo::signed_bytes_with_published(&self, published: Date)` does that **from
+the record's own decoded parts**:
+
+```rust
+pub fn signed_bytes_with_published(&self, published: Date) -> Result<Vec<u8>, CodecError>
+```
+
+It re-encodes through the same `encode_unsigned` path the original encode used, so
+the addresses, the peers and the options are the record's own -- never re-derived,
+never re-guessed, and never a lossy round trip through a partial view.
+
+**Why this is in the protocol crate and not in the daemon.** The daemon must not
+re-implement the encoding: a second encoder would be a second answer to "what does
+this record say", and the two could drift. The re-encode lives beside the decode, so
+the two halves of the codec stay together.
+
+**No wire-format change.** `published` is already part of the signed region, so the
+re-encoded bytes have the same shape as the original. The record's **hash** does not
+change either, because a RouterInfo's key is derived from the router identity rather
+than from the signed bytes.
 
 ## Public surface
 
