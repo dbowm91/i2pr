@@ -814,6 +814,12 @@ change. A **confirmation** ends the cycle — the reference clears its exclusion
 set and schedules the next publish at the full interval — and a delivery
 **refusal** advances at once rather than waiting out the timeout.
 
+**The cycle cannot get stuck.** The publication decides what the outcome means
+for the cycle in **one** place: a batch that went out is awaited, a refused
+delivery is abandoned at once, and anything else **halts** the cycle. A cycle
+that is running with nothing to await would never advance, and it would hold
+the next period's cycle out.
+
 **Two divergences are recorded rather than imitated.** The tree's batch is
 Plan 515's fan-out of **three** rather than the reference's one target at a
 time, and a cycle that reaches the reference's bound of fifteen **ends** and

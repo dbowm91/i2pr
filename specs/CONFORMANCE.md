@@ -2603,7 +2603,9 @@ excludes the ones already asked; a cycle is not retried before the reference's
 timeout and is retried once it passes; a confirmation ends the cycle; a delivery
 refusal advances at once; the cycle is bounded by the reference's fifteen and
 the fan-out by the tree's three; the retry rides the loop's **existing** tick,
-and no new timer is introduced; the cycle never reads a clock.
+and no new timer is introduced; the cycle never reads a clock; and the cycle
+**cannot get stuck** -- an outcome that leaves nothing to await halts it, so it
+never holds the next period's cycle out.
 
 **Two divergences are recorded rather than imitated.** The tree's batch is
 Plan 515's fan-out of **three** rather than the reference's one target at a

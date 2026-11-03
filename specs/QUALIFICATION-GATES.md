@@ -1071,7 +1071,17 @@ is not retried.
 *Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
 `a_confirmation_ends_the_cycle`.
 
-### 16.6 The cycle must never read a clock
+### 16.6 The cycle must not be able to get stuck
+
+A cycle that is running with nothing to await would never advance, and it
+would hold the next period's cycle out. The publication must therefore
+**halt** the cycle whenever it cannot proceed, and **abandon** a refused
+batch at once.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
+`the_cycle_cannot_get_stuck`.
+
+### 16.7 The cycle must never read a clock
 
 The cycle takes the reading from its caller, so the whole ladder is provable
 without a wall clock, a socket or a sleep.
@@ -1079,7 +1089,7 @@ without a wall clock, a socket or a sleep.
 *Gate:* `crates/i2pr-daemon/tests/router_info_publication_retry_boundary.rs`,
 `the_cycle_never_reads_a_clock`.
 
-### 16.7 What this section does **not** gate
+### 16.8 What this section does **not** gate
 
 The **stock-peer** half. That a pinned stock floodfill answers a publication,
 and that the retry therefore reaches one, is still blocked on Plan 493's
