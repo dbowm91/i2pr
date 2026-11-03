@@ -957,3 +957,69 @@ from that checkout. The pinned Java reference is **2.13.0**
 **not installed** on this host — the local installation's jars carry no
 `router/netdb` package at all — so there is **no** Java reading of the
 publication timer to record. The **primary** derivation is i2pd's.
+
+## 15. The publication's acknowledgement (Plan 516)
+
+### 15.1 The correlation token must reach the wire
+
+A `DatabaseStore` whose reply token is zero asks the peer for **no**
+acknowledgement. The correlator's token must therefore be the token the
+store message carries, and it must never be zero.
+
+*Gate:* `crates/i2pr-netdb/src/publication.rs`, `begin_attempt`, carries the
+minted token; `crates/i2pr-daemon/tests/router_info_publication_confirmation.rs`,
+`the_publication_carries_the_correlators_minted_token`.
+
+### 15.2 The reply form must be the reference's direct reply
+
+A **zero** reply tunnel id means "send the `DeliveryStatus` straight back
+to me" (`libi2pd/I2NPProtocol.cpp:285`), and the reply gateway is the local
+hash. A tunnelled reply would need an inbound tunnel the router may not
+hold.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_confirmation.rs`,
+`the_store_uses_the_reference_s_direct_reply_form`.
+
+### 15.3 The key, the gateway and the payload must be one record
+
+A `DatabaseStore` whose key is the hash of one record and whose payload is
+another stores a record under the wrong key.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_confirmation.rs`,
+`the_store_keys_our_own_hash_and_carries_our_own_record`.
+
+### 15.4 There must be one store-message builder
+
+The daemon composes **no** store message of its own. The one-shot
+publication and the router-level refresh share the correlator's builder and
+its attempt book.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_confirmation_boundary.rs`,
+`the_daemon_composes_no_store_message` and
+`the_one_shot_goes_through_the_correlator`.
+
+### 15.5 The inbound owner must join the publication
+
+The acknowledgement arrives on the SSU2 service's inbound path. It must be
+routed to the correlator, and an answer that matches no live attempt must
+be **refused** and counted under its own reason.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_confirmation_boundary.rs`,
+`the_inbound_owner_joins_the_publication` and
+`an_unmatched_acknowledgement_is_refused`.
+
+### 15.6 A delivery is not an acknowledgement
+
+The two are counted separately, and a delivery admission alone never yields
+a confirmation.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_confirmation.rs`,
+`a_delivery_admission_is_not_an_acknowledgement` and
+`the_acknowledgement_is_counted_separately_from_the_publication`.
+
+### 15.7 What this section does **not** gate
+
+The **stock-peer** half. That a pinned stock floodfill answers a
+publication is still blocked on Plan 493's authorized two-host topology, and
+no live claim is made. Plan 515's finding **F1** — the reference's resend
+burst — is still open and is a successor's subject.

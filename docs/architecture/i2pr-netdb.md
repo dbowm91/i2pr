@@ -92,7 +92,7 @@ It must **not** own:
 | `profile_store` | `profile_store.rs` | 1 686 | Plan 488 tiered bounded profile store over the Plan 103 validated-RouterInfo store: classification, failure model, maintenance pass, and the bounded sanitized projection | `ProfileStore`, `ProfileStoreConfig`, `ProfileStoreStats`, `ProfileInsertOutcome`, `ObserveOutcome`, `MaintenanceReport`, `ProfileProjection`, `ProfileProjectionRecord`, `ProfileProjectionError`, `RestoreReport` |
 | `optimized_lookup` | `optimized_lookup.rs` | 310 | Plan 489 pure optimized lookup plan: closest-first candidates from the routing table, split into queryable and pending peers | `OptimizedPlan`, `OptimizedCandidate`, `plan_optimized_lookup`, `MAX_OPTIMIZED_QUERYABLE`, `MAX_OPTIMIZED_PENDING` |
 | `provenance` | `provenance.rs` | 476 | Plan 271 bounded privacy-safe provenance metadata and the pure namespace/disclosure eligibility policy | `ProvenanceIndex`, `RecordProvenance`, `RecordId`, `NetDbNamespace`, `ClientNamespaceId`, `InboundProvenance`, `StorePurpose`, `ProvenanceLimits`, `Eligibility` (re-exported as `ProvenanceEligibility`) |
-| `publication` | `publication.rs` | 823 | Local RouterInfo publication coordinator emitting one bounded `DatabaseStore` per nearest floodfill; Plan 491 refuses a floodfill below the DSM API-version floor and counts the refusal | `PublicationCoordinator`, `PublicationAttempt`, `PublicationAttemptRecord`, `PublicationAttemptState`, `PublicationCorrelation`, `PublicationSnapshot`, `PublicationError`, `FloodfillTargetSelection`, `MAX_PUBLICATION_ATTEMPTS` |
+| `publication` | `publication.rs` | 911 | Local RouterInfo publication coordinator emitting one bounded `DatabaseStore` per nearest floodfill; Plan 491 refuses a floodfill below the DSM API-version floor and counts the refusal; Plan 516 publishes an explicitly registered record and puts the minted correlation token **on the wire**, in the reference's direct-reply form, so the peer can answer | `PublicationCoordinator`, `PublicationLocalRecord`, `PublicationAttempt`, `PublicationAttemptRecord`, `PublicationAttemptState`, `PublicationCorrelation`, `PublicationSnapshot`, `PublicationError`, `FloodfillTargetSelection`, `MAX_PUBLICATION_ATTEMPTS` |
 | `replication` | `replication.rs` | 308 | Plan 275 bounded source-excluding direct DatabaseStore action planning over current/next daily routing keys | `ReplicationPlanner`, `ReplicationPolicy`, `ReplicationPlan`, `ReplicationStats`, `ReplicationError`, `DirectFloodAction`, `FloodfillPeerView`, `RoutingKeyClass`, `nearest_peers` |
 | `reseed` | `reseed.rs` | 1547 | SU3 framing, signer trust, RSA-SHA512-4096 verification, bounded ZIP ingestion, per-entry RouterInfo validation | `parse_su3`, `verify_su3`, `verify_su3_with_signers`, `verify_su3_archive`, `trust_signer_from_certificate`, `ReseedSignerTrustSet`, `TrustedSigner`, `ReseedSignerId`, `ReseedLimits`, `ReseedSignatureType`, `ReseedVerifyReport`, `ReseedVerifyOutcome`, `ReseedEntryReport`, `ReseedEntryState`, `ReseedVerifiedBundle`, `ReseedParseError`, `ReseedTrustError`, `ReseedEntryError`, `MAX_*` scan budgets |
 | `resource` | `resource.rs` | 154 | Plan 276 shared floodfill admission budgets with drop-released leases | `FloodfillResourceBudget`, `FloodfillResourcePolicy`, `FloodfillResourceSnapshot`, `ResourceKind`, `ResourceLease` |
@@ -194,7 +194,7 @@ provenance    ClientNamespaceId, Eligibility as ProvenanceEligibility, InboundPr
               StorePurpose
 publication   MAX_PUBLICATION_ATTEMPTS, PublicationAttempt, PublicationAttemptRecord,
               PublicationAttemptState, PublicationCoordinator, PublicationCorrelation,
-              PublicationError, PublicationSnapshot
+              PublicationError, PublicationLocalRecord, PublicationSnapshot
 replication   DirectFloodAction, FloodfillPeerView, ReplicationError, ReplicationPlan,
               ReplicationPlanner, ReplicationPolicy, ReplicationStats, RoutingKeyClass,
               nearest_peers
@@ -795,11 +795,21 @@ caller-supplied request id.
   above). `max_candidates_considered` remains the separate ceiling on the
   candidate set the selector produces.
 - `PublicationCoordinator` emits one bounded `DatabaseStore` per nearest
-  floodfill with `reply_token = 0` store-and-forget semantics, tracks
-  acknowledgement tokens, **never re-signs the local RouterInfo** (a
-  retry reuses the originally encoded bytes and the originally minted
-  reply token), and surfaces `needs_verification_lookup()` for the
-  verification path. `MAX_PUBLICATION_ATTEMPTS = 32` bounds concurrent
+  floodfill, tracks acknowledgement tokens, **never re-signs the local
+  RouterInfo** (a retry reuses the originally encoded bytes and the
+  originally minted reply token), and surfaces `needs_verification_lookup()`
+  for the verification path. **Plan 516** changes the wire: the store
+  message carries the **minted** reply token rather than zero, in the
+  reference's **direct-reply** form -- a nonzero token, a **zero** reply
+  tunnel id (the reference's *"zero tunnelID means direct reply"*,
+  `libi2pd/I2NPProtocol.cpp:285`), and the local hash as the reply gateway
+  (`:287-289`). Until then the token was minted, recorded and documented as
+  the key the peer would correlate the acknowledgement with, and then left
+  off the wire, so `correlate_delivery_status` could never match. The
+  coordinator also publishes an **explicitly registered record**
+  (`PublicationLocalRecord`) rather than re-encoding a snapshot, so the
+  store message's key, its reply gateway and its payload are provably one
+  record. `MAX_PUBLICATION_ATTEMPTS = 32` bounds concurrent
   attempts; `PublicationError` is `UnknownRequest { .. }`,
   `AlreadyTerminal { .. }`, `ReplyTokenReuse { .. }`.
   `PublicationAttemptRecord` (Plan 117 §5.2) carries the typed
@@ -1156,7 +1166,7 @@ What is **not** claimed, stated explicitly:
 | `DEFAULT_PER_ATTEMPT_DEADLINE_MS` | 1 500 | `lookup_policy.rs:28` |
 | `DEFAULT_MAX_SUGGESTED_HASHES` | 128 | `lookup_policy.rs:31` |
 | `DEFAULT_MAX_CANDIDATES_CONSIDERED` | 32 | `lookup_policy.rs:35` |
-| `MAX_PUBLICATION_ATTEMPTS` | 32 | `publication.rs:24` |
+| `MAX_PUBLICATION_ATTEMPTS` | 32 | `publication.rs:25` |
 | `MAX_SU3_BYTES` | 8 MiB | `reseed.rs:33` |
 | `MAX_ARCHIVE_ENTRIES` | 4 096 | `reseed.rs:37` |
 | `MAX_ARCHIVE_ROUTERINFO_BYTES` | 32 MiB | `reseed.rs:41` |

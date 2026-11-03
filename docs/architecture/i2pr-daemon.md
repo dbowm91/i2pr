@@ -27,7 +27,7 @@ implementation.
   on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
-- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:5115`): identity load,
+- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:5155`): identity load,
   cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
@@ -157,7 +157,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 6 786 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
 | `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
-| `src/lib.rs` | 6 337| Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision. **Plan 514** makes the operator's exploration switch real: `NetDbParticipation` carries `exploration_enabled`, read from `netdb.exploration_enabled`, and `drive_discovery` consults it before it starts an exploration — after the RouterInfo-kind resolution, so the routing table keeps its production reader  **Plan 515** adds the router's **own** RouterInfo refresh: the SSU2 service's loop carries a `publication_tick` beside the relay tick, and the refresh republishes the router's record on the reference's interval — it is the **router's own**, so the publication no longer depends on a service tunnel being provisioned | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 6 377| Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision. **Plan 514** makes the operator's exploration switch real: `NetDbParticipation` carries `exploration_enabled`, read from `netdb.exploration_enabled`, and `drive_discovery` consults it before it starts an exploration — after the RouterInfo-kind resolution, so the routing table keeps its production reader  **Plan 515** adds the router's **own** RouterInfo refresh: the SSU2 service's loop carries a `publication_tick` beside the relay tick, and the refresh republishes the router's record on the reference's interval — it is the **router's own**, so the publication no longer depends on a service tunnel being provisioned  **Plan 516** joins the **inbound owner** to the publication: the same loop that reads the inbound stream correlates an inbound `DeliveryStatus` with the attempt it names, so the router learns that the **network holds** its record -- a different fact from the transport having accepted the store | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
@@ -166,7 +166,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | --- | --- | --- | --- |
 | `src/bootstrap.rs` | 887| Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels. **Plan 513** adds `store_mut`, the narrow mutating accessor the discovery spine's RouterInfo-kind lookup writes a resolved record through | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
 
-> `bootstrap_daemon` itself lives in `src/lib.rs:5115`, not in `bootstrap.rs` — it is the
+> `bootstrap_daemon` itself lives in `src/lib.rs:5155`, not in `bootstrap.rs` — it is the
 > composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
 > `RouterInfoStoreConfig`, then calls `Bootstrap::run`.
 
@@ -175,7 +175,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/netdb_participation.rs` | 3 479| Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either. **Plan 497** adds the `RoutingTableConsumer` — the shared, mutex-owned handle the lookup path consults, whose `candidates(...)` answers `Table(Vec<RouterHash>)` or `Fallback(RoutingTableFallback)`, and whose `RoutingTableCounters` count every fallback by reason. **Plan 513** adds the **`NetDbDiscoverySpine`** — the bounded owner of the router's DHT discovery — with its `DiscoveryOutcome`, `DiscoveryError`, `DiscoveryDelivery`, `DiscoveryDispatch` and `NetDbDiscoveryCounters`; the spine owns no task, no timer, no listener and no socket, and the daemon's existing tick drives it. **Plan 514** adds `RoutingTableConsumer::closest_floodfill` — the table's closest-first answer, used as a **target** rather than a preference — and the spine's exploratory start asks the table for it, so the peer the request is addressed to is the closest floodfill rather than the flat store's first advertiser; a table that names none ends the request, counted under `explorations_refused_no_target` | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome`, `RoutingTableConsumer`, `RoutingTableCandidates`, `RoutingTableFallback`, `RoutingTableCounters` |
-| `src/router_info_publication.rs` | 562 | **Plan 515** the router's **own** RouterInfo publication: the runtime-neutral schedule (a period, a due test, the counted outcomes), the **shared** selection rule -- the version-gated function, so Plan 503's API-version floor holds for every publication -- the shared `DatabaseStore` construction, and the **one** delivery path the service product's one-shot publication and the router-level refresh both use. The schedule never reads a clock: it takes `now_ms` from its caller | `RouterInfoPublicationOwner`, `RouterInfoPublicationSchedule`, `RouterInfoPublicationOutcome`, `RouterInfoPublicationCounters`, `RouterInfoPublicationPlan`, `publication_targets`, `router_info_store_message`, `publish_router_info`, `refresh_router_info` |
+| `src/router_info_publication.rs` | 666 | **Plan 515** the router's **own** RouterInfo publication: the runtime-neutral schedule (a period, a due test, the counted outcomes), the **shared** selection rule -- the version-gated function, so Plan 503's API-version floor holds for every publication -- the shared `DatabaseStore` construction, and the **one** delivery path the service product's one-shot publication and the router-level refresh both use. The schedule never reads a clock: it takes `now_ms` from its caller. **Plan 516** makes the publication **confirmable**: the store message's construction moves to the correlator, so the minted correlation token reaches the wire, and the module gains the runtime-neutral confirmation seam (`confirm_publication`) and the attempt book the owner holds. A **delivery** admission and a **network acknowledgement** are counted separately | `RouterInfoPublicationOwner`, `RouterInfoPublicationSchedule`, `RouterInfoPublicationOutcome`, `RouterInfoPublicationCounters`, `RouterInfoPublicationPlan`, `PublicationConfirmation`, `publication_targets`, `begin_attempts`, `confirm_publication`, `publish_router_info`, `refresh_router_info` |
 | `src/netdb_seam.rs` | 1 592| Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider; **Plan 497** adds `begin_lookup_with_preferred`, which forwards a routing table's preferred peer list to the engine's `start_with_preferred` entry point. **Plan 513** adds the two live starts the discovery spine drives — `begin_routerinfo_lookup` (wire type `2`, the candidate list reordered by the table's preference and never narrowed) and `begin_exploratory_lookup` (wire type `3`) — plus `ingest_routerinfo_store`, `ingest_exploratory_search_reply`, `set_routerinfo_now_seconds` and `policy` | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome`, `begin_lookup_with_preferred` |
 | `src/netdb_tunnels.rs` | 1 180| Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss; **Plan 491** refuses a DSM whose floodfill target is below the DSM API-version floor; **Plan 497** adds `with_routing_table`, which injects the shared `RoutingTableConsumer` so `begin_tunnel_lookup` can ask the table how it would order the flat store's selection. **Plan 513** factors the composition into the free function `compose_lookup_via_outbound_tunnel`, which the coordinator's `compose_lookup_via_tunnel` now delegates to with byte-identical behaviour, so the live discovery spine reaches the canonical composition without constructing the never-composed coordinator | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
@@ -404,7 +404,7 @@ under Key contracts for the lifecycle detail.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
-| `src/service_product.rs` | 10 278| Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations. **Plan 513** adds the tick step `drive_netdb_discovery` and its two deliveries — `deliver_discovery_direct` for the exploratory kind and `deliver_discovery_via_outbound_tunnel` for the RouterInfo kind — plus the two ingestion helpers `ingest_discovery_search_reply` and `ingest_discovery_routerinfo_store`  **Plan 515** moves the creator RouterInfo publication onto the **shared** path — the same selection, the same store and the same delivery the router-level refresh uses — so the two cannot drift apart | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2407``) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_product.rs` | 10 264| Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations. **Plan 513** adds the tick step `drive_netdb_discovery` and its two deliveries — `deliver_discovery_direct` for the exploratory kind and `deliver_discovery_via_outbound_tunnel` for the RouterInfo kind — plus the two ingestion helpers `ingest_discovery_search_reply` and `ingest_discovery_routerinfo_store`  **Plan 515** moves the creator RouterInfo publication onto the **shared** path — the same selection, the same store and the same delivery the router-level refresh uses — so the two cannot drift apart. **Plan 516** puts the one-shot publication on the **correlator**, so it begins a tracked attempt with the minted token on the wire and shares the attempt book with the router-level refresh | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2407``) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
 | `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
@@ -731,7 +731,59 @@ lock is released before anything is sent.
 **What is not claimed.** The reference's resend burst is not adopted, and
 the divergence is recorded rather than papered over.
 
-### `bootstrap_daemon` (`src/lib.rs:5115`) — ordered startup
+### The publication's acknowledgement (Plan 516)
+
+Plan 515 made the publication **repeatable**. Plan 516 makes it
+**observable**.
+
+The correlator already minted a reply token for every attempt, recorded it
+in its bounded token map, and documented that the peer would correlate the
+acknowledgement with it — and then wrote `reply_token: 0` into the store
+message. A zero token asks a peer for **no** acknowledgement, so the
+floodfill never answered, the correlator's `correlate_delivery_status` could
+never match, and the `acknowledged` counter was structurally always zero.
+The tree's own live test said so in a comment: the "protocol-derived
+acknowledgement" it correlated was **manufactured in-process**.
+
+The other half of the mechanism was already here. This router's **own**
+floodfill service answers a direct-peer store that carries a nonzero reply
+token, and the `DeliveryStatus`'s message id **is** that token — so the
+router's floodfill service was answering an acknowledgement the router's
+publication never asked for.
+
+**What changed.**
+
+- The store message carries the correlator's **minted** token, in the
+  reference's **direct-reply** form: a nonzero token, a **zero** reply
+  tunnel id (the reference's *"zero tunnelID means direct reply"*), and the
+  local hash as the reply gateway.
+- The correlator publishes an **explicitly registered record**, so the
+  store message's key, its reply gateway and its payload are provably
+  **one** record. A publication can no longer store a record under the
+  wrong key.
+- The daemon composes **no** store message of its own any more. The
+  one-shot publication and the router-level refresh share the
+  correlator's builder and its attempt book, so there is one rule and one
+  book rather than two.
+- The **inbound owner** — the SSU2 service's own loop — joins the
+  publication: an inbound `DeliveryStatus` is correlated with the attempt
+  it names. The controlled NTCP2 probe path keeps its own table and its
+  own behaviour; the publication's correlation is a separate match, scoped
+  to the transport the publication uses.
+- A **delivery** admission and a **network acknowledgement** are counted
+  separately. A store the transport accepted is not a record the network
+  holds, and neither is allowed to stand in for the other.
+- An acknowledgement that matches **no** live attempt is **refused** and
+  counted under its own reason. It never confirms anything and is never
+  dropped silently.
+
+**What is not claimed.** That a **stock** floodfill answers is still
+blocked on Plan 493's authorized two-host topology, and no live claim is
+made. Plan 515's finding **F1** — the reference's resend burst — stays
+open: the reference retries on a drop and stops on a confirmation, so a
+faithful burst needs this confirmation and is a successor's subject.
+
+### `bootstrap_daemon` (`src/lib.rs:5155`) — ordered startup
 
 ```
 bootstrap_daemon(&Config, now_seconds, offline_reseed_path)
@@ -766,7 +818,7 @@ side effects); `Identity::Generate` -> `OsRng` -> `RouterIdentityBundle::generat
 `store.save_new` (atomic); `Identity::Inspect` -> `store.load` -> `IdentityInspected` (no
 secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }`).
 
-`run_daemon(config)` (`src/lib.rs:5294`) is the real daemon path:
+`run_daemon(config)` (`src/lib.rs:5334`) is the real daemon path:
 
 1. Compute wall-clock seconds.
 2. Run `bootstrap_daemon(&config, now_seconds, None)`.
@@ -1153,9 +1205,9 @@ alone and never consulted `dsm_target_eligibility`:
 
 - the **creator RouterInfo** publication (`src/service_product.rs:7910``,
   reached from the live composition through the product's own tick,
-  `src/service_product.rs:8098``) sorted the
+  `src/service_product.rs:8082``) sorted the
   floodfill advertisers itself and truncated to three;
-- the **service LeaseSet2** publication (`src/service_product.rs:9647``,
+- the **service LeaseSet2** publication (`src/service_product.rs:9631``,
   reached from `src/service_product.rs:3486`/`:4960`/`:9035`) went through
   `DestinationTunnelCoordinator::candidate_hashes` →
   `i2pr_netdb::lookup_policy::select_floodfill_candidates`, a selection that
@@ -1620,7 +1672,7 @@ through the runtime's own API.
 
 The live inbound loop constructs the carriage and hands it to the drain
 (`src/lib.rs:4419`-4377`), and the log line now reports `carried` and
-`carriage_refused` instead of `awaiting_carriage` (`src/lib.rs:5138`-5011`).
+`carriage_refused` instead of `awaiting_carriage` (`src/lib.rs:5178`-5011`).
 
 **What the carriage does not do.** It does not publish anything. The
 transport's own documentation says the target "asks the introducer for a tag
@@ -2701,7 +2753,7 @@ above: **an inversion harness must verify its edit applied.**
 ## Tests
 
 **112 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:5445``, `src/config.rs`, and the module-local test blocks in
+modules (notably `src/lib.rs:5485``, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 

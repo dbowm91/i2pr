@@ -2517,6 +2517,11 @@ inventory holds **107 surfaces, 102 experimental, 4 deferred, 1 ready, 0
 advertised**. The advertised count stays **zero**: Plan 515 refreshes the
 router's own record, and advertises nothing new.
 
+**Plan 516 adds one surface** — `daemon.router-info-publication-confirmation`
+— so the inventory holds **108 surfaces, 103 experimental, 4 deferred, 1
+ready, 0 advertised**. The advertised count stays **zero**: Plan 516 makes
+the publication *confirmable*, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -2535,6 +2540,36 @@ references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §13. The
 plan of record is
 `plans/implementation/network-participation/514-live-exploratory-request.md`;
 the closure record is `plans/closure/network-participation/514-status.md`.
+
+## The router learns that the network holds its record (Plan 516)
+
+Plan 515 made the router republish its own RouterInfo on a period. That
+made the publication **repeatable**; it did not make it **observable**. The
+router learned that the transport accepted the store, and nothing more.
+
+The correlator already minted a reply token for every attempt and
+documented that the peer would correlate the acknowledgement with it, but
+the store message carried `reply_token: 0` — a token that asks for no
+acknowledgement. So the correlator's correlation half was unreachable, and
+the `acknowledged` counter was structurally always zero.
+
+Plan 516 closes that join. The store message now carries the correlator's
+minted token in the reference's **direct-reply** form, the inbound owner
+routes the floodfill's answer to the correlator, and the attempt moves to
+`Acknowledged`. The **delivery** admission and the **network
+acknowledgement** are counted separately, because they are different facts.
+
+**Proved here:** the token reaches the wire and is the correlator's own; the
+reply form is the reference's direct reply; the store's key, gateway and
+payload are one record; the daemon composes no store message of its own;
+the one-shot and the refresh share the correlator; the inbound owner joins
+the publication; an unmatched acknowledgement is refused and counted.
+
+**Not proved here, and not claimed:** that a **stock** floodfill answers.
+That half needs Plan 493's authorized two-host topology, and the
+stock-peer evidence remains blocked on it. Nothing is advertised: the
+inventory's advertised count stays zero, `router.version` stays `0.9.62`,
+and the published RouterInfo is unchanged.
 
 ## The router republishes its own RouterInfo (Plan 515)
 

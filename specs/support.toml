@@ -2379,6 +2379,23 @@ evidence = [
     "plans/implementation/network-participation/515-router-info-publication-refresh.md",
 ]
 [[surface]]
+id = "daemon.router-info-publication-confirmation"
+protocol = "reseed-netdb"
+structure = "the-publication-asks-for-and-records-the-networks-acknowledgement"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 516 makes the router's publication **confirmable**. Until this plan the router published its own RouterInfo and learned exactly one thing: that the **transport accepted the message**. It never learned that the **network holds** the record. The correlator minted a reply token, recorded it in its bounded token map, and documented that a retry reuses the token \"so the remote peer can correlate the delivery acknowledgement\" (`crates/i2pr-netdb/src/publication.rs:279-284`) -- and then wrote **`reply_token: 0`** into the `DatabaseStoreMessage` it returned. A store with a zero reply token asks for **no** acknowledgement, so no peer ever answered and `correlate_delivery_status` (`:410`) could never match; the `acknowledged` counter in `PublicationSnapshot` was structurally always zero. The tree's own live test said so in a comment (`crates/i2pr-daemon/tests/netdb_tunnel_live.rs:343-344`): \"the store message itself carries reply_token=0 (store-and-forget)\" -- the \"protocol-derived acknowledgement\" it correlated was **manufactured in-process**. The other half of the mechanism already existed in this tree: the floodfill service answers a direct-peer store that carries a nonzero reply token (`crates/i2pr-netdb/src/floodfill_service.rs:559`, `:611`), and the `DeliveryStatus`'s message id **is** that token (`:1361-1362`). So this router's own floodfill service answered an acknowledgement this router's publication never asked for. This surface puts the minted token **on the wire**, in the reference's **direct-reply** form -- a nonzero token (the reference writes it at `libi2pd/I2NPProtocol.cpp:272`), a **zero** reply tunnel id meaning a direct reply (`:285`), and the local hash as the reply gateway (`:287-289`) -- and joins the **inbound owner** to the correlator, so the answer the floodfill sends back is correlated with the attempt it names. The correlator publishes an **explicitly registered record** (`crates/i2pr-netdb/src/publication.rs:163`), so the store message's key, its reply gateway and its payload are provably **one** record; the daemon composes **no** store message of its own any more, and the one-shot and the router-level refresh share the correlator's builder and the correlator's attempt book. A **delivery** admission and a **network acknowledgement** are counted separately: a store the transport accepted is not a record the network holds. An acknowledgement that matches no live attempt is **refused** and counted under its own reason; it never confirms anything and is never dropped silently. The reference's resend burst (Plan 515's finding **F1**) is still **not** adopted: the reference retries on a drop and stops on a confirmation, so a faithful burst needs this confirmation and is a successor's subject. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-netdb/src/publication.rs",
+    "crates/i2pr-daemon/src/router_info_publication.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_confirmation.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_confirmation_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/516-router-info-publication-confirmation.md",
+]
+[[surface]]
 id = "daemon.netdb-exploratory-target"
 protocol = "reseed-netdb"
 structure = "table-directed-exploratory-target-and-the-operator-switch"
