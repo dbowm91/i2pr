@@ -290,7 +290,9 @@ fn the_cycle_is_bounded_by_the_reference_fifteen() {
     let mut owner = owner_with_cycle(local_hash);
     let mut asked = 0usize;
     let mut batches = 0usize;
-    loop {
+    // The loop is **bounded**: a mutation that stopped the exclusion set
+    // from growing must fail an assertion here, not spin forever.
+    for _ in 0..(PUBLICATION_CYCLE_TARGETS + 2) {
         let targets = match owner.cycle_step(&store) {
             RouterInfoPublicationStep::Ask(targets) => targets,
             RouterInfoPublicationStep::Exhausted => break,

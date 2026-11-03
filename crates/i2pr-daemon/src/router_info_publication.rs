@@ -822,8 +822,51 @@ pub async fn advance_publication_cycle<R: RngCore>(
 }
 
 /// Publishes once, without touching the schedule.
+///
+/// Plan 517: this is where the cycle learns what the attempt's outcome
+/// means for it. A batch that went **out** is awaited -- the confirmation
+/// deadline is armed and the ladder waits for the answer. A **refused**
+/// delivery is abandoned at once, so the next batch is asked without waiting
+/// out the timeout. **Anything else** means the cycle cannot proceed, so it
+/// is halted: a cycle that is running with nothing to await would never
+/// advance, and it would hold the next period's cycle out.
 #[allow(clippy::too_many_arguments)]
 async fn publish_once<R: RngCore>(
+    owner: &mut RouterInfoPublicationOwner,
+    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
+    local_record: Option<Vec<u8>>,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    rng: &mut R,
+    cancellation: &i2pr_runtime::CancellationToken,
+    clock: &PublicationClock,
+) -> RouterInfoPublicationOutcome {
+    let outcome = publish_once_inner(
+        owner,
+        ssu2_handle,
+        bootstrap,
+        local_record,
+        dial_timeout,
+        qualification_profile,
+        rng,
+        cancellation,
+        clock,
+    )
+    .await;
+    match outcome {
+        RouterInfoPublicationOutcome::Published { .. } => {}
+        RouterInfoPublicationOutcome::DeliveryRefused { .. } => {
+            owner.abandon_batch(clock());
+        }
+        _ => owner.halt_cycle(),
+    }
+    outcome
+}
+
+/// The attempt itself, without touching the cycle's outcome.
+#[allow(clippy::too_many_arguments)]
+async fn publish_once_inner<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
     ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
@@ -855,11 +898,9 @@ async fn publish_once<R: RngCore>(
             // starts a fresh one.
             RouterInfoPublicationStep::Exhausted => {
                 owner.record_cycle_exhausted();
-                owner.halt_cycle();
                 return RouterInfoPublicationOutcome::RefusedNoTarget;
             }
             RouterInfoPublicationStep::NoTarget => {
-                owner.halt_cycle();
                 return RouterInfoPublicationOutcome::RefusedNoTarget;
             }
         };
@@ -894,12 +935,6 @@ async fn publish_once<R: RngCore>(
     // (`libi2pd/RouterContext.cpp:1476`). A batch the transport refused is
     // abandoned at once rather than waiting out the timeout.
     owner.record_batch(clock(), &targets);
-    if matches!(
-        outcome,
-        RouterInfoPublicationOutcome::DeliveryRefused { .. }
-    ) {
-        owner.abandon_batch(clock());
-    }
     outcome
 }
 

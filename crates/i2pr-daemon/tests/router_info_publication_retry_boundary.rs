@@ -468,6 +468,35 @@ fn check_the_fan_out_stays_bounded(source: &str) -> Option<String> {
 // The rules.
 // ----------------------------------------------------------------------
 
+/// Rule 8: the cycle cannot get stuck.
+///
+/// A cycle that is running with nothing to await would never advance, and it
+/// would hold the next period's cycle out. The publication must therefore
+/// **halt** the cycle whenever it cannot proceed, and **abandon** a refused
+/// batch at once.
+fn check_the_cycle_cannot_get_stuck(source: &str) -> Option<String> {
+    let code = code_view(source);
+    let Some(body) = item_body(&code, "async fn publish_once") else {
+        return Some("the publication's attempt is absent".to_owned());
+    };
+    if !body.contains("halt_cycle(") {
+        return Some("the publication never halts a cycle that cannot proceed".to_owned());
+    }
+    if !body.contains("abandon_batch(") {
+        return Some("the publication never abandons a refused batch".to_owned());
+    }
+    None
+}
+
+#[test]
+fn the_cycle_cannot_get_stuck() {
+    let reason = check_the_cycle_cannot_get_stuck(&source_of(PUBLICATION_MODULE));
+    assert!(
+        reason.is_none(),
+        "the cycle must not be able to get stuck: {reason:?}"
+    );
+}
+
 #[test]
 fn the_retry_rides_the_existing_tick() {
     let reason = check_the_retry_rides_the_existing_tick(&source_of(COMPOSITION_MODULE));
@@ -735,5 +764,21 @@ pub fn cycle_batch(&self, store: &u8) -> Option<u8> {
     assert!(
         reason.is_some(),
         "an unbounded fan-out must be reported: {reason:?}"
+    );
+}
+
+/// The inverted probe for rule 8: a publication that never halts the cycle
+/// must be reported.
+#[test]
+fn the_guard_reports_a_publication_that_never_halts_the_cycle() {
+    let violating = "async fn publish_once<R: RngCore>(owner: &mut u8) -> u8 {
+    let _ = owner;
+    0
+}
+";
+    let reason = check_the_cycle_cannot_get_stuck(violating);
+    assert!(
+        reason.is_some(),
+        "a publication that never halts the cycle must be reported: {reason:?}"
     );
 }
