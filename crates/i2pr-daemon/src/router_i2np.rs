@@ -1708,7 +1708,7 @@ pub fn generate_controlled_identity_with_keys(
 /// the refusal, so the fault is visible rather than silent.
 pub fn refresh_local_router_info_record(
     bundle: &RouterIdentityBundle,
-    handle: &Ssu2DaemonHandle,
+    handle: &Ssu2PublicationHandle,
     now_ms: u64,
 ) -> Option<Vec<u8>> {
     let installed = handle.service().installed_local_router_info()?;
@@ -2364,6 +2364,84 @@ impl Ssu2DaemonHandle {
     /// Returns the privacy-safe runtime snapshot.
     pub fn snapshot(&self) -> i2pr_runtime::Ssu2Snapshot {
         self.service.snapshot()
+    }
+
+    /// Returns the narrow capability the router's own publication needs.
+    ///
+    /// Plan 519: the publication runs on its **own task**, so it cannot
+    /// hold this handle: the handle owns the runtime's inbound handoff and
+    /// is not cloneable. The capability carries only what a publication
+    /// touches, and it hands out no authority the handle does not already
+    /// hold.
+    pub fn publication_handle(&self) -> Ssu2PublicationHandle {
+        Ssu2PublicationHandle {
+            service: self.service.clone(),
+            delivery: self.delivery.clone(),
+        }
+    }
+}
+
+/// The narrow capability the router's own RouterInfo publication uses.
+///
+/// Plan 519: the publication is a **task of its own**, and a task that is
+/// not the transport's service loop cannot hold the service's handle --
+/// that handle owns the runtime's inbound handoff and is not cloneable.
+/// This capability is the publication's whole view of the transport: the
+/// runtime's service (the live sessions, the installed record), the
+/// bounded delivery seam, and the dial seam.
+///
+/// It grants nothing the daemon did not already hold: it carries the same
+/// [`Ssu2RuntimeService`] the handle carries, over the same shared state.
+#[derive(Clone, Debug)]
+pub struct Ssu2PublicationHandle {
+    service: Ssu2RuntimeService,
+    delivery: RouterDeliveryService,
+}
+
+impl Ssu2PublicationHandle {
+    /// Returns the owning runtime service.
+    pub const fn service(&self) -> &Ssu2RuntimeService {
+        &self.service
+    }
+
+    /// Returns the narrow outbound delivery capability.
+    pub const fn delivery(&self) -> &RouterDeliveryService {
+        &self.delivery
+    }
+
+    /// Returns the router hashes of the peers holding at least one live
+    /// session link.
+    ///
+    /// Plan 519: the publication **prefers** a peer it is already connected
+    /// to, because that is the peer whose send needs no handshake. The set
+    /// is a point-in-time reading and is bounded by the runtime's own
+    /// active-session ceiling.
+    pub fn established_peer_hashes(&self) -> Vec<Hash> {
+        self.service.active_peer_hashes()
+    }
+
+    /// Returns the installed local RouterInfo, if one is installed.
+    pub fn installed_local_router_info(&self) -> Option<Vec<u8>> {
+        self.service.installed_local_router_info()
+    }
+
+    /// Installs the local RouterInfo the router hands out.
+    pub fn install_local_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service.install_local_router_info(encoded, wall_now_ms)
+    }
+
+    /// Dials one validated SSU2 target to an authenticated session.
+    pub async fn dial(
+        &self,
+        target: Ssu2DialTarget,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<Ssu2EstablishedLink, i2pr_runtime::Ssu2DialOutcome> {
+        self.service.dial_ssu2(target, timeout, cancellation).await
     }
 }
 

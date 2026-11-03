@@ -1178,3 +1178,97 @@ the rung published.
 The **stock-peer** half. That a pinned stock floodfill accepts the re-dated
 record in the live network is still blocked on Plan 493's authorized two-host
 topology, and no live claim is made.
+
+## 18. How the publication leaves the transport's loop (Plan 519)
+
+The router's own RouterInfo publication used to run inside the SSU2 service's
+`select!` loop, where its delivery awaited a session establishment. While that
+await was pending the loop could not drain its relay queue or correlate an
+inbound `DeliveryStatus`. Neither pinned reference blocks its transport's loop
+on a handshake: i2pd 2.61.0 posts the send and ignores the returned future
+(`libi2pd/Transports.cpp:483-496`), and Java I2P 2.13.0 runs the publication as
+a job on its own pool (`PublishLocalRouterInfoJob`, `JobQueue.java:163`).
+
+### 18.1 The transport's service loop never awaits the publication
+
+The publication's work -- the refresh, the retry ladder and the acknowledgement
+correlation -- is confined to the publication's own task. Nothing else in the
+composition root may name it.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_loop_never_awaits_the_publication`.
+
+### 18.2 The publication's state is not owned by the loop
+
+The loop binds no publication owner, and the owner is constructed **once** and
+handed to the task: there is exactly one owner of the cycle.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_publications_state_is_not_owned_by_the_loop`.
+
+### 18.3 The task is owned and cancellable
+
+The task is spawned under the service's own child scope -- never on an
+ownerless task -- in a moved closure that owns the publication's state, and it
+stops when its cancellation fires.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_task_is_spawned_with_ownership_and_cancellation`.
+
+### 18.4 The acknowledgement handoff is bounded
+
+The channel is bounded, its capacity is bounded, and the hand-over never waits
+for room: the transport's service loop is never blocked by the publication. A
+full channel counts the acknowledgement as **unmatched** rather than dropping
+it silently.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_acknowledgement_handoff_is_bounded`, and
+`crates/i2pr-daemon/tests/router_info_publication_off_loop.rs`,
+`a_full_handoff_counts_the_acknowledgement_as_unmatched` and
+`the_handoff_never_blocks_the_loop`.
+
+### 18.5 The selection prefers an established session
+
+i2pd's `IsConnected` and Java's `isEstablished` both prefer a peer the router
+is already connected to, because that is the peer whose send needs no
+handshake. The preference is applied **on top of** the version-gated closeness
+selection, and the targets it skips for want of one are counted under their
+own reason.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_selection_prefers_an_established_session`, and
+`crates/i2pr-daemon/tests/router_info_publication_off_loop.rs`,
+`the_selection_prefers_an_established_session` and
+`the_skipped_targets_are_counted_under_their_own_reason`.
+
+### 18.6 The delivery timeout is bounded and the publication's own
+
+The reference bounds one store attempt at 90 seconds
+(`FloodfillNetworkDatabaseFacade.java:174`). A delivery that did not finish
+inside the publication's own window is refused under **its own reason** and
+counted, so a hung handshake holds neither the transport's loop nor the
+publication's task.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_delivery_timeout_is_bounded_and_owned`, and
+`crates/i2pr-daemon/tests/router_info_publication_off_loop.rs`,
+`the_delivery_timeout_is_bounded_and_is_the_references_own` and
+`a_delivery_that_timed_out_is_refused_under_its_own_reason`.
+
+### 18.7 The transport's loop carries no publication timer
+
+The publication's period tick and the ladder's tick belong to the publication's
+task, so the transport's loop gains no timer.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`,
+`the_loop_carries_no_publication_timer`.
+
+### 18.8 What this section does **not** gate
+
+The **stock-peer** half, and the **live-dial** half. That a pinned stock
+floodfill accepts the router's record in the live network is still blocked on
+Plan 493's authorized two-host topology, and the lane drives the publication's
+public behaviour without a socket, so a *live* dial inside the transport's loop
+is not re-measured here. The structural gates above are what stand between the
+publication and the transport's loop, and they read the production files.

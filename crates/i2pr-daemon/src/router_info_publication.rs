@@ -40,6 +40,13 @@
 //! the next one, and a confirmation ends the cycle. The deadline rides the
 //! composition root's existing tick, so no new timer is introduced.
 //!
+//! Plan 519 adds the publication's **execution context**. The publication
+//! used to run inside the SSU2 service's `select!` loop, where its
+//! delivery awaited a session establishment and stalled the loop's relay
+//! drain and its inbound acknowledgement owner. The publication now runs
+//! on its **own task**, with its own bounded delivery timeout, and the
+//! selection **prefers** a peer the router is already connected to.
+//!
 //! Nothing here advertises anything: `router.version` stays `0.9.62`, the
 //! published RouterInfo's content is unchanged, and the inventory's
 //! advertised count stays zero.
@@ -51,6 +58,7 @@ use i2pr_netdb::{
     LookupPolicy, PublicationCoordinator, PublicationLocalRecord, RouterHash, RouterInfoStore,
     ValidatedRouterInfo, VersionGatedFloodfillSelection, select_version_gated_floodfills,
 };
+use i2pr_proto::Hash;
 use rand_core::RngCore;
 
 /// The reference's publication interval: `39 * 60` seconds
@@ -107,6 +115,20 @@ pub const PUBLICATION_CONFIRMATION_TIMEOUT_MS: u64 = 1_600;
 /// never asks more than this many targets.
 pub const PUBLICATION_CYCLE_TARGETS: usize = 15;
 
+/// The publication's own bounded delivery timeout, in milliseconds.
+///
+/// Plan 519: the timeout belongs to the **publication**, not to the
+/// transport's service loop. The reference bounds one store attempt the
+/// same way -- Java's `PUBLISH_TIMEOUT` is 90 seconds
+/// (`router/java/src/net/i2p/router/networkdb/FloodfillNetworkDatabaseFacade.java:174`),
+/// and the store it bounds is handed to a `FloodfillStoreJob` of its own
+/// (`:246-257`).
+///
+/// A delivery that did not finish inside this window is refused under **its
+/// own reason** and counted, so a hung handshake holds neither the
+/// transport's loop nor the publication's task.
+pub const PUBLICATION_DELIVERY_TIMEOUT_MS: u64 = 90_000;
+
 /// A reading of the current time, in milliseconds.
 ///
 /// Plan 517: the confirmation deadline is measured from the moment the
@@ -152,6 +174,17 @@ pub enum RouterInfoPublicationOutcome {
         /// The number of targets the publication named.
         targets: usize,
     },
+    /// The delivery did not finish inside the publication's own timeout.
+    ///
+    /// Plan 519: the timeout belongs to the publication, so a hung
+    /// handshake ends the attempt under **its own reason** and the ladder
+    /// moves to the next target.
+    DeliveryTimedOut {
+        /// The number of targets the publication named.
+        targets: usize,
+        /// The number of deliveries that timed out.
+        timed_out: usize,
+    },
     /// The publication was cancelled before it completed.
     Cancelled,
 }
@@ -182,6 +215,18 @@ pub struct RouterInfoPublicationCounters {
     pub refused_stale_record: u64,
     /// The number of attempts refused by the transport.
     pub deliveries_refused: u64,
+    /// The number of attempts whose delivery did not finish inside the
+    /// publication's own timeout.
+    ///
+    /// Plan 519.
+    pub deliveries_timed_out: u64,
+    /// The number of targets the publication skipped for want of an
+    /// established session.
+    ///
+    /// Plan 519: the publication prefers a peer it is already connected
+    /// to, and the targets it skipped for want of one are counted here,
+    /// so the preference is visible rather than silent.
+    pub skipped_no_session: u64,
     /// The number of attempts cancelled before they completed.
     pub cancelled: u64,
     /// The number of publications the network acknowledged.
@@ -380,10 +425,44 @@ impl RouterInfoPublicationSchedule {
             PublicationConfirmation::Confirmed { .. } => {
                 self.counters.confirmed = self.counters.confirmed.saturating_add(1);
             }
-            PublicationConfirmation::Unmatched => {
-                self.counters.unmatched = self.counters.unmatched.saturating_add(1);
-            }
+            PublicationConfirmation::Unmatched => self.record_unmatched(),
         }
+    }
+
+    /// Records one acknowledgement that matched no live attempt.
+    ///
+    /// Plan 519: an acknowledgement the publication's task could not even
+    /// hand over -- because the bounded channel was full -- is refused and
+    /// counted under the **same** reason, so it is never dropped
+    /// silently.
+    pub fn record_unmatched(&mut self) {
+        self.counters.unmatched = self.counters.unmatched.saturating_add(1);
+    }
+
+    /// Records a count of acknowledgements that matched no live attempt.
+    ///
+    /// Plan 519: the publication's task folds in the acknowledgements the
+    /// bounded handoff could not take, and they are refused under the
+    /// **same** reason as one that names no live attempt.
+    pub fn record_unmatched_count(&mut self, count: u64) {
+        self.counters.unmatched = self.counters.unmatched.saturating_add(count);
+    }
+
+    /// Records the targets the publication skipped for want of an
+    /// established session.
+    ///
+    /// Plan 519.
+    pub fn record_skipped_no_session(&mut self, skipped: usize) {
+        let skipped = u64::try_from(skipped).unwrap_or(u64::MAX);
+        self.counters.skipped_no_session = self.counters.skipped_no_session.saturating_add(skipped);
+    }
+
+    /// Records a cancelled publication.
+    ///
+    /// Plan 519: the cancellation is counted under its own reason, and it
+    /// is **not** an attempt -- the period is not moved by a cancellation.
+    pub fn record_cancelled(&mut self) {
+        self.count_attempt(RouterInfoPublicationOutcome::Cancelled);
     }
 
     /// Records one attempt and its outcome.
@@ -428,6 +507,10 @@ impl RouterInfoPublicationSchedule {
             RouterInfoPublicationOutcome::DeliveryRefused { .. } => {
                 self.counters.deliveries_refused =
                     self.counters.deliveries_refused.saturating_add(1);
+            }
+            RouterInfoPublicationOutcome::DeliveryTimedOut { .. } => {
+                self.counters.deliveries_timed_out =
+                    self.counters.deliveries_timed_out.saturating_add(1);
             }
             RouterInfoPublicationOutcome::Cancelled => {
                 self.counters.cancelled = self.counters.cancelled.saturating_add(1);
@@ -477,6 +560,50 @@ pub fn publication_targets_excluding(
     exclusions.push(*local_hash);
     exclusions.extend_from_slice(excluded);
     select_version_gated_floodfills(store, local_hash, &exclusions, policy)
+}
+
+/// The publication's batch, with the established-session preference
+/// applied.
+///
+/// Plan 519.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterInfoPublicationPreference {
+    /// The targets to ask: the ones holding an established session, in the
+    /// selection's own order.
+    pub targets: Vec<RouterHash>,
+    /// The number of targets skipped for want of an established session.
+    pub skipped: usize,
+}
+
+/// Applies the established-session preference to one batch.
+///
+/// Plan 519: i2pd's `IsConnected`
+/// (`libi2pd/RouterContext.cpp:1502-1521`) and Java's `isEstablished`
+/// (`router/java/src/net/i2p/router/networkdb/kademlia/StoreJob.java:392-410`)
+/// both prefer a peer the router is already connected to, because that is
+/// the peer whose send needs no handshake. i2pr applies the same
+/// preference **on top of** the version-gated closeness selection, so the
+/// selection's own rule is unchanged.
+///
+/// The rule is runtime-neutral: it reads the batch and the established set
+/// and never a clock, a socket or a session.
+pub fn prefer_established_sessions(
+    targets: &[RouterHash],
+    established: &[Hash],
+) -> RouterInfoPublicationPreference {
+    let mut preferred = Vec::with_capacity(targets.len());
+    let mut skipped = 0usize;
+    for target in targets {
+        if established.contains(target.as_hash()) {
+            preferred.push(*target);
+        } else {
+            skipped = skipped.saturating_add(1);
+        }
+    }
+    RouterInfoPublicationPreference {
+        targets: preferred,
+        skipped,
+    }
 }
 
 /// The plan for one publication: the targets and the store, or the refusal.
@@ -832,7 +959,7 @@ impl RouterInfoPublicationOwner {
 #[allow(clippy::too_many_arguments)]
 pub async fn refresh_router_info<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
-    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
@@ -874,7 +1001,7 @@ pub async fn refresh_router_info<R: RngCore>(
 #[allow(clippy::too_many_arguments)]
 pub async fn advance_publication_cycle<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
-    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
@@ -926,7 +1053,7 @@ pub async fn advance_publication_cycle<R: RngCore>(
 #[allow(clippy::too_many_arguments)]
 async fn publish_once<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
-    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
     local_record: Option<Vec<u8>>,
     dial_timeout: Duration,
@@ -961,7 +1088,11 @@ async fn publish_once<R: RngCore>(
     };
     match outcome {
         RouterInfoPublicationOutcome::Published { .. } => {}
-        RouterInfoPublicationOutcome::DeliveryRefused { .. } => {
+        RouterInfoPublicationOutcome::DeliveryRefused { .. }
+        | RouterInfoPublicationOutcome::DeliveryTimedOut { .. } => {
+            // Plan 519: a delivery that was refused, or that did not
+            // finish inside the publication's own timeout, is abandoned at
+            // once, so the ladder moves to the next target.
             owner.abandon_batch(clock());
         }
         _ => owner.halt_cycle(),
@@ -973,7 +1104,7 @@ async fn publish_once<R: RngCore>(
 #[allow(clippy::too_many_arguments)]
 async fn publish_once_inner<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
-    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
     local_record: Option<Vec<u8>>,
     dial_timeout: Duration,
@@ -989,6 +1120,10 @@ async fn publish_once_inner<R: RngCore>(
         return RouterInfoPublicationOutcome::RefusedNoTarget;
     };
     let local_hash = *owner.local_hash();
+    // Plan 519: the peers the router is already connected to are read
+    // **outside** the store's lock: the reading is the runtime's own, and
+    // the store must not be held for it.
+    let established = ssu2_handle.established_peer_hashes();
     let (attempts, records, targets) = {
         let Ok(guard) = bootstrap.lock() else {
             return RouterInfoPublicationOutcome::RefusedNoTarget;
@@ -1009,6 +1144,22 @@ async fn publish_once_inner<R: RngCore>(
                 return RouterInfoPublicationOutcome::RefusedNoTarget;
             }
         };
+        // Plan 519: the publication **prefers** a peer it is already
+        // connected to, and counts the targets it skipped for want of
+        // one.
+        //
+        // i2pr installs no exploratory tunnel, so the direct route is the
+        // only route it has. When **no** target of the batch holds a
+        // session, the batch is asked anyway and the direct route
+        // establishes the session under the publication's own bounded
+        // delivery timeout.
+        let preference = prefer_established_sessions(&targets, &established);
+        let (targets, skipped) = if preference.targets.is_empty() {
+            (targets, 0usize)
+        } else {
+            (preference.targets, preference.skipped)
+        };
+        owner.schedule_mut().record_skipped_no_session(skipped);
         let plan = RouterInfoPublicationPlan::publish(targets.clone(), local_record.clone());
         let records = targets
             .iter()
@@ -1085,75 +1236,55 @@ pub async fn publish_router_info<R: RngCore>(
     coordinator: &mut PublicationCoordinator,
     attempts: &[i2pr_netdb::PublicationAttemptRecord],
     records: &[(RouterHash, ValidatedRouterInfo)],
-    ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
     rng: &mut R,
     cancellation: &i2pr_runtime::CancellationToken,
 ) -> RouterInfoPublicationOutcome {
     let mut accepted = 0usize;
+    let mut timed_out = 0usize;
     for attempt in attempts {
         if cancellation.is_cancelled() {
             return RouterInfoPublicationOutcome::Cancelled;
         }
-        // Plan 516: the store message was composed by the correlator, so
-        // the wire message carries this target's own minted reply token and
-        // the attempt was already in the bounded book before anything was
-        // sent.
-        let target = &attempt.attempt.peer();
-        let request_id = attempt.attempt.request_id();
-        let peer_id = i2pr_transport::PeerId::from_hash(*target.as_hash());
-        if ssu2_handle.service().session_peer_links(peer_id).is_empty() {
-            let Some((_, record)) = records.iter().find(|(hash, _)| hash == target) else {
-                let _ = coordinator.mark_delivery_failed(request_id);
-                continue;
-            };
-            if crate::service_product::ensure_peer_session_for_record(
-                record,
+        // Plan 519: the delivery timeout belongs to the **publication**.
+        // The whole attempt -- the session establishment and the send --
+        // is bounded by it, so a hung handshake holds neither the
+        // transport's loop nor the publication's task.
+        let attempt_result = tokio::time::timeout(
+            Duration::from_millis(PUBLICATION_DELIVERY_TIMEOUT_MS),
+            deliver_publication_attempt(
+                coordinator,
+                attempt,
+                records,
                 ssu2_handle,
-                *target.as_hash(),
-                crate::service_product::DestinationDialPurpose::CreatorRouterInfoPublication,
                 dial_timeout,
                 qualification_profile,
+                rng,
                 cancellation,
-            )
-            .await
-            .is_err()
-            {
-                let _ = coordinator.mark_delivery_failed(request_id);
-                continue;
+            ),
+        )
+        .await;
+        let request_id = attempt.attempt.request_id();
+        match attempt_result {
+            Ok(true) => {
+                // A **delivery** admission, not an acknowledgement. The
+                // attempt is delivered; only the network's
+                // `DeliveryStatus` makes it acknowledged.
+                let _ = coordinator.mark_delivered(request_id);
+                accepted = accepted.saturating_add(1);
             }
-        }
-        let Some(message_id) = fresh_message_id(rng) else {
-            let _ = coordinator.mark_delivery_failed(request_id);
-            continue;
-        };
-        let Ok(wire) = crate::outbound_lookup::encode_store_envelope_short(
-            &attempt.store_message,
-            message_id,
-            // The same 60-second lifetime policy the one-shot publication
-            // carries, in the seconds the direct short envelope holds.
-            publication_expiry_seconds(),
-        ) else {
-            continue;
-        };
-        let Ok(request) =
-            crate::router_i2np::RouterDeliveryRequest::new(peer_id, wire, dial_timeout)
-        else {
-            let _ = coordinator.mark_delivery_failed(request_id);
-            continue;
-        };
-        if matches!(
-            ssu2_handle.delivery().deliver(request, cancellation),
-            crate::router_i2np::RouterDeliveryOutcome::Accepted
-        ) {
-            // A **delivery** admission, not an acknowledgement. The attempt
-            // is delivered; only the network's `DeliveryStatus` makes it
-            // acknowledged.
-            let _ = coordinator.mark_delivered(request_id);
-            accepted = accepted.saturating_add(1);
-        } else {
-            let _ = coordinator.mark_delivery_failed(request_id);
+            Ok(false) => {
+                let _ = coordinator.mark_delivery_failed(request_id);
+            }
+            Err(_) => {
+                // Plan 519: the attempt did not finish inside the
+                // publication's own timeout. It is refused under its own
+                // reason and counted, and the ladder moves on.
+                let _ = coordinator.mark_delivery_failed(request_id);
+                timed_out = timed_out.saturating_add(1);
+            }
         }
     }
     if accepted > 0 {
@@ -1161,11 +1292,83 @@ pub async fn publish_router_info<R: RngCore>(
             targets: attempts.len(),
             accepted,
         }
+    } else if timed_out > 0 {
+        RouterInfoPublicationOutcome::DeliveryTimedOut {
+            targets: attempts.len(),
+            timed_out,
+        }
     } else {
         RouterInfoPublicationOutcome::DeliveryRefused {
             targets: attempts.len(),
         }
     }
+}
+
+/// Delivers one attempt's store message to its target.
+///
+/// Plan 516: the store message was composed by the correlator, so the
+/// wire message carries this target's own minted reply token and the
+/// attempt was already in the bounded book before anything was sent.
+///
+/// Plan 519: the attempt is bounded by the publication's own delivery
+/// timeout, so it can never hold the publication's task.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_publication_attempt<R: RngCore>(
+    coordinator: &mut PublicationCoordinator,
+    attempt: &i2pr_netdb::PublicationAttemptRecord,
+    records: &[(RouterHash, ValidatedRouterInfo)],
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    rng: &mut R,
+    cancellation: &i2pr_runtime::CancellationToken,
+) -> bool {
+    let target = &attempt.attempt.peer();
+    let request_id = attempt.attempt.request_id();
+    let peer_id = i2pr_transport::PeerId::from_hash(*target.as_hash());
+    if ssu2_handle.service().session_peer_links(peer_id).is_empty() {
+        let Some((_, record)) = records.iter().find(|(hash, _)| hash == target) else {
+            let _ = coordinator.mark_delivery_failed(request_id);
+            return false;
+        };
+        if crate::service_product::ensure_peer_session_for_record(
+            record,
+            ssu2_handle,
+            *target.as_hash(),
+            crate::service_product::DestinationDialPurpose::CreatorRouterInfoPublication,
+            dial_timeout,
+            qualification_profile,
+            cancellation,
+        )
+        .await
+        .is_err()
+        {
+            let _ = coordinator.mark_delivery_failed(request_id);
+            return false;
+        }
+    }
+    let Some(message_id) = fresh_message_id(rng) else {
+        let _ = coordinator.mark_delivery_failed(request_id);
+        return false;
+    };
+    let Ok(wire) = crate::outbound_lookup::encode_store_envelope_short(
+        &attempt.store_message,
+        message_id,
+        // The same 60-second lifetime policy the one-shot publication
+        // carries, in the seconds the direct short envelope holds.
+        publication_expiry_seconds(),
+    ) else {
+        return false;
+    };
+    let Ok(request) = crate::router_i2np::RouterDeliveryRequest::new(peer_id, wire, dial_timeout)
+    else {
+        let _ = coordinator.mark_delivery_failed(request_id);
+        return false;
+    };
+    matches!(
+        ssu2_handle.delivery().deliver(request, cancellation),
+        crate::router_i2np::RouterDeliveryOutcome::Accepted
+    )
 }
 
 /// The publication envelope's expiry, in seconds.

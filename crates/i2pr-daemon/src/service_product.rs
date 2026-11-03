@@ -7415,9 +7415,13 @@ async fn ensure_selected_peer_session(
             "selected first hop is absent from the validated RouterInfo store".to_owned(),
         )
     })?;
+    // Plan 519: the dial seam is reached through the narrow publication
+    // capability, so the router's own publication and the service product
+    // share one dial path.
+    let publication_handle = ssu2_handle.publication_handle();
     ensure_peer_session_for_record(
         &record,
-        ssu2_handle,
+        &publication_handle,
         router_hash,
         purpose,
         dial_timeout,
@@ -7437,7 +7441,7 @@ async fn ensure_selected_peer_session(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_peer_session_for_record(
     record: &ValidatedRouterInfo,
-    ssu2_handle: &Ssu2DaemonHandle,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
     router_hash: Hash,
     purpose: DestinationDialPurpose,
     dial_timeout: Duration,
@@ -8001,11 +8005,15 @@ async fn publish_creator_router_info(
             return;
         }
     };
+    // Plan 519: the shared publication path takes the narrow publication
+    // capability, so the one-shot publication and the router's own
+    // publication use the same delivery seam.
+    let publication_handle = ssu2_handle.publication_handle();
     let outcome = crate::router_info_publication::publish_router_info(
         &mut coordinator,
         &attempts,
         &records,
-        ssu2_handle,
+        &publication_handle,
         dial_timeout,
         qualification_profile,
         &mut rng,

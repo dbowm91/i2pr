@@ -363,3 +363,118 @@ Plus the routine floor in `AGENTS.md`, verbatim.
   publication no longer shares the transport's service loop.
 - The **stock-peer** half of the publication's evidence stays blocked on Plan 493's
   authorized two-host topology. This plan does not and cannot unblock it.
+
+## 17. Amendment log
+
+The plan of record is amended as the implementation lands. Every amendment below
+records a **decision that changed**, the reason, and where the change is
+visible. The plan's own text is not rewritten: an amendment that reverses a
+decision says so explicitly.
+
+### 17.1 The publication's task body lives in the composition root, not in a new module
+
+**Changed.** §6 said `crates/i2pr-daemon/src/router_info_publication.rs` would
+gain the publication task, and that the composition root would spawn it. The
+**task body** is in `crates/i2pr-daemon/src/lib.rs`; only the **bounded
+acknowledgement handoff** is in the new module
+`crates/i2pr-daemon/src/router_info_publication_task.rs`.
+
+**Why.** Plan 515's guard (`crates/i2pr-daemon/tests/router_info_publication_boundary.rs`,
+rule 1) requires the composition root to contain
+`crate::router_info_publication::refresh_router_info(`; Plan 517's guard
+requires it to contain `crate::router_info_publication::advance_publication_cycle(`;
+and Plan 516's requires it to contain `publication_owner.confirm(`. All three
+read `crates/i2pr-daemon/src/lib.rs`, and §10 and acceptance criterion 7
+require those guard files to stay **byte-identical**. A task body in a new
+module would have taken every one of those literals out of the composition
+root and broken three earlier guards. The task's `select!` therefore stays in
+the composition root, where its calls are visible, and the handoff — which
+needs no guard anchor — is a separate module.
+
+**Visible in.** `crates/i2pr-daemon/src/lib.rs`
+(`run_router_info_publication_task`), `crates/i2pr-daemon/src/router_info_publication_task.rs`.
+
+### 17.2 The publication holds a narrow, cloneable capability
+
+**Added.** §6 did not mention it. The publication's task cannot hold the SSU2
+service's handle: that handle owns the runtime's inbound handoff and is not
+cloneable. `crates/i2pr-daemon/src/router_i2np.rs` therefore gains
+`Ssu2PublicationHandle` — a cloneable capability over the **same** shared
+runtime state, carrying the service, the bounded delivery seam and the dial
+seam, and nothing else. `refresh_router_info`, `advance_publication_cycle` and
+`publish_router_info` take it instead of the service handle.
+
+**Why.** The plan requires the publication to run on a task of its own, and the
+runtime's service is already `Clone` over shared `Arc` state — that is the
+enabler the plan named in §2. The capability grants nothing the daemon did not
+already hold, so no authority widens.
+
+**Visible in.** `crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/src/router_info_publication.rs`,
+`crates/i2pr-daemon/src/service_product.rs`.
+
+### 17.3 Decision **D6** is corrected: the batch falls back to the direct route
+
+**Changed.** D6 read: *"When no target has a session, the batch is **refused
+under its own reason** and counted — never blocked on."* Read literally, the
+publication would publish **nothing** whenever the router holds no session
+with a floodfill — and i2pr installs no exploratory tunnel, so the direct
+route would be the only one, and it would be closed. A router that cannot
+publish its own RouterInfo cannot be found by any peer, which contradicts
+this plan's own objective and Plan 491's line.
+
+**As implemented.** The selection **prefers** a peer the router is already
+connected to, and the targets it drops for want of one are counted under
+their own reason (`skipped_no_session`). When the batch holds **no** session
+at all, the batch is asked anyway and the **direct route** establishes the
+session — under the publication's own bounded delivery timeout, so it is
+never blocked on. The skip count is then zero, because nothing was skipped.
+
+**Why.** The plan's intent — the publication must never block the transport's
+loop, and a peer whose send needs no handshake is preferred — is kept
+verbatim. What changes is the refusal: a batch with no session is not refused
+outright, it is attempted on the only route this tree has.
+
+**Visible in.** `crates/i2pr-daemon/src/router_info_publication.rs`
+(`prefer_established_sessions`, `publish_once_inner`).
+
+### 17.4 The lane proves the public behaviour; the guard proves the wiring
+
+**Changed.** §11 listed every acceptance case under the lane, including the
+wiring: that the transport's loop loses its publication arm, that the
+publication's task is spawned with ownership and cancellation, and that no
+new timer is added to the loop. Those are **structural** claims about the
+production files, and the tree's house pattern puts them in the **guard**
+(`crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs`),
+which reads `crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/src/router_info_publication.rs` and
+`crates/i2pr-daemon/src/router_info_publication_task.rs` directly. Plan 513's
+lane records the same split in its own header.
+
+The lane (`crates/i2pr-daemon/tests/router_info_publication_off_loop.rs`)
+therefore proves the publication's **public** behaviour through the public API
+only: the established-session preference, the delivery timeout's bound and its
+own counting reason, the bounded handoff and its unmatched counting, the
+cancellation's counting, and the unchanged ladder, correlator and staleness
+rules.
+
+**Not claimed.** The **live-dial** half is not re-measured: the lane drives
+the publication's behaviour without a socket, so a *live* slow dial inside
+the transport's loop is not observed end to end. The **stock-peer** half stays
+blocked on Plan 493's authorized two-host topology.
+
+### 17.5 The handoff's capacity and the ladder's tick
+
+**Added.** The acknowledgement handoff's capacity is `16`
+(`PUBLICATION_ACKNOWLEDGEMENT_CAPACITY`) and the publication's ladder tick is
+`100` milliseconds (`PUBLICATION_LADDER_TICK_MS`) — the transport's loop's own
+cadence, moved with the ladder. The period tick stays the reference's
+`39 * 60` seconds. The transport's loop gains **no** timer.
+
+### 17.6 The composition root creates no ownerless task
+
+**Added.** The guard's third rule also pins that
+`crates/i2pr-daemon/src/lib.rs` contains no `tokio::spawn(` in production
+code: the publication's task is spawned under the service's own child scope,
+with an explicit cancellation, and the composition root creates no detached
+task of its own.

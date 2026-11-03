@@ -2429,6 +2429,23 @@ evidence = [
     "plans/implementation/network-participation/518-router-info-publication-freshness.md",
 ]
 [[surface]]
+id = "daemon.router-info-publication-off-loop"
+protocol = "reseed-netdb"
+structure = "the-publication-runs-on-its-own-task"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 519 moves the router's own RouterInfo publication **off the transport's service loop**. Plans 515-518 made the publication periodic, confirmable, retrying and current -- and all four ran it **inside** the SSU2 service's `select!` loop, where its delivery awaited a session establishment (`crates/i2pr-daemon/src/service_product.rs:7442` -> `crates/i2pr-daemon/src/router_i2np.rs:2438` -> `crates/i2pr-runtime/src/ssu2_runtime.rs:3480`). While that await was pending the loop could not run its other arms: the relay drain and the inbound acknowledgement owner both waited. This was the **Medium** finding **M1** that Plan 517's and Plan 518's closure records both carry open. Neither pinned reference blocks its transport's loop on a handshake: i2pd 2.61.0's `Transports::SendMessage` posts the send and the publisher **ignores** the returned future (`libi2pd/Transports.cpp:483-496`), and Java I2P 2.13.0 runs the publication as a **job on its own pool** (`PublishLocalRouterInfoJob`, `JobQueue.java:163`) whose store is handed to a `FloodfillStoreJob` with its own `PUBLISH_TIMEOUT = 90 s` (`FloodfillNetworkDatabaseFacade.java:174`, `:246-257`) and delivered by `commSystem().processMessage(m)` (`StoreJob.java:415-441`). This surface gives the publication **its own task** (`crates/i2pr-daemon/src/lib.rs:3572`): the owner -- the schedule, the cycle, the correlator and the cycle's record -- the transport capability, the identity and the acknowledgement inbox all move into it, the composition root spawns it under the service's own **child scope** with an explicit cancellation, and the transport's loop holds **none** of the publication's state and never awaits it. The inbound `DeliveryStatus` crosses a **bounded** channel (`crates/i2pr-daemon/src/router_info_publication_task.rs:110`): the loop's hand-over never waits for room, and a full channel counts the acknowledgement as **unmatched** -- the refusal Plan 516 already defines -- rather than dropping it silently. The publication owns a **bounded per-attempt delivery timeout** of 90 seconds (`crates/i2pr-daemon/src/router_info_publication.rs:130`), in the shape of the reference's `PUBLISH_TIMEOUT`, so a hung handshake holds neither the transport's loop nor the publication's task; a delivery that did not finish inside it is refused under **its own reason** and counted. The selection **prefers a peer the router is already connected to** (`crates/i2pr-daemon/src/router_info_publication.rs:590`) -- i2pd's `IsConnected` (`libi2pd/RouterContext.cpp:1502-1521`) and Java's `isEstablished` (`StoreJob.java:392-410`) both do -- applied **on top of** the version-gated closeness selection, and the targets skipped for want of one are counted under their own reason. **Exploratory tunnels are out of scope**: i2pr installs none in production, so the direct route is the only one, and the batch falls back to it when no target holds a session. The publication's period stays `39 * 60` seconds -- the floodfill's RouterInfo timeout is 60 minutes -- and the ladder's timing, the correlator's matching and Plan 518's staleness rule are unchanged. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), `caps`, the published RouterInfo, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-daemon/src/router_info_publication.rs",
+    "crates/i2pr-daemon/src/router_info_publication_task.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_off_loop.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_off_loop_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/519-router-info-publication-off-the-transport-loop.md",
+]
+[[surface]]
 id = "daemon.netdb-exploratory-target"
 protocol = "reseed-netdb"
 structure = "table-directed-exploratory-target-and-the-operator-switch"

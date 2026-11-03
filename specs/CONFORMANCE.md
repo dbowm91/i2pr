@@ -2532,6 +2532,11 @@ so the inventory holds **110 surfaces, 105 experimental, 4 deferred, 1 ready,
 0 advertised**. The advertised count stays **zero**: Plan 518 makes the
 published record *current*, and advertises nothing new.
 
+**Plan 519 adds one surface** — `daemon.router-info-publication-off-loop` —
+so the inventory holds **111 surfaces, 106 experimental, 4 deferred, 1 ready,
+0 advertised**. The advertised count stays **zero**: Plan 519 moves the
+publication onto its own task, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -2623,6 +2628,77 @@ re-dated record in the live network. That half needs Plan 493's authorized
 two-host topology, and the stock-peer evidence remains blocked on it. Nothing
 is advertised: the inventory's advertised count stays zero, `router.version`
 stays `0.9.62`, and the published RouterInfo's content is unchanged.
+
+## The publication leaves the transport's loop (Plan 519)
+
+Plan 515 made the publication periodic. Plan 516 made it confirmable. Plan 517
+made it retry. Plan 518 made the record current. All four ran the publication
+**inside** the SSU2 service's `select!` loop.
+
+That loop's publication arm awaited a session establishment. While that await
+was pending the loop could not run its other arms: the relay drain and the
+inbound acknowledgement owner both waited. The transport's **socket** I/O was
+not the victim — `i2pr-runtime` owns the sockets, the timers and the handshake
+machinery, so a handshake completed while the daemon's service loop was
+stalled. What was lost was the **service layer's** other work. This was the
+**Medium** finding `M1` that Plan 517's and Plan 518's closure records both
+carry open.
+
+Neither pinned reference blocks its transport's loop on a handshake. i2pd
+2.61.0's `Transports::SendMessage` posts the send and the publisher **ignores**
+the returned future (`libi2pd/Transports.cpp:483-496`). Java I2P 2.13.0 runs
+the publication as a **job on its own pool** (`PublishLocalRouterInfoJob`,
+`JobQueue.java:163`), hands the store to a `FloodfillStoreJob` with its own
+`PUBLISH_TIMEOUT = 90 s` (`FloodfillNetworkDatabaseFacade.java:174`,
+`:246-257`), and delivers it through `commSystem().processMessage(m)`, so the
+transport owns the dial (`StoreJob.java:415-441`). The I2P documentation states
+the same rule in prose: a router publishes its RouterInfo by directly
+connecting to a floodfill router, and only in some circumstances out an
+exploratory tunnel.
+
+**The publication now runs on its own task.** The owner — the schedule, the
+cycle, the correlator and the cycle's record — the transport capability, the
+identity and the acknowledgement inbox all move into it. The composition root
+spawns it under the service's own child scope with an explicit cancellation;
+there is no ownerless task and no detached one. The transport's service loop
+holds **none** of the publication's state and never awaits it.
+
+The inbound `DeliveryStatus` still crosses the boundary, and it crosses it
+over a **bounded** channel: the loop's hand-over never waits for room, and a
+full channel counts the acknowledgement as **unmatched** — the refusal Plan
+516 already defines — rather than dropping it silently.
+
+The publication owns a **bounded per-attempt delivery timeout** of 90 seconds,
+in the shape of the reference's `PUBLISH_TIMEOUT`. A delivery that did not
+finish inside it is refused under **its own reason** and counted, so a hung
+handshake holds neither the transport's loop nor the publication's task.
+
+The selection **prefers a peer the router is already connected to**, because
+that is the peer whose send needs no handshake — i2pd's `IsConnected` and
+Java's `isEstablished` both do. The preference is applied **on top of** the
+version-gated closeness selection, and the targets it skips for want of one
+are counted under their own reason. Exploratory tunnels stay out of scope:
+i2pr installs none in production, so the direct route is the only one.
+
+**Proved here:** the transport's service loop never awaits the publication and
+never names its work; the publication's state is not owned by the loop, and the
+owner is constructed once and handed to the task; the task is spawned with
+explicit ownership and cancellation and stops when its cancellation fires; the
+acknowledgement handoff is bounded, never waits for room, and counts a refused
+acknowledgement as unmatched; the selection prefers an established session and
+counts the targets it skipped; the delivery timeout is bounded and owned by the
+publication, and a delivery that timed out is refused under its own reason; the
+transport's loop carries no publication timer; and the ladder's timing, the
+correlator's matching and Plan 518's staleness rule are unchanged.
+
+**Not proved here, and not claimed:** that a **stock** floodfill accepts the
+router's record in the live network — that half needs Plan 493's authorized
+two-host topology and remains blocked on it. The **live-dial** half is also not
+re-measured here: the lane drives the publication's public behaviour without a
+socket, so what stands between the publication and the transport's loop is the
+structural gate, which reads the production files. Nothing is advertised: the
+inventory's advertised count stays zero, `router.version` stays `0.9.62`, and
+the published RouterInfo's content is unchanged.
 
 ## The router retries a publication the network did not acknowledge (Plan 517)
 

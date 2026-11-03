@@ -47,6 +47,7 @@ pub mod peer_reconcile;
 pub mod peer_test;
 pub mod router_i2np;
 pub mod router_info_publication;
+pub mod router_info_publication_task;
 pub mod sam;
 pub mod service_delivery;
 pub mod service_els2;
@@ -3547,6 +3548,171 @@ fn register_ntcp2_service(
     Ok(())
 }
 
+/// The router's own RouterInfo publication, on its **own task**.
+///
+/// Plan 519: the publication used to run inside the SSU2 service's
+/// `select!` loop, where its delivery awaited a session establishment and
+/// stalled the loop's relay drain and its inbound acknowledgement owner.
+/// The publication now has its **own** task, with its own ownership, its
+/// own cancellation and its own bounded delivery timeout, and the
+/// transport's service loop never awaits it.
+///
+/// The reference never blocks its transport's loop on a handshake: i2pd
+/// 2.61.0 posts the send and ignores the returned future
+/// (`libi2pd/Transports.cpp:483-496`), and Java I2P 2.13.0 runs the
+/// publication as a job on its own pool (`PublishLocalRouterInfoJob`,
+/// `JobQueue.java:163`) whose store is handed to a `FloodfillStoreJob`
+/// with its own `PUBLISH_TIMEOUT`
+/// (`FloodfillNetworkDatabaseFacade.java:174`).
+///
+/// The task owns the publication's whole world: the owner (the schedule,
+/// the cycle, the correlator and the cycle's record), the transport
+/// capability, the identity and the acknowledgement inbox. The transport's
+/// service loop holds **none** of it.
+async fn run_router_info_publication_task(
+    task: crate::router_info_publication_task::RouterInfoPublicationTask,
+    cancellation: i2pr_runtime::CancellationToken,
+) -> Result<(), i2pr_runtime::ChildTaskFailure> {
+    let crate::router_info_publication_task::RouterInfoPublicationTask {
+        mut publication_owner,
+        handle,
+        bundle,
+        bootstrap,
+        mut rng,
+        mut inbox,
+        dial_timeout,
+        qualification_profile,
+    } = task;
+    // Plan 519: the publication's ticks are **its own**. The transport's
+    // service loop gains no timer: it carries none of the publication's
+    // ticks, and the publication's ticks carry none of the transport's
+    // work.
+    let mut publication_tick = tokio::time::interval(Duration::from_millis(
+        crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+    ));
+    publication_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut publication_ladder_tick = tokio::time::interval(Duration::from_millis(
+        crate::router_info_publication_task::PUBLICATION_LADDER_TICK_MS,
+    ));
+    publication_ladder_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        // Plan 519: the acknowledgements the bounded handoff could not take
+        // are folded in under the **unmatched** reason, so none of them is
+        // dropped silently. The fold is a read-and-clear, so it is safe to
+        // run it on every wake of the task.
+        inbox.fold_overflow(&mut publication_owner);
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                // Plan 519: a cancelled publication stops at its next
+                // await, the cycle is halted, and the cancellation is
+                // counted under its own reason.
+                publication_owner.halt_cycle();
+                publication_owner.schedule_mut().record_cancelled();
+                break;
+            }
+            Some(message_id) = inbox.recv() => {
+                // Plan 516: the correlator matches the inbound
+                // `DeliveryStatus` to the attempt it names, and an
+                // acknowledgement that names no live attempt is refused
+                // and counted under its own reason.
+                //
+                // Plan 519: the correlation happens on the publication's
+                // **own** task, so the transport's service loop never
+                // waits for it.
+                match publication_owner.confirm(message_id) {
+                    crate::router_info_publication::PublicationConfirmation::Confirmed {
+                        request_id,
+                    } => {
+                        tracing::info!(
+                            request_id,
+                            "router RouterInfo publication acknowledged by the network"
+                        );
+                    }
+                    crate::router_info_publication::PublicationConfirmation::Unmatched => {
+                        tracing::debug!(
+                            "router RouterInfo publication acknowledgement matched no live attempt"
+                        );
+                    }
+                }
+            }
+            _ = publication_tick.tick() => {
+                // Plan 515: one republication, when the schedule says it
+                // is due. Every outcome is counted by reason, and a
+                // refusal never stops the router.
+                //
+                // Plan 517: the publication is a **cycle**, and a cycle
+                // that is already running is left alone -- the periodic
+                // tick must not start a second one over the first.
+                let now_ms = wall_clock_ms();
+                if publication_owner.is_due(now_ms) && publication_owner.begin_cycle() {
+                    // Plan 518: the cycle's record is re-dated and
+                    // re-signed **once**, here, so every rung of the cycle
+                    // publishes the same bytes. The reference dates the
+                    // record before each publish cycle
+                    // (`libi2pd/RouterContext.cpp:1474`) and its resend
+                    // rungs publish that same record.
+                    let local_record = crate::router_i2np::refresh_local_router_info_record(
+                        &bundle,
+                        &handle,
+                        now_ms,
+                    );
+                    // Plan 518: the cycle's record is decided **once**,
+                    // here, and every rung of the cycle publishes it. A
+                    // rung never reads a copy back out of the runtime, so
+                    // the record cannot change under the cycle.
+                    publication_owner.set_cycle_record(local_record);
+                    let outcome = crate::router_info_publication::refresh_router_info(
+                        &mut publication_owner,
+                        &handle,
+                        bootstrap.as_ref(),
+                        dial_timeout,
+                        qualification_profile,
+                        &mut rng,
+                        &cancellation,
+                        &wall_clock_ms,
+                    )
+                    .await;
+                    tracing::info!(
+                        transition = "router_info_publication",
+                        outcome = ?outcome,
+                        "router RouterInfo publication",
+                    );
+                }
+            }
+            _ = publication_ladder_tick.tick() => {
+                // Plan 517: the publication's confirmation deadline rides
+                // **this** tick -- the publication's own ladder tick -- so
+                // no new timer is introduced in the transport's service
+                // loop. A batch the network did not acknowledge within
+                // the reference's timeout is followed by the next batch,
+                // and a delivery refusal is followed at once.
+                let publication_now_ms = wall_clock_ms();
+                if publication_owner.cycle_expired(publication_now_ms)
+                    && let Some(outcome) =
+                        crate::router_info_publication::advance_publication_cycle(
+                            &mut publication_owner,
+                            &handle,
+                            bootstrap.as_ref(),
+                            dial_timeout,
+                            qualification_profile,
+                            &mut rng,
+                            &cancellation,
+                            &wall_clock_ms,
+                        )
+                        .await
+                {
+                    tracing::info!(
+                        transition = "router_info_publication_retry",
+                        outcome = ?outcome,
+                        "router RouterInfo publication retry",
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Registers the supervised loopback SSU2 router service in the
 /// supplied builder. Plan 184 owns the first daemon activation of
 /// the existing SSU2 runtime under the strict controlled profile
@@ -4105,33 +4271,15 @@ fn register_ssu2_service(
                     // introducer (Bob) role owner.
                     let mut relay_tick = tokio::time::interval(Duration::from_millis(100));
                     relay_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    // Plan 515: the router's own RouterInfo is republished
-                    // on a period, so the record does not age out of the
-                    // network's view and a peer can keep finding the
-                    // router. The refresh is the **router's own**: it does
-                    // not depend on a service tunnel being provisioned.
-                    let publication_dial_timeout =
-                        crate::service_product::ServiceProductOptions::default().dial_timeout;
-                    let mut publication_tick = tokio::time::interval(Duration::from_millis(
-                        crate::router_info_publication::PUBLICATION_INTERVAL_MS,
-                    ));
-                    publication_tick
-                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    let mut publication_owner =
-                        i2pr_netdb::router_hash(bundle.identity()).ok().map(|hash| {
-                            crate::router_info_publication::RouterInfoPublicationOwner::new(
-                                hash,
-                                crate::router_info_publication::PUBLICATION_INTERVAL_MS,
-                            )
-                        });
-                    let mut publication_rng = match ChaCha8Rng::try_from_os_rng() {
-                        Ok(rng) => rng,
-                        // The publication's message id is the only
-                        // randomness it needs, and a router that cannot
-                        // reach the operating system's entropy still
-                        // publishes; it simply never reuses an id.
-                        Err(_) => ChaCha8Rng::seed_from_u64(0),
-                    };
+                    // Plan 519: the publication has its **own task**, and
+                    // this loop holds **none** of the publication's state.
+                    // The only thing that crosses the boundary is the
+                    // inbound acknowledgement, and it crosses it over a
+                    // **bounded** channel that this loop never blocks on.
+                    let (publication_handoff, publication_inbox) =
+                        crate::router_info_publication_task::publication_acknowledgement_channel(
+                            crate::router_info_publication_task::PUBLICATION_ACKNOWLEDGEMENT_CAPACITY,
+                        );
                     let pump_started = tokio::time::Instant::now();
                     let mut reply_token_probe_sent = HashSet::new();
                     let mut pending_reply_token_probes = HashMap::new();
@@ -4324,6 +4472,57 @@ fn register_ssu2_service(
                     } else {
                         NormalSsu2Owner::Router(handle)
                     };
+                    // Plan 519: the publication runs on its **own task**.
+                    //
+                    // The task is spawned under the service's own child
+                    // scope, so it is owned, cancelled and joined with the
+                    // service: there is no ownerless task and no detached
+                    // one. The transport's service loop never awaits it.
+                    // The router's own identity hash is already validated
+                    // by the composition root, so the publication's owner
+                    // is always built and the task is always spawned.
+                    let publication_task =
+                        crate::router_info_publication_task::RouterInfoPublicationTask {
+                            publication_owner:
+                                crate::router_info_publication::RouterInfoPublicationOwner::new(
+                                    i2pr_netdb::RouterHash::from_hash(router_hash),
+                                    crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+                                ),
+                            handle: owner.handle().publication_handle(),
+                            bundle: Arc::clone(&bundle),
+                            bootstrap: live_bootstrap.clone(),
+                            rng: match ChaCha8Rng::try_from_os_rng() {
+                                Ok(rng) => rng,
+                                // The publication's message id is the only
+                                // randomness it needs, and a router that
+                                // cannot reach the operating system's entropy
+                                // still publishes; it simply never reuses
+                                // an id.
+                                Err(_) => ChaCha8Rng::seed_from_u64(0),
+                            },
+                            inbox: publication_inbox,
+                            dial_timeout:
+                                crate::service_product::ServiceProductOptions::default().dial_timeout,
+                            qualification_profile: ssu2_config.qualification_profile,
+                        };
+                    if children
+                        .spawn(move |cancellation| async move {
+                            run_router_info_publication_task(publication_task, cancellation).await
+                        })
+                        .is_err()
+                    {
+                        owner.shutdown().await;
+                        let detail = i2pr_core::HealthDetail::new(
+                            "the RouterInfo publication task could not be spawned",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
                     // Plan 502: the router hashes the transit owner holds an
                     // index entry for. The set is bounded by the live
                     // session set and by the transit peer index's own
@@ -4749,22 +4948,29 @@ fn register_ssu2_service(
                                 if transport == AuthenticatedRouterTransport::Ssu2
                                     && let Some(i2pr_proto::I2npBody::DeliveryStatus(status)) =
                                         message.map(i2pr_proto::I2npMessage::body)
-                                    && let Some(publication_owner) = publication_owner.as_mut()
                                 {
-                                    match publication_owner.confirm(status.message_id) {
-                                        crate::router_info_publication::PublicationConfirmation::Confirmed {
-                                            request_id,
-                                        } => {
-                                            tracing::info!(
-                                                request_id,
-                                                "router RouterInfo publication acknowledged by the network"
-                                            );
-                                        }
-                                        crate::router_info_publication::PublicationConfirmation::Unmatched => {
-                                            tracing::debug!(
-                                                "router RouterInfo publication acknowledgement matched no live attempt"
-                                            );
-                                        }
+                                    // Plan 516: the store the publication
+                                    // put on the wire carries the
+                                    // correlator's minted reply token, so
+                                    // the floodfill answers with a
+                                    // `DeliveryStatus` that carries it back
+                                    // -- and the router learns that the
+                                    // **network holds** its record, which is
+                                    // a different fact from the transport
+                                    // having accepted the store.
+                                    //
+                                    // Plan 519: the acknowledgement crosses
+                                    // a **bounded** channel to the
+                                    // publication's task, which owns the
+                                    // correlator. This loop never awaits
+                                    // it: a full channel counts the
+                                    // acknowledgement as unmatched rather
+                                    // than blocking the loop or dropping it
+                                    // silently.
+                                    if !publication_handoff.acknowledge(status.message_id) {
+                                        tracing::debug!(
+                                            "router RouterInfo publication acknowledgement could not be handed over"
+                                        );
                                     }
                                 }
                                 let mut served = false;
@@ -5053,59 +5259,6 @@ fn register_ssu2_service(
                                 }
                             }
 
-                            _ = publication_tick.tick() => {
-                                // Plan 515: one republication, when the
-                                // schedule says it is due. Every outcome is
-                                // counted by reason, and a refusal never
-                                // stops the router.
-                                //
-                                // Plan 517: the publication is a **cycle**,
-                                // and a cycle that is already running is
-                                // left alone -- the periodic tick must not
-                                // start a second one over the first.
-                                let now_ms = wall_clock_ms();
-                                if let Some(publication_owner) = publication_owner.as_mut()
-                                    && publication_owner.is_due(now_ms)
-                                    && publication_owner.begin_cycle()
-                                {
-                                    // Plan 518: the cycle's record is
-                                    // re-dated and re-signed **once**, here,
-                                    // so every rung of the cycle publishes
-                                    // the same bytes. The reference dates
-                                    // the record before each publish cycle
-                                    // (`libi2pd/RouterContext.cpp:1474`) and
-                                    // its resend rungs publish that same
-                                    // record.
-                                    let local_record = crate::router_i2np::refresh_local_router_info_record(
-                                        &bundle,
-                                        owner.handle(),
-                                        now_ms,
-                                    );
-                                    // Plan 518: the cycle's record is decided
-                                    // **once**, here, and every rung of the
-                                    // cycle publishes it. A rung never reads
-                                    // a copy back out of the runtime, so the
-                                    // record cannot change under the cycle.
-                                    publication_owner.set_cycle_record(local_record);
-                                    let outcome = crate::router_info_publication::refresh_router_info(
-                                        publication_owner,
-                                        owner.handle(),
-                                        live_bootstrap.as_ref(),
-                                        publication_dial_timeout,
-                                        ssu2_config.qualification_profile,
-                                        &mut publication_rng,
-                                        &cancellation,
-                                        &wall_clock_ms,
-                                    )
-                                    .await;
-                                    tracing::info!(
-                                        transition = "router_info_publication",
-                                        outcome = ?outcome,
-                                        "router RouterInfo publication",
-                                    );
-                                }
-                            }
-
                             _ = relay_tick.tick() => {
                                 // Plan 498: drain the runtime's bounded
                                 // relay handoff into the introducer (Bob)
@@ -5149,37 +5302,6 @@ fn register_ssu2_service(
                                             "SSU2 introducer relay handoff drained"
                                         );
                                     }
-                                }
-
-                                // Plan 517: the publication's confirmation
-                                // deadline rides **this** tick -- the loop's
-                                // existing 100 millisecond cadence -- so no
-                                // new timer is introduced. A batch the
-                                // network did not acknowledge within the
-                                // reference's timeout is followed by the next
-                                // batch, and a delivery refusal is followed
-                                // at once.
-                                let publication_now_ms = wall_clock_ms();
-                                if let Some(publication_owner) = publication_owner.as_mut()
-                                    && publication_owner.cycle_expired(publication_now_ms)
-                                    && let Some(outcome) =
-                                        crate::router_info_publication::advance_publication_cycle(
-                                            publication_owner,
-                                            owner.handle(),
-                                            live_bootstrap.as_ref(),
-                                            publication_dial_timeout,
-                                            ssu2_config.qualification_profile,
-                                            &mut publication_rng,
-                                            &cancellation,
-                                            &wall_clock_ms,
-                                        )
-                                        .await
-                                {
-                                    tracing::info!(
-                                        transition = "router_info_publication_retry",
-                                        outcome = ?outcome,
-                                        "router RouterInfo publication retry",
-                                    );
                                 }
                             }
                         }
