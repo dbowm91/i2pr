@@ -250,6 +250,44 @@ fn the_re_dating_is_deterministic() {
 }
 
 #[test]
+fn the_cycle_holds_one_record_for_every_rung() {
+    // Plan 518, invariant 7: every rung of a cycle publishes **one** record.
+    // The record is the cycle's, and the cycle's record lives in the owner,
+    // so a rung reads it back rather than reading a copy out of the runtime.
+    let (_bundle, encoded) = local_record(T0);
+    let local_hash = router_hash(decoded(&encoded).router_identity()).expect("hash");
+    let mut owner = RouterInfoPublicationOwner::new(local_hash, PUBLICATION_INTERVAL_MS);
+
+    assert!(
+        owner.cycle_record().is_none(),
+        "a cycle with no record has nothing to publish"
+    );
+
+    // The cycle's record is set once, at the cycle's start.
+    owner.set_cycle_record(Some(encoded.clone()));
+    let first = owner.cycle_record().expect("the cycle's record").to_vec();
+    assert_eq!(
+        first, encoded,
+        "the cycle's record must be the record it was given, byte for byte"
+    );
+
+    // A rung reads it back: the same bytes, unchanged.
+    let rung = owner.cycle_record().expect("the cycle's record").to_vec();
+    assert_eq!(
+        first, rung,
+        "every rung of a cycle must publish the same record"
+    );
+
+    // A cycle with no record is refused rather than published from some
+    // other copy.
+    owner.set_cycle_record(None);
+    assert!(
+        owner.cycle_record().is_none(),
+        "a cycle with no record must publish nothing"
+    );
+}
+
+#[test]
 fn the_publication_fan_out_is_unchanged() {
     // Plan 518 does not touch the selection: the fan-out stays at the
     // tree's three.

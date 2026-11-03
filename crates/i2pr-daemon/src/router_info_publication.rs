@@ -546,6 +546,16 @@ pub struct RouterInfoPublicationOwner {
     /// Plan 517: the cycle -- the exclusion set of the targets already
     /// asked, and the confirmation deadline.
     cycle: RouterInfoPublicationCycle,
+    /// Plan 518: the **cycle's record** -- the bytes every rung of the cycle
+    /// publishes.
+    ///
+    /// The record is set once, at the cycle's start, by the composition
+    /// root, which re-dates and re-signs it before the first batch goes out
+    /// (decision **D1**). Every rung then publishes *this* record rather
+    /// than reading a copy back out of the runtime, so the cycle's record
+    /// cannot change under it -- and the correlator's registered record
+    /// stays the record the acknowledgement names.
+    cycle_record: Option<Vec<u8>>,
 }
 
 impl RouterInfoPublicationOwner {
@@ -557,7 +567,33 @@ impl RouterInfoPublicationOwner {
             policy: LookupPolicy::default(),
             coordinator: PublicationCoordinator::new(LookupPolicy::default()),
             cycle: RouterInfoPublicationCycle::default(),
+            cycle_record: None,
         }
+    }
+
+    /// Sets the **cycle's record**: the bytes every rung of the cycle
+    /// publishes.
+    ///
+    /// Plan 518: the composition root calls this once, at the cycle's start,
+    /// with the record it has just re-dated and re-signed. The rungs read it
+    /// back through `cycle_record`, so the cycle's record is decided once
+    /// and cannot change under the cycle.
+    ///
+    /// `None` is a real answer: a router with no record has nothing to
+    /// publish, and the publication is refused under its own reason rather
+    /// than an empty record being sent.
+    pub fn set_cycle_record(&mut self, record: Option<Vec<u8>>) {
+        self.cycle_record = record;
+    }
+
+    /// The **cycle's record**, if the cycle has one.
+    ///
+    /// Plan 518: this is what every rung of the cycle publishes. It is
+    /// `None` before the cycle's first batch, and a publication with no
+    /// cycle record is refused under its own reason rather than published
+    /// from some other copy.
+    pub fn cycle_record(&self) -> Option<&[u8]> {
+        self.cycle_record.as_deref()
     }
 
     /// The owner's correlator, mutably.
@@ -798,7 +834,6 @@ pub async fn refresh_router_info<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
     ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
-    local_record: Option<Vec<u8>>,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
     rng: &mut R,
@@ -809,6 +844,9 @@ pub async fn refresh_router_info<R: RngCore>(
     // so the period stays anchored to the attempt and not to the moment
     // the delivery finished.
     let attempt_ms = clock();
+    // Plan 518: the record is the **cycle's** record, read from the owner,
+    // so the first batch and every rung publish the same bytes.
+    let local_record = owner.cycle_record().map(<[u8]>::to_vec);
     let outcome = publish_once(
         owner,
         ssu2_handle,
@@ -838,7 +876,6 @@ pub async fn advance_publication_cycle<R: RngCore>(
     owner: &mut RouterInfoPublicationOwner,
     ssu2_handle: &crate::router_i2np::Ssu2DaemonHandle,
     bootstrap: Option<&Arc<Mutex<crate::bootstrap::Bootstrap>>>,
-    local_record: Option<Vec<u8>>,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
     rng: &mut R,
@@ -851,6 +888,11 @@ pub async fn advance_publication_cycle<R: RngCore>(
         return None;
     }
     let attempt_ms = clock();
+    // Plan 518: the rung publishes the **cycle's** record, read from the
+    // owner. A rung never reads a copy back out of the runtime, so the
+    // record the correlator registered at the cycle's start is still the
+    // record this rung publishes.
+    let local_record = owner.cycle_record().map(<[u8]>::to_vec);
     // The awaited batch is abandoned; the next one is asked.
     owner.abandon_batch(attempt_ms);
     let outcome = publish_once(

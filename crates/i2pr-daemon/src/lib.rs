@@ -5081,11 +5081,16 @@ fn register_ssu2_service(
                                         owner.handle(),
                                         now_ms,
                                     );
+                                    // Plan 518: the cycle's record is decided
+                                    // **once**, here, and every rung of the
+                                    // cycle publishes it. A rung never reads
+                                    // a copy back out of the runtime, so the
+                                    // record cannot change under the cycle.
+                                    publication_owner.set_cycle_record(local_record);
                                     let outcome = crate::router_info_publication::refresh_router_info(
                                         publication_owner,
                                         owner.handle(),
                                         live_bootstrap.as_ref(),
-                                        local_record,
                                         publication_dial_timeout,
                                         ssu2_config.qualification_profile,
                                         &mut publication_rng,
@@ -5157,15 +5162,11 @@ fn register_ssu2_service(
                                 let publication_now_ms = wall_clock_ms();
                                 if let Some(publication_owner) = publication_owner.as_mut()
                                     && publication_owner.cycle_expired(publication_now_ms)
-                                {
-                                    let local_record =
-                                        owner.handle().service().installed_local_router_info();
-                                    if let Some(outcome) =
+                                    && let Some(outcome) =
                                         crate::router_info_publication::advance_publication_cycle(
                                             publication_owner,
                                             owner.handle(),
                                             live_bootstrap.as_ref(),
-                                            local_record,
                                             publication_dial_timeout,
                                             ssu2_config.qualification_profile,
                                             &mut publication_rng,
@@ -5173,13 +5174,12 @@ fn register_ssu2_service(
                                             &wall_clock_ms,
                                         )
                                         .await
-                                    {
-                                        tracing::info!(
-                                            transition = "router_info_publication_retry",
-                                            outcome = ?outcome,
-                                            "router RouterInfo publication retry",
-                                        );
-                                    }
+                                {
+                                    tracing::info!(
+                                        transition = "router_info_publication_retry",
+                                        outcome = ?outcome,
+                                        "router RouterInfo publication retry",
+                                    );
                                 }
                             }
                         }

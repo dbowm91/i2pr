@@ -334,6 +334,41 @@ fn select_arm_body(code: &str, head: &str) -> Option<String> {
     Some(code[open..end].to_owned())
 }
 
+/// Rule 9: the rungs publish the **cycle's** record.
+///
+/// A rung must not read a copy of the record back out of the runtime: the
+/// cycle's record is the owner's, and a rung that re-read the installed copy
+/// would publish a different record from the one the correlator registered
+/// when the cycle began.
+fn check_the_rungs_publish_the_cycle_record(composition: &str) -> Option<String> {
+    let code = code_view(composition);
+    let Some(relay) = select_arm_body(&code, "relay_tick.tick() =>") else {
+        return Some("the composition root has no relay tick arm".to_owned());
+    };
+    if relay.contains("installed_local_router_info(") {
+        return Some(
+            "the relay tick reads the installed record: a rung must publish the cycle's record"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+/// Rule 10: the cycle's record is the **owner's**.
+///
+/// The rung reads the cycle's record from the owner, so the record is decided
+/// once, at the cycle's start, and cannot change under the cycle.
+fn check_the_cycle_record_is_the_owners(publication: &str) -> Option<String> {
+    let code = code_view(publication);
+    let Some(body) = item_body(&code, "pub async fn advance_publication_cycle") else {
+        return Some("the publication's rung is absent".to_owned());
+    };
+    if !body.contains("cycle_record(") {
+        return Some("the rung does not read the cycle's record".to_owned());
+    }
+    None
+}
+
 /// Rule 1: the re-dating happens once per cycle, at the cycle's start, and
 /// not per rung.
 ///
@@ -570,6 +605,24 @@ fn the_module_stays_runtime_neutral() {
     );
 }
 
+#[test]
+fn the_rungs_publish_the_cycle_record() {
+    let reason = check_the_rungs_publish_the_cycle_record(&source_of(COMPOSITION_MODULE));
+    assert!(
+        reason.is_none(),
+        "the rungs must publish the cycle's record: {reason:?}"
+    );
+}
+
+#[test]
+fn the_cycle_record_is_the_owners() {
+    let reason = check_the_cycle_record_is_the_owners(&source_of(PUBLICATION_MODULE));
+    assert!(
+        reason.is_none(),
+        "the cycle's record must be the owner's: {reason:?}"
+    );
+}
+
 // ----------------------------------------------------------------------
 // The inverted probes: each rule must report its own violation.
 // ----------------------------------------------------------------------
@@ -610,6 +663,40 @@ fn compose() {
     assert!(
         reason.is_some(),
         "a publication that reads the installed record must be reported: {reason:?}"
+    );
+}
+
+/// The inverted probe for rule 9: a relay arm that reads the installed
+/// record back out of the runtime must be reported.
+#[test]
+fn the_guard_reports_a_rung_that_reads_the_installed_record() {
+    let violating = "\
+fn compose() {
+    let _ = relay_tick.tick() => {
+        let _ = owner.handle().service().installed_local_router_info();
+    };
+}
+";
+    let reason = check_the_rungs_publish_the_cycle_record(violating);
+    assert!(
+        reason.is_some(),
+        "a rung that reads the installed record must be reported: {reason:?}"
+    );
+}
+
+/// The inverted probe for rule 10: a rung that does not read the cycle's
+/// record must be reported.
+#[test]
+fn the_guard_reports_a_rung_that_does_not_read_the_cycle_record() {
+    let violating = "\
+pub async fn advance_publication_cycle(owner: &mut Owner) {
+    let _ = owner;
+}
+";
+    let reason = check_the_cycle_record_is_the_owners(violating);
+    assert!(
+        reason.is_some(),
+        "a rung that does not read the cycle's record must be reported: {reason:?}"
     );
 }
 
