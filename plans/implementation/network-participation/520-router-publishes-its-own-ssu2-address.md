@@ -60,6 +60,13 @@ is `PROP_CAPABILITIES = "caps"` (`:86`).
 The gap is not a missing protocol. It is a missing **owner** and a missing **wiring**,
 and both are provable from the tree.
 
+> **This section records the tree as it stood before the plan**, at the
+> registration commit `169d124e`. Plan 520 changed the very lines it cites —
+> the four refusals it lists were the plan's own targets — so the line numbers
+> below are the **registration-time** locations and the quoted messages are the
+> **pre-plan** ones. Section 17.8 records each pointer's current location and
+> what changed; the plan's evidence is not rewritten.
+
 ### 3.1 The published record names no endpoint
 
 - `crates/i2pr-netdb/src/local.rs:207-219` — the ordinary builder *"carries zero
@@ -597,3 +604,30 @@ The fix is a **fix**, not a relaxation: no script's rule was weakened, no
 rule was disabled, no exclusion was widened, and no production wire was
 changed to go green. The routine floor was then re-run on the fixed, committed
 tree and reconciled step for step; the closure record carries the result.
+
+### 17.8 The section 3 citations were left as the registration-time record
+
+Section 3 is the plan's **evidence**, and evidence is not rewritten. It was
+written against the registration commit `169d124e`, and Plan 520 changed the
+very lines it cites — the four refusals it lists were the plan's own targets —
+so a reader following a registration-time line number would land on unrelated
+code in the closing tree.
+
+The section therefore carries a banner saying so, and this entry records every
+pointer's current location. The **quotes** in section 3 remain the pre-plan
+ones; they are what the plan was written against.
+
+| Section 3 pointer (registration time) | Current pointer | What changed |
+| --- | --- | --- |
+| `crates/i2pr-netdb/src/local.rs:207-219` | `crates/i2pr-netdb/src/local.rs:213-220` | The builder's own doc, which carries the quoted text |
+| `crates/i2pr-daemon/src/config.rs:2005-2006` | `crates/i2pr-daemon/src/config.rs:2005-2012` | The field's doc, rewritten by Plan 520 |
+| `crates/i2pr-daemon/src/config.rs:3385-3392` | `crates/i2pr-daemon/src/config.rs:3398-3411` | The parser's refusal, now conditional on the service and the profile |
+| `crates/i2pr-daemon/src/router_i2np.rs:1571-1576` | `crates/i2pr-daemon/src/router_i2np.rs:1577-1583` | The socket boundary's refusal, now profile-scoped |
+| `crates/i2pr-daemon/src/router_i2np.rs:2133-2138` | `crates/i2pr-daemon/src/router_i2np.rs:2144-2150` | The service constructor's refusal, now profile-scoped |
+| `crates/i2pr-daemon/src/lib.rs:3943-3949` | `crates/i2pr-daemon/src/lib.rs:3966-3974` | The composition's strict-profile refusal, which is now the **introducer's**; the advertisement's refusal moved to the config's opt-in |
+| `crates/i2pr-daemon/src/lib.rs:4179` | `crates/i2pr-daemon/src/lib.rs:4198-4202` | The startup install, shifted by the owner's wiring |
+| `crates/i2pr-daemon/src/lib.rs:4752-4767` | `crates/i2pr-daemon/src/lib.rs:4792-4796` | The cycle's re-install, shifted by the owner's wiring |
+| `crates/i2pr-daemon/src/router_i2np.rs:1709` | `crates/i2pr-daemon/src/router_i2np.rs:1715` | `refresh_local_router_info_record` |
+
+The closure record is the authority on the **closing** tree, so it cites the
+current locations and only the current locations.
