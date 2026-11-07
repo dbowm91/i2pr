@@ -203,6 +203,42 @@ impl ReachabilitySignal {
     }
 }
 
+/// Evidence that this router completed a peer-test round trip with a peer.
+///
+/// The type is **sealed** on purpose. There is no constructor that takes a
+/// boolean, a count or a claim: the only way to obtain one is
+/// [`ConfirmedPeerTest::attest_matched_round_trip`], which takes the elapsed
+/// local time a **matched** echo produced. A tracker that did not match has
+/// no elapsed time to pass, so the unmatched and timed-out paths cannot mint
+/// a proof at all.
+///
+/// This is the ordinary router's evidence, and it is about **this** router.
+/// It is never written into a peer's profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfirmedPeerTest {
+    elapsed_ms: u64,
+    _sealed: (),
+}
+
+impl ConfirmedPeerTest {
+    /// Mints the proof of a matched round trip.
+    ///
+    /// The caller passes the elapsed local time the **match** produced. The
+    /// value is a measurement, never a claim: the repository's guard pins the
+    /// production call sites to the code that matched an echoed identifier.
+    pub const fn attest_matched_round_trip(elapsed_ms: u64) -> Self {
+        Self {
+            elapsed_ms,
+            _sealed: (),
+        }
+    }
+
+    /// The measured local round-trip time of the matched exchange.
+    pub const fn elapsed_ms(self) -> u64 {
+        self.elapsed_ms
+    }
+}
+
 /// Tunable corroboration/expiry policy with a structural safety floor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReachabilityPolicy {

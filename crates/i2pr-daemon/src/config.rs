@@ -638,6 +638,8 @@ struct RawSsu2Config {
     advertise: bool,
     #[serde(default = "default_ssu2_introducer_service")]
     introducer_service: bool,
+    #[serde(default = "default_ssu2_peer_test")]
+    peer_test: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
     /// Optional destination for the Plan 476 sanitized local receipt
@@ -676,6 +678,7 @@ impl Default for RawSsu2Config {
             port: default_ssu2_port(),
             advertise: default_ssu2_advertise(),
             introducer_service: default_ssu2_introducer_service(),
+            peer_test: default_ssu2_peer_test(),
             qualification_profile: default_ssu2_qualification_profile(),
             qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
@@ -1426,6 +1429,13 @@ const fn default_ssu2_introducer_service() -> bool {
     false
 }
 
+/// Plan 521: the router's own peer test is an explicit opt-in and it is
+/// **off** by default, so a router that has not asked for reachability
+/// evidence never generates probe traffic.
+const fn default_ssu2_peer_test() -> bool {
+    false
+}
+
 fn default_ssu2_qualification_profile() -> String {
     String::from("controlled_loopback")
 }
@@ -2010,6 +2020,14 @@ pub struct Ssu2Config {
     /// withdraws the address when the evidence lapses. It is refused
     /// outside the controlled loopback profile.
     pub advertise: bool,
+    /// Whether this router runs **its own** peer test (default false).
+    ///
+    /// Plan 521: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router probes a peer it already holds a
+    /// session with and records a **confirmed** exchange as its own
+    /// reachability evidence. It generates no traffic when it is off, and it
+    /// never runs outside the SSU2 service.
+    pub peer_test: bool,
     /// Whether introducer service is offered (default false).
     ///
     /// Plan 490 makes the role available behind this explicit opt-in.
@@ -3409,6 +3427,16 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             });
         }
     }
+    // Plan 521: the router's own peer test runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because a peer test is an
+    // exchange with a peer the router already holds a session with, and it
+    // is refused rather than silently inert when the service is off.
+    if raw.peer_test && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.peer_test",
+            reason: "the router's own peer test requires ssu2.enabled = true",
+        });
+    }
     // Plan 490: the introducer role is available behind an explicit
     // opt-in. It still requires the SSU2 service itself to run, and it
     // never grants advertisement.
@@ -3535,6 +3563,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         bind_ipv6,
         port: raw.port,
         advertise: raw.advertise,
+        peer_test: raw.peer_test,
         introducer_service: raw.introducer_service,
         qualification_profile: if private_lan {
             Ssu2QualificationProfile::PrivateLan

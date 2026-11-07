@@ -78,10 +78,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo, SigningPublicKey};
 use i2pr_transport::{
-    AddressFamily, CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage,
-    FamilyNetworkCondition, LinkCandidate, LinkId, PeerId, PeerTestOutcomeKind, PendingHandshake,
-    ReachabilitySignal, ReachabilityState, ReachabilityTracker, ResourceClass, TerminationCategory,
-    TransportKind, TransportLimits, TransportManager, effective_reachability,
+    AddressFamily, CandidateDecision, ConfirmedPeerTest, DeliveryRequest, Direction,
+    EncodedI2npMessage, FamilyNetworkCondition, LinkCandidate, LinkId, PeerId, PeerTestOutcomeKind,
+    PendingHandshake, ReachabilitySignal, ReachabilityState, ReachabilityTracker, ResourceClass,
+    TerminationCategory, TransportKind, TransportLimits, TransportManager, effective_reachability,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
@@ -999,6 +999,18 @@ pub struct Ssu2PublicationMaterial {
     pub bound_family: i2pr_transport::AddressFamily,
 }
 
+/// Why the router's own confirmed peer test was not recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2PeerTestEvidenceError {
+    /// The runtime has shut down.
+    Closed,
+    /// State was poisoned during shutdown or failure.
+    StateUnavailable,
+    /// The session the exchange travelled on is gone, so the address family
+    /// the evidence belongs to cannot be established.
+    NoSession,
+}
+
 /// Why the runtime cannot currently expose SSU2 publication material.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ssu2PublicationUnavailable {
@@ -1324,6 +1336,13 @@ struct ServiceCounters {
     controlled_confirmed: AtomicU64,
     controlled_received: AtomicU64,
     controlled_drops: AtomicU64,
+    /// The router's **own** confirmed peer tests, recorded from a matched
+    /// echo (Plan 521). Distinct from `controlled_confirmed`, which mirrors
+    /// the controlled table's outcome.
+    confirmed_peer_tests: AtomicU64,
+    /// The measured local round-trip time of the most recent confirmed peer
+    /// test, in milliseconds; zero when none has been confirmed.
+    last_confirmed_peer_test_ms: AtomicU64,
     relay_tag_requests: AtomicU64,
     relay_tags_issued: AtomicU64,
     relay_tag_refused_disabled: AtomicU64,
@@ -2542,6 +2561,87 @@ impl Ssu2RuntimeService {
             );
         }
         Ok(())
+    }
+
+    /// Records the router's **own** confirmed peer test (Plan 521).
+    ///
+    /// This is the production counterpart of the controlled table's outcome
+    /// mirror. The controlled mirror takes its outcome from the controlled
+    /// exchange; this one takes the **sealed** proof the transport mints when
+    /// an echoed identifier matched an outstanding probe. A caller therefore
+    /// cannot assert a confirmed round trip with a boolean or a claim.
+    ///
+    /// The signal belongs to **this** router: it is the router's own
+    /// reachability, and it is never written into a peer's profile. Only a
+    /// `Confirmed` outcome records anything, so an inconclusive test records
+    /// nothing and a failed test can never poison later evidence.
+    ///
+    /// The caller names the **link** the exchange travelled on. The runtime
+    /// derives the address family from that session's own address, so a
+    /// caller cannot assert a family and the evidence cannot be filed under
+    /// a family the exchange never used. A session that is already gone is
+    /// refused rather than recorded under a guessed family.
+    ///
+    /// Refused after shutdown.
+    pub fn note_confirmed_peer_test(
+        &self,
+        link_id: LinkId,
+        proof: ConfirmedPeerTest,
+    ) -> Result<(), Ssu2PeerTestEvidenceError> {
+        if self.shared.shutdown.is_cancelled() {
+            return Err(Ssu2PeerTestEvidenceError::Closed);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| Ssu2PeerTestEvidenceError::StateUnavailable)?;
+        // The family is the family of the session the exchange travelled on,
+        // and the runtime is the only component that knows it. The caller
+        // names the link and the runtime derives the family from the
+        // session's own address, so the evidence is recorded on the family's
+        // terms or not at all.
+        let family = match state.active.get(&link_id) {
+            Some(session) => match session.peer_addr.ip() {
+                IpAddr::V4(_) => AddressFamily::Ipv4,
+                IpAddr::V6(_) => AddressFamily::Ipv6,
+            },
+            None => return Err(Ssu2PeerTestEvidenceError::NoSession),
+        };
+        let now = self.service_now();
+        state.reachability.record(
+            ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: PeerTestOutcomeKind::Confirmed,
+            },
+            now,
+        );
+        self.shared
+            .counters
+            .confirmed_peer_tests
+            .fetch_add(1, Ordering::Relaxed);
+        self.shared
+            .counters
+            .last_confirmed_peer_test_ms
+            .store(proof.elapsed_ms(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Returns the measured local round-trip time of the most recent
+    /// confirmed peer test, in milliseconds; zero when none was confirmed.
+    pub fn last_confirmed_peer_test_ms(&self) -> u64 {
+        self.shared
+            .counters
+            .last_confirmed_peer_test_ms
+            .load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of the router's own confirmed peer tests recorded.
+    pub fn confirmed_peer_test_count(&self) -> u64 {
+        self.shared
+            .counters
+            .confirmed_peer_tests
+            .load(Ordering::Relaxed)
     }
 
     /// Starts one single-flight controlled peer-test exchange (Plan 283).

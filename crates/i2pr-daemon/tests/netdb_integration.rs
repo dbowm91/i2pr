@@ -115,6 +115,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             bind_ipv6: None,
             port: 0,
             advertise: false,
+            peer_test: false,
             introducer_service: false,
             qualification_profile:
                 i2pr_daemon::config::Ssu2QualificationProfile::ControlledLoopback,

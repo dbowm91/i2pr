@@ -110,10 +110,11 @@ pub use ssu2_runtime::{
     SSU2_TOKEN_CACHE_PER_PEER, SSU2_TOKEN_REQUEST_SOURCES, SSU2_TOKEN_REQUESTS_PER_SECOND,
     Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget, Ssu2DialTargetError, Ssu2EstablishedLink,
     Ssu2IdentityMaterial, Ssu2InboundBatch, Ssu2InboundI2np, Ssu2InboundRelay, Ssu2LimitKind,
-    Ssu2LinkHandle, Ssu2NetworkCondition, Ssu2PublicationMaterial, Ssu2PublicationUnavailable,
-    Ssu2RelayCounters, Ssu2RelayEvent, Ssu2RelayQueueError, Ssu2RuntimeConfig,
-    Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService,
-    Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig, Ssu2TestFaults,
+    Ssu2LinkHandle, Ssu2NetworkCondition, Ssu2PeerTestEvidenceError, Ssu2PublicationMaterial,
+    Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent, Ssu2RelayQueueError,
+    Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines, Ssu2RuntimeLimits,
+    Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig,
+    Ssu2TestFaults,
 };
 // Plan 490 daemon-owned SSU2 relay re-exports: the daemon owns the
 // introducer (Bob) role and must reach the relay blocks without a

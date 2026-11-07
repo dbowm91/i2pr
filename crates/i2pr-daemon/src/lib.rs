@@ -4395,6 +4395,9 @@ fn register_ssu2_service(
  extra_bootstrap_peers: Vec::new(),
                             options: crate::service_product::ServiceProductOptions {
                                 ssu2_qualification_profile: ssu2_config.qualification_profile,
+                                // Plan 521: the router's own peer test is an
+                                // explicit opt-in and it is off by default.
+                                peer_test: ssu2_config.peer_test,
                                 ..Default::default()
                             },
                             addressbook: addressbook.shared(),
@@ -4474,6 +4477,14 @@ fn register_ssu2_service(
                                 // counts and stable reason labels only.
                                 inspection.publish_peer_reconcile_counters(
                                     product.peer_reconcile_counters_cell(),
+                                );
+                                // Plan 521: publish the live peer-test
+                                // counters so the running router's own
+                                // peer-test posture is observable through the
+                                // inspection plane. The counters carry counts
+                                // only.
+                                inspection.publish_peer_test_counters(
+                                    product.peer_test_counters_cell(),
                                 );
                                 NormalSsu2Owner::Groups(Box::new(product))
                             }
