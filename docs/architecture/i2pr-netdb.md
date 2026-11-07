@@ -83,7 +83,7 @@ It must **not** own:
 | `floodfill_service` | `floodfill_service.rs` | 1601 | Plan 273/274 synchronous bounded DatabaseStore admission plus DatabaseLookup selection and one-shot supplied-key ECIES reply effects | `FloodfillStoreService`, `FloodfillStorePolicy`, `FloodfillStoreStats`, `FloodfillStoreEffect`, `FloodfillAck`, `FloodfillIngress`, `FloodfillLookupEffect`, `FloodfillReplyIntent`, `FloodfillRole`, `FloodfillTime`, `ReplyProtection`, `LookupFailure`, `ReplicationCandidate` |
 | `lease_set` | `lease_set.rs` | 574 | Plan 272 validated classic LeaseSet and MetaLeaseSet plus their bounded stores | `ValidatedLeaseSet`, `ValidatedMetaLeaseSet`, `LeaseSetValidationContext`, `LeaseSetValidationError`, `LeaseSetStore`, `LeaseSetStoreConfig`, `LeaseSetInsertOutcome`, `MetaLeaseSetStore`, `MetaLeaseSetStoreConfig`, `MetaLeaseSetInsertOutcome` |
 | `lease_set2` | `lease_set2.rs` | 1000 | Plan 119 Standard LeaseSet2 validation, freshness policy, disclosure block, and bounded store | `ValidatedLeaseSet2`, `DestinationHash`, `LeaseSet2ValidationPolicy` / `LeaseSet2ValidationContext` / `LeaseSet2ValidationError`, `LeaseSetDisclosureBlock`, `LeaseSet2Store`, `LeaseSet2StoreConfig`, `LeaseSet2StoreStats`, `LeaseSet2InsertOutcome` |
-| `local` | `local.rs` | 812 | Local signed RouterInfo builder, controlled option declaration, data-only Java-compatible bandwidth-class derivation, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `BandwidthClass`, `BandwidthClassError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
+| `local` | `local.rs` | 1440 | Local signed RouterInfo builder, controlled option declaration, data-only Java-compatible bandwidth-class derivation, self-validation, non-advertisement guard | `LocalRouterInfoBuilder`, `LocalRouterInfo`, `LocalRouterInfoError`, `BandwidthClass`, `BandwidthClassError`, `controlled_router_options`, `CONTROLLED_ROUTER_VERSION`, `CONTROLLED_NET_ID` |
 | `lookup_action` | `lookup_action.rs` | 500 | Typed action vocabulary emitted by the lookup machine; bounded gzip decompression; reply-path sink trait | `LookupAction`, `LookupOutcome`, `LookupFinalState`, `DecompressionError`, `ReplyPathSink`, `decompress_router_info`, `MAX_COMPRESSED_ROUTER_INFO_BYTES`, `MAX_DECOMPRESSED_ROUTER_INFO_BYTES`, `LOOKUP_EXCLUDED_PEER_BUDGET` |
 | `lookup_engine` | `lookup_engine.rs` | 1 849 | Iterative `RouterInfo`/`LeaseSet2` lookup state machine and bounded coalescing; **Plan 497** adds the preferred-order entry point `start_with_preferred`, which reorders the flat store's own selection without narrowing it; **Plan 500** enforces the policy's per-lookup peer ceiling in the single attempt site, so it binds on every entry point and narrows attempts, never candidates | `RouterInfoLookup`, `CoalescedRouterInfoLookup`, `LookupResult`, `LookupEngineError`, `LookupDiagnostics`, `StartOutcome`, `ResponseOutcome`, `DeliveryOutcome`, `handle_database_store`, `handle_database_store_lease_set2`, `handle_search_reply`, `handle_delivery_outcome`, `handle_databasestore_message`, `handle_searchreply_message` |
 | `lookup_id` | `lookup_id.rs` | 366 | Typed lookup identity, exploratory reply-path token, bounded waiter/target sets, `ReplyPathProvider` | `LookupId`, `LookupKind`, `ReplyPath`, `ReplyPathError`, `ReplyPathProvider`, `WaiterSet`, `CoalescedTargets`, `router_hash_from_proto_hash`, `router_hash_from_destination`, `MAX_WAITERS_PER_LOOKUP`, `MAX_COALESCED_LOOKUPS` |
@@ -943,9 +943,21 @@ a `LocalRouterInfo`.
   `build_floodfill_reachable` additionally requires a
   `LoopbackReachabilityProof`. A normal daemon config can never mint
   either (`LocalRouterInfoError::UnqualifiedFloodfillAddress` otherwise).
+- **Plan 520** adds `build_with_ssu2_address`, the **non-floodfill** addressed
+  builder. It signs a record carrying **one** qualified SSU2 address, and it
+  takes **no** floodfill permit, so it cannot mint `caps=f`: the permit stays
+  the only route to the floodfill capability. The address is accepted only
+  when the netdb's **own** qualification rule accepts it
+  (`is_qualified_ssu2_address`: the transport style is `SSU2`, the options
+  are exactly `host`, `port`, `mtu`, `v`, `caps`, `s` and `i`, the port is
+  non-zero, the MTU is within `1280..=9000`, `v` is `2`, and the capability
+  string is exactly the address family). An address the rule refuses is
+  never signed and never installed
+  (`LocalRouterInfoError::UnqualifiedAddress`).
 - `LocalRouterInfoError` variants: `ForbiddenTransport { style }`,
   `InvalidMapping { context }`, `SigningFailed`,
-  `UnqualifiedFloodfillAddress`, `Validation(RouterInfoValidationError)`.
+  `UnqualifiedFloodfillAddress`, `UnqualifiedAddress`,
+  `Validation(RouterInfoValidationError)`.
 
 ### Resource accounting owned here (`resource.rs`)
 

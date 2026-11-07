@@ -2537,6 +2537,11 @@ so the inventory holds **111 surfaces, 106 experimental, 4 deferred, 1 ready,
 0 advertised**. The advertised count stays **zero**: Plan 519 moves the
 publication onto its own task, and advertises nothing new.
 
+**Plan 520 adds one surface** — `daemon.own-ssu2-address-publication` —
+so the inventory holds **112 surfaces, 107 experimental, 4 deferred, 1 ready,
+0 advertised**. The advertised count stays **zero**: Plan 520 qualifies the
+address the router already published, and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3119,3 +3124,63 @@ Capability publication is a security and interoperability contract. Before chang
 ## Evidence retention
 
 Store stable protocol vectors and minimized malformed fixtures in the repository. Store large captures, generated testnets and sensitive operational logs outside Git history, with scripts and hashes sufficient to reproduce them. Redact live peer identities, IP addresses, destination keys, session keys and potentially identifying timing data before retaining or publishing artifacts.
+
+## The router publishes its own qualified SSU2 address (Plan 520)
+
+The router publishes its own RouterInfo to the network. Since the tree
+began that record has carried **one** SSU2 address — `generate_identity_with_keys`
+builds it from the **bound** endpoint with the options `host`, `port`, `v`,
+`s` and `i` — but the address was **unqualified**: it omitted the `caps`
+and `mtu` options the specification's SSU2 form carries, and the netdb's own
+`is_qualified_ssu2_address` refuses an address without them. So the record
+named an endpoint no peer could qualify, and the reference publishes both
+(`libi2pd/RouterInfo.cpp:1434-1449`, `:281`).
+
+**The switch is `ssu2.advertise`, and it is off by default.** It is refused
+unless the SSU2 service itself runs, and it is refused outside the
+controlled loopback profile, because the runtime's publication material is
+refused for any non-loopback bind. With the switch off the installed record
+stands byte-identical: the default router publishes exactly what it
+published before.
+
+**The decision has exactly one owner.** The transport's
+`build_publication_snapshot` renders the direct form — host, port, the
+family capability and the transport's MTU — only when the reachability
+state is `Reachable` and the policy allows it; otherwise it renders the
+endpoint-less form. The runtime applies that builder to the router's own
+evidence, and the daemon's owner **asks the runtime** for the material: it
+never builds a snapshot, never writes an address's options, and never
+records a reachability signal of its own. The daemon owns the opt-in, the
+hand-off to the netdb's own qualified builder, the install, the withdrawal
+and the count.
+
+**The withdrawal is the expiry.** When the evidence lapses the published
+record returns to the netdb's ordinary **zero-address** form, so the router
+does not keep publishing an endpoint it can no longer justify. The runtime's
+install gate was changed to allow that: it still binds every SSU2 address the
+record carries to the router's own bound endpoint with the router's own
+keys, and still refuses two conflicting ones, but it no longer *requires* an
+address to be present.
+
+**`caps=f` stays permit-gated.** The netdb's addressed builder takes **no**
+floodfill permit, so it cannot mint the floodfill capability, and the
+floodfill path's own record is left alone by the owner's stand-down rule.
+
+**Proved here:** the opt-in is off by default and changes nothing when off;
+the direct form is published when the transport's material admits it, and the
+address is the router's own bound endpoint; the netdb's own qualification
+accepts the published form; the record carries no `f` capability and the
+floodfill builders still require the permit; the lapsed evidence withdraws
+the address; the re-dated record still carries the address; the floodfill
+path's record is left alone; and every outcome is counted under its own
+reason.
+
+**Not proved here, and not claimed:** that a **stock** peer qualifies the
+published record in the live network — that half needs Plan 493's authorized
+two-host topology and remains blocked on it. The direct form also needs three
+distinct corroboration classes, and there is **no production entry point**
+that starts a peer test outside the controlled floodfill activation, so the
+ordinary record's address cannot be earned in production today. Nothing is
+advertised: the inventory's advertised count stays zero, `router.version`
+stays `0.9.62`, the published record's `caps` string is unchanged, and
+`Cargo.toml` and `Cargo.lock` are byte-identical.

@@ -562,7 +562,14 @@ categorical/expiry evidence only. `install_local_router_info` accepts future
 handshake RouterInfo bytes only after signature and local identity checks,
 preserved network id, strict endpoint/key binding to the actual socket, and a
 size-bounded decode; replacement is atomic and already-established sessions are
-not rewritten. Plan 283 adds the Plan 103 freshness windows mirrored locally
+not rewritten. **Plan 520** relaxes one thing: the record may carry **no** SSU2
+address. Every address it *does* carry is still bound to the router's own
+bound endpoint with the router's own static and intro keys, and two conflicting
+SSU2 addresses are still refused, but the transport's **endpoint-less** form is
+now installable -- which is what makes the withdrawal of a lapsed address
+possible, and what lets the transport's own publication policy (rather than an
+unconditional ad-hoc address) decide whether an endpoint may be published at
+all. Plan 283 adds the Plan 103 freshness windows mirrored locally
 (dependency direction forbids importing them from `i2pr-netdb`) and the
 opt-in explicit-bind corroboration flag. The bind-plus-observation pair yields
 exactly `CandidateReachable`; `publication_material` still requires above-floor

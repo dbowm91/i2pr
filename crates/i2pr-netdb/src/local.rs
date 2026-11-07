@@ -129,6 +129,15 @@ pub enum LocalRouterInfoError {
     /// address and one live NTCP2 address, both with fixed loopback endpoints.
     #[error("controlled dual-transport floodfill addresses are invalid")]
     InvalidControlledTransportAddresses,
+    /// The supplied SSU2 address is not one the netdb's own qualification
+    /// rule accepts.
+    ///
+    /// Plan 520: the router's own published record may carry one qualified
+    /// SSU2 address, and the qualification rule is the netdb's own
+    /// `is_qualified_ssu2_address`. An address that rule refuses is never
+    /// signed and never installed.
+    #[error("local router info requires one qualified SSU2 address")]
+    UnqualifiedAddress,
     /// The constructed record did not pass the standard validator.
     #[error("local router info failed validation: {0}")]
     Validation(#[from] RouterInfoValidationError),
@@ -232,6 +241,38 @@ impl<'a> LocalRouterInfoBuilder<'a> {
     /// Convenience constructor that uses an empty options mapping.
     pub fn build_default(&self, published: Date) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         self.build(published, Mapping::empty())
+    }
+
+    /// Builds the local signed RouterInfo carrying **one** qualified SSU2
+    /// address.
+    ///
+    /// Plan 520: the router publishes its own record to the network, and a
+    /// record that names no endpoint cannot be found. This builder is the
+    /// **non-floodfill** way to carry an address: it takes no permit, so the
+    /// `f` capability stays unreachable here, and it refuses every capability
+    /// letter the ordinary builder refuses.
+    ///
+    /// The address is accepted only when the netdb's **own** qualification
+    /// rule accepts it (`is_qualified_ssu2_address`): the transport style is
+    /// `SSU2`, the options are exactly `host`, `port`, `mtu`, `v`, `caps`,
+    /// `s` and `i`, the port is non-zero, the MTU is within `1280..=9000`,
+    /// `v` is `2`, and the capability string is exactly the address family.
+    /// An address the rule refuses is never signed and never installed.
+    ///
+    /// The record carries no peer list: the ordinary builder carries none
+    /// either, and the router's own introducer set is not this builder's
+    /// business.
+    pub fn build_with_ssu2_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
     }
 
     /// Builds a floodfill RouterInfo only from an opaque active-role permit and a qualified SSU2
@@ -662,7 +703,10 @@ pub fn options_to_sorted_entries(options: &Mapping) -> Option<Vec<(&str, &str)>>
 pub struct LocalRouterInfoSummary {
     /// Canonical local RouterHash.
     pub router_hash: RouterHash,
-    /// Number of `RouterAddress` entries (always zero under Plan 103).
+    /// Number of `RouterAddress` entries.
+    ///
+    /// Zero for the ordinary builder's record under Plan 103; one for the
+    /// Plan 520 addressed builder's record.
     pub address_count: usize,
     /// Publication timestamp carried by the local RouterInfo.
     pub published: Date,
@@ -1092,6 +1136,98 @@ mod tests {
         ])
         .unwrap();
         RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), address_options).unwrap()
+    }
+
+    /// Plan 520: the router's own published record must be able to name the
+    /// endpoint at which a peer reaches it. The builder that carries the
+    /// address is **not** the floodfill builder, so the `f` capability stays
+    /// unreachable through it.
+    #[test]
+    fn the_addressed_builder_carries_one_qualified_ssu2_address() {
+        let signer = bundle(0x520);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let address = qualified_ssu2_test_address();
+        let local = builder
+            .build_with_ssu2_address(Date::from_millis(101), options, address.clone())
+            .expect("the qualified address is accepted");
+        assert_eq!(local.router_info().addresses().len(), 1);
+        assert_eq!(
+            local.router_info().addresses()[0].options().get("host"),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            local.router_info().addresses()[0].options().get("caps"),
+            Some("4")
+        );
+        // The builder signs the address list and no peer list: the router's
+        // own introducer set is not this builder's business.
+        assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    /// The netdb's own qualification rule is the authority: an address it
+    /// refuses is never signed.
+    #[test]
+    fn an_unqualified_address_is_never_signed() {
+        let signer = bundle(0x521);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        // A capability string that is not exactly the family letter.
+        let wrong_caps = Mapping::from_entries(vec![
+            ("caps".into(), "4f".into()),
+            ("host".into(), "127.0.0.1".into()),
+            ("i".into(), crate::base64::encode(&[2; 32]).unwrap()),
+            ("mtu".into(), "1280".into()),
+            ("port".into(), "1234".into()),
+            ("s".into(), crate::base64::encode(&[1; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
+        let refused = RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), wrong_caps)
+            .expect("the address itself is well formed");
+        assert!(matches!(
+            builder.build_with_ssu2_address(Date::from_millis(101), options.clone(), refused),
+            Err(LocalRouterInfoError::UnqualifiedAddress)
+        ));
+        // A transport style that is not SSU2.
+        let ntcp2 = qualified_ntcp2_test_address();
+        assert!(matches!(
+            builder.build_with_ssu2_address(Date::from_millis(101), options, ntcp2),
+            Err(LocalRouterInfoError::UnqualifiedAddress)
+        ));
+    }
+
+    /// The capability letters the ordinary builder refuses stay refused
+    /// here: the addressed builder is not a route to `caps=f`.
+    #[test]
+    fn the_addressed_builder_still_refuses_the_f_capability() {
+        let signer = bundle(0x522);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = Mapping::from_entries(vec![
+            ("caps".into(), "f".into()),
+            ("router.version".into(), CONTROLLED_ROUTER_VERSION.into()),
+        ])
+        .unwrap();
+        assert!(matches!(
+            builder.build_with_ssu2_address(
+                Date::from_millis(101),
+                options,
+                qualified_ssu2_test_address()
+            ),
+            Err(LocalRouterInfoError::InvalidMapping { context: "caps" })
+        ));
+    }
+
+    /// The ordinary builder is unchanged: it still carries no address.
+    #[test]
+    fn the_ordinary_builder_still_carries_no_address() {
+        let signer = bundle(0x523);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let local = builder
+            .build(Date::from_millis(101), options)
+            .expect("the ordinary build succeeds");
+        assert!(local.router_info().addresses().is_empty());
     }
 
     /// Plan 306/ADR 0030: the proof-gated builder emits exactly `fR` —

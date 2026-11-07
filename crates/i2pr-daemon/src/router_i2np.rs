@@ -1568,11 +1568,17 @@ pub fn ssu2_socket_config_from(config: &Ssu2Config) -> Result<Ssu2SocketConfig, 
             "SSU2 service requires enabled = true".to_owned(),
         ));
     }
-    // Plan 490: the introducer role is available behind an explicit
-    // opt-in; advertisement stays forbidden.
-    if config.advertise {
+    // Plan 520: the router may publish **its own** SSU2 address behind an
+    // explicit opt-in. The publication is confined to the controlled
+    // loopback profile: the runtime's publication material is refused for
+    // any non-loopback bind, so a private-LAN bind could never earn the
+    // address, and the switch is refused there rather than silently
+    // publishing nothing.
+    if config.advertise
+        && config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+    {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "SSU2 controlled profile forbids advertise".to_owned(),
+            "the private-LAN SSU2 profile cannot publish an SSU2 address".to_owned(),
         ));
     }
     if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -2130,11 +2136,16 @@ impl Ssu2DaemonService {
                 "SSU2 service requires enabled = true".to_owned(),
             ));
         }
-        // Plan 490: the introducer role is available behind an explicit
-        // opt-in; advertisement stays forbidden.
-        if config.advertise {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in. The publication is confined to the
+        // controlled loopback profile: the runtime's publication material
+        // is refused for any non-loopback bind, so a private-LAN bind
+        // could never earn the address.
+        if config.advertise
+            && config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+        {
             return Err(Ssu2ServiceError::ControlledProfile(
-                "SSU2 controlled profile forbids advertise".to_owned(),
+                "the private-LAN SSU2 profile cannot publish an SSU2 address".to_owned(),
             ));
         }
         if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -3487,13 +3498,13 @@ mod tests {
     }
 
     #[test]
-    fn socket_config_refuses_advertisement_even_with_the_introducer_role_on() {
-        // Plan 490: the introducer role is available, but the SSU2 service
-        // still refuses to start when advertisement is permitted. The role
-        // lives inside that service, so this refusal is the control that
-        // keeps the introducer unreachable in any advertising
-        // configuration. The config parser refuses `advertise = true` on
-        // its own; this is the second, independent gate.
+    fn socket_config_permits_the_controlled_advertisement_opt_in() {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in, and the introducer role is available behind
+        // its own. The socket layer's independent gate is the **profile**:
+        // the controlled loopback profile may opt in, and the private-LAN
+        // profile may not, because the runtime's publication material is
+        // refused for any non-loopback bind.
         let mut config = crate::config::Config::parse(
             "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"\"\nbind_ipv6 = \"::1\"\nintroducer_service = true\n",
         )
@@ -3501,14 +3512,22 @@ mod tests {
         .ssu2;
         assert!(config.introducer_service);
         assert!(!config.advertise);
+        // The controlled loopback profile may opt in.
         config.advertise = true;
-        let Err(Ssu2ServiceError::ControlledProfile(reason)) = ssu2_socket_config_from(&config)
+        assert!(ssu2_socket_config_from(&config).is_ok());
+        // The private-LAN profile may not.
+        let mut private = config.clone();
+        private.qualification_profile = crate::config::Ssu2QualificationProfile::PrivateLan;
+        private.bind_ipv4 = Some("192.168.10.25".parse().unwrap());
+        private.bind_ipv6 = None;
+        private.port = 44123;
+        let Err(Ssu2ServiceError::ControlledProfile(reason)) = ssu2_socket_config_from(&private)
         else {
-            panic!("an advertising configuration must never produce SSU2 sockets");
+            panic!("the private-LAN profile must never publish an SSU2 address");
         };
         assert!(
-            reason.contains("advertise"),
-            "the refusal must name the advertisement it forbids: {reason}"
+            reason.contains("publish"),
+            "the refusal must name the publication it forbids: {reason}"
         );
     }
 

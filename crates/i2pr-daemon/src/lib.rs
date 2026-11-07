@@ -49,6 +49,7 @@ pub mod router_i2np;
 pub mod router_info_publication;
 pub mod router_info_publication_task;
 pub mod sam;
+pub mod self_publication;
 pub mod service_delivery;
 pub mod service_els2;
 pub mod service_generation;
@@ -3582,6 +3583,7 @@ async fn run_router_info_publication_task(
         mut inbox,
         dial_timeout,
         qualification_profile,
+        self_publication,
     } = task;
     // Plan 519: the publication's ticks are **its own**. The transport's
     // service loop gains no timer: it carries none of the publication's
@@ -3651,6 +3653,23 @@ async fn run_router_info_publication_task(
                     // record before each publish cycle
                     // (`libi2pd/RouterContext.cpp:1474`) and its resend
                     // rungs publish that same record.
+                    // Plan 520: the router's own published address is
+                    // decided **before** the cycle re-dates the record, so
+                    // the cycle publishes the addressed record and every
+                    // rung of the cycle publishes the same bytes. The
+                    // transport owns the decision; the owner only
+                    // installs and counts.
+                    let self_publication_outcome =
+                        self_publication.refresh(&bundle, handle.service(), now_ms);
+                    if !matches!(
+                        self_publication_outcome,
+                        crate::self_publication::SelfPublicationOutcome::Disabled
+                    ) {
+                        tracing::info!(
+                            outcome = ?self_publication_outcome,
+                            "the router's own published address was refreshed"
+                        );
+                    }
                     let local_record = crate::router_i2np::refresh_local_router_info_record(
                         &bundle,
                         &handle,
@@ -3942,9 +3961,11 @@ fn register_ssu2_service(
                     // Strict profile is enforced twice: once at config
                     // parse time and again here so a future bypass
                     // cannot reach socket ownership.
-                    if ssu2_config.advertise
-                        || ssu2_config.introducer_service
-                    {
+                    //
+                    // Plan 520: the router's **own** address publication is
+                    // behind an explicit opt-in and is no longer refused
+                    // here. The introducer role still is.
+                    if ssu2_config.introducer_service {
                         let detail = i2pr_core::HealthDetail::new(
                             "SSU2 service requires the strict controlled profile",
                         )
@@ -4504,6 +4525,11 @@ fn register_ssu2_service(
                             dial_timeout:
                                 crate::service_product::ServiceProductOptions::default().dial_timeout,
                             qualification_profile: ssu2_config.qualification_profile,
+                            // Plan 520: the router's own published address
+                            // is behind the operator's explicit opt-in.
+                            self_publication: crate::self_publication::SelfPublicationOwner::new(
+                                ssu2_config.advertise,
+                            ),
                         };
                     if children
                         .spawn(move |cancellation| async move {

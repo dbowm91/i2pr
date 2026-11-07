@@ -161,11 +161,12 @@ refactor" rule).
 
 **Authority plan:** Plan 519 `passed` — the publication's own task — with
 Plans 518, 517, 516 and 515 closed before it. **Plan 520 is registered and
-active**: the router's own published RouterInfo carries **no address**, so the
-network cannot find it.
+active**: the router's own published RouterInfo carries an SSU2 address that
+**no peer can qualify** — it omits the `caps` and `mtu` options the form
+requires — so the network cannot find it.
 
-The support inventory states the position precisely: of **111 surface
-entries, 0 are advertised** — 106 `experimental`, 4 `deferred`, 1 `ready`
+The support inventory states the position precisely: of **112 surface
+entries, 0 are advertised** — 107 `experimental`, 4 `deferred`, 1 `ready`
 (`specs/support.toml`). The four deferred entries are
 `i2np.tunnel-framing`, `i2np.garlic-data-framing`, `i2np.initial-bodies`, and
 `tunnel.live-build`.
@@ -174,7 +175,7 @@ What exists today, and what is missing from it:
 
 | Layer | Present | Missing |
 |---|---|---|
-| RouterInfo | signed build, periodic publication to floodfills with a fresh date and a correlated acknowledgement (`plans/closure/network-participation/515-status.md`–`519-status.md`), `router.version` 0.9.62 pinned to the implemented I2NP surface (`crates/i2pr-netdb/src/local.rs`), the version comparator and the minimum-peer floors with their **live** enforcement points (`503-status.md`) | **the published record carries no address at all** — the ordinary builder refuses every `RouterAddress` and `ssu2.advertise` is refused at parse time (`local.rs:207-219`, `config.rs:3385-3392`), so the router cannot be found (**Plan 520**) |
+| RouterInfo | signed build, periodic publication to floodfills with a fresh date and a correlated acknowledgement (`plans/closure/network-participation/515-status.md`–`519-status.md`), `router.version` 0.9.62 pinned to the implemented I2NP surface (`crates/i2pr-netdb/src/local.rs`), the version comparator and the minimum-peer floors with their **live** enforcement points (`503-status.md`) | **the published address is unqualified** — it omits the `caps` and `mtu` options the form carries and the netdb's own `is_qualified_ssu2_address` demands, so the record names an endpoint no peer can qualify (**Plan 520**) |
 | I2NP | the specification's 14 messages plus `TunnelTest` (231) (`crates/i2pr-proto/src/i2np/header.rs`) | nothing on the wire; the gaps are role-level, not codec-level |
 | Peers | the tiered peer-profile store with its failure detection, score and bounded selection policy (`488-status.md`), the knowledge reconcile into the two stores the router builds with (`506-status.md`), and the retention window with its prune (`507-status.md`) | the store's only **reader** remains Plan 433's never-constructed `NetDbTunnelCoordinator`, so the table's routing consumer is still Plan 433's blocked scope (`505-status.md`) |
 | NetDb | the iterative lookup state machine with its deadline, peer budget, duplicate coalescing and suggestion merging (`crates/i2pr-netdb/src/lookup_engine.rs`), the floodfill-indexed routing table and its exploration job (`489-status.md`, `514-status.md`), and the live discovery spine with its routing-table consumer (`513-status.md`) | the **composition** that would make the lookup the router's ordinary path — Plan 433's blocked scope; the lookup surface itself is no longer deferred |
@@ -184,8 +185,9 @@ What exists today, and what is missing from it:
 
 The consequence: `i2pr` can be *in* the network as a client of it, and it can
 be *tested* against the network in a controlled mesh, but it cannot yet be
-*relied upon* by the network. It cannot be found by a peer, because the record
-it publishes names no endpoint (**Plan 520**); it cannot carry another router's
+*relied upon* by the network. It cannot be **found** by a peer, because the
+address its record publishes is one no peer can qualify (**Plan 520**); it
+cannot carry another router's
 traffic on an ordinary profile, because transit participation is real but
 default-off; and it cannot claim the floodfill role, because the advertisement
 is Plan 494's and Plan 493's evidence is external. The reseed is no longer the

@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 69 `.rs` files, 119 860 lines of `src` (63 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
+**Size:** 77 `.rs` files, 133 723 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -177,6 +177,7 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | `src/netdb_participation.rs` | 3 479| Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either. **Plan 497** adds the `RoutingTableConsumer` — the shared, mutex-owned handle the lookup path consults, whose `candidates(...)` answers `Table(Vec<RouterHash>)` or `Fallback(RoutingTableFallback)`, and whose `RoutingTableCounters` count every fallback by reason. **Plan 513** adds the **`NetDbDiscoverySpine`** — the bounded owner of the router's DHT discovery — with its `DiscoveryOutcome`, `DiscoveryError`, `DiscoveryDelivery`, `DiscoveryDispatch` and `NetDbDiscoveryCounters`; the spine owns no task, no timer, no listener and no socket, and the daemon's existing tick drives it. **Plan 514** adds `RoutingTableConsumer::closest_floodfill` — the table's closest-first answer, used as a **target** rather than a preference — and the spine's exploratory start asks the table for it, so the peer the request is addressed to is the closest floodfill rather than the flat store's first advertiser; a table that names none ends the request, counted under `explorations_refused_no_target` | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome`, `RoutingTableConsumer`, `RoutingTableCandidates`, `RoutingTableFallback`, `RoutingTableCounters` |
 | `src/router_info_publication.rs` | 1 396 | **Plan 515** the router's **own** RouterInfo publication: the runtime-neutral schedule (a period, a due test, the counted outcomes), the **shared** selection rule -- the version-gated function, so Plan 503's API-version floor holds for every publication -- the shared `DatabaseStore` construction, and the **one** delivery path the service product's one-shot publication and the router-level refresh both use. The schedule never reads a clock: it takes `now_ms` from its caller. **Plan 516** makes the publication **confirmable**: the store message's construction moves to the correlator, so the minted correlation token reaches the wire, and the module gains the runtime-neutral confirmation seam (`confirm_publication`) and the attempt book the owner holds. A **delivery** admission and a **network acknowledgement** are counted separately. **Plan 517** adds the **cycle**: a bounded ladder of batches, the cycle's exclusion set, the reference's `1600` millisecond confirmation deadline, and the retry that follows an unacknowledged batch. The cycle is runtime-neutral -- it takes the reading from its caller through a `PublicationClock` and never reads a clock itself. **Plan 518** adds the publication's **staleness rule**: `record_is_publishable` is runtime-neutral, takes the reading from its caller, and uses the netdb's **own** acceptance window -- so a record the network would refuse is refused and counted (`refused_stale_record`) rather than published. **Plan 518** also gives the owner the **cycle's record**: the bytes every rung of the cycle publishes, set once at the cycle's start, so a rung cannot publish a different record from the one the correlator registered  **Plan 519** adds the **established-session preference** (`prefer_established_sessions`) -- the batch prefers a peer the router is already connected to, as i2pd's `IsConnected` and Java's `isEstablished` both do -- and counts the targets it skipped for want of one (`skipped_no_session`). It adds the publication's own **bounded per-attempt delivery timeout** (`PUBLICATION_DELIVERY_TIMEOUT_MS`, the reference's 90 seconds), so a hung handshake holds neither the transport's loop nor the publication's task, and a delivery that did not finish inside it is refused under its own reason (`deliveries_timed_out`) | `RouterInfoPublicationOwner`, `RouterInfoPublicationSchedule`, `RouterInfoPublicationOutcome`, `RouterInfoPublicationCounters`, `RouterInfoPublicationPlan`, `RouterInfoPublicationCycle`, `RouterInfoPublicationStep`, `PublicationConfirmation`, `PublicationClock`, `publication_targets`, `publication_targets_excluding`, `begin_attempts`, `confirm_publication`, `publish_router_info`, `refresh_router_info`, `advance_publication_cycle` |
 | `src/router_info_publication_task.rs` | 162 | **Plan 519** the publication's **bounded acknowledgement handoff**: the transport's service loop hands the inbound `DeliveryStatus`'s message id to the publication's task over a **bounded** channel and never awaits it, so the loop is never blocked by the publication. A full channel counts the acknowledgement as **unmatched** -- the refusal Plan 516 already defines -- rather than dropping it silently, and the task folds the refusals into the publication's own counters on every wake. The module also carries the task's inputs: the owner, the transport capability, the identity, the store handle and the inbox, so the transport's loop holds **none** of the publication's state | `PublicationAcknowledgementHandoff`, `PublicationAcknowledgementInbox`, `RouterInfoPublicationTask`, `publication_acknowledgement_channel`, `PUBLICATION_ACKNOWLEDGEMENT_CAPACITY`, `PUBLICATION_LADDER_TICK_MS` |
+| `src/self_publication.rs` | 457 | **Plan 520** the owner of the router's **own** published SSU2 address: the operator's opt-in, the hand-off of the transport's address to the netdb's own qualified builder, the install, the **withdrawal** when the evidence lapses, and the count of every outcome under its own reason. It never builds a snapshot, never writes an address's options and never records a reachability signal of its own: the **transport's** `build_publication_snapshot` is the single authority on whether an endpoint may be published | `SelfPublicationOwner`, `SelfPublicationDecision`, `SelfPublicationOutcome`, `SelfPublicationCounters`, `SelfPublicationCounterSnapshot`, `StandDownReason`, `SelfPublicationFailure` |
 | `src/netdb_seam.rs` | 1 592| Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider; **Plan 497** adds `begin_lookup_with_preferred`, which forwards a routing table's preferred peer list to the engine's `start_with_preferred` entry point. **Plan 513** adds the two live starts the discovery spine drives — `begin_routerinfo_lookup` (wire type `2`, the candidate list reordered by the table's preference and never narrowed) and `begin_exploratory_lookup` (wire type `3`) — plus `ingest_routerinfo_store`, `ingest_exploratory_search_reply`, `set_routerinfo_now_seconds` and `policy` | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome`, `begin_lookup_with_preferred` |
 | `src/netdb_tunnels.rs` | 1 180| Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss; **Plan 491** refuses a DSM whose floodfill target is below the DSM API-version floor; **Plan 497** adds `with_routing_table`, which injects the shared `RoutingTableConsumer` so `begin_tunnel_lookup` can ask the table how it would order the flat store's selection. **Plan 513** factors the composition into the free function `compose_lookup_via_outbound_tunnel`, which the coordinator's `compose_lookup_via_tunnel` now delegates to with byte-identical behaviour, so the live discovery spine reaches the canonical composition without constructing the never-composed coordinator | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
@@ -939,6 +940,56 @@ The **live-dial** half is not re-measured either: the lane drives the
 publication's public behaviour without a socket, so what stands between the
 publication and the transport's loop is the structural guard, which reads the
 production files.
+
+### The router's own published address (Plan 520)
+
+The router publishes its own RouterInfo, and that record has carried one SSU2
+address since the tree began: `generate_identity_with_keys` builds it from the
+**bound** endpoint with the options `host`, `port`, `v`, `s` and `i`. The
+address was **unqualified** — it omitted the `caps` and `mtu` options the
+specification's SSU2 form carries and the netdb's own
+`is_qualified_ssu2_address` demands — so the record named an endpoint no
+peer could qualify. The reference publishes both
+(`libi2pd/RouterInfo.cpp:1434-1449`, `:281`).
+
+**What changed:**
+
+- `src/self_publication.rs` — the owner. It asks the runtime for the
+  material, hands the transport's address to the netdb's own qualified
+  builder, installs the record, withdraws it when the evidence lapses, and
+  counts every outcome under its own reason. It starts no task, no timer and
+  no listener, and it records **no** reachability signal of its own;
+- `crates/i2pr-netdb/src/local.rs` —
+  `LocalRouterInfoBuilder::build_with_ssu2_address`, the **non-floodfill**
+  addressed builder. It validates the address with the netdb's own
+  `is_qualified_ssu2_address`, takes **no** floodfill permit, and therefore
+  cannot mint `caps=f`;
+- `src/config.rs` — `ssu2.advertise` stops being a parse-time error and
+  becomes an explicit opt-in that is **off** by default, refused unless the
+  SSU2 service itself runs and refused outside the controlled loopback
+  profile;
+- `src/router_i2np.rs` — the socket and the service boundaries refuse the
+  opt-in by **profile** rather than refusing it outright;
+- `src/lib.rs` — the composition root builds the owner from the operator's
+  opt-in and refreshes the record inside the publication's cycle, **before**
+  the cycle re-dates and publishes it;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the install gate no longer
+  *requires* an SSU2 address. It still binds every address the record carries
+  to the router's own bound endpoint with the router's own keys, and still
+  refuses two conflicting ones, but the transport's **endpoint-less** form is
+  now installable — which is what makes the withdrawal possible.
+
+**The decision has one owner.** The transport's `build_publication_snapshot`
+renders the direct form — host, port, the family capability and the
+transport's MTU — only when the router's own reachability evidence is
+`Reachable`. The daemon never re-implements that rule: the owner asks the
+runtime for the material and takes the transport's answer, and the guard
+proves the daemon's own copy of the rule does not exist.
+
+**The withdrawal is the expiry.** When the evidence lapses the published
+record returns to the netdb's ordinary **zero-address** form, so the router
+does not keep publishing an endpoint it can no longer justify. The withdrawal
+is counted under its own reason, exactly like every other refusal.
 
 ### `bootstrap_daemon` (`src/lib.rs:5166`) — ordered startup
 
@@ -2909,12 +2960,12 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**130 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+**134 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
 modules (notably `src/lib.rs:5496``, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
 
-The area inventory below names **72** of the 112 files. The remaining 39 were
+The area inventory below names **72** of the 134 files. The remaining 62 were
 added by later plans and are not yet assigned an area; the inventory is not
 inflated to hide that.
 

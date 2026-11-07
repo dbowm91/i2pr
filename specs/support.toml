@@ -2465,3 +2465,24 @@ evidence = [
     "plans/closure/network-participation/514-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.own-ssu2-address-publication"
+protocol = "ssu2"
+structure = "the-router's-own-qualified-ssu2-address-in-its-published-routerinfo"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 520 gives the router's published RouterInfo an address a peer can **qualify**. The registered plan's premise was wrong, and the correction matters: the published record has carried one SSU2 address since the tree began — `generate_identity_with_keys` builds it from the **bound** endpoint with the options `host`, `port`, `v`, `s`, `i` — and the real gap was that the address was **unqualified**: it omitted the `caps` and `mtu` options the specification's SSU2 form carries and the netdb's own `is_qualified_ssu2_address` demands, so no peer could qualify the endpoint `i2pr` publishes. The reference publishes both (`libi2pd/RouterInfo.cpp:1434-1449`, `:281`). The switch is `ssu2.advertise`, it is **off** by default, and it is refused outside the controlled loopback profile. When it is on, the transport's own `build_publication_snapshot` decides: the direct form — host, port, the family capability and the transport's MTU — is published only while the router's own reachability evidence is `Reachable`, and the record returns to the netdb's ordinary **zero-address** form when the evidence lapses. The decision keeps exactly one owner: the daemon's owner asks the runtime for the material and never builds a snapshot, never writes an address's options and never records a reachability signal of its own. The netdb's addressed builder takes **no** floodfill permit, so `caps=f` stays permit-gated, and the floodfill path's own record is left alone. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), the record's `caps` string, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical. The **stock-peer** half is not claimed: the direct form needs three distinct corroboration classes, and there is no production entry point that starts a peer test outside the controlled floodfill activation."
+evidence = [
+    "crates/i2pr-daemon/src/self_publication.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_address.rs",
+    "crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs",
+    "crates/i2pr-netdb/src/local.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/520-router-publishes-its-own-ssu2-address.md",
+]
+advertised = false

@@ -2002,7 +2002,13 @@ pub struct Ssu2Config {
     /// Bind port. `0` selects an ephemeral port (integration tests);
     /// a configured service port must be in the normal range.
     pub port: u16,
-    /// Whether this router advertises an SSU2 address (always false).
+    /// Whether this router publishes **its own** SSU2 address.
+    ///
+    /// Plan 520: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router publishes the direct SSU2 form
+    /// only while its own reachability evidence admits it, and it
+    /// withdraws the address when the evidence lapses. It is refused
+    /// outside the controlled loopback profile.
     pub advertise: bool,
     /// Whether introducer service is offered (default false).
     ///
@@ -3382,13 +3388,26 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             });
         }
     };
-    // SSU2 remains opt-in and non-advertised. Private-LAN qualification
-    // is an explicit local bind profile, not a public publication permit.
+    // Plan 520: the router may publish **its own** SSU2 address behind an
+    // explicit opt-in. The switch stays off by default, it requires the
+    // SSU2 service itself to run, and it is refused outside the controlled
+    // loopback profile: the runtime's publication material is refused for
+    // any non-loopback bind, so a private-LAN bind could never earn the
+    // address, and the switch is refused there instead of silently
+    // publishing nothing.
     if raw.advertise {
-        return Err(ConfigError::Semantic {
-            field: "ssu2.advertise",
-            reason: "SSU2 address publication is unavailable in this milestone",
-        });
+        if !raw.enabled {
+            return Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                reason: "the SSU2 address publication requires ssu2.enabled = true",
+            });
+        }
+        if private_lan {
+            return Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                reason: "the private-LAN SSU2 profile cannot publish an SSU2 address",
+            });
+        }
     }
     // Plan 490: the introducer role is available behind an explicit
     // opt-in. It still requires the SSU2 service itself to run, and it
@@ -6154,16 +6173,12 @@ data_dir = "./state"
 
     #[test]
     fn ssu2_enabled_true_rejects_broad_exposure() {
-        // advertise stays rejected under the controlled profile, and no
-        // wildcard/non-loopback bind is reachable because
+        // No wildcard/non-loopback bind is reachable because
         // `parse_ssu2_bind` rejects it fail-closed. Plan 490 makes the
-        // introducer role available behind an explicit opt-in, so it is
-        // no longer in this list.
-        for extra in [
-            "advertise = true",
-            "bind_ipv4 = \"0.0.0.0\"",
-            "bind_ipv4 = \"192.0.2.1\"",
-        ] {
+        // introducer role available behind an explicit opt-in, and Plan
+        // 520 makes the router's own address publication available behind
+        // an explicit opt-in, so neither is in this list.
+        for extra in ["bind_ipv4 = \"0.0.0.0\"", "bind_ipv4 = \"192.0.2.1\""] {
             let text = format!("{}\n[ssu2]\nenabled = true\n{}\n", MINIMAL, extra);
             assert!(
                 Config::parse(&text).is_err(),
@@ -6323,7 +6338,35 @@ data_dir = "./state"
     }
 
     #[test]
+    fn ssu2_advertise_is_an_explicit_opt_in_behind_the_controlled_profile() {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in. The switch is off by default, it requires
+        // the SSU2 service itself to run, and it is refused outside the
+        // controlled loopback profile.
+        let text = format!("{}\n[ssu2]\nenabled = true\nadvertise = true\n", MINIMAL);
+        let config = Config::parse(&text).expect("the controlled profile may opt in");
+        assert!(config.ssu2.enabled);
+        assert!(config.ssu2.advertise);
+        // The private-LAN profile may not: the runtime's publication
+        // material is refused for any non-loopback bind, so the address
+        // could never be earned there.
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nadvertise = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn ssu2_advertise_and_introducer_are_rejected() {
+        // Plan 520: the publication is an explicit opt-in, but it needs
+        // the SSU2 service itself to run, so the switch alone is refused.
         let text = format!("{}\n[ssu2]\nadvertise = true\n", MINIMAL);
         assert!(matches!(
             Config::parse(&text),

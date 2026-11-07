@@ -148,6 +148,13 @@ pub struct RouterInfoPublicationTask {
     pub dial_timeout: std::time::Duration,
     /// The SSU2 qualification profile the dial is built under.
     pub qualification_profile: crate::config::Ssu2QualificationProfile,
+    /// Plan 520: the owner of the router's own published address.
+    ///
+    /// The owner is constructed once, from the operator's opt-in, and it
+    /// runs on the publication's **own** task: it starts no timer and no
+    /// listener of its own, and the transport's service loop never awaits
+    /// it.
+    pub self_publication: crate::self_publication::SelfPublicationOwner,
 }
 
 impl std::fmt::Debug for RouterInfoPublicationTask {

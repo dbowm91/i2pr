@@ -300,37 +300,44 @@ expires.
 
 ### The lane — the public behaviour
 
-1. The router publishes **no** address when the opt-in is off.
+1. The router publishes **no** address when the opt-in is off, and the installed record
+   stands byte-identical.
 2. The router publishes the **direct** form when the evidence admits it, and the address
    is the router's own bound endpoint.
-3. The router publishes the **firewalled** form when the corroboration is short, and the
-   form carries no host and no port.
-4. A **contradicting** signal withdraws the direct form.
-5. An **expired** snapshot withdraws the address.
-6. The **re-dated** record still carries the address.
-7. The address's `caps` option is exactly the family letter, and the netdb's own
+3. The router's published record names **no** endpoint when the corroboration is short,
+   and the netdb's own ordinary builder produces that form.
+4. The **lapsed** evidence withdraws the address: the record returns to its zero-address
+   form and the withdrawal is counted under its own reason.
+5. The **re-dated** record still carries the address.
+6. The address's `caps` option is exactly the family letter, and the netdb's own
    qualification accepts the published form.
-8. The record's `caps` string carries **no** `f`, and the floodfill permit still gates
+7. The record's `caps` string carries **no** `f`, and the floodfill permit still gates
    `caps=f`.
+8. The **floodfill** path's record is left alone: its address is the floodfill path's.
 9. Every outcome is counted under its own reason.
-10. A **restart** publishes no address until the evidence is earned again.
 
 ### The guard — the wiring
 
 1. `ssu2.advertise` is not refused at parse time, and it defaults to off.
-2. The daemon's own copy of the direct-versus-firewalled rule does not exist: the
-   decision is the transport's `build_publication_snapshot`.
-3. The published endpoint is the runtime's bound endpoint, never a configured literal.
-4. The netdb's addressed builder carries no `f` capability and needs no floodfill permit.
+2. The daemon's own copy of the direct-versus-firewalled rule does not exist: the owner
+   asks the runtime for the material and never names a reachability state.
+3. The owner never builds an address: the address is the transport's, whole, so the
+   published endpoint is the runtime's bound endpoint and never a configured literal.
+4. The netdb's addressed builder qualifies the address with the netdb's **own** rule and
+   carries no `f` capability and needs no floodfill permit.
 5. The floodfill builders still require the permit.
-6. The capability set the daemon passes is empty, so the address's `caps` option is
-   exactly the family letter the netdb's qualification demands.
-7. The record is installed, and the publication cycle publishes the installed record.
+6. The runtime's material carries the **family** capability, and the transport writes the
+   `caps` option only when the capability set is non-empty.
+7. The record is installed, and the publication cycle publishes it **after** the owner
+   has refreshed it.
 8. The re-dating path preserves the address.
 9. The expiry withdraws the address.
-10. The reachability signals the daemon records are the ones it genuinely holds, and the
-    corroboration floor is the transport's own.
-11. No new timer, no new listener, no new configuration section.
+10. The daemon records **no** reachability signal of its own: the evidence is the
+    runtime's.
+11. The owner starts no task, no timer and no listener, and the configuration gains no new
+    key.
+12. The runtime's install gate binds every SSU2 address the record carries to the
+    router's own endpoint and keys, and refuses two conflicting ones.
 
 ### The negative controls
 
@@ -414,3 +421,116 @@ around, when:
 - The **stock-peer** half stays blocked on Plan 493's authorized two-host topology.
 - The router's published record has carried **no address** since the tree began. This
   plan is the first to give it one, and it gives one only when the evidence earns it.
+
+## 17. Amendment log
+
+**Amended during implementation, 2026-11-05.** Four things in the registered
+plan did not survive contact with the tree. They are recorded here, in the
+plan's own log, rather than by rewriting the registered text.
+
+### 17.1 The premise was wrong: the published record **does** name an endpoint
+
+**Amended.** Section 3.1 is titled *"The published record names no
+endpoint"*, and section 4's second invariant reads *"the router's published
+record carries no address, exactly as today"*. **Both are false.** The
+daemon's published record has carried one SSU2 address since the tree began:
+`generate_identity_with_keys`
+(`crates/i2pr-daemon/src/router_i2np.rs:2036-2050`) builds it from the
+**bound** endpoint with the options `host`, `port`, `v`, `s` and `i`, and
+that record is what the composition installs
+(`crates/i2pr-daemon/src/lib.rs:4179`) and what the publication cycle
+publishes.
+
+**Why it matters.** The real gap is narrower and sharper than the registered
+one: the published address is **unqualified**. It omits the `caps` and
+`mtu` options the specification's SSU2 form carries and the netdb's own
+`is_qualified_ssu2_address` demands
+(`crates/i2pr-netdb/src/floodfill_role.rs:195-260`), so no peer can qualify
+the endpoint `i2pr` publishes. The reference publishes both
+(`libi2pd/RouterInfo.cpp:1434-1449`, `:281`).
+
+The corrected objective is therefore: **the published address is qualified —
+it carries the family capability and the transport's MTU — and it is
+published only while the router's own reachability evidence admits it.**
+
+### 17.2 Decision **D8** was unimplementable as written
+
+**Amended.** The registered **D8** says the daemon passes an **empty**
+capability set, "so the emitted value is exactly the family letter". That
+does not work: the transport's `direct_snapshot` writes the `caps` option
+**only when the capability set is non-empty**
+(`crates/i2pr-transport-ssu2/src/publication.rs:296-298`), so an empty set
+produces an address with **no** `caps` option at all, and the netdb's own
+qualification refuses an address with no `caps`
+(`crates/i2pr-netdb/src/floodfill_role.rs:225-229`).
+
+The daemon therefore passes **no capability set at all**: it takes the
+address **whole** from the transport's snapshot, which already carries the
+family letter because the runtime passes it
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2442-2452`). The daemon never
+writes an address's options, and the guard pins that.
+
+### 17.3 The owner asks the runtime; it does not build the snapshot
+
+**Amended.** The registered section 6.2 puts the owner in a new daemon
+module that "builds the snapshot through the transport's builder". The
+daemon has **no** `i2pr-transport-ssu2` dependency, and section 10 requires
+`Cargo.toml` and `Cargo.lock` to stay byte-identical, so it cannot call
+`build_publication_snapshot` at all.
+
+The **runtime** already owns exactly that: `Ssu2RuntimeService::publication_material`
+applies the transport's builder to the router's own reachability evidence
+and refuses anything the builder refuses. The daemon's owner therefore
+**asks the runtime** for the material and takes the transport's answer. The
+decision keeps exactly one owner — the transport's — and the daemon owns
+only the opt-in, the hand-off to the netdb's builder, the install, the
+withdrawal and the count.
+
+### 17.4 The withdrawal is the **zero-address** form, and the runtime's gate had to yield
+
+**Amended.** Section 9 says the lapsed address returns the record to its
+**zero-address** form. That form could not be installed: the runtime's gate
+required **exactly one** SSU2 address naming the router's own bound
+endpoint (`crates/i2pr-runtime/src/ssu2_runtime.rs:3355-3361`), so a record
+with no address was refused outright.
+
+That gate was also the reason the daemon's published address was rendered
+**unconditionally**: the transport's own policy renders the endpoint-less
+form when the evidence does not admit a direct endpoint, and the daemon's
+ad-hoc address bypassed that policy. The gate now accepts a record with
+**no** SSU2 address, while still binding every address the record *does*
+carry to the router's own endpoint and keys, and still refusing two
+conflicting SSU2 addresses. The transport's policy is therefore the single
+authority on whether an endpoint may be published, and the withdrawal is
+the netdb's ordinary zero-address form.
+
+### 17.5 What the amendment does **not** change
+
+The plan number, the objective, the invariants **1**–**7**, the decisions
+**D1**–**D7**, the scope, the compatibility promise and the stop conditions
+are unchanged. The switch is still `ssu2.advertise`, still off by default,
+and the default configuration still changes in no way: with the switch off
+the installed record stands byte-identical.
+
+Section 11's two lists were rewritten to name the surface that was actually
+built. The lane's **firewalled** row became the **zero-address** row (the
+netdb's ordinary builder is what produces the endpoint-less form, and the
+runtime's gate now admits it), the **contradiction** row became the
+**floodfill stand-down** row (the transport's own tracker owns the
+contradiction, and the daemon never re-implements it), and the **restart**
+row became the **re-dating** row (a restarted router has no evidence and
+therefore publishes no address, which the withdrawal row already shows).
+The guard's list grew from eleven rules to twelve: the runtime's install
+gate is now a rule of its own.
+
+### 17.6 One finding the implementation exposed
+
+The direct form requires `Reachable`, which the transport's tracker defines
+as **three distinct corroboration classes**
+(`crates/i2pr-transport/src/reachability.rs:66`, `:557-561`). The runtime's
+production recorders can supply them only inside the **controlled floodfill
+activation**, and that path installs the *floodfill* record, whose address
+this plan's stand-down rule leaves alone. There is therefore **no production
+entry point** that starts a peer test outside the floodfill activation, and
+the ordinary record's address cannot be earned in production today. That is
+recorded as a finding in the closure record; it is not worked around.

@@ -1272,3 +1272,107 @@ Plan 493's authorized two-host topology, and the lane drives the publication's
 public behaviour without a socket, so a *live* dial inside the transport's loop
 is not re-measured here. The structural gates above are what stand between the
 publication and the transport's loop, and they read the production files.
+
+## 19. The router's own published SSU2 address (Plan 520)
+
+The router publishes its own RouterInfo, and that record has carried one
+SSU2 address since the tree began. Plan 520 qualifies it: the published
+address carries the family capability and the transport's MTU, so the netdb's
+own `is_qualified_ssu2_address` accepts it, and it is published **only**
+while the router's own reachability evidence admits the direct form.
+
+### 19.1 The opt-in is real, and it is off by default
+
+`ssu2.advertise` is parsed, defaults to `false`, is refused unless the SSU2
+service itself runs, and is refused outside the controlled loopback profile.
+With the switch off the installed record stands byte-identical.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_switch_is_not_refused_at_parse_time`, and
+`crates/i2pr-daemon/tests/router_info_publication_address.rs`,
+`the_opt_in_is_off_by_default` and
+`the_router_publishes_no_address_when_the_opt_in_is_off`.
+
+### 19.2 The decision has one owner
+
+The daemon holds no copy of the direct-versus-firewalled rule: the owner asks
+the runtime for the material, never names a reachability state, and never
+names the transport's builder.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_daemon_holds_no_copy_of_the_publication_rule` and
+`the_owner_never_builds_an_address`.
+
+### 19.3 The netdb's own rule qualifies the published address
+
+The netdb's addressed builder validates the address with the netdb's **own**
+qualification rule and takes **no** floodfill permit, so it cannot mint
+`caps=f`. The floodfill builders still require the permit.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_addressed_builder_qualifies_without_a_permit` and
+`the_floodfill_builders_still_require_the_permit`, and
+`crates/i2pr-daemon/tests/router_info_publication_address.rs`,
+`the_direct_form_is_published_when_the_evidence_admits_it` and
+`the_published_record_carries_no_f_capability`.
+
+### 19.4 The family capability is the family letter
+
+The runtime's material carries the family capability, and the transport
+writes the `caps` option only when the capability set is non-empty — an
+empty set would produce an address with **no** `caps` option, which the
+netdb's own qualification refuses.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_family_capability_is_carried`.
+
+### 19.5 The published record is the installed record
+
+The owner installs the record, and the publication's cycle re-dates and
+publishes it **after** the owner has refreshed it, so every rung of the cycle
+publishes the same bytes. The re-dating preserves the address.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_record_is_installed_and_published` and
+`the_redating_preserves_the_address`, and
+`crates/i2pr-daemon/tests/router_info_publication_address.rs`,
+`the_redated_record_still_carries_the_address`.
+
+### 19.6 The expiry withdraws the address
+
+When the transport admits no address, the published record returns to the
+netdb's ordinary zero-address form. The runtime's install gate binds every
+SSU2 address the record carries to the router's own endpoint and keys, and
+refuses two conflicting ones.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_expiry_withdraws_the_address` and `the_install_gate_binds_every_address`,
+and `crates/i2pr-daemon/tests/router_info_publication_address.rs`,
+`the_address_is_withdrawn_when_the_evidence_lapses`.
+
+### 19.7 The daemon records no evidence of its own
+
+The runtime owns the reachability evidence; the daemon owns the opt-in and
+the install. A signal the daemon does not genuinely hold is never recorded.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_daemon_records_no_reachability_signal`.
+
+### 19.8 The owner adds no infrastructure
+
+The owner starts no task, no timer and no listener, and the configuration
+gains no new key beside `advertise`.
+
+*Gate:* `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs`,
+`the_owner_adds_no_infrastructure`.
+
+### 19.9 What this gate does **not** claim
+
+It does not claim that a **stock** peer qualifies the published record in the
+live network: that half needs Plan 493's authorized two-host topology and
+remains blocked on it. The direct form needs three distinct corroboration
+classes, and there is **no production entry point** that starts a peer test
+outside the controlled floodfill activation, so the ordinary record's address
+cannot be earned in production today. Nothing is advertised: the inventory's
+advertised count stays zero, `router.version` stays `0.9.62`, and the
+published record's `caps` string is unchanged.

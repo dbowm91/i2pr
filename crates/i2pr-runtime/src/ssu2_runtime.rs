@@ -3257,6 +3257,13 @@ impl Ssu2RuntimeService {
     /// endpoint/key binding are checked before replacement; existing authenticated sessions
     /// retain the RouterInfo they already exchanged. Each successful installation bumps the
     /// diagnostics-only generation counter; no session is re-authenticated or mutated.
+    ///
+    /// Plan 520: the record may carry **no** SSU2 address. The transport's publication
+    /// policy renders the endpoint-less form when the router's own reachability evidence
+    /// does not admit a direct endpoint, and the router must not keep publishing an
+    /// endpoint it can no longer justify. Every SSU2 address the record *does* carry is
+    /// still bound to the router's own endpoint and the router's own keys, and two
+    /// conflicting SSU2 addresses are still refused.
     pub fn install_local_router_info(
         &self,
         encoded: Vec<u8>,
@@ -3378,7 +3385,7 @@ impl Ssu2RuntimeService {
             None => ntcp2_addresses.is_empty(),
         };
         if info.options().get("netId") != current.options().get("netId")
-            || ssu2_count != 1
+            || ssu2_count > 1
             || !ntcp2_matches
         {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);
@@ -3389,26 +3396,31 @@ impl Ssu2RuntimeService {
             .lock()
             .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
         let expected_static = X25519PrivateKey::from_bytes(self.shared.local_static).public_bytes();
-        let address_matches = info.addresses().iter().any(|address| {
-            if address.transport_style() != "SSU2" {
-                return false;
-            }
-            let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
-                return false;
-            };
-            let Some(endpoint) = parsed.endpoint() else {
-                return false;
-            };
-            let is_bound = [sockets.v4, sockets.v6]
-                .into_iter()
-                .flatten()
-                .any(|bound| bound.ip() == endpoint.ip() && bound.port() == endpoint.port());
-            is_bound
-                && parsed.static_public_key().as_bytes() == &expected_static
-                && parsed
-                    .intro_key()
-                    .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes())
-        });
+        // Plan 520: every SSU2 address the record carries must name the
+        // router's own bound endpoint with the router's own static and
+        // intro keys. The record may carry **none**: the transport's
+        // publication policy renders the endpoint-less form when the
+        // router's own evidence does not admit a direct endpoint.
+        let address_matches =
+            info.addresses()
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .all(|address| {
+                    let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
+                        return false;
+                    };
+                    let Some(endpoint) = parsed.endpoint() else {
+                        return false;
+                    };
+                    let is_bound = [sockets.v4, sockets.v6].into_iter().flatten().any(|bound| {
+                        bound.ip() == endpoint.ip() && bound.port() == endpoint.port()
+                    });
+                    is_bound
+                        && parsed.static_public_key().as_bytes() == &expected_static
+                        && parsed
+                            .intro_key()
+                            .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes())
+                });
         drop(sockets);
         if !address_matches {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);
