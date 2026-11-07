@@ -491,7 +491,7 @@ withdrawal and the count.
 **Amended.** Section 9 says the lapsed address returns the record to its
 **zero-address** form. That form could not be installed: the runtime's gate
 required **exactly one** SSU2 address naming the router's own bound
-endpoint (`crates/i2pr-runtime/src/ssu2_runtime.rs:3355-3361`), so a record
+endpoint (`crates/i2pr-runtime/src/ssu2_runtime.rs:3386-3392`), so a record
 with no address was refused outright.
 
 That gate was also the reason the daemon's published address was rendered
@@ -534,3 +534,66 @@ this plan's stand-down rule leaves alone. There is therefore **no production
 entry point** that starts a peer test outside the floodfill activation, and
 the ordinary record's address cannot be earned in production today. That is
 recorded as a finding in the closure record; it is not worked around.
+### 17.7 The routine floor's four findings, and the fixes
+
+The first routine-floor run, on the implementation commit `0687c1e4`, reported
+**149 steps, 145 PASS, 4 FAIL**. Every failure was caused by this plan's own
+changes and by nothing else. They are recorded here because two of them
+required a change to a file this plan did not own.
+
+1. **`cargo clippy`** — the plan's own guard carried an unused constant
+   (`NETDB_FLOODFILL_MODULE`) and an unused helper (`call_site`). Both were
+   removed. Neither was a rule, so the guard's rule count is unchanged.
+
+2. **`check-router-readiness-contract`** — two of the checker's needles no
+   longer pointed at their refusals, because this plan moved where the
+   refusals are enforced. The introducer's refusal moved out of the socket
+   boundary and into the composition, which refuses to start the SSU2 service
+   when the introducer role is requested. The refusal test was renamed,
+   because the behaviour it pinned became a permitted, default-off opt-in.
+
+   The checker's rules were **re-anchored** at the new enforcement points and
+   **extended**: the advertisement is now pinned twice, refused unless the
+   SSU2 service itself runs and refused outside the controlled loopback
+   profile, where the old rule pinned only the `if raw.advertise {` line. One
+   rule was added and two rules' labels changed; **no rule was dropped**, and
+   the checker's self-test still detects a mutation of every rule, including
+   the two new ones.
+
+   One label changed because it had become misleading rather than merely
+   stale: "introducer publication refusal test must remain" came to pin
+   `fn socket_config_permits_the_controlled_advertisement_opt_in()`, which is a
+   *permissive* test. A fail-closed diagnostic must name the thing it pins
+   accurately, so the label is now "SSU2 advertisement opt-in test must
+   remain". Plan 490's closure record
+   (`plans/closure/network-participation/490-status.md`) describes the label
+   as it stood at Plan 490's time, when it did pin a refusal test. That
+   record is closed and is not rewritten; this amendment and this plan's
+   closure record carry the correction.
+
+3. **`check-m12-floodfill-boundaries`** — the M12 checker scans the crates for
+   corroboration recording outside the runtime's owner. Its own exclusion of
+   the test directories (`--glob '!*/tests/*'`) does not reach a nested
+   `crates/*/tests/` path, because a ripgrep glob's `*` does not cross a
+   directory separator. The checker therefore read this plan's own **probe
+   fixture**, a string literal inside a test file that stands for a
+   hypothetical violating daemon, as if it were a production recorder.
+
+   The **checker was not modified**. Broadening its exclusion would have
+   meant changing another plan's guard file, which a plan of record would
+   have had to extend explicitly. Instead the **probe fixture** was rewritten
+   so that it names a tracker handle rather than the runtime's own field: the
+   fixture no longer spells `reachability.record(`, which is the checker's
+   pattern. The rule the probe exercises is unchanged, because the guard's
+   own rule 10 keys on the `ReachabilitySignal` token, which the fixture still
+   names. The inverted probe therefore still proves that the guard fires on a
+   daemon that records its own signal, and the guard's twenty-five tests
+   still pass.
+
+4. **`check-m12-floodfill-boundaries --self-test`** — the same fixture, read
+   by the checker's self-test variant. It is fixed by the same change.
+
+The fix is a **fix**, not a relaxation: no script's rule was weakened, no
+rule was disabled, no exclusion was widened, and no production wire was
+changed to go green. The routine floor was then re-run on the fixed, committed
+tree and reconciled step for step; the closure record carries the result.

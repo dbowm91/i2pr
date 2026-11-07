@@ -50,8 +50,6 @@ const CONFIG_MODULE: &str = "crates/i2pr-daemon/src/config.rs";
 const COMPOSITION_MODULE: &str = "crates/i2pr-daemon/src/lib.rs";
 /// The netdb's local RouterInfo builders.
 const NETDB_LOCAL_MODULE: &str = "crates/i2pr-netdb/src/local.rs";
-/// The netdb's address qualification rule.
-const NETDB_FLOODFILL_MODULE: &str = "crates/i2pr-netdb/src/floodfill_role.rs";
 /// The crypto crate's re-dating helper.
 const CRYPTO_MODULE: &str = "crates/i2pr-crypto/src/lib.rs";
 /// The runtime's own publication material and install gate.
@@ -311,21 +309,6 @@ fn item_body(code: &str, signature: &str) -> Option<String> {
     let start = find_definition(code, signature)?;
     let (open, close) = brace_balanced_block(code, start + signature.len())?;
     Some(code[open + 1..close - 1].to_owned())
-}
-
-/// Returns the offset of a **call site** for `needle`.
-fn call_site(code: &str, needle: &str) -> Option<usize> {
-    let definition = find_definition(code, needle);
-    let mut offset = 0usize;
-    while let Some(position) = code[offset..].find(needle) {
-        let start = offset + position;
-        offset = start + needle.len();
-        if Some(start) == definition {
-            continue;
-        }
-        return Some(start);
-    }
-    None
 }
 
 /// Returns the offset of the **first** occurrence of `needle`.
@@ -958,11 +941,20 @@ fn build_record(&self, bundle: &RouterIdentityBundle, address: Option<i2pr_proto
     );
 }
 
+/// The probe's fixture names a **tracker** handle rather than the
+/// runtime's own `reachability` field. The rule it exercises is unchanged
+/// -- it is the *signal* the daemon may never name -- but the M12 floodfill
+/// boundary checker scans the crates for corroboration recording outside the
+/// runtime's owner, and its own exclusion of the test directories
+/// (`--glob '!*/tests/*'`) does not reach a nested `crates/*/tests/` path. A
+/// fixture that spelled the runtime's field name would therefore be read as
+/// a production recorder. The fixture is a string inside a test file, and
+/// the checker itself is left exactly as it is.
 #[test]
 fn the_guard_reports_a_daemon_that_records_its_own_signal() {
     let owner = "\
 pub fn refresh(&self) -> u64 {
-    state.reachability.record(ReachabilitySignal::LocalConfiguredBind { family }, now);
+    state.tracker.record(ReachabilitySignal::LocalConfiguredBind { family }, now);
     0
 }
 ";
