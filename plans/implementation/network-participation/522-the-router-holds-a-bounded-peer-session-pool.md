@@ -751,3 +751,81 @@ must be separate mappings: the address parser refuses an option it does not
 know, so a router option inside the address would make the whole record
 undiallable. That is a property of the production parser
 (`crates/i2pr-transport-ssu2/src/address.rs:994`), not a change to it.
+
+### 17.7 — 2026-11-08, WP5: the §17.5 pointer table moved again
+
+**§3 is evidence and is not rewritten.** §17.5 recorded the registration-time
+to current pointer table for §3's citations after WP1 and WP2. Two later work
+packages moved the tree again, so that table is stale for two of the three
+files it names. §17.5 is **not** rewritten; the corrected pointers are here.
+
+**What moved.**
+
+1. **WP3 and WP4** added the runtime's re-export of the keepalive interval —
+   `pub const KEEPALIVE_INTERVAL_MS` — and the daemon's own
+   `DestinationDialPurpose::PeerPoolMaintenance`, the `ssu2.peer_pool` field
+   and its two refusals. Those additions pushed every line **below** them in
+   `crates/i2pr-runtime/src/ssu2_runtime.rs`,
+   `crates/i2pr-daemon/src/service_product.rs`,
+   `crates/i2pr-daemon/src/config.rs` and
+   `crates/i2pr-daemon/src/router_i2np.rs` down.
+2. **WP5** added the pool's own admission counter, which changed
+   `crates/i2pr-daemon/src/peer_pool.rs` — a file §3 never cited, because the
+   file did not exist at registration.
+
+**The corrected pointers.**
+
+| §3 pointer | registration-time | §17.5 said | current | what it names |
+| --- | --- | --- | --- | --- |
+| `crates/i2pr-transport-ssu2/src/session.rs:198` | `:198` | `:211` | `:211` | `SessionConfig`'s `idle_timeout_ms` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1137` | `:1137` | `:1193` | `:1193` | `poll_transmit_fragments_traced` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1399` | `:1399` | `:1455` | `:1455` | `seal_packet` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1501` | `:1501` | `:1610` | `:1610` | `should_request_immediate_ack` |
+| `crates/i2pr-transport-ssu2/src/session.rs:2551` | `:2551` | `:2679-2686` | `:2679-2686` | the idle-timeout check |
+| `crates/i2pr-transport-ssu2/src/session.rs:2632` | `:2632` | `:2830` | `:2830` | `is_ack_eliciting` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:647` | `:647` | `:687` | `:694` | `Ssu2DialTarget::new` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:679` | `:679` | `:719` | `:726` | `Ssu2DialTarget::new_private_lan` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1131` | `:1131` | `:1171` | `:1178` | `ActiveSession` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1134` | `:1134` | `:1174` | `:1181` | `ActiveSession`'s `direction` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1763` | `:1763` | `:1803` | `:1810` | `session_peer_links` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1786` | `:1786` | `:1826` | `:1833` | `active_peer_hashes` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3592` | `:3592` | `:3632` | `:3639` | `dial_ssu2` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:4415` | `:4415` | `:4455` | `:4462` | `construct_session` |
+| `crates/i2pr-daemon/src/service_product.rs:7737` | `:7737` | not listed | `:7744` | `ensure_peer_session_for_record` |
+| `crates/i2pr-daemon/src/config.rs:1447` | `:1447` | not listed | `:1457` | `default_ssu2_max_active_sessions` |
+| `crates/i2pr-daemon/src/config.rs:1475` | `:1475` | not listed | `:1485` | `default_ssu2_idle_timeout_ms` |
+| `crates/i2pr-daemon/src/config.rs:2005` | `:2005` | not listed | `:2015` | `Ssu2Config` |
+| `crates/i2pr-daemon/src/router_i2np.rs:2480` | `:2480` | not listed | `:2488` | `daemon_dial_target_for_profile` |
+
+**The publication's own file did not move.**
+`crates/i2pr-daemon/src/router_info_publication.rs` is unchanged by every work
+package — the publication's delivery path is **byte-for-byte** the file §3
+cited — so §3's five pointers into it are still exact. The netdb, the proto
+crate and the two pinned references are untouched as well.
+
+**The new public surfaces** the implementation added, for the reader who comes
+to the tree first:
+
+- `crates/i2pr-transport-ssu2/src/session.rs:220` —
+  `SessionConfig`'s `keepalive_interval_ms`;
+- `crates/i2pr-transport-ssu2/src/constants.rs:331` —
+  `DATA_KEEPALIVE_PAYLOAD_BYTES`;
+- `crates/i2pr-transport-ssu2/src/constants.rs:340` —
+  `DATA_KEEPALIVE_TIMEOUT_INTERVALS`;
+- `crates/i2pr-transport-ssu2/src/constants.rs:348` —
+  `DATA_KEEPALIVE_INTERVAL_MS`;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs:126` — the re-exported
+  `KEEPALIVE_INTERVAL_MS`;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs:346` — the runtime's
+  `deadlines.keepalive`;
+- `crates/i2pr-daemon/src/peer_pool.rs:62` — `MAX_POOLED_PEERS`;
+- `crates/i2pr-daemon/src/peer_pool.rs:69` — `POOL_PERIOD_MS`;
+- `crates/i2pr-daemon/src/peer_pool.rs:76` — `MAX_DIALS_PER_PERIOD`;
+- `crates/i2pr-daemon/src/peer_pool.rs:196` — `PeerPoolOwner`;
+- `crates/i2pr-daemon/src/peer_pool_task.rs:40` — `PeerPoolTask`;
+- `crates/i2pr-daemon/src/peer_pool_task.rs:74` — `run_peer_pool_task`;
+- `crates/i2pr-daemon/src/config.rs:1445` — `default_ssu2_peer_pool`;
+- `crates/i2pr-daemon/src/service_product.rs:7358` —
+  `DestinationDialPurpose::PeerPoolMaintenance`;
+- `crates/i2pr-daemon/src/i2pcontrol_inspection.rs:82` —
+  `PeerPoolCounterCell`.
