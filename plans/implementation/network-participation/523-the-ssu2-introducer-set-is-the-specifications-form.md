@@ -648,3 +648,106 @@ The citations in §3 were verified against the tree at registration
 `635b013a612ff47278ef02acf8580a28e10e26c5`, against the pinned Java I2P
 checkout at `9134f808337b401e8e53c73734c81fab04280c9d`, and against the
 SSU2 specification at <https://i2p.net/en/docs/specs/ssu2/>.
+### 17.2 — 2026-11-09, the citation drift in section 3
+
+Section 3 is **evidence**: it records the tree as it stood at registration,
+before this plan's own commits, and it is **not** rewritten. The
+implementation commits moved the code that section 3 points at, so some of
+its line numbers now land elsewhere, and two of them land on code that no
+longer exists at all.
+
+This subsection is the additive pointer table. Every code citation in
+section 3 is listed with its current location in the tree at commit
+`22464cfc` and a verdict. A verdict of **holds** means the citation still
+points at the code it described. A verdict of **drifted** means the code
+still exists but moved, or changed shape. A verdict of **removed** means the
+thing the citation described is gone — and that is the *intended* outcome
+of this plan, not a defect in it.
+
+| Section 3 citation | What it described | Current location | Verdict |
+|---|---|---|---|
+| `crates/i2pr-transport-ssu2/src/address.rs:467-473` | the `Ssu2Introducer` fields | `address.rs:485-489` | **drifted** — the fields are now `(peer_hash, expires_secs, relay_tag)` |
+| `crates/i2pr-transport-ssu2/src/address.rs:492-510` | the endpoint accessor surface | `address.rs:495-508` (`new`) and `:510-524` (the accessors) | **drifted** — `endpoint()`, `ip()`, `port()` and `intro_key()` are gone |
+| `crates/i2pr-transport-ssu2/src/address.rs:1001-1004` | the four option prefixes | `address.rs:1018-1022` | **drifted** — the prefixes are `ih`/`iexp`/`itag` |
+| `crates/i2pr-transport-ssu2/src/address.rs:1006-1019` | `parse_introducer_index` | `address.rs:1027-1042` | **drifted** — the same function over the new prefix set |
+| `crates/i2pr-transport-ssu2/src/address.rs:994` | the general `UnknownOption` refusal | `address.rs:1010` | **drifted** by 16 lines; the arm is unchanged |
+| `crates/i2pr-transport-ssu2/src/address.rs:1035` | the introducer group's `UnknownOption` refusal | `address.rs:1059` | **drifted** — the arm now dispatches the three SSU2 prefixes |
+| `crates/i2pr-transport-ssu2/src/address.rs:539` | the `DirectWithIntroducers` variant | — | **removed** — the variant no longer exists; the enum is `address.rs:543-550` |
+| `crates/i2pr-transport-ssu2/src/address.rs:679` | `address_class()` | `address.rs:682-692` | **drifted** — the classification is now total |
+| `crates/i2pr-transport-ssu2/src/publication.rs:325-356` | `introducer_snapshot` | `publication.rs:326-364` | **drifted** by one line — the same function, a new body |
+| `crates/i2pr-transport-ssu2/src/publication.rs:255-265` | the introducer/direct branch | `publication.rs:255-265` | **holds** |
+| `crates/i2pr-transport-ssu2/src/publication.rs:364-379` | the family capability helper | `publication.rs:372-387` | **holds** — `caps_with_family` |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:893` | `select_introducers` | unchanged | **holds** |
+| `crates/i2pr-transport-ssu2/src/introducer.rs:249-256` | `validated_introducers` | `introducer.rs:253-256` | **drifted** by 4 lines; the same function |
+| `crates/i2pr-transport-ssu2/src/introducer.rs:69-76` | `IntroducerRecord` | unchanged | **holds** |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2384-2438` | `introducer_publication_material` | unchanged | **holds** |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:1101-1119` | `note_authenticated_introducer` | unchanged | **holds** |
+| `crates/i2pr-daemon/src/self_publication.rs:125`, `:157`, `:186`, `:224`, `:270` | the `NoIntroducers` counter | unchanged | **holds** |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2390` | the `NoIntroducers` producer | unchanged | **holds** |
+| `crates/i2pr-netdb/src/floodfill_role.rs:195-258` | the direct qualification rule | `floodfill_role.rs:197-261` | **drifted** by 2 lines; the rule itself is unchanged |
+| `crates/i2pr-netdb/src/floodfill_role.rs:200-212` | the rule's host/port demand | `floodfill_role.rs:202-214` | **drifted** by 2 lines |
+| `crates/i2pr-netdb/src/floodfill_role.rs:253-257` | the rule's option allow-set | `floodfill_role.rs:255-259` | **drifted** by 2 lines |
+| `crates/i2pr-netdb/src/local.rs:265-277` | `build_with_ssu2_address` | `local.rs:268-279` | **drifted** by 3 lines; the builder is unchanged |
+| `crates/i2pr-daemon/src/service_product.rs:7759` | the daemon's dial-path parse | unchanged | **holds** |
+| `crates/i2pr-daemon/src/router_i2np.rs:2108` | the daemon's identity-path parse | unchanged | **holds** |
+| `crates/i2pr-daemon/src/floodfill.rs:238` | the floodfill service's identity parse | unchanged | **holds** |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1649`, `:3556`, `:4448` | the runtime's peer-address parses | unchanged | **holds** |
+| section 3.7's i2pd, Java I2P and specification citations | the reference behaviour | the external checkouts at the pins | **holds** — the pins are unchanged |
+
+Two of section 3's citations are the substance of the plan and are
+therefore **removed** rather than merely moved: the `DirectWithIntroducers`
+variant and the SSU 1 option prefixes. A reviewer who follows the section 3
+line numbers into the tree today will not find the SSU 1 form, and should
+read that absence as this plan's result rather than as a missing file.
+
+### 17.3 — 2026-11-09, the index of the new production items
+
+Section 3's pointer table answers "where did the code this plan cited go?".
+This subsection answers the other direction: "what did this plan add?".
+Every production item this plan introduced or changed is listed with its
+location in the tree at commit `22464cfc`, so that a reviewer can navigate
+from the plan to the implementation without reading section 3's superseded
+lines at all.
+
+**The transport** (`crates/i2pr-transport-ssu2/src/`):
+
+| Item | Location | What it is |
+|---|---|---|
+| `Ssu2AddressError::HostPortWithIntroducers` | `address.rs:137` | the typed refusal of an endpoint published alongside introducers |
+| `Ssu2Introducer` | `address.rs:485-489` | the specification's tuple: a router hash, an expiry, a relay tag |
+| `Ssu2Introducer::new` | `address.rs:495-508` | the constructor, which refuses a zero relay tag |
+| `peer_hash` / `expires_secs` / `relay_tag` | `address.rs:511` / `:517` / `:522` | the accessors, replacing the endpoint accessors |
+| `Ssu2AddressClass` | `address.rs:543-550` | three variants: `Direct`, `IntroducerOnly`, `UnpublishedStatic` |
+| `address_class()` | `address.rs:682-692` | the total classification |
+| the endpoint-with-introducers refusal | `address.rs:758-764` | the parser's exclusive-forms check |
+| `INTRODUCER_HASH_PREFIX` / `INTRODUCER_EXPIRY_PREFIX` / `INTRODUCER_TAG_PREFIX` | `address.rs:1018` / `:1020` / `:1022` | `ih`, `iexp`, `itag` |
+| `INTRODUCER_HASH_LENGTH` | `address.rs:1025` | the exact byte length of a router hash |
+| `parse_introducer_index` | `address.rs:1027-1042` | the dispatch over the three prefixes |
+| `parse_introducers` | `address.rs:1079-1125` | the per-group assembly, refusing a partial group |
+| `parse_introducer` | `address.rs:1127-1147` | one group: the hash, the expiry and the nonzero tag |
+| `parse_introducer_expiry` | `address.rs:1153-1161` | a canonical decimal, with no leading zeros |
+| `introducer_snapshot` | `publication.rs:326-364` | the publication builder's `ih`/`iexp`/`itag` rendering |
+| `has_direct_endpoint` | `publication.rs:173` | matches only the `Direct` class |
+| the introducer marker | `handshake.rs:975-977` | `ih0`, `iexp0`, `itag0` |
+| `validated_introducers` | `introducer.rs:253-256` | maps the record's hash, expiry and tag |
+
+**The netdb** (`crates/i2pr-netdb/src/`):
+
+| Item | Location | What it is |
+|---|---|---|
+| `is_qualified_ssu2_introducer_address` | `floodfill_role.rs:277` | the second qualification rule: no host, no port, a complete group |
+| `MAX_SSU2_PUBLISHED_INTRODUCERS` | `floodfill_role.rs:374` | the ceiling on published introducers |
+| `IntroducerOptionKind` | `floodfill_role.rs:378-385` | the option vocabulary the rule reads |
+| `introducer_option` | `floodfill_role.rs:392-407` | classifies one indexed introducer option key |
+| `build_with_ssu2_introducer_address` | `local.rs:292` | the builder for the introducer-only form; it takes no floodfill permit |
+| the export | `lib.rs:92-93` | both qualification rules are public |
+
+**The tests**: `crates/i2pr-daemon/tests/ssu2_introducer_address.rs` (the
+lane, 11 rows) and
+`crates/i2pr-daemon/tests/ssu2_introducer_address_boundary.rs` (the guard,
+13 rules and 13 inverted probes).
+
+**The documentation**: `specs/support.toml` (the
+`ssu2.introducer-address-form` surface), `specs/CONFORMANCE.md`,
+`specs/protocols/09-ssu2.md`, `specs/QUALIFICATION-GATES.md` (section 22)
+and `docs/architecture/i2pr-transport-ssu2.md`.
