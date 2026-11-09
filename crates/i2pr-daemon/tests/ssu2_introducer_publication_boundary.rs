@@ -474,12 +474,26 @@ fn check_the_daemon_matches_on_the_typed_form(owner: &str) -> Option<String> {
     let Some(build) = item_body(&code, "fn build_record") else {
         return Some("the owner's record builder is absent".to_owned());
     };
+    // Plan 526 moved the typed-form match into its own helper, because the
+    // owner now carries a **third** published form: the direct form **with**
+    // the introducer role letter. The invariant is unchanged -- the owner
+    // builds the record from the **typed** form and never infers one -- and
+    // the rule is **stronger**: the helper must exist, the build must call
+    // it, and the helper must still name the runtime's own forms.
+    let Some(typed) = item_body(&code, "fn published_form") else {
+        return Some("the owner's typed published form is absent".to_owned());
+    };
+    if !build.contains("published_form(material)") {
+        return Some("the owner must build the record from the typed form".to_owned());
+    }
+    if !typed.contains("material.form") {
+        return Some("the owner must build the record from the typed form".to_owned());
+    }
     for needle in [
         "Ssu2PublicationForm::Direct",
         "Ssu2PublicationForm::IntroducerOnly",
-        "material.form",
     ] {
-        if !build.contains(needle) {
+        if !typed.contains(needle) {
             return Some(format!(
                 "the owner must build the record from the typed form: {needle}"
             ));
@@ -573,10 +587,21 @@ fn check_the_counters_distinguish_the_forms(owner: &str) -> Option<String> {
     let Some(snapshot) = item_body(&code, "pub fn snapshot(&self)") else {
         return Some("the owner's counter snapshot is absent".to_owned());
     };
-    if !snapshot.contains("published_direct + published_introducer_only") {
-        return Some("the published count must be the sum of the two published forms".to_owned());
+    // Plan 526 added a third published form: the direct form **with** the
+    // introducer role letter. The aggregate is now the sum of the three,
+    // and the rule is **stronger**: it names all three and requires the
+    // aggregate to be their sum.
+    if !snapshot
+        .contains("published_direct + published_direct_relay_role + published_introducer_only")
+    {
+        return Some("the published count must be the sum of the three published forms".to_owned());
     }
-    for needle in ["published_direct", "published_introducer_only", "withdrawn"] {
+    for needle in [
+        "published_direct",
+        "published_direct_relay_role",
+        "published_introducer_only",
+        "withdrawn",
+    ] {
         if !snapshot.contains(needle) {
             return Some(format!("the counters must distinguish: {needle}"));
         }

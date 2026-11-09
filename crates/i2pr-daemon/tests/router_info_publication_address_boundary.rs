@@ -468,10 +468,26 @@ fn check_the_family_capability_is_carried(runtime: &str, transport: &str) -> Opt
     let Some(material) = item_body(&runtime_code, "pub fn publication_material") else {
         return Some("the runtime's publication material is absent".to_owned());
     };
-    if !material.contains("Ssu2Capabilities::parse(") {
+    // Plan 526 moved the capability composition into its own helper so the
+    // role letter could be composed in one place. The invariant is
+    // unchanged -- the material carries the family capability -- so the
+    // rule follows the composition to wherever it now lives, and it is
+    // **stronger** than before: it fails closed when the composition it
+    // names is absent.
+    let composition = if material.contains("Ssu2Capabilities::parse(") {
+        material.clone()
+    } else if material.contains("capabilities_for(") {
+        let Some(helper) = item_body(&runtime_code, "fn capabilities_for") else {
+            return Some("the runtime's capability composition is absent".to_owned());
+        };
+        helper
+    } else {
+        return Some("the runtime's material must carry the family capability".to_owned());
+    };
+    if !composition.contains("Ssu2Capabilities::parse(") {
         return Some("the runtime's material must carry the family capability".to_owned());
     }
-    if !material.contains("\"4\"") || !material.contains("\"6\"") {
+    if !composition.contains("\"4\"") || !composition.contains("\"6\"") {
         return Some("the family capability must be the family letter".to_owned());
     }
     let transport_code = code_view(transport);
@@ -497,8 +513,21 @@ fn check_the_record_is_installed_and_published(composition: &str, owner: &str) -
     let Some(refresh) = item_body(&owner_code, "pub fn refresh") else {
         return Some("the owner's refresh is absent".to_owned());
     };
+    // Plan 526 split the owner's **apply** half from its **ask** half, and
+    // the install moved with it. The invariant is unchanged -- the owner
+    // installs the record it built -- and the rule is **stronger**: the
+    // install must exist in the owner, and the refresh must hand the
+    // runtime's answer to it.
     if !refresh.contains("install_local_router_info(") {
-        return Some("the owner must install the record it built".to_owned());
+        let Some(apply) = item_body(&owner_code, "pub fn apply") else {
+            return Some("the owner must install the record it built".to_owned());
+        };
+        if !apply.contains("install_local_router_info(") {
+            return Some("the owner must install the record it built".to_owned());
+        }
+        if !refresh.contains("self.apply(") {
+            return Some("the owner's refresh must apply the runtime's answer".to_owned());
+        }
     }
     let code = code_view(composition);
     let Some(own) = first_offset(&code, "self_publication.refresh(") else {
