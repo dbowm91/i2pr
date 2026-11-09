@@ -130,6 +130,7 @@ fn plain_address(
 fn material(address: RouterAddress) -> Ssu2PublicationMaterial {
     Ssu2PublicationMaterial {
         address,
+        form: i2pr_runtime::Ssu2PublicationForm::Direct,
         evidence_expires_at: Duration::from_secs(3_600),
         reachability: ReachabilityState::Reachable,
         bound_family: AddressFamily::Ipv4,

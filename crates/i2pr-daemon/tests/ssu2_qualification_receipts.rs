@@ -748,6 +748,7 @@ fn documentation_material() -> Ssu2PublicationMaterial {
     .expect("documentation router address");
     Ssu2PublicationMaterial {
         address,
+        form: i2pr_runtime::Ssu2PublicationForm::Direct,
         evidence_expires_at: Duration::from_secs(3600),
         reachability: ReachabilityState::Reachable,
         bound_family: AddressFamily::Ipv4,

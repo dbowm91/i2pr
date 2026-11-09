@@ -380,8 +380,12 @@ fn check_the_daemon_holds_no_copy_of_the_publication_rule(owner: &str) -> Option
     let Some(refresh) = item_body(&code, "pub fn refresh") else {
         return Some("the owner's refresh is absent".to_owned());
     };
-    if !refresh.contains("service.publication_material(") {
-        return Some("the owner must ask the runtime for the material".to_owned());
+    // Plan 525: the runtime now answers **which form** the router
+    // publishes, so the owner must ask the runtime for the composed
+    // form. Asking for one form alone would publish the direct address
+    // and never the introducer-only one.
+    if !refresh.contains("service.self_publication_material(") {
+        return Some("the owner must ask the runtime for the published form".to_owned());
     }
     None
 }
@@ -794,6 +798,19 @@ pub fn refresh(&self, bundle: &RouterIdentityBundle, service: &Ssu2RuntimeServic
     assert!(
         reason.is_some(),
         "a daemon copy of the rule must be reported: {reason:?}"
+    );
+    // Plan 525: an owner that asks for one form alone never publishes the
+    // introducer-only address, so it must be reported as well.
+    let single_form = "\
+pub fn refresh(&self, bundle: &RouterIdentityBundle, service: &Ssu2RuntimeService, now_ms: u64) -> SelfPublicationOutcome {
+    let _ = service.publication_material(now_ms);
+    SelfPublicationOutcome::Disabled
+}
+";
+    let reason = check_the_daemon_holds_no_copy_of_the_publication_rule(single_form);
+    assert!(
+        reason.is_some(),
+        "an owner that asks for one form alone must be reported: {reason:?}"
     );
 }
 
