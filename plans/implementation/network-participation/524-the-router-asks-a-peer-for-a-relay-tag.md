@@ -43,14 +43,18 @@ production caller that is missing.
   insertion path
   (`crates/i2pr-runtime/src/ssu2_peer_relay.rs:1101`). The insertion path
   exists; nothing calls it.
-- The runtime already holds each session's **validated** peer RouterInfo
-  (`ssu2_runtime.rs:1188`), and the transport already validated it — structural
-  decode, signature, expected identity hash, static-key binding, intro-key
-  shape and publication freshness
-  (`crates/i2pr-transport-ssu2/src/handshake.rs:924`, called at
-  `crates/i2pr-transport-ssu2/src/state_machine.rs:1446`). The peer's
-  advertised capabilities are therefore **authenticated**, and reading them
-  needs no new trust.
+- The **daemon** already reads a peer's **validated** RouterInfo from the
+  authoritative store — `Bootstrap::store()`
+  (`crates/i2pr-daemon/src/bootstrap.rs:261`) → `RouterInfoStore::get`
+  (`crates/i2pr-netdb/src/store.rs:177`) — and already does so for a peer's
+  public static encryption key
+  (`crates/i2pr-daemon/src/service_product.rs:4122`). The peer's advertised
+  capabilities are therefore **authenticated**, and reading them needs no new
+  trust.
+
+  **Corrected by §17.2.** The registered text put this read in the transport's
+  validated peer record. That is true of an **inbound** session and false of
+  an **outbound** one, and the request travels outbound.
 
 So the gap is not a missing capability. It is a missing **call**: four public
 items with no production caller, and one event that arrives and dies.
@@ -222,14 +226,15 @@ whether it is.
    publishes no introducer set and advertises no `C`; `router.version` stays
    `0.9.62`; the published record's `caps` string is unchanged; the inventory's
    advertised count stays **zero**.
-4. **A tag is recorded only from an authenticated session.** The peer must
-   have a **live session** whose RouterInfo the transport already validated,
-   and the peer must **advertise the introducer capability**. A tag from any
-   other source is refused, not recorded.
+4. **A tag is recorded only from an authenticated session, and only in
+   answer to a request this router made.** The peer must have a **live
+   session**, and the peer must be one the router **asked**. A tag from any
+   other source is refused, not recorded. **Corrected by §17.2.**
 5. **The capability read is authenticated.** The peer RouterInfo the plan reads
-   is the one the transport validated during the handshake — signature,
-   identity hash, static-key binding and freshness all checked. The plan
-   re-uses that validated record and does not parse unvalidated bytes.
+   is the one the **netdb validated on ingest** — signature, identity hash,
+   static-key binding and freshness all checked — and the plan re-uses that
+   validated record rather than parsing unvalidated bytes. **Corrected by
+   §17.2.**
 6. **A malformed or absent capability is refused, never defaulted.** A peer
    whose address carries no `caps`, an unparsable `caps`, or a `caps` without
    the introducer letter is **not** an introducer.
@@ -282,15 +287,14 @@ whether it is.
 
 ## 6. Required production changes
 
-1. **`crates/i2pr-transport-ssu2/src/handshake.rs`** — the validated peer
-   record carries the peer's **advertised capabilities**, read from the SSU2
-   address the validation already found, so that no later reader has to
-   re-parse unvalidated bytes.
-2. **`crates/i2pr-runtime/src/ssu2_runtime.rs`** — the runtime exposes the
-   capability for a peer it holds a session with, and records the tag that
+1. **`crates/i2pr-transport-ssu2/`** — **nothing.** The transport is
+   untouched by this plan. **Corrected by §17.2.**
+2. **`crates/i2pr-daemon/src/`** — the daemon reads the peer's advertised
+   capability from the authoritative store, drives the request on its own tick
+   under a bounded policy, and publishes the counters to the inspection plane.
+3. **`crates/i2pr-runtime/src/ssu2_runtime.rs`** — the runtime keeps the
+   **bounded** set of outstanding relay-tag requests, and records the tag that
    arrives as an authenticated introducer.
-3. **`crates/i2pr-daemon/src/`** — the daemon drives the request on its own
-   tick under a bounded policy, and the counters reach the inspection plane.
 4. **`crates/i2pr-runtime/src/ssu2_peer_relay.rs`** — the insertion path
    gains the production caller; the table and its ceiling are unchanged.
 
@@ -304,12 +308,16 @@ is that test. The plan does **not** use the peer's *published introducer set*
 publishes introducers is a peer that *has* introducers, not a peer that is
 willing to *be* one.
 
-**D2 — The capability is read from the transport's validated peer record.**
-The transport validates the peer's RouterInfo during the handshake
-(`handshake.rs:924`, `state_machine.rs:1446`). The plan reads the capability
-there, once, and carries it on the session. It does not re-parse the
-RouterInfo bytes later, and it does not read bytes the transport did not
-validate.
+**D2 — The capability is read from the store's validated peer record.**
+*(**Corrected by §17.2.** The registered text read it from the transport's
+validated peer record, which is not implementable for an outbound session.)*
+The daemon reads the peer's validated RouterInfo from the authoritative
+store (`Bootstrap::store()` → `RouterInfoStore::get`), takes the peer's SSU2
+address, and parses it with the transport's own strict parser,
+`Ssu2RouterAddress::parse` (`crates/i2pr-transport-ssu2/src/address.rs:570`),
+whose `capabilities()` (`:661`) answers the `C` question with the transport's
+own vocabulary. The bytes are the ones the netdb validated on ingest; the
+plan does not parse unvalidated bytes.
 
 **D3 — The router asks only when it is firewalled.** The reference's condition
 is `eRouterStatusFirewalled && m_Address->IsIntroducer()`
@@ -323,19 +331,28 @@ from the peers the runtime already holds a session with
 (`ssu2_runtime.rs:1833`), exactly as the router's own peer test chooses
 (`crates/i2pr-daemon/src/service_product.rs:4709`).
 
-**D5 — The tag is recorded only if the peer still advertises the capability.**
-The reference drops the tag when the peer's RouterInfo stops advertising it
-(`libi2pd/SSU2Session.cpp:1990-1991`). The plan applies the same rule at the
-moment the tag arrives: the capability read is the session's, and a session
-whose peer does not advertise it yields no record.
+**D5 — The tag is recorded only for a peer this router asked.**
+*(**Corrected by §17.2.** The registered text checked the capability at the
+moment the tag arrived, which the runtime cannot do for an outbound peer.)*
+The runtime keeps a **bounded** set of outstanding relay-tag requests, and a
+`SessionEvent::RelayTag` for a peer that is not in that set is **refused**: a
+peer may send the block unsolicited, and recording an introducer nobody asked
+for would put an unauthenticated peer into the router's introducer set. The
+reference drops a tag when the peer's RouterInfo stops advertising the
+capability (`libi2pd/SSU2Session.cpp:1990-1991`); this plan applies that
+check **at the request**, in the daemon, from the store, and the check at
+**publication** time — where staleness bites — belongs to the publication
+successor.
 
-**D6 — The record's `intro_key` is the peer's own introduction key.** The
-record's `intro_key` is an SSU 1 shape field; the SSU2 published form does not
-carry it (Plan 523). The plan supplies the peer's own introduction key, read
-from the same validated RouterInfo, so the record keeps its documented
-meaning and stays constructible. A peer whose RouterInfo carries no usable
-introduction key yields **no** record, because `IntroKey::new` rejects the
-all-zero value (`crates/i2pr-transport-ssu2/src/address.rs:295`).
+**D6 — The record's `endpoint` and `intro_key` are this router's own.**
+*(**Corrected by §17.2.** The registered text supplied the *peer's* own
+introduction key, which the runtime cannot read for an outbound peer.)* The
+SSU 1 shape published the **target's** contact material — the target's host,
+port and introduction key — so that the introducer could reach the target;
+the record's `endpoint` and `intro_key` are that material, and they are
+**this router's own**: its bound endpoint and its own introduction key, both
+of which the runtime already holds. The SSU2 published form carries neither
+(Plan 523), so neither is load-bearing for this plan.
 
 **D7 — The record's expiry is bounded and derived from the session's own
 evidence.** The tag does not carry an expiry. The plan derives one from the
@@ -356,18 +373,20 @@ guard proves the key exists and is default-off.
 
 ## 8. Work packages
 
-### WP1 — the transport carries the peer's advertised capabilities
+### WP1 — the daemon reads the peer's advertised capability
 
-The transport's validated peer record gains the peer's advertised SSU2
-capabilities, read from the address the validation already matched. The
-runtime can then answer the capability question without re-parsing anything.
+The daemon reads the peer's validated RouterInfo from the authoritative store,
+takes its SSU2 address, and parses it with the transport's own strict parser.
+A peer with no stored record, an unparsable address, or an address without
+the introducer letter is **not** an introducer, and each is a counted refusal
+rather than an absence. **Corrected by §17.2:** the registered WP1 put this
+read in the transport, which cannot answer it for an outbound session.
 
-### WP2 — the runtime answers the capability question
+### WP2 — the runtime tracks the outstanding requests
 
-The runtime exposes, for a peer it holds a session with, whether that peer
-advertises the introducer capability. A peer with no session, a poisoned
-state, or a session whose peer does not advertise the capability is **not** an
-introducer, and each is a counted refusal rather than an absence.
+The runtime keeps the **bounded** set of peers this router asked for a relay
+tag, so that a tag arriving for a peer nobody asked about is refused rather
+than recorded.
 
 ### WP3 — the daemon asks a peer for a tag
 
@@ -419,21 +438,19 @@ record the new surface.
 
 ## 11. Required tests
 
-### The transport's validated peer record
+### The daemon's capability read
 
-- a validated peer record carries the peer's advertised capabilities;
-- a RouterInfo whose SSU2 address advertises `C` yields a peer record that
-  answers the capability question affirmatively;
+- a stored peer whose SSU2 address advertises `C` answers the capability
+  question affirmatively;
 - one that does not, answers negatively;
-- an address with no `caps`, or with an unparsable `caps`, yields no
-  capability and no failure of the validation itself.
+- a peer with no stored record answers negatively, and is counted;
+- an address with no `caps`, or with an unparsable `caps`, answers negatively.
 
-### The runtime's capability question
+### The runtime's outstanding-request set
 
-- a peer with a live session that advertises the capability answers
-  affirmatively;
-- a peer with a live session that does not, answers negatively;
-- a peer with no session answers negatively, and is counted.
+- a peer this router asked for a tag is in the set;
+- a peer it did not ask is not;
+- the set is bounded, and a peer beyond the bound is refused and counted.
 
 ### The daemon's request policy
 
@@ -445,12 +462,11 @@ record the new surface.
 
 ### The runtime's recording
 
-- a tag arriving on an authenticated session is recorded as an authenticated
-  introducer;
+- a tag arriving on an authenticated session, in answer to a request this
+  router made, is recorded as an authenticated introducer;
 - the recorded introducer is observable in the table;
 - a zero tag is refused;
-- a peer that does not advertise the capability yields no record;
-- a peer with no usable introduction key yields no record;
+- a tag arriving for a peer this router **did not** ask yields **no** record;
 - the table's ceiling refuses rather than evicts;
 - the `Tag` event no longer reaches the role owner's refusal path.
 
@@ -545,6 +561,73 @@ The plan passes when:
   record and in this plan's registry row.
 
 ## 17. Amendment log
+
+### 17.2 — 2026-11-09, the capability read moves to the daemon
+
+**The defect in the registered design.** §2 and D2 put the capability read in
+the transport's validated peer record. The transport's `validate_router_info`
+(`crates/i2pr-transport-ssu2/src/handshake.rs:924`) is called on exactly one
+path — the **responder's** SessionConfirmed
+(`crates/i2pr-transport-ssu2/src/state_machine.rs:1446`) — because it is the
+**initiator** that carries a RouterInfo in its SessionConfirmed. The
+initiator's own peer record is built with an **empty** RouterInfo
+(`state_machine.rs:728-732` — `router_info: Vec::new()`), so an **outbound**
+session never carries the responder's RouterInfo at all.
+
+That is the direction this plan's request travels: the router dials a peer and
+asks it. So the registered design could not answer the question for the
+peers it needed to answer it for, and the runtime's session record — which
+the registered §2 called "each session's validated peer RouterInfo" — is
+empty on exactly the sessions that matter.
+
+**The correction.** The capability read belongs to the **daemon**, which is
+the tree's authority for peer records. The daemon reads the peer's validated
+RouterInfo from the authoritative store — `Bootstrap::store()`
+(`crates/i2pr-daemon/src/bootstrap.rs:261`) → `RouterInfoStore::get`
+(`crates/i2pr-netdb/src/store.rs:177`) — takes the peer's SSU2 address, and
+parses it with the transport's own strict parser, `Ssu2RouterAddress::parse`
+(`crates/i2pr-transport-ssu2/src/address.rs:570`), whose `capabilities()`
+(`:661`) answers the `C` question in the transport's own vocabulary. This is
+the same authority and the same pattern the product already uses for a peer's
+public static encryption key (`crates/i2pr-daemon/src/service_product.rs:4122`).
+
+**What changed.**
+
+- **D2 is replaced** — the read is from the store's validated record, not
+  from the transport's peer record.
+- **D5 is replaced** — the runtime cannot re-check the capability when the tag
+  arrives, so the gate becomes **"a peer this router asked"**. The runtime
+  keeps a bounded set of outstanding relay-tag requests, and a tag for a peer
+  outside that set is refused. The reference's own staleness rule
+  (`libi2pd/SSU2Session.cpp:1990-1991`) is applied at the **request**, and the
+  check at **publication** time belongs to the publication successor.
+- **D6 is replaced** — the record's `endpoint` and `intro_key` are **this
+  router's own**, because the SSU 1 shape published the *target's* contact
+  material and the runtime holds both facts without any peer lookup.
+- **The transport is untouched.** The plan adds no transport surface at all.
+  An earlier draft put the capability on the transport's validated peer
+  record; the correction above is why it does not.
+
+**What did not change.** The objective, the scope, the invariants' intent, the
+acceptance criteria, the out-of-scope list, and the design decisions D1, D3,
+D4, D7, D8 and D9 all stand as registered. No production code had been
+written against the registered design when the correction was made, so nothing
+was rewritten after the fact.
+
+**The new evidence.** The asymmetry is the evidence for this amendment, and it
+is in the tree:
+
+| Site | What it shows |
+|---|---|
+| `crates/i2pr-transport-ssu2/src/handshake.rs:924` | `validate_router_info` — the transport's full validation |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:1446` | the **only** call site — the responder's SessionConfirmed |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:728-732` | the initiator's peer record, with `router_info: Vec::new()` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1188` | the session's peer RouterInfo field — empty on an outbound session |
+| `crates/i2pr-daemon/src/bootstrap.rs:261` | `Bootstrap::store()` — the authoritative store |
+| `crates/i2pr-netdb/src/store.rs:177` | `RouterInfoStore::get` — the validated lookup |
+| `crates/i2pr-daemon/src/service_product.rs:4122` | the product's existing use of that lookup |
+| `crates/i2pr-transport-ssu2/src/address.rs:570` | `Ssu2RouterAddress::parse` — the strict address parser |
+| `crates/i2pr-transport-ssu2/src/address.rs:661` | `capabilities()` — the `C` question |
 
 ### 17.1 — 2026-11-09, registration
 
