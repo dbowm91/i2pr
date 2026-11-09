@@ -723,6 +723,7 @@ fn the_direct_form_is_still_published_through_the_direct_builder() {
     let material = i2pr_runtime::Ssu2PublicationMaterial {
         address,
         form: Ssu2PublicationForm::Direct,
+        advertises_introducer_role: false,
         evidence_expires_at: Duration::from_secs(3_600),
         reachability: i2pr_transport::ReachabilityState::Reachable,
         bound_family: i2pr_transport::AddressFamily::Ipv4,

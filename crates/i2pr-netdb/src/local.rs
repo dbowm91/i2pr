@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
 use crate::{
     FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address,
-    is_qualified_ssu2_introducer_address,
+    is_qualified_ssu2_introducer_address, is_qualified_ssu2_relay_role_address,
 };
 
 /// Conservative Java-compatible bandwidth tier derived from configured
@@ -297,6 +297,37 @@ impl<'a> LocalRouterInfoBuilder<'a> {
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         Self::validate_options(&options)?;
         if !is_qualified_ssu2_introducer_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
+    /// Builds a signed RouterInfo carrying one **role-bearing** SSU2
+    /// address.
+    ///
+    /// Plan 526. The specification's Relay capability is advertised with a
+    /// `"C"` in the `caps` option, and the reference publishes it on the
+    /// **published** form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`). The
+    /// netdb's **direct** rule demands the capability string be exactly the
+    /// address's own family, so a router that advertises the role needs a
+    /// builder of its own.
+    ///
+    /// This builder's authority is the netdb's own
+    /// `is_qualified_ssu2_relay_role_address`: an address that rule refuses
+    /// is never signed and never installed. The **direct** builder and the
+    /// **introducer** builder are unchanged and still refuse this form.
+    ///
+    /// The builder carries no floodfill permit, so it cannot produce
+    /// `caps=f`. That matches the reference, which clears the introducer
+    /// role for a floodfill router (`libi2pd/RouterContext.cpp:655`).
+    pub fn build_with_ssu2_relay_role_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_relay_role_address(&address) {
             return Err(LocalRouterInfoError::UnqualifiedAddress);
         }
         self.sign_addressed_many(published, options, vec![address])

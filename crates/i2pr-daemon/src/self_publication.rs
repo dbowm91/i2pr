@@ -80,6 +80,36 @@ pub enum StandDownReason {
     NoInstalledRecord,
 }
 
+/// The three published forms the router can install.
+///
+/// Plan 526: the runtime's [`Ssu2PublicationForm`] names the **shape** of
+/// the address, and the shape has two variants in the direct family. This
+/// enum is the daemon's own view of which of the three forms was published,
+/// so the owner never inspects the address's `caps` option to infer it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishedForm {
+    /// The **direct** form without the introducer role letter.
+    Direct,
+    /// The **direct** form **with** the introducer role letter.
+    DirectRelayRole,
+    /// The **introducer-only** form.
+    IntroducerOnly,
+}
+
+/// Returns the published form a material represents.
+fn published_form(material: &Ssu2PublicationMaterial) -> PublishedForm {
+    match material.form {
+        Ssu2PublicationForm::Direct => {
+            if material.advertises_introducer_role {
+                PublishedForm::DirectRelayRole
+            } else {
+                PublishedForm::Direct
+            }
+        }
+        Ssu2PublicationForm::IntroducerOnly => PublishedForm::IntroducerOnly,
+    }
+}
+
 /// Why the addressed record could not be built or installed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelfPublicationFailure {
@@ -92,6 +122,12 @@ pub enum SelfPublicationFailure {
     /// Plan 525: the two forms are qualified by two **different** rules,
     /// so the rule that refused is part of the reason.
     UnqualifiedIntroducerAddress,
+    /// The netdb's own **role-bearing** qualification refused the
+    /// address.
+    ///
+    /// Plan 526: the three forms are qualified by three **different**
+    /// rules, so the rule that refused is part of the reason.
+    UnqualifiedRelayRoleAddress,
     /// The record could not be built or encoded.
     Construction,
     /// The runtime refused the install.
@@ -123,6 +159,7 @@ pub enum SelfPublicationOutcome {
 #[derive(Debug, Default)]
 pub struct SelfPublicationCounters {
     published_direct: AtomicU64,
+    published_direct_relay_role: AtomicU64,
     published_introducer_only: AtomicU64,
     withdrawn: AtomicU64,
     prepared: AtomicU64,
@@ -140,6 +177,7 @@ pub struct SelfPublicationCounters {
     stood_down_no_installed_record: AtomicU64,
     failed_unqualified_address: AtomicU64,
     failed_unqualified_introducer_address: AtomicU64,
+    failed_unqualified_relay_role_address: AtomicU64,
     failed_construction: AtomicU64,
     failed_install: AtomicU64,
 }
@@ -156,6 +194,12 @@ pub struct SelfPublicationCounterSnapshot {
     /// The **direct** form was published: the address carries the
     /// router's host and port.
     pub published_direct: u64,
+    /// The **role-bearing** direct form was published: the address names
+    /// the router's host and port **and** advertises the introducer role.
+    ///
+    /// Plan 526: this is the form the specification's Relay capability
+    /// rides, and it is published **only** while the role is live.
+    pub published_direct_relay_role: u64,
     /// The **introducer-only** form was published: the address carries no
     /// host and no port, and publishes the validated introducer set.
     pub published_introducer_only: u64,
@@ -193,6 +237,8 @@ pub struct SelfPublicationCounterSnapshot {
     pub failed_unqualified_address: u64,
     /// The netdb's **introducer** qualification refused the address.
     pub failed_unqualified_introducer_address: u64,
+    /// The netdb's **role-bearing** qualification refused the address.
+    pub failed_unqualified_relay_role_address: u64,
     /// The record could not be built or encoded.
     pub failed_construction: u64,
     /// The runtime refused the install.
@@ -231,6 +277,9 @@ impl SelfPublicationCounters {
             SelfPublicationFailure::UnqualifiedIntroducerAddress => {
                 &self.failed_unqualified_introducer_address
             }
+            SelfPublicationFailure::UnqualifiedRelayRoleAddress => {
+                &self.failed_unqualified_relay_role_address
+            }
             SelfPublicationFailure::Construction => &self.failed_construction,
             SelfPublicationFailure::Install(_) => &self.failed_install,
         };
@@ -240,10 +289,12 @@ impl SelfPublicationCounters {
     /// Returns a plain snapshot of every counter.
     pub fn snapshot(&self) -> SelfPublicationCounterSnapshot {
         let published_direct = self.published_direct.load(Ordering::Relaxed);
+        let published_direct_relay_role = self.published_direct_relay_role.load(Ordering::Relaxed);
         let published_introducer_only = self.published_introducer_only.load(Ordering::Relaxed);
         SelfPublicationCounterSnapshot {
-            published: published_direct + published_introducer_only,
+            published: published_direct + published_direct_relay_role + published_introducer_only,
             published_direct,
+            published_direct_relay_role,
             published_introducer_only,
             withdrawn: self.withdrawn.load(Ordering::Relaxed),
             prepared: self.prepared.load(Ordering::Relaxed),
@@ -268,6 +319,9 @@ impl SelfPublicationCounters {
             failed_unqualified_address: self.failed_unqualified_address.load(Ordering::Relaxed),
             failed_unqualified_introducer_address: self
                 .failed_unqualified_introducer_address
+                .load(Ordering::Relaxed),
+            failed_unqualified_relay_role_address: self
+                .failed_unqualified_relay_role_address
                 .load(Ordering::Relaxed),
             failed_construction: self.failed_construction.load(Ordering::Relaxed),
             failed_install: self.failed_install.load(Ordering::Relaxed),
@@ -297,6 +351,7 @@ impl SelfPublicationOwner {
             enabled,
             counters: SelfPublicationCounters {
                 published_direct: AtomicU64::new(0),
+                published_direct_relay_role: AtomicU64::new(0),
                 published_introducer_only: AtomicU64::new(0),
                 withdrawn: AtomicU64::new(0),
                 prepared: AtomicU64::new(0),
@@ -314,6 +369,7 @@ impl SelfPublicationOwner {
                 stood_down_no_installed_record: AtomicU64::new(0),
                 failed_unqualified_address: AtomicU64::new(0),
                 failed_unqualified_introducer_address: AtomicU64::new(0),
+                failed_unqualified_relay_role_address: AtomicU64::new(0),
                 failed_construction: AtomicU64::new(0),
                 failed_install: AtomicU64::new(0),
             },
@@ -400,22 +456,46 @@ impl SelfPublicationOwner {
         service: &Ssu2RuntimeService,
         now_ms: u64,
     ) -> SelfPublicationOutcome {
-        if !self.enabled {
-            self.counters.disabled.fetch_add(1, Ordering::Relaxed);
-            return SelfPublicationOutcome::Disabled;
-        }
         let installed = service.installed_local_router_info();
         // Plan 525: the runtime answers **which form** the router
         // publishes -- the direct one while the reachability evidence
         // admits it, the introducer-only one while it does not -- and the
         // daemon never infers a form from a refusal.
         let material = service.self_publication_material(now_ms);
-        let decision = self.decide(
+        self.apply(
             bundle,
             installed.as_deref(),
             material.as_ref().map_err(|reason| *reason),
+            service,
             now_ms,
-        );
+        )
+    }
+
+    /// Applies the runtime's answer to the installed record and counts it.
+    ///
+    /// Plan 526: the owner's **apply** half is separated from its **ask**
+    /// half. The production path asks the runtime and applies the answer,
+    /// and the separation changes nothing about that path -- it lets the
+    /// hand-off, the netdb's rule and the counters be exercised with a
+    /// material the caller supplies, which the runtime's own `Reachable`
+    /// gate would otherwise put out of reach in a local lane.
+    ///
+    /// The applied material is still the **only** thing that is installed,
+    /// and the install still goes through the runtime's own gate, so a
+    /// material the runtime would not have produced is refused there.
+    pub fn apply(
+        &self,
+        bundle: &RouterIdentityBundle,
+        installed: Option<&[u8]>,
+        material: Result<&Ssu2PublicationMaterial, Ssu2PublicationUnavailable>,
+        service: &Ssu2RuntimeService,
+        now_ms: u64,
+    ) -> SelfPublicationOutcome {
+        if !self.enabled {
+            self.counters.disabled.fetch_add(1, Ordering::Relaxed);
+            return SelfPublicationOutcome::Disabled;
+        }
+        let decision = self.decide(bundle, installed, material, now_ms);
         match decision {
             SelfPublicationDecision::Disabled => SelfPublicationOutcome::Disabled,
             SelfPublicationDecision::StoodDown(reason) => SelfPublicationOutcome::StoodDown(reason),
@@ -427,13 +507,22 @@ impl SelfPublicationOwner {
                         // was published, and each form is counted under
                         // its own reason. A withdrawal carries no form at
                         // all, and is counted as one.
-                        match material.as_ref().map(|material| material.form) {
-                            Ok(Ssu2PublicationForm::Direct) => {
+                        match material.as_ref().map(|material| published_form(material)) {
+                            Ok(PublishedForm::Direct) => {
                                 self.counters
                                     .published_direct
                                     .fetch_add(1, Ordering::Relaxed);
                             }
-                            Ok(Ssu2PublicationForm::IntroducerOnly) => {
+                            // Plan 526: the role-bearing form is counted
+                            // under its own reason, so a reader can tell a
+                            // router that advertises the introducer role
+                            // from one that does not.
+                            Ok(PublishedForm::DirectRelayRole) => {
+                                self.counters
+                                    .published_direct_relay_role
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            Ok(PublishedForm::IntroducerOnly) => {
                                 self.counters
                                     .published_introducer_only
                                     .fetch_add(1, Ordering::Relaxed);
@@ -471,23 +560,33 @@ impl SelfPublicationOwner {
             // it refuses is never signed. Plan 525: the two forms have
             // two **different** rules, and each form is built by the
             // builder that carries its own rule.
-            Some(material) => match material.form {
-                Ssu2PublicationForm::Direct => builder
+            Some(material) => match published_form(material) {
+                PublishedForm::Direct => builder
                     .build_with_ssu2_address(published, options, material.address.clone())
                     .map_err(|error| {
-                        SelfPublicationFailure::from_netdb(error, Ssu2PublicationForm::Direct)
+                        SelfPublicationFailure::from_netdb(error, PublishedForm::Direct)
                     })?,
-                Ssu2PublicationForm::IntroducerOnly => builder
+                // Plan 526: the role-bearing direct form has the netdb's
+                // **own** third rule and the **own** third builder. The
+                // direct builder still refuses it, so the two forms can
+                // never be signed by the wrong rule.
+                PublishedForm::DirectRelayRole => builder
+                    .build_with_ssu2_relay_role_address(
+                        published,
+                        options,
+                        material.address.clone(),
+                    )
+                    .map_err(|error| {
+                        SelfPublicationFailure::from_netdb(error, PublishedForm::DirectRelayRole)
+                    })?,
+                PublishedForm::IntroducerOnly => builder
                     .build_with_ssu2_introducer_address(
                         published,
                         options,
                         material.address.clone(),
                     )
                     .map_err(|error| {
-                        SelfPublicationFailure::from_netdb(
-                            error,
-                            Ssu2PublicationForm::IntroducerOnly,
-                        )
+                        SelfPublicationFailure::from_netdb(error, PublishedForm::IntroducerOnly)
                     })?,
             },
             None => builder
@@ -506,14 +605,18 @@ impl SelfPublicationFailure {
     /// Plan 525: the direct form and the introducer-only form are
     /// qualified by two **different** rules, so the rule that refused is
     /// part of the reason. Every other refusal is a construction failure.
-    fn from_netdb(error: i2pr_netdb::LocalRouterInfoError, form: Ssu2PublicationForm) -> Self {
+    fn from_netdb(error: i2pr_netdb::LocalRouterInfoError, form: PublishedForm) -> Self {
         match (error, form) {
-            (i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress, Ssu2PublicationForm::Direct) => {
+            (i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress, PublishedForm::Direct) => {
                 Self::UnqualifiedAddress
             }
             (
                 i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress,
-                Ssu2PublicationForm::IntroducerOnly,
+                PublishedForm::DirectRelayRole,
+            ) => Self::UnqualifiedRelayRoleAddress,
+            (
+                i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress,
+                PublishedForm::IntroducerOnly,
             ) => Self::UnqualifiedIntroducerAddress,
             _ => Self::Construction,
         }

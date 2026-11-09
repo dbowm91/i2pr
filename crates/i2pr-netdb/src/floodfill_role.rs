@@ -260,6 +260,94 @@ pub fn is_qualified_ssu2_address(address: &RouterAddress) -> bool {
     })
 }
 
+/// Validates an SSU2 address in the **role-bearing** direct form.
+///
+/// Plan 526. The specification's Relay capability is advertised with a
+/// `"C"` in the address's `caps` option, and the reference publishes it on
+/// the **published** form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`),
+/// because its peer-side check demands an endpoint for an introducer
+/// (`libi2pd/RouterInfo.cpp:1059`).
+///
+/// The **direct** rule demands the capability string be *exactly* the
+/// address's own family, so a router that advertises the role cannot be
+/// qualified by it. This is the netdb's **third** rule, beside
+/// [`is_qualified_ssu2_address`] and
+/// [`is_qualified_ssu2_introducer_address`], and neither of the first two
+/// is weakened by it: the direct rule still refuses a role-bearing address
+/// and the introducer rule still refuses any role letter at all.
+///
+/// The capability string is **exact**: the address's own family letter
+/// followed by the role letter, and nothing else. `"BC"`, `"4CB"`, `"46C"`
+/// and the bare family letters are all refused, so an unearned role cannot
+/// reach the wire through a permissive rule.
+pub fn is_qualified_ssu2_relay_role_address(address: &RouterAddress) -> bool {
+    if address.transport_style() != "SSU2" {
+        return false;
+    }
+    let options = address.options();
+    let Some(host) = options
+        .get("host")
+        .and_then(|value| value.parse::<core::net::IpAddr>().ok())
+    else {
+        return false;
+    };
+    let Some(port) = options
+        .get("port")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+    else {
+        return false;
+    };
+    let Some(mtu) = options
+        .get("mtu")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|mtu| (1280..=9000).contains(mtu))
+    else {
+        return false;
+    };
+    let Some(version) = options.get("v") else {
+        return false;
+    };
+    let Some(caps) = options.get("caps") else {
+        return false;
+    };
+    let (Some(static_key), Some(intro_key)) = (
+        options
+            .get("s")
+            .and_then(|value| crate::base64::decode(value).ok()),
+        options
+            .get("i")
+            .and_then(|value| crate::base64::decode(value).ok()),
+    ) else {
+        return false;
+    };
+    if host.is_unspecified()
+        || port.to_string() != options.get("port").unwrap_or_default()
+        || mtu.to_string() != options.get("mtu").unwrap_or_default()
+        || version != "2"
+        || static_key.len() != 32
+        || static_key.iter().all(|byte| *byte == 0)
+        || intro_key.len() != 32
+        || intro_key.iter().all(|byte| *byte == 0)
+        || caps.is_empty()
+        || host.to_string() != options.get("host").unwrap_or_default()
+        // The capability string is exactly the address's own family
+        // letter followed by the introducer role letter.
+        || match host {
+            core::net::IpAddr::V4(_) => caps != "4C",
+            core::net::IpAddr::V6(_) => caps != "6C",
+        }
+    {
+        return false;
+    }
+    options.entries().iter().all(|entry| {
+        matches!(
+            entry.key(),
+            "host" | "port" | "mtu" | "v" | "caps" | "s" | "i"
+        )
+    })
+}
+
 /// Validates an SSU2 address in the specification's introducer-only form.
 ///
 /// Plan 523. The SSU2 specification forbids publishing a host or a port

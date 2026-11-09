@@ -1122,6 +1122,15 @@ pub struct Ssu2PublicationMaterial {
     /// Plan 525: the caller matches on this and hands the address to the
     /// builder that qualifies **that** form.
     pub form: Ssu2PublicationForm,
+    /// Whether the address advertises the router's **introducer role**.
+    ///
+    /// Plan 526: the specification's Relay capability is the `"C"` letter
+    /// in the address's `caps` option. The letter is a **claim** -- a peer
+    /// that reads it may ask this router to introduce a third party -- so it
+    /// is carried **only** while the role is live. The caller matches on
+    /// this field and hands the address to the netdb's builder that
+    /// qualifies **that** form.
+    pub advertises_introducer_role: bool,
     /// Monotonic expiry of the reachability evidence used to build it.
     pub evidence_expires_at: Duration,
     /// Conservative current reachability classification.
@@ -2624,6 +2633,13 @@ impl Ssu2RuntimeService {
             return Err(Ssu2PublicationUnavailable::NoIntroducers);
         }
         let family = self.bound_family()?;
+        // Plan 526: the introducer-only form carries the **family**
+        // letter and never the role letter. The form publishes no
+        // endpoint, so it is not an introducer to a peer that reads the
+        // advertisement -- the reference's own peer-side check demands an
+        // endpoint for an introducer (`libi2pd/RouterInfo.cpp:1059`) -- and
+        // the netdb's introducer rule refuses any role letter on this form
+        // (`crates/i2pr-netdb/src/floodfill_role.rs`).
         let capabilities = match family {
             i2pr_transport::AddressFamily::Ipv4 => "4",
             i2pr_transport::AddressFamily::Ipv6 => "6",
@@ -2686,6 +2702,7 @@ impl Ssu2RuntimeService {
         Ok(Ssu2PublicationMaterial {
             address,
             form: Ssu2PublicationForm::IntroducerOnly,
+            advertises_introducer_role: false,
             evidence_expires_at: std::time::Duration::from_secs(
                 evidence_expires_secs.saturating_sub(now_secs),
             ),
@@ -2721,6 +2738,60 @@ impl Ssu2RuntimeService {
             Some(_) => Ok(i2pr_transport::AddressFamily::Ipv6),
             None => Err(Ssu2PublicationUnavailable::NoBoundSocket),
         }
+    }
+
+    /// Returns the capability string the router publishes for itself.
+    ///
+    /// Plan 526: this is the **same** value the published address carries,
+    /// so a reader cannot see a different capability string than the one
+    /// the router publishes. The family letter comes from the router's
+    /// **bound** socket; the published address's own family comes from the
+    /// reachability evidence, and the two are the same family whenever the
+    /// direct form is admitted -- the direct builder looks up the bound
+    /// socket of the reachability family and refuses the form when it has
+    /// none.
+    pub fn advertised_capabilities(
+        &self,
+    ) -> Result<i2pr_transport_ssu2::Ssu2Capabilities, Ssu2PublicationUnavailable> {
+        let family = self.bound_family()?;
+        let (capabilities, _advertises_introducer_role) = self.capabilities_for(family)?;
+        Ok(capabilities)
+    }
+
+    /// Returns the capability string for a family, with the role letter
+    /// when the role is live.
+    ///
+    /// Plan 526: the family letter comes from the router's **bound**
+    /// socket, and the **introducer role** letter is added **only** while
+    /// the role is live. The role letter is a claim the router must be able
+    /// to honour, so a router whose role owner is not running never
+    /// publishes it.
+    ///
+    /// The family letter comes **first** and the role letter second, which
+    /// is the order the transport's own family helper uses
+    /// (`crates/i2pr-transport-ssu2/src/publication.rs`). The result is
+    /// parsed by the transport's own strict parser, so an unusable
+    /// combination is refused rather than published.
+    fn capabilities_for(
+        &self,
+        family: i2pr_transport::AddressFamily,
+    ) -> Result<(i2pr_transport_ssu2::Ssu2Capabilities, bool), Ssu2PublicationUnavailable> {
+        let family_letter = match family {
+            i2pr_transport::AddressFamily::Ipv4 => "4",
+            i2pr_transport::AddressFamily::Ipv6 => "6",
+            i2pr_transport::AddressFamily::Unknown => {
+                return Err(Ssu2PublicationUnavailable::InvalidPublication);
+            }
+        };
+        let advertises_introducer_role = self.introducer_service_enabled();
+        let value = if advertises_introducer_role {
+            format!("{family_letter}C")
+        } else {
+            family_letter.to_owned()
+        };
+        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse(&value)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        Ok((capabilities, advertises_introducer_role))
     }
 
     /// Answers which form the router publishes for **itself** now.
@@ -2824,15 +2895,13 @@ impl Ssu2RuntimeService {
         }
         let endpoint = Ssu2Endpoint::new(bound.ip(), bound.port())
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
-        let capabilities = match family {
-            i2pr_transport::AddressFamily::Ipv4 => "4",
-            i2pr_transport::AddressFamily::Ipv6 => "6",
-            i2pr_transport::AddressFamily::Unknown => {
-                return Err(Ssu2PublicationUnavailable::InvalidPublication);
-            }
-        };
-        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse(capabilities)
-            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        // Plan 526: the direct form is the only form that may carry the
+        // introducer role letter, because the reference publishes the role
+        // letters on the published form only
+        // (`libi2pd/RouterInfo.cpp:1350`-`:1373`) and a peer that reads a
+        // role letter without an endpoint cannot act on it
+        // (`libi2pd/RouterInfo.cpp:1059`).
+        let (capabilities, advertises_introducer_role) = self.capabilities_for(family)?;
         let expires_secs = expiry.as_secs();
         let snapshot = i2pr_transport_ssu2::publication::build_publication_snapshot(
             i2pr_transport_ssu2::publication::PublicationRequest {
@@ -2874,6 +2943,7 @@ impl Ssu2RuntimeService {
         Ok(Ssu2PublicationMaterial {
             address,
             form: Ssu2PublicationForm::Direct,
+            advertises_introducer_role,
             evidence_expires_at: expiry,
             reachability,
             bound_family: family,
@@ -3883,6 +3953,15 @@ impl Ssu2RuntimeService {
                     && parsed
                         .intro_key()
                         .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes());
+                // Plan 526: the introducer role letter is a **claim** the
+                // router must be able to honour. A record that carries it
+                // while the role is not live is refused outright, so a
+                // stale letter cannot reach the wire -- and the record
+                // cannot stand installed with a claim the router has
+                // stopped making.
+                if parsed.capabilities().supports_relay() && !self.introducer_service_enabled() {
+                    return false;
+                }
                 // Plan 525: the transport's parser refuses an address
                 // carrying both a direct endpoint and introducers, so
                 // the two forms are exclusive and the classification

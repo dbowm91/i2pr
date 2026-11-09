@@ -3601,6 +3601,10 @@ mod tests {
         i2pr_runtime::Ssu2PublicationMaterial {
             address,
             form: i2pr_runtime::Ssu2PublicationForm::Direct,
+            // Plan 526: the floodfill path never advertises the
+            // introducer role -- the reference clears the role for a
+            // floodfill router (`libi2pd/RouterContext.cpp:655`).
+            advertises_introducer_role: false,
             evidence_expires_at: Duration::from_secs(3600),
             reachability: if reachable {
                 i2pr_transport::ReachabilityState::Reachable

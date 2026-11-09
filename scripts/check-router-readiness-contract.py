@@ -44,13 +44,18 @@ def source_controls() -> dict[str, tuple[str, str]]:
             "ssu2 advertisement must remain refused outside the controlled profile": ("config", "if private_lan {\n            return Err(ConfigError::Semantic {\n                field: \"ssu2.advertise\","),
             # Plan 490 made the introducer role available behind an explicit
             # opt-in, and Plan 520 removed the advertisement refusal that
-            # used to bound it. The invariant this control protects -- the
-            # router never publishes an introducer address -- now lives
-            # where it is enforced: the composition refuses to start the
-            # SSU2 service when the introducer role is requested, and the
-            # socket boundary refuses the advertisement outside the
-            # controlled loopback profile.
-            "introducer publication must remain rejected": ("daemon", "if ssu2_config.introducer_service {\n                        let detail = i2pr_core::HealthDetail::new("),
+            # used to bound it. Plan 526 found that the composition's
+            # **blanket** refusal of the role made the role owner the
+            # composition constructs unreachable in every configuration, so
+            # the role could never run and the role's advertisement could
+            # never be truthful. The invariant this control protects -- the
+            # router never publishes an introducer role it does not serve --
+            # now lives where it is enforced: the runtime's install gate
+            # refuses a role-bearing record while the role is not live, and
+            # the composition constructs the role owner **only** behind the
+            # explicit opt-in.
+            "introducer publication must remain rejected unless the role is live": ("ssu2_runtime", "parsed.capabilities().supports_relay() && !self.introducer_service_enabled()"),
+            "the introducer role must be constructed only behind the explicit opt-in": ("daemon", "let mut introducer = if ssu2_config.introducer_service {"),
             "SSU2 advertisement must remain refused by the socket boundary": ("router_i2np", "if config.advertise\n        && config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan\n    {\n        return Err(Ssu2ServiceError::ControlledProfile(\n            \"the private-LAN SSU2 profile cannot publish an SSU2 address\""),
             "SSU2 advertisement opt-in test must remain": ("router_i2np", "fn socket_config_permits_the_controlled_advertisement_opt_in()"),
             "introducer role must remain rejected unless the SSU2 service runs": ("config", "if raw.introducer_service && !raw.enabled {"),

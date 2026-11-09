@@ -3970,25 +3970,26 @@ fn register_ssu2_service(
                             }
                         }
                     }
-                    // Strict profile is enforced twice: once at config
-                    // parse time and again here so a future bypass
-                    // cannot reach socket ownership.
+                    // The SSU2 service's **profile** is enforced at the
+                    // socket boundary, which owns the socket: it refuses an
+                    // SSU2 service that is not enabled, and it refuses an
+                    // advertisement outside the controlled loopback
+                    // profile (`ssu2_socket_config_from`). The configuration
+                    // is parsed and refused for the same reasons before the
+                    // service is ever registered.
                     //
-                    // Plan 520: the router's **own** address publication is
-                    // behind an explicit opt-in and is no longer refused
-                    // here. The introducer role still is.
-                    if ssu2_config.introducer_service {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "SSU2 service requires the strict controlled profile",
-                        )
-                        .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::InvalidState,
-                                detail,
-                            ),
-                        );
-                    }
+                    // Plan 526: the introducer (Bob) role is **no longer
+                    // refused here**. The blanket refusal that Plan 520
+                    // kept made the role owner this composition constructs
+                    // unreachable in **every** configuration -- with the
+                    // opt-in on, the service failed before the
+                    // construction was reached -- so the role could never
+                    // run, and Plan 499's claim that the daemon's live loop
+                    // constructs the role owner and the carriage was false
+                    // of the tree. The role's own explicit, default-off
+                    // `ssu2.introducer_service` opt-in is now the only
+                    // gate, and the role owner refuses every event with
+                    // `Disabled` while it is off.
                     let store = IdentityStore::in_data_dir(&data_dir);
                     let bundle = match store.load() {
                         Ok(bundle) => bundle,
