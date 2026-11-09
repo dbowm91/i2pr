@@ -24,9 +24,8 @@ use i2pr_runtime::{
     CancellationToken, ChildFailurePolicy, ChildScope, RelayIntroBlock, RelayRequestBlock,
     RelayResponseBlock, Ssu2DialOutcome, Ssu2DialTarget, Ssu2Endpoint, Ssu2EstablishedLink,
     Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2RelayEvent, Ssu2RelayQueueError, Ssu2RuntimeConfig,
-    Ssu2TagRequestError,
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
-    Ssu2ServiceHandle, Ssu2SocketConfig, Ssu2TestFaults,
+    Ssu2ServiceHandle, Ssu2SocketConfig, Ssu2TagRequestError, Ssu2TestFaults,
 };
 use i2pr_transport::{
     EncodedI2npMessage, LinkId, MAX_I2NP_MESSAGE_BYTES, PeerId, TerminationCategory, TransportKind,

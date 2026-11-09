@@ -1115,6 +1115,7 @@ impl Ssu2PeerRelayService {
     /// derived the sweep clock from the record's own expiry, which made
     /// the sweep run in the future and expired live records early; this
     /// path had no production caller until Plan 524.)
+    #[allow(clippy::too_many_arguments)]
     pub fn note_authenticated_introducer(
         &self,
         now_secs: u64,

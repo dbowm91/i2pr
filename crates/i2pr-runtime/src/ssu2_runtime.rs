@@ -2162,9 +2162,7 @@ impl Ssu2RuntimeService {
             relay_tag_requests: counters.relay_tag_requests.load(Ordering::Relaxed),
             relay_tags_issued: counters.relay_tags_issued.load(Ordering::Relaxed),
             relay_tags_observed: counters.relay_tags_observed.load(Ordering::Relaxed),
-            relay_tag_requests_queued: counters
-                .relay_tag_requests_queued
-                .load(Ordering::Relaxed),
+            relay_tag_requests_queued: counters.relay_tag_requests_queued.load(Ordering::Relaxed),
             relay_tag_requests_refused_capacity: counters
                 .relay_tag_requests_refused_capacity
                 .load(Ordering::Relaxed),
@@ -2172,9 +2170,7 @@ impl Ssu2RuntimeService {
             relay_tags_refused_unrequested: counters
                 .relay_tags_refused_unrequested
                 .load(Ordering::Relaxed),
-            relay_tags_refused_record: counters
-                .relay_tags_refused_record
-                .load(Ordering::Relaxed),
+            relay_tags_refused_record: counters.relay_tags_refused_record.load(Ordering::Relaxed),
             relay_blocks_queued: counters.relay_blocks_queued.load(Ordering::Relaxed),
             relay_blocks_refused: counters
                 .relay_blocks_refused_no_session
@@ -2396,10 +2392,7 @@ impl Ssu2RuntimeService {
             &mut i2pr_transport_ssu2::Ssu2Session,
         ) -> Result<(), i2pr_transport_ssu2::SessionError>,
     {
-        let link = match resolve_single_peer_link(state.peer_links.get(&peer)) {
-            Ok(link) => link,
-            Err(error) => return Err(error),
-        };
+        let link = resolve_single_peer_link(state.peer_links.get(&peer))?;
         let Some(record) = state.active.get_mut(&link) else {
             return Err(Ssu2RelayQueueError::NoSession);
         };
@@ -2442,11 +2435,12 @@ impl Ssu2RuntimeService {
         // The record's introduction key is the **published** form of the
         // router's own key, so it is the address module's type; the
         // runtime holds the session's copy of the same 32 bytes.
-        let intro_key =
-            match i2pr_transport_ssu2::address::IntroKey::new(*self.shared.local_intro.as_bytes()) {
-                Ok(key) => key,
-                Err(_) => return Err(Ssu2TagRequestError::NoLocalIntroKey),
-            };
+        let intro_key = match i2pr_transport_ssu2::address::IntroKey::new(
+            *self.shared.local_intro.as_bytes(),
+        ) {
+            Ok(key) => key,
+            Err(_) => return Err(Ssu2TagRequestError::NoLocalIntroKey),
+        };
         let expires_secs = now_secs.saturating_add(RELAY_TAG_INTRODUCER_TTL_SECS);
         self.shared
             .peer_relay
@@ -2498,10 +2492,7 @@ impl Ssu2RuntimeService {
     /// tuple is published in the RouterInfo address, so it is public data
     /// and never a secret. The set is point-in-time, and a record that
     /// expired is not returned.
-    pub fn learned_introducers(
-        &self,
-        now_secs: u64,
-    ) -> Vec<i2pr_transport_ssu2::Ssu2Introducer> {
+    pub fn learned_introducers(&self, now_secs: u64) -> Vec<i2pr_transport_ssu2::Ssu2Introducer> {
         self.shared.peer_relay.select_introducers(now_secs)
     }
 
