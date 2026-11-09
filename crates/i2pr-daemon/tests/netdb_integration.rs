@@ -117,6 +117,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             advertise: false,
             peer_test: false,
             peer_pool: false,
+            introducer_request: false,
             introducer_service: false,
             qualification_profile:
                 i2pr_daemon::config::Ssu2QualificationProfile::ControlledLoopback,

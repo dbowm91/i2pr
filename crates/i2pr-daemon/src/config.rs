@@ -642,6 +642,8 @@ struct RawSsu2Config {
     peer_test: bool,
     #[serde(default = "default_ssu2_peer_pool")]
     peer_pool: bool,
+    #[serde(default = "default_ssu2_introducer_request")]
+    introducer_request: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
     /// Optional destination for the Plan 476 sanitized local receipt
@@ -682,6 +684,7 @@ impl Default for RawSsu2Config {
             introducer_service: default_ssu2_introducer_service(),
             peer_test: default_ssu2_peer_test(),
             peer_pool: default_ssu2_peer_pool(),
+            introducer_request: default_ssu2_introducer_request(),
             qualification_profile: default_ssu2_qualification_profile(),
             qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
@@ -1446,6 +1449,13 @@ const fn default_ssu2_peer_pool() -> bool {
     false
 }
 
+/// Plan 524: asking a peer for a relay tag is an explicit opt-in and it
+/// is **off** by default, so a router that has not asked to learn an
+/// introducer never sends a relay-tag request.
+const fn default_ssu2_introducer_request() -> bool {
+    false
+}
+
 fn default_ssu2_qualification_profile() -> String {
     String::from("controlled_loopback")
 }
@@ -2047,6 +2057,15 @@ pub struct Ssu2Config {
     /// reachability evidence. It generates no traffic when it is off, and it
     /// never runs outside the SSU2 service.
     pub peer_test: bool,
+    /// Whether this router asks a peer for a relay tag (default false).
+    ///
+    /// Plan 524: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, a **firewalled** router asks one peer that
+    /// advertises the introducer capability for a relay tag, over a
+    /// session it already holds, and records the answer as an
+    /// authenticated introducer. It generates no traffic when it is off,
+    /// and it never runs outside the SSU2 service.
+    pub introducer_request: bool,
     /// Whether introducer service is offered (default false).
     ///
     /// Plan 490 makes the role available behind this explicit opt-in.
@@ -3481,6 +3500,16 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "the outbound peer-session pool needs an idle timeout longer than the keepalive's unanswered deadline",
         });
     }
+    // Plan 524: asking a peer for a relay tag runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because the request
+    // travels over a session the router already holds, and it is refused
+    // rather than silently inert when the service is off.
+    if raw.introducer_request && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.introducer_request",
+            reason: "the relay-tag request requires ssu2.enabled = true",
+        });
+    }
     // Plan 490: the introducer role is available behind an explicit
     // opt-in. It still requires the SSU2 service itself to run, and it
     // never grants advertisement.
@@ -3609,6 +3638,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         advertise: raw.advertise,
         peer_test: raw.peer_test,
         peer_pool: raw.peer_pool,
+        introducer_request: raw.introducer_request,
         introducer_service: raw.introducer_service,
         qualification_profile: if private_lan {
             Ssu2QualificationProfile::PrivateLan

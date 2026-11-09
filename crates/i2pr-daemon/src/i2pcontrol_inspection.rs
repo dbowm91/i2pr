@@ -75,6 +75,12 @@ pub type PeerReconcileCounterCell = std::sync::Mutex<crate::peer_reconcile::Peer
 /// The counters are counts only: they name no peer, address, key or payload.
 pub type PeerTestCounterCell = std::sync::Mutex<crate::peer_test::PeerTestOwnerCounters>;
 
+/// Plan 524: the live counters of this router's relay-tag requests.
+///
+/// The counters are counts only: they name no peer, address, key or tag.
+pub type IntroducerRequestCounterCell =
+    std::sync::Mutex<crate::introducer_request::IntroducerRequestCounters>;
+
 /// Live counters of this router's outbound peer-session pool, published
 /// by the composition root (Plan 522). The pool's own task refreshes
 /// the cell on its period; the counters are counts only and name no
@@ -296,6 +302,11 @@ pub struct InspectionHandles {
     /// composition root (Plan 521). The product refreshes the cell on its
     /// tick; the counters are counts only and name no peer, address or key.
     peer_test_live: Mutex<Option<Arc<PeerTestCounterCell>>>,
+    /// Live counters of this router's relay-tag requests, published by the
+    /// composition root (Plan 524). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address, key
+    /// or tag.
+    introducer_request_live: Mutex<Option<Arc<IntroducerRequestCounterCell>>>,
     /// Live counters of this router's outbound peer-session pool,
     /// published by the composition root (Plan 522).
     peer_pool_live: Mutex<Option<Arc<PeerPoolCounterCell>>>,
@@ -329,6 +340,7 @@ impl InspectionHandles {
             exploratory_driver_live: Mutex::new(None),
             peer_reconcile_live: Mutex::new(None),
             peer_test_live: Mutex::new(None),
+            introducer_request_live: Mutex::new(None),
             peer_pool_live: Mutex::new(None),
         }
     }
@@ -700,6 +712,40 @@ impl InspectionHandles {
             .lock()
             .ok()
             .and_then(|slot| slot.clone())
+    }
+
+    /// Plan 524: publishes the cell the daemon product refreshes on its
+    /// tick, so the running router's relay-tag request posture is
+    /// observable through the inspection seam.
+    ///
+    /// Publishing is the composition root's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_introducer_request_counters(&self, cell: Arc<IntroducerRequestCounterCell>) {
+        if let Ok(mut slot) = self.introducer_request_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published relay-tag request counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn introducer_request_counters(&self) -> Option<Arc<IntroducerRequestCounterCell>> {
+        self.introducer_request_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published relay-tag request
+    /// counters.
+    ///
+    /// Plan 524: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn introducer_request_counters_snapshot(
+        &self,
+    ) -> Option<crate::introducer_request::IntroducerRequestCounters> {
+        let cell = self.introducer_request_counters()?;
+        cell.lock().ok().map(|counters| *counters)
     }
 
     /// Reads a point-in-time snapshot of the published peer-test counters.

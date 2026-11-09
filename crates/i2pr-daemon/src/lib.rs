@@ -34,6 +34,7 @@ pub mod i2pcontrol_dispatch;
 pub mod i2pcontrol_inspection;
 pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
+pub mod introducer_request;
 pub mod netdb_participation;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
@@ -4400,6 +4401,10 @@ fn register_ssu2_service(
                                 // Plan 521: the router's own peer test is an
                                 // explicit opt-in and it is off by default.
                                 peer_test: ssu2_config.peer_test,
+                                // Plan 524: the router's relay-tag request
+                                // is an explicit opt-in and it is off by
+                                // default.
+                                introducer_request: ssu2_config.introducer_request,
                                 ..Default::default()
                             },
                             addressbook: addressbook.shared(),
@@ -4487,6 +4492,14 @@ fn register_ssu2_service(
                                 // only.
                                 inspection.publish_peer_test_counters(
                                     product.peer_test_counters_cell(),
+                                );
+                                // Plan 524: publish the live relay-tag
+                                // request counters so the running router's
+                                // introducer-acquisition posture is
+                                // observable through the inspection plane.
+                                // The counters carry counts only.
+                                inspection.publish_introducer_request_counters(
+                                    product.introducer_request_counters_cell(),
                                 );
                                 NormalSsu2Owner::Groups(Box::new(product))
                             }

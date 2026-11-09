@@ -303,6 +303,33 @@ fn build_peer_test_owner(enabled: bool) -> Option<crate::peer_test::PeerTestOwne
     Some(crate::peer_test::PeerTestOwner::new(true))
 }
 
+/// Plan 524 — builds the owner of this router's relay-tag requests.
+///
+/// The owner is installed only when the operator enabled the request, so a
+/// default router has no owner and never sends a relay-tag request.
+fn build_introducer_request_owner(
+    enabled: bool,
+) -> Option<crate::introducer_request::IntroducerRequestOwner> {
+    if !enabled {
+        return None;
+    }
+    Some(crate::introducer_request::IntroducerRequestOwner::new(true))
+}
+
+/// Plan 524 — reads one peer's advertised introducer capability from the
+/// authoritative store.
+///
+/// The read is the daemon's, because the daemon is the tree's authority for
+/// peer records. The lock is taken for the read only and the read itself is
+/// the pure function the owner module owns.
+async fn read_introducer_capability(
+    destinations: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    peer: PeerId,
+) -> crate::introducer_request::IntroducerCapability {
+    let store = destinations.lock().await;
+    crate::introducer_request::read_capability(store.store(), peer)
+}
+
 /// Plan 521 — builds the entropy source for this router's own peer test.
 ///
 /// The source is installed only when the operator enabled the peer test. A
@@ -398,6 +425,12 @@ pub struct ServiceProductOptions {
     /// that has not asked for reachability evidence never generates probe
     /// traffic.
     pub peer_test: bool,
+    /// Plan 524 — whether this router asks a peer for a relay tag.
+    ///
+    /// The switch is an explicit opt-in and it is off by default. A router
+    /// that has not asked to learn an introducer never sends a relay-tag
+    /// request.
+    pub introducer_request: bool,
 }
 
 impl Default for ServiceProductOptions {
@@ -410,6 +443,7 @@ impl Default for ServiceProductOptions {
             delivery_timeout: DEFAULT_DELIVERY_TIMEOUT,
             tunnel_deadline: DEFAULT_TUNNEL_DEADLINE,
             peer_test: false,
+            introducer_request: false,
         }
     }
 }
@@ -1302,6 +1336,17 @@ struct ProductInner {
     peer_test_rng: Option<ChaCha8Rng>,
     /// Plan 521 — the local time the next peer-test attempt is due.
     peer_test_next_at_ms: u64,
+    /// Plan 524 — the live owner of this router's relay-tag requests.
+    ///
+    /// The owner selects the peer to ask and records every outcome. It owns
+    /// no task, no timer, no listener and no socket: the product's tick
+    /// drives it. `None` means the operator has not enabled the request.
+    introducer_request: Option<crate::introducer_request::IntroducerRequestOwner>,
+    /// Plan 524 — the live counter cell the composition root publishes into
+    /// the inspection seam. The product refreshes it on its tick; it holds
+    /// counts only.
+    introducer_request_counters_cell:
+        Arc<crate::i2pcontrol_inspection::IntroducerRequestCounterCell>,
     /// Plan 513 — the live bootstrap store the discovery spine writes a
     /// resolved record into.
     ///
@@ -2754,6 +2799,13 @@ impl ServiceProduct {
                 )),
                 peer_test_rng: build_peer_test_rng(spec.options.peer_test),
                 peer_test_next_at_ms: 0,
+                // Plan 524 — the router's relay-tag requests. The owner is
+                // installed only when the operator enabled it, so a default
+                // router has no owner and the tick's step costs nothing.
+                introducer_request: build_introducer_request_owner(spec.options.introducer_request),
+                introducer_request_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::introducer_request::IntroducerRequestCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -3038,6 +3090,13 @@ impl ServiceProduct {
                 )),
                 peer_test_rng: build_peer_test_rng(spec.options.peer_test),
                 peer_test_next_at_ms: 0,
+                // Plan 524 — the router's relay-tag requests. The owner is
+                // installed only when the operator enabled it, so a default
+                // router has no owner and the tick's step costs nothing.
+                introducer_request: build_introducer_request_owner(spec.options.introducer_request),
+                introducer_request_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::introducer_request::IntroducerRequestCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
                 version_eligibility,
@@ -4712,6 +4771,111 @@ impl ServiceProduct {
         hashes.first().map(|hash| PeerId::from_hash(*hash))
     }
 
+    /// Plan 524 — drives this router's relay-tag request on the product's
+    /// tick.
+    ///
+    /// The owner holds no task, no timer and no listener: the tick runs one
+    /// bounded window, reads the advertised introducer capability of the
+    /// peers this router holds a session with, and asks **at most one** of
+    /// them for a relay tag. A router whose operator has not enabled the
+    /// request does nothing here, and a router that is not firewalled asks
+    /// nobody — a reachable router needs no introducer.
+    ///
+    /// The request rides the session the router already holds: no new
+    /// connection is made, and the peer is never named unless this router
+    /// holds a session with it.
+    async fn drive_introducer_request(&mut self, now_ms: u64) {
+        let live: Vec<PeerId> = self
+            .inner
+            .ssu2_handle
+            .service()
+            .active_peer_hashes()
+            .into_iter()
+            .map(PeerId::from_hash)
+            .collect();
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+        // The store is cloned out of the composition so the capability read
+        // never borrows the product while it waits for the lock.
+        let destinations = Arc::clone(&self.inner.destination_tunnels);
+        let Some(owner) = self.inner.introducer_request.as_mut() else {
+            return;
+        };
+        if !owner.enabled() {
+            return;
+        }
+        if !owner.due(now_ms) {
+            return;
+        }
+        let window =
+            owner.candidate_window(&live, crate::introducer_request::MAX_INTRODUCER_CANDIDATES);
+        let mut eligible: Vec<PeerId> = Vec::new();
+        for peer in window {
+            let capability = read_introducer_capability(&destinations, peer).await;
+            owner.note_capability(capability);
+            if capability.is_introducer() {
+                eligible.push(peer);
+                break;
+            }
+        }
+        let decision = owner.decide(&eligible, firewalled, now_ms);
+        let peer = match decision {
+            crate::introducer_request::IntroducerRequestDecision::Ask(peer) => peer,
+            crate::introducer_request::IntroducerRequestDecision::Refuse(reason) => {
+                tracing::debug!(
+                    transition = "introducer_request_refused",
+                    reason = ?reason,
+                    "the router asked nobody for a relay tag"
+                );
+                self.publish_introducer_request_counters();
+                return;
+            }
+        };
+        let outcome = self
+            .inner
+            .ssu2_handle
+            .service()
+            .queue_relay_tag_request(peer);
+        let Some(owner) = self.inner.introducer_request.as_mut() else {
+            return;
+        };
+        match outcome {
+            Ok(()) => {
+                owner.note_queued(peer);
+                tracing::debug!(
+                    transition = "introducer_request_queued",
+                    "the router asked a peer for a relay tag"
+                );
+            }
+            Err(error) => {
+                owner.note_transport_refusal(now_ms);
+                tracing::debug!(
+                    transition = "introducer_request_refused",
+                    reason = %error.reason(),
+                    "the transport refused a relay-tag request"
+                );
+            }
+        }
+        self.publish_introducer_request_counters();
+    }
+
+    /// Plan 524 — refreshes the published relay-tag request counters.
+    fn publish_introducer_request_counters(&self) {
+        let Some(owner) = self.inner.introducer_request.as_ref() else {
+            return;
+        };
+        if let Ok(mut cell) = self.inner.introducer_request_counters_cell.lock() {
+            *cell = owner.counters();
+        }
+    }
+
+    /// Plan 524 — returns the live relay-tag request counter cell.
+    pub fn introducer_request_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::IntroducerRequestCounterCell> {
+        Arc::clone(&self.inner.introducer_request_counters_cell)
+    }
+
     /// Plan 521 — refreshes the published peer-test counters.
     fn publish_peer_test_counters(&self) {
         let Some(owner) = self.inner.peer_test_owner.as_ref() else {
@@ -4957,6 +5121,11 @@ impl ServiceProduct {
         // probes that aged out; the live inbound path answers the peer's
         // own test. No new task, no new timer, no new listener.
         self.drive_peer_test(now_ms);
+        // Plan 524 — the router's relay-tag request is driven on the same
+        // tick, beside the peer test it shares its cadence with. It asks
+        // one eligible peer for a relay tag, and only while this router is
+        // firewalled. No new task, no new timer, no new listener.
+        self.drive_introducer_request(now_ms).await;
         let destination_ids = self.inner.destination_ids.clone();
         for destination_id in destination_ids {
             let Some(snapshot) =
