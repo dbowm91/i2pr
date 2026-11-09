@@ -1273,7 +1273,10 @@ async fn publication_integration_and_privacy_over_real_udp() {
         .collect();
     assert!(!keys.contains(&"host"));
     assert!(!keys.contains(&"port"));
-    assert!(keys.contains(&"ihost0"));
+    // The SSU2 introducer group is the specification's: the introducer's
+    // router hash, its expiry and its relay tag.
+    assert!(keys.contains(&"ih0"));
+    assert!(keys.contains(&"iexp0"));
     assert!(keys.contains(&"itag0"));
     // Privacy: snapshot and service Debug expose no secrets, even after
     // real-UDP traffic moved through the mapper above.

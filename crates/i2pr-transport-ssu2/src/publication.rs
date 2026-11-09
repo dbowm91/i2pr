@@ -171,10 +171,7 @@ impl Ssu2PublicationSnapshot {
 
     /// Returns whether a direct endpoint is present.
     pub const fn has_direct_endpoint(&self) -> bool {
-        matches!(
-            self.class,
-            Ssu2AddressClass::Direct | Ssu2AddressClass::DirectWithIntroducers
-        )
+        matches!(self.class, Ssu2AddressClass::Direct)
     }
 }
 
@@ -317,11 +314,15 @@ fn direct_snapshot(
 /// Builds the specification's introducer-only address form.
 ///
 /// The form omits `host`/`port` entirely, publishes the introducer
-/// groups the specification defines (`ihostN`/`iportN`/`ikeyN`/`itagN`)
+/// groups the specification defines **for SSU2** (`ihN`/`iexpN`/`itagN`)
 /// together with the local intro and static keys, and carries the
 /// family capability the specification demands alongside introducers.
 /// The introducer order is the caller's validated order and is
 /// therefore deterministic.
+///
+/// The SSU 1 introducer groups (`ihostN`/`iportN`/`ikeyN`) are not used
+/// for SSU2: the introducer is identified by its router hash and
+/// resolved through the network database.
 fn introducer_snapshot(
     static_key: StaticPublicKey,
     intro_public: [u8; 32],
@@ -336,12 +337,19 @@ fn introducer_snapshot(
     }
     options.push(("i".to_owned(), encode_i2p_base64(&intro_public)));
     for (index, introducer) in introducers.iter().enumerate() {
-        options.push((format!("ihost{index}"), introducer.ip().to_string()));
         options.push((
-            format!("ikey{index}"),
-            encode_i2p_base64(introducer.intro_key().as_bytes()),
+            format!("ih{index}"),
+            encode_i2p_base64(introducer.peer_hash()),
         ));
-        options.push((format!("iport{index}"), introducer.port().to_string()));
+        // The expiry is optional in the specification's address table. A
+        // zero expiry means "not published" and is omitted rather than
+        // written as the epoch, which would read as already expired.
+        if introducer.expires_secs() != 0 {
+            options.push((
+                format!("iexp{index}"),
+                introducer.expires_secs().to_string(),
+            ));
+        }
         options.push((format!("itag{index}"), introducer.relay_tag().to_string()));
     }
     options.push(("mtu".to_owned(), mtu.to_string()));
@@ -562,9 +570,7 @@ mod tests {
 
     #[test]
     fn unvalidated_introducers_are_rejected_not_dropped() {
-        let introducer =
-            Ssu2Introducer::new(endpoint(), AddressIntroKey::new(INTRO).expect("intro"), 7)
-                .expect("introducer");
+        let introducer = Ssu2Introducer::new([0x5A; 32], 1_800_000_000, 7).expect("introducer");
         let outcome = build_publication_snapshot(PublicationRequest {
             policy: PublicationPolicy::new(true, false),
             static_public: STATIC,
@@ -669,18 +675,11 @@ mod tests {
     // Plan 490 — the specification's introducer-only address form.
     // -------------------------------------------------------------------
 
+    /// One SSU2 introducer: the introducer's router hash, its expiry and
+    /// its relay tag. The SSU 1 tuple has no place in an SSU2 address.
     fn introducer(index: u8, tag: u32) -> Ssu2Introducer {
-        let endpoint = Ssu2Endpoint::new(
-            IpAddr::V4(Ipv4Addr::new(198, 51, 100, index)),
-            10_000 + u16::from(index),
-        )
-        .expect("endpoint");
-        Ssu2Introducer::new(
-            endpoint,
-            AddressIntroKey::new([0x30 + index; 32]).expect("intro"),
-            tag,
-        )
-        .expect("introducer")
+        Ssu2Introducer::new([0x30 + index; 32], 1_800_000_000 + u64::from(index), tag)
+            .expect("introducer")
     }
 
     fn build_with_introducers(
@@ -730,10 +729,16 @@ mod tests {
         assert!(keys.contains(&"s"));
         assert!(keys.contains(&"v"));
         for index in 0..introducers.len() {
-            assert!(keys.contains(&format!("ihost{index}").as_str()));
-            assert!(keys.contains(&format!("iport{index}").as_str()));
-            assert!(keys.contains(&format!("ikey{index}").as_str()));
+            assert!(keys.contains(&format!("ih{index}").as_str()));
+            assert!(keys.contains(&format!("iexp{index}").as_str()));
             assert!(keys.contains(&format!("itag{index}").as_str()));
+        }
+        // The SSU 1 introducer options are not part of an SSU2 address.
+        for key in keys {
+            assert!(
+                !key.starts_with("ihost") && !key.starts_with("iport") && !key.starts_with("ikey"),
+                "an SSU2 address carries no SSU 1 introducer option: {key}"
+            );
         }
     }
 
@@ -783,8 +788,8 @@ mod tests {
         // The deterministic order is the validated order.
         for (index, introducer) in parsed.introducers().iter().enumerate() {
             assert_eq!(introducer.relay_tag(), introducers[index].relay_tag());
-            assert_eq!(introducer.ip(), introducers[index].ip());
-            assert_eq!(introducer.port(), introducers[index].port());
+            assert_eq!(introducer.peer_hash(), introducers[index].peer_hash());
+            assert_eq!(introducer.expires_secs(), introducers[index].expires_secs());
         }
     }
 

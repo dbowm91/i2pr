@@ -972,8 +972,15 @@ pub fn validate_router_info(
             }
         } else if address.options().get("host").is_some()
             || address.options().get("port").is_some()
-            || address.options().get("ihost0").is_some()
+            || address.options().get("ih0").is_some()
+            || address.options().get("iexp0").is_some()
+            || address.options().get("itag0").is_some()
         {
+            // Plan 523: the introducer marker in an SSU2 address is the
+            // specification's own group (`ih0`/`iexp0`/`itag0`). The SSU 1
+            // introducer options are not part of an SSU2 address and are
+            // refused by the strict parser, so naming them here would
+            // leave the check unable to fire.
             return Err(HandshakeError::IntroKeyInvalid);
         }
         matched = true;

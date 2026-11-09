@@ -741,8 +741,15 @@ fn introducer_records_feed_publication_and_expire_cleanly() {
         .collect();
     assert!(!keys.contains(&"host"));
     assert!(!keys.contains(&"port"));
-    assert!(keys.contains(&"ihost0"));
+    // The SSU2 introducer group is the specification's: the
+    // introducer's router hash, its expiry and its relay tag. The SSU 1
+    // options are not part of an SSU2 address.
+    assert!(keys.contains(&"ih0"));
+    assert!(keys.contains(&"iexp0"));
     assert!(keys.contains(&"itag0"));
+    assert!(!keys.contains(&"ihost0"));
+    assert!(!keys.contains(&"iport0"));
+    assert!(!keys.contains(&"ikey0"));
     assert!(i2pr_transport_ssu2::build_publication_snapshot(request(false)).is_err());
     // Expiry withdraws: past the lifetime nothing validates.
     assert!(table.validated_introducers(NOW_SECS + 601).is_empty());
