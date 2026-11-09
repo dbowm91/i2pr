@@ -1647,6 +1647,33 @@ publishing the netdb's ordinary zero-address record, where the reference
 publishes an unpublished `s`+`i`+`v` form. The **stock-peer** half needs
 Plan 493's authorized two-host topology.
 
+## 25. The router's advertised introducer role (Plan 526)
+
+Plan 526 gives the router the **advertisement** half of the SSU2 introducer
+composition. The gates below are the questions a reviewer asks of the `C`
+letter in the router's own address.
+
+| Gate | Question | How it is answered |
+|---|---|---|
+| G25.1 | Is the role's switch real and off by default? | `ssu2.introducer_service` is the existing opt-in, off by default, and this plan adds **no** new key. |
+| G25.2 | Is the letter the specification's? | The `caps` option carries the `"C"` letter, which the specification defines ("Relay — As advertised with a `"C"` in the `"caps"` parameter") and whose alphabet is `[B,C,4,6]`. |
+| G25.3 | Does the letter ride the right form? | The **direct** form only. The reference publishes the role letters on the published form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`) and its peer-side check demands an endpoint for an introducer (`:1059`); the netdb's own introducer rule refuses any role letter on the introducer-only form. |
+| G25.4 | Is the combination inside the vocabulary? | The tree publishes `"4C"` / `"6C"`, keeping its stricter family requirement. Both references parse a combination: i2pd's `ExtractAddressCaps` is a per-character switch (`:562`-`:581`), and the pinned Java I2P reads the capability with a containment test. |
+| G25.5 | Is the letter published only while the role is live? | The runtime owns the role's live state and composes the capability in one place; the letter is added **only** while the role is live. |
+| G25.6 | Can a stale letter reach the wire? | No: the runtime's install gate **refuses** a role-bearing record while the role is not live, so the installed record cannot stand with a claim the router has stopped making. |
+| G25.7 | Does the netdb qualify it with its **own** rule? | `is_qualified_ssu2_relay_role_address` is a **third** rule, beside the untouched direct and introducer rules, and the builder that carries it takes no floodfill permit. |
+| G25.8 | Is the third rule exact? | Yes: the address's own family letter followed by the role letter, and nothing else. `"BC"`, `"4CB"`, `"46C"` and the bare family letters are all refused. |
+| G25.9 | Can a floodfill advertise the role? | No: the floodfill builder qualifies with the **direct** rule and refuses the role-bearing address, which matches the reference (`libi2pd/RouterContext.cpp:655`). |
+| G25.10 | Is every refusal counted under its own reason? | The third rule's refusal has its own reason and its own counter, and the three published forms are counted separately. |
+| G25.11 | Can the role actually run? | The composition constructs the role owner **only** behind the explicit opt-in. The blanket refusal that made the role owner unreachable in every configuration is gone. |
+| G25.12 | Does the owner add infrastructure? | No: no task, no timer, no listener and no socket. The publication's own cycle drives it. |
+
+**What the gates do not cover.** The **`B`** (peer-test) advertisement is a
+separate matter. The advertisement is confined to the **controlled loopback
+profile**, because `ssu2.advertise` is refused outside it, so the `C` is a
+local qualification claim and not yet a network-reachable one. The
+**stock-peer** half needs Plan 493's authorized two-host topology.
+
 ## 23. The router's relay-tag request (Plan 524)
 
 Plan 524 gives the router the **acquisition** half of the SSU2 introducer

@@ -2571,6 +2571,13 @@ advertised**. The advertised count stays **zero**: Plan 525 makes the router
 introducer-only address form, and it still advertises **no** introducer
 capability of its own.
 
+**Plan 526 adds one surface** — `daemon.introducer-advertisement` — so the
+inventory holds **119 surfaces, 114 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 526 makes the router
+*advertise its own introducer role*, in the `caps` option of its own address
+and **only** while the role is live, and the surface is internal and
+non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3518,6 +3525,87 @@ references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §24. The
 plan of record is
 `plans/implementation/network-participation/525-the-router-publishes-the-introducer-set-it-learned.md`;
 the closure record is `plans/closure/network-participation/525-status.md`.
+
+## The router advertises its own introducer role (Plan 526)
+
+The SSU2 **introducer** role is worth nothing to a peer that cannot see it.
+Plan 490 built the role, Plan 498 made the role owner reachable in a live
+daemon, Plan 499 made it work, Plan 523 corrected the **form** of the
+introducer set, Plan 524 gave the router the **acquisition** and Plan 525 the
+**publication**. Plan 526 gives the router the **advertisement**: the
+specification's Relay capability, the `"C"` letter, in the `caps` option of the
+router's **own** address.
+
+**The letter is the specification's.** "Relay — As advertised with a `"C"` in
+the `"caps"` parameter", and the option's alphabet is `[B,C,4,6]`. The pinned
+i2pd 2.61.0 publishes the role letters on the **published** form only
+(`libi2pd/RouterInfo.cpp:1350`-`:1373`), and its peer-side check demands an
+endpoint for an introducer (`:1059`):
+
+```cpp
+return addr && addr->IsIntroducer () && !addr->host.is_unspecified () && addr->port;
+```
+
+— so a router that publishes no host and no port is **not** an introducer to a
+reference peer, however its `caps` read. The tree's `C` therefore rides the
+**direct** form and never the introducer-only one, and the netdb's own
+introducer rule — which refuses any role letter — enforces the exclusion
+without being weakened.
+
+**The tree publishes the combination, not the reference's role-only form.** The
+reference's published form carries `"C"`; the tree's carries `"4C"`, because
+the tree's stricter rule requires the capability string to name the address's
+own family. Both are inside the specification's alphabet, and both references
+parse a combination: i2pd's `ExtractAddressCaps` is a per-character switch
+(`libi2pd/RouterInfo.cpp:562`-`:581`), and the pinned Java I2P 2.13.0 reads the
+capability with a containment test
+(`router/java/src/net/i2p/router/transport/udp/UDPTransport.java:2588`,
+`:4185`).
+
+**The letter is a claim, so it is published only while the role is live.** The
+runtime owns that fact (`introducer_service_enabled`) and owns the wire, so it
+composes the capability in one place: the family letter, plus the role letter
+**only** while the role is live. The runtime's install gate **refuses** a
+role-bearing record while the role is not live, so a stale letter cannot reach
+the wire and the installed record cannot stand with a claim the router has
+stopped making.
+
+**The netdb gains a third rule and a third builder**, beside the untouched
+direct and introducer rules. The third rule is **exact** — the address's own
+family letter followed by the role letter — so an unearned role cannot reach
+the wire through a permissive rule, and the third builder carries no floodfill
+permit, which matches the reference, which clears the role for a floodfill
+router (`libi2pd/RouterContext.cpp:655`).
+
+**The registration recorded a latent defect.** The composition refused the
+SSU2 service outright whenever `ssu2.introducer_service` was set, so the role
+owner the composition constructs was **unreachable in every configuration**,
+and Plan 499's closed record — "the daemon's live loop then constructs the
+role owner and the carriage" — was false of the tree. The blanket refusal is
+replaced by the role's own explicit, default-off opt-in. Plan 499's closed
+record is **not** rewritten; the correction lives in Plan 526's closure record
+and in the registry row.
+
+**What is deliberately not claimed.** No configuration key is added:
+`ssu2.introducer_service` is the role's switch and `ssu2.advertise` is the
+publication's switch, and the `C` rides both. The **`B`** (peer-test)
+advertisement is out of scope. The advertisement is confined to the
+**controlled loopback profile**, because `ssu2.advertise` is refused outside
+it, so the `C` is a local qualification claim and not yet a network-reachable
+one. Nothing is advertised in the inventory sense: `router.version` stays
+`0.9.62`, the inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
+Evidence: `crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-netdb/src/floodfill_role.rs`, `crates/i2pr-netdb/src/local.rs`,
+`crates/i2pr-daemon/src/self_publication.rs`, `crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/tests/ssu2_introducer_advertisement.rs` and
+`crates/i2pr-daemon/tests/ssu2_introducer_advertisement_boundary.rs`. The
+references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §25. The
+plan of record is
+`plans/implementation/network-participation/526-the-router-advertises-its-own-introducer-role.md`;
+the closure record is `plans/closure/network-participation/526-status.md`.
 
 ## The router asks a peer for a relay tag (Plan 524)
 

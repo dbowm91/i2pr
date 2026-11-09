@@ -991,6 +991,28 @@ router's own keys and at least one introducer. (The gate previously
 required every SSU2 address to carry an endpoint, so the introducer-only
 form could never be installed at all.)
 
+## The advertised introducer role (Plan 526)
+
+The runtime owns the **wire**, so it owns the capability the router publishes.
+
+**The capability is composed in one place.** `capabilities_for` derives the
+family letter from the router's **bound** socket and adds the **role** letter
+— the specification's `"C"` — **only** while the introducer role is live. The
+direct form builds its capability through it, and the material carries a typed
+field saying whether the role is advertised, so a caller never infers the role
+from the address's text. `advertised_capabilities` returns the same value the
+published address carries.
+
+**The introducer-only form never carries the role letter.** The form publishes
+no endpoint, so no peer could act on a role letter it carried: the reference's
+own peer-side check demands an endpoint for an introducer
+(`libi2pd/RouterInfo.cpp:1059`), and the netdb's introducer rule refuses any
+role letter on that form.
+
+**The install gate refuses a stale role letter.** A record whose SSU2 address
+advertises the role is refused outright while the role is not live, so the
+installed record cannot stand with a claim the router has stopped making.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

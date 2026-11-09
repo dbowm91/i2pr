@@ -148,6 +148,37 @@ The transport's parser refuses an address that carries both a direct
 endpoint and introducers, so the two forms are exclusive and the
 classification is total.
 
+## The role letter and the family-and-role combination (Plan 526)
+
+The specification's Relay capability is a `"C"` in the `caps` option, and the
+option's alphabet is `[B,C,4,6]`. This crate **already modelled** the letter
+before any router advertised it: `Ssu2Capabilities` carries a `RELAY` bit
+(`src/address.rs:435`) and `supports_relay` reads it (`src/address.rs:472`), so
+a peer record's advertised role is readable from the transport's own validated
+type.
+
+The parser is **per character** (`src/address.rs:1314`-`:1345`), so it is
+order-independent and accepts a **combination**: `"4C"` yields both the IPv4
+bit and the relay bit. The pinned reference behaves the same way — i2pd's
+`ExtractAddressCaps` is a per-character switch
+(`libi2pd/RouterInfo.cpp:562`-`:581`) — and the pinned Java I2P reads the
+capability with a containment test, so both references read a combination the
+way this crate does.
+
+Plan 526 therefore needed **no change to this crate**. The advertisement lives
+in the runtime, which composes the capability; in the netdb, which qualifies
+the role-bearing address; and in the daemon, which publishes it. The `git
+diff` over `crates/i2pr-transport-ssu2/` for the plan is empty.
+
+The tree publishes the **combination** `"4C"` rather than the reference's
+role-only `"C"`. The reference publishes the role letters on the published
+form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`) and keeps the family
+letters on the form that carries no endpoint; the tree publishes the family
+letter on **both** forms, because its netdb requires the capability string to
+name the address's own family. Adding the role letter to the family letter
+rather than replacing it keeps that stricter check intact, and the result is
+inside the alphabet both references parse.
+
 ## Module layout
 
 Declared in `src/lib.rs:27-41` — 15 modules, no subdirectories.

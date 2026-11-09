@@ -790,3 +790,64 @@ that the advertisement's truthfulness depends on.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here as
 an amendment, additively.
+### 17.2 — 2026-11-10, the guard extensions and the readiness repin
+
+Three guard surfaces are extended by this plan. Each extension is a
+**strengthening**: the extended rule names the new location **as well as** the
+old one, and it fails closed when either named item is absent. No other plan's
+guard file is touched, and no existing assertion is relaxed.
+
+| Guard | Rule | Extension |
+|---|---|---|
+| `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs` | Plan 520's "the family capability is carried" | The rule now follows the composition into the runtime's `capabilities_for` helper, and it fails closed if that helper is absent. |
+| `crates/i2pr-daemon/tests/router_info_publication_address_boundary.rs` | Plan 520's "the record is installed and published" | The rule now accepts the install inside the daemon's new `apply` seam **and** requires `refresh` to call `self.apply(`. |
+| `crates/i2pr-daemon/tests/ssu2_introducer_publication_boundary.rs` | Plan 525's "the daemon matches on the typed form" | The rule now requires the `published_form` helper to exist, to read `material.form`, to name both runtime forms, and to be called by `build_record`. |
+| `crates/i2pr-daemon/tests/ssu2_introducer_publication_boundary.rs` | Plan 525's "the counters distinguish the forms" | The rule now names all three counters and requires the three-term aggregate. |
+
+`scripts/check-router-readiness-contract.py` — the control **"introducer
+publication must remain rejected"** pinned the daemon's blanket refusal. That
+refusal is removed by this plan (§3.6), so the control is **repinned**, not
+dropped: the invariant it guarded — *the router never publishes an introducer
+role it does not serve* — still exists, and its enforcement point moves to the
+runtime's install gate.
+
+| Control | Needle | File |
+|---|---|---|
+| "introducer publication must remain rejected unless the role is live" | `parsed.capabilities().supports_relay() && !self.introducer_service_enabled()` | `ssu2_runtime` |
+| "the introducer role must be constructed only behind the explicit opt-in" | `let mut introducer = if ssu2_config.introducer_service {` | `daemon` |
+
+Both invocations pass — `python3 scripts/check-router-readiness-contract.py`
+and `python3 scripts/check-router-readiness-contract.py --self-test` — and the
+self-test still proves that every control has teeth by mutating an in-memory
+copy of each needle.
+
+### 17.3 — 2026-11-10, citation drift
+
+§3 is evidence and is **not** rewritten. This plan's own production change
+moved lines in four files, so the citations that point at those files no
+longer land on the text they quoted. The table below is the additive pointer
+to the current text. Every citation in the plan that is **not** listed here
+still lands where it did at registration.
+
+| Quoted citation | Current pointer | What moved |
+|---|---|---|
+| `crates/i2pr-daemon/src/lib.rs:3973`-`:3991` — the blanket refusal (§3.6) | `crates/i2pr-daemon/src/lib.rs:3973`-`:3992` | The refusal is **removed**; the site now carries the accurate comment that explains why, and names the opt-in that replaced it. |
+| `crates/i2pr-daemon/src/lib.rs:3980` — the guard (§7 D7) | `crates/i2pr-daemon/src/lib.rs:3980`-`:3992` | As above. |
+| `crates/i2pr-daemon/src/lib.rs:4719` — the role owner construction (§3.6) | `crates/i2pr-daemon/src/lib.rs:4720` | One line: the removed refusal's closing lines. |
+| `crates/i2pr-netdb/src/floodfill_role.rs:277` — the introducer rule (§2, §3.5) | `crates/i2pr-netdb/src/floodfill_role.rs:365` | The third rule was inserted at `:283`, pushing the introducer rule down by 88 lines. |
+| `crates/i2pr-netdb/src/floodfill_role.rs:306` — the introducer rule's caps check (§3.5) | `crates/i2pr-netdb/src/floodfill_role.rs:394` | As above. |
+| `crates/i2pr-netdb/src/local.rs:491`-`:499` — the floodfill builder's qualification (§3.3) | `crates/i2pr-netdb/src/local.rs:522`-`:530` | The third builder was inserted at `:323`, pushing the floodfill builder down by 31 lines. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2505` — `introducer_service_enabled` (§2, §7 D3) | `crates/i2pr-runtime/src/ssu2_runtime.rs:2514` | The material's new field and the composition helpers were added above it. |
+| `crates/i2pr-daemon/src/self_publication.rs:397` — the self-publication path (§2) | `crates/i2pr-daemon/src/self_publication.rs:453` | The `decide`/`refresh` split added the `apply` seam at `:486`. |
+
+Citations that did **not** move, and therefore still stand as quoted:
+`crates/i2pr-transport-ssu2/src/address.rs:426`-`:475`,
+`crates/i2pr-transport-ssu2/src/address.rs:1314`-`:1345`,
+`crates/i2pr-netdb/src/floodfill_role.rs:197`,
+`crates/i2pr-netdb/src/floodfill_role.rs:248`-`:251`,
+`crates/i2pr-netdb/src/local.rs:268`,
+`crates/i2pr-netdb/src/local.rs:292`,
+`crates/i2pr-daemon/src/lib.rs:3666`,
+`crates/i2pr-daemon/src/config.rs:3461`,
+`crates/i2pr-daemon/src/config.rs:3516`,
+`crates/i2pr-daemon/src/router_i2np.rs:1579`.

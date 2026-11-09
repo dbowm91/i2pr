@@ -1418,6 +1418,36 @@ unblinded destination hash the record itself carries.
 `scripts/check-encrypted-service-consumer-caller.sh` fails if this arm ever starts validating,
 unwrapping, or inserting.
 
+## The third address qualification rule (Plan 526)
+
+The netdb owns the rules that say what the router's own published address may
+look like. It now owns **three** of them, and they are **three rules**, not one
+rule with three shapes.
+
+| Rule | Form | Capability string |
+|---|---|---|
+| `is_qualified_ssu2_address` | the direct form — host and port | exactly the family letter (`"4"` / `"6"`) |
+| `is_qualified_ssu2_introducer_address` | the introducer-only form — no host, no port | only family letters |
+| `is_qualified_ssu2_relay_role_address` | the **role-bearing** direct form | the family letter **and** the role letter (`"4C"` / `"6C"`) |
+
+Plan 526 added the third rule because the specification's Relay capability is
+advertised with a `"C"` in the address's `caps` option, and the direct rule
+demands the capability string be *exactly* the address's own family. The third
+rule is **exact** in the same way: the family letter followed by the role
+letter and nothing else, so `"BC"`, `"4CB"`, `"46C"` and the bare family letters
+are all refused and an unearned role cannot reach the wire through a
+permissive rule.
+
+**Each rule has its own builder**, and each builder carries **no** floodfill
+permit: `build_with_ssu2_address`, `build_with_ssu2_introducer_address` and
+`build_with_ssu2_relay_role_address`. A reader can therefore tell which rule
+admitted an address, and the daemon's refusal reason names the rule.
+
+The floodfill builders are unchanged and qualify with the **direct** rule, so
+a floodfill router's address can never carry the role letter. That matches the
+reference, which clears the introducer role for a floodfill router
+(`libi2pd/RouterContext.cpp:655`).
+
 ## Cross-references
 
 **ADRs**

@@ -2621,3 +2621,28 @@ evidence = [
     "plans/implementation/network-participation/525-the-router-publishes-the-introducer-set-it-learned.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.introducer-advertisement"
+protocol = "ssu2"
+structure = "the-router-advertises-its-own-introducer-role"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 526 gives the router the **advertisement** half of the SSU2 introducer composition: it publishes the specification's Relay capability -- the `\"C\"` letter in the address's `caps` option -- in its **own** SSU2 address. The specification defines the letter (\"Relay -- As advertised with a \"C\" in the \"caps\" parameter\") and the option's alphabet is `[B,C,4,6]`. The reference publishes the role letters on the **published** form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`) and its peer-side check demands an endpoint for an introducer (`:1059`), so the tree's `C` rides the **direct** form and never the introducer-only one -- a form that publishes no endpoint could not be acted on by a reference peer, and the netdb's own introducer rule refuses any role letter on it. The tree keeps its stricter family requirement and publishes the **combination** `\"4C\"` rather than the reference's role-only `\"C\"`; both are inside the specification's alphabet, and both references parse a combination (i2pd's `ExtractAddressCaps` is a per-character switch, `:562`-`:581`, and the pinned Java I2P reads the capability with a containment test). The letter is a **claim**, so it is published **only** while the introducer role is live: the runtime owns that fact (`introducer_service_enabled`), owns the wire, and composes the capability in one place. The runtime's install gate **refuses** a role-bearing record while the role is not live, so a stale letter cannot reach the wire and the installed record cannot stand with a claim the router has stopped making. The netdb gains a **third** qualification rule and a **third** builder, beside the untouched direct and introducer rules; the third rule is exact -- the address's own family letter followed by the role letter -- so an unearned role cannot reach the wire through a permissive rule, and the third builder carries no floodfill permit, matching the reference, which clears the role for a floodfill router (`libi2pd/RouterContext.cpp:655`). The registration also records a **latent defect**: the composition refused the SSU2 service outright whenever `ssu2.introducer_service` was set, so the role owner the composition constructs was **unreachable in every configuration** and Plan 499's closed claim that the daemon's live loop constructs it was false of the tree. The blanket refusal is replaced by the role's own explicit, default-off opt-in. No configuration key is added: `ssu2.introducer_service` is the role's switch and `ssu2.advertise` is the publication's switch, and the `C` rides both. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), and the inventory's advertised count stays **zero**; the published `caps` string changes only behind the existing default-off opt-in. The advertisement is confined to the **controlled loopback profile**, because `ssu2.advertise` is refused outside it, so the `C` is a local qualification claim and not yet a network-reachable one. The **stock-peer** half is not claimed: it needs Plan 493's authorized two-host topology."
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-transport-ssu2/src/address.rs",
+    "crates/i2pr-transport-ssu2/src/publication.rs",
+    "crates/i2pr-netdb/src/local.rs",
+    "crates/i2pr-netdb/src/floodfill_role.rs",
+    "crates/i2pr-daemon/src/self_publication.rs",
+    "crates/i2pr-daemon/src/ssu2_introducer.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_advertisement.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_advertisement_boundary.rs",
+    "scripts/check-router-readiness-contract.py",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/526-the-router-advertises-its-own-introducer-role.md",
+]
+advertised = false

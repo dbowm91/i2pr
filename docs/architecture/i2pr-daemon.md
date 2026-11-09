@@ -3740,6 +3740,41 @@ unchanged, the inventory's advertised count stays **zero**, and
 `Cargo.toml` and `Cargo.lock` are byte-identical. The **stock-peer** half
 needs Plan 493's authorized two-host topology.
 
+## The router's advertised introducer role (Plan 526)
+
+Plan 525 gave the router the **publication** of the introducer set it learned.
+Plan 526 gives the router the **advertisement** of its own introducer role: the
+specification's `"C"` letter in the `caps` option of the router's own address.
+
+- `src/lib.rs` — the composition. The role owner is constructed **only** behind
+  the explicit `ssu2.introducer_service` opt-in. The blanket refusal that
+  Plan 520 kept made the role owner unreachable in **every** configuration, so
+  the role could never run and Plan 499's closed claim that the daemon's live
+  loop constructs it was false of the tree. The refusal is gone; the opt-in is
+  the only gate, and the opt-in keeps its default and its refusals;
+- `src/self_publication.rs` — the owner. It matches on the **typed** published
+  form, hands the address to the netdb builder that carries that form's own
+  rule, and counts the three published forms — the direct form, the
+  **role-bearing** direct form and the introducer-only form — under their own
+  reasons. The third rule's refusal has its own reason too. The owner's
+  **apply** half is separated from its **ask** half, so the hand-off and the
+  counters can be exercised with a material the caller supplies;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime owns the role's live
+  state, composes the capability, and refuses a stale role letter at the
+  install gate;
+- `crates/i2pr-netdb/src/local.rs` and `crates/i2pr-netdb/src/floodfill_role.rs`
+  — the netdb's **third** builder and its **third** qualification rule, beside
+  the untouched direct and introducer rules. The builder carries **no**
+  floodfill permit.
+
+**What is deliberately not claimed.** Nothing is advertised in the inventory
+sense: `router.version` stays `0.9.62`, the inventory's advertised count stays
+**zero**, and `Cargo.toml` and `Cargo.lock` are byte-identical. The `B`
+(peer-test) advertisement is out of scope, and the advertisement is confined to
+the controlled loopback profile, so the `C` is a local qualification claim and
+not yet a network-reachable one. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
 ## Cross-references
 
 ### Deep dives
