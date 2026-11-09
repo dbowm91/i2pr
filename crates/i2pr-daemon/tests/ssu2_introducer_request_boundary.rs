@@ -818,6 +818,33 @@ fn the_outstanding_set_is_bounded() {
 // The negative controls: every rule must fire on a mutation.
 // ----------------------------------------------------------------------
 
+/// The guard's own fail-closed property: a rule whose named item is
+/// **absent** must be **reported**, not passed.
+///
+/// The first draft of this guard returned "no defect" when the item a rule
+/// names could not be found, which made a rule pass vacuously — and three
+/// of the probes below did not fire because of it. Every rule now returns a
+/// refusal when its named item is absent, and this probe proves it.
+#[test]
+fn the_guard_reports_a_missing_named_item() {
+    assert!(
+        check_the_opt_in_defaults_off_and_needs_the_service("").is_some(),
+        "a rule whose named item is absent must be reported"
+    );
+    assert!(
+        check_the_capability_read_uses_the_validated_store("").is_some(),
+        "a rule whose named item is absent must be reported"
+    );
+    assert!(
+        check_the_runtime_records_only_an_asked_peer("").is_some(),
+        "a rule whose named item is absent must be reported"
+    );
+    assert!(
+        check_the_outstanding_set_is_bounded("").is_some(),
+        "a rule whose named item is absent must be reported"
+    );
+}
+
 #[test]
 fn the_guard_reports_an_opt_in_that_defaults_on() {
     let mutated = r#"
