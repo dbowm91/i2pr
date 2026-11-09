@@ -268,13 +268,20 @@ methods on `Ssu2Session`: `new`, `request_bootstrap_ack`,
   a bounded graphic string (≤ `MAX_SSU2_CAPS_BYTES` = 16) with
   duplicate-known-flag rejection (`4`/`6` families, `B` peer-test,
   `C` relay; other letters ignored for forward compatibility); up to
-  3 introducer groups (`ihostN`/`iportN`/`ikeyN`/`itagN`, dense from
-  0, nonzero tags); unknown options rejected; `pq` tolerated as
+  3 introducer groups (**Plan 523**: `ihN`/`iexpN`/`itagN`, dense
+  from 0, nonzero tags, the introducer's router hash in I2P base64,
+  the expiry optional in the specification's address table). The SSU 1
+  introducer options (`ihostN`/`iportN`/`ikeyN`) are **not** part of an
+  SSU2 address and are refused as unknown options, not ignored. An
+  address that carries both a direct endpoint and introducers is
+  refused: the specification forbids publishing a host or a port
+  alongside introducers. Unknown options rejected; `pq` tolerated as
   described above.
-- `address_class()` — `Direct` / `DirectWithIntroducers` /
-  `IntroducerOnly` / `UnpublishedStatic`. Describes present
-  contact material only; never implies reachability or publication
-  approval.
+- `address_class()` — `Direct` / `IntroducerOnly` /
+  `UnpublishedStatic`. Describes present contact material only; never
+  implies reachability or publication approval. Plan 523 removed the
+  `DirectWithIntroducers` class, because the form it described is
+  forbidden.
 - `ConfiguredListenAddress` / `ResolvedDialTarget` — distinct
   endpoint + material types with no socket ownership; dial targets
   require an exact literal endpoint match.
@@ -677,13 +684,18 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
 - **Plan 490 — the introducer-only form.** An address that publishes
   introducers omits `host`/`port` entirely and carries the `4`/`6`
   family capability the specification demands alongside the introducer
-  groups (`ihostN`/`iportN`/`ikeyN`/`itagN`), the local intro and static
-  keys, the MTU, and the version. The builder adds only the family flag
-  implied by the reachability snapshot; it never invents a role
-  capability (`B`, `C`) and never drops a flag the caller asked for.
-  The `DirectWithIntroducers` class stays a *parser*-accepted shape for
-  other routers but is no longer produced by this builder — a change
-  mandated by Plan 490's invariant 5 and acceptance criterion 4.
+  groups, the local intro and static keys, the MTU, and the version.
+  The builder adds only the family flag implied by the reachability
+  snapshot; it never invents a role capability (`B`, `C`) and never drops
+  a flag the caller asked for.
+- **Plan 523 — the introducer groups are the specification's.** The
+  groups are `ihN` (the introducer's router hash), `iexpN` (its expiry,
+  omitted when zero) and `itagN` (its relay tag). The SSU 1 groups
+  (`ihostN`/`iportN`/`ikeyN`) are not emitted and are not parsed: the
+  specification says they "are for SSU only and are not used for SSU2",
+  and the pinned i2pd 2.61.0 publishes and parses only the
+  specification's three. The builder never produces an address with both
+  an endpoint and introducers.
 - Output options are canonical (sorted); `Ssu2PublicationSnapshot`
   carries `evidence_expires_secs`, and `is_expired(now)` marks
   withdrawal. `parse_snapshot` round-trips through the strict

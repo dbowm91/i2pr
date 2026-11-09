@@ -1598,3 +1598,24 @@ Plan 493's authorized two-host topology, and the **dial scope** limit — the
 transport's own dial target accepts a loopback endpoint or an RFC1918 IPv4
 address, so a public deployment cannot use the pool today — is a transport
 boundary with its own plan-of-record. Nothing is advertised.
+
+## 22. The SSU2 introducer address form (Plan 523)
+
+Plan 523 corrects the **form** of the SSU2 introducer set — the peers that
+will introduce this router to others — to the specification's own. The
+gates below are the questions a reviewer asks of the form.
+
+| Gate | Question | How it is answered |
+|---|---|---|
+| G22.1 | Does an SSU2 address carry the specification's introducer group? | The transport's parser reads `ih[N]` (the introducer's router hash, I2P base64, 32 bytes), `iexp[N]` (the expiry, optional) and `itag[N]` (the nonzero relay tag). |
+| G22.2 | Are the SSU 1 introducer options refused? | `ihost[N]`, `iport[N]` and `ikey[N]` are **refused** as unknown options in an SSU2 address, never ignored. The reference says they "are for SSU only and are not used for SSU2". |
+| G22.3 | Is an endpoint refused alongside introducers? | The parser returns the typed `HostPortWithIntroducers`, and the netdb's introducer rule refuses a `host` or a `port`. The specification forbids publishing them. |
+| G22.4 | Is the netdb's rule exclusive with the direct rule? | `is_qualified_ssu2_address` still demands a host and a port; `is_qualified_ssu2_introducer_address` forbids them. Neither rule is weakened by the other. |
+| G22.5 | Can the introducer builder advertise the floodfill role? | No: it takes no floodfill permit, so it cannot produce `caps=f`. |
+| G22.6 | Does the plan add wire vocabulary? | No: the proto crate carries no introducer option name, and the guard proves it. |
+
+**What the gates do not cover.** The **composition** — asking a peer for a
+relay tag, recording an introducer, publishing the router's own introducer
+set, and advertising the `C` capability — is a successor's subject. The
+**stock-peer** half needs Plan 493's authorized two-host topology, and a
+published introducer set that does not exist yet.

@@ -1286,8 +1286,8 @@ fn i2p_base64_digit(byte: u8) -> Option<u8> {
 /// Encodes bytes with the I2P base64 alphabet (`A-Za-z0-9-~`, `=` pad).
 ///
 /// Used by the Plan 159 publication snapshot builder to emit canonical
-/// `s`/`i`/`ikeyN` option values; parsing stays strict in
-/// [`decode_i2p_base64`].
+/// `s`/`i` option values, and by Plan 523 for the `ihN` introducer hash;
+/// parsing stays strict in [`decode_i2p_base64`].
 pub(crate) fn encode_i2p_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
     let mut output = String::new();

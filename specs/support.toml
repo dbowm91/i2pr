@@ -1109,6 +1109,27 @@ evidence = [
 advertised = false
 
 [[surface]]
+id = "ssu2.introducer-address-form"
+protocol = "ssu2"
+structure = "the-specification's-ssu2-introducer-address-form-and-its-netdb-qualification"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 523 corrects the SSU2 **introducer set** -- the peers that will introduce this router to others -- to the specification's own form. The tree implemented the **SSU 1** form: the specification says of `ihost`/`iport`/`ikey` that those options 'are for SSU only and are not used for SSU2', and the SSU2 tuple is `ih[N]` (the introducer's router hash) + `iexp[N]` (its expiry) + `itag[N]` (its relay tag) -- the form the pinned i2pd 2.61.0 publishes and parses (`libi2pd/RouterInfo.cpp:1402`, `:1413`, `:1424`; `:353`, `:359`, `:361`) and the pinned Java I2P 2.13.0 marks with `itag0` (`router/java/src/net/i2p/router/transport/udp/UDPTransport.java:2335`). Two defects followed. The router could not **read** a real peer's introducer set: the parser refused `ih`/`iexp` as unknown options, and that refusal is production-reachable, so a peer that publishes introducers -- which a firewalled router must, and which the pinned i2pd does -- was refused outright. And the router's own introducer-only address, were it published, would have been **unreadable**: the publication builder emitted the SSU 1 options the pinned i2pd reads none of. The transport's value becomes `(router hash, expiry, tag)` and exposes no endpoint, because an SSU2 introducer is resolved by hash through the network database and the specification forbids publishing a host or a port in an address that publishes introducers; the SSU 1 options are **refused** in an SSU2 address, not ignored, and an address carrying both a direct endpoint and introducers is refused with a typed error. The netdb gains a **second** qualification rule and builder for the introducer-only form, beside the untouched direct rule, and carries no floodfill permit. The surface is internal and non-advertised: the router still never asks a peer for a relay tag, never records an introducer and never publishes an introducer set, so nothing here changes `router.version` (`0.9.62`), the published RouterInfo, the record's `caps` string, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical, and the proto crate gains no wire vocabulary."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/address.rs",
+    "crates/i2pr-transport-ssu2/src/publication.rs",
+    "crates/i2pr-transport-ssu2/src/introducer.rs",
+    "crates/i2pr-transport-ssu2/src/handshake.rs",
+    "crates/i2pr-netdb/src/floodfill_role.rs",
+    "crates/i2pr-netdb/src/local.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_address.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_address_boundary.rs",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/523-the-ssu2-introducer-set-is-the-specifications-form.md",
+]
+advertised = false
+
+[[surface]]
 id = "ssu2.introducer-relay-role"
 protocol = "ssu2"
 structure = "opt-in-introducer-bob-role-with-relay-tag-target-binding-and-typed-refusals"

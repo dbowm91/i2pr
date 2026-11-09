@@ -2554,6 +2554,11 @@ nothing new.
 stays **zero**: Plan 522 holds sessions the router already wanted to hold,
 and advertises nothing new.
 
+**Plan 523 adds one surface** — `ssu2.introducer-address-form` — so the
+inventory holds **116 surfaces, 111 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 523 corrects the
+*form* of the SSU2 introducer set and publishes nothing.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3275,6 +3280,74 @@ topology, and the router-level 231 responder is proven against this router's
 own peer. Nothing is advertised: the inventory's advertised count stays
 zero, `router.version` stays `0.9.62`, the published record's `caps` string
 is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+## The SSU2 introducer set is the specification's form (Plan 523)
+
+The SSU2 **introducer set** — the peers that will introduce this router to
+others — is the only way a firewalled router is reachable at all, and it is
+the second half of the network-participation roadmap's completion
+definition: *"publishes the validated introducer set in its RouterInfo
+address"*. Plan 490 answered the first half — the router answers a peer's
+Relay Request as the introducer — and Plan 523 corrects the **form** the
+second half depends on.
+
+**What was wrong.** The tree implemented the **SSU 1** introducer form. The
+specification's *Published Router Info* section defines the SSU2 introducer
+group as `ih[N]` (the introducer's router hash), `iexp[N]` (its expiry) and
+`itag[N]` (its relay tag), and says of `ihost[N]`/`iport[N]`/`ikey[N]`:
+*"The following options are for SSU only and are not used for SSU2. In SSU2,
+Alice gets this information from Charlie's RI instead."* The pinned i2pd
+2.61.0 publishes and parses exactly the specification's three options
+(`libi2pd/RouterInfo.cpp:1402`, `:1413`, `:1424`; `:353`, `:359`, `:361`),
+and the pinned Java I2P 2.13.0 uses `itag0` as the introducer marker
+(`router/java/src/net/i2p/router/transport/udp/UDPTransport.java:2335`,
+`:2576`).
+
+**Two defects followed, and the first was production-reachable.**
+
+1. **The router could not read a real peer's introducer set.** The parser
+   refused `ih`/`iexp` as unknown options, and the refusal is reached by
+   the daemon's dial path, its identity path, the floodfill service's
+   identity and three runtime sites. A peer that publishes introducers —
+   which a firewalled router must, and which the pinned i2pd does — was
+   refused outright.
+2. **The router's own introducer-only address, were it published, would
+   have been unreadable.** The publication builder emitted the SSU 1
+   options, and the pinned i2pd reads none of them, so it would have seen
+   **no introducers at all** in a record this router signed.
+
+**What changed.** The transport's introducer value is the specification's
+tuple `(router hash, expiry, tag)` and exposes no endpoint: an SSU2
+introducer is resolved by hash through the network database. The parser
+reads `ih`/`iexp`/`itag`, **refuses** the SSU 1 options in an SSU2 address
+rather than ignoring them, and refuses an address that carries both a
+direct endpoint and introducers — a combination the specification forbids.
+The publication builder renders the specification's form. The handshake's
+"this address claims introducers" marker names the specification's options,
+so the check can still fire. The netdb gains a **second** qualification rule
+and a **second** builder for the introducer-only form, beside the untouched
+direct rule, and the new builder carries no floodfill permit.
+
+**What this does not close.** The **composition** is explicitly out of
+scope: the router still never asks a peer for a relay tag, never records an
+introducer, and never publishes an introducer set, and the `C` capability
+that would tell a peer this router can introduce is not advertised. That is
+a successor's subject, and the form must be right before it is used. The
+**stock-peer** half needs Plan 493's authorized two-host topology.
+
+**The advertisement.** Nothing is advertised. `router.version` stays
+`0.9.62`; the published RouterInfo's `caps` string is unchanged; the
+inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock`
+are byte-identical; and the proto crate gains no wire vocabulary.
+
+**Evidence.** The lane `crates/i2pr-daemon/tests/ssu2_introducer_address.rs`
+(11 rows) drives the real parser, the real netdb rule and the real netdb
+builder over the specification's form and over the pinned i2pd's own
+published bytes. The guard
+`crates/i2pr-daemon/tests/ssu2_introducer_address_boundary.rs` (13 rules,
+13 inverted probes) pins the form structurally. The transport's own unit
+tests cover the publication builder's snapshot and its round-trip through
+the strict parser.
 
 ## The router holds a bounded pool of outbound peer sessions (Plan 522)
 
