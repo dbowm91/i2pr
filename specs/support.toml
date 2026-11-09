@@ -1126,6 +1126,7 @@ evidence = [
     "crates/i2pr-daemon/tests/ssu2_introducer_address_boundary.rs",
     "specs/protocols/09-ssu2.md",
     "plans/implementation/network-participation/523-the-ssu2-introducer-set-is-the-specifications-form.md",
+    "plans/closure/network-participation/523-status.md",
 ]
 advertised = false
 
