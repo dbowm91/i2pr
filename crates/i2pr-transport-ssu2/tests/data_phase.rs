@@ -123,6 +123,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         alice_keys,
     )
@@ -136,6 +137,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         bob_keys,
     )

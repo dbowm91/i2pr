@@ -45,6 +45,19 @@
 //!   ACK/Address/DateTime/Padding/Termination packets never elicit an
 //!   ACK response on their own, which provably avoids ACK-of-ACK
 //!   loops (tested).
+//! - **Plan 522**: the specification's *immediate-ACK request* is the
+//!   one exception to that rule, and it is honoured exactly as both
+//!   pinned references honour it -- without consulting the block
+//!   classification. i2pd marks the session as having received data
+//!   (`libi2pd/SSU2Session.cpp:1758`) and Java schedules an immediate
+//!   ACK
+//!   (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`).
+//!   i2pd sends the flag on a padding-only packet
+//!   (`libi2pd/SSU2Session.cpp:269`), so a peer that ignored it would
+//!   never answer a keepalive. The loop-avoidance invariant still
+//!   holds: the ACK this arms is a pure ACK with **no** immediate-ACK
+//!   flag, a pure ACK is not ack-eliciting, and the peer therefore
+//!   arms nothing for it.
 //! - `NextNonce` (type 11) is specified as TODO for key rotation with
 //!   no normative behavior. It is decoded into a typed
 //!   [`SessionEvent::RekeyRequested`] event; no automatic rekey
@@ -196,6 +209,15 @@ pub struct SessionConfig {
     pub max_payload_bytes: usize,
     /// Data-phase idle timeout in milliseconds.
     pub idle_timeout_ms: u64,
+    /// The keepalive interval in milliseconds, or `None` to
+    /// disable it.
+    ///
+    /// Plan 522: a keepalive is a padding-only data packet that
+    /// requests an immediate ACK, so a session the router has
+    /// decided to **hold** stays alive without any I2NP traffic.
+    /// The interval must be strictly below the idle timeout, or
+    /// the two would disagree about when the session dies.
+    pub keepalive_interval_ms: Option<u64>,
 }
 
 impl SessionConfig {
@@ -242,6 +264,11 @@ pub struct SessionCounters {
     pub reassembly_bytes: usize,
     /// Reassembly admissions denied or entries dropped on conflict.
     pub reassembly_drops: u64,
+    /// Keepalive packets sealed on the transmit path (Plan 522).
+    pub keepalives_sent: u64,
+    /// Sessions ended because a keepalive went unanswered
+    /// (Plan 522).
+    pub keepalive_timeouts: u64,
     /// Locally initiated termination, if any.
     pub terminated_local: bool,
     /// Remotely observed termination reason code, if any.
@@ -556,6 +583,11 @@ pub struct Ssu2Session {
     ack_deadline_ms: Option<u64>,
     ack_eliciting_since_ack: u32,
     last_received_eliciting: bool,
+    /// Plan 522 -- an inbound packet asked for an immediate ACK even
+    /// though it carried no ack-eliciting block. The request is
+    /// honoured, and the standalone ACK it arms must be allowed to
+    /// leave even though the packet was not eliciting.
+    immediate_ack_requested: bool,
     /// One-shot request to carry an ACK block on the next transmit
     /// even when nothing ack-eliciting has been received yet (honest
     /// `ackThrough = 0`). The independent initiator establishes only
@@ -582,6 +614,16 @@ pub struct Ssu2Session {
 
     last_send_ms: Option<u64>,
     last_receive_ms: Option<u64>,
+    /// Plan 522 -- the keepalive interval in milliseconds, or
+    /// `None` when the session sends no keepalive.
+    keepalive_interval_ms: Option<u64>,
+    /// Plan 522 -- when the outstanding keepalive was sent, if one
+    /// is unanswered. Any inbound packet clears it.
+    keepalive_pending_since_ms: Option<u64>,
+    /// Plan 522 -- the time a session that has not yet sent or
+    /// received anything was anchored, so its first keepalive
+    /// still fires and it still has a liveness deadline.
+    keepalive_armed_ms: Option<u64>,
     local_terminate: Option<u8>,
     remote_terminate: Option<u8>,
 
@@ -620,6 +662,16 @@ impl Ssu2Session {
         if config.max_payload_bytes < constants::MIN_POST_HEADER_BYTES + 16 {
             return Err(SessionError::LocalPolicyDenied);
         }
+        // Plan 522: the keepalive's own unanswered deadline must
+        // fall strictly before the session's idle timeout, or the
+        // two would disagree about when the session dies.
+        if let Some(interval) = config.keepalive_interval_ms
+            && (interval == 0
+                || interval.saturating_mul(constants::DATA_KEEPALIVE_TIMEOUT_INTERVALS)
+                    >= config.idle_timeout_ms)
+        {
+            return Err(SessionError::LocalPolicyDenied);
+        }
         let (tx_keys, rx_keys) = keys.into_parts();
         let (transmit_cipher, transmit_header_2) = tx_keys.into_owner();
         let (receive_cipher, receive_header_2) = rx_keys.into_owner();
@@ -648,6 +700,7 @@ impl Ssu2Session {
             ack_deadline_ms: None,
             ack_eliciting_since_ack: 0,
             last_received_eliciting: false,
+            immediate_ack_requested: false,
             bootstrap_ack_pending: false,
             srtt_ms: None,
             rttvar_ms: 0,
@@ -664,6 +717,9 @@ impl Ssu2Session {
             delivered: VecDeque::new(),
             last_send_ms: None,
             last_receive_ms: None,
+            keepalive_interval_ms: config.keepalive_interval_ms,
+            keepalive_pending_since_ms: None,
+            keepalive_armed_ms: None,
             local_terminate: None,
             remote_terminate: None,
             counters,
@@ -1159,7 +1215,7 @@ impl Ssu2Session {
             // An ACK-only piggyback is still allowed: emit the pending
             // ACK alone without new ack-eliciting bytes.
             if want_ack {
-                let datagram = self.seal_packet(now_ms, Vec::new(), true);
+                let datagram = self.seal_packet(now_ms, Vec::new(), true, false);
                 if datagram.is_some() {
                     self.clear_ack_state();
                 }
@@ -1342,7 +1398,7 @@ impl Ssu2Session {
                 total_fragments: fragment.total_fragments,
             })
             .collect::<Vec<_>>();
-        self.seal_packet(now_ms, blocks, ack_only)
+        self.seal_packet(now_ms, blocks, ack_only, false)
             .inspect(|datagram| {
                 if carries_ack {
                     self.clear_ack_state();
@@ -1401,8 +1457,8 @@ impl Ssu2Session {
         now_ms: u64,
         blocks: Vec<Block>,
         force_ack_only: bool,
+        force_immediate_ack: bool,
     ) -> Option<Vec<u8>> {
-        let _ = force_ack_only;
         let packet_number = self.allocate_packet_number()?;
         let approved_no_ack = blocks.is_empty();
         // Empty block list means a standalone ACK was requested but no
@@ -1437,7 +1493,13 @@ impl Ssu2Session {
             combined.append(&mut padded);
             plaintext = combined;
         }
-        let immediate = self.should_request_immediate_ack();
+        // Plan 522: the keepalive forces the immediate-ACK flag, so
+        // the peer answers it and the session can tell a lost
+        // keepalive from a peer that stopped answering. A packet that
+        // carries no ack-eliciting block never asks for an ACK of its
+        // own, which is what keeps the ACK exchange loop-free.
+        let immediate =
+            force_immediate_ack || (!force_ack_only && self.should_request_immediate_ack());
         let header = DataHeader::new(self.remote_conn_id, packet_number, immediate);
         let header_bytes = header.encode();
         let sealed = self
@@ -1473,6 +1535,7 @@ impl Ssu2Session {
         self.bootstrap_ack_pending = false;
         self.ack_deadline_ms = None;
         self.ack_eliciting_since_ack = 0;
+        self.immediate_ack_requested = false;
     }
 
     fn allocate_packet_number(&mut self) -> Option<u32> {
@@ -1496,6 +1559,52 @@ impl Ssu2Session {
         }
         self.packets_sent_count = self.packets_sent_count.saturating_add(1);
         Some(number)
+    }
+
+    /// Returns the session's last activity time, if it has any.
+    ///
+    /// The activity is the *latest* of the send and receive
+    /// timestamps: the idle timeout reads the same value, so the
+    /// keepalive and the idle timeout can never disagree about
+    /// when a session is idle.
+    fn last_activity_ms(&self) -> Option<u64> {
+        match (self.last_send_ms, self.last_receive_ms) {
+            (Some(send), Some(receive)) => Some(send.max(receive)),
+            (Some(send), None) => Some(send),
+            (None, Some(receive)) => Some(receive),
+            (None, None) => None,
+        }
+    }
+
+    /// Records inbound activity and clears any outstanding
+    /// keepalive.
+    ///
+    /// Plan 522: **any** inbound packet proves the peer is alive,
+    /// so an outstanding keepalive is answered by any traffic and
+    /// not only by the ACK the keepalive asked for.
+    fn note_inbound_activity(&mut self, now_ms: u64) {
+        self.last_receive_ms = Some(now_ms);
+        self.keepalive_pending_since_ms = None;
+    }
+
+    /// Seals one keepalive: a padding-only data packet that
+    /// requests an immediate ACK.
+    ///
+    /// Plan 522: the reference's keepalive is a twenty-byte padding
+    /// block with the immediate-ACK flag set and no I2NP message at
+    /// all (`libi2pd/SSU2Session.cpp:269`). The immediate-ACK
+    /// request is what makes the keepalive *observable*: both
+    /// pinned references answer it -- i2pd sends a quick ACK
+    /// (`libi2pd/SSU2Session.cpp:1758`) and Java schedules an
+    /// immediate ACK
+    /// (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`)
+    /// -- so a keepalive that goes unanswered means the peer is
+    /// gone.
+    fn seal_keepalive(&mut self, now_ms: u64) -> Option<Vec<u8>> {
+        let padding =
+            crate::block::PaddingBlock::new(vec![0_u8; constants::DATA_KEEPALIVE_PAYLOAD_BYTES])
+                .ok()?;
+        self.seal_packet(now_ms, vec![Block::Padding(padding)], true, true)
     }
 
     fn should_request_immediate_ack(&self) -> bool {
@@ -1679,8 +1788,8 @@ impl Ssu2Session {
         let parsed = match parse_blocks(&plaintext) {
             Ok(parsed) => parsed,
             Err(BlockError::UnsupportedBlock) => {
-                self.mark_received(packet_number, false, now_ms, false);
-                self.last_receive_ms = Some(now_ms);
+                let _ = self.mark_received(packet_number, false, now_ms, false);
+                self.note_inbound_activity(now_ms);
                 self.counters.packets_received = self.counters.packets_received.saturating_add(1);
                 outcome.events.push(SessionEvent::RekeyRequested);
                 return outcome;
@@ -1724,10 +1833,15 @@ impl Ssu2Session {
         }
         // Mark reception only after successful authentication (never on
         // tag failure or replay); this also arms ACK scheduling.
-        self.mark_received(packet_number, ack_eliciting, now_ms, header.immediate_ack());
-        self.last_receive_ms = Some(now_ms);
+        let armed =
+            self.mark_received(packet_number, ack_eliciting, now_ms, header.immediate_ack());
+        self.note_inbound_activity(now_ms);
         self.counters.packets_received = self.counters.packets_received.saturating_add(1);
-        outcome.ack_scheduled = ack_eliciting;
+        // Plan 522: the flag says whether an ACK was actually armed,
+        // which is no longer the same question as whether the packet
+        // carried an ack-eliciting block: the specification's own
+        // immediate-ACK request arms one either way.
+        outcome.ack_scheduled = armed;
         self.last_received_eliciting = ack_eliciting;
         // Deliver remaining blocks as typed events.
         for block in parsed.into_blocks() {
@@ -1875,7 +1989,7 @@ impl Ssu2Session {
         ack_eliciting: bool,
         now_ms: u64,
         immediate_requested: bool,
-    ) {
+    ) -> bool {
         match self.highest_received {
             None => {
                 self.highest_received = Some(packet_number);
@@ -1923,6 +2037,28 @@ impl Ssu2Session {
             let immediate =
                 immediate_requested || out_of_order || self.ack_eliciting_since_ack >= 2;
             self.arm_ack(now_ms, immediate);
+            true
+        } else if immediate_requested {
+            // Plan 522: the specification's immediate-ACK request is
+            // honoured even when the packet carries no ack-eliciting
+            // block. Both pinned references honour it unconditionally
+            // -- i2pd marks the session as having received data
+            // (`libi2pd/SSU2Session.cpp:1758`) and Java schedules an
+            // immediate ACK
+            // (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`)
+            // -- and i2pd sends the flag on exactly this kind of
+            // packet (`libi2pd/SSU2Session.cpp:269`).
+            //
+            // The loop-avoidance invariant still holds: the ACK this
+            // arms is a pure ACK with **no** immediate-ACK flag, a pure
+            // ACK is not ack-eliciting, and the peer therefore arms
+            // nothing for it.
+            self.ack_pending = true;
+            self.immediate_ack_requested = true;
+            self.arm_ack(now_ms, true);
+            true
+        } else {
+            false
         }
     }
 
@@ -2541,13 +2677,7 @@ impl Ssu2Session {
             self.counters.reassembly_drops = self.counters.reassembly_drops.saturating_add(1);
         }
         // Idle timeout.
-        let last_activity = match (self.last_send_ms, self.last_receive_ms) {
-            (Some(send), Some(receive)) => Some(send.max(receive)),
-            (Some(send), None) => Some(send),
-            (None, Some(receive)) => Some(receive),
-            (None, None) => None,
-        };
-        if let Some(last) = last_activity
+        if let Some(last) = self.last_activity_ms()
             && now_ms.saturating_sub(last) >= self.idle_timeout_ms
         {
             self.local_terminate = Some(2);
@@ -2581,8 +2711,11 @@ impl Ssu2Session {
         {
             // Standalone ACKs fire only when the last received packet
             // was ack-eliciting (loop avoidance); otherwise the ACK
-            // piggybacks on the next eliciting transmit.
-            if self.last_received_eliciting
+            // piggybacks on the next eliciting transmit. The one
+            // exception is the specification's own immediate-ACK
+            // request, which the peer made explicitly and which the
+            // pinned references answer (Plan 522).
+            if (self.last_received_eliciting || self.immediate_ack_requested)
                 && let Some((datagram, message_ids, fragments)) =
                     self.poll_transmit_fragments_traced(now_ms)
             {
@@ -2595,6 +2728,58 @@ impl Ssu2Session {
                         fragments,
                     }
                 });
+            }
+        }
+        // Plan 522 -- the keepalive's unanswered deadline.
+        //
+        // The deadline comes first. The keepalive refreshes the
+        // session's **send** timestamp, so the idle timeout above
+        // -- which reads the *maximum* of the send and receive
+        // timestamps -- can never notice a peer that stopped
+        // answering.
+        if let Some(interval) = self.keepalive_interval_ms
+            && let Some(sent) = self.keepalive_pending_since_ms
+            && now_ms.saturating_sub(sent)
+                >= interval.saturating_mul(constants::DATA_KEEPALIVE_TIMEOUT_INTERVALS)
+        {
+            self.counters.keepalive_timeouts = self.counters.keepalive_timeouts.saturating_add(1);
+            // Reason 14 is the specification's own timeout code
+            // (`libi2pd/SSU2Session.h:169`), the same code the
+            // consecutive-RTO ceiling already uses: the peer stopped
+            // answering.
+            self.local_terminate = Some(14);
+            actions.push(SessionAction::Terminate { reason: 14 });
+            return actions;
+        }
+        // Plan 522 -- the keepalive itself.
+        //
+        // It is emitted only when the poll has not already
+        // produced a transmit, because the session's single
+        // transmit slot per poll must never be split, and only
+        // while the congestion window has room, because the
+        // keepalive does not bypass the transport's own policy.
+        if let Some(interval) = self.keepalive_interval_ms {
+            // The activity anchor is read **before** the congestion
+            // gate, so a session whose window is full is still
+            // anchored and its keepalive is not pushed a whole
+            // interval further out by the gate.
+            let activity = match self.last_activity_ms() {
+                Some(value) => value,
+                None => *self.keepalive_armed_ms.get_or_insert(now_ms),
+            };
+            // One outstanding keepalive at a time. A second
+            // keepalive would refresh the session's send timestamp
+            // **and** the deadline, so an unanswered keepalive would
+            // never reach its deadline at all.
+            if actions.is_empty()
+                && self.keepalive_pending_since_ms.is_none()
+                && self.bytes_in_flight < self.cwnd_bytes
+                && now_ms.saturating_sub(activity) >= interval
+                && let Some(datagram) = self.seal_keepalive(now_ms)
+            {
+                self.keepalive_pending_since_ms = Some(now_ms);
+                self.counters.keepalives_sent = self.counters.keepalives_sent.saturating_add(1);
+                actions.push(SessionAction::Transmit(datagram));
             }
         }
         let _ = now_secs;
@@ -2616,6 +2801,19 @@ impl Ssu2Session {
         }
         if let (Some(send), Some(receive)) = (self.last_send_ms, self.last_receive_ms) {
             candidates.push(send.max(receive).saturating_add(self.idle_timeout_ms));
+        }
+        // Plan 522: the keepalive's fire time and its unanswered
+        // deadline are the runtime's timers too, so the keepalive
+        // rides the **existing** session scheduler.
+        if let Some(interval) = self.keepalive_interval_ms {
+            if let Some(sent) = self.keepalive_pending_since_ms {
+                candidates.push(sent.saturating_add(
+                    interval.saturating_mul(constants::DATA_KEEPALIVE_TIMEOUT_INTERVALS),
+                ));
+            }
+            if let Some(activity) = self.last_activity_ms().or(self.keepalive_armed_ms) {
+                candidates.push(activity.saturating_add(interval));
+            }
         }
         candidates.into_iter().min()
     }
@@ -2752,6 +2950,7 @@ mod tests {
                 initial_send_packet_number: 0,
                 max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
                 idle_timeout_ms: 300_000,
+                keepalive_interval_ms: None,
             },
             alice_keys,
         )
@@ -2765,6 +2964,7 @@ mod tests {
                 initial_send_packet_number: 0,
                 max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
                 idle_timeout_ms: 300_000,
+                keepalive_interval_ms: None,
             },
             bob_keys,
         )
@@ -3062,5 +3262,326 @@ mod tests {
         assert!(outcome.events.contains(&SessionEvent::RekeyRequested));
         // The session stays usable afterwards.
         assert!(!bob.is_terminated());
+    }
+    // -- Plan 522: the outbound session keepalive -------------------------
+
+    /// Builds a paired Alice/Bob session with the given keepalive
+    /// interval on Alice only, so the pair is asymmetric on purpose:
+    /// only the side that holds a session sends keepalives.
+    fn test_session_pair_with_keepalive(
+        keepalive_interval_ms: Option<u64>,
+    ) -> (Ssu2Session, Ssu2Session) {
+        let (alice_keys, bob_keys) = paired_test_splits();
+        let alice = Ssu2Session::new(
+            SessionConfig {
+                local_conn_id: 0xaaaa_aaaa_aaaa_aaaa,
+                remote_conn_id: 0xbbbb_bbbb_bbbb_bbbb,
+                local_intro: IntroKey::new([0xA1; 32]),
+                remote_intro: IntroKey::new([0xB2; 32]),
+                initial_send_packet_number: 0,
+                max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
+                idle_timeout_ms: 300_000,
+                keepalive_interval_ms,
+            },
+            alice_keys,
+        )
+        .expect("session");
+        let bob = Ssu2Session::new(
+            SessionConfig {
+                local_conn_id: 0xbbbb_bbbb_bbbb_bbbb,
+                remote_conn_id: 0xaaaa_aaaa_aaaa_aaaa,
+                local_intro: IntroKey::new([0xB2; 32]),
+                remote_intro: IntroKey::new([0xA1; 32]),
+                initial_send_packet_number: 0,
+                max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
+                idle_timeout_ms: 300_000,
+                keepalive_interval_ms: None,
+            },
+            bob_keys,
+        )
+        .expect("session");
+        (alice, bob)
+    }
+
+    /// The keepalive interval used by the tests below.
+    const KEEPALIVE_MS: u64 = 60_000;
+
+    #[test]
+    fn keepalive_fires_at_the_interval_and_not_before_it() {
+        let (mut alice, _bob) = test_session_pair_with_keepalive(Some(KEEPALIVE_MS));
+        // Nothing has been sent or received yet, so the session is
+        // anchored on its first poll and the keepalive is due one
+        // interval later.
+        assert!(alice.poll(1_000, 1_700_000_000).is_empty());
+        assert!(
+            alice
+                .poll(1_000 + KEEPALIVE_MS - 1, 1_700_000_000)
+                .is_empty()
+        );
+        let actions = alice.poll(1_000 + KEEPALIVE_MS, 1_700_000_000);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Transmit(_))),
+            "the keepalive fires exactly at the interval"
+        );
+        assert_eq!(alice.counters.keepalives_sent, 1);
+    }
+
+    #[test]
+    fn keepalive_carries_padding_only_and_no_i2np_message() {
+        let (mut alice, mut bob) = test_session_pair_with_keepalive(Some(KEEPALIVE_MS));
+        alice.poll(1_000, 1_700_000_000);
+        let datagram = alice
+            .poll(1_000 + KEEPALIVE_MS, 1_700_000_000)
+            .into_iter()
+            .find_map(|action| match action {
+                SessionAction::Transmit(bytes) => Some(bytes),
+                _ => None,
+            })
+            .expect("keepalive datagram");
+        // The peer authenticates it, and it delivers **no** I2NP
+        // message: the keepalive is padding only.
+        let outcome = bob.receive_datagram(1_000 + KEEPALIVE_MS, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(outcome.events.is_empty());
+        assert!(!outcome.ack_eliciting);
+        assert!(outcome.ack_only);
+        // The keepalive asks for an immediate ACK, so the peer can answer
+        // it and the session can tell a lost keepalive from a peer that
+        // stopped answering.
+        assert!(
+            peer_immediate_ack_flag(&bob, &datagram),
+            "the keepalive requests an immediate ACK"
+        );
+    }
+
+    #[test]
+    fn keepalive_is_answered_by_the_peer_and_the_deadline_is_cleared() {
+        let (mut alice, mut bob) = test_session_pair_with_keepalive(Some(KEEPALIVE_MS));
+        alice.poll(1_000, 1_700_000_000);
+        let datagram = alice
+            .poll(1_000 + KEEPALIVE_MS, 1_700_000_000)
+            .into_iter()
+            .find_map(|action| match action {
+                SessionAction::Transmit(bytes) => Some(bytes),
+                _ => None,
+            })
+            .expect("keepalive datagram");
+        assert!(alice.keepalive_pending_since_ms.is_some());
+        // The peer receives the keepalive and answers it, because the
+        // specification's immediate-ACK request is honoured even when
+        // the packet carries no ack-eliciting block.
+        let outcome = bob.receive_datagram(1_000 + KEEPALIVE_MS, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(
+            outcome.ack_scheduled,
+            "the immediate-ACK request is honoured"
+        );
+        // The peer's ACK leaves at the immediate horizon, not at the
+        // delayed one.
+        let ack = bob
+            .poll(1_000 + KEEPALIVE_MS + 10, 1_700_000_000)
+            .into_iter()
+            .find_map(|action| match action {
+                SessionAction::Transmit(bytes) => Some(bytes),
+                _ => None,
+            })
+            .expect("ack datagram");
+        // The answer clears the outstanding keepalive.
+        assert!(
+            alice
+                .receive_datagram(1_000 + KEEPALIVE_MS + 20, 1_700_000_000, &ack)
+                .dropped
+                .is_none()
+        );
+        assert!(alice.keepalive_pending_since_ms.is_none());
+        assert_eq!(alice.counters.keepalive_timeouts, 0);
+    }
+
+    #[test]
+    fn unanswered_keepalive_ends_the_session() {
+        let (mut alice, _bob) = test_session_pair_with_keepalive(Some(KEEPALIVE_MS));
+        alice.poll(1_000, 1_700_000_000);
+        let actions = alice.poll(1_000 + KEEPALIVE_MS, 1_700_000_000);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Transmit(_))),
+            "the keepalive is sent"
+        );
+        // Three unanswered keepalives end the session. The deadline is
+        // the keepalive's own, not the idle timeout: the keepalive
+        // refreshed the send timestamp, so the idle timeout can never
+        // notice a peer that stopped answering.
+        let deadline = 1_000 + KEEPALIVE_MS + KEEPALIVE_MS * 3;
+        assert!(
+            alice.poll(deadline - 1, 1_700_000_000).is_empty(),
+            "the deadline is not early"
+        );
+        let actions = alice.poll(deadline, 1_700_000_000);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Terminate { reason: 14 })),
+            "the unanswered keepalive terminates the session with the timeout reason"
+        );
+        assert_eq!(alice.counters.keepalive_timeouts, 1);
+        assert!(alice.is_terminated());
+    }
+
+    #[test]
+    fn a_disabled_keepalive_sends_nothing() {
+        let (mut alice, _bob) = test_session_pair_with_keepalive(None);
+        assert!(alice.poll(1_000, 1_700_000_000).is_empty());
+        assert!(alice.poll(1_000 + 600_000, 1_700_000_000).is_empty());
+        assert_eq!(alice.counters.keepalives_sent, 0);
+        assert!(alice.keepalive_pending_since_ms.is_none());
+    }
+
+    #[test]
+    fn the_idle_timeout_still_ends_a_session_without_a_keepalive() {
+        let (mut alice, _bob) = test_session_pair_with_keepalive(None);
+        alice.poll(1_000, 1_700_000_000);
+        // The idle timeout reads the maximum of the send and receive
+        // timestamps; a session that never sent anything has neither,
+        // so the timeout is anchored on the first poll's activity.
+        alice.last_send_ms = Some(1_000);
+        let actions = alice.poll(1_000 + 300_000, 1_700_000_000);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Terminate { reason: 2 })),
+            "the idle timeout is unchanged"
+        );
+    }
+
+    #[test]
+    fn a_keepalive_interval_that_cannot_fall_before_the_idle_timeout_is_refused() {
+        let (alice_keys, _bob_keys) = paired_test_splits();
+        let error = Ssu2Session::new(
+            SessionConfig {
+                local_conn_id: 0xaaaa_aaaa_aaaa_aaaa,
+                remote_conn_id: 0xbbbb_bbbb_bbbb_bbbb,
+                local_intro: IntroKey::new([0xA1; 32]),
+                remote_intro: IntroKey::new([0xB2; 32]),
+                initial_send_packet_number: 0,
+                max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
+                idle_timeout_ms: 300_000,
+                keepalive_interval_ms: Some(100_000),
+            },
+            alice_keys,
+        )
+        .expect_err("the deadline would not fall before the idle timeout");
+        assert!(matches!(error, SessionError::LocalPolicyDenied));
+    }
+
+    #[test]
+    fn a_zero_keepalive_interval_is_refused() {
+        let (alice_keys, _bob_keys) = paired_test_splits();
+        let error = Ssu2Session::new(
+            SessionConfig {
+                local_conn_id: 0xaaaa_aaaa_aaaa_aaaa,
+                remote_conn_id: 0xbbbb_bbbb_bbbb_bbbb,
+                local_intro: IntroKey::new([0xA1; 32]),
+                remote_intro: IntroKey::new([0xB2; 32]),
+                initial_send_packet_number: 0,
+                max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
+                idle_timeout_ms: 300_000,
+                keepalive_interval_ms: Some(0),
+            },
+            alice_keys,
+        )
+        .expect_err("a zero interval is refused");
+        assert!(matches!(error, SessionError::LocalPolicyDenied));
+    }
+
+    #[test]
+    fn the_keepalive_never_bypasses_the_congestion_gate() {
+        let (mut alice, _bob) = test_session_pair_with_keepalive(Some(KEEPALIVE_MS));
+        // The window is full, so the keepalive waits.
+        alice.bytes_in_flight = alice.cwnd_bytes;
+        alice.poll(1_000, 1_700_000_000);
+        let actions = alice.poll(1_000 + KEEPALIVE_MS, 1_700_000_000);
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Transmit(_))),
+            "a full congestion window holds the keepalive back"
+        );
+        assert_eq!(alice.counters.keepalives_sent, 0);
+        // The room returns and the keepalive leaves.
+        alice.bytes_in_flight = 0;
+        let actions = alice.poll(1_000 + KEEPALIVE_MS + 1, 1_700_000_000);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Transmit(_))),
+            "the keepalive leaves once the window has room"
+        );
+    }
+
+    #[test]
+    fn a_pure_ack_never_asks_for_an_ack_of_its_own() {
+        let (mut alice, mut bob) = test_session_pair_with_keepalive(None);
+        // Alice sends one I2NP message, which is ack-eliciting.
+        let mut message = Vec::new();
+        message.push(20_u8);
+        message.extend_from_slice(&1_u32.to_be_bytes());
+        message.extend_from_slice(&1_700_000_060_u32.to_be_bytes());
+        message.extend_from_slice(&[7_u8; 16]);
+        alice.queue_i2np_message(message).expect("queue");
+        // The queued message leaves through the transmit drain, which is
+        // the path the runtime uses for user data.
+        let datagram = alice.poll_transmit(1_000).expect("message datagram");
+        assert!(
+            bob.receive_datagram(1_001, 1_700_000_000, &datagram)
+                .ack_scheduled,
+            "an ack-eliciting message schedules an ACK"
+        );
+        // Bob's congestion window is full, so the transport's own policy
+        // would ask for an immediate ACK -- but a pure ACK must never ask
+        // for an ACK of its own, or the two sides would ask each other
+        // for ACKs forever.
+        bob.bytes_in_flight = bob.cwnd_bytes;
+        // The delayed-ACK horizon is 25 ms without an RTT sample, so
+        // the ACK leaves at the horizon and not before it.
+        let ack = polled_datagram(bob.poll(1_030, 1_700_000_000));
+        assert!(
+            !peer_immediate_ack_flag(&alice, &ack),
+            "a pure ACK carries no immediate-ACK request"
+        );
+    }
+
+    /// Returns the immediate-ACK flag the peer put on a sealed datagram.
+    ///
+    /// The receiver's own intro key and receive header key undo the
+    /// sender's header protection, so the flag the sender wrote is read
+    /// back exactly as the peer will read it.
+    fn peer_immediate_ack_flag(receiver: &Ssu2Session, datagram: &[u8]) -> bool {
+        let mut working = datagram.to_vec();
+        crate::crypto::remove_header_protection(
+            &mut working,
+            constants::SHORT_HEADER_LENGTH,
+            receiver.local_intro.as_bytes(),
+            &receiver.receive_header_2,
+            false,
+        )
+        .expect("unprotect");
+        crate::header::DataHeader::decode(&working[..constants::SHORT_HEADER_LENGTH])
+            .expect("header")
+            .immediate_ack()
+    }
+
+    /// Pulls the one datagram a poll produced, tracked or not.
+    fn polled_datagram(actions: Vec<SessionAction>) -> Vec<u8> {
+        actions
+            .into_iter()
+            .find_map(|action| match action {
+                SessionAction::Transmit(bytes) => Some(bytes),
+                SessionAction::TransmitTracked { datagram, .. } => Some(datagram),
+                _ => None,
+            })
+            .expect("one datagram")
     }
 }

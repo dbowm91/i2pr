@@ -109,6 +109,14 @@ use i2pr_core::CancellationReason;
 
 /// Hard maximum for any Plan 158 runtime duration.
 pub const MAX_SSU2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
+
+/// The keepalive's unanswered deadline, in intervals.
+///
+/// Plan 522: this is the transport's own policy, read rather than
+/// restated, so the runtime and the transport cannot disagree about
+/// when an unanswered keepalive ends a session.
+pub const KEEPALIVE_TIMEOUT_INTERVALS: u32 =
+    i2pr_transport_ssu2::constants::DATA_KEEPALIVE_TIMEOUT_INTERVALS as u32;
 /// Absolute ceiling for pending handshakes (both directions).
 pub const MAX_SSU2_PENDING_CEILING: usize = 1024;
 /// Absolute ceiling for active sessions.
@@ -320,6 +328,15 @@ pub struct Ssu2RuntimeDeadlines {
     pub dial: Duration,
     /// Data-phase idle timeout handed to sessions.
     pub idle: Duration,
+    /// The outbound session keepalive interval.
+    ///
+    /// Plan 522: `None` disables the keepalive entirely, so the
+    /// default router's wire behaviour is unchanged. When it is
+    /// set, the interval must be strictly below the idle timeout:
+    /// the keepalive's own unanswered deadline has to fall before
+    /// the idle timeout, or the two would disagree about when a
+    /// session dies.
+    pub keepalive: Option<Duration>,
     /// Queue admission timeout for `send_i2np`.
     pub queue_wait: Duration,
     /// Graceful close drain timeout.
@@ -334,6 +351,7 @@ impl Default for Ssu2RuntimeDeadlines {
             handshake: Duration::from_secs(20),
             dial: Duration::from_secs(30),
             idle: Duration::from_secs(300),
+            keepalive: None,
             queue_wait: Duration::from_secs(5),
             drain: Duration::from_secs(5),
             scheduler_poll_max: Duration::from_millis(200),
@@ -362,6 +380,19 @@ impl Ssu2RuntimeDeadlines {
         }
         if self.dial < self.handshake {
             return Err(Ssu2RuntimeConfigError::DialShorterThanHandshake);
+        }
+        // Plan 522: the keepalive's own unanswered deadline must
+        // fall strictly before the idle timeout.
+        if let Some(keepalive) = self.keepalive {
+            if keepalive.is_zero() {
+                return Err(Ssu2RuntimeConfigError::ZeroDeadline { field: "keepalive" });
+            }
+            if keepalive > MAX_SSU2_RUNTIME_DURATION {
+                return Err(Ssu2RuntimeConfigError::DeadlineTooLong { field: "keepalive" });
+            }
+            if keepalive.saturating_mul(KEEPALIVE_TIMEOUT_INTERVALS) >= self.idle {
+                return Err(Ssu2RuntimeConfigError::KeepaliveTooLong);
+            }
         }
         Ok(self)
     }
@@ -448,6 +479,12 @@ pub enum Ssu2RuntimeConfigError {
     InvalidPrefix,
     /// The dial timeout cannot cover a full handshake attempt.
     DialShorterThanHandshake,
+    /// The keepalive interval cannot fall before the idle timeout.
+    ///
+    /// Plan 522: the keepalive's unanswered deadline has to be
+    /// strictly earlier than the session's own idle timeout, or
+    /// the two would disagree about when a session dies.
+    KeepaliveTooLong,
     /// Local identity material was rejected.
     InvalidIdentity,
     /// A dial target failed validation.
@@ -469,6 +506,9 @@ impl fmt::Display for Ssu2RuntimeConfigError {
             Self::InvalidPrefix => formatter.write_str("invalid SSU2 IP prefix width"),
             Self::DialShorterThanHandshake => {
                 formatter.write_str("SSU2 dial timeout is shorter than the handshake timeout")
+            }
+            Self::KeepaliveTooLong => {
+                formatter.write_str("SSU2 keepalive interval does not fall before the idle timeout")
             }
             Self::InvalidIdentity => formatter.write_str("invalid SSU2 local identity material"),
             Self::InvalidDialTarget => formatter.write_str("invalid SSU2 dial target"),
@@ -4418,6 +4458,7 @@ impl Ssu2RuntimeService {
         auth: AuthenticatedSsu2Session,
         remote_intro: IntroKey,
         peer_addr: SocketAddr,
+        direction: Direction,
     ) -> Option<i2pr_transport_ssu2::Ssu2Session> {
         let local_conn_id = auth.local_conn_id();
         let remote_conn_id = auth.remote_conn_id();
@@ -4428,6 +4469,18 @@ impl Ssu2RuntimeService {
             .idle
             .as_millis()
             .min(u128::from(u64::MAX)) as u64;
+        // Plan 522: the keepalive is an **outbound** behaviour. An
+        // inbound session's lifetime is exactly what it was before
+        // this plan, so the inbound path is untouched.
+        let keepalive_interval_ms = match direction {
+            Direction::Outbound => self
+                .shared
+                .config
+                .deadlines
+                .keepalive
+                .map(|value| value.as_millis().min(u128::from(u64::MAX)) as u64),
+            Direction::Inbound => None,
+        };
         let config = SessionConfig {
             local_conn_id,
             remote_conn_id,
@@ -4436,6 +4489,7 @@ impl Ssu2RuntimeService {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(self.shared.local_mtu, false),
             idle_timeout_ms: idle_ms,
+            keepalive_interval_ms,
         };
         let mut session = i2pr_transport_ssu2::Ssu2Session::new(config, auth.into_keys()).ok()?;
         // One spare token for the peer's next handshake, announced
@@ -4561,18 +4615,23 @@ impl Ssu2RuntimeService {
             );
         }
         let peer_router_info = auth.peer().router_info.clone();
-        let session =
-            match self.construct_session(state, auth, target.responder_intro(), target.address()) {
-                Some(session) => session,
-                None => {
-                    self.shared
-                        .counters
-                        .auth_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    fail(completion);
-                    return;
-                }
-            };
+        let session = match self.construct_session(
+            state,
+            auth,
+            target.responder_intro(),
+            target.address(),
+            Direction::Outbound,
+        ) {
+            Some(session) => session,
+            None => {
+                self.shared
+                    .counters
+                    .auth_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                fail(completion);
+                return;
+            }
+        };
         if !self.active_capacity_locked(state, &target.address().ip()) {
             self.shared
                 .counters
@@ -4722,16 +4781,17 @@ impl Ssu2RuntimeService {
             }
         };
         let peer_router_info = auth.peer().router_info.clone();
-        let mut session = match self.construct_session(state, auth, remote_intro, source) {
-            Some(session) => session,
-            None => {
-                self.shared
-                    .counters
-                    .auth_failures
-                    .fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        };
+        let mut session =
+            match self.construct_session(state, auth, remote_intro, source, Direction::Inbound) {
+                Some(session) => session,
+                None => {
+                    self.shared
+                        .counters
+                        .auth_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
         // Release the peer initiator immediately: it establishes only
         // on its first received ACK block, which may otherwise wait
         // for ack-eliciting data that never comes (proven against

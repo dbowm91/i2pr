@@ -613,3 +613,116 @@ holds:
 ### 17.1 — 2026-11-08, registration
 
 The plan is registered as written. No amendment.
+
+### 17.2 — 2026-11-08, WP1: the immediate-ACK request is now honoured on a
+non-eliciting packet
+
+**What the plan said.** §7's D6 said the keepalive's immediate-ACK request is
+what makes the keepalive *observable*, and that "a keepalive that goes
+unanswered means the peer is gone". §8's WP1 said the same. The plan assumed
+the peer answers a padding-only packet that asks for an immediate ACK.
+
+**What the tree actually does.** `i2pr`'s own receiver did **not** answer it.
+`mark_received` armed an ACK only when the inbound packet carried an
+ack-eliciting block
+(`crates/i2pr-transport-ssu2/src/session.rs`, the `if ack_eliciting` arm),
+and the immediate-ACK flag was consulted **only inside that arm**. A
+padding-only packet is not ack-eliciting by this transport's own rule
+(`is_ack_eliciting`, `crates/i2pr-transport-ssu2/src/session.rs:2830`), so
+the flag was ignored and no ACK was armed. The standalone ACK's own guard
+(`last_received_eliciting`) had the same effect.
+
+**Why the plan's premise was wrong.** The plan cited the two references for
+the *sender* side of the keepalive but did not check the *receiver* side. Both
+pinned references honour the request **unconditionally**, without consulting
+the block classification:
+
+- i2pd sets `m_IsDataReceived` purely from the flag
+  (`libi2pd/SSU2Session.cpp:1758`) and then sends a quick ACK
+  (`libi2pd/SSU2Session.cpp:3462`);
+- Java reads the flag straight out of the short header and schedules an
+  immediate ACK
+  (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`).
+
+i2pd sends the flag on exactly this kind of packet
+(`libi2pd/SSU2Session.cpp:269`), so a peer that ignored it would never answer
+a keepalive. `i2pr`'s implementation was therefore an **incomplete**
+implementation of the specified flag, and the plan's premise depended on the
+complete one.
+
+**The correction.** The transport now honours the immediate-ACK request even
+when the packet carries no ack-eliciting block. The loop-avoidance invariant
+is preserved and is now stated in the module's own documentation: the ACK
+this arms is a pure ACK with **no** immediate-ACK flag, a pure ACK is not
+ack-eliciting, and the peer therefore arms nothing for it.
+
+**One consequence, recorded here.** A packet that carries no ack-eliciting
+block now **never** asks for an ACK of its own. The transport already
+computed that fact — `seal_packet`'s `force_ack_only` parameter carried it and
+was then discarded — so the correction uses the parameter the shape already
+had instead of adding a second source of truth.
+
+### 17.3 — 2026-11-08, WP1: the termination reason is the specification's own
+timeout code
+
+**What the plan said.** §7's D7 said the session "terminates locally under
+its own reason", and §8's WP1 said "under its own reason code".
+
+**What the implementation does.** It terminates with reason **14**, which is
+the specification's own timeout code
+(`libi2pd/SSU2Session.h:169`, `eSSU2TerminationReasonTimeout = 14`) and the
+same code the transport's consecutive-RTO ceiling already used. The plan did
+not intend a **new wire** code, and inventing one would have put a
+meaningless number on the wire.
+
+**Why the cause is still distinguishable.** The transport's own counters
+carry the distinction: `keepalives_sent` and `keepalive_timeouts`
+(`crates/i2pr-transport-ssu2/src/session.rs`, `SessionCounters`). Two
+different local causes produce the same wire reason and two different
+counters.
+
+### 17.4 — 2026-11-08, WP1: `ack_scheduled` now reports what it says
+
+`ReceiveOutcome::ack_scheduled` reported `ack_eliciting`, which was the same
+question as "did this packet carry an ack-eliciting block". With §17.2 the
+two questions differ, so the field now reports whether an ACK was actually
+**armed**. For every packet that carried an ack-eliciting block the value is
+unchanged; the only difference is the immediate-ACK request, which now
+reports `true` because an ACK really was armed.
+
+### 17.5 — 2026-11-08, WP1 and WP2: the citation drift
+
+**§3 is evidence and is not rewritten.** §3 cites the production tree as it
+stood at registration. WP1 and WP2 moved that tree, so §3's line numbers
+into the two changed files are now registration-time pointers. The table
+below gives the current pointer for each one.
+
+| §3 pointer | registration-time | current | what it names |
+| --- | --- | --- | --- |
+| `crates/i2pr-transport-ssu2/src/session.rs:198` | `:198` | `:211` | `SessionConfig`'s `idle_timeout_ms` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1137` | `:1137` | `:1193` | `poll_transmit_fragments_traced` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1399` | `:1399` | `:1455` | `seal_packet` |
+| `crates/i2pr-transport-ssu2/src/session.rs:1501` | `:1501` | `:1610` | `should_request_immediate_ack` |
+| `crates/i2pr-transport-ssu2/src/session.rs:2543-2551` | `:2543-2551` | `:2679-2686` | the idle-timeout check |
+| `crates/i2pr-transport-ssu2/src/session.rs:2632` | `:2632` | `:2830` | `is_ack_eliciting` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:647` | `:647` | `:687` | `Ssu2DialTarget::new` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:679` | `:679` | `:719` | `Ssu2DialTarget::new_private_lan` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1131` | `:1131` | `:1171` | `ActiveSession` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1134` | `:1134` | `:1174` | `ActiveSession`'s `direction` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1763` | `:1763` | `:1803` | `session_peer_links` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1786` | `:1786` | `:1826` | `active_peer_hashes` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3592` | `:3592` | `:3632` | `dial_ssu2` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:4415` | `:4415` | `:4455` | `construct_session` |
+
+**No citation into the daemon, the netdb, the proto crate or either pinned
+reference moved.** The daemon, the netdb, the proto crate and the two
+references are untouched by WP1 and WP2, so §3's pointers into them are
+still exact.
+
+**The two new public surfaces** the implementation added, for the reader who
+comes to the tree first:
+
+- `crates/i2pr-transport-ssu2/src/session.rs:220` —
+  `SessionConfig`'s `keepalive_interval_ms`;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs:339` — the runtime's
+  `deadlines.keepalive`.
