@@ -811,7 +811,7 @@ fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
 fn the_guard_reports_a_recorder_that_delegates_to_the_controlled_mirror() {
     let mutated = r#"
 fn map_controlled_outcome_locked(&self, state: &mut ServiceState, outcome: Option<PeerTestOutcome>) {
-    state.reachability.record(ReachabilitySignal::PeerTestResult { family, outcome: PeerTestOutcomeKind::Confirmed }, now);
+    state.tracker.record(ReachabilitySignal::PeerTestResult { family, outcome: PeerTestOutcomeKind::Confirmed }, now);
 }
 pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest) -> Result<(), Ssu2PeerTestEvidenceError> {
     self.map_controlled_outcome_locked(state, outcome);
