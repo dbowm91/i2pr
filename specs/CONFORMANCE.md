@@ -2548,6 +2548,12 @@ The advertised count stays **zero**: Plan 521 gives the router a way to earn
 the reachability evidence its published address needs, and advertises
 nothing new.
 
+**Plan 522 adds two surfaces** — `ssu2.outbound-session-keepalive` and
+`daemon.outbound-peer-session-pool` — so the inventory holds **115 surfaces,
+110 experimental, 4 deferred, 1 ready, 0 advertised**. The advertised count
+stays **zero**: Plan 522 holds sessions the router already wanted to hold,
+and advertises nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3267,5 +3273,88 @@ i2pd uses message 231 only for a garlic-carried **tunnel** test
 stock-peer half therefore stays blocked on Plan 493's authorized two-host
 topology, and the router-level 231 responder is proven against this router's
 own peer. Nothing is advertised: the inventory's advertised count stays
+zero, `router.version` stays `0.9.62`, the published record's `caps` string
+is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+## The router holds a bounded pool of outbound peer sessions (Plan 522)
+
+The router used to dial per need and hold nothing between needs, so the
+publication's ordinary path was the handshake path: the publication's period
+is `39 * 60` seconds (`crates/i2pr-daemon/src/router_info_publication.rs:72`)
+and a session's idle timeout is `300_000` milliseconds
+(`crates/i2pr-daemon/src/config.rs:1486`), so a session established by one
+publication was always gone before the next. Plan 522 gives the router a
+**bounded pool** of outbound peer sessions, and the transport an
+**outbound-only** keepalive that holds a pooled session open.
+
+**The population is the router's own selection.** The pool reads the same
+version-gated floodfill selection the publication reads, under the
+**default** policy the publication's owner already holds. There is no second
+policy and no second source of truth: a peer Plan 491's version floor would
+refuse is never a pool candidate.
+
+**The bounds are ceilings that refuse.** One publication cycle's worth of
+peers (`15`, `crates/i2pr-daemon/src/router_info_publication.rs:116`) and
+two dials per period. A candidate beyond either bound is **refused and
+counted** under its own reason — never evicted, never skipped silently — so
+a router under flood cannot grow the pool past its ceiling, and a reader can
+always tell a refused candidate from a peer the pool never tried.
+
+**There is one dial path.** The pool dials through the **one** existing
+narrow seam, so the router's own publication and the pool share a single dial
+path. The publication's delivery path is **unchanged**: its existing session
+check already reuses a session, so the pool's only job is to make the
+session exist. With the pool on and a session present, the publication
+performs **no** handshake; with the pool on and no session, it dials exactly
+as it did before.
+
+**The owner owns no infrastructure.** It holds no session, no socket, no task
+and no timer. The dial is awaited on the pool's **own** task, for the same
+reason the publication has one — a session establishment is an await, and the
+daemon's `select!` loop must never block on a handshake — and the bootstrap's
+lock is released before any dial, so a slow handshake can never hold the
+router's NetDB.
+
+**The keepalive is the reference's shape, and it is outbound only.** A
+padding-only SSU2 data packet with the immediate-ACK flag set, twenty bytes,
+no I2NP message, no new block type and no new message type
+(`libi2pd/SSU2Session.cpp:269`, at the pin). The runtime passes the interval
+to an **outbound** session and to nothing else, so an inbound session's
+lifetime is exactly what it was. The unanswered deadline is the keepalive's
+**own** — three intervals — because the keepalive refreshes the session's
+send timestamp while the idle timeout reads the **maximum** of the send and
+receive timestamps, so the idle timeout could never detect a dead peer. One
+keepalive is outstanding at a time, so an unanswered keepalive reaches its
+deadline instead of being refreshed by a second one, and the keepalive
+respects the transport's congestion gate and the payload budget.
+
+**The pool writes no peer profile.** A dial outcome is this router's
+condition as often as the peer's, so the pool counts its outcomes in its own
+counters and nowhere else.
+
+**The switch is real.** `ssu2.peer_pool` is **off** by default, refused
+without the SSU2 service, and refused when the session's idle timeout cannot
+hold the keepalive's unanswered deadline. With the switch off the router
+sends nothing it did not already send.
+
+**Proved here:** the opt-in is off by default and refused without the
+service; the opt-in is refused when the idle timeout is too short; the pool
+plans a dial to a peer it knows and reuses a session it already holds; a peer
+whose session lapsed is planned again and the lapse is counted; a candidate
+beyond the ceiling is refused and counted; a candidate the version gate
+refuses is never planned; every dial outcome is counted under its own reason
+and a cancelled dial releases the peer; the pool **establishes a real
+session** to a peer it knows over a real SSU2 handshake between two
+daemon-owned services on loopback; a peer with no dialable address is
+refused under its own reason; a router with the opt-in off establishes no
+session; the keepalive's interval reaches the runtime only when the pool is
+on; and the counters reach the inspection plane.
+
+**Not proved here, and not claimed:** the **stock-peer** half, which needs
+Plan 493's authorized two-host topology. The **dial scope** limit is not
+discharged either: the transport's own dial target accepts a loopback
+endpoint or an RFC1918 IPv4 address, so a public deployment cannot use the
+pool today, and that limit is a transport boundary with its own
+plan-of-record. Nothing is advertised: the inventory's advertised count stays
 zero, `router.version` stays `0.9.62`, the published record's `caps` string
 is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.

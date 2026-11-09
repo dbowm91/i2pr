@@ -113,6 +113,13 @@ pub struct PeerPoolPeerState {
     pub dialing: bool,
     /// Whether the peer held a session when the pool last saw it.
     pub had_session: bool,
+    /// Whether the peer was admitted to the pool's population.
+    ///
+    /// A peer is admitted when the pool holds a session with it, whether
+    /// the pool dialled it or found the session already there. The
+    /// admission is counted **once** per peer, so a peer whose session
+    /// lapses and is re-established is still one admitted peer.
+    pub admitted: bool,
 }
 
 /// The pool's counters.
@@ -129,7 +136,12 @@ pub struct PeerPoolCounters {
     pub candidates_refused: u64,
     /// The number of candidates the pool's ceiling refused.
     pub ceiling_refused: u64,
-    /// The number of peers the pool admitted to its population.
+    /// The number of distinct peers the pool admitted to its population.
+    ///
+    /// A peer is admitted when the pool holds a session with it, whether
+    /// the pool dialled it or found the session already there. A peer is
+    /// counted **once**, however many times its session lapses and is
+    /// re-established.
     pub peers_admitted: u64,
     /// The number of peers that already held a session.
     pub sessions_reused: u64,
@@ -265,8 +277,9 @@ impl PeerPoolOwner {
             let holds_session = established.contains(peer.as_hash());
             if holds_session {
                 self.counters.sessions_reused = self.counters.sessions_reused.saturating_add(1);
-                if !state.had_session {
+                if !state.admitted {
                     self.counters.peers_admitted = self.counters.peers_admitted.saturating_add(1);
+                    state.admitted = true;
                 }
                 state.had_session = true;
                 state.dialing = false;
@@ -304,6 +317,14 @@ impl PeerPoolOwner {
         state.dialing = false;
         match outcome {
             PeerPoolDialOutcome::Established => {
+                // The pool now holds a session with the peer, so the peer is
+                // admitted. The admission is counted once, whether the
+                // session was established by the pool's own dial or found
+                // already there.
+                if !state.admitted {
+                    self.counters.peers_admitted = self.counters.peers_admitted.saturating_add(1);
+                    state.admitted = true;
+                }
                 state.had_session = true;
                 self.counters.dials_established = self.counters.dials_established.saturating_add(1);
             }
@@ -479,6 +500,33 @@ mod tests {
             "every peer in the store holds a session"
         );
         assert_eq!(owner.counters().dials_started, 2);
+    }
+
+    #[test]
+    fn a_peer_the_pool_dialled_is_admitted_when_the_dial_establishes() {
+        let store = store_with(4);
+        let mut owner = PeerPoolOwner::new(true);
+        let planned = owner.plan(&store, &local_hash(), &[]);
+        assert_eq!(
+            owner.counters().peers_admitted,
+            0,
+            "a planned dial is not an admission"
+        );
+        owner.record_dial_outcome(&planned[0], PeerPoolDialOutcome::Established);
+        assert_eq!(
+            owner.counters().peers_admitted,
+            1,
+            "the pool's own established dial admits the peer"
+        );
+        // The peer is seen again with its session held, and the admission is
+        // not counted twice.
+        let established = vec![*planned[0].as_hash()];
+        owner.plan(&store, &local_hash(), &established);
+        assert_eq!(
+            owner.counters().peers_admitted,
+            1,
+            "an admission is counted once per peer"
+        );
     }
 
     #[test]

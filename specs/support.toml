@@ -2507,3 +2507,45 @@ evidence = [
     "plans/implementation/network-participation/521-the-router-runs-its-own-peer-test.md",
 ]
 advertised = false
+
+[[surface]]
+id = "ssu2.outbound-session-keepalive"
+protocol = "ssu2"
+structure = "the-transport's-outbound-only-session-keepalive-and-its-unanswered-deadline"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 522 gives the transport an **outbound-only** session keepalive, so a session the router holds on purpose is not torn down by the idle timeout. The keepalive is the reference's exact shape: a padding-only SSU2 data packet with the immediate-ACK flag set, twenty bytes, carrying **no** I2NP message and adding **no** block type and **no** message type (`libi2pd/SSU2Session.cpp:269`, at the exact pin). The reference's receiver honours the immediate-ACK flag unconditionally (`libi2pd/SSU2Session.cpp:1758`), and Java I2P 2.13.0 arms its acknowledgement timer on the same flag (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`, at the exact pin). The interval is the transport's own constant -- sixty seconds -- and the unanswered deadline is three intervals, which is the specification's own timeout code (`libi2pd/SSU2Session.h:169`). The keepalive is **outbound only**: the runtime passes the interval to an outbound session and to nothing else, so an inbound session's lifetime is exactly what it was before this surface. The deadline is the keepalive's **own** because the keepalive refreshes the session's send timestamp while the idle timeout reads the **maximum** of the send and receive timestamps, so the idle timeout could never detect a dead peer. One keepalive is outstanding at a time, so an unanswered keepalive reaches its deadline instead of being refreshed by a second one, and the keepalive respects the transport's congestion gate and the payload budget. The keepalive is **off** unless the outbound peer-session pool is on, so a router that did not ask for the pool sends nothing it did not already send. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), the published RouterInfo, the record's `caps` string, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-transport-ssu2/src/constants.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/src/lib.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/tests/peer_pool.rs",
+    "crates/i2pr-daemon/tests/peer_pool_boundary.rs",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/522-the-router-holds-a-bounded-peer-session-pool.md",
+]
+advertised = false
+
+[[surface]]
+id = "daemon.outbound-peer-session-pool"
+protocol = "ssu2"
+structure = "the-router's-bounded-pool-of-outbound-peer-sessions"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 522 gives the router a **bounded pool** of outbound peer sessions, so the publication's ordinary path is no longer the handshake path. The router used to dial per need and hold nothing between needs: the publication's period is `39 * 60` seconds (`crates/i2pr-daemon/src/router_info_publication.rs:72`) and a session's idle timeout is `300_000` milliseconds (`crates/i2pr-daemon/src/config.rs:1486`), so a session established by one publication was always gone before the next. The pool's population is the router's **own** version-gated floodfill selection -- the same `select_version_gated_floodfills` the publication uses, under the **default** policy the publication's owner already holds -- so the pool never names a peer the tree's version floor would refuse, and there is no second policy and no second source of truth to disagree with. The population is bounded by one publication cycle's worth of peers (`15`, `crates/i2pr-daemon/src/router_info_publication.rs:116`) and the per-period dial budget is two; a candidate beyond either bound is **refused and counted** under its own reason, never evicted and never skipped silently. The pool dials through the **one** existing narrow seam, so the router's own publication and the pool share a single dial path, and the publication's delivery path is **unchanged** -- its existing session check already reuses a session, so the pool's only job is to make the session exist. The owner holds no session, no socket, no task and no timer; the dial is awaited on the pool's **own** task, for the same reason the publication has one, so the daemon's `select!` loop never blocks on a handshake, and the bootstrap's lock is released before any dial. The pool writes **no** peer profile: a dial outcome is this router's condition as often as the peer's, so the pool counts its outcomes in its own counters and nowhere else. The switch is `ssu2.peer_pool`, it is **off** by default, it is refused without the SSU2 service, and it is refused when the session's idle timeout cannot hold the keepalive's unanswered deadline. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), the published RouterInfo, the record's `caps` string, or any advertisement; `Cargo.toml` and `Cargo.lock` are byte-identical. The **dial scope** limit is not discharged here: the transport's own dial target accepts a loopback endpoint or an RFC1918 IPv4 address, so a public deployment cannot use the pool today, and that limit is a transport boundary with its own plan-of-record. The **stock-peer** half is not claimed: it needs Plan 493's authorized two-host topology."
+evidence = [
+    "crates/i2pr-daemon/src/peer_pool.rs",
+    "crates/i2pr-daemon/src/peer_pool_task.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/peer_pool.rs",
+    "crates/i2pr-daemon/tests/peer_pool_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/522-the-router-holds-a-bounded-peer-session-pool.md",
+]
+advertised = false

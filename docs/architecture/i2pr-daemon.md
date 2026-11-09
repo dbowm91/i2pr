@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 77 `.rs` files, 134 855 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
+**Size:** 77 `.rs` files, 134 855 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).**Size:** 79 `.rs` files, 135 808 lines of `src` (73 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -3587,6 +3587,57 @@ The static guard is `crates/i2pr-daemon/tests/destination_liveness_boundary.rs`;
 the lane is `crates/i2pr-daemon/tests/destination_liveness_live.rs`. Plan
 504's guard and lane stay **byte-identical**, and their SHA-256 digests are
 pinned by the new guard, so the claim is checkable rather than asserted.
+
+## The outbound peer-session pool (Plan 522)
+
+The router used to dial per need and hold nothing between needs, so the
+publication's ordinary path was the handshake path. Plan 522 gives the
+router a **bounded pool** of outbound peer sessions, and the transport an
+**outbound-only** keepalive that holds a pooled session open.
+
+**What changed:**
+
+- `src/peer_pool.rs` — the bounded owner. It is runtime-neutral: it owns no
+  session, no socket, no task and no timer, and it reads its clock from its
+  caller. The population is the router's **own** version-gated floodfill
+  selection, under the **default** policy the publication's owner already
+  holds, so there is no second policy and no second source of truth. The
+  ceiling is one publication cycle's worth of peers (`15`) and the
+  per-period dial budget is two; a candidate beyond either bound is
+  **refused and counted** under its own reason, never evicted and never
+  skipped silently. Every counter carries a stable reason label, and the
+  admission is counted once per peer, so the receipt agrees with the pool's
+  own peer list;
+- `src/peer_pool_task.rs` — the pool's **own** task, for the same reason the
+  publication has one: a session establishment is an await, and the daemon's
+  `select!` loop must never block on a handshake. The bootstrap's lock is
+  taken to read the population and is **released** before any dial, so a
+  slow handshake can never hold the router's NetDB;
+- `src/service_product.rs` — `DestinationDialPurpose::PeerPoolMaintenance`,
+  the pool's own reason for a dial. The pool dials through the **one**
+  existing narrow seam, so the router's own publication and the pool share a
+  single dial path, and the publication's delivery path is **unchanged**;
+- `src/config.rs` — `ssu2.peer_pool` is an explicit opt-in, **off** by
+  default, refused unless the SSU2 service itself runs, and refused when the
+  session's idle timeout cannot hold the keepalive's unanswered deadline;
+- `src/router_i2np.rs` — the runtime's keepalive interval is derived from
+  the pool's own switch and the transport's own constant, so a router
+  without the pool sends no keepalive at all;
+- `src/i2pcontrol_inspection.rs` — the counters reach the inspection plane.
+  The cell holds counts only: it names no peer, no address and no key.
+
+**The pool writes no peer profile.** A dial outcome is this router's
+condition as often as the peer's, so the pool counts its outcomes in its own
+counters and nowhere else.
+
+**What is deliberately not claimed.** The **stock-peer** half needs Plan
+493's authorized two-host topology. The **dial scope** limit is not
+discharged: the transport's own dial target accepts a loopback endpoint or
+an RFC1918 IPv4 address, so a public deployment cannot use the pool today,
+and that limit is a transport boundary with its own plan-of-record. Nothing
+is advertised: `router.version` stays `0.9.62`, the published record's
+`caps` string is unchanged, and `Cargo.toml` and `Cargo.lock` are
+byte-identical.
 
 ## Cross-references
 

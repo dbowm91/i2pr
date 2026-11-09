@@ -600,6 +600,41 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   retransmits, flight, cwnd, reassembly, termination). No hashes,
   nonces, or endpoints.
 
+### The outbound session keepalive (Plan 522)
+
+- `SessionConfig::keepalive_interval_ms` — `None` disables the keepalive
+  entirely. The constructor refuses a zero interval, and refuses one whose
+  three-times deadline is not **strictly** below the session's idle timeout,
+  so the keepalive's deadline and the idle timeout can never disagree about
+  when a session dies.
+- `seal_keepalive` — the keepalive is a **padding-only** packet: a
+  `Block::Padding` of `DATA_KEEPALIVE_PAYLOAD_BYTES` (20) and **no** I2NP
+  message. It is sealed by the transport's own `seal_packet`, so it respects
+  the congestion window and the payload budget, and it asks for an
+  **immediate ACK**. The shape is the pinned i2pd 2.61.0 reference's own
+  (`libi2pd/SSU2Session.cpp:269`).
+- The **immediate-ACK request is honoured on a non-eliciting packet.** A
+  packet that carries no ack-eliciting block never asks for an ACK of its
+  own, so the ACK exchange stays loop-free, but the reference's receiver
+  honours the flag unconditionally (`libi2pd/SSU2Session.cpp:1758`) and so
+  does Java I2P 2.13.0
+  (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`).
+  Without this the peer would never answer a keepalive at all.
+- **One keepalive is outstanding at a time.** A second would refresh the
+  deadline as well as the session, so an unanswered keepalive would never
+  reach it.
+- The deadline is the keepalive's **own** — `DATA_KEEPALIVE_TIMEOUT_INTERVALS`
+  (3) intervals — because the keepalive refreshes the session's *send*
+  timestamp and the idle timeout reads the **maximum** of the send and
+  receive timestamps. The idle timeout could therefore never detect a dead
+  peer.
+- An unanswered keepalive terminates the session under the specification's
+  own timeout code (**14**, `libi2pd/SSU2Session.h:169`), and the cause is
+  distinguished by the counters rather than by the reason: `keepalives_sent`
+  and `keepalive_timeouts` say which of the two happened.
+- `SessionCounters` gains `keepalives_sent` and `keepalive_timeouts` —
+  counts only, no addresses, keys or payloads.
+
 ### Path validation (`path.rs`)
 
 - `PathValidator::new(endpoint, mtu)` — one validated path, no

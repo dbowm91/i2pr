@@ -726,3 +726,28 @@ comes to the tree first:
   `SessionConfig`'s `keepalive_interval_ms`;
 - `crates/i2pr-runtime/src/ssu2_runtime.rs:339` — the runtime's
   `deadlines.keepalive`.
+
+### 17.6 — 2026-11-08, WP5: the admission counter now counts the pool's own dials
+
+The lane found a defect in the pool's receipt, not in the pool's behaviour.
+`peers_admitted` was incremented in exactly one place: the plan's sighting
+path, when the pool found a peer that **already** held a session. The pool's
+own successful dial set `had_session` without counting the admission, so a
+pool that dialled fifteen peers and established twelve reported **zero**
+admissions — the counter contradicted the pool's own peer list.
+
+The counter now counts an admission wherever the pool comes to hold a
+session with a peer: the sighting path and the pool's own established dial.
+The admission is counted **once** per peer, through a dedicated per-peer
+`admitted` flag, so a peer whose session lapses and is re-established is
+still one admitted peer rather than two.
+
+This changes no behaviour on the wire and no counter's reason label; it
+changes only whether the receipt is true. The counter's own documentation now
+states the semantics, and the pool's unit tests carry a row that pins them.
+
+The lane also showed the **address options** and the **RouterInfo options**
+must be separate mappings: the address parser refuses an option it does not
+know, so a router option inside the address would make the whole record
+undiallable. That is a property of the production parser
+(`crates/i2pr-transport-ssu2/src/address.rs:994`), not a change to it.

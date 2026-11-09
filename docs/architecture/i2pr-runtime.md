@@ -697,6 +697,28 @@ adds no such API — the live path binds the authenticated session peer — but
 the surface remains, and it is a legitimate way for a caller to mint a tag
 for a peer it names.
 
+### The outbound session keepalive (Plan 522)
+
+- `Ssu2RuntimeDeadlines::keepalive` — `None` by default, so a router without
+  the outbound peer-session pool sends **no** keepalive at all. When it is
+  `Some`, it is the transport's own interval: the daemon derives it from
+  `ssu2.peer_pool` and the transport's own constant, so there is no second
+  value to disagree with.
+- The runtime's configuration refuses a zero interval and refuses one whose
+  three-times deadline is not **strictly** below the session's idle timeout,
+  so the keepalive's unanswered deadline and the idle timeout can never
+  disagree about when a session dies.
+- `construct_session` takes the session's **direction** and passes the
+  keepalive interval to an **outbound** session and to nothing else. An
+  inbound session's lifetime is exactly what it was before this plan.
+- The deadline belongs to the keepalive, not to the session's idle timer:
+  the keepalive refreshes the session's *send* timestamp and the idle timeout
+  reads the **maximum** of the send and receive timestamps, so the idle
+  timeout could never detect a dead peer on its own.
+- The runtime re-exports `KEEPALIVE_INTERVAL_MS` and
+  `KEEPALIVE_TIMEOUT_INTERVALS`, so the daemon names the transport's own
+  constants and never a second copy of them.
+
 ### `Ssu2PeerRelayService` (`ssu2_peer_relay.rs`, Plan 160)
 
 `Ssu2PeerRelayService::new(config)` owns the five Plan 160 tables

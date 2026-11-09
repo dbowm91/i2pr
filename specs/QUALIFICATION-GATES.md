@@ -1487,3 +1487,114 @@ outside the controlled floodfill activation, so the ordinary record's address
 cannot be earned in production today. Nothing is advertised: the inventory's
 advertised count stays zero, `router.version` stays `0.9.62`, and the
 published record's `caps` string is unchanged.
+
+## 21. The outbound peer-session pool and the outbound keepalive (Plan 522)
+
+The router used to dial per need and hold nothing between needs, so the
+publication's ordinary path was the handshake path. Plan 522 gives the
+router a **bounded pool** of outbound peer sessions, and the transport an
+**outbound-only** keepalive that holds a pooled session open.
+
+### 21.1 The opt-in is real, and it is off by default
+
+`ssu2.peer_pool` is parsed, defaults to `false`, is refused unless the SSU2
+service itself runs, and is refused when the session's idle timeout cannot
+hold the keepalive's unanswered deadline.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_an_opt_in_that_defaults_on`, and
+`crates/i2pr-daemon/tests/peer_pool.rs`,
+`the_opt_in_is_off_by_default`, `the_opt_in_requires_the_ssu2_service` and
+`the_opt_in_is_refused_when_the_idle_timeout_cannot_hold_the_keepalive`.
+
+### 21.2 The owner adds no infrastructure
+
+The pool's owner holds no session, no socket, no task and no timer. The dial
+is awaited on the pool's own task, and the bootstrap's lock is released
+before any dial.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_pool_that_spawns_a_task` and
+`the_guard_reports_a_pool_that_binds_a_socket`.
+
+### 21.3 There is one dial path
+
+The pool dials through the one existing narrow seam and names no other dial
+entry point, and the publication's delivery path is unchanged.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_pool_that_dials_the_transport_directly` and
+`the_guard_reports_a_publication_that_names_the_pool`.
+
+### 21.4 The pool writes no peer profile
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_pool_that_writes_a_peer_profile`.
+
+### 21.5 The ceilings refuse rather than evict
+
+The population is bounded by one publication cycle's worth of peers and the
+per-period dial budget is two. A candidate beyond either bound is refused and
+counted under its own reason, and a peer is never evicted.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_pool_that_evicts_a_peer` and
+`the_guard_reports_a_pool_with_no_dial_budget`, and
+`crates/i2pr-daemon/tests/peer_pool.rs`,
+`the_pool_refuses_a_candidate_beyond_its_ceiling` and
+`the_pool_never_exceeds_its_ceiling`.
+
+### 21.6 The keepalive carries no I2NP message and holds one at a time
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_keepalive_that_carries_an_i2np_message` and
+`the_guard_reports_a_session_that_keeps_two_keepalives`.
+
+### 21.7 The keepalive respects the congestion gate and the payload budget
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_keepalive_that_bypasses_the_congestion_gate`.
+
+### 21.8 The keepalive is outbound only
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_keepalive_on_an_inbound_session`.
+
+### 21.9 The keepalive is off unless the pool is on
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_keepalive_that_is_on_without_the_pool`, and
+`crates/i2pr-daemon/tests/peer_pool.rs`,
+`the_keepalive_reaches_the_runtime_only_when_the_pool_is_on`.
+
+### 21.10 The pool's task runs only under the opt-in
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_pool_task_that_runs_without_the_opt_in`.
+
+### 21.11 A rule whose named item is absent fails closed
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool_boundary.rs`,
+`the_guard_reports_a_missing_named_item`.
+
+### 21.12 The pool establishes a real session
+
+The lane drives two daemon-owned SSU2 services on loopback and shows the pool
+establishing a **real** session to a peer it knows.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool.rs`,
+`the_pool_establishes_a_session_to_a_peer_it_knows`.
+
+### 21.13 Every refusal is counted by reason
+
+*Gate:* `crates/i2pr-daemon/tests/peer_pool.rs`,
+`the_pool_counts_every_dial_outcome_under_its_own_reason`,
+`the_pool_counts_a_peer_with_no_dialable_address`,
+`the_pool_refuses_a_candidate_the_version_gate_refuses` and
+`a_cancelled_dial_releases_the_peer`.
+
+**What this gate does not open.** The **stock-peer** half stays blocked on
+Plan 493's authorized two-host topology, and the **dial scope** limit — the
+transport's own dial target accepts a loopback endpoint or an RFC1918 IPv4
+address, so a public deployment cannot use the pool today — is a transport
+boundary with its own plan-of-record. Nothing is advertised.
