@@ -30,7 +30,8 @@
 use std::collections::BTreeMap;
 
 use i2pr_runtime::{
-    RelayIntroBlock, RelayResponseBlock, Ssu2InboundRelay, Ssu2RelayQueueError, Ssu2RuntimeService,
+    RelayIntroBlock, RelayResponseBlock, Ssu2InboundRelay, Ssu2RelayEvent, Ssu2RelayQueueError,
+    Ssu2RuntimeService,
 };
 
 use crate::ssu2_introducer::{
@@ -145,6 +146,15 @@ pub struct RelayDrainOutcome {
     /// without a trace. The keys are the runtime's stable reason labels
     /// (`Ssu2RelayQueueError::reason`); no peer identity appears in them.
     pub carriage_refusals: BTreeMap<&'static str, u64>,
+    /// Relay-tag answers the drain pulled and did not hand to the role
+    /// owner.
+    ///
+    /// Plan 524. A `Tag` is the answer to *this router's own* request for
+    /// a relay tag. It is not an inbound request, the role owner never
+    /// served it, and counting it as one of the role owner's refusals was
+    /// wrong. The runtime records the answer itself; the drain only
+    /// reports that it saw one.
+    pub tag_answers: u64,
 }
 
 /// Drains the runtime's relay handoff into the introducer role owner.
@@ -171,6 +181,13 @@ pub fn drain_relay_events(
             break;
         };
         outcome.drained = outcome.drained.saturating_add(1);
+        // Plan 524: a relay-tag answer is not an inbound request. The
+        // role owner never served it and must not be charged with a
+        // refusal it did not make.
+        if matches!(event.event, Ssu2RelayEvent::Tag(_)) {
+            outcome.tag_answers = outcome.tag_answers.saturating_add(1);
+            continue;
+        }
         match owner.on_relay_event(&event, signers, now_ms, now_secs) {
             Ssu2IntroducerOutcome::Refused { .. } => {
                 outcome.refused = outcome.refused.saturating_add(1);

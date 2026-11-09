@@ -66,6 +66,13 @@ pub const PEER_RELAY_MAX_SIGNERS: usize = 128;
 /// Maximum response bytes per request byte (anti-amplification).
 pub const PEER_RELAY_RESPONSE_BUDGET_NUMERATOR: usize = 3;
 
+/// Plan 524: the margin an introducer record's expiry is pulled back by.
+///
+/// A tag whose own expiry is within this margin is not a usable
+/// introducer: the tag would be at the end of its life before the peers
+/// that read it could use it.
+pub const INTRODUCER_EXPIRY_MARGIN_SECS: u64 = 600;
+
 /// Runtime configuration for peer-test/relay coordination.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ssu2PeerRelayConfig {
@@ -1098,8 +1105,19 @@ impl Ssu2PeerRelayService {
 
     /// Inserts a validated introducer record from authenticated session
     /// evidence (provenance-tagged for publication selection).
+    ///
+    /// Plan 524. `now_secs` is the **wall clock**: it is the clock the
+    /// table sweeps expired records against. The margin belongs to the
+    /// *record*, not to the clock — a tag whose own expiry is within
+    /// [`INTRODUCER_EXPIRY_MARGIN_SECS`] is not a usable introducer, so
+    /// the record's effective expiry is pulled back by the margin and the
+    /// sweep still runs against the real clock. (The previous shape
+    /// derived the sweep clock from the record's own expiry, which made
+    /// the sweep run in the future and expired live records early; this
+    /// path had no production caller until Plan 524.)
     pub fn note_authenticated_introducer(
         &self,
+        now_secs: u64,
         peer_hash: [u8; 32],
         endpoint: Ssu2Endpoint,
         intro_key: i2pr_transport_ssu2::address::IntroKey,
@@ -1107,15 +1125,16 @@ impl Ssu2PeerRelayService {
         expires_secs: u64,
         provenance: IntroducerProvenance,
     ) -> Result<(), i2pr_transport_ssu2::IntroducerError> {
+        let effective_expiry = expires_secs.saturating_sub(INTRODUCER_EXPIRY_MARGIN_SECS);
         let record = IntroducerRecord::new(
             peer_hash,
             endpoint,
             intro_key,
             relay_tag,
-            expires_secs,
+            effective_expiry,
             provenance,
         )?;
-        self.insert_introducer(record, expires_secs.saturating_sub(600))
+        self.insert_introducer(record, now_secs)
     }
 }
 

@@ -129,7 +129,8 @@ pub fn note_authenticated_introducer(
 
 It builds an `IntroducerRecord` — which refuses a **zero** tag
 (`crates/i2pr-transport-ssu2/src/introducer.rs:80`) — and inserts it into the
-table. The table is bounded and its ceiling is a refusal, not an eviction.
+table. The table is bounded: at its ceiling it **evicts the oldest** record
+(`crates/i2pr-transport-ssu2/src/introducer.rs:196-210`).
 
 ### 3.4 The router cannot tell that a peer is an introducer
 
@@ -362,9 +363,13 @@ provenance is `IntroducerProvenance::AuthenticatedDirect`
 the tag *is* the authentication.
 
 **D8 — A `Tag` event no longer reaches the role owner's refusal path.** The
-event is consumed by the runtime's recording path before it reaches the
-handoff, so a legitimate event is no longer counted as a refusal. The role
-owner's refusal stands for any `Tag` event that still reaches it.
+event still reaches the **handoff** — the handoff is the runtime's public
+authenticated-event channel, and Plan 499's live-mesh evidence reads the
+minted tag there — but the **daemon's drain** no longer hands it to the role
+owner. The answer to the router's own request is not an inbound request, the
+role owner never served it, and charging it with a refusal it did not make
+was wrong. The runtime records the answer itself; the drain reports that it
+saw one. **Corrected by §17.3.**
 
 **D9 — The plan adds one configuration key, and it is default-off.**
 Something like `ssu2.introducer_request`. A router whose operator has not
@@ -420,8 +425,11 @@ record the new surface.
   persistence: a tag learned from a session is meaningless after the session
   is gone.
 - **Contention.** The request is bounded to one peer per cadence window, so a
-  busy router does not ask every peer it knows. The table's own ceiling
-  refuses rather than evicts.
+  busy router does not ask every peer it knows. The introducer table's own
+  ceiling **evicts the oldest** record when it is full
+  (`crates/i2pr-transport-ssu2/src/introducer.rs:196-210`); that is the
+  transport's existing behaviour and this plan does not change it. The
+  **outstanding-request** set is a different bound, and it **refuses**.
 
 ## 10. Compatibility and migration review
 
@@ -467,7 +475,7 @@ record the new surface.
 - the recorded introducer is observable in the table;
 - a zero tag is refused;
 - a tag arriving for a peer this router **did not** ask yields **no** record;
-- the table's ceiling refuses rather than evicts;
+- the table's ceiling evicts the oldest record when it is full;
 - the `Tag` event no longer reaches the role owner's refusal path.
 
 ### The negative controls
@@ -561,6 +569,55 @@ The plan passes when:
   record and in this plan's registry row.
 
 ## 17. Amendment log
+
+### 17.3 — 2026-11-09, the `Tag` event stays on the handoff, and the ceiling evicts
+
+**Two corrections, both found while implementing.**
+
+**D8 — the handoff keeps the event; the drain skips it.** The registered D8
+said the `Tag` event is consumed before it reaches the handoff, so that the
+role owner stops counting a legitimate answer as one of its own refusals.
+The wart was real, but the fix was in the wrong place. The handoff is the
+runtime's **public authenticated-event channel**, and Plan 499's live-mesh
+evidence reads the minted tag through it
+(`crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs:480-487`,
+`:759-776`; `crates/i2pr-runtime/tests/ssu2_local.rs:913-921`). Consuming the
+event before the handoff would have broken that plan's evidence.
+
+The correction keeps the event on the handoff and moves the fix to the
+**daemon's drain** (`crates/i2pr-daemon/src/ssu2_relay_drain.rs`): a `Tag`
+event is pulled, counted under its own reason (`tag_answers`), and **not**
+handed to the role owner. The role owner never served it, so charging it
+with a refusal it did not make was wrong — and the fix now costs the earlier
+plan nothing.
+
+**The introducer table's ceiling evicts; it does not refuse.** The
+registered §3.3, §9 and §11 said the table "refuses rather than evicts". The
+tree does not do that: at its ceiling the table removes the **oldest** record
+(`crates/i2pr-transport-ssu2/src/introducer.rs:196-210`) and returns
+`TableFull` only when there is nothing left to evict. The registered wording
+was wrong about the tree; this plan does not change the table's behaviour, and
+the closure record states the ceiling as it is.
+
+**A latent defect the first production caller would have activated.** The
+peer-relay insertion path derived the table's **sweep clock** from the new
+record's own expiry:
+
+```rust
+self.insert_introducer(record, expires_secs.saturating_sub(600))
+```
+
+(`crates/i2pr-runtime/src/ssu2_peer_relay.rs:1101`, before Plan 524). The
+table sweeps with the clock it is given
+(`crates/i2pr-transport-ssu2/src/introducer.rs:283-293`), so a record whose
+expiry was an hour away made the sweep run an hour in the **future** and
+expired live records early. The path had no production caller, so nothing was
+wrong on the wire. Plan 524 is the first production caller, so the plan
+fixes it: the insertion path now takes the **wall clock** and the margin
+belongs to the *record* — a tag whose own expiry is within
+`INTRODUCER_EXPIRY_MARGIN_SECS` is not a usable introducer, so the record's
+effective expiry is pulled back by the margin and the sweep still runs
+against the real clock.
 
 ### 17.2 — 2026-11-09, the capability read moves to the daemon
 

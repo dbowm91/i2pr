@@ -66,7 +66,7 @@
 //!   `[ssu2]` surface stays `enabled = false`; see
 //!   `i2pr-daemon/src/config.rs`.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
@@ -909,6 +909,57 @@ impl Ssu2RelayQueueError {
     }
 }
 
+/// Why one relay-tag request was refused, or one tag was not recorded.
+///
+/// Plan 524. The carriage reasons stay in [`Ssu2RelayQueueError`]: this
+/// type carries the two refusals that belong to the *request* rather than
+/// to the block's carriage -- the outstanding set's ceiling, and a tag that
+/// could not be recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2TagRequestError {
+    /// The request could not be queued on the peer's session.
+    NotQueued(Ssu2RelayQueueError),
+    /// The outstanding-request set is at its ceiling.
+    Capacity,
+    /// The tag could not be recorded as an authenticated introducer.
+    NotRecorded(i2pr_transport_ssu2::IntroducerError),
+    /// The router has no bound endpoint to record as its own contact
+    /// material, and a record with none would be a lie.
+    NoLocalEndpoint,
+    /// The router has no usable introduction key to record as its own
+    /// contact material.
+    NoLocalIntroKey,
+}
+
+impl Ssu2TagRequestError {
+    /// A stable, count-only reason key for this refusal.
+    ///
+    /// The key is a label only: it carries no peer identity, no tag and no
+    /// payload. It exists so a refusal can be counted by reason.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::NotQueued(error) => error.reason(),
+            Self::Capacity => "request_capacity",
+            Self::NotRecorded(_) => "not_recorded",
+            Self::NoLocalEndpoint => "no_local_endpoint",
+            Self::NoLocalIntroKey => "no_local_intro_key",
+        }
+    }
+}
+
+/// Plan 524: the ceiling on the peers this router has asked for a relay tag
+/// and has not yet seen the answer for.
+///
+/// A request beyond the bound is **refused**, never queued, and never
+/// evicts an older request.
+pub const MAX_OUTSTANDING_TAG_REQUESTS: usize = 16;
+
+/// Plan 524: how long a learned relay tag stays usable, in seconds.
+///
+/// The tag itself carries no expiry. This is the router's own lifetime for
+/// a tag it learned over an authenticated session.
+pub const RELAY_TAG_INTRODUCER_TTL_SECS: u64 = 3600;
+
 /// One batch of runtime handoff events produced by a datagram or a
 /// scheduler tick.
 #[derive(Debug, Default)]
@@ -975,6 +1026,18 @@ pub struct Ssu2Snapshot {
     pub relay_tags_issued: u64,
     /// Relay tags observed on an authenticated session.
     pub relay_tags_observed: u64,
+    /// Plan 524: relay-tag requests this router queued toward a peer.
+    pub relay_tag_requests_queued: u64,
+    /// Plan 524: relay-tag requests refused because the outstanding set was
+    /// at its ceiling.
+    pub relay_tag_requests_refused_capacity: u64,
+    /// Plan 524: relay tags recorded as authenticated introducers.
+    pub relay_tags_recorded: u64,
+    /// Plan 524: relay tags refused because the router never asked the peer.
+    pub relay_tags_refused_unrequested: u64,
+    /// Plan 524: relay tags that answered an outstanding request but could
+    /// not be recorded.
+    pub relay_tags_refused_record: u64,
     /// Relay blocks queued onto a live session.
     pub relay_blocks_queued: u64,
     /// Relay blocks refused for any reason.
@@ -1279,6 +1342,14 @@ struct ServiceState {
     /// unless the controlled driver started one through
     /// `start_controlled_peer_test`.
     controlled_test: Option<ControlledPeerTestContext>,
+    /// Plan 524: the peers this router asked for a relay tag, and has not
+    /// yet seen the answer for.
+    ///
+    /// Bounded by [`MAX_OUTSTANDING_TAG_REQUESTS`]. A tag that arrives for
+    /// a peer outside this set is **refused**: a peer may send the block
+    /// unsolicited, and recording an introducer nobody asked for would put
+    /// an unauthenticated peer into the router's introducer set.
+    outstanding_tag_requests: BTreeSet<PeerId>,
 }
 
 impl ServiceState {
@@ -1398,6 +1469,18 @@ struct ServiceCounters {
     relay_tag_refused_terminated: AtomicU64,
     relay_tag_refused_control_queue_full: AtomicU64,
     relay_tags_observed: AtomicU64,
+    /// Plan 524: relay-tag requests this router queued toward a peer.
+    relay_tag_requests_queued: AtomicU64,
+    /// Plan 524: relay-tag requests refused because the outstanding set was
+    /// at its ceiling.
+    relay_tag_requests_refused_capacity: AtomicU64,
+    /// Plan 524: relay tags recorded as authenticated introducers.
+    relay_tags_recorded: AtomicU64,
+    /// Plan 524: relay tags refused because the router never asked the peer.
+    relay_tags_refused_unrequested: AtomicU64,
+    /// Plan 524: relay tags that answered an outstanding request but could
+    /// not be recorded.
+    relay_tags_refused_record: AtomicU64,
     relay_blocks_queued: AtomicU64,
     relay_blocks_refused_no_session: AtomicU64,
     relay_blocks_refused_ambiguous_session: AtomicU64,
@@ -1744,6 +1827,7 @@ impl Ssu2RuntimeService {
                     fault_held: None,
                     reachability,
                     controlled_test: None,
+                    outstanding_tag_requests: BTreeSet::new(),
                 }),
                 peer_relay,
                 notify: Notify::new(),
@@ -2078,6 +2162,19 @@ impl Ssu2RuntimeService {
             relay_tag_requests: counters.relay_tag_requests.load(Ordering::Relaxed),
             relay_tags_issued: counters.relay_tags_issued.load(Ordering::Relaxed),
             relay_tags_observed: counters.relay_tags_observed.load(Ordering::Relaxed),
+            relay_tag_requests_queued: counters
+                .relay_tag_requests_queued
+                .load(Ordering::Relaxed),
+            relay_tag_requests_refused_capacity: counters
+                .relay_tag_requests_refused_capacity
+                .load(Ordering::Relaxed),
+            relay_tags_recorded: counters.relay_tags_recorded.load(Ordering::Relaxed),
+            relay_tags_refused_unrequested: counters
+                .relay_tags_refused_unrequested
+                .load(Ordering::Relaxed),
+            relay_tags_refused_record: counters
+                .relay_tags_refused_record
+                .load(Ordering::Relaxed),
             relay_blocks_queued: counters.relay_blocks_queued.load(Ordering::Relaxed),
             relay_blocks_refused: counters
                 .relay_blocks_refused_no_session
@@ -2184,8 +2281,45 @@ impl Ssu2RuntimeService {
     /// session is the whole destination. The request carries no policy —
     /// whether the *receiving* peer answers is that peer's own introducer
     /// gate (`ssu2.introducer_service`), not the requester's.
-    pub fn queue_relay_tag_request(&self, peer: PeerId) -> Result<(), Ssu2RelayQueueError> {
-        self.queue_relay_block(peer, |session| session.queue_relay_tag_request())
+    ///
+    /// Plan 524. The peer joins the **outstanding** set, so that a tag
+    /// arriving for a peer this router did not ask is refused rather than
+    /// recorded. The set is bounded and a request beyond the bound is
+    /// refused: it never queues and never evicts an older request.
+    pub fn queue_relay_tag_request(&self, peer: PeerId) -> Result<(), Ssu2TagRequestError> {
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                let error = Ssu2RelayQueueError::SessionTerminated;
+                self.note_relay_refusal(error);
+                return Err(Ssu2TagRequestError::NotQueued(error));
+            }
+        };
+        if !state.outstanding_tag_requests.contains(&peer)
+            && state.outstanding_tag_requests.len() >= MAX_OUTSTANDING_TAG_REQUESTS
+        {
+            self.shared
+                .counters
+                .relay_tag_requests_refused_capacity
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(Ssu2TagRequestError::Capacity);
+        }
+        match self.queue_relay_block_on_state(&mut state, peer, |session| {
+            session.queue_relay_tag_request()
+        }) {
+            Ok(()) => {
+                state.outstanding_tag_requests.insert(peer);
+                self.shared
+                    .counters
+                    .relay_tag_requests_queued
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.note_relay_refusal(error);
+                Err(Ssu2TagRequestError::NotQueued(error))
+            }
+        }
     }
 
     /// Queues one Relay Intro block toward `peer`.
@@ -2236,17 +2370,38 @@ impl Ssu2RuntimeService {
                 return Err(error);
             }
         };
-        let link = match resolve_single_peer_link(state.peer_links.get(&peer)) {
-            Ok(link) => link,
+        match self.queue_relay_block_on_state(&mut state, peer, queue) {
+            Ok(()) => Ok(()),
             Err(error) => {
                 self.note_relay_refusal(error);
-                return Err(error);
+                Err(error)
             }
+        }
+    }
+
+    /// Resolves `peer` to exactly one live link and queues one control on
+    /// it.
+    ///
+    /// Plan 524. The caller holds the state lock and owns the refusal
+    /// count, so the tag-request path can make the queueing and the
+    /// outstanding-set update one step under one lock.
+    fn queue_relay_block_on_state<F>(
+        &self,
+        state: &mut ServiceState,
+        peer: PeerId,
+        queue: F,
+    ) -> Result<(), Ssu2RelayQueueError>
+    where
+        F: FnOnce(
+            &mut i2pr_transport_ssu2::Ssu2Session,
+        ) -> Result<(), i2pr_transport_ssu2::SessionError>,
+    {
+        let link = match resolve_single_peer_link(state.peer_links.get(&peer)) {
+            Ok(link) => link,
+            Err(error) => return Err(error),
         };
         let Some(record) = state.active.get_mut(&link) else {
-            let error = Ssu2RelayQueueError::NoSession;
-            self.note_relay_refusal(error);
-            return Err(error);
+            return Err(Ssu2RelayQueueError::NoSession);
         };
         match queue(&mut record.session) {
             Ok(()) => {
@@ -2257,12 +2412,54 @@ impl Ssu2RuntimeService {
                 self.shared.notify.notify_one();
                 Ok(())
             }
-            Err(error) => {
-                let error = relay_queue_reason(error);
-                self.note_relay_refusal(error);
-                Err(error)
-            }
+            Err(error) => Err(relay_queue_reason(error)),
         }
+    }
+
+    /// Records one relay tag as an authenticated introducer.
+    ///
+    /// Plan 524. The record's `peer_hash` and `relay_tag` are the facts
+    /// the SSU2 introducer tuple publishes. The record's `endpoint` and
+    /// `intro_key` are **this router's own**: the SSU 1 shape published
+    /// the *target's* contact material so that the introducer could reach
+    /// the target, and the SSU2 published form carries neither (Plan 523).
+    ///
+    /// The tag arrived over an authenticated session, so the session *is*
+    /// the authentication and the provenance is
+    /// [`i2pr_transport_ssu2::IntroducerProvenance::AuthenticatedDirect`].
+    fn record_authenticated_introducer(
+        &self,
+        peer: &PeerId,
+        tag: u32,
+        local_endpoint: Option<Ssu2Endpoint>,
+        now_secs: u64,
+    ) -> Result<(), Ssu2TagRequestError> {
+        let Some(endpoint) = local_endpoint else {
+            // Without the router's own bound endpoint there is no contact
+            // material to record, and a record with none would be a lie.
+            return Err(Ssu2TagRequestError::NoLocalEndpoint);
+        };
+        // The record's introduction key is the **published** form of the
+        // router's own key, so it is the address module's type; the
+        // runtime holds the session's copy of the same 32 bytes.
+        let intro_key =
+            match i2pr_transport_ssu2::address::IntroKey::new(*self.shared.local_intro.as_bytes()) {
+                Ok(key) => key,
+                Err(_) => return Err(Ssu2TagRequestError::NoLocalIntroKey),
+            };
+        let expires_secs = now_secs.saturating_add(RELAY_TAG_INTRODUCER_TTL_SECS);
+        self.shared
+            .peer_relay
+            .note_authenticated_introducer(
+                now_secs,
+                *peer.hash().as_bytes(),
+                endpoint,
+                intro_key,
+                tag,
+                expires_secs,
+                i2pr_transport_ssu2::IntroducerProvenance::AuthenticatedDirect,
+            )
+            .map_err(Ssu2TagRequestError::NotRecorded)
     }
 
     /// Counts one refused relay-block carriage by reason.
@@ -2292,6 +2489,20 @@ impl Ssu2RuntimeService {
     /// Returns whether the introducer (Bob) role is enabled.
     pub fn introducer_service_enabled(&self) -> bool {
         self.shared.peer_relay.introducer_enabled()
+    }
+
+    /// Returns the introducers this router has learned from authenticated
+    /// sessions.
+    ///
+    /// Plan 524. Read-only public protocol material: the SSU2 introducer
+    /// tuple is published in the RouterInfo address, so it is public data
+    /// and never a secret. The set is point-in-time, and a record that
+    /// expired is not returned.
+    pub fn learned_introducers(
+        &self,
+        now_secs: u64,
+    ) -> Vec<i2pr_transport_ssu2::Ssu2Introducer> {
+        self.shared.peer_relay.select_introducers(now_secs)
     }
 
     /// Issues one relay tag that identifies `target_hash`.
@@ -6153,6 +6364,7 @@ impl Ssu2RuntimeService {
         bytes: &[u8],
         now_ms: u64,
         now_secs: u64,
+        local_endpoint: Option<Ssu2Endpoint>,
         inbound: &mut Vec<Ssu2InboundI2np>,
         relay: &mut Vec<Ssu2InboundRelay>,
     ) {
@@ -6310,14 +6522,58 @@ impl Ssu2RuntimeService {
                     self.answer_relay_tag_request(state, &link_id, &peer, now_secs);
                 }
                 // Plan 499 (WP2): this router learned a tag from a peer.
-                // The tag creates no state of its own; it travels back
-                // over the bounded relay handoff because the peer that
-                // asked for a tag is the peer that has to learn it.
+                //
+                // Plan 524. A `Tag` is the answer to *this router's own*
+                // request, so the event is **recorded** here as an
+                // authenticated introducer. A tag for a peer this router
+                // did **not** ask is refused -- a peer may send the block
+                // unsolicited, and recording an introducer nobody asked
+                // for would put an unauthenticated peer into the router's
+                // introducer set.
+                //
+                // The event still reaches the relay handoff: the handoff
+                // is the runtime's public authenticated-event channel, and
+                // Plan 499's live-mesh evidence reads the minted tag
+                // there. The **daemon's drain** is what no longer hands it
+                // to the introducer role owner, so an answer to the
+                // router's own request is no longer counted as one of the
+                // role owner's refusals.
                 SessionEvent::RelayTag(tag) => {
                     self.shared
                         .counters
                         .relay_tags_observed
                         .fetch_add(1, Ordering::Relaxed);
+                    if state.outstanding_tag_requests.remove(&peer) {
+                        match self.record_authenticated_introducer(
+                            &peer,
+                            tag,
+                            local_endpoint,
+                            now_secs,
+                        ) {
+                            Ok(()) => {
+                                self.shared
+                                    .counters
+                                    .relay_tags_recorded
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(reason) => {
+                                self.shared
+                                    .counters
+                                    .relay_tags_refused_record
+                                    .fetch_add(1, Ordering::Relaxed);
+                                tracing::debug!(
+                                    transition = "relay_tag_record_refused",
+                                    reason = reason.reason(),
+                                    "a relay tag could not be recorded as an introducer"
+                                );
+                            }
+                        }
+                    } else {
+                        self.shared
+                            .counters
+                            .relay_tags_refused_unrequested
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     relay.push(Ssu2InboundRelay {
                         link_id,
                         peer,
@@ -6454,6 +6710,10 @@ impl Ssu2RuntimeService {
             .iter()
             .find(|(_, record)| record.session.matches_inbound(bytes))
             .map(|(id, _)| *id);
+        // Plan 524: the router's own bound endpoint, for the introducer
+        // record's contact material. It is read from the datagram's own
+        // local address, so no lock is taken while the state lock is held.
+        let local_endpoint = local_addr.and_then(|addr| Ssu2Endpoint::from_socket_addr(addr).ok());
         if let Some(link_id) = matched {
             self.handle_active_datagram(
                 &mut state,
@@ -6462,6 +6722,7 @@ impl Ssu2RuntimeService {
                 bytes,
                 now_ms,
                 now_secs,
+                local_endpoint,
                 &mut batch.i2np,
                 &mut batch.relay,
             );
@@ -6494,6 +6755,7 @@ impl Ssu2RuntimeService {
                 bytes,
                 now_ms,
                 now_secs,
+                local_endpoint,
                 &mut batch.i2np,
                 &mut batch.relay,
             );

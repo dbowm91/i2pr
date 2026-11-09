@@ -93,9 +93,9 @@ pub use ssu2_controlled_peer_test::{
     run_controlled_peer_test,
 };
 pub use ssu2_peer_relay::{
-    PEER_RELAY_DATAGRAMS_PER_SECOND, PEER_RELAY_MAX_SIGNERS, PEER_RELAY_RATE_SOURCES,
-    PEER_RELAY_RESPONSE_BUDGET_NUMERATOR, PeerRelayAdmission, Ssu2PeerRelayConfig,
-    Ssu2PeerRelayService, Ssu2PeerRelaySnapshot,
+    INTRODUCER_EXPIRY_MARGIN_SECS, PEER_RELAY_DATAGRAMS_PER_SECOND, PEER_RELAY_MAX_SIGNERS,
+    PEER_RELAY_RATE_SOURCES, PEER_RELAY_RESPONSE_BUDGET_NUMERATOR, PeerRelayAdmission,
+    Ssu2PeerRelayConfig, Ssu2PeerRelayService, Ssu2PeerRelaySnapshot,
 };
 pub use ssu2_qualification_observer::{
     Ssu2QualificationEvent, Ssu2QualificationEventKind, Ssu2QualificationObserver,
@@ -115,7 +115,8 @@ pub use ssu2_runtime::{
     Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent, Ssu2RelayQueueError,
     Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines, Ssu2RuntimeLimits,
     Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig,
-    Ssu2TestFaults,
+    Ssu2TagRequestError, Ssu2TestFaults, MAX_OUTSTANDING_TAG_REQUESTS,
+    RELAY_TAG_INTRODUCER_TTL_SECS,
 };
 // Plan 490 daemon-owned SSU2 relay re-exports: the daemon owns the
 // introducer (Bob) role and must reach the relay blocks without a

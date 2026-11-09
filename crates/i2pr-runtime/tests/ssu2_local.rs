@@ -24,6 +24,7 @@ use i2pr_runtime::{
     CancellationToken, ChildFailurePolicy, ChildScope, RelayIntroBlock, RelayRequestBlock,
     RelayResponseBlock, Ssu2DialOutcome, Ssu2DialTarget, Ssu2Endpoint, Ssu2EstablishedLink,
     Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2RelayEvent, Ssu2RelayQueueError, Ssu2RuntimeConfig,
+    Ssu2TagRequestError,
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
     Ssu2ServiceHandle, Ssu2SocketConfig, Ssu2TestFaults,
 };
@@ -1047,7 +1048,9 @@ async fn relay_carriage_without_a_live_session_is_refused() {
     );
     assert_eq!(
         a.service.queue_relay_tag_request(unknown),
-        Err(Ssu2RelayQueueError::NoSession)
+        Err(Ssu2TagRequestError::NotQueued(
+            Ssu2RelayQueueError::NoSession
+        ))
     );
     assert_eq!(
         a.service.relay_counters().blocks_refused_no_session,
@@ -1086,7 +1089,9 @@ async fn relay_carriage_after_the_session_terminates_is_refused() {
     );
     assert_eq!(
         a.service.queue_relay_tag_request(b.keys.peer),
-        Err(Ssu2RelayQueueError::NoSession)
+        Err(Ssu2TagRequestError::NotQueued(
+            Ssu2RelayQueueError::NoSession
+        ))
     );
 
     a.shutdown_scope().await;
