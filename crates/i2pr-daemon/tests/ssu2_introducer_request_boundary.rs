@@ -315,13 +315,6 @@ fn item_body(code: &str, signature: &str) -> Option<String> {
     Some(code[open + 1..close - 1].to_owned())
 }
 
-/// Extracts the body of the `impl` block whose header is `header`.
-fn impl_body(code: &str, header: &str) -> Option<String> {
-    let start = find_definition(code, header)?;
-    let (open, close) = brace_balanced_block(code, start + header.len())?;
-    Some(code[open + 1..close - 1].to_owned())
-}
-
 // ----------------------------------------------------------------------
 // The rules.
 // ----------------------------------------------------------------------
