@@ -3639,6 +3639,64 @@ is advertised: `router.version` stays `0.9.62`, the published record's
 `caps` string is unchanged, and `Cargo.toml` and `Cargo.lock` are
 byte-identical.
 
+## The router's relay-tag request (Plan 524)
+
+A router behind a firewall cannot be reached directly, so it needs an
+**introducer**: a peer that will introduce it to the peers that want to talk
+to it. Plan 524 gives the router the **acquisition** half of that
+composition — it learns that a peer is an introducer, asks such a peer for a
+relay tag while the router is firewalled, and records the answer as an
+**authenticated introducer**. The **publication** half — building the
+introducer-only address, choosing it over the direct form, and signing it —
+is a successor's subject, and so is the `C` capability the router publishes
+about **itself**.
+
+- `src/introducer_request.rs` — the bounded owner. It is runtime-neutral: it
+  owns no task, no timer, no listener and no socket, and the product's
+  existing tick drives it. It refuses every window while the operator's
+  opt-in is off, refuses every window while the router is not firewalled,
+  and draws its candidates from the peers with a live session. The
+  candidate window is **bounded** and **rotates**, so a busy router sees
+  every peer it holds a session with over time instead of re-examining the
+  same head of the list for ever; a peer the router already asked is not
+  asked again while its session lives, and the asked set is pruned against
+  the live sessions so it never outgrows them. Every refusal is counted
+  under its own reason, and the counters name no peer, no address, no key
+  and no tag;
+- `src/introducer_request.rs` — `read_capability`, the read of the peer's
+  advertised capability. It takes the **validated** record from the
+  authoritative store and parses the address with the transport's own
+  strict parser. A peer with no stored record, with no SSU2 address, with
+  an unparsable address, or with an address that advertises no introducer
+  letter is **not** an introducer, and each is a distinct refusal — never a
+  silent absence. The test is the peer's **advertised** `C`, never its
+  published introducer set;
+- `src/service_product.rs` — `drive_introducer_request`, the tick step. It
+  reads the router's own reachability state, draws the bounded window from
+  the peers with a live session, reads their advertised capabilities, and
+  queues **at most one** relay-tag request through the runtime. It never
+  dials: the request rides a session the router already holds;
+- `src/config.rs` — `ssu2.introducer_request` is an explicit opt-in, **off**
+  by default, and refused unless the SSU2 service itself runs;
+- `src/i2pcontrol_inspection.rs` — the counters reach the inspection plane.
+  The cell holds counts only: it names no peer, no address, no key and no
+  tag;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime's bounded
+  outstanding-request set and the recording. A tag is recorded **only** in
+  answer to a request this router made; a tag for any other peer is refused
+  and counted, because recording an introducer nobody asked for would put an
+  unauthenticated peer into the router's introducer set;
+- `src/ssu2_relay_drain.rs` — the drain **skips** the tag answer. The
+  handoff keeps the event — Plan 499's live-mesh evidence reads the minted
+  tag there — but the role owner never served it, so it is not charged with
+  a refusal it did not make.
+
+**What is deliberately not claimed.** Nothing is advertised: `router.version`
+stays `0.9.62`, the published record's `caps` string is unchanged, the
+inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
 ## Cross-references
 
 ### Deep dives

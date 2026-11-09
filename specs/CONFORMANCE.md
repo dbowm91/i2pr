@@ -2559,6 +2559,11 @@ inventory holds **116 surfaces, 111 experimental, 4 deferred, 1 ready, 0
 advertised**. The advertised count stays **zero**: Plan 523 corrects the
 *form* of the SSU2 introducer set and publishes nothing.
 
+**Plan 524 adds one surface** — `daemon.introducer-request` — so the
+inventory holds **117 surfaces, 112 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 524 makes the router
+*acquire* an introducer, and publishes nothing.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3431,3 +3436,88 @@ pool today, and that limit is a transport boundary with its own
 plan-of-record. Nothing is advertised: the inventory's advertised count stays
 zero, `router.version` stays `0.9.62`, the published record's `caps` string
 is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+## The router asks a peer for a relay tag (Plan 524)
+
+The SSU2 **introducer set** — the peers that will introduce this router to
+others — is the only way a firewalled router is reachable at all, and it is
+the second half of the network-participation roadmap's completion
+definition. Plan 490 answered the first half (the router answers a peer's
+Relay Request as the introducer), Plan 523 corrected the **form** the second
+half depends on, and Plan 524 gives the router the **acquisition**: it
+learns that a peer is an introducer, asks such a peer for a relay tag, and
+records the answer as an authenticated introducer.
+
+**The condition is the reference's own.** The pinned i2pd 2.61.0 asks for a
+relay tag under exactly one condition
+(`libi2pd/SSU2Session.cpp:753`):
+
+```cpp
+if (GetRouterStatus () == eRouterStatusFirewalled && m_Address->IsIntroducer ())
+```
+
+— the router is **firewalled** and the peer **advertises the introducer
+capability** (`libi2pd/RouterInfo.h:184`, `caps & eSSUIntroducer`). A
+reachable router needs no introducer, so it asks nobody; and a peer that
+*publishes* introducers is a peer that *has* introducers, not a peer willing
+to *be* one, so the published set is never the test.
+
+**The capability read is authenticated.** The daemon reads the peer's
+**validated** RouterInfo from the authoritative store and parses its SSU2
+address with the transport's own strict parser, so the bytes are the ones
+the netdb validated on ingest. A peer with no stored record, with no SSU2
+address, with an unparsable address, or with an address that advertises no
+introducer letter is **not** an introducer, and each is a distinct counted
+refusal — never a silent absence. (Plan 524's §17.2 corrected the plan's
+registered design, which put this read in the transport's validated peer
+record: the transport's `validate_router_info` runs on exactly one path, the
+**responder's** SessionConfirmed, and the initiator's peer record carries an
+empty RouterInfo — so the read could not have answered the question for the
+outbound sessions the request travels on.)
+
+**The request rides an existing session.** The peer is drawn from the peers
+the runtime already holds a session with; no new connection is made, and at
+most one request leaves per cadence window. The window is **bounded** and
+**rotates**, so a busy router sees every peer it holds a session with over
+time instead of re-examining the same head of the list for ever, and a peer
+the router already asked is not asked again while its session lives.
+
+**A tag is recorded only in answer to this router's own request.** The
+runtime keeps a bounded set of outstanding requests. A tag for a peer outside
+that set is **refused** and counted: a peer may send the block unsolicited,
+and recording an introducer nobody asked for would put an unauthenticated
+peer into the router's introducer set. The recorded tuple is the
+specification's — the introducer's router hash, an expiry and the nonzero
+relay tag — and the record's endpoint and introduction key are **this
+router's own**, because the SSU 1 shape published the *target's* contact
+material and the SSU2 form carries neither.
+
+**The switch is real.** `ssu2.introducer_request` is **off** by default and
+refused without the SSU2 service, so a router that has not asked to learn an
+introducer never sends a relay-tag request.
+
+**The advertisement.** Nothing is advertised. `router.version` stays
+`0.9.62`; the published RouterInfo's `caps` string is unchanged; the
+inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock`
+are byte-identical; and the router still advertises **no** introducer
+capability of its own.
+
+**What this does not close.** The **publication** half — building the
+introducer-only address, choosing it over the direct form, and signing it —
+is a successor's subject, and so is the `C` capability this router publishes
+about **itself**. The **stock-peer** half needs Plan 493's authorized
+two-host topology.
+
+**Evidence.** The lane
+`crates/i2pr-daemon/tests/ssu2_introducer_request.rs` (13 rows) drives the
+daemon's owner and the runtime's live service over a **real** SSU2 session
+between two daemon-owned services on loopback: the opt-in is off by default
+and refused without the service; the capability read answers from the
+validated record and counts each refusal under its own reason; a firewalled
+router asks exactly one peer per window and a reachable router asks nobody;
+the peer is never named without a session; the request rides the established
+session; the answer is recorded as an authenticated introducer bound to the
+peer that issued it; and a tag for a peer the router did not ask yields no
+record. The guard
+`crates/i2pr-daemon/tests/ssu2_introducer_request_boundary.rs` (15 rules,
+15 inverted probes) pins the production surface structurally.

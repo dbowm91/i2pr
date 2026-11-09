@@ -917,6 +917,44 @@ The governor remains the socket-level enforcement; the posture is the
 router-level accounting of what the *transit role* may spend inside that
 enforced share. No new channel, no new queue, and no new task was added here.
 
+## The relay-tag request and the introducer recording (Plan 524)
+
+A router behind a firewall needs an **introducer**. Plan 524 gives the
+router the **acquisition** half of that composition, and the runtime owns
+the two halves of it that are below the daemon.
+
+**The outstanding-request set is bounded and refuses.** The runtime keeps
+the set of peers this router asked for a relay tag, so that a tag arriving
+for a peer nobody asked about is refused rather than recorded. The set is a
+**ceiling**: at `MAX_OUTSTANDING_TAG_REQUESTS` a further request is refused
+and counted, never queued and never evicting an older request. (This is a
+different bound from the introducer table's own ceiling, which **evicts**
+the oldest record — `crates/i2pr-transport-ssu2/src/introducer.rs`.)
+
+**The recording is gated on the router's own request.** A `SessionEvent::RelayTag`
+is recorded as an authenticated introducer only for a peer in the outstanding
+set; for any other peer it is refused and counted under its own reason. The
+session that carried the tag *is* the authentication, and the provenance is
+`AuthenticatedDirect`. The record's `peer_hash` and `relay_tag` are the
+facts the SSU2 introducer tuple publishes; the record's `endpoint` and
+`intro_key` are **this router's own**, because the SSU 1 shape published the
+*target's* contact material and the SSU2 form carries neither.
+
+**The sweep runs against the real clock.** The insertion path takes the
+**wall clock**, and the margin belongs to the *record*: a tag whose own
+expiry is within `INTRODUCER_EXPIRY_MARGIN_SECS` is not a usable
+introducer, so the record's effective expiry is pulled back by the margin
+while the table's sweep still runs against the real clock. (The earlier
+shape derived the sweep clock from the record's own expiry, which made the
+sweep run in the future and expire live records early; the path had no
+production caller until Plan 524.)
+
+**The event still reaches the handoff.** The relay handoff is the runtime's
+public authenticated-event channel, and Plan 499's live-mesh evidence reads
+the minted tag through it. The **daemon's drain** is what skips the event,
+so the answer to the router's own request is no longer counted as one of the
+introducer role owner's refusals.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

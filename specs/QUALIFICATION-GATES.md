@@ -1619,3 +1619,27 @@ relay tag, recording an introducer, publishing the router's own introducer
 set, and advertising the `C` capability — is a successor's subject. The
 **stock-peer** half needs Plan 493's authorized two-host topology, and a
 published introducer set that does not exist yet.
+
+## 23. The router's relay-tag request (Plan 524)
+
+Plan 524 gives the router the **acquisition** half of the SSU2 introducer
+composition. The gates below are the questions a reviewer asks of the
+request.
+
+| Gate | Question | How it is answered |
+|---|---|---|
+| G23.1 | Is the opt-in real and off by default? | `ssu2.introducer_request` is parsed, defaults to `false`, and is refused unless the SSU2 service itself runs. |
+| G23.2 | Is the peer's capability read from a **validated** record? | The daemon reads the peer's RouterInfo from the authoritative store and parses the address with the transport's strict parser; unvalidated bytes are never parsed. |
+| G23.3 | Is the test the peer's **advertised** capability? | The transport's own `supports_relay()` — the `C` letter — is the test. The peer's *published* introducer set is never the test. |
+| G23.4 | Does the router ask only while firewalled? | The driver reads the router's own reachability state and refuses every window that is not `Firewalled`, counting the refusal under its own reason. |
+| G23.5 | Does the request ride an existing session? | The peer is drawn from the peers with a live session, and the driver never dials. |
+| G23.6 | Does one window ask one peer? | The driver queues exactly one relay-tag request, and the candidate window is bounded and rotates. |
+| G23.7 | Is a tag recorded only when the router asked? | The runtime records the tag only for a peer in its bounded outstanding-request set; a tag for any other peer is refused and counted. |
+| G23.8 | Does the daemon write the wire vocabulary? | No: the request block is the one the transport already builds, and the guard proves the daemon names no block. |
+| G23.9 | Does the owner add infrastructure? | No: no task, no timer, no listener and no socket. The product's existing tick drives it. |
+| G23.10 | Is the publication untouched? | The acquisition builds no introducer-only address, signs nothing, and advertises no `C` of the router's own. |
+
+**What the gates do not cover.** The **publication** — building the
+introducer-only address, choosing it over the direct form, and signing it —
+is a successor's subject, and so is the `C` advertisement. The **stock-peer**
+half needs Plan 493's authorized two-host topology.

@@ -570,6 +570,54 @@ The plan passes when:
 
 ## 17. Amendment log
 
+### 17.4 — 2026-11-09, the citation drift after the two halves
+
+**Why this section exists.** §3 is the plan's **evidence**, and evidence is
+never rewritten. The two halves of this plan — the runtime's outstanding
+set, the typed queue error, the recording arm, the drain's skip, and then
+the daemon's owner, the tick driver and the capability read — moved the
+constructs §3 cites. The table below is an **additive pointer**: it maps each
+registered citation to the site that now holds the cited construct. The
+registered text stands exactly as it was written.
+
+| Registered citation | Current site | What moved |
+|---|---|---|
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2187` — `queue_relay_tag_request` | `:2285` | the outstanding-request set and the typed `Ssu2TagRequestError` were added above it |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2225` — `queue_relay_block` | `:2355`, and `queue_relay_block_on_state` at `:2384` | the same insertion, and the split that lets the queueing and the set update be one step under one lock |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6316` — `SessionEvent::RelayTag` | `:6532` | the same insertion, and the recording arm's own growth |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3204` — the responder mints a relay tag | `answer_relay_tag_request` at `:3388` | the same insertion |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1833` — `active_peer_hashes` | `:1917` | the same insertion |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1188` — the session's peer RouterInfo field | `:1251` (`peer_router_info`), accessor `session_peer_router_info` at `:1879` | the same insertion |
+| `ssu2_runtime.rs:2392` — a `Ssu2Capabilities::parse` caller | `:2594` | the same insertion |
+| `ssu2_runtime.rs:2514` — a `Ssu2Capabilities::parse` caller | `:2716` | the same insertion |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:1036` — `reachability_state` | `:1043` | the wall-clock insertion and its own doc comment |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:1101` — `note_authenticated_introducer` | `:1119` | the same insertion |
+| `crates/i2pr-daemon/src/service_product.rs:4122` — `peer_static_encryption_key` | `:4181` | the daemon's own composition grew above it |
+| `crates/i2pr-daemon/src/service_product.rs:4709` — `select_peer_test_target` | `:4768` | the same insertion |
+| `crates/i2pr-daemon/src/ssu2_relay_drain.rs:174` — the drain | the drain at `:170`; the role-owner call at `:191` | the drain gained the `tag_answers` field and the skip |
+
+**The citations that did not move.** The transport's
+`crates/i2pr-transport-ssu2/src/address.rs:472` (`supports_relay`), `:570`
+(`Ssu2RouterAddress::parse`) and `:661` (`capabilities()`); the
+introduction table's `crates/i2pr-transport-ssu2/src/introducer.rs:43`, `:80`
+and `:196-210`; the transport's validation sites
+`crates/i2pr-transport-ssu2/src/handshake.rs:924` and
+`crates/i2pr-transport-ssu2/src/state_machine.rs:728-732` and `:1446`; the
+daemon's `crates/i2pr-daemon/src/bootstrap.rs:261` and
+`crates/i2pr-daemon/src/ssu2_introducer.rs:349`; the netdb's
+`crates/i2pr-netdb/src/store.rs:177`; and the two live-mesh evidence sites
+`crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs:480-487` and
+`crates/i2pr-runtime/tests/ssu2_local.rs:913-921` all still hold the cited
+construct.
+
+**What the daemon half added.** The daemon's own sites are new, so they are
+recorded here rather than in §3: the owner is
+`crates/i2pr-daemon/src/introducer_request.rs` (the policy, the counters and
+the capability read), the tick driver is
+`crates/i2pr-daemon/src/service_product.rs` (`drive_introducer_request`),
+the configuration key is `ssu2.introducer_request`, and the inspection cell
+is `crates/i2pr-daemon/src/i2pcontrol_inspection.rs`.
+
 ### 17.3 — 2026-11-09, the `Tag` event stays on the handoff, and the ceiling evicts
 
 **Two corrections, both found while implementing.**
