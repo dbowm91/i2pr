@@ -7736,6 +7736,60 @@ mod tests {
     }
 
     #[test]
+    fn the_keepalive_deadline_is_refused_when_it_cannot_fall_before_the_idle_timeout() {
+        // Plan 522: the keepalive's unanswered deadline is three intervals,
+        // and it must fall **strictly** before the session's idle timeout.
+        // The two would otherwise disagree about when a session dies: the
+        // keepalive refreshes the session's send timestamp, and the idle
+        // timeout reads the maximum of the send and receive timestamps.
+        //
+        // The daemon's parse-time refusal is the first line. This is the
+        // second, and it is the one a different caller of the runtime crate
+        // would meet.
+        let idle = Duration::from_secs(300);
+        let accepted = Ssu2RuntimeDeadlines {
+            keepalive: Some(Duration::from_secs(60)),
+            idle,
+            ..Default::default()
+        };
+        assert!(accepted.validate().is_ok());
+
+        let zero = Ssu2RuntimeDeadlines {
+            keepalive: Some(Duration::ZERO),
+            idle,
+            ..Default::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(Ssu2RuntimeConfigError::ZeroDeadline { field: "keepalive" })
+        ));
+
+        let too_long = Ssu2RuntimeDeadlines {
+            keepalive: Some(idle),
+            idle,
+            ..Default::default()
+        };
+        assert!(matches!(
+            too_long.validate(),
+            Err(Ssu2RuntimeConfigError::KeepaliveTooLong)
+        ));
+
+        let beyond_the_ceiling = Ssu2RuntimeDeadlines {
+            keepalive: Some(MAX_SSU2_RUNTIME_DURATION + Duration::from_secs(1)),
+            idle,
+            ..Default::default()
+        };
+        assert!(matches!(
+            beyond_the_ceiling.validate(),
+            Err(Ssu2RuntimeConfigError::DeadlineTooLong { field: "keepalive" })
+        ));
+
+        // A router without the pool carries no keepalive at all, and that is
+        // the default posture.
+        assert!(Ssu2RuntimeDeadlines::default().validate().is_ok());
+    }
+
+    #[test]
     fn dial_targets_validate_before_socket_activity() {
         let hash = Hash::from_bytes([0x44_u8; 32]);
         let peer = PeerId::from_hash(hash);
