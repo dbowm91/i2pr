@@ -38,7 +38,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use i2pr_crypto::RouterIdentityBundle;
 use i2pr_netdb::LocalRouterInfoBuilder;
 use i2pr_proto::Date;
-use i2pr_runtime::{Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RuntimeService};
+use i2pr_runtime::{
+    Ssu2PublicationForm, Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RuntimeService,
+};
 
 /// The maximum encoded size of the router's own published RouterInfo.
 const MAX_ENCODED_ROUTER_INFO: usize = i2pr_proto::MAX_COMMON_STRUCTURE_SIZE;
@@ -81,9 +83,15 @@ pub enum StandDownReason {
 /// Why the addressed record could not be built or installed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelfPublicationFailure {
-    /// The netdb's own qualification refused the address the transport
-    /// produced. The address is never signed and never installed.
+    /// The netdb's own **direct** qualification refused the address the
+    /// transport produced. The address is never signed and never
+    /// installed.
     UnqualifiedAddress,
+    /// The netdb's own **introducer** qualification refused the address.
+    ///
+    /// Plan 525: the two forms are qualified by two **different** rules,
+    /// so the rule that refused is part of the reason.
+    UnqualifiedIntroducerAddress,
     /// The record could not be built or encoded.
     Construction,
     /// The runtime refused the install.
@@ -114,7 +122,9 @@ pub enum SelfPublicationOutcome {
 /// one that does.
 #[derive(Debug, Default)]
 pub struct SelfPublicationCounters {
-    published: AtomicU64,
+    published_direct: AtomicU64,
+    published_introducer_only: AtomicU64,
+    withdrawn: AtomicU64,
     prepared: AtomicU64,
     disabled: AtomicU64,
     withheld_closed: AtomicU64,
@@ -129,6 +139,7 @@ pub struct SelfPublicationCounters {
     stood_down_unreadable: AtomicU64,
     stood_down_no_installed_record: AtomicU64,
     failed_unqualified_address: AtomicU64,
+    failed_unqualified_introducer_address: AtomicU64,
     failed_construction: AtomicU64,
     failed_install: AtomicU64,
 }
@@ -136,8 +147,21 @@ pub struct SelfPublicationCounters {
 /// A plain snapshot of the owner's counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SelfPublicationCounterSnapshot {
-    /// The transport's qualified address was published.
+    /// An address was published, in either form.
+    ///
+    /// Plan 525: this is the **sum** of the two published forms. It was
+    /// previously a count of every successful install, which included the
+    /// withdrawal and so did not mean "an address was published".
     pub published: u64,
+    /// The **direct** form was published: the address carries the
+    /// router's host and port.
+    pub published_direct: u64,
+    /// The **introducer-only** form was published: the address carries no
+    /// host and no port, and publishes the validated introducer set.
+    pub published_introducer_only: u64,
+    /// The address was **withdrawn**: the record carries no address at
+    /// all.
+    pub withdrawn: u64,
     /// The owner produced an installable record.
     pub prepared: u64,
     /// The opt-in was off.
@@ -165,8 +189,10 @@ pub struct SelfPublicationCounterSnapshot {
     pub stood_down_unreadable: u64,
     /// No record was installed.
     pub stood_down_no_installed_record: u64,
-    /// The netdb's qualification refused the address.
+    /// The netdb's **direct** qualification refused the address.
     pub failed_unqualified_address: u64,
+    /// The netdb's **introducer** qualification refused the address.
+    pub failed_unqualified_introducer_address: u64,
     /// The record could not be built or encoded.
     pub failed_construction: u64,
     /// The runtime refused the install.
@@ -202,6 +228,9 @@ impl SelfPublicationCounters {
     fn record_failure(&self, reason: SelfPublicationFailure) {
         let counter = match reason {
             SelfPublicationFailure::UnqualifiedAddress => &self.failed_unqualified_address,
+            SelfPublicationFailure::UnqualifiedIntroducerAddress => {
+                &self.failed_unqualified_introducer_address
+            }
             SelfPublicationFailure::Construction => &self.failed_construction,
             SelfPublicationFailure::Install(_) => &self.failed_install,
         };
@@ -210,8 +239,13 @@ impl SelfPublicationCounters {
 
     /// Returns a plain snapshot of every counter.
     pub fn snapshot(&self) -> SelfPublicationCounterSnapshot {
+        let published_direct = self.published_direct.load(Ordering::Relaxed);
+        let published_introducer_only = self.published_introducer_only.load(Ordering::Relaxed);
         SelfPublicationCounterSnapshot {
-            published: self.published.load(Ordering::Relaxed),
+            published: published_direct + published_introducer_only,
+            published_direct,
+            published_introducer_only,
+            withdrawn: self.withdrawn.load(Ordering::Relaxed),
             prepared: self.prepared.load(Ordering::Relaxed),
             disabled: self.disabled.load(Ordering::Relaxed),
             withheld_closed: self.withheld_closed.load(Ordering::Relaxed),
@@ -232,6 +266,9 @@ impl SelfPublicationCounters {
                 .stood_down_no_installed_record
                 .load(Ordering::Relaxed),
             failed_unqualified_address: self.failed_unqualified_address.load(Ordering::Relaxed),
+            failed_unqualified_introducer_address: self
+                .failed_unqualified_introducer_address
+                .load(Ordering::Relaxed),
             failed_construction: self.failed_construction.load(Ordering::Relaxed),
             failed_install: self.failed_install.load(Ordering::Relaxed),
         }
@@ -259,7 +296,9 @@ impl SelfPublicationOwner {
         Self {
             enabled,
             counters: SelfPublicationCounters {
-                published: AtomicU64::new(0),
+                published_direct: AtomicU64::new(0),
+                published_introducer_only: AtomicU64::new(0),
+                withdrawn: AtomicU64::new(0),
                 prepared: AtomicU64::new(0),
                 disabled: AtomicU64::new(0),
                 withheld_closed: AtomicU64::new(0),
@@ -274,6 +313,7 @@ impl SelfPublicationOwner {
                 stood_down_unreadable: AtomicU64::new(0),
                 stood_down_no_installed_record: AtomicU64::new(0),
                 failed_unqualified_address: AtomicU64::new(0),
+                failed_unqualified_introducer_address: AtomicU64::new(0),
                 failed_construction: AtomicU64::new(0),
                 failed_install: AtomicU64::new(0),
             },
@@ -336,7 +376,7 @@ impl SelfPublicationOwner {
                 };
             }
         };
-        match self.build_record(bundle, Some(material.address.clone()), now_ms) {
+        match self.build_record(bundle, Some(material), now_ms) {
             Ok(encoded) => {
                 self.counters.prepared.fetch_add(1, Ordering::Relaxed);
                 SelfPublicationDecision::Install(encoded)
@@ -365,7 +405,11 @@ impl SelfPublicationOwner {
             return SelfPublicationOutcome::Disabled;
         }
         let installed = service.installed_local_router_info();
-        let material = service.publication_material(now_ms);
+        // Plan 525: the runtime answers **which form** the router
+        // publishes -- the direct one while the reachability evidence
+        // admits it, the introducer-only one while it does not -- and the
+        // daemon never infers a form from a refusal.
+        let material = service.self_publication_material(now_ms);
         let decision = self.decide(
             bundle,
             installed.as_deref(),
@@ -379,7 +423,25 @@ impl SelfPublicationOwner {
             SelfPublicationDecision::Install(encoded) => {
                 match service.install_local_router_info(encoded, now_ms) {
                     Ok(()) => {
-                        self.counters.published.fetch_add(1, Ordering::Relaxed);
+                        // The form the runtime admitted is the form that
+                        // was published, and each form is counted under
+                        // its own reason. A withdrawal carries no form at
+                        // all, and is counted as one.
+                        match material.as_ref().map(|material| material.form) {
+                            Ok(Ssu2PublicationForm::Direct) => {
+                                self.counters
+                                    .published_direct
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            Ok(Ssu2PublicationForm::IntroducerOnly) => {
+                                self.counters
+                                    .published_introducer_only
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(_) => {
+                                self.counters.withdrawn.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                         SelfPublicationOutcome::Published
                     }
                     Err(reason) => {
@@ -397,19 +459,37 @@ impl SelfPublicationOwner {
     fn build_record(
         &self,
         bundle: &RouterIdentityBundle,
-        address: Option<i2pr_proto::RouterAddress>,
+        material: Option<&Ssu2PublicationMaterial>,
         now_ms: u64,
     ) -> Result<Vec<u8>, SelfPublicationFailure> {
         let options = i2pr_netdb::controlled_router_options()
             .map_err(|_| SelfPublicationFailure::Construction)?;
         let published = Date::from_millis(now_ms);
         let builder = LocalRouterInfoBuilder::new(bundle);
-        let local = match address {
+        let local = match material {
             // The netdb's own qualification is the authority: an address
-            // it refuses is never signed.
-            Some(address) => builder
-                .build_with_ssu2_address(published, options, address)
-                .map_err(|_| SelfPublicationFailure::UnqualifiedAddress)?,
+            // it refuses is never signed. Plan 525: the two forms have
+            // two **different** rules, and each form is built by the
+            // builder that carries its own rule.
+            Some(material) => match material.form {
+                Ssu2PublicationForm::Direct => builder
+                    .build_with_ssu2_address(published, options, material.address.clone())
+                    .map_err(|error| {
+                        SelfPublicationFailure::from_netdb(error, Ssu2PublicationForm::Direct)
+                    })?,
+                Ssu2PublicationForm::IntroducerOnly => builder
+                    .build_with_ssu2_introducer_address(
+                        published,
+                        options,
+                        material.address.clone(),
+                    )
+                    .map_err(|error| {
+                        SelfPublicationFailure::from_netdb(
+                            error,
+                            Ssu2PublicationForm::IntroducerOnly,
+                        )
+                    })?,
+            },
             None => builder
                 .build(published, options)
                 .map_err(|_| SelfPublicationFailure::Construction)?,
@@ -417,6 +497,26 @@ impl SelfPublicationOwner {
         local
             .encoded(MAX_ENCODED_ROUTER_INFO)
             .map_err(|_| SelfPublicationFailure::Construction)
+    }
+}
+
+impl SelfPublicationFailure {
+    /// Maps the netdb's own refusal onto the reason that names it.
+    ///
+    /// Plan 525: the direct form and the introducer-only form are
+    /// qualified by two **different** rules, so the rule that refused is
+    /// part of the reason. Every other refusal is a construction failure.
+    fn from_netdb(error: i2pr_netdb::LocalRouterInfoError, form: Ssu2PublicationForm) -> Self {
+        match (error, form) {
+            (i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress, Ssu2PublicationForm::Direct) => {
+                Self::UnqualifiedAddress
+            }
+            (
+                i2pr_netdb::LocalRouterInfoError::UnqualifiedAddress,
+                Ssu2PublicationForm::IntroducerOnly,
+            ) => Self::UnqualifiedIntroducerAddress,
+            _ => Self::Construction,
+        }
     }
 }
 

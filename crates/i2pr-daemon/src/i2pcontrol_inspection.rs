@@ -87,6 +87,13 @@ pub type IntroducerRequestCounterCell =
 /// peer, address or key.
 pub type PeerPoolCounterCell = std::sync::Mutex<crate::peer_pool::PeerPoolCounters>;
 
+/// Plan 525: the live counters of this router's own published address.
+///
+/// The cell carries counts and stable reason labels only: it names no
+/// peer, no address, no key and no payload.
+pub type SelfPublicationCounterCell =
+    std::sync::Mutex<crate::self_publication::SelfPublicationCounterSnapshot>;
+
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
 
@@ -310,6 +317,11 @@ pub struct InspectionHandles {
     /// Live counters of this router's outbound peer-session pool,
     /// published by the composition root (Plan 522).
     peer_pool_live: Mutex<Option<Arc<PeerPoolCounterCell>>>,
+    /// Live counters of this router's own published address, published by
+    /// the composition root (Plan 525). The publication's own task
+    /// refreshes the cell on its cycle; the counters are counts only and
+    /// name no peer, address, key or payload.
+    self_publication_live: Mutex<Option<Arc<SelfPublicationCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -342,6 +354,7 @@ impl InspectionHandles {
             peer_test_live: Mutex::new(None),
             introducer_request_live: Mutex::new(None),
             peer_pool_live: Mutex::new(None),
+            self_publication_live: Mutex::new(None),
         }
     }
 
@@ -767,6 +780,40 @@ impl InspectionHandles {
         if let Ok(mut slot) = self.peer_pool_live.lock() {
             *slot = Some(cell);
         }
+    }
+
+    /// Plan 525: publishes the cell the publication's own task refreshes
+    /// on its cycle, so the running router's own published-address
+    /// posture is observable through the inspection seam.
+    ///
+    /// Publishing is the composition root's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_self_publication_counters(&self, cell: Arc<SelfPublicationCounterCell>) {
+        if let Ok(mut slot) = self.self_publication_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published self-publication counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn self_publication_counters(&self) -> Option<Arc<SelfPublicationCounterCell>> {
+        self.self_publication_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published self-publication
+    /// counters.
+    ///
+    /// Plan 525: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn self_publication_counters_snapshot(
+        &self,
+    ) -> Option<crate::self_publication::SelfPublicationCounterSnapshot> {
+        let cell = self.self_publication_counters()?;
+        cell.lock().ok().map(|counters| *counters)
     }
 
     /// Reads the published peer-pool counter cell.

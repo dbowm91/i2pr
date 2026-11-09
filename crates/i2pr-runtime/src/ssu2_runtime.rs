@@ -88,10 +88,10 @@ use i2pr_transport_ssu2::{
     DropCategory, HandshakeAction, HandshakeReplayCache, Initiator, InitiatorConfig,
     InitiatorSecrets, IntroKey, PATH_CHALLENGE_LENGTH, PathError, PathEvent, PathValidator,
     PeerTestBlock, PeerTestOutcome, PeerTestRole, PeerTestState, Responder, ResponderConfig,
-    ResponderParams, RetryAnswer, SessionAction, SessionConfig, SessionEvent, Ssu2Endpoint,
-    Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore, build_out_of_session_peer_test,
-    constants, parse_out_of_session_peer_test, parse_session_request, parse_token_request,
-    peer_test_conn_ids, retry_response_budget,
+    ResponderParams, RetryAnswer, SessionAction, SessionConfig, SessionEvent, Ssu2AddressClass,
+    Ssu2Endpoint, Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore,
+    build_out_of_session_peer_test, constants, parse_out_of_session_peer_test,
+    parse_session_request, parse_token_request, peer_test_conn_ids, retry_response_budget,
 };
 use rand_core::{OsRng, TryRngCore};
 use tokio::net::UdpSocket;
@@ -1095,12 +1095,33 @@ pub struct Ssu2RelayCounters {
     pub blocks_refused_control_queue_full: u64,
 }
 
+/// The form an SSU2 publication material represents.
+///
+/// Plan 525: the router publishes **one** SSU2 address, and its shape
+/// depends on the router's own posture. The form is a **value** the
+/// caller matches on, never a pair of answers the caller must reconcile
+/// and never a refusal the caller must interpret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2PublicationForm {
+    /// The **direct** form: the address carries the router's host and
+    /// port, and a peer can dial it.
+    Direct,
+    /// The **introducer-only** form: the address carries **no** host and
+    /// **no** port, and publishes the validated introducer set instead.
+    IntroducerOnly,
+}
+
 /// Factual public publication material obtained from the live SSU2 owner.
 /// Private key material never crosses this runtime boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ssu2PublicationMaterial {
     /// Strictly validated SSU2 address for the actual bound endpoint.
     pub address: RouterAddress,
+    /// The form this material represents.
+    ///
+    /// Plan 525: the caller matches on this and hands the address to the
+    /// builder that qualifies **that** form.
+    pub form: Ssu2PublicationForm,
     /// Monotonic expiry of the reachability evidence used to build it.
     pub evidence_expires_at: Duration,
     /// Conservative current reachability classification.
@@ -2581,8 +2602,19 @@ impl Ssu2RuntimeService {
     /// The form omits host/port, publishes the introducer groups and the
     /// family capability the specification demands alongside them, and
     /// lists at most three introducers in the table's deterministic
-    /// order. The router's own publication remains refused by
-    /// `ssu2.advertise`; this API only proves the address form.
+    /// order.
+    ///
+    /// Plan 525: the snapshot's **evidence** is the introducer set
+    /// itself, so the evidence expiry is the **earliest** expiry among
+    /// the introducers the form publishes. Passing the build time as the
+    /// evidence expiry instead -- as this builder used to -- made the
+    /// transport's own evidence gate withdraw **every** snapshot, so the
+    /// function could never succeed. The gate was never wrong; the value
+    /// handed to it was.
+    ///
+    /// The family capability is derived from the router's **bound**
+    /// socket rather than assumed, so the router never claims a family it
+    /// has no socket for.
     pub fn introducer_publication_material(
         &self,
         now_secs: u64,
@@ -2591,8 +2623,28 @@ impl Ssu2RuntimeService {
         if introducers.is_empty() {
             return Err(Ssu2PublicationUnavailable::NoIntroducers);
         }
-        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse("4")
+        let family = self.bound_family()?;
+        let capabilities = match family {
+            i2pr_transport::AddressFamily::Ipv4 => "4",
+            i2pr_transport::AddressFamily::Ipv6 => "6",
+            i2pr_transport::AddressFamily::Unknown => {
+                return Err(Ssu2PublicationUnavailable::NoBoundSocket);
+            }
+        };
+        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse(capabilities)
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        // The form's evidence is the introducer set, and the set's members
+        // expire individually. The **earliest** expiry is the fail-closed
+        // choice: the form is withdrawn the moment its first listed
+        // introducer dies, so a refresh re-selects and the published set
+        // never carries a dead introducer for longer than one publication
+        // cycle. Every selected introducer is live, so the earliest expiry
+        // is strictly greater than `now_secs`.
+        let evidence_expires_secs = introducers
+            .iter()
+            .map(i2pr_transport_ssu2::Ssu2Introducer::expires_secs)
+            .min()
+            .ok_or(Ssu2PublicationUnavailable::NoIntroducers)?;
         let snapshot = i2pr_transport_ssu2::publication::build_publication_snapshot(
             i2pr_transport_ssu2::publication::PublicationRequest {
                 policy: i2pr_transport_ssu2::publication::PublicationPolicy::new(false, true),
@@ -2604,13 +2656,13 @@ impl Ssu2RuntimeService {
                     state: i2pr_transport::ReachabilityState::Firewalled,
                     corroboration: 0,
                     expires_at: std::time::Duration::from_secs(0),
-                    family: i2pr_transport::AddressFamily::Ipv4,
+                    family,
                 },
                 mtu: self.shared.local_mtu,
                 caps: &capabilities,
                 introducers: &introducers,
                 now_secs,
-                evidence_expires_secs: now_secs,
+                evidence_expires_secs,
             },
         )
         .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
@@ -2633,10 +2685,76 @@ impl Ssu2RuntimeService {
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
         Ok(Ssu2PublicationMaterial {
             address,
-            evidence_expires_at: std::time::Duration::from_secs(0),
+            form: Ssu2PublicationForm::IntroducerOnly,
+            evidence_expires_at: std::time::Duration::from_secs(
+                evidence_expires_secs.saturating_sub(now_secs),
+            ),
             reachability: i2pr_transport::ReachabilityState::Firewalled,
-            bound_family: i2pr_transport::AddressFamily::Ipv4,
+            bound_family: family,
         })
+    }
+
+    /// Returns the address family this router's **bound** socket
+    /// represents.
+    ///
+    /// Plan 525: the introducer-only form publishes a family capability,
+    /// and the family must be one the router actually has a socket for.
+    /// IPv4 is preferred when both are bound, because the tree's SSU2
+    /// posture is IPv4-first and the form publishes exactly one family
+    /// letter.
+    fn bound_family(&self) -> Result<i2pr_transport::AddressFamily, Ssu2PublicationUnavailable> {
+        let sockets = self
+            .shared
+            .sockets
+            .lock()
+            .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+        let bound = sockets
+            .v4
+            .filter(|bound| bound.port() != 0 && !bound.ip().is_unspecified())
+            .or_else(|| {
+                sockets
+                    .v6
+                    .filter(|bound| bound.port() != 0 && !bound.ip().is_unspecified())
+            });
+        match bound {
+            Some(bound) if bound.is_ipv4() => Ok(i2pr_transport::AddressFamily::Ipv4),
+            Some(_) => Ok(i2pr_transport::AddressFamily::Ipv6),
+            None => Err(Ssu2PublicationUnavailable::NoBoundSocket),
+        }
+    }
+
+    /// Answers which form the router publishes for **itself** now.
+    ///
+    /// Plan 525: the router publishes **one** SSU2 address, and its shape
+    /// depends on the router's own posture. The **direct** form -- with
+    /// host and port -- is published while the router's reachability
+    /// evidence admits it. When that evidence does not admit it, the
+    /// router is firewalled, and the specification's **introducer-only**
+    /// form is published instead: it carries the validated introducer set
+    /// and **no** endpoint.
+    ///
+    /// The composition lives here because both facts are the runtime's:
+    /// the router's reachability evidence and the validated introducer
+    /// set. A caller never infers a form from a refusal, and the daemon
+    /// holds no copy of the rule.
+    ///
+    /// A refusal that is **not** about reachability -- the runtime is
+    /// closed, no socket is bound, the state is poisoned, the endpoint is
+    /// invalid -- is propagated unchanged: such a router is **broken**,
+    /// not firewalled, and publishing an introducer-only address would
+    /// hide the fault behind a plausible record.
+    pub fn self_publication_material(
+        &self,
+        wall_now_ms: u64,
+    ) -> Result<Ssu2PublicationMaterial, Ssu2PublicationUnavailable> {
+        match self.publication_material(wall_now_ms) {
+            Ok(material) => Ok(material),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified) => {
+                let now_secs = wall_now_ms / 1_000;
+                self.introducer_publication_material(now_secs)
+            }
+            Err(reason) => Err(reason),
+        }
     }
 
     /// Builds direct SSU2 publication material only from the actual live bound endpoint and
@@ -2755,6 +2873,7 @@ impl Ssu2RuntimeService {
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
         Ok(Ssu2PublicationMaterial {
             address,
+            form: Ssu2PublicationForm::Direct,
             evidence_expires_at: expiry,
             reachability,
             bound_family: family,
@@ -3750,26 +3869,47 @@ impl Ssu2RuntimeService {
         // intro keys. The record may carry **none**: the transport's
         // publication policy renders the endpoint-less form when the
         // router's own evidence does not admit a direct endpoint.
-        let address_matches =
-            info.addresses()
-                .iter()
-                .filter(|address| address.transport_style() == "SSU2")
-                .all(|address| {
-                    let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
-                        return false;
-                    };
-                    let Some(endpoint) = parsed.endpoint() else {
-                        return false;
-                    };
-                    let is_bound = [sockets.v4, sockets.v6].into_iter().flatten().any(|bound| {
-                        bound.ip() == endpoint.ip() && bound.port() == endpoint.port()
-                    });
-                    is_bound
-                        && parsed.static_public_key().as_bytes() == &expected_static
-                        && parsed
-                            .intro_key()
-                            .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes())
-                });
+        let address_matches = info
+            .addresses()
+            .iter()
+            .filter(|address| address.transport_style() == "SSU2")
+            .all(|address| {
+                let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
+                    return false;
+                };
+                // The address must be the router's **own**: its static
+                // key and its intro key are the router's.
+                let own_keys = parsed.static_public_key().as_bytes() == &expected_static
+                    && parsed
+                        .intro_key()
+                        .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes());
+                // Plan 525: the transport's parser refuses an address
+                // carrying both a direct endpoint and introducers, so
+                // the two forms are exclusive and the classification
+                // is total.
+                match parsed.address_class() {
+                    Ssu2AddressClass::Direct => {
+                        let Some(endpoint) = parsed.endpoint() else {
+                            return false;
+                        };
+                        let is_bound =
+                            [sockets.v4, sockets.v6].into_iter().flatten().any(|bound| {
+                                bound.ip() == endpoint.ip() && bound.port() == endpoint.port()
+                            });
+                        is_bound && own_keys
+                    }
+                    // The **introducer-only** form carries **no**
+                    // endpoint: the router is reached through the
+                    // introducers it publishes, and those introducers
+                    // are the router's own validated set.
+                    Ssu2AddressClass::IntroducerOnly => {
+                        !parsed.introducers().is_empty() && own_keys
+                    }
+                    // A static-key-only address names no contact at
+                    // all, so it is not the router's published address.
+                    Ssu2AddressClass::UnpublishedStatic => false,
+                }
+            });
         drop(sockets);
         if !address_matches {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);

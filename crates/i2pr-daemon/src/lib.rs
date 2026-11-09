@@ -3587,6 +3587,7 @@ async fn run_router_info_publication_task(
         dial_timeout,
         qualification_profile,
         self_publication,
+        self_publication_counters,
     } = task;
     // Plan 519: the publication's ticks are **its own**. The transport's
     // service loop gains no timer: it carries none of the publication's
@@ -3664,6 +3665,14 @@ async fn run_router_info_publication_task(
                     // installs and counts.
                     let self_publication_outcome =
                         self_publication.refresh(&bundle, handle.service(), now_ms);
+                    // Plan 525: publish the owner's counter snapshot so
+                    // the running router's own published-address posture
+                    // is observable through the inspection plane. The
+                    // counters carry counts and stable reason labels
+                    // only.
+                    if let Ok(mut cell) = self_publication_counters.lock() {
+                        *cell = self_publication.counters().snapshot();
+                    }
                     if !matches!(
                         self_publication_outcome,
                         crate::self_publication::SelfPublicationOutcome::Disabled
@@ -4528,6 +4537,17 @@ fn register_ssu2_service(
                     // The router's own identity hash is already validated
                     // by the composition root, so the publication's owner
                     // is always built and the task is always spawned.
+                    // Plan 525: the self-publication counters become
+                    // observable on a running router. The cell carries
+                    // counts and stable reason labels only.
+                    let self_publication_counters: Arc<
+                        crate::i2pcontrol_inspection::SelfPublicationCounterCell,
+                    > = Arc::new(std::sync::Mutex::new(
+                        crate::self_publication::SelfPublicationCounterSnapshot::default(),
+                    ));
+                    inspection.publish_self_publication_counters(Arc::clone(
+                        &self_publication_counters,
+                    ));
                     let publication_task =
                         crate::router_info_publication_task::RouterInfoPublicationTask {
                             publication_owner:
@@ -4556,6 +4576,7 @@ fn register_ssu2_service(
                             self_publication: crate::self_publication::SelfPublicationOwner::new(
                                 ssu2_config.advertise,
                             ),
+                            self_publication_counters,
                         };
                     if children
                         .spawn(move |cancellation| async move {

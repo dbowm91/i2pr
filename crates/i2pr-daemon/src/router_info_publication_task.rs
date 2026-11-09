@@ -155,6 +155,12 @@ pub struct RouterInfoPublicationTask {
     /// listener of its own, and the transport's service loop never awaits
     /// it.
     pub self_publication: crate::self_publication::SelfPublicationOwner,
+    /// Plan 525: the live cell the owner's counter snapshot is published
+    /// into, so the running router's own published-address posture is
+    /// observable through the inspection plane.
+    ///
+    /// The cell carries counts and stable reason labels only.
+    pub self_publication_counters: Arc<crate::i2pcontrol_inspection::SelfPublicationCounterCell>,
 }
 
 impl std::fmt::Debug for RouterInfoPublicationTask {

@@ -3600,6 +3600,7 @@ mod tests {
         .expect("test router address");
         i2pr_runtime::Ssu2PublicationMaterial {
             address,
+            form: i2pr_runtime::Ssu2PublicationForm::Direct,
             evidence_expires_at: Duration::from_secs(3600),
             reachability: if reachable {
                 i2pr_transport::ReachabilityState::Reachable
