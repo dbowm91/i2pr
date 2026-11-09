@@ -1620,6 +1620,33 @@ set, and advertising the `C` capability — is a successor's subject. The
 **stock-peer** half needs Plan 493's authorized two-host topology, and a
 published introducer set that does not exist yet.
 
+## 24. The router's published introducer set (Plan 525)
+Plan 525 gives the router the **publication** half of the SSU2 introducer
+composition. The gates below are the questions a reviewer asks of the
+published address.
+
+| Gate | Question | How it is answered |
+|---|---|---|
+| G24.1 | Is the switch real and off by default? | `ssu2.advertise` is the existing opt-in, off by default, and this plan adds **no** new key. |
+| G24.2 | Is the published form the specification's? | The address carries `ih[N]`/`iexp[N]`/`itag[N]`, the family `caps`, `i`, `mtu`, `s` and `v`, and **no** `host` and **no** `port` — the reference's unpublished SSU2 form, option for option (`libi2pd/RouterInfo.cpp:1350`-`:1466`). |
+| G24.3 | Does the netdb qualify it with its **own** rule? | `is_qualified_ssu2_introducer_address` is the only authority, beside the untouched direct rule, and the builder that carries it takes no floodfill permit. |
+| G24.4 | Is the direct form still preferred? | The composition asks for the direct form first and falls back to the introducer-only form only on a reachability refusal. |
+| G24.5 | Is a broken router distinguished from a firewalled one? | A closed runtime, an unbound runtime and a poisoned state are propagated unchanged; only a reachability refusal falls through. |
+| G24.6 | Is the form's evidence the introducer set? | The snapshot's evidence expiry is the **earliest** expiry among the published introducers, so the form is withdrawn when its first listed introducer dies. |
+| G24.7 | Does the router claim a family it has no socket for? | The family capability is derived from the router's bound socket; no family is assumed. |
+| G24.8 | Does the install gate bind the router's own address? | A direct address must name the router's own bound endpoint with the router's own keys; an introducer-only address must carry the router's own keys and at least one introducer. |
+| G24.9 | Is every refusal counted under its own reason? | The empty introducer set has its own counter, and it **moves**; the two published forms and the withdrawal are counted separately. |
+| G24.10 | Is the posture observable? | The counters reach the inspection plane through the existing seam, carrying counts and stable reason labels only. |
+| G24.11 | Does the daemon write the address? | No: the daemon names no option and assembles no address; the address is the runtime's, whole. |
+| G24.12 | Does the owner add infrastructure? | No: no task, no timer, no listener and no socket. The publication's own cycle drives it. |
+
+**What the gates do not cover.** The **`C` advertisement** — this router
+advertising its own introducer role — is a third, separate matter. The
+**withdrawal** is unchanged: a firewalled router with no introducer keeps
+publishing the netdb's ordinary zero-address record, where the reference
+publishes an unpublished `s`+`i`+`v` form. The **stock-peer** half needs
+Plan 493's authorized two-host topology.
+
 ## 23. The router's relay-tag request (Plan 524)
 
 Plan 524 gives the router the **acquisition** half of the SSU2 introducer

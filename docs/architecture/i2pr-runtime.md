@@ -955,6 +955,42 @@ the minted tag through it. The **daemon's drain** is what skips the event,
 so the answer to the router's own request is no longer counted as one of the
 introducer role owner's refusals.
 
+## The published form and its evidence (Plan 525)
+
+The router publishes **one** SSU2 address, and its shape depends on the
+router's own posture. The runtime owns that decision.
+
+**The composition is one answer with two shapes.** `self_publication_material`
+asks for the **direct** form first and falls back to the **introducer-only**
+form only when the router's reachability evidence refuses the direct one.
+A refusal that is not about reachability — a closed runtime, an unbound
+runtime, a poisoned state, an invalid endpoint — is propagated unchanged:
+such a router is **broken**, not firewalled, and publishing an
+introducer-only address would hide the fault behind a plausible record. The
+answer is a typed value (`Ssu2PublicationForm`), so a caller matches on the
+form and never infers one from a refusal.
+
+**The introducer-only form's evidence is the introducer set.** The
+snapshot's evidence expiry is the **earliest** expiry among the introducers
+the form publishes, so the form is withdrawn the moment its first listed
+introducer dies and the next publication cycle re-selects. (The builder
+passed the *build time* as the evidence expiry, and the transport's own
+tested gate therefore withdrew every snapshot, so the builder could never
+succeed; the path had no production caller until Plan 525.)
+
+**The family capability is derived, not assumed.** The form publishes the
+family letter of the router's **bound** socket — IPv4 when the IPv4 socket
+is bound, otherwise IPv6 — so the router never claims a family it has no
+socket for.
+
+**The install gate binds the router's own address by its form.** A direct
+address must name the router's own bound endpoint with the router's own
+static and intro keys. An **introducer-only** address has no endpoint: it
+is reached through the introducers it publishes, so the gate requires the
+router's own keys and at least one introducer. (The gate previously
+required every SSU2 address to carry an endpoint, so the introducer-only
+form could never be installed at all.)
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

@@ -2595,3 +2595,29 @@ evidence = [
     "plans/implementation/network-participation/524-the-router-asks-a-peer-for-a-relay-tag.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.introducer-publication"
+protocol = "ssu2"
+structure = "the-router-publishes-the-introducer-set-it-learned"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 525 gives the router the **publication** half of the SSU2 introducer composition: it publishes the validated introducer set it learned, in the specification's introducer-only address form. The reference publishes one SSU2 address whose shape depends on reachability (`libi2pd/RouterInfo.cpp:1333`): when the router is not published directly, `caps` carries only the **family** letter, `host` and `port` are **omitted**, `i` is written, and the `iexp[N]`/`ih[N]`/`itag[N]` groups are written whenever the address carries introducers (`:1350`-`:1466`). The tree now renders exactly that form. The runtime owns the decision: `self_publication_material` asks for the **direct** form first and falls back to the introducer-only form **only** when the router's reachability evidence refuses the direct one, and the daemon matches on the typed form rather than inferring one from a refusal. Two defects were fixed on the way, and both were latent because the path had no production caller. The runtime's introducer-only builder could **never succeed**: it passed the build time as the snapshot's evidence expiry, and the transport's own tested gate therefore withdrew every snapshot, so the function always refused with a malformed-address reason. The runtime's install gate could not admit the form at all: it required every SSU2 address the record carries to name the router's own bound **endpoint**, and the introducer-only form has none. The gate now binds the router's **own** identity and contact material by the address's form: a direct address must still name the router's own bound endpoint, and an introducer-only address must carry the router's own keys and at least one introducer. The snapshot's evidence expiry is the **earliest** expiry among the introducers it publishes, so the form is withdrawn the moment its first listed introducer dies and a refresh re-selects. The family capability is derived from the router's **bound** socket rather than hardcoded, so the router never claims a family it has no socket for. No configuration key is added: `ssu2.advertise` already means 'the router publishes its own SSU2 address', and the introducer-only form is that address in its other shape. The surface is internal and non-advertised: nothing here changes `router.version` (`0.9.62`), the published RouterInfo's `caps` string, or any advertisement; the router still advertises **no** introducer capability of its own, which is a **third**, separate matter; `Cargo.toml` and `Cargo.lock` are byte-identical. The **stock-peer** half is not claimed: it needs Plan 493's authorized two-host topology."
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
+    "crates/i2pr-transport-ssu2/src/publication.rs",
+    "crates/i2pr-transport-ssu2/src/introducer.rs",
+    "crates/i2pr-netdb/src/local.rs",
+    "crates/i2pr-netdb/src/floodfill_role.rs",
+    "crates/i2pr-daemon/src/self_publication.rs",
+    "crates/i2pr-daemon/src/router_info_publication_task.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_publication.rs",
+    "crates/i2pr-daemon/tests/ssu2_introducer_publication_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/525-the-router-publishes-the-introducer-set-it-learned.md",
+]
+advertised = false

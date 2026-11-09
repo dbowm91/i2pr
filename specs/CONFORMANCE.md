@@ -2564,6 +2564,13 @@ inventory holds **117 surfaces, 112 experimental, 4 deferred, 1 ready, 0
 advertised**. The advertised count stays **zero**: Plan 524 makes the router
 *acquire* an introducer, and publishes nothing.
 
+**Plan 525 adds one surface** — `daemon.introducer-publication` — so the
+inventory holds **118 surfaces, 113 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 525 makes the router
+*publish* the introducer set it learned, in the specification's
+introducer-only address form, and it still advertises **no** introducer
+capability of its own.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3436,6 +3443,81 @@ pool today, and that limit is a transport boundary with its own
 plan-of-record. Nothing is advertised: the inventory's advertised count stays
 zero, `router.version` stays `0.9.62`, the published record's `caps` string
 is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+## The router publishes the introducer set it learned (Plan 525)
+
+The SSU2 **introducer set** is the only way a firewalled router is reachable
+at all. Plan 490 answered the first half (the router answers a peer's Relay
+Request as the introducer), Plan 523 corrected the **form** of the second
+half's data, Plan 524 gave the router the **acquisition**, and Plan 525
+gives the router the **publication**: it publishes the validated introducer
+set it learned, in the specification's introducer-only address form.
+
+**The reference publishes one address whose shape depends on reachability.**
+The pinned i2pd 2.61.0 writes one SSU2 address
+(`libi2pd/RouterInfo.cpp:1333`):
+
+```cpp
+bool isPublished = address.published && !address.host.is_unspecified () && address.port;
+```
+
+— and when the router is **not** published directly, the `caps` option
+carries only the **family** letter, `host` and `port` are **omitted**, `i`
+is written, and the `iexp[N]`/`ih[N]`/`itag[N]` groups are written whenever
+the address carries introducers (`:1350`-`:1466`). The tree now renders
+exactly that form, and the netdb's own second qualification rule accepts it.
+
+**The runtime owns the decision, and the daemon matches on the form.**
+`Ssu2RuntimeService::self_publication_material` asks for the **direct** form
+first and falls back to the introducer-only form **only** when the router's
+reachability evidence refuses the direct one. A refusal that is not about
+reachability — a closed runtime, an unbound runtime, a poisoned state — is
+propagated unchanged: such a router is **broken**, not firewalled, and
+publishing an introducer-only address would hide the fault behind a
+plausible record. The daemon never infers a form from a refusal; the
+transport's material carries a typed `Ssu2PublicationForm`, and the daemon
+builds the record with the netdb builder that matches it.
+
+**Two latent defects were fixed on the way.** Both were invisible because
+the path had no production caller. The runtime's introducer-only builder
+could **never succeed**: it passed the build time as the snapshot's
+evidence expiry, so the transport's own tested gate withdrew every snapshot
+and the function always refused with a malformed-address reason. And the
+runtime's install gate could not admit the form at all: it required every
+SSU2 address the record carries to name the router's own bound **endpoint**,
+and the introducer-only form has none. The gate now binds the router's
+**own** identity and contact material *by the address's form*.
+
+**The form's evidence is the introducer set.** The snapshot's evidence
+expiry is the **earliest** expiry among the introducers it publishes, so the
+form is withdrawn the moment its first listed introducer dies and the next
+publication cycle re-selects. The family capability is derived from the
+router's **bound** socket rather than hardcoded, so the router never claims
+a family it has no socket for.
+
+**What is deliberately not claimed.** No configuration key is added:
+`ssu2.advertise` already means "the router publishes its own SSU2 address",
+and the introducer-only form is that address in its other shape. The **`C`
+advertisement** — this router advertising its own introducer role — is a
+**third**, separate matter and is not claimed. The **withdrawal** is
+unchanged: a firewalled router with no introducer keeps publishing the
+netdb's ordinary zero-address record, where the reference publishes an
+unpublished `s`+`i`+`v` form. Nothing is advertised: `router.version` stays
+`0.9.62`, the published RouterInfo's `caps` string is unchanged, the
+inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
+Evidence: `crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-daemon/src/self_publication.rs`,
+`crates/i2pr-daemon/src/i2pcontrol_inspection.rs`,
+`crates/i2pr-netdb/src/local.rs`,
+`crates/i2pr-daemon/tests/ssu2_introducer_publication.rs` and
+`crates/i2pr-daemon/tests/ssu2_introducer_publication_boundary.rs`. The
+references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §24. The
+plan of record is
+`plans/implementation/network-participation/525-the-router-publishes-the-introducer-set-it-learned.md`;
+the closure record is `plans/closure/network-participation/525-status.md`.
 
 ## The router asks a peer for a relay tag (Plan 524)
 

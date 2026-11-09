@@ -126,6 +126,28 @@ So: parsing a `pq` option proves nothing about key exchange, and no
 SSU2 session in this router is post-quantum. A reader must not come
 away from this crate believing PQ session establishment exists.
 
+## The introducer-only address form's evidence (Plan 525)
+
+The transport's publication builder renders the specification's
+introducer-only form — `caps` (the family letter), `i`, the
+`iexp[N]`/`ih[N]`/`itag[N]` groups, `mtu`, `s` and `v`, and **no** `host`
+and **no** `port`. The form's **evidence** is the introducer set it
+publishes, and the transport's snapshot contract is that a caller must treat
+an expired snapshot as withdrawn.
+
+Plan 525 makes the runtime derive that expiry from the set's own members:
+the **earliest** expiry among the published introducers. The fail-closed
+choice is deliberate — the maximum would let a dead introducer sit in a
+published address until the whole set had expired, while the earliest
+withdraws the form as soon as its first listed introducer dies, so a
+refresh re-selects.
+
+The gate that admits the form is the runtime's install gate, and it binds
+the router's **own** identity and contact material *by the address's form*.
+The transport's parser refuses an address that carries both a direct
+endpoint and introducers, so the two forms are exclusive and the
+classification is total.
+
 ## Module layout
 
 Declared in `src/lib.rs:27-41` — 15 modules, no subdirectories.

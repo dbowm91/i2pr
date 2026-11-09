@@ -700,6 +700,104 @@ The plan passes when:
 
 ## 17. Amendment log
 
+### 17.2 — 2026-11-09, the install gate could not admit the form
+
+The registered §3 recorded **one** latent defect. The implementation found a
+**second** one, which §3 did not record. §3 is evidence and is **not**
+rewritten; this amendment adds the second defect forward.
+
+The runtime's install gate
+(`crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`install_local_router_info_inner`) required **every** SSU2 address the
+record carries to name the router's own bound **endpoint**: `parsed.endpoint()`
+had to be `Some`, and that endpoint had to be one of the router's own bound
+sockets. The introducer-only form has **no** endpoint — that is what the form
+*is* (`libi2pd/RouterInfo.cpp:1377` and `:1444` omit `host` and `port` when
+the router is not published directly). The gate therefore refused the form
+with `InvalidPublication` before the record could be installed, and the
+plan's publication could not have landed with the gate unchanged.
+
+The fix binds the router's **own** identity and contact material **by the
+address's form**. The transport's parser refuses an address carrying both a
+direct endpoint and introducers (`Ssu2AddressError::HostPortWithIntroducers`),
+so the two forms are exclusive and `Ssu2RouterAddress::address_class()` is a
+total classification:
+
+| Class | The gate requires |
+|---|---|
+| `Direct` | the router's own bound endpoint, with the router's own static and intro keys |
+| `IntroducerOnly` | the router's own static and intro keys, and at least one introducer |
+| `UnpublishedStatic` | refused — the address names no contact at all |
+
+The gate's **subject** is unchanged: it binds the router's own address, and
+the introducer-only form is bound by its keys and its introducers rather than
+by an endpoint it does not have. The **introducer set** itself is not
+re-verified by the gate: it is the runtime's own validated table's product,
+the runtime's material builder is its only source, and the netdb's rule
+verifies the set's **form**.
+
+**Plan 520's guard is not weakened.** Its rule 12 — "the install gate binds
+every SSU2 address the record carries to the router's own endpoint" — still
+requires the gate to contain the `is_bound` binding, and it still does, for
+the direct form. The rule's **subject** is unchanged; the gate now
+distinguishes the two forms instead of demanding an endpoint of both.
+
+**Plan 520's guard rule 2 is updated, and strengthened.** The owner must now
+ask the runtime for the **composed** form
+(`service.self_publication_material(`), which is strictly stronger than
+asking for one form alone — an owner that asked for one form only would
+publish the direct address and never the introducer-only one. A second
+inverted probe reports exactly that owner. The rule's **subject** — "the
+daemon holds no copy of the publication rule; it asks the runtime" — is
+unchanged.
+
+### 17.3 — 2026-11-09, the citation drift after the implementation
+
+The implementation moved the lines the registered §3 cites. §3 is evidence and
+is **not** rewritten; this table points each drifted citation at its current
+site. The citations that did **not** move are named at the end.
+
+| The registered §3 citation | Its current site | What moved |
+|---|---|---|
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2586` | `:2618` | the `Ssu2PublicationForm` enum and the material's `form` field were added above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2612` | `:2664` | the builder's body was rewritten |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2613` | `:2665` | the evidence expiry is now the set's own |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2617` | `:2669` | as above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2636` | `:2689` | as above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2654` | `:2772` | the composition and the bound-family helper were added above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2696` | `:2814` | as above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1101` | `:1117` | the `Ssu2PublicationForm` enum was added above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1126` | `:1147` | as above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1848` | `:1869` | as above |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2495` | `:2516` | as above |
+| `crates/i2pr-daemon/src/self_publication.rs:157` | `:181` | the counters gained a field |
+| `crates/i2pr-daemon/src/self_publication.rs:302` | `:342` | the counters gained fields |
+| `crates/i2pr-daemon/src/self_publication.rs:357` | `:397` | as above |
+| `crates/i2pr-daemon/src/self_publication.rs:397` | `:459` | as above |
+| `crates/i2pr-daemon/src/lib.rs:3666` | `:3667` | the counter snapshot is published beside the refresh |
+
+The citations that did **not** move and remain valid as registered:
+`crates/i2pr-runtime/src/ssu2_peer_relay.rs:900` and `:1119`;
+`crates/i2pr-transport-ssu2/src/publication.rs:126`, `:212`, `:239`, `:326`,
+`:389` and `:544`; `crates/i2pr-transport-ssu2/src/introducer.rs:137`, `:185`
+and `:253`; `crates/i2pr-netdb/src/local.rs:268` and `:292`;
+`crates/i2pr-netdb/src/floodfill_role.rs:277`;
+`crates/i2pr-daemon/src/router_i2np.rs:2298`; and
+`crates/i2pr-daemon/src/floodfill.rs:706`.
+
+The **new** sites the implementation added, which §3 could not have cited:
+
+| The construct | Its site |
+|---|---|
+| `Ssu2PublicationForm` | `crates/i2pr-runtime/src/ssu2_runtime.rs:1105` |
+| `Ssu2RuntimeService::bound_family` | `crates/i2pr-runtime/src/ssu2_runtime.rs:2705` |
+| `Ssu2RuntimeService::self_publication_material` | `crates/i2pr-runtime/src/ssu2_runtime.rs:2746` |
+| the install gate's form-aware binding | `crates/i2pr-runtime/src/ssu2_runtime.rs:3872` |
+| `SelfPublicationFailure::UnqualifiedIntroducerAddress` | `crates/i2pr-daemon/src/self_publication.rs:94` |
+| `SelfPublicationOwner::build_record`'s form match | `crates/i2pr-daemon/src/self_publication.rs:459` |
+| `SelfPublicationCounterCell` | `crates/i2pr-daemon/src/i2pcontrol_inspection.rs:94` |
+| `InspectionHandles::publish_self_publication_counters` | `crates/i2pr-daemon/src/i2pcontrol_inspection.rs:791` |
+
 ### 17.1 — 2026-11-09, registration
 
 Plan 525 registered. The plan's subject is the publication half of the SSU2

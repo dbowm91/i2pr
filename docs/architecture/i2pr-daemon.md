@@ -3697,6 +3697,49 @@ inventory's advertised count stays **zero**, and `Cargo.toml` and
 `Cargo.lock` are byte-identical. The **stock-peer** half needs Plan 493's
 authorized two-host topology.
 
+## The router's published introducer set (Plan 525)
+
+Plan 524 gave the router the **acquisition** half of the SSU2 introducer
+composition — it learns that a peer is an introducer, asks such a peer for
+a relay tag while the router is firewalled, and records the answer as an
+**authenticated introducer**. Plan 525 gives the router the **publication**
+half: it publishes the validated introducer set it learned, in the
+specification's introducer-only address form. The `C` capability the router
+publishes about **itself** is a third, separate matter.
+
+- `src/self_publication.rs` — the owner. It asks the runtime for **which
+  form** the router publishes and hands the address to the netdb builder
+  that matches that form: `build_with_ssu2_address` for the direct form and
+  `build_with_ssu2_introducer_address` for the introducer-only one. It
+  never infers a form from a refusal, and it never writes an option. The
+  counters **distinguish** the two published forms and the withdrawal, and
+  the empty-introducer-set reason — which could never move before this
+  plan, because nothing produced the refusal — has its own counter;
+- `src/router_info_publication_task.rs` — the owner's counter snapshot is
+  published into the live cell on the publication's own cycle. The counters
+  are counts and stable reason labels only: they name no peer, no address,
+  no key and no tag;
+- `src/i2pcontrol_inspection.rs` — the cell reaches the inspection plane,
+  so the running router's own published-address posture is observable. An
+  unpublished or poisoned slot is a **gap**, never a fabricated zero;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime owns the
+  decision, the material and the install gate. The daemon holds no copy of
+  the publication rule;
+- `crates/i2pr-netdb/src/local.rs` — the netdb's second builder and its
+  second qualification rule. The builder carries **no** floodfill permit,
+  so a record it builds is an ordinary router's record.
+
+**The withdrawal is unchanged.** A firewalled router with **no** introducer
+keeps publishing the netdb's ordinary zero-address record, where the
+reference publishes an unpublished `s`+`i`+`v` form. That divergence belongs
+to Plan 520's path.
+
+**What is deliberately not claimed.** Nothing is advertised:
+`router.version` stays `0.9.62`, the published record's `caps` string is
+unchanged, the inventory's advertised count stays **zero**, and
+`Cargo.toml` and `Cargo.lock` are byte-identical. The **stock-peer** half
+needs Plan 493's authorized two-host topology.
+
 ## Cross-references
 
 ### Deep dives
