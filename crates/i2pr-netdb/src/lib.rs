@@ -90,6 +90,7 @@ pub use els2_transcript::{
 pub use floodfill_role::{
     FloodfillAdvertisementPermit, FloodfillEligibilitySnapshot, FloodfillRoleController,
     FloodfillRoleEffect, FloodfillRoleState, LoopbackReachabilityProof, is_qualified_ssu2_address,
+    is_qualified_ssu2_introducer_address,
 };
 pub use floodfill_service::{
     FloodfillAck, FloodfillIngress, FloodfillLookupEffect, FloodfillReplyIntent, FloodfillRole,

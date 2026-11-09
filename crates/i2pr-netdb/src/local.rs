@@ -16,7 +16,10 @@ use i2pr_proto::{Date, Mapping, RouterAddress, RouterInfo};
 use thiserror::Error;
 
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
-use crate::{FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address};
+use crate::{
+    FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address,
+    is_qualified_ssu2_introducer_address,
+};
 
 /// Conservative Java-compatible bandwidth tier derived from configured
 /// directional byte rates and the operator's integer share percentage.
@@ -270,6 +273,30 @@ impl<'a> LocalRouterInfoBuilder<'a> {
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         Self::validate_options(&options)?;
         if !is_qualified_ssu2_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
+    /// Builds a signed RouterInfo carrying one **introducer-only** SSU2
+    /// address.
+    ///
+    /// Plan 523. The specification's introducer-only form omits `host` and
+    /// `port` and publishes the introducer groups instead, so the direct
+    /// builder's rule cannot accept it. This builder's authority is the
+    /// netdb's own `is_qualified_ssu2_introducer_address`: an address that
+    /// rule refuses is never signed and never installed.
+    ///
+    /// The builder carries no floodfill permit, so it cannot produce
+    /// `caps=f`, and a record it builds is an ordinary router's record.
+    pub fn build_with_ssu2_introducer_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_introducer_address(&address) {
             return Err(LocalRouterInfoError::UnqualifiedAddress);
         }
         self.sign_addressed_many(published, options, vec![address])
