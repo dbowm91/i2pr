@@ -39,6 +39,12 @@ stock peer qualifies the router's published record — stays blocked on Plan
 
 ## 3. Current implementation evidence
 
+> **Registration-time snapshot.** §3 was written when the plan was
+> registered and it cites the production tree as it stood then. The
+> implementation moved that tree; the drift is recorded in §17.5 with a
+> registration-time to current pointer table, and §3 itself is **not**
+> rewritten.
+
 ### 3.1 The peer test exists, in two halves, and neither is wired
 
 - `crates/i2pr-proto/src/i2np/header.rs:61` — message **231** is
@@ -439,5 +445,133 @@ The plan closes when, and only when:
 
 ## 17. Amendment log
 
-_None yet. The corrections to this plan, if any, are recorded here and never
-in a silent rewrite of the registered text._
+_The corrections to this plan, if any, are recorded here and never in a
+silent rewrite of the registered text._
+
+### 17.1 The answered-key table (WP3)
+
+**What changed.** The registered §6.2 and §11 named "one answer per inbound
+test, never more", but named no bound on the **reply traffic** a peer can
+provoke. A peer that sends the same test repeatedly would have been
+answered repeatedly, and a peer that echoes the router's own late answer
+would have started a second exchange.
+
+**Why it matters.** `AGENTS.md` requires that network bytes be treated as
+hostile and bounded. Without a bound, the reply traffic is bounded only by
+the peer's patience — that is, by nothing the router controls.
+
+**The correction.** A second bounded table remembers the keys the router has
+**already answered**. A repeated key is **suppressed** rather than answered
+again, the table is a ceiling that refuses rather than evicting, and it ages
+out on the owner's own sweep. The table is separate from the outstanding-
+probe table on purpose: a flood of inbound probes must not be able to fill
+the probe table and block the router's own probes.
+
+**Where it lives.** `crates/i2pr-daemon/src/peer_test.rs` — the
+`PeerTestOwner::responded` table, `MAX_RESPONDED_PEER_TESTS`, the
+`answers_suppressed_repeat` and `answers_refused_full` counters, and the
+suppression in `PeerTestOwner::handle_inbound`.
+
+### 17.2 The runtime derives the family; the daemon asserts none (WP1)
+
+**What changed.** The registered §6.3 said the runtime's production
+recorder "takes the **typed confirmed outcome** the daemon observed". The
+implemented method takes the **link** the exchange travelled on and the
+sealed proof, and it **derives** the address family from that session's own
+address.
+
+**Why it matters.** The reachability tracker is **family-scoped**: the
+transport's `supporting_classes` counts the distinct classes of the **latest
+family** only (`crates/i2pr-transport/src/reachability.rs:511-528`). A
+daemon that named the family could file the evidence under a family the
+exchange never used, and the corroboration count would then be taken over
+the wrong family. The runtime is the only component that knows the session's
+address, so the runtime derives it.
+
+**The correction.** `Ssu2RuntimeService::note_confirmed_peer_test(link_id,
+proof)` resolves the family from `state.active[link_id].peer_addr.ip()` and
+refuses with `Ssu2PeerTestEvidenceError::NoSession` when the session is
+already gone. The daemon names **no** family, and the guard proves it.
+
+### 17.3 One probe at a time per peer (WP2)
+
+**What changed.** The registered §9 named the contention rule — "one probe
+at a time per peer. Two concurrent attempts for the same peer are refused,
+not queued" — but the registered §6.1 did not say how the table enforces
+it, and the tracker is keyed by the probed identifier **and** timestamp.
+
+**The correction.** `PeerTestTracker::has_outstanding_for(peer)` answers
+the question directly, and `PeerTestOwner::start_probe` refuses a second
+attempt for the same peer with `PeerTestOwnerError::InFlight` and its own
+counter. The registered §9's rule is now implemented rather than implied.
+
+### 17.4 The stock-peer half is narrower than §3.1 implied (WP5)
+
+**What changed.** §3.1 describes "the responder's echo" as the answer owed
+to an inbound peer test, and the scope says the **stock-peer** half is
+Plan 493's. The implementation work found that the stock half is narrower
+still: **no stock router implements an I2NP 231 responder at the router
+level**.
+
+- i2pd uses message 231 only for a **garlic-carried tunnel** test
+  (`libi2pd/TunnelPool.cpp:436`, `:493-501` at the pin
+  `635b013a612ff47278ef02acf8580a28e10e26c5`); its
+  `TunnelPool::ProcessTunnelTest` is the **initiator** half, matching the
+  message id against the tunnel pool's own outstanding tests.
+- Java I2P has **no** `TunnelTestMessage` class at all at the pin
+  `9134f808337b401e8e53c73734c81fab04280c9d`; its peer test is the
+  out-of-session `PeerTestManager`
+  (`router/java/src/net/i2p/router/transport/udp/`).
+
+**Why it is recorded here.** The router-level 231 responder is therefore
+proven against **this router's own peer**, over a real SSU2 session on
+loopback. The stock-peer half stays blocked on Plan 493's authorized
+two-host topology, and it is now blocked on it for a **second** reason
+besides the topology itself. The plan's stop condition — "the stock-peer
+half is reached for, which is Plan 493's" — was therefore never reached:
+the lane drives the router-level responder, not a stock peer.
+
+**Nothing else in the plan changes.** The mechanism, the opt-in, the
+match, the failure semantics, the bounds and the non-goals are as
+registered.
+
+### 17.5 §3's citation drift
+
+**§3 is evidence and is not rewritten.** The registered §3 cited the
+production tree at registration time, and the implementation moved that
+tree. The drift is recorded here, additively, with a registration-time to
+current pointer table. The **banner** on §3 marks it as the
+registration-time snapshot.
+
+| §3's pointer | now | what it names |
+| --- | --- | --- |
+| `crates/i2pr-daemon/src/peer_test.rs:87` | `:157` | `PeerTestEcho::encode` |
+| `crates/i2pr-daemon/src/peer_test.rs:122` | `:276` | `PeerTestTracker` |
+| `crates/i2pr-daemon/src/peer_test.rs:202` | **retired** | `dispatch_router_i2np_with_peer_test` — replaced by `PeerTestOwner::handle_inbound` at `:638` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3214` | `:3314` | `map_controlled_outcome_locked` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3746` | `:3846` | `send_i2np_with_link` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5966` | `:6066` | the `ValidatedPath` record (class 2) |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6097` | `:6204` | the `AuthenticatedPeerObservedExternalAddress` record (class 1) |
+| `crates/i2pr-daemon/src/service_product.rs:5277` | `:5572` | the `route_inbound_with_liveness_classified` call |
+| `crates/i2pr-transport/src/reachability.rs:475` | `:511` | `supporting_classes` |
+| `crates/i2pr-transport/src/reachability.rs:528` | `:564` | `recompute` |
+| `crates/i2pr-transport/src/reachability.rs:557-561` | `:594-595` | the `Reachable` transition |
+
+**Unchanged:** `crates/i2pr-proto/src/i2np/header.rs:61`,
+`crates/i2pr-daemon/src/router_i2np.rs:748`,
+`crates/i2pr-daemon/src/tunnel_liveness.rs:785`,
+`crates/i2pr-transport-ssu2/src/peer_test.rs:483`,
+`crates/i2pr-daemon/src/floodfill.rs:675`, and in
+`crates/i2pr-transport/src/reachability.rs` the lines `66`, `119`, `136`
+and `195`.
+
+**The one that is not a drift but a retirement.** §3.1 cited
+`dispatch_router_i2np_with_peer_test` as the responder's production hook,
+and then said in the same paragraph that it **must not** become the
+production path, because it re-decodes the message the dispatcher had
+already decoded. The registered **D9** therefore required the responder to
+use the dispatcher's classified outcome instead. The implementation retired
+the function rather than rewiring it: it is gone, and
+`PeerTestOwner::handle_inbound` reads the classified outcome. The
+registered §6.2 — "the responder" — is satisfied by the new seam, and the
+retirement is the **only** way §3.1's own requirement could be met.

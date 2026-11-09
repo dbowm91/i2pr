@@ -1,6 +1,6 @@
 # `i2pr-runtime` — Deep Dive
 
-Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~25.7k lines (16 modules + `lib.rs`)
+Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~25.9k lines (16 modules + `lib.rs`)
 
 **Purpose:** the sole production owner of Tokio in the workspace — it owns
 sockets, timers, bounded channels, tasks, and wakeable cancellation, and

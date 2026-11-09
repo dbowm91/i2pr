@@ -2542,6 +2542,12 @@ so the inventory holds **112 surfaces, 107 experimental, 4 deferred, 1 ready,
 0 advertised**. The advertised count stays **zero**: Plan 520 qualifies the
 address the router already published, and advertises nothing new.
 
+**Plan 521 adds one surface** — `daemon.own-peer-test` — so the inventory
+holds **113 surfaces, 108 experimental, 4 deferred, 1 ready, 0 advertised**.
+The advertised count stays **zero**: Plan 521 gives the router a way to earn
+the reachability evidence its published address needs, and advertises
+nothing new.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3178,9 +3184,88 @@ reason.
 **Not proved here, and not claimed:** that a **stock** peer qualifies the
 published record in the live network — that half needs Plan 493's authorized
 two-host topology and remains blocked on it. The direct form also needs three
-distinct corroboration classes, and there is **no production entry point**
-that starts a peer test outside the controlled floodfill activation, so the
-ordinary record's address cannot be earned in production today. Nothing is
+distinct corroboration classes, and Plan 521 closes the gap that Plan 520
+recorded here: there is now a production entry point that starts a peer test
+outside the controlled floodfill activation. Nothing is
 advertised: the inventory's advertised count stays zero, `router.version`
 stays `0.9.62`, the published record's `caps` string is unchanged, and
 `Cargo.toml` and `Cargo.lock` are byte-identical.
+
+## The router runs its own peer test (Plan 521)
+
+The router publishes its own RouterInfo, and Plan 520 made the SSU2 address
+in that record **qualified** — gated on the router's own reachability
+evidence. Plan 520 closed with the finding that the ordinary record could
+**not** be earned in production: the direct form needs **three** distinct
+corroboration classes, and the third — a confirmed peer test — was recorded
+in production only by the controlled floodfill activation, which installs
+the *floodfill* record Plan 520's stand-down rule leaves alone.
+
+**The mechanism is the I2NP peer test, message 231.** The daemon already
+modelled it (`crates/i2pr-daemon/src/peer_test.rs`) and the dispatcher
+already classified it (`RouterI2npOutcome::PeerTest`), but neither half had
+a production caller. The transport's separate **out-of-session** three-party
+peer test is a different mechanism, stays controlled-only, and is untouched.
+
+**The switch is `ssu2.peer_test`, and it is off by default.** It is refused
+unless the SSU2 service itself runs, because a peer test is an exchange with
+a peer the router already holds a session with. With the switch off the
+router sends no probe and records nothing.
+
+**One bounded owner holds both roles.** The outstanding-probe table is keyed
+by the probed identifier **and** the probed timestamp, so an echo matches the
+probe that produced it; a probe completes only when the answer came from the
+peer the probe was sent to, and a mismatch neither completes the probe nor
+releases its entry. One probe at a time per peer: a second attempt is
+refused, not queued. The table is a ceiling that **refuses** rather than
+evicts, so an answer can never be matched against a different probe.
+
+**The responder sits on the live inbound path and decodes once.** It reads
+the dispatcher's **classified** outcome — the same outcome the liveness
+scheduler correlates — so the inbound message is decoded exactly once and
+the responder runs no decoder of its own. An echo of the router's own probe
+completes the probe and is owed **no** answer; anything else is owed an
+answer that repeats the probed identifier and timestamp unchanged, and the
+answer travels to the **authenticated** peer the test arrived from. The
+responder records **nothing** about itself.
+
+**The reply traffic is bounded by the router, not by the peer.** A bounded
+table of answered keys means one key is answered at most once per age
+window, and the table refuses rather than evicting. Without it a peer could
+make the router answer the same test again and again.
+
+**Only the transport's tracker decides.** The daemon hands the runtime a
+**sealed** proof — `i2pr_transport::ConfirmedPeerTest`, which has no
+constructor that takes a boolean or a claim, so the unmatched and timed-out
+paths cannot mint one — and the runtime derives the address family from the
+session the exchange travelled on. The daemon can neither assert a family
+nor record an unmatched exchange, and it never writes a reachability signal
+of its own. The transport's corroboration policy is untouched: the
+threshold, the classes and the expiry remain the transport's.
+
+**Failure is neutral.** A timeout, an unmatched echo, a peer mismatch and a
+refused probe all record **nothing**, so a failed test can never poison
+later evidence.
+
+**Proved here:** the opt-in is off by default and refused without the
+service; the responder answers with the probed fields unchanged, back to the
+peer that sent the test; a matched echo completes with the locally measured
+elapsed time; a confirmed exchange records the router's **own** reachability
+through the runtime's own recorder; the responder records nothing about
+itself; a probe that is not answered times out and records no signal; an
+unmatched echo completes nothing; the table's ceiling refuses rather than
+evicts; a repeated key is answered at most once; and the transport's tracker
+reaches `Reachable` once the confirmed peer test supplies the missing third
+class.
+
+**Not proved here, and not claimed:** that a **stock** peer answers the
+probe. No stock router implements an I2NP 231 responder at the router level:
+i2pd uses message 231 only for a garlic-carried **tunnel** test
+(`libi2pd/TunnelPool.cpp:436`, `:493-501` at the pin), and Java I2P has no
+`TunnelTestMessage` class at all — its peer test is the out-of-session
+`PeerTestManager` (`router/java/src/net/i2p/router/transport/udp/`). The
+stock-peer half therefore stays blocked on Plan 493's authorized two-host
+topology, and the router-level 231 responder is proven against this router's
+own peer. Nothing is advertised: the inventory's advertised count stays
+zero, `router.version` stays `0.9.62`, the published record's `caps` string
+is unchanged, and `Cargo.toml` and `Cargo.lock` are byte-identical.

@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 77 `.rs` files, 133 725 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
+**Size:** 77 `.rs` files, 134 855 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -990,6 +990,52 @@ proves the daemon's own copy of the rule does not exist.
 record returns to the netdb's ordinary **zero-address** form, so the router
 does not keep publishing an endpoint it can no longer justify. The withdrawal
 is counted under its own reason, exactly like every other refusal.
+
+### The router's own peer test (Plan 521)
+
+Plan 520 made the published SSU2 address **qualified** and gated its
+publication on the router's own reachability evidence, and it closed with
+the finding that the ordinary record could not be earned in production: the
+direct form needs **three** distinct corroboration classes, and the third —
+a confirmed peer test — was recorded in production only by the controlled
+floodfill activation. Plan 521 closes that gap at its source.
+
+**What changed:**
+
+- `src/peer_test.rs` — the bounded owner. The outstanding-probe table is
+  keyed by the probed identifier **and** the probed timestamp, so an echo
+  matches the probe that produced it, and a probe completes only when the
+  answer came from the peer the probe was sent to. One probe at a time per
+  peer; a second attempt is refused, not queued. The table is a ceiling that
+  refuses rather than evicts. A second bounded table remembers the keys the
+  router has already **answered**, so the reply traffic a peer can provoke
+  is bounded by the router's own table and not by the peer's patience;
+- `src/service_product.rs` — the responder sits on the **live inbound path**
+  and reads the dispatcher's **classified** outcome, so the inbound message
+  is decoded exactly once and the responder runs no decoder of its own. An
+  echo of the router's own probe completes the probe and is owed no answer;
+  anything else is owed an answer that repeats the probed fields unchanged.
+  The owner is driven by the product's **existing** tick: it starts no task,
+  no timer and no listener;
+- `src/config.rs` — `ssu2.peer_test` is an explicit opt-in, **off** by
+  default, and refused unless the SSU2 service itself runs;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the production recorder. It is
+  distinct from the controlled mirror, it records only a confirmed outcome,
+  and it is refused after shutdown. The caller names the **link** the
+  exchange travelled on and the runtime derives the address family from
+  that session's own address, so the daemon can neither assert a family nor
+  record an unmatched exchange;
+- `crates/i2pr-transport/src/reachability.rs` — `ConfirmedPeerTest`, a
+  **sealed** proof of a matched round trip. It has no constructor that takes
+  a boolean or a claim, so the unmatched and timed-out paths cannot mint
+  one.
+
+**The transport's tracker remains the single authority.** The daemon never
+computes a reachability state, never reads one, and never writes a state into
+a published record; the transport's corroboration policy is untouched.
+
+**The signal is about this router.** The recorded evidence belongs to the
+router's **own** reachability and is never written into a peer's profile.
 
 ### `bootstrap_daemon` (`src/lib.rs:5166`) — ordered startup
 

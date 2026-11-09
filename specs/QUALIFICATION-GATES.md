@@ -1273,6 +1273,117 @@ public behaviour without a socket, so a *live* dial inside the transport's loop
 is not re-measured here. The structural gates above are what stand between the
 publication and the transport's loop, and they read the production files.
 
+## 20. The router's own peer test (Plan 521)
+
+The router publishes its own RouterInfo, and Plan 520 made the SSU2 address
+in that record **qualified** — published only while the router's own
+reachability evidence admits the direct form. That evidence needs **three**
+distinct corroboration classes, and Plan 520 closed with the finding that
+the ordinary router could earn only two: the confirmed peer test was
+recorded in production only by the controlled floodfill activation.
+
+Plan 521 closes that gap at its source. The mechanism is the I2NP peer test,
+message **231**, which the daemon already modelled and the dispatcher
+already classified; the transport's separate out-of-session three-party
+peer test is untouched and stays controlled-only.
+
+### 20.1 The opt-in is real, and it is off by default
+
+`ssu2.peer_test` is parsed, defaults to `false`, and is refused unless the
+SSU2 service itself runs. With the switch off the router sends no probe and
+records nothing.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_opt_in_defaults_off_and_needs_the_service`, and
+`crates/i2pr-daemon/tests/peer_test_role.rs`, `the_opt_in_is_off_by_default`
+and `the_opt_in_requires_the_ssu2_service`.
+
+### 20.2 The probe is recorded before the send
+
+The probe is recorded in the outstanding table **before** it is returned to
+the caller, so an answer that arrives quickly is never dropped.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_probe_is_recorded_before_the_send`.
+
+### 20.3 The recorder has one production call site
+
+The runtime's production recorder is called from exactly **one** place in
+the daemon: the confirmed-match path. The controlled recorder is a separate
+method and is untouched.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_recorder_has_one_production_call_site` and
+`the_controlled_recorder_is_untouched`.
+
+### 20.4 The daemon asserts no family and no reachability state
+
+The runtime derives the address family from the session the exchange
+travelled on. The daemon never names a family, never names a reachability
+signal, and never owns a tracker.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_daemon_asserts_no_family` and
+`the_daemon_records_no_reachability_signal`.
+
+### 20.5 The responder derives the answer from the authenticated delivery
+
+The answer carries the authenticated peer and the exact link the test
+arrived on, and the responder runs **no** second decoder: the live inbound
+path decodes the message once and classifies it once, and the peer-test
+seam reads that same classified outcome.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_responder_uses_the_authenticated_delivery` and
+`the_inbound_path_decodes_once`.
+
+### 20.6 The owner adds no task, no timer and no listener
+
+The owner is driven by the product's **existing** tick and fed by the live
+inbound path. It starts nothing and binds nothing.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_owner_adds_no_infrastructure`.
+
+### 20.7 The reply traffic is bounded by the router
+
+A bounded table of answered keys means one key is answered at most once per
+age window, and the table refuses rather than evicting.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_answered_key_table_is_bounded`, and
+`crates/i2pr-daemon/tests/peer_test_role.rs`,
+`a_repeated_key_is_answered_at_most_once`.
+
+### 20.8 The transport's policy is untouched, and the publication too
+
+The daemon names no corroboration threshold and no class, and the peer test
+touches no builder and no permit: `caps=f` stays permit-gated.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`the_corroboration_policy_is_untouched` and `the_publication_is_untouched`.
+
+### 20.9 The confirmed exchange is the third class
+
+The confirmed peer test supplies the class the router could not earn. With
+the configured bind and the peer's external-address observation already
+present, the transport's tracker reaches `Reachable` only once the peer test
+is recorded.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role.rs`,
+`the_transport_s_tracker_reaches_reachable_with_the_confirmed_peer_test` and
+`a_confirmed_exchange_records_the_router_s_own_reachability`.
+
+### 20.10 The stock-peer half is not claimed
+
+No stock router implements an I2NP 231 responder at the router level. The
+stock half stays blocked on Plan 493's authorized two-host topology, and
+the lane drives the router-level responder against this router's own peer
+over a **real** SSU2 session on loopback.
+
+*Gate:* `crates/i2pr-daemon/tests/peer_test_role.rs`,
+`the_responder_answers_with_the_probed_fields_unchanged`.
+
 ## 19. The router's own published SSU2 address (Plan 520)
 
 The router publishes its own RouterInfo, and that record has carried one
