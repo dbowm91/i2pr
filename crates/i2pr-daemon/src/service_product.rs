@@ -7349,6 +7349,13 @@ pub(crate) enum DestinationDialPurpose {
     OutboundTunnelFirstHop,
     CreatorRouterInfoPublication,
     ServiceLeaseSetPublication,
+    /// Plan 522: the outbound peer-session pool's own dial.
+    ///
+    /// The purpose records why the dial happened, exactly as the
+    /// other purposes do. The pool's dial is never a first hop of
+    /// a tunnel and never a publication: it establishes a session
+    /// the router wants to **hold**, so that a later need finds it.
+    PeerPoolMaintenance,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

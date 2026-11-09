@@ -338,6 +338,14 @@ pub const DATA_KEEPALIVE_PAYLOAD_BYTES: usize = 20;
 /// own deadline, and three unanswered keepalives end the
 /// session.
 pub const DATA_KEEPALIVE_TIMEOUT_INTERVALS: u64 = 3;
+/// The keepalive interval, in milliseconds.
+///
+/// Plan 522: this is the transport's own cadence and the single
+/// source of truth for it. The daemon derives the runtime's
+/// keepalive from this constant rather than configuring a second
+/// value, and refuses a pool whose idle timeout is too short for
+/// this interval's unanswered deadline.
+pub const DATA_KEEPALIVE_INTERVAL_MS: u64 = 60_000;
 /// IPv4 data-phase payload budget overhead (`MTU - 60` per the Data
 /// Message section).
 pub const DATA_IPV4_OVERHEAD_BYTES: usize = 60;

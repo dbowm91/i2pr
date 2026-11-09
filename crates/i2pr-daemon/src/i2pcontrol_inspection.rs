@@ -75,6 +75,12 @@ pub type PeerReconcileCounterCell = std::sync::Mutex<crate::peer_reconcile::Peer
 /// The counters are counts only: they name no peer, address, key or payload.
 pub type PeerTestCounterCell = std::sync::Mutex<crate::peer_test::PeerTestOwnerCounters>;
 
+/// Live counters of this router's outbound peer-session pool, published
+/// by the composition root (Plan 522). The pool's own task refreshes
+/// the cell on its period; the counters are counts only and name no
+/// peer, address or key.
+pub type PeerPoolCounterCell = std::sync::Mutex<crate::peer_pool::PeerPoolCounters>;
+
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
 
@@ -290,6 +296,9 @@ pub struct InspectionHandles {
     /// composition root (Plan 521). The product refreshes the cell on its
     /// tick; the counters are counts only and name no peer, address or key.
     peer_test_live: Mutex<Option<Arc<PeerTestCounterCell>>>,
+    /// Live counters of this router's outbound peer-session pool,
+    /// published by the composition root (Plan 522).
+    peer_pool_live: Mutex<Option<Arc<PeerPoolCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -320,6 +329,7 @@ impl InspectionHandles {
             exploratory_driver_live: Mutex::new(None),
             peer_reconcile_live: Mutex::new(None),
             peer_test_live: Mutex::new(None),
+            peer_pool_live: Mutex::new(None),
         }
     }
 
@@ -698,6 +708,38 @@ impl InspectionHandles {
     /// zero.
     pub fn peer_test_counters_snapshot(&self) -> Option<crate::peer_test::PeerTestOwnerCounters> {
         let cell = self.peer_test_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 522: the composition root publishes the cell the pool's own
+    /// task refreshes on its period, so the running router's pooled
+    /// session posture is observable through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_peer_pool_counters(&self, cell: Arc<PeerPoolCounterCell>) {
+        if let Ok(mut slot) = self.peer_pool_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published peer-pool counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn peer_pool_counters(&self) -> Option<Arc<PeerPoolCounterCell>> {
+        self.peer_pool_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published peer-pool
+    /// counters.
+    ///
+    /// Plan 522: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn peer_pool_counters_snapshot(&self) -> Option<crate::peer_pool::PeerPoolCounters> {
+        let cell = self.peer_pool_counters()?;
         cell.lock().ok().map(|counters| *counters)
     }
 

@@ -640,6 +640,8 @@ struct RawSsu2Config {
     introducer_service: bool,
     #[serde(default = "default_ssu2_peer_test")]
     peer_test: bool,
+    #[serde(default = "default_ssu2_peer_pool")]
+    peer_pool: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
     /// Optional destination for the Plan 476 sanitized local receipt
@@ -679,6 +681,7 @@ impl Default for RawSsu2Config {
             advertise: default_ssu2_advertise(),
             introducer_service: default_ssu2_introducer_service(),
             peer_test: default_ssu2_peer_test(),
+            peer_pool: default_ssu2_peer_pool(),
             qualification_profile: default_ssu2_qualification_profile(),
             qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
@@ -1436,6 +1439,13 @@ const fn default_ssu2_peer_test() -> bool {
     false
 }
 
+/// Plan 522: the outbound peer-session pool is an explicit opt-in
+/// and it is **off** by default, so a router that has not asked to
+/// hold peer sessions never generates handshake traffic.
+const fn default_ssu2_peer_pool() -> bool {
+    false
+}
+
 fn default_ssu2_qualification_profile() -> String {
     String::from("controlled_loopback")
 }
@@ -2020,6 +2030,15 @@ pub struct Ssu2Config {
     /// withdraws the address when the evidence lapses. It is refused
     /// outside the controlled loopback profile.
     pub advertise: bool,
+    /// Whether this router holds a **bounded pool of outbound peer
+    /// sessions** (default false).
+    ///
+    /// Plan 522: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router keeps a bounded set of
+    /// outbound sessions to the peers it already knows, and the
+    /// transport's outbound sessions send a keepalive so a held
+    /// session does not lapse. It never advertises anything.
+    pub peer_pool: bool,
     /// Whether this router runs **its own** peer test (default false).
     ///
     /// Plan 521: the switch is an explicit opt-in and it is **off** by
@@ -3437,6 +3456,31 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "the router's own peer test requires ssu2.enabled = true",
         });
     }
+    // Plan 522: the outbound peer-session pool runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because a pooled
+    // session is an outbound SSU2 session, and it is refused rather
+    // than silently inert when the service is off.
+    if raw.peer_pool && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.peer_pool",
+            reason: "the outbound peer-session pool requires ssu2.enabled = true",
+        });
+    }
+    // Plan 522: the keepalive's own unanswered deadline must fall
+    // strictly before the session's idle timeout, or the two would
+    // disagree about when a session dies. The interval is the
+    // transport's own constant, so there is no second value to
+    // disagree with.
+    if raw.peer_pool
+        && raw.idle_timeout_ms
+            <= i2pr_runtime::KEEPALIVE_INTERVAL_MS
+                * u64::from(i2pr_runtime::KEEPALIVE_TIMEOUT_INTERVALS)
+    {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.idle_timeout_ms",
+            reason: "the outbound peer-session pool needs an idle timeout longer than the keepalive's unanswered deadline",
+        });
+    }
     // Plan 490: the introducer role is available behind an explicit
     // opt-in. It still requires the SSU2 service itself to run, and it
     // never grants advertisement.
@@ -3564,6 +3608,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         port: raw.port,
         advertise: raw.advertise,
         peer_test: raw.peer_test,
+        peer_pool: raw.peer_pool,
         introducer_service: raw.introducer_service,
         qualification_profile: if private_lan {
             Ssu2QualificationProfile::PrivateLan

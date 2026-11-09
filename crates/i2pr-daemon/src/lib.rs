@@ -43,6 +43,8 @@ pub mod outbound_lookup;
 pub mod outbound_secret;
 pub mod outproxy_options;
 pub mod outproxy_route;
+pub mod peer_pool;
+pub mod peer_pool_task;
 pub mod peer_reconcile;
 pub mod peer_test;
 pub mod router_i2np;
@@ -4559,6 +4561,63 @@ fn register_ssu2_service(
                                 detail,
                             ),
                         );
+                    }
+                    // Plan 522: the outbound peer-session pool runs on
+                    // its **own task**, for the same reason the
+                    // publication does: a session establishment is an
+                    // await, and the daemon's `select!` loop must never
+                    // block on a handshake. The task is spawned under the
+                    // service's own child scope, so it is owned,
+                    // cancelled and joined with the service.
+                    //
+                    // The pool is an explicit, default-off opt-in, so a
+                    // router that has not asked for it spawns no task
+                    // at all and generates no handshake traffic.
+                    if ssu2_config.peer_pool {
+                        let peer_pool_counters: Arc<
+                            crate::i2pcontrol_inspection::PeerPoolCounterCell,
+                        > = Arc::new(std::sync::Mutex::new(
+                            crate::peer_pool::PeerPoolCounters::default(),
+                        ));
+                        inspection.publish_peer_pool_counters(Arc::clone(
+                            &peer_pool_counters,
+                        ));
+                        let peer_pool_task =
+                            crate::peer_pool_task::PeerPoolTask {
+                                owner: crate::peer_pool::PeerPoolOwner::new(true),
+                                handle: owner.handle().publication_handle(),
+                                bootstrap: live_bootstrap.clone(),
+                                local_hash: Some(i2pr_netdb::RouterHash::from_hash(
+                                    router_hash,
+                                )),
+                                dial_timeout: crate::service_product::
+                                    ServiceProductOptions::default()
+                                    .dial_timeout,
+                                qualification_profile: ssu2_config.qualification_profile,
+                                counters_cell: peer_pool_counters,
+                            };
+                        if children
+                            .spawn(move |cancellation| async move {
+                                crate::peer_pool_task::run_peer_pool_task(
+                                    peer_pool_task,
+                                    cancellation,
+                                )
+                                .await
+                            })
+                            .is_err()
+                        {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "the outbound peer-session pool task could not be spawned",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::Internal,
+                                    detail,
+                                ),
+                            );
+                        }
                     }
                     // Plan 502: the router hashes the transit owner holds an
                     // index entry for. The set is bounded by the live

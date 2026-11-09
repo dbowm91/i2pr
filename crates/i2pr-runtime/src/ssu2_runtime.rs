@@ -117,6 +117,13 @@ pub const MAX_SSU2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
 /// when an unanswered keepalive ends a session.
 pub const KEEPALIVE_TIMEOUT_INTERVALS: u32 =
     i2pr_transport_ssu2::constants::DATA_KEEPALIVE_TIMEOUT_INTERVALS as u32;
+
+/// The keepalive interval, in milliseconds.
+///
+/// Plan 522: this is the transport's own cadence, re-exported so the
+/// daemon reads the one value without taking a second dependency on
+/// the transport crate.
+pub const KEEPALIVE_INTERVAL_MS: u64 = i2pr_transport_ssu2::constants::DATA_KEEPALIVE_INTERVAL_MS;
 /// Absolute ceiling for pending handshakes (both directions).
 pub const MAX_SSU2_PENDING_CEILING: usize = 1024;
 /// Absolute ceiling for active sessions.

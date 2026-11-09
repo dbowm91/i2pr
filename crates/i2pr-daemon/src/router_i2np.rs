@@ -1520,6 +1520,14 @@ pub fn ssu2_runtime_config_from(
             handshake: config.handshake_timeout,
             dial,
             idle: config.idle_timeout,
+            // Plan 522: the keepalive rides the **existing** session
+            // scheduler, so it is a deadline and not a task. Its
+            // interval is the transport's own constant, so there is no
+            // second value to disagree with. A router without the
+            // pool sends no keepalive at all.
+            keepalive: config
+                .peer_pool
+                .then(|| Duration::from_millis(i2pr_runtime::KEEPALIVE_INTERVAL_MS)),
             queue_wait: default_deadlines.queue_wait,
             drain: default_deadlines.drain,
             scheduler_poll_max: config.scheduler_poll_max,
