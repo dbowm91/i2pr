@@ -3775,6 +3775,28 @@ the controlled loopback profile, so the `C` is a local qualification claim and
 not yet a network-reachable one. The **stock-peer** half needs Plan 493's
 authorized two-host topology.
 
+## The router's reachability is read, not asserted (Plan 527)
+
+The daemon's firewalled gate reads the runtime's tracker:
+
+```rust
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+```
+
+Before Plan 527 that read was **permanently false**. The tracker the product
+reads could only ever receive confirming evidence, because every
+contradicting signal was written into a second tracker inside the peer-relay
+service that **nothing** read. So the gate refused every request — a router
+that was not firewalled asked nobody, and a router that could never become
+firewalled asked nobody either — and the introducer composition below it
+never ran.
+
+The gate itself is **unchanged**: the router asks only while its own
+reachability state is `Firewalled`, and every refusal is still counted under
+its own reason. What changed is that the state is now **reachable**, and the
+gate's flag is read from the tracker rather than injected.
+
 ## Cross-references
 
 ### Deep dives

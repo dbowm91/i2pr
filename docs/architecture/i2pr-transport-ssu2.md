@@ -179,6 +179,37 @@ name the address's own family. Adding the role letter to the family letter
 rather than replacing it keeps that stricter check intact, and the result is
 inside the alphabet both references parse.
 
+## The observed endpoint survives the event (Plan 527)
+
+The data-phase **Address block** carries a validated endpoint
+(`AddressBlock::decode`), and the session decodes it on every authenticated
+datagram. Until Plan 527 the session then **threw it away**:
+
+```rust
+                DecodedBlock::Address(_) => {
+                    outcome.events.push(SessionEvent::AddressObserved);
+                }
+```
+
+The event was a **unit** variant, so the router was told that a peer
+observed an external address and never **which** address. It could not
+compare the observation with its own bound address, and could not discover
+that it was behind a NAT.
+
+Plan 527 keeps the endpoint the block already carried:
+
+```rust
+                DecodedBlock::Address(block) => {
+                    outcome.events.push(SessionEvent::AddressObserved {
+                        observed: block.endpoint(),
+                    });
+                }
+```
+
+**No codec, block or option changes.** The Address block's wire format, the
+session's block set and the transport's options are all untouched; the plan
+stops discarding a value that was already decoded and validated.
+
 ## Module layout
 
 Declared in `src/lib.rs:27-41` — 15 modules, no subdirectories.

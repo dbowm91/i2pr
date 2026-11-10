@@ -729,3 +729,120 @@ requester side.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+### 17.2 — 2026-11-10, the implementation findings
+
+**The transport's own state machine settles the scope question, and the plan
+is not re-scoped.** The registration's §3.4 showed that the `Firewalled` and
+`Unreachable` branches were dead code in the running router, and §5.2 kept
+the **requester** side out of scope. The implementation had to settle
+whether the peer-test route alone could reach `Firewalled`.
+
+It cannot, and the transport's own tests say so
+(`crates/i2pr-transport/src/reachability.rs`, `contradictory_observation_keeps_state_unconfirmed`
+and `corroborated_failures_mark_unreachable`): a contradicting observation
+must come from **two distinct classes** before the state machine calls the
+router firewalled, and the two classes are the peer-test verdict (class 3)
+and the relay-firewalled indication (class 4). One peer-test contradiction
+alone reaches `ObservedUnconfirmed`, never `Firewalled`.
+
+So the runtime's **recorder** for the relay-success indication is part of the
+deliverable and not an optional extra: it is the second class, and without it
+the router's reachability could be contradicted but never *firewalled*. The
+plan delivers it (`Ssu2RuntimeService::note_relay_firewalled`), and the lane
+drives it. The **producer** of that indication in the field — the requester
+side of the SSU2 relay protocol, which §5.2 and §5.3 keep out of scope —
+stays unwired, with its owner named.
+
+Criterion 4 of §14 is therefore met as written: the product's reachability
+state reaches `Firewalled`, and Plan 524's gate fires on it **without any
+injected flag** — the lane reads the state from the tracker and passes it to
+the gate.
+
+**The comparison needs no wire change.** The Address block already carried a
+validated endpoint and the session already decoded it; the plan stops
+discarding it. The transport's codec, its block set and its options are
+untouched.
+
+**The router's evidence is now readable.** The runtime gains
+`reachability_evidence`, which returns the state, the number of **distinct**
+corroborating classes behind it, the family's expiry and the family itself.
+Without it a contradiction could not be *shown* to support nothing: the state
+alone cannot distinguish "one contradicting class" from "one corroborating
+class", because both read `ObservedUnconfirmed`.
+
+### 17.3 — 2026-11-10, citation drift
+
+§3 is evidence and is **not** rewritten. This plan's own production change
+moved lines in four files and removed the items §3 quoted, so the citations
+that point at those files no longer land on the text they quoted. The table
+below is the additive pointer to the current text. Every citation in the plan
+that is **not** listed here still lands where it did at registration.
+
+| Quoted citation | Current pointer | What moved |
+|---|---|---|
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1370` — the runtime's tracker field | `crates/i2pr-runtime/src/ssu2_runtime.rs:1371` | One line: the new comparison's doc comment. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1805` — the tracker's construction | `crates/i2pr-runtime/src/ssu2_runtime.rs:1806` | One line. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2996` — the `LocalConfiguredBind` writer | `crates/i2pr-runtime/src/ssu2_runtime.rs:3109` | The comparison and its seam were added above it. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3050` — the `PeerTestResult{Confirmed}` writer | `crates/i2pr-runtime/src/ssu2_runtime.rs:3163` | As above. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3024`-`:3066` — `note_confirmed_peer_test` | `crates/i2pr-runtime/src/ssu2_runtime.rs:3137`-`:3179` | As above, and the relay-success recorder was added beside it. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3744`-`:3750` — `map_controlled_outcome_locked` | `crates/i2pr-runtime/src/ssu2_runtime.rs:3884`-`:3890` | The recorder and the comparison were added above it; the quoted range was the doc comment, and the function itself is at `:3892`. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6553` — the `ValidatedPath` writer | `crates/i2pr-runtime/src/ssu2_runtime.rs:6729` | As above. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6692` — the `AuthenticatedPeerObservedExternalAddress` writer | `crates/i2pr-runtime/src/ssu2_runtime.rs:2810` | The writer now lives in the comparison, and the handler calls it. |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:2162`-`:2167` — the snapshot reads the tracker | `crates/i2pr-runtime/src/ssu2_runtime.rs:2190`-`:2195` | The new evidence accessor was added above it. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:139` — the second tracker field | **removed** | The field is gone; the peer-relay service owns no tracker. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:170`-`:171` — the second tracker's construction | **removed** | As above. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:466`-`:499` — `mirror_peer_outcome` | **removed** | The service returns the typed outcome instead of mirroring it. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:505`-`:511` — `note_relay_firewalled` | **removed** | The recorder is the runtime's now. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:508` — the `RelayFirewalledSignal` writer | **removed** | As above. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:479`, `:483` — the `AddressMismatch` and `FirewalledLikely` writers | **removed** | As above. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:518` — `start_relay_request` | `crates/i2pr-runtime/src/ssu2_peer_relay.rs:481` | The tracker and the mirror were removed above it. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:534` — `on_relay_response` | `crates/i2pr-runtime/src/ssu2_peer_relay.rs:497` | As above. |
+| `crates/i2pr-runtime/src/ssu2_peer_relay.rs:1062`-`:1110` — the snapshot | `crates/i2pr-runtime/src/ssu2_peer_relay.rs:1010`-`:1057` (the function is `:1010`-`:1051`; registration's `:1110` fell inside the next item's doc block, now `:1053`-`:1057`) | The reachability field is gone from it. |
+| `crates/i2pr-transport-ssu2/src/session.rs:1927`-`:1929` — the Address block's decode site | `crates/i2pr-transport-ssu2/src/session.rs:1936`-`:1940` | The event now carries the endpoint. |
+| `crates/i2pr-transport-ssu2/src/session.rs:347` — the event variant | `crates/i2pr-transport-ssu2/src/session.rs:353`-`:356` | As above. |
+
+Citations that did **not** move, and therefore still stand as quoted:
+`crates/i2pr-transport/src/reachability.rs:119`,
+`:180`-`:189`, `:195`-`:203`, `:530`-`:542`, `:564`-`:601`,
+`crates/i2pr-transport-ssu2/src/block.rs:692`-`:725`, `:1387`,
+`crates/i2pr-transport-ssu2/src/peer_test.rs:732`-`:744`,
+`crates/i2pr-daemon/src/service_product.rs:4608`-`:4649`, `:4796`-`:4797`,
+`crates/i2pr-daemon/src/introducer_request.rs:314`-`:315`,
+`crates/i2pr-daemon/tests/ssu2_introducer_request.rs:498`, `:509`.
+
+### 17.4 — 2026-11-10, Plan 521's peer-test guard is extended, not weakened
+
+Plan 521's structural guard
+(`crates/i2pr-daemon/tests/peer_test_role_boundary.rs`) asserted, as its
+rule 5, that the controlled floodfill mirror "keeps its own mirror": the
+mirror's **own** body had to contain the literal
+`ReachabilitySignal::PeerTestResult`.
+
+This plan moves that recording into the runtime's single typed-outcome
+recorder, because the router's reachability has one owner and the product
+reads it. The controlled mirror now hands its typed outcome to
+`record_peer_test_outcome_locked`, so the literal is no longer in the
+mirror's body and Plan 521's rule 5 reported the change.
+
+The rule is **extended**, not weakened. Another plan's guard file is
+otherwise byte-identical, so the extension is recorded here:
+
+- the original branch is kept: a controlled mirror that records **nothing**
+  -- neither inline nor by delegation -- is still reported;
+- the delegation branch is **checked**, not assumed: the recorder the
+  mirror delegates to must be present, and it must file the outcome as a
+  `PeerTestResult` under its own kind, the **contradicting** kinds
+  included;
+- the absent-recorder case **fails closed**: a missing recorder is a
+  report, not a pass;
+- the "the production recorder must not delegate to the controlled mirror"
+  branch is untouched, and the dependency now points the safe way -- the
+  controlled mirror calls the runtime's recorder, never the reverse;
+- two inverted probes are added: a mirror that records nothing, and a
+  mirror that delegates to a recorder which files no peer-test result. The
+  guard's probe count goes from 13 to 15, and its rule count stays at 12.
+
+No boundary script is touched, no rule is relaxed, and no production
+behaviour is exempted: the controlled path records **more** than it did
+before, because it now records the outcome **whole** instead of only its
+confirming kind.

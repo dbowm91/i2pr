@@ -1013,6 +1013,49 @@ role letter on that form.
 advertises the role is refused outright while the role is not live, so the
 installed record cannot stand with a claim the router has stopped making.
 
+## The one tracker and the comparison (Plan 527)
+
+The runtime **owns** the router's reachability. It is the only tracker, and
+the product reads it.
+
+Before Plan 527 the peer-relay service kept a second one. Every
+contradicting signal was written into that second tracker and nothing read
+it, so the tracker the product read could only ever say `Reachable` — and
+the daemon's firewalled gate read `false` for ever. The service now keeps no
+tracker: it returns the typed facts it computes, and the runtime records
+them.
+
+**The comparison.** `note_observed_external_address` takes an observed
+endpoint and compares it with the router's **own bound socket**
+(`bound_endpoint`, which looks the socket up by the observation's family and
+yields `None` when the family has none):
+
+- an **agreement** corroborates — the peer sees this router at the address
+  the router is bound to;
+- a **disagreement** **contradicts** — the peer sees this router somewhere
+  else, so the router is behind a NAT and must not claim to be reachable;
+- a family with **no bound socket** refuses the comparison, so the router
+  neither claims a reachability it cannot compare nor invents a contradiction
+  it cannot support.
+
+A contradiction is recorded as `PeerTestResult{AddressMismatch}` and never
+also as a corroborating class: one observation is one fact.
+
+**Every typed outcome is recorded**, not only the confirming one.
+`record_peer_test_outcome_locked` maps the whole typed outcome, so a
+contradicting outcome reaches the product instead of being dropped.
+
+**The relay-success recorder is the runtime's.** `note_relay_firewalled` is
+the only place the relay-firewalled indication is recorded. The **requester**
+side of the SSU2 relay protocol produces it in the field, and that side is
+not wired yet — the recorder is here so its producer has exactly one place to
+write to.
+
+**The evidence is readable.** `reachability_evidence` returns the state, the
+number of **distinct** corroborating classes behind it, the family's expiry
+and the family itself, so a reader can see how much a claim rests on and not
+only what the claim is.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

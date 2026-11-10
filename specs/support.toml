@@ -2646,3 +2646,25 @@ evidence = [
     "plans/implementation/network-participation/526-the-router-advertises-its-own-introducer-role.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.reachability-contradiction"
+protocol = "ssu2"
+structure = "the-router-s-reachability-has-one-owner-and-one-reader"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 527 gives the router's reachability **one owner and one reader**. Before this plan it had **two** trackers: the runtime owned one and the product read it, and the peer-relay service owned another that **nothing** read. Every **contradicting** signal was written only into the second one -- `RelayFirewalledSignal` at exactly one place, `AddressMismatch` and `FirewalledLikely` at exactly two -- while the tracker the product read received only `LocalConfiguredBind`, `PeerTestResult{Confirmed}`, `ValidatedPath` and `AuthenticatedPeerObservedExternalAddress`, none of which contradicts. The state machine's `Firewalled` and `Unreachable` branches were therefore **dead code in the running router**, and the peer-relay service's snapshot had **no reader in the daemon at all**. The consequence reached the whole introducer composition: the daemon's firewalled gate reads the runtime's tracker, so it was **permanently false**; Plan 524's owner refused every request while the router was not firewalled; the router therefore **never** asked a peer for a relay tag, never obtained an authenticated introducer, and the introducer set it publishes stayed empty -- leaving Plan 525's publication with nothing to publish and Plan 526's `\"C\"` advertisement riding a role whose acquisition half could never run in the field. Plan 524's lane drove the owner with the flag **injected** (`owner.decide(&eligible, true, ...)`), so it proved the consumer honours the flag and never exercised the producer. The plan removes the second tracker: the peer-relay service returns the typed facts it computes and the **runtime** records them, every typed peer-test outcome is recorded rather than only the confirming one, and the runtime owns the relay-success recorder. The transport also **decoded** the data-phase Address block, which carries a validated endpoint, and then **discarded** it -- the event was a unit variant, so the router was told that a peer observed an external address but never **which** address, and could not compare it with its own bound address. The transport now keeps the endpoint it already decoded (**no codec, block or option changes**), and the runtime compares the observation with the router's **own bound socket**: an agreement corroborates and a disagreement contradicts, so a router behind a NAT no longer publishes a reachability claim it cannot honour. The transport's reachability **model** -- the five signal kinds, the corroboration classes, the policy floor and the state machine -- is untouched. The **requester** side of the SSU2 relay protocol, which produces the relay-success indication in the field, stays unwired and out of scope, with its owner named. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The **stock-peer** half is not claimed: it needs Plan 493's authorized two-host topology."
+evidence = [
+    "crates/i2pr-transport/src/reachability.rs",
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/introducer_request.rs",
+    "crates/i2pr-daemon/tests/ssu2_reachability_contradiction.rs",
+    "crates/i2pr-daemon/tests/ssu2_reachability_contradiction_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/527-the-routers-reachability-has-one-owner-and-one-reader.md",
+]
+advertised = false

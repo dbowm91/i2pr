@@ -2578,6 +2578,12 @@ advertised**. The advertised count stays **zero**: Plan 526 makes the router
 and **only** while the role is live, and the surface is internal and
 non-advertised.
 
+**Plan 527 adds one surface** — `daemon.reachability-contradiction` — so the
+inventory holds **120 surfaces, 115 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 527 gives the
+router's reachability **one owner and one reader**, and the surface is
+internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3525,6 +3531,56 @@ references' evidence is recorded in `specs/QUALIFICATION-GATES.md` §24. The
 plan of record is
 `plans/implementation/network-participation/525-the-router-publishes-the-introducer-set-it-learned.md`;
 the closure record is `plans/closure/network-participation/525-status.md`.
+
+## The router's reachability has one owner and one reader (Plan 527)
+
+The router's reachability had **two** trackers, and the product read the one
+that could only ever be *confirmed*.
+
+The runtime owned one, inside its service state, and the peer-relay service
+owned another, with the **default** policy rather than the runtime's. Every
+**contradicting** signal was written only into the second: `RelayFirewalledSignal`
+at exactly one place, `AddressMismatch` and `FirewalledLikely` at exactly two.
+The tracker the product read received only `LocalConfiguredBind`,
+`PeerTestResult{Confirmed}`, `ValidatedPath` and
+`AuthenticatedPeerObservedExternalAddress` — none of which contradicts. The
+state machine's `Firewalled` and `Unreachable` branches were therefore **dead
+code in the running router**, and the peer-relay service's snapshot had **no
+reader in the daemon at all**.
+
+**The consequence reached the whole introducer composition.** The daemon's
+firewalled gate reads the runtime's tracker, so it was permanently `false`;
+Plan 524's owner refuses every request while the router is not firewalled;
+the router therefore never asked a peer for a relay tag, never obtained an
+authenticated introducer, and the introducer set it published stayed empty —
+which left Plan 525's publication with nothing to publish and Plan 526's `C`
+riding a role whose acquisition half could never run in the field. Plan 524's
+lane drove the owner with the flag **injected**
+(`owner.decide(&eligible, true, ...)`), so it proved the consumer honours the
+flag and never exercised the producer.
+
+**The transport decoded the observed address and discarded it.** The
+data-phase Address block carries a validated endpoint and the session already
+decoded it, but the event was a unit variant: the router was told that a peer
+observed an external address and never **which** address, so it could not
+compare it with its own bound address and could not discover that it was
+behind a NAT.
+
+Plan 527 gives the router's reachability **one owner and one reader**. The
+peer-relay service keeps no tracker at all: it returns the typed facts it
+computes and the **runtime** records them. Every typed peer-test outcome is
+recorded, not only the confirming one, so a contradicting outcome reaches the
+product. The transport keeps the endpoint it already decoded — **no codec,
+block or option changes** — and the runtime compares the observation with the
+router's **own bound socket**: an agreement corroborates and a disagreement
+contradicts. The transport's reachability **model** — the five signal kinds,
+the corroboration classes, the policy floor and the state machine — is
+untouched.
+
+**What Plan 527 does not close.** The **requester** side of the SSU2 relay
+protocol, which produces the relay-success indication in the field, stays
+unwired and out of scope, with its owner named. The **stock-peer** half
+remains blocked externally on Plan 493's authorized two-host topology.
 
 ## The router advertises its own introducer role (Plan 526)
 

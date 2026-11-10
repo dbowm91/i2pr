@@ -1697,3 +1697,28 @@ request.
 introducer-only address, choosing it over the direct form, and signing it —
 is a successor's subject, and so is the `C` advertisement. The **stock-peer**
 half needs Plan 493's authorized two-host topology.
+
+## 26. The router's reachability is contradicted (Plan 527)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G27.1 | the router's reachability has **one** tracker, and the runtime owns it | `crates/i2pr-daemon/tests/ssu2_reachability_contradiction_boundary.rs`, `the_router_has_one_reachability_tracker` |
+| G27.2 | the peer-relay service owns **no** tracker | the same file, `the_peer_relay_service_owns_no_tracker` |
+| G27.3 | the transport keeps the observed endpoint it already decoded, and its reachability model is untouched | the same file, `the_transport_keeps_the_observed_endpoint` and `the_transport_model_is_untouched` |
+| G27.4 | the runtime compares the observation with the router's **own bound address**, and a disagreement contradicts | the same file, `the_runtime_compares_with_the_bound_address` |
+| G27.5 | **every** typed peer-test outcome is recorded, each under its own kind | the same file, `every_typed_outcome_is_recorded` |
+| G27.6 | the runtime owns the relay-success recorder | the same file, `the_runtime_owns_the_relay_success_recorder` |
+| G27.7 | the product reads the runtime's tracker | the same file, `the_product_reads_the_runtime_s_tracker` |
+| G27.8 | the firewalled gate stays fail-closed and counts its refusal | the same file, `the_gate_stays_fail_closed` |
+| G27.9 | the plan adds no configuration key and no infrastructure | the same file, `no_new_key_and_no_infrastructure` |
+| G27.10 | an observation that **agrees** with the bound address corroborates | `crates/i2pr-daemon/tests/ssu2_reachability_contradiction.rs`, `an_observation_that_agrees_with_the_bound_address_corroborates` |
+| G27.11 | an observation that **differs** from it contradicts | the same file, `an_observation_that_differs_from_the_bound_address_contradicts` |
+| G27.12 | a contradiction is never also a corroboration | the same file, `a_contradiction_is_never_also_a_corroboration` |
+| G27.13 | two contradicting classes reach `Firewalled` | the same file, `two_contradicting_classes_reach_firewalled` |
+| G27.14 | the gate asks **only** on the state the tracker really holds, and refuses otherwise | the same file, `the_firewalled_gate_asks_only_on_the_state_the_tracker_really_holds` and `a_router_with_no_contradiction_asks_nobody` |
+| G27.15 | an unknown family records nothing, and a router with no bound socket refuses the comparison | the same file, `an_unknown_family_records_nothing` and `a_router_with_no_bound_socket_refuses_the_comparison` |
+
+Every gate above is **local**: the lane drives the runtime's **producer** over
+a real loopback socket, and never injects the flag the daemon's gate reads.
+The **stock-peer** half of this surface remains blocked externally on Plan
+493's authorized two-host topology.

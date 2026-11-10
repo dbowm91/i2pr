@@ -39,6 +39,28 @@ monotonically to `record_reachability` / `enqueue_delivery` /
 are guarded by `std::sync::Mutex` and never held across a suspension
 point.
 
+## The reachability model's owner and reader (Plan 527)
+
+This crate owns the **model**: the five typed signal classes, the
+per-character corroboration class, the policy floor and the state machine
+that distinguishes `Unknown`, `ObservedUnconfirmed`, `CandidateReachable`,
+`Reachable`, `Firewalled` and `Unreachable`. Plan 527 changes **none** of it.
+
+What the plan changes is **who owns the fact** and **who reads it**. The
+model had two trackers: the runtime's and the peer-relay service's, and
+every contradicting signal was written into the second while the product read
+the first. The second is gone; the runtime's is the only one, and the product
+reads it.
+
+The model's own rule is worth stating plainly, because it is what made the
+defect consequential: a contradicting observation takes precedence over
+corroboration until it expires, so a tracker that never receives a
+contradiction can only ever say `Reachable`. The classes are distinct on
+purpose — a peer-test verdict (class 3) and a relay indication (class 4) are
+two different kinds of evidence, and the state machine needs **both** before
+it calls the router firewalled. One observation is never recorded under two
+classes.
+
 ## Module layout
 
 Flat — declared at `src/lib.rs:16-26`. No subdirectories. Line counts are
