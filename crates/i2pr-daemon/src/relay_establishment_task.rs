@@ -56,6 +56,12 @@ pub struct RelayEstablishmentTask {
     /// The cell holds counts only. It names no peer, no address, no key
     /// and no token.
     pub counters_cell: Arc<StdMutex<RelayEstablishmentCounters>>,
+    /// Plan 534 — the local observation table.
+    ///
+    /// The table records that this router reached a peer through a relay.
+    /// It is a **local** fact about this router's session: nothing is
+    /// written into the peer's record and no reachability is claimed.
+    pub relay_sessions: Option<crate::relay_session_peer::RelaySessionPeerHandle>,
 }
 
 /// Publishes the owner's counters into the shared cell.
@@ -69,6 +75,23 @@ fn publish_counters(
     if let Ok(mut guard) = cell.lock() {
         *guard = owner.counters();
     }
+}
+
+/// Plan 534 — records that this router reached a peer through a relay.
+///
+/// The observation is a **local** fact: it says that this router's session
+/// with the peer is established, and it writes nothing into the peer's
+/// record and claims nothing about the peer's reachability.
+///
+/// The peer comes from the dial target the task already built, so no identity
+/// crosses a boundary that did not already have it.
+pub fn record_established_peer(
+    handle: &crate::relay_session_peer::RelaySessionPeerHandle,
+    target: i2pr_runtime::Ssu2DialTarget,
+    now_ms: u64,
+) -> Result<(), crate::relay_session_peer::RelaySessionPeerRefusal> {
+    let peer = i2pr_netdb::RouterHash::from_hash(target.expected_router_hash());
+    crate::relay_session_peer::record_relay_session_peer(handle, peer, now_ms)
 }
 
 /// Runs the establishment's task until the cancellation arrives.
@@ -88,6 +111,7 @@ pub async fn run_relay_establishment_task(
         dial_timeout,
         mut receiver,
         counters_cell,
+        relay_sessions,
     } = task;
     loop {
         tokio::select! {
@@ -120,15 +144,27 @@ pub async fn run_relay_establishment_task(
                         continue;
                     }
                 };
-                let _ = crate::relay_establishment::drive_relay_establishment(
-                    &mut owner,
-                    target,
-                    establishment.token,
-                    &service,
-                    dial_timeout,
-                    &cancellation,
-                )
-                .await;
+                let outcome =
+                    crate::relay_establishment::drive_relay_establishment(
+                        &mut owner,
+                        target,
+                        establishment.token,
+                        &service,
+                        dial_timeout,
+                        &cancellation,
+                    )
+                    .await;
+                // Plan 534: a successful establishment is the router's
+                // deliberate reach. It is recorded as a **local** observation
+                // of this router's session, and the route takes it from
+                // there. A refusal records nothing.
+                if matches!(
+                    outcome,
+                    crate::relay_establishment::RelayEstablishmentOutcome::Established { .. }
+                ) && let Some(handle) = relay_sessions.as_ref()
+                {
+                    let _ = record_established_peer(handle, target, crate::service_product::wall_ms());
+                }
                 publish_counters(&owner, &counters_cell);
             }
         }

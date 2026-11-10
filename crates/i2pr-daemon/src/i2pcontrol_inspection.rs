@@ -325,6 +325,11 @@ pub struct InspectionHandles {
     /// refreshes the cell on its cycle; the counters are counts only and
     /// name no peer, address, key or payload.
     self_publication_live: Mutex<Option<Arc<SelfPublicationCounterCell>>>,
+    /// Plan 534: the local observations of the peers this router reached
+    /// through a relay. The handle is published by the composition root and
+    /// the seam exposes the **counts only**: no peer, no address and no key
+    /// is readable through it.
+    relay_session_peer_live: Mutex<Option<crate::relay_session_peer::RelaySessionPeerHandle>>,
     /// Live counters of this router's relay establishments, published by
     /// the composition root (Plan 533). The establishment's own task
     /// refreshes the cell; the counters are counts only and name no peer,
@@ -364,6 +369,7 @@ impl InspectionHandles {
             peer_pool_live: Mutex::new(None),
             self_publication_live: Mutex::new(None),
             relay_establishment_live: Mutex::new(None),
+            relay_session_peer_live: Mutex::new(None),
         }
     }
 
@@ -857,6 +863,36 @@ impl InspectionHandles {
     ) -> Option<crate::relay_establishment::RelayEstablishmentCounters> {
         let cell = self.relay_establishment_counters()?;
         cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 534: the composition root publishes the local observation
+    /// table, so the running router's relayed-peer posture is observable
+    /// through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the seam reads the **counts
+    /// only** and never the observations themselves.
+    pub fn publish_relay_session_peers(
+        &self,
+        handle: crate::relay_session_peer::RelaySessionPeerHandle,
+    ) {
+        if let Ok(mut slot) = self.relay_session_peer_live.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Reads a point-in-time snapshot of the local observation counters.
+    ///
+    /// Plan 534: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero. The snapshot carries counts only.
+    pub fn relay_session_peer_counters_snapshot(
+        &self,
+    ) -> Option<crate::relay_session_peer::RelaySessionPeerCounters> {
+        let handle = self
+            .relay_session_peer_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())?;
+        crate::relay_session_peer::relay_session_peer_counters(&handle)
     }
 
     /// Reads the published peer-pool counter cell.

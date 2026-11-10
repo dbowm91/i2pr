@@ -38,8 +38,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use i2pr_netdb::{RouterHash, ValidatedRouterInfo};
-use i2pr_proto::Hash;
+use i2pr_netdb::{RouterHash, ValidatedRouterInfo, published_version_of, tunnel_peer_eligibility};
+use i2pr_proto::{Hash, VersionEligibility};
 use i2pr_tunnel::bridge::ShortBuildI2npBridge;
 use i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN;
 use i2pr_tunnel::short::BuildAttemptId;
@@ -341,6 +341,35 @@ pub struct ExploratoryDriverCounters {
     pub refusals_below_floor: u64,
     /// Pairs the driver completed — both directions installed toward one peer.
     pub pairs_completed: u64,
+    /// Named targets the driver honoured: the peers this router reached
+    /// through a relay and built toward.
+    pub named_targets_used: u64,
+    /// Named targets the driver refused. A refusal is counted under the
+    /// driver's **existing** version-refusal counters as well, so a named
+    /// target and a drawn candidate are counted for the same reason.
+    pub named_targets_refused: u64,
+}
+
+/// Plan 534 — whether a named target may be built toward.
+///
+/// The named target is gated by **exactly** the gate the selection applies
+/// to a drawn candidate. The one extra case is a **local** condition: the
+/// router does not hold the peer's validated record, so the peer's version
+/// cannot be read at all. That is counted as a local condition and never as
+/// a missing version, because a peer that published a version is not a peer
+/// that published no version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RelayTargetEligibility {
+    /// The target satisfies the floor.
+    Eligible,
+    /// The router does not hold the peer's validated record.
+    MaterialAbsent,
+    /// The peer published no version at all.
+    UnknownVersion,
+    /// The peer published a version that cannot be compared.
+    UncomparableVersion,
+    /// The peer's version is below the floor.
+    BelowFloor,
 }
 
 /// What one driver tick did.
@@ -459,6 +488,10 @@ pub struct ExploratoryDriver {
     counters: ExploratoryDriverCounters,
     /// The driver's clock, advanced by [`Self::drive`].
     now_ms: u64,
+    /// Plan 534 — the local observations of the peers this router reached
+    /// through a relay. The handle is present only when the operator has
+    /// asked for the requester role.
+    relay_sessions: Option<crate::relay_session_peer::RelaySessionPeerHandle>,
 }
 
 impl fmt::Debug for ExploratoryDriver {
@@ -485,6 +518,22 @@ impl ExploratoryDriver {
         profiles: PeerParticipationHandle,
         resolver: Arc<dyn PeerBuildIdentityResolver + Send + Sync>,
     ) -> Self {
+        Self::with_relay_sessions(enabled, profiles, resolver, None)
+    }
+
+    /// Constructs a driver that may name the peers this router reached
+    /// through a relay.
+    ///
+    /// Plan 534. The handle is the **local observation** table: the
+    /// establishment's task records into it, and the driver takes from it.
+    /// `None` means the router has not asked for the requester role, and the
+    /// driver names no relayed peer.
+    pub fn with_relay_sessions(
+        enabled: bool,
+        profiles: PeerParticipationHandle,
+        resolver: Arc<dyn PeerBuildIdentityResolver + Send + Sync>,
+        relay_sessions: Option<crate::relay_session_peer::RelaySessionPeerHandle>,
+    ) -> Self {
         Self {
             enabled,
             profiles,
@@ -492,6 +541,7 @@ impl ExploratoryDriver {
             state: DriverState::Idle,
             counters: ExploratoryDriverCounters::default(),
             now_ms: 0,
+            relay_sessions,
         }
     }
 
@@ -708,6 +758,38 @@ impl ExploratoryDriver {
     /// The refusals the gate counted are added to the driver's own counters
     /// by reason, so a peer below the floor is never a silent skip.
     fn select_peer(&mut self, now_ms: u64) -> Option<SelectedPeer> {
+        // Plan 534 — the peer this router reached through a relay is the
+        // route's **subject**, not one more candidate. The deliberate reach
+        // is taken from the local observation table and honoured when it is
+        // eligible; the store's selection is the fallback.
+        if let Some(peer) = self.take_relay_session_peer(now_ms) {
+            match self.relay_target_eligibility(peer) {
+                RelayTargetEligibility::Eligible => {
+                    self.counters.named_targets_used += 1;
+                    self.counters.selections += 1;
+                    return Some(SelectedPeer { key: peer });
+                }
+                RelayTargetEligibility::MaterialAbsent => {
+                    // The router does not hold the peer's validated record.
+                    // That is a **local** condition and is counted as one; it
+                    // is never written into the peer's profile.
+                    self.counters.peer_material_absent += 1;
+                    self.counters.named_targets_refused += 1;
+                }
+                RelayTargetEligibility::UnknownVersion => {
+                    self.counters.refusals_unknown_version += 1;
+                    self.counters.named_targets_refused += 1;
+                }
+                RelayTargetEligibility::UncomparableVersion => {
+                    self.counters.refusals_uncomparable_version += 1;
+                    self.counters.named_targets_refused += 1;
+                }
+                RelayTargetEligibility::BelowFloor => {
+                    self.counters.refusals_below_floor += 1;
+                    self.counters.named_targets_refused += 1;
+                }
+            }
+        }
         let seed = self.selection_seed(now_ms);
         let Some(selection) = self.profiles.with(|profiles| {
             profiles.advance_time(now_ms);
@@ -732,6 +814,42 @@ impl ExploratoryDriver {
         let candidate = selection.candidates.into_iter().next()?;
         self.counters.selections = self.counters.selections.saturating_add(1);
         Some(SelectedPeer { key: candidate.key })
+    }
+
+    /// Takes the oldest live local observation, if there is one.
+    ///
+    /// Plan 534. The observation is **consumed**: the route builds toward a
+    /// peer this router reached through a relay once, and a router that
+    /// wants to reach the peer again reaches it again through the relay.
+    fn take_relay_session_peer(&mut self, now_ms: u64) -> Option<RouterHash> {
+        let handle = self.relay_sessions.as_ref()?;
+        crate::relay_session_peer::take_relay_session_peer(handle, now_ms)
+    }
+
+    /// Applies the **same** version floor to a named target that the
+    /// selection applies to a drawn candidate.
+    ///
+    /// Plan 534. The floor is not bypassed for a peer the router deliberately
+    /// reached: a peer below the floor cannot complete the build, and a
+    /// build that cannot complete burns a tunnel slot and a coordinator
+    /// lease.
+    fn relay_target_eligibility(&self, peer: RouterHash) -> RelayTargetEligibility {
+        let version = self
+            .profiles
+            .with(|profiles| {
+                let record = profiles.store().peers().get(&peer)?;
+                Some(published_version_of(record))
+            })
+            .flatten();
+        let Some(version) = version else {
+            return RelayTargetEligibility::MaterialAbsent;
+        };
+        match tunnel_peer_eligibility(version) {
+            VersionEligibility::Eligible => RelayTargetEligibility::Eligible,
+            VersionEligibility::UnknownVersion => RelayTargetEligibility::UnknownVersion,
+            VersionEligibility::UncomparableVersion => RelayTargetEligibility::UncomparableVersion,
+            VersionEligibility::BelowFloor { .. } => RelayTargetEligibility::BelowFloor,
+        }
     }
 
     /// Derives the deterministic selection seed for one tick.

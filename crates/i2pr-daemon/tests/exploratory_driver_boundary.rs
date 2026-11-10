@@ -742,14 +742,45 @@ fn check_composition_builds_the_driver_gated(composition_source: &str) -> Option
     if !body.contains("if exploratory_builds") {
         return Some("the composition must branch on the operator posture".to_owned());
     }
-    if let Some(finding) = check_block_contains(
-        composition_source,
-        "if exploratory_builds",
+    // Plan 534 extended this guard: the driver may now be constructed with
+    // the local relay observations beside it. The rule's intent is unchanged
+    // -- the driver is still constructed **inside** the posture's branch,
+    // and the posture is still the only thing that decides it.
+    let constructed = [
         "ExploratoryDriver::new(",
-    ) {
-        return Some(format!(
-            "the driver must be constructed inside the posture's branch ({finding})"
-        ));
+        "ExploratoryDriver::with_relay_sessions(",
+    ]
+    .iter()
+    .any(|token| {
+        check_block_contains(composition_source, "if exploratory_builds", token).is_none()
+    });
+    if !constructed {
+        return Some("the driver must be constructed inside the posture's branch".to_owned());
+    }
+    None
+}
+
+/// Rule 11 (Plan 534): a named target passes the same version gate.
+///
+/// The named target is the peer this router reached through a relay. It is
+/// gated by the **same** function the selection gates a drawn candidate by,
+/// and its version comes from the peer's **validated** record. A named
+/// target below the floor is refused, and the refusal is counted under the
+/// driver's existing version-refusal counters, so a named target and a drawn
+/// candidate are counted for the same reason.
+fn check_the_named_target_passes_the_same_gate(driver_source: &str) -> Option<String> {
+    let driver = code_view(driver_source);
+    let Some(body) = function_body(&driver, "relay_target_eligibility") else {
+        return Some("the named target's gate must exist in the driver module".to_owned());
+    };
+    if !body.contains("tunnel_peer_eligibility(") {
+        return Some("the named target must be gated by the version floor".to_owned());
+    }
+    if !body.contains("published_version_of(") {
+        return Some("the named target's version must come from the validated record".to_owned());
+    }
+    if !body.contains("peers()") {
+        return Some("the named target's record must come from the validated store".to_owned());
     }
     None
 }
@@ -1099,6 +1130,23 @@ fn rule_10_the_counters_are_published_and_the_seam_reports_a_gap() {
     );
 }
 
+/// Rule 11 (Plan 534): a named target passes the same version gate.
+///
+/// Plan 534 extended this guard with one rule. The peer this router reached
+/// through a relay is the route's **subject** rather than one more
+/// candidate, so the rule is that it is gated by the **same** function the
+/// selection gates a drawn candidate by, and that its version comes from the
+/// peer's validated record.
+#[test]
+fn rule_11_a_named_target_passes_the_same_version_gate() {
+    let driver = source_of(DRIVER_MODULE);
+    assert_eq!(
+        check_the_named_target_passes_the_same_gate(&driver),
+        None,
+        "a named target must pass the same version gate"
+    );
+}
+
 /// The inverted probes for the ten rules.
 ///
 /// Each probe is the smallest edit that would reintroduce the defect the
@@ -1370,6 +1418,31 @@ fn the_guard_fires_on_a_weakened_copy_of_the_landed_source() {
     assert!(
         check_counters_are_published(&product, &weakened).is_some(),
         "a seam that fabricates a zero must be reported"
+    );
+
+    // Rule 11: the named target stops passing the gate.
+    let weakened = driver.replace(
+        "match tunnel_peer_eligibility(version) {",
+        "match VersionEligibility::Eligible {",
+    );
+    assert_ne!(
+        weakened, driver,
+        "the named-gate mutation must have applied"
+    );
+    assert!(
+        check_the_named_target_passes_the_same_gate(&weakened).is_some(),
+        "a named target that skips the version gate must be reported"
+    );
+
+    // Rule 11: the named target's gate is absent altogether.
+    let weakened = driver.replace("fn relay_target_eligibility(", "fn unused_relay_target(");
+    assert_ne!(
+        weakened, driver,
+        "the missing-gate mutation must have applied"
+    );
+    assert!(
+        check_the_named_target_passes_the_same_gate(&weakened).is_some(),
+        "a driver with no named-target gate must fail the rule"
     );
 }
 

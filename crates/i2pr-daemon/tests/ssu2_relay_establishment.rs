@@ -663,6 +663,9 @@ async fn wire() -> Wired {
         dial_timeout: DIAL_TIMEOUT,
         receiver,
         counters_cell: Arc::clone(&counters),
+        // Plan 534: this lane drives the establishment alone. The local
+        // observation the establishment records is Plan 534's own subject.
+        relay_sessions: None,
     };
     task_scope
         .spawn(move |cancellation| async move {

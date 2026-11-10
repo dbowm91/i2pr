@@ -51,6 +51,7 @@ pub mod peer_test;
 pub mod relay_establishment;
 pub mod relay_establishment_task;
 pub mod relay_requester;
+pub mod relay_session_peer;
 pub mod relay_target;
 pub mod router_i2np;
 pub mod router_info_publication;
@@ -4364,6 +4365,21 @@ fn register_ssu2_service(
                     // real peer population. The handle is cloned before
                     // the borrow below so the product owns it.
                     let live_bootstrap = bootstrap.clone();
+                    // Plan 534: the local observation table.
+                    //
+                    // The establishment's task records into it — the router
+                    // reached a peer through a relay — and the exploratory
+                    // driver takes from it and builds toward the peer it
+                    // names. The table is present only when the operator
+                    // has asked for the requester role, so an ordinary
+                    // router records nothing and names nothing.
+                    let relay_sessions = if ssu2_config.relay_requester {
+                        Some(
+                            crate::relay_session_peer::RelaySessionPeerOwner::new(true).into_handle(),
+                        )
+                    } else {
+                        None
+                    };
                     let mut owner = if has_enabled_groups {
                         let Some(bootstrap) = bootstrap.as_ref() else {
                             handle.shutdown();
@@ -4420,11 +4436,14 @@ fn register_ssu2_service(
                                     profiles.clone(),
                                 ),
                             );
-                            Some(crate::exploratory_driver::ExploratoryDriver::new(
-                                true,
-                                profiles,
-                                resolver,
-                            ))
+                            Some(
+                                crate::exploratory_driver::ExploratoryDriver::with_relay_sessions(
+                                    true,
+                                    profiles,
+                                    resolver,
+                                    relay_sessions.clone(),
+                                ),
+                            )
                         } else {
                             None
                         };
@@ -4882,6 +4901,12 @@ fn register_ssu2_service(
                         inspection.publish_relay_establishment_counters(Arc::clone(
                             &establishment_counters,
                         ));
+                        // Plan 534: the local observation table is published
+                        // so the running router's relayed-peer posture is
+                        // observable. The seam reads the counts only.
+                        if let Some(handle) = relay_sessions.as_ref() {
+                            inspection.publish_relay_session_peers(Arc::clone(handle));
+                        }
                         let establishment_task = crate::relay_establishment_task::RelayEstablishmentTask {
                             owner: crate::relay_establishment::RelayEstablishmentOwner::new(true),
                             service: owner.handle().service().clone(),
@@ -4891,6 +4916,7 @@ fn register_ssu2_service(
                                 .dial_timeout,
                             receiver: establishment_rx,
                             counters_cell: establishment_counters,
+                            relay_sessions: relay_sessions.clone(),
                         };
                         if children
                             .spawn(move |cancellation| async move {
