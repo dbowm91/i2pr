@@ -3750,6 +3750,18 @@ impl ServiceProduct {
         self.inner.ssu2_handle.try_next_relay_event()
     }
 
+    /// Plan 531 -- pulls the next inbound requester event without waiting.
+    ///
+    /// The requester's events have their own bounded handoff beside the
+    /// relay handoff: a Relay Response that correlates with one of the
+    /// router's own live relay requests, and an out-of-session
+    /// HolePunch.
+    pub(crate) fn try_next_requester_event(
+        &mut self,
+    ) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        self.inner.ssu2_handle.try_next_requester_event()
+    }
+
     /// Plan 504 — drives the creator-side tunnel-liveness scheduler on
     /// the product tick.
     ///

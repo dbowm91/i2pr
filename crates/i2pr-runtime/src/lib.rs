@@ -111,10 +111,11 @@ pub use ssu2_runtime::{
     SSU2_TOKEN_CACHE_PEERS, SSU2_TOKEN_CACHE_PER_PEER, SSU2_TOKEN_REQUEST_SOURCES,
     SSU2_TOKEN_REQUESTS_PER_SECOND, Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget,
     Ssu2DialTargetError, Ssu2EstablishedLink, Ssu2IdentityMaterial, Ssu2InboundBatch,
-    Ssu2InboundI2np, Ssu2InboundRelay, Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition,
-    Ssu2PeerTestEvidenceError, Ssu2PeerTestMessages, Ssu2PeerTestVerdict, Ssu2PublicationForm,
-    Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent,
-    Ssu2RelayQueueError, Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines,
+    Ssu2InboundHolePunch, Ssu2InboundI2np, Ssu2InboundRelay, Ssu2InboundRequesterEvent,
+    Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition, Ssu2PeerTestEvidenceError,
+    Ssu2PeerTestMessages, Ssu2PeerTestVerdict, Ssu2PublicationForm, Ssu2PublicationMaterial,
+    Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent, Ssu2RelayQueueError,
+    Ssu2RelayRequestState, Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines,
     Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot,
     Ssu2SocketConfig, Ssu2TagRequestError, Ssu2TestFaults,
 };
@@ -124,9 +125,10 @@ pub use ssu2_runtime::{
 // codec owner; the runtime re-exports the bounded vocabulary the
 // daemon's role owner needs.
 pub use i2pr_transport_ssu2::{
-    IntroducerResponseOutcome, PEER_TEST_RESULT_TABLE, PeerTestResult, PeerTestResultRow,
-    RelayError, RelayIntroBlock, RelayRequestBlock, RelayResponseBlock, RelayResponseCode,
-    Ssu2Endpoint, peer_test_result, relay_request_preimage, relay_response_preimage,
+    HolePunchMessage, IntroducerResponseOutcome, PEER_TEST_RESULT_TABLE, PeerTestResult,
+    PeerTestResultRow, RelayError, RelayIntroBlock, RelayRequestBlock, RelayResponseBlock,
+    RelayResponseCode, Ssu2Endpoint, build_hole_punch, hole_punch_conn_ids, peer_test_result,
+    relay_request_preimage, relay_response_preimage,
 };
 // Plan 184 daemon-owned SSU2 re-exports: the daemon composes the
 // controlled SSU2 identity/address surface through the runtime so it

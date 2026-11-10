@@ -48,6 +48,7 @@ pub mod peer_pool;
 pub mod peer_pool_task;
 pub mod peer_reconcile;
 pub mod peer_test;
+pub mod relay_requester;
 pub mod router_i2np;
 pub mod router_info_publication;
 pub mod router_info_publication_task;
@@ -2553,6 +2554,19 @@ impl NormalSsu2Owner {
         }
     }
 
+    /// Plan 531: pulls the next inbound requester event without waiting.
+    ///
+    /// The requester's events have their own bounded handoff beside the
+    /// relay handoff, and the daemon's live inbound loop drains it into
+    /// the requester (Alice) role owner. The pull is non-blocking so the
+    /// drain can run on its own bounded tick.
+    fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        match self {
+            Self::Router(handle) => handle.try_next_requester_event(),
+            Self::Groups(product) => product.try_next_requester_event(),
+        }
+    }
+
     async fn process_group_inbound(
         &mut self,
         inbound: &i2pr_runtime::Ssu2InboundI2np,
@@ -2586,6 +2600,12 @@ impl NormalSsu2Owner {
 impl crate::ssu2_relay_drain::RelayEventSource for NormalSsu2Owner {
     fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
         NormalSsu2Owner::try_next_relay_event(self)
+    }
+}
+
+impl crate::ssu2_relay_drain::RequesterEventSource for NormalSsu2Owner {
+    fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        NormalSsu2Owner::try_next_requester_event(self)
     }
 }
 
@@ -4753,6 +4773,46 @@ fn register_ssu2_service(
                     } else {
                         None
                     };
+                    // Plan 531: the SSU2 requester (Alice) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.relay_requester`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner, sends no relay request and drains nothing.
+                    //
+                    // The resolver answers the **target's** signing key
+                    // only from the NetDB's validated store, exactly as
+                    // the introducer's resolver does. A target this
+                    // NetDB does not hold yields `None`, and the owner
+                    // refuses the event rather than guessing.
+                    let requester_signers = bootstrap.as_ref().map(|bootstrap| {
+                        crate::ssu2_introducer::NetDbSignerResolver::new(Arc::clone(bootstrap))
+                    });
+                    let mut requester_rng = if ssu2_config.relay_requester {
+                        rand_chacha::ChaCha8Rng::try_from_os_rng().ok()
+                    } else {
+                        None
+                    };
+                    let mut requester = match (
+                        ssu2_config.relay_requester,
+                        requester_signers.as_ref(),
+                        requester_rng.as_mut(),
+                    ) {
+                        (true, Some(_), Some(rng)) => {
+                            let signer = std::sync::Arc::new(
+                                crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
+                                    &bundle,
+                                )),
+                            );
+                            let _ = rng;
+                            Some(crate::relay_requester::RelayRequesterOwner::new(
+                                true,
+                                owner.handle().service().clone(),
+                                signer,
+                            ))
+                        }
+                        _ => None,
+                    };
                     if !owner
                         .handle()
                         .delivery()
@@ -5431,6 +5491,84 @@ fn register_ssu2_service(
                                             carried = drained.carried,
                                             carriage_refused = carriage_refused,
                                             "SSU2 introducer relay handoff drained"
+                                        );
+                                    }
+                                }
+                                // Plan 531: the requester (Alice) role.
+                                //
+                                // The requester's inbound events have their
+                                // own bounded handoff and its outbound
+                                // step runs on the same tick, so both halves
+                                // of the exchange share one cadence. The
+                                // owner holds no task, no timer, no
+                                // listener and no socket: the tick is the
+                                // only thing that moves it.
+                                if let Some(requester) = requester.as_mut()
+                                    && let Some(signers) = requester_signers.as_ref()
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let now_secs = now_ms / 1_000;
+                                    // The outbound half: one bounded
+                                    // window over the NetDB's peers. It
+                                    // reads only validated material and
+                                    // every refusal is counted under its
+                                    // own reason.
+                                    let live: Vec<i2pr_transport::PeerId> = owner
+                                        .handle()
+                                        .service()
+                                        .active_peer_hashes()
+                                        .into_iter()
+                                        .map(i2pr_transport::PeerId::from_hash)
+                                        .collect();
+                                    let local_endpoint =
+                                        owner.handle().service().local_bound_endpoint();
+                                    if let Some(bootstrap) = bootstrap.as_ref()
+                                        && let Ok(guard) = bootstrap.lock()
+                                        && let Some(rng) = requester_rng.as_mut()
+                                    {
+                                        let decision = crate::relay_requester::drive_relay_request(
+                                            requester,
+                                            guard.store(),
+                                            &live,
+                                            rng,
+                                            local_endpoint,
+                                            now_ms,
+                                            now_secs,
+                                        );
+                                        if let Some(decision) = decision
+                                            && matches!(
+                                                decision,
+                                                crate::relay_requester::RelayRequesterDecision::Refuse(_)
+                                            )
+                                        {
+                                            tracing::debug!(
+                                                transition = "relay_request_refused",
+                                                "the router asked nobody for a relay"
+                                            );
+                                        }
+                                    }
+                                    // The inbound half: the requester's
+                                    // own handoff.
+                                    let drained =
+                                        crate::ssu2_relay_drain::drain_requester_events(
+                                            &mut owner,
+                                            requester,
+                                            signers,
+                                            now_ms,
+                                            now_secs,
+                                        );
+                                    if drained.drained > 0 {
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            handled = drained.handled,
+                                            refused = drained.refused,
+                                            firewalled = drained.firewalled,
+                                            "SSU2 requester relay handoff drained"
                                         );
                                     }
                                 }

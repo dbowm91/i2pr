@@ -126,6 +126,102 @@ impl RelayCarriage for RuntimeRelayCarriage {
     }
 }
 
+/// The source the requester drain pulls from.
+///
+/// Plan 531. It is a **pull** seam like [`RelayEventSource`]: it cannot
+/// enqueue into the runtime's handoff, and it cannot bypass the
+/// requester owner's verification, because the transport verifies every
+/// event the owner hands to it.
+pub trait RequesterEventSource {
+    /// Returns the next pending requester event, or `None` when none is
+    /// pending.
+    fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent>;
+}
+
+/// The counted outcome of one requester drain pass.
+///
+/// Counts only: no peer hash, no key, no tag, no payload.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RequesterDrainOutcome {
+    /// Requester events pulled from the source.
+    pub drained: u64,
+    /// Events the requester owner handled.
+    pub handled: u64,
+    /// Events the requester owner refused.
+    pub refused: u64,
+    /// Exchanges that completed and recorded the relay-firewalled fact.
+    pub firewalled: u64,
+}
+
+/// Drains the runtime's requester handoff into the requester (Alice) role
+/// owner.
+///
+/// Plan 531. The pass is bounded by [`MAX_RELAY_DRAIN_PER_PASS`]: it
+/// pulls until the source is empty or the bound is reached, whichever
+/// comes first. A refusal is a counted outcome, not an error -- the
+/// drain never fails the caller's loop.
+///
+/// The target's signing key is resolved from the **validated** store by
+/// the caller's resolver. A target this router does not hold yields
+/// `None`, and the owner refuses the event rather than guessing.
+pub fn drain_requester_events(
+    source: &mut dyn RequesterEventSource,
+    owner: &mut crate::relay_requester::RelayRequesterOwner,
+    signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
+    now_ms: u64,
+    now_secs: u64,
+) -> RequesterDrainOutcome {
+    let mut outcome = RequesterDrainOutcome::default();
+    for _ in 0..MAX_RELAY_DRAIN_PER_PASS {
+        let Some(event) = source.try_next_requester_event() else {
+            break;
+        };
+        outcome.drained = outcome.drained.saturating_add(1);
+        let result = match event {
+            i2pr_runtime::Ssu2InboundRequesterEvent::Response(inbound) => {
+                let i2pr_runtime::Ssu2RelayEvent::Response(block) = &inbound.event else {
+                    outcome.refused = outcome.refused.saturating_add(1);
+                    continue;
+                };
+                if owner.context_for(block.nonce()).is_none() {
+                    outcome.refused = outcome.refused.saturating_add(1);
+                    continue;
+                }
+                owner.on_relay_response(
+                    block,
+                    *inbound.peer.hash().as_bytes(),
+                    signers,
+                    now_secs,
+                    now_ms,
+                )
+            }
+            i2pr_runtime::Ssu2InboundRequesterEvent::HolePunch(inbound) => {
+                if owner
+                    .context_for(inbound.message.response.nonce())
+                    .is_none()
+                {
+                    outcome.refused = outcome.refused.saturating_add(1);
+                    continue;
+                }
+                owner.on_hole_punch(&inbound.message, signers, now_secs, now_ms)
+            }
+        };
+        match result {
+            crate::relay_requester::RelayRequesterOutcome::Refused(_) => {
+                outcome.refused = outcome.refused.saturating_add(1);
+            }
+            crate::relay_requester::RelayRequesterOutcome::HolePunchReady => {
+                outcome.handled = outcome.handled.saturating_add(1);
+                outcome.firewalled = outcome.firewalled.saturating_add(1);
+            }
+            _ => {
+                outcome.handled = outcome.handled.saturating_add(1);
+            }
+        }
+    }
+    outcome
+}
+
 /// The counted outcome of one drain pass.
 ///
 /// Counts only: no peer hash, no key, no tag, no payload.

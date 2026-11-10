@@ -1551,6 +1551,10 @@ pub fn ssu2_runtime_config_from(
         // explicit `ssu2.introducer_service` opt-in. It stays
         // non-advertised and default-off.
         introducer_service: config.introducer_service,
+        // Plan 531: the requester (Alice) role runs only behind the
+        // explicit `ssu2.relay_requester` opt-in. It stays
+        // non-advertised and default-off.
+        relay_requester: config.relay_requester,
     };
     runtime
         .validate()
@@ -2331,6 +2335,16 @@ impl Ssu2DaemonHandle {
     /// the I2NP handoff's `next_inbound`.
     pub fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
         self.handle.try_next_relay_event()
+    }
+
+    /// Receives the next inbound requester event without waiting
+    /// (Plan 531).
+    ///
+    /// The requester's inbound events have their own bounded handoff: a
+    /// Relay Response that correlates with one of the router's own live
+    /// relay requests, and an out-of-session HolePunch.
+    pub fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        self.handle.try_next_requester_event()
     }
 
     /// Receives the next inbound message and dispatches it through

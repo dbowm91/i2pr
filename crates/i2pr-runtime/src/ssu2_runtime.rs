@@ -91,7 +91,7 @@ use i2pr_transport_ssu2::{
     PeerTestBlock, PeerTestOutcome, PeerTestRole, PeerTestState, Responder, ResponderConfig,
     ResponderParams, RetryAnswer, SessionAction, SessionConfig, SessionEvent, Ssu2AddressClass,
     Ssu2Endpoint, Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore,
-    build_out_of_session_peer_test, constants, parse_out_of_session_peer_test,
+    build_out_of_session_peer_test, constants, parse_hole_punch, parse_out_of_session_peer_test,
     parse_session_request, parse_token_request, peer_test_conn_ids, retry_response_budget,
 };
 use rand_core::{OsRng, TryRngCore};
@@ -452,6 +452,16 @@ pub struct Ssu2RuntimeConfig {
     /// machine is live; the daemon's `ssu2.introducer_service` key
     /// (default off) is the only production gate.
     pub introducer_service: bool,
+    /// Enables the requester (Alice) role inside the peer/relay
+    /// coordinator (Plan 531).
+    ///
+    /// When false (default) the runtime owns no requester path at all:
+    /// the inbound hole-punch route does not exist, no relay request can
+    /// be started, and the relay-firewalled indication has no producer.
+    /// When true, the requester's seam is live; the daemon's
+    /// `ssu2.relay_requester` key (default off) is the only production
+    /// gate.
+    pub relay_requester: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -888,6 +898,61 @@ pub enum Ssu2RelayEvent {
     Tag(u32),
 }
 
+/// One authenticated inbound event on the **requester** side (Plan 531).
+///
+/// The requester's inbound events are the ones this router's **own**
+/// live relay requests attract: a Relay Response from the introducer it
+/// named, and an out-of-session HolePunch from the target it named.
+/// They have their own bounded handoff because a hole punch names
+/// neither a session nor a peer hash, and because a Relay Response that
+/// correlates with one of the router's own requests belongs to the
+/// requester role rather than to the introducer role.
+#[derive(Debug)]
+pub enum Ssu2InboundRequesterEvent {
+    /// A Relay Response for one of this router's live relay requests.
+    Response(Ssu2InboundRelay),
+    /// An out-of-session HolePunch for one of this router's live relay
+    /// requests.
+    HolePunch(Ssu2InboundHolePunch),
+}
+
+/// One authenticated inbound out-of-session HolePunch (Plan 531).
+///
+/// A hole punch travels **out of session**: it is sealed under the
+/// receiver's own introduction key and it names no session and no peer
+/// hash. It therefore cannot ride the session-shaped relay handoff --
+/// [`Ssu2InboundRelay`] carries a link and an authenticated peer, and a
+/// hole punch has neither -- so it has its own bounded handoff.
+///
+/// The runtime decodes and authenticates the datagram; it never
+/// interprets the relay role. The daemon's requester owner owns the
+/// disposition.
+#[derive(Debug)]
+pub struct Ssu2InboundHolePunch {
+    /// The source address the datagram arrived from.
+    ///
+    /// The address is the datagram's transport source, not a claim about
+    /// a peer: the datagram carries no router hash.
+    pub source: SocketAddr,
+    /// The decoded hole punch.
+    pub message: i2pr_transport_ssu2::HolePunchMessage,
+}
+
+/// The requester's state after one correlated Relay Response (Plan 531).
+///
+/// The transport owns the state machine; the runtime names the two
+/// outcomes the requester owner acts on, so the daemon never has to
+/// name a transport type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2RelayRequestState {
+    /// The response is correlated and the request still awaits an answer.
+    AwaitingResponse,
+    /// The peer accepted; the exchange now awaits the hole punch.
+    AwaitingHolePunch,
+    /// The peer refused; the request is finished.
+    Refused,
+}
+
 /// The reason an outbound relay block could not be carried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ssu2RelayQueueError {
@@ -975,6 +1040,8 @@ pub struct Ssu2InboundBatch {
     pub i2np: Vec<Ssu2InboundI2np>,
     /// Authenticated inbound relay blocks.
     pub relay: Vec<Ssu2InboundRelay>,
+    /// Authenticated inbound requester events (Plan 531).
+    pub requester: Vec<Ssu2InboundRequesterEvent>,
 }
 
 /// Privacy-safe SSU2 service counters (counts only, no payloads, keys,
@@ -1634,6 +1701,12 @@ pub struct Ssu2ServiceHandle {
     service: Ssu2RuntimeService,
     inbound: mpsc::Receiver<Ssu2InboundI2np>,
     relay: mpsc::Receiver<Ssu2InboundRelay>,
+    /// Plan 531: the bounded requester handoff. It is a separate
+    /// channel because a hole punch names no session and no peer hash,
+    /// and because a Relay Response that correlates with one of the
+    /// router's own requests belongs to the requester role. It carries
+    /// the same ceiling as the relay handoff.
+    requester: mpsc::Receiver<Ssu2InboundRequesterEvent>,
     local_v4: Option<SocketAddr>,
     local_v6: Option<SocketAddr>,
 }
@@ -1678,6 +1751,16 @@ impl Ssu2ServiceHandle {
     /// capacity, and changes nothing about the runtime's authentication path.
     pub fn try_next_relay_event(&mut self) -> Option<Ssu2InboundRelay> {
         self.relay.try_recv().ok()
+    }
+
+    /// Receives the next inbound requester event without waiting (Plan 531).
+    ///
+    /// The requester's events have their own bounded handoff with the
+    /// same ceiling as the relay handoff (`max_inbound_relay_queue`,
+    /// default 16). Returns `None` when the handoff is empty **or**
+    /// disconnected.
+    pub fn try_next_requester_event(&mut self) -> Option<Ssu2InboundRequesterEvent> {
+        self.requester.try_recv().ok()
     }
 
     /// Returns the bound IPv4 socket address, if any.
@@ -2054,6 +2137,13 @@ impl Ssu2RuntimeService {
         let (inbound_tx, inbound_rx) =
             mpsc::channel(self.shared.config.limits.max_inbound_i2np_queue);
         let (relay_tx, relay_rx) = mpsc::channel(self.shared.config.limits.max_inbound_relay_queue);
+        // Plan 531: the requester's inbound events travel out of session
+        // or belong to one of the router's own live requests, so they
+        // have their own bounded handoff. The ceiling is the relay
+        // handoff's ceiling: one inbound requester queue per router,
+        // never one per peer.
+        let (requester_tx, requester_rx) =
+            mpsc::channel(self.shared.config.limits.max_inbound_relay_queue);
         {
             let mut guard = self
                 .shared
@@ -2087,20 +2177,29 @@ impl Ssu2RuntimeService {
             let service = self.clone();
             let inbound_tx = inbound_tx.clone();
             let relay_tx = relay_tx.clone();
+            let requester_tx = requester_tx.clone();
             scope
                 .spawn(move |child| async move {
                     service
-                        .run_loop(child, socket, inbound_tx, relay_tx, true)
+                        .run_loop(child, socket, inbound_tx, relay_tx, requester_tx, true)
                         .await
                 })
                 .map_err(|_| Ssu2BindError::Scope)?;
         }
         if let Some((socket, _)) = bound_v6 {
             let service = self.clone();
+            let requester_tx = requester_tx.clone();
             scope
                 .spawn(move |child| async move {
                     service
-                        .run_loop(child, socket, inbound_tx.clone(), relay_tx.clone(), false)
+                        .run_loop(
+                            child,
+                            socket,
+                            inbound_tx.clone(),
+                            relay_tx.clone(),
+                            requester_tx.clone(),
+                            false,
+                        )
                         .await
                 })
                 .map_err(|_| Ssu2BindError::Scope)?;
@@ -2122,6 +2221,7 @@ impl Ssu2RuntimeService {
             service: self.clone(),
             inbound: inbound_rx,
             relay: relay_rx,
+            requester: requester_rx,
             local_v4,
             local_v6,
         })
@@ -2670,6 +2770,136 @@ impl Ssu2RuntimeService {
             now_secs,
             now_ms,
         )
+    }
+
+    /// Handles one authenticated inbound Relay Intro for the target
+    /// (Charlie) role (Plan 531).
+    ///
+    /// The transport's target table owns the correlation, the replay
+    /// suppression and the forwarded-signature verification. The
+    /// requester's signing key is resolved by the caller from the
+    /// **validated** store, because the validated store is the daemon's
+    /// authority and not the runtime's.
+    pub fn on_target_relay_intro(
+        &self,
+        block: &i2pr_transport_ssu2::RelayIntroBlock,
+        expected_bob_hash: &[u8; 32],
+        expected_charlie_hash: &[u8; 32],
+        alice_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        self.shared.peer_relay.on_relay_intro_with_signer(
+            block,
+            expected_bob_hash,
+            expected_charlie_hash,
+            alice_signer,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Starts one relay request (Alice, the requester side; Plan 531).
+    ///
+    /// The transport's requester table owns the correlation, the
+    /// per-peer quota and the global ceiling. The daemon's requester
+    /// owner owns the policy -- which target, which introducer, when --
+    /// and calls this seam. The table itself is the transport's own and
+    /// this plan does not edit it.
+    pub fn start_relay_request(
+        &self,
+        nonce: u32,
+        tag: u32,
+        bob_hash: [u8; 32],
+        charlie_hash: [u8; 32],
+        alice_endpoint: Ssu2Endpoint,
+        now_ms: u64,
+    ) -> Result<(), i2pr_transport_ssu2::RelayError> {
+        self.shared.peer_relay.start_relay_request(
+            nonce,
+            tag,
+            bob_hash,
+            charlie_hash,
+            alice_endpoint,
+            now_ms,
+        )
+    }
+
+    /// Handles one inbound Relay Response for the requester's own request
+    /// (Plan 531).
+    ///
+    /// `bob_hash` is the introducer the request named and `sender_hash`
+    /// is the peer the response arrived from; the transport refuses a
+    /// response whose sender is not that introducer. `charlie_signer`
+    /// is the **target's** signing key, resolved by the daemon from the
+    /// target's validated RouterInfo: the accept is Charlie's signature
+    /// forwarded verbatim by the introducer.
+    pub fn on_requester_relay_response(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<Ssu2RelayRequestState, i2pr_transport_ssu2::RelayError> {
+        let state = self.shared.peer_relay.on_relay_response_with_signer(
+            block,
+            sender_hash,
+            bob_hash,
+            charlie_signer,
+            now_secs,
+            now_ms,
+        )?;
+        Ok(match state {
+            i2pr_transport_ssu2::RequesterState::AwaitingResponse => {
+                Ssu2RelayRequestState::AwaitingResponse
+            }
+            i2pr_transport_ssu2::RequesterState::AwaitingHolePunch => {
+                Ssu2RelayRequestState::AwaitingHolePunch
+            }
+            i2pr_transport_ssu2::RequesterState::Completed => Ssu2RelayRequestState::Refused,
+        })
+    }
+
+    /// Handles one inbound HolePunch for the requester's own request
+    /// (Plan 531).
+    ///
+    /// `true` means the punch is ready: the exchange completed, the peer
+    /// is reachable **through the relay**, and the router's own inbound
+    /// reachability is contradicted. The runtime owns the router's
+    /// reachability, so the runtime records the indication.
+    pub fn on_requester_hole_punch(
+        &self,
+        message: &i2pr_transport_ssu2::HolePunchMessage,
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        self.shared.peer_relay.on_hole_punch_with_signer(
+            message,
+            bob_hash,
+            charlie_signer,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Cancels one relay request and releases its quota (Plan 531).
+    pub fn cancel_relay_request(&self, nonce: u32) -> Result<(), i2pr_transport_ssu2::RelayError> {
+        self.shared.peer_relay.cancel_relay_request(nonce)
+    }
+
+    /// Returns the router's own bound endpoint (Plan 531).
+    ///
+    /// The requester's Relay Request carries the router's own endpoint,
+    /// and the router must name the endpoint it actually holds: a
+    /// wildcard or port-zero bind names none, and a router with no bound
+    /// socket yields `None`. IPv4 is preferred; IPv6 is the fallback.
+    pub fn local_bound_endpoint(&self) -> Option<Ssu2Endpoint> {
+        self.bound_endpoint(AddressFamily::Ipv4)
+            .or_else(|| self.bound_endpoint(AddressFamily::Ipv6))
     }
 
     /// Builds the specification's introducer-only publication material
@@ -6931,6 +7161,7 @@ impl Ssu2RuntimeService {
         local_endpoint: Option<Ssu2Endpoint>,
         inbound: &mut Vec<Ssu2InboundI2np>,
         relay: &mut Vec<Ssu2InboundRelay>,
+        requester: &mut Vec<Ssu2InboundRequesterEvent>,
     ) {
         let mut remove = None;
         let outcome = match state.active.get_mut(&link_id) {
@@ -7064,11 +7295,32 @@ impl Ssu2RuntimeService {
                     });
                 }
                 SessionEvent::RelayResponse(block) => {
-                    relay.push(Ssu2InboundRelay {
-                        link_id,
-                        peer,
-                        event: Ssu2RelayEvent::Response(block),
-                    });
+                    // Plan 531: a Relay Response that correlates with one
+                    // of this router's own live relay requests belongs to
+                    // the requester role, not to the introducer role. The
+                    // correlation is by nonce, exactly as the transport's
+                    // own table correlates, and the signature is verified
+                    // later, when the requester owner hands the response
+                    // to the transport. A response that correlates with no
+                    // live request keeps travelling the introducer's
+                    // handoff exactly as before.
+                    if self
+                        .shared
+                        .peer_relay
+                        .is_requester_nonce(block.nonce(), now_ms)
+                    {
+                        requester.push(Ssu2InboundRequesterEvent::Response(Ssu2InboundRelay {
+                            link_id,
+                            peer,
+                            event: Ssu2RelayEvent::Response(block),
+                        }));
+                    } else {
+                        relay.push(Ssu2InboundRelay {
+                            link_id,
+                            peer,
+                            event: Ssu2RelayEvent::Response(block),
+                        });
+                    }
                 }
                 // Plan 499 (WP2): a peer asked this router for a relay
                 // tag. The tag is minted, bound to the session peer and
@@ -7281,6 +7533,7 @@ impl Ssu2RuntimeService {
                 local_endpoint,
                 &mut batch.i2np,
                 &mut batch.relay,
+                &mut batch.requester,
             );
             return batch;
         }
@@ -7314,6 +7567,7 @@ impl Ssu2RuntimeService {
                 local_endpoint,
                 &mut batch.i2np,
                 &mut batch.relay,
+                &mut batch.requester,
             );
             return batch;
         }
@@ -7370,6 +7624,32 @@ impl Ssu2RuntimeService {
                 local_addr,
             );
             return batch;
+        }
+        // Plan 531: the requester side of the SSU2 relay protocol. A
+        // hole punch travels **out of session**: it is sealed under the
+        // receiver's own introduction key and it names neither a session
+        // nor a peer hash, so it cannot ride the session-shaped relay
+        // handoff and it has its own bounded one. The route exists only
+        // while the operator's requester opt-in is on; a datagram that
+        // does not parse falls through to the cheap-drop below.
+        if self.shared.config.relay_requester {
+            if !self.shared.peer_relay.check_admission(source.ip(), now_ms) {
+                self.shared
+                    .counters
+                    .cheap_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return batch;
+            }
+            let mut punch_probe = bytes.to_vec();
+            if let Ok(message) = parse_hole_punch(&mut punch_probe, &self.shared.local_intro) {
+                batch
+                    .requester
+                    .push(Ssu2InboundRequesterEvent::HolePunch(Ssu2InboundHolePunch {
+                        source,
+                        message,
+                    }));
+                return batch;
+            }
         }
         // Controlled peer-test out-of-session ingress (Plan 283): only
         // when permitted. Parse-only with the local intro key; wrong
@@ -8250,6 +8530,7 @@ impl Ssu2RuntimeService {
         socket: Arc<UdpSocket>,
         inbound_tx: mpsc::Sender<Ssu2InboundI2np>,
         relay_tx: mpsc::Sender<Ssu2InboundRelay>,
+        requester_tx: mpsc::Sender<Ssu2InboundRequesterEvent>,
         is_v4: bool,
     ) -> Result<(), ChildTaskFailure> {
         let mut buffer = vec![0_u8; 2048];
@@ -8274,7 +8555,7 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
+                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
                 result = socket.recv_from(&mut buffer) => {
@@ -8298,7 +8579,7 @@ impl Ssu2RuntimeService {
                                 continue;
                             }
                             let inbound = self.handle_datagram(&buffer[..len], source, is_v4, local_addr);
-                            self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
+                            self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
                             self.flush_staged(&socket, is_v4, &child).await;
                         }
                         Err(_) => {
@@ -8313,7 +8594,7 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx);
+                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
             }
@@ -8325,6 +8606,7 @@ impl Ssu2RuntimeService {
         inbound: Ssu2InboundBatch,
         inbound_tx: &mpsc::Sender<Ssu2InboundI2np>,
         relay_tx: &mpsc::Sender<Ssu2InboundRelay>,
+        requester_tx: &mpsc::Sender<Ssu2InboundRequesterEvent>,
     ) {
         for message in inbound.i2np {
             if inbound_tx.try_send(message).is_err() {
@@ -8336,6 +8618,14 @@ impl Ssu2RuntimeService {
         }
         for event in inbound.relay {
             if relay_tx.try_send(event).is_err() {
+                self.shared
+                    .counters
+                    .inbound_queue_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        for event in inbound.requester {
+            if requester_tx.try_send(event).is_err() {
                 self.shared
                     .counters
                     .inbound_queue_drops
@@ -8719,11 +9009,15 @@ mod tests {
         let (relay_tx, relay_rx) = mpsc::channel::<Ssu2InboundRelay>(
             Ssu2RuntimeConfig::default().limits.max_inbound_relay_queue,
         );
+        let (_requester_tx, requester_rx) = mpsc::channel::<Ssu2InboundRequesterEvent>(
+            Ssu2RuntimeConfig::default().limits.max_inbound_relay_queue,
+        );
         (
             Ssu2ServiceHandle {
                 service,
                 inbound: inbound_rx,
                 relay: relay_rx,
+                requester: requester_rx,
                 local_v4: None,
                 local_v6: None,
             },

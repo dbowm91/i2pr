@@ -47,7 +47,7 @@
 //! [`Ssu2PeerRelayService::poll_expired`] scheduler input), no secret
 //! logging (§12: snapshots and `Debug` carry counts only).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Mutex;
 
@@ -144,6 +144,16 @@ pub struct Ssu2PeerRelayService {
     signers: Mutex<HashMap<[u8; 32], SigningPublicKey>>,
     rates: Mutex<HashMap<IpAddr, RateWindow>>,
     counters: Mutex<SnapCounters>,
+    /// Plan 531: the nonces of this router's live relay requests.
+    ///
+    /// The table is a **routing** table, not a second copy of the
+    /// transport's requester table: it holds a nonce and its deadline
+    /// and nothing else. It is written only where the transport's own
+    /// table is written -- when a request starts, when it completes and
+    /// when it is cancelled -- and it is bounded by the transport's own
+    /// global ceiling. It exists so the runtime can route an inbound
+    /// Relay Response to the role that asked for it.
+    requester_nonces: Mutex<BTreeMap<u32, u64>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -185,6 +195,7 @@ impl Ssu2PeerRelayService {
             signers: Mutex::new(HashMap::new()),
             rates: Mutex::new(HashMap::new()),
             counters: Mutex::new(SnapCounters::default()),
+            requester_nonces: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -490,7 +501,34 @@ impl Ssu2PeerRelayService {
         self.requester
             .lock()
             .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
-            .start(nonce, tag, bob_hash, charlie_hash, alice_endpoint, now_ms)
+            .start(nonce, tag, bob_hash, charlie_hash, alice_endpoint, now_ms)?;
+        // The routing table is written only where the transport's own
+        // table is written, so the two cannot drift.
+        if let Ok(mut nonces) = self.requester_nonces.lock() {
+            nonces.insert(
+                nonce,
+                now_ms.saturating_add(i2pr_transport_ssu2::RELAY_REQUEST_TIMEOUT_MS),
+            );
+        }
+        Ok(())
+    }
+
+    /// Returns whether one nonce belongs to a live relay request of this
+    /// router (Plan 531).
+    ///
+    /// The check is a **routing** decision, not a verification: the
+    /// signature is verified later, when the requester owner hands the
+    /// response to the transport. A response that correlates with no live
+    /// request is not the requester's, and it keeps travelling the
+    /// introducer's handoff exactly as before.
+    pub fn is_requester_nonce(&self, nonce: u32, now_ms: u64) -> bool {
+        let Ok(mut nonces) = self.requester_nonces.lock() else {
+            return false;
+        };
+        // The routing table expires on the same deadline the transport's
+        // own table uses, so the two cannot disagree about a live request.
+        nonces.retain(|_, deadline| now_ms < *deadline);
+        nonces.contains_key(&nonce)
     }
 
     /// Handles one authenticated RelayResponse (Alice, sender must be Bob).
@@ -566,6 +604,113 @@ impl Ssu2PeerRelayService {
             return Err(RelayError::InvalidSignature);
         }
         Err(last_error)
+    }
+
+    /// Handles one authenticated RelayResponse for a requester whose
+    /// target's signing key the caller already resolved (Plan 531).
+    ///
+    /// The table's own variant resolves the signer from the registered
+    /// signer table; the requester side resolves it from the target's
+    /// **validated** RouterInfo, which is the daemon's authority and not
+    /// the runtime's. The correlation, the sender check, the freshness
+    /// window and the signature verification are the transport's own and
+    /// are identical in both paths.
+    pub fn on_relay_response_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<i2pr_transport_ssu2::RequesterState, i2pr_transport_ssu2::RelayError> {
+        use i2pr_transport_ssu2::RelayError;
+        // Bob rejections need no key.
+        if matches!(
+            block.code(),
+            i2pr_transport_ssu2::RelayResponseCode::RejectedByBob(_)
+        ) {
+            let state = self
+                .requester
+                .lock()
+                .map_err(|_| RelayError::TooManyRequests)?
+                .on_response(block, sender_hash, bob_hash, None, now_secs, now_ms)?;
+            if state == i2pr_transport_ssu2::RequesterState::Completed {
+                self.count_relay_response();
+            }
+            return Ok(state);
+        }
+        let mut trial = self
+            .requester
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .clone();
+        match trial.on_response(
+            block,
+            sender_hash,
+            bob_hash,
+            Some(charlie_signer),
+            now_secs,
+            now_ms,
+        ) {
+            Ok(state) => {
+                *self
+                    .requester
+                    .lock()
+                    .map_err(|_| RelayError::TooManyRequests)? = trial;
+                if let Ok(mut counters) = self.counters.lock() {
+                    counters.relay_responses = counters.relay_responses.saturating_add(1);
+                }
+                Ok(state)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Handles one authenticated HolePunch whose target's signing key the
+    /// caller already resolved (Plan 531).
+    ///
+    /// The correlation, the connection-ID check, the freshness window and
+    /// the signature verification are the transport's own; only the
+    /// signer's origin differs from the table-driven variant.
+    pub fn on_hole_punch_with_signer(
+        &self,
+        message: &i2pr_transport_ssu2::HolePunchMessage,
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        use i2pr_transport_ssu2::RelayError;
+        let mut trial = self
+            .requester
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .clone();
+        match trial.on_hole_punch(message, bob_hash, Some(charlie_signer), now_secs, now_ms) {
+            Ok(ready) => {
+                *self
+                    .requester
+                    .lock()
+                    .map_err(|_| RelayError::TooManyRequests)? = trial;
+                if ready {
+                    // The exchange is over: the nonce leaves the routing
+                    // table with the transport's own entry.
+                    if let Ok(mut nonces) = self.requester_nonces.lock() {
+                        nonces.remove(&message.response.nonce());
+                    }
+                    // Plan 527: a ready hole punch is the requester's
+                    // firewalled fact. The service keeps the count; the
+                    // runtime records the indication.
+                    self.count_relay_response();
+                    if let Ok(mut counters) = self.counters.lock() {
+                        counters.hole_punches = counters.hole_punches.saturating_add(1);
+                    }
+                }
+                Ok(ready)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Handles one authenticated HolePunch (Alice, from Charlie).
@@ -820,6 +965,35 @@ impl Ssu2PeerRelayService {
         Ok(outcome)
     }
 
+    /// Handles one authenticated RelayIntro (Charlie) whose requester's
+    /// signing key the caller already resolved (Plan 531).
+    ///
+    /// The target role's verification is the transport's own: the
+    /// forwarded RelayRequest view is reconstructed and Alice's signature
+    /// over the specification's preimage is verified, so only the
+    /// signer's origin differs from the table-driven variant.
+    pub fn on_relay_intro_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayIntroBlock,
+        expected_bob_hash: &[u8; 32],
+        expected_charlie_hash: &[u8; 32],
+        alice_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        self.target
+            .lock()
+            .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
+            .on_intro(
+                block,
+                expected_bob_hash,
+                expected_charlie_hash,
+                alice_signer,
+                now_secs,
+                now_ms,
+            )
+    }
+
     /// Handles one authenticated RelayIntro (Charlie).
     pub fn on_relay_intro(
         &self,
@@ -930,10 +1104,17 @@ impl Ssu2PeerRelayService {
 
     /// Cancels one relay request and releases its quota.
     pub fn cancel_relay_request(&self, nonce: u32) -> Result<(), i2pr_transport_ssu2::RelayError> {
-        self.requester
+        let outcome = self
+            .requester
             .lock()
             .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
-            .cancel(nonce)
+            .cancel(nonce);
+        if outcome.is_ok()
+            && let Ok(mut nonces) = self.requester_nonces.lock()
+        {
+            nonces.remove(&nonce);
+        }
+        outcome
     }
 
     /// Central expiry scheduler: polls every table with one call, prunes

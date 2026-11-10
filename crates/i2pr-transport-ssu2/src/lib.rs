@@ -97,7 +97,7 @@ pub use relay::{
     MAX_RELAY_REQUESTS_GLOBAL, MAX_RELAY_REQUESTS_PER_PEER, MAX_RELAY_TAGS_GLOBAL,
     MAX_RELAY_TAGS_PER_PEER, RELAY_MAX_CLOCK_SKEW_SECONDS, RELAY_REQUEST_PROLOGUE,
     RELAY_REQUEST_TIMEOUT_MS, RELAY_RESPONSE_PROLOGUE, RELAY_TAG_LIFETIME_SECS, RelayCounters,
-    RelayError, RelayIntroducer, RelayRequester, RelayTarget, build_hole_punch,
+    RelayError, RelayIntroducer, RelayRequester, RelayTarget, RequesterState, build_hole_punch,
     check_relay_freshness, hole_punch_conn_ids, parse_hole_punch, relay_request_preimage,
     relay_response_budget, relay_response_preimage, verify_relay_request, verify_relay_response,
 };
