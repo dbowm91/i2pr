@@ -92,6 +92,13 @@ pub enum RelayTargetRefusal {
     DestinationRefused,
     /// The runtime's staging queue refused the hole punch.
     StagingRefused,
+    /// The responder's token store refused the establishment token.
+    ///
+    /// Plan 533. The accept's token is issued by the runtime's **own**
+    /// responder table, and that table is the only authority on a
+    /// presented token. A refusal here is a **local** condition about
+    /// this router's table, never a fact about the requester.
+    EstablishmentRefused,
 }
 
 impl RelayTargetRefusal {
@@ -118,6 +125,7 @@ impl RelayTargetRefusal {
             Self::NoRandomness => "no-randomness",
             Self::DestinationRefused => "destination-refused",
             Self::StagingRefused => "staging-refused",
+            Self::EstablishmentRefused => "establishment-refused",
         }
     }
 }
@@ -175,6 +183,10 @@ pub struct RelayTargetCounters {
     pub refusals_destination_refused: u64,
     /// The runtime's staging queue refused the hole punch.
     pub refusals_staging_refused: u64,
+    /// The responder's token store refused the establishment token.
+    pub refusals_establishment_refused: u64,
+    /// Establishment tokens issued for a requester's establishment.
+    pub tokens_issued: u64,
 }
 
 /// What the owner did with one introduction.
@@ -310,6 +322,9 @@ impl RelayTargetOwner {
             RelayTargetRefusal::StagingRefused => {
                 self.counters.refusals_staging_refused += 1;
             }
+            RelayTargetRefusal::EstablishmentRefused => {
+                self.counters.refusals_establishment_refused += 1;
+            }
         }
     }
 }
@@ -380,7 +395,6 @@ pub fn drive_relay_target(
     owner: &mut RelayTargetOwner,
     store: &i2pr_netdb::RouterInfoStore,
     event: &i2pr_runtime::Ssu2InboundTarget,
-    rng: &mut rand_chacha::ChaCha8Rng,
     now_secs: u64,
     now_ms: u64,
 ) -> RelayTargetOutcome {
@@ -424,7 +438,7 @@ pub fn drive_relay_target(
         }
         Ok(true) => {
             owner.counters.intros_verified += 1;
-            answer_introduction(owner, event, &material, own_endpoint, rng, now_secs)
+            answer_introduction(owner, event, &material, own_endpoint, now_secs)
         }
         Err(error) => {
             let reason = map_relay_error(error);
@@ -440,7 +454,6 @@ fn answer_introduction(
     event: &i2pr_runtime::Ssu2InboundTarget,
     material: &RequesterMaterial,
     own_endpoint: i2pr_runtime::Ssu2Endpoint,
-    rng: &mut rand_chacha::ChaCha8Rng,
     now_secs: u64,
 ) -> RelayTargetOutcome {
     let block = &event.block;
@@ -464,10 +477,30 @@ fn answer_introduction(
         owner.refuse(RelayTargetRefusal::SigningRefused);
         return RelayTargetOutcome::Refused(RelayTargetRefusal::SigningRefused);
     };
-    let Some(token) = draw_nonzero_token(rng) else {
-        owner.refuse(RelayTargetRefusal::NoRandomness);
-        return RelayTargetOutcome::Refused(RelayTargetRefusal::NoRandomness);
+    // The establishment token is issued by the runtime's **own**
+    // responder table and bound to the requester's exact source address
+    // (Plan 533). That table is the only authority on a presented token:
+    // the requester's dial presents this value and the responder consumes
+    // it. A token the daemon drew for itself would be in no table, and the
+    // responder would refuse it as unknown.
+    //
+    // The binding address is the requester's own endpoint, taken from the
+    // introduction -- the same address the requester put in its Relay
+    // Request, and the address the responder will observe as the
+    // datagram's source.
+    let requester_endpoint = block.endpoint();
+    let token = match owner
+        .runtime
+        .issue_relay_establishment_token(requester_endpoint.socket_addr(), now_secs)
+    {
+        Ok(token) => token,
+        Err(error) => {
+            let reason = map_target_error(error);
+            owner.refuse(reason);
+            return RelayTargetOutcome::Refused(reason);
+        }
     };
+    owner.counters.tokens_issued += 1;
     let Ok(accept) = i2pr_runtime::RelayResponseBlock::accept(
         nonce,
         timestamp,
@@ -514,24 +547,6 @@ fn answer_introduction(
     }
 }
 
-/// Draws a fresh nonzero correlation token.
-///
-/// The token is the requester's handle for the establishment that follows
-/// the hole punch. It is drawn from the router's own randomness and is
-/// never zero: the transport refuses a zero token.
-fn draw_nonzero_token(rng: &mut rand_chacha::ChaCha8Rng) -> Option<u64> {
-    use rand_core::TryRngCore;
-    for _ in 0..8 {
-        let mut bytes = [0_u8; 8];
-        rng.try_fill_bytes(&mut bytes).ok()?;
-        let token = u64::from_be_bytes(bytes);
-        if token != 0 {
-            return Some(token);
-        }
-    }
-    None
-}
-
 /// Maps one transport refusal onto the owner's typed reason.
 ///
 /// The transport's own errors are the authority; the owner names them
@@ -558,5 +573,8 @@ fn map_target_error(error: i2pr_runtime::Ssu2RelayTargetError) -> RelayTargetRef
         }
         i2pr_runtime::Ssu2RelayTargetError::NoRandomness => RelayTargetRefusal::NoRandomness,
         i2pr_runtime::Ssu2RelayTargetError::StagingRefused => RelayTargetRefusal::StagingRefused,
+        i2pr_runtime::Ssu2RelayTargetError::EstablishmentRefused => {
+            RelayTargetRefusal::EstablishmentRefused
+        }
     }
 }

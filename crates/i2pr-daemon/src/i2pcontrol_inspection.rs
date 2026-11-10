@@ -86,6 +86,9 @@ pub type IntroducerRequestCounterCell =
 /// the cell on its period; the counters are counts only and name no
 /// peer, address or key.
 pub type PeerPoolCounterCell = std::sync::Mutex<crate::peer_pool::PeerPoolCounters>;
+/// Plan 533: the live counters of this router's relay establishments.
+pub type RelayEstablishmentCounterCell =
+    std::sync::Mutex<crate::relay_establishment::RelayEstablishmentCounters>;
 
 /// Plan 525: the live counters of this router's own published address.
 ///
@@ -322,6 +325,11 @@ pub struct InspectionHandles {
     /// refreshes the cell on its cycle; the counters are counts only and
     /// name no peer, address, key or payload.
     self_publication_live: Mutex<Option<Arc<SelfPublicationCounterCell>>>,
+    /// Live counters of this router's relay establishments, published by
+    /// the composition root (Plan 533). The establishment's own task
+    /// refreshes the cell; the counters are counts only and name no peer,
+    /// address, key or token.
+    relay_establishment_live: Mutex<Option<Arc<RelayEstablishmentCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -355,6 +363,7 @@ impl InspectionHandles {
             introducer_request_live: Mutex::new(None),
             peer_pool_live: Mutex::new(None),
             self_publication_live: Mutex::new(None),
+            relay_establishment_live: Mutex::new(None),
         }
     }
 
@@ -813,6 +822,40 @@ impl InspectionHandles {
         &self,
     ) -> Option<crate::self_publication::SelfPublicationCounterSnapshot> {
         let cell = self.self_publication_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 533: the composition root publishes the cell the
+    /// establishment's own task refreshes, so the running router's relay
+    /// establishment posture is observable through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_relay_establishment_counters(&self, cell: Arc<RelayEstablishmentCounterCell>) {
+        if let Ok(mut slot) = self.relay_establishment_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published relay-establishment counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn relay_establishment_counters(&self) -> Option<Arc<RelayEstablishmentCounterCell>> {
+        self.relay_establishment_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published relay-establishment
+    /// counters.
+    ///
+    /// Plan 533: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn relay_establishment_counters_snapshot(
+        &self,
+    ) -> Option<crate::relay_establishment::RelayEstablishmentCounters> {
+        let cell = self.relay_establishment_counters()?;
         cell.lock().ok().map(|counters| *counters)
     }
 

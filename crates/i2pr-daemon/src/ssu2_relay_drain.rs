@@ -151,6 +151,12 @@ pub struct RequesterDrainOutcome {
     pub refused: u64,
     /// Exchanges that completed and recorded the relay-firewalled fact.
     pub firewalled: u64,
+    /// Hole punches the owner held until their accept arrived (Plan 533).
+    ///
+    /// A held punch is **handled**, not refused: the transport requires
+    /// the accept before a hole punch, and the punch travels one hop
+    /// while the accept travels two.
+    pub deferred: u64,
 }
 
 /// Drains the runtime's requester handoff into the requester (Alice) role
@@ -187,13 +193,32 @@ pub fn drain_requester_events(
                     outcome.refused = outcome.refused.saturating_add(1);
                     continue;
                 }
-                owner.on_relay_response(
+                let accepted = owner.on_relay_response(
                     block,
                     *inbound.peer.hash().as_bytes(),
                     signers,
                     now_secs,
                     now_ms,
-                )
+                );
+                // Plan 533: the accept's correlation is what releases a
+                // hole punch that arrived before it. The punch is
+                // presented again through the transport's own seam, so
+                // the transport's verification runs on it once more.
+                if !matches!(
+                    accepted,
+                    crate::relay_requester::RelayRequesterOutcome::ResponseAccepted
+                ) {
+                    accepted
+                } else if let Some(punched) =
+                    owner.redrive_deferred(block.nonce(), signers, now_secs, now_ms)
+                {
+                    // Both events are handled: the accept correlated, and
+                    // the punch it released completed the exchange.
+                    outcome.handled = outcome.handled.saturating_add(1);
+                    punched
+                } else {
+                    accepted
+                }
             }
             i2pr_runtime::Ssu2InboundRequesterEvent::HolePunch(inbound) => {
                 if owner
@@ -213,6 +238,10 @@ pub fn drain_requester_events(
             crate::relay_requester::RelayRequesterOutcome::HolePunchReady => {
                 outcome.handled = outcome.handled.saturating_add(1);
                 outcome.firewalled = outcome.firewalled.saturating_add(1);
+            }
+            crate::relay_requester::RelayRequesterOutcome::PunchDeferred => {
+                outcome.handled = outcome.handled.saturating_add(1);
+                outcome.deferred = outcome.deferred.saturating_add(1);
             }
             _ => {
                 outcome.handled = outcome.handled.saturating_add(1);
@@ -265,7 +294,6 @@ pub fn drain_target_events(
     source: &mut dyn TargetEventSource,
     owner: &mut crate::relay_target::RelayTargetOwner,
     store: &i2pr_netdb::RouterInfoStore,
-    rng: &mut rand_chacha::ChaCha8Rng,
     now_secs: u64,
     now_ms: u64,
 ) -> TargetDrainOutcome {
@@ -275,7 +303,7 @@ pub fn drain_target_events(
             break;
         };
         outcome.drained = outcome.drained.saturating_add(1);
-        match crate::relay_target::drive_relay_target(owner, store, &event, rng, now_secs, now_ms) {
+        match crate::relay_target::drive_relay_target(owner, store, &event, now_secs, now_ms) {
             crate::relay_target::RelayTargetOutcome::Answered => {
                 outcome.answered = outcome.answered.saturating_add(1);
             }

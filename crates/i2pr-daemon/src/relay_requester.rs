@@ -94,6 +94,25 @@ pub const RELAY_REQUEST_LIFETIME_MS: u64 = 10_000;
 /// could use it.
 pub const PUBLISHED_INTRODUCER_EXPIRY_MARGIN_SECS: u64 = 600;
 
+/// The maximum number of hole punches the owner holds while it waits for
+/// their accept (Plan 533).
+///
+/// A hole punch travels **one** hop and the accept travels **two**, so on
+/// loopback the punch reaches the requester's handoff first and the
+/// transport refuses it until the accept is correlated. The owner holds
+/// the punch instead of losing it, and the hold is bounded: a router
+/// that is flooded with early punches refuses them under their own
+/// reason rather than growing a table.
+pub const MAX_DEFERRED_PUNCHES: usize = 8;
+
+/// The maximum number of establishments the owner holds for its task
+/// (Plan 533).
+///
+/// The owner publishes one establishment per completed exchange, and the
+/// task takes them. The bound is the owner's own view and is enforced
+/// independently of the handoff's own capacity.
+pub const MAX_PENDING_ESTABLISHMENTS: usize = 8;
+
 /// The number of attempts a nonce draw makes before it gives up.
 ///
 /// The draw is bounded: a router whose entropy source cannot produce a
@@ -334,9 +353,23 @@ pub enum RelayRequesterRefusal {
     InvalidSignature,
     /// The inbound event's timestamp was outside the permitted skew.
     StaleTimestamp,
-    /// The target's signing key is unknown to the validated store, so
-    /// the inbound event's signature cannot be verified.
+    /// The target's signing key is unknown to the validated store, so the
+    /// inbound event's signature cannot be verified.
     TargetUnknown,
+    /// The deferred-punch buffer is full (Plan 533).
+    ///
+    /// A hole punch that arrived before its accept could not be held, so
+    /// the exchange for that nonce is lost. The loss is counted and never
+    /// silent.
+    DeferralFull,
+    /// The establishment could not be published (Plan 533).
+    ///
+    /// The establishment table is full, or the accept carried no endpoint
+    /// or no token. Either way the router cannot reach the peer it was
+    /// relayed to, and it says so under its own reason.
+    EstablishmentUnavailable,
+    /// The handoff to the establishment task is full (Plan 533).
+    EstablishmentQueueFull,
 }
 
 /// The owner's counters, one per outcome.
@@ -370,6 +403,10 @@ pub struct RelayRequesterCounters {
     pub hole_punches_ready: u64,
     /// Relay-firewalled indications recorded.
     pub firewalled_recorded: u64,
+    /// Hole punches held until their accept arrived (Plan 533).
+    pub punches_deferred: u64,
+    /// Establishments published for the task to perform (Plan 533).
+    pub establishments_ready: u64,
     /// Refusals because the operator left the opt-in off.
     pub refusals_disabled: u64,
     /// Refusals because the router names no bound endpoint.
@@ -402,6 +439,12 @@ pub struct RelayRequesterCounters {
     pub refusals_stale_timestamp: u64,
     /// Refusals because the target's signing key is unknown.
     pub refusals_target_unknown: u64,
+    /// Refusals because the deferred-punch buffer was full.
+    pub refusals_deferral_full: u64,
+    /// Refusals because the establishment could not be published.
+    pub refusals_establishment_unavailable: u64,
+    /// Refusals because the handoff to the establishment task was full.
+    pub refusals_establishment_queue_full: u64,
 }
 
 /// The context of one live relay request.
@@ -430,6 +473,40 @@ impl std::fmt::Debug for RelayRequestContext {
             .field("target", &"<redacted>")
             .field("tag", &"<redacted>")
             .field("family", &self.family)
+            .finish()
+    }
+}
+
+/// The material of one establishment the requester is ready to perform
+/// (Plan 533).
+///
+/// The establishment is the requester's **ordinary** session establishment
+/// with the peer it reached through a relay. The accept carries the
+/// target's endpoint and the establishment token the target's responder
+/// issued, and both are needed to open the session.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct RelayEstablishment {
+    /// The target (Charlie) the session is with.
+    pub target: [u8; 32],
+    /// The target's endpoint, from the accept.
+    ///
+    /// The accept's preimage carries the endpoint, so the target's own
+    /// signature authenticates it.
+    pub endpoint: i2pr_runtime::Ssu2Endpoint,
+    /// The establishment token, from the accept.
+    ///
+    /// The token was issued by the target's responder and is bound to
+    /// this router's exact source address. It is one-use.
+    pub token: u64,
+}
+
+impl std::fmt::Debug for RelayEstablishment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RelayEstablishment")
+            .field("target", &"<redacted>")
+            .field("endpoint", &"<redacted>")
+            .field("token", &"<redacted>")
             .finish()
     }
 }
@@ -497,6 +574,13 @@ pub enum RelayRequesterOutcome {
     HolePunchReady,
     /// The hole punch was correlated but the exchange was not accepted.
     HolePunchNotReady,
+    /// The hole punch arrived before its accept and was held (Plan 533).
+    ///
+    /// This is **not** a refusal. The transport requires the accept
+    /// before a hole punch, and the punch travels one hop while the
+    /// accept travels two, so the owner holds the punch and presents it
+    /// again once the accept is correlated.
+    PunchDeferred,
     /// The event was refused.
     Refused(RelayRequesterRefusal),
 }
@@ -572,6 +656,19 @@ pub struct RelayRequesterOwner {
     next_at_ms: u64,
     /// The live requests, by nonce.
     live: BTreeMap<u32, LiveRelayRequest>,
+    /// The hole punches that arrived before their accept (Plan 533).
+    ///
+    /// The transport's requester table refuses a hole punch until the
+    /// accept is correlated, and the punch travels one hop while the
+    /// accept travels two. The owner holds the punch here instead of
+    /// losing it, and presents it again once the transport's
+    /// precondition holds.
+    deferred: BTreeMap<u32, DeferredPunch>,
+    /// The establishments the owner has published (Plan 533).
+    ///
+    /// One per completed exchange. The owner publishes them and its task
+    /// takes them; the owner holds no socket and dials nothing.
+    establishments: BTreeMap<u32, RelayEstablishment>,
     counters: RelayRequesterCounters,
 }
 
@@ -580,6 +677,17 @@ pub struct RelayRequesterOwner {
 struct LiveRelayRequest {
     context: RelayRequestContext,
     deadline_ms: u64,
+    /// The accept's endpoint, once the accept has been correlated.
+    accept_endpoint: Option<i2pr_runtime::Ssu2Endpoint>,
+    /// The accept's token, once the accept has been correlated.
+    accept_token: Option<u64>,
+}
+
+/// One hole punch held until its accept arrives (Plan 533).
+#[derive(Clone)]
+struct DeferredPunch {
+    /// The authenticated hole punch.
+    message: i2pr_runtime::HolePunchMessage,
 }
 
 impl std::fmt::Debug for RelayRequesterOwner {
@@ -611,6 +719,8 @@ impl RelayRequesterOwner {
             cursor: None,
             next_at_ms: 0,
             live: BTreeMap::new(),
+            deferred: BTreeMap::new(),
+            establishments: BTreeMap::new(),
             counters: RelayRequesterCounters::default(),
         }
     }
@@ -822,6 +932,8 @@ impl RelayRequesterOwner {
             LiveRelayRequest {
                 context,
                 deadline_ms: now_ms.saturating_add(RELAY_REQUEST_LIFETIME_MS),
+                accept_endpoint: None,
+                accept_token: None,
             },
         );
         self.asked.insert(candidate.target);
@@ -881,6 +993,15 @@ impl RelayRequesterOwner {
         ) {
             Ok(i2pr_runtime::Ssu2RelayRequestState::AwaitingHolePunch) => {
                 self.counters.responses_accepted += 1;
+                // The accept carries the target's endpoint and the
+                // establishment token the target's responder issued. The
+                // accept's preimage carries the endpoint, so the target's
+                // own signature authenticates it. Both are kept for the
+                // establishment, which the exchange opens.
+                if let Some(live) = self.live.get_mut(&nonce) {
+                    live.accept_endpoint = block.endpoint();
+                    live.accept_token = block.token();
+                }
                 RelayRequesterOutcome::ResponseAccepted
             }
             Ok(i2pr_runtime::Ssu2RelayRequestState::Refused) => {
@@ -907,12 +1028,84 @@ impl RelayRequesterOwner {
     /// is contradicted. The owner records the fact through the runtime's
     /// own recorder — the daemon never writes into the reachability
     /// tracker itself — and never into a peer's profile.
+    ///
+    /// A punch that arrives **before** its accept is **held**, not
+    /// refused (Plan 533). The transport's requester table requires the
+    /// accept before a hole punch, and the punch travels one hop while
+    /// the accept travels two, so on loopback the punch arrives first.
+    /// Holding it is what lets the exchange complete at all; the hold is
+    /// bounded and the punch is presented again once the accept is
+    /// correlated.
     pub fn on_hole_punch(
         &mut self,
         message: &i2pr_runtime::HolePunchMessage,
         signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
         now_secs: u64,
         now_ms: u64,
+    ) -> RelayRequesterOutcome {
+        self.handle_hole_punch(message, signers, now_secs, now_ms, true)
+    }
+
+    /// Holds one hole punch until its accept is correlated.
+    ///
+    /// The hold is bounded: a router that is flooded with early punches
+    /// refuses them under their own reason rather than growing a table.
+    /// The held punch is dropped with its request when the request
+    /// expires.
+    fn defer_hole_punch(
+        &mut self,
+        message: &i2pr_runtime::HolePunchMessage,
+        now_ms: u64,
+    ) -> RelayRequesterOutcome {
+        let nonce = message.response.nonce();
+        if self.deferred.len() >= MAX_DEFERRED_PUNCHES {
+            self.refuse(RelayRequesterRefusal::DeferralFull, now_ms);
+            return RelayRequesterOutcome::Refused(RelayRequesterRefusal::DeferralFull);
+        }
+        self.deferred.insert(
+            nonce,
+            DeferredPunch {
+                message: message.clone(),
+            },
+        );
+        self.counters.punches_deferred += 1;
+        RelayRequesterOutcome::PunchDeferred
+    }
+
+    /// Presents a held hole punch again, now that its accept is
+    /// correlated.
+    ///
+    /// Returns `None` when no punch was held for the nonce. The punch is
+    /// presented through the transport's own seam, so the transport's
+    /// verification runs again on it and its one-use guarantee is
+    /// unchanged. A re-drive that the transport still refuses is a
+    /// **refusal**, not another hold: the hold has already had its one
+    /// chance.
+    pub fn redrive_deferred(
+        &mut self,
+        nonce: u32,
+        signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Option<RelayRequesterOutcome> {
+        let deferred = self.deferred.remove(&nonce)?;
+        Some(self.handle_hole_punch(&deferred.message, signers, now_secs, now_ms, false))
+    }
+
+    /// Correlates one hole punch with the requester's own request.
+    ///
+    /// `allow_deferral` is true only for a punch that arrives from the
+    /// handoff. The transport refuses a hole punch whose accept has not
+    /// been correlated, and that refusal is the **deferral signal**: it
+    /// is intercepted before the generic mapping, so a punch that merely
+    /// arrived early is never counted as a transport refusal.
+    fn handle_hole_punch(
+        &mut self,
+        message: &i2pr_runtime::HolePunchMessage,
+        signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
+        now_secs: u64,
+        now_ms: u64,
+        allow_deferral: bool,
     ) -> RelayRequesterOutcome {
         let nonce = message.response.nonce();
         let Some(entry) = self.live.get(&nonce).copied() else {
@@ -939,6 +1132,10 @@ impl RelayRequesterOwner {
                 // the indication.
                 self.runtime.note_relay_firewalled(entry.context.family);
                 self.counters.firewalled_recorded += 1;
+                // The exchange is complete, so the establishment may now
+                // be published: the accept's endpoint and token are the
+                // material the requester's task dials with.
+                self.publish_establishment(nonce, &entry, now_ms);
                 self.live.remove(&nonce);
                 RelayRequesterOutcome::HolePunchReady
             }
@@ -947,10 +1144,74 @@ impl RelayRequesterOwner {
                 RelayRequesterOutcome::HolePunchNotReady
             }
             Err(error) => {
+                if allow_deferral && matches!(error, i2pr_runtime::RelayError::WrongRole) {
+                    // The accept has not been correlated yet. The punch is
+                    // held, not refused.
+                    return self.defer_hole_punch(message, now_ms);
+                }
                 let reason = map_relay_error(error);
                 self.refuse(reason, now_ms);
                 RelayRequesterOutcome::Refused(reason)
             }
+        }
+    }
+
+    /// Publishes the establishment for one completed exchange.
+    ///
+    /// The establishment is the requester's ordinary session
+    /// establishment with the peer it reached through a relay: the
+    /// accept's endpoint and the establishment token the target's
+    /// responder issued. The owner publishes it and its task takes it —
+    /// the owner holds no socket and dials nothing.
+    ///
+    /// An accept that carried no endpoint or no token is refused under
+    /// its own reason: the router cannot reach the peer it was relayed
+    /// to, and it says so rather than dialling something it cannot
+    /// verify.
+    fn publish_establishment(&mut self, nonce: u32, entry: &LiveRelayRequest, now_ms: u64) {
+        let (Some(endpoint), Some(token)) = (entry.accept_endpoint, entry.accept_token) else {
+            self.refuse(RelayRequesterRefusal::EstablishmentUnavailable, now_ms);
+            return;
+        };
+        if self.establishments.len() >= MAX_PENDING_ESTABLISHMENTS {
+            self.refuse(RelayRequesterRefusal::EstablishmentUnavailable, now_ms);
+            return;
+        }
+        self.establishments.insert(
+            nonce,
+            RelayEstablishment {
+                target: entry.context.target,
+                endpoint,
+                token,
+            },
+        );
+        self.counters.establishments_ready += 1;
+    }
+
+    /// Takes the oldest published establishment, if any.
+    ///
+    /// The owner publishes and its task takes; the handoff between them
+    /// is bounded, and a handoff that is full returns the material to
+    /// the owner rather than dropping it.
+    pub fn take_establishment(&mut self) -> Option<(u32, RelayEstablishment)> {
+        let nonce = *self.establishments.keys().next()?;
+        let establishment = self.establishments.remove(&nonce)?;
+        Some((nonce, establishment))
+    }
+
+    /// Returns a published establishment the handoff could not take.
+    ///
+    /// The material goes back into the owner's table and the refusal is
+    /// counted: an establishment is never dropped silently.
+    pub fn return_establishment(
+        &mut self,
+        nonce: u32,
+        establishment: RelayEstablishment,
+        now_ms: u64,
+    ) {
+        self.refuse(RelayRequesterRefusal::EstablishmentQueueFull, now_ms);
+        if self.establishments.len() < MAX_PENDING_ESTABLISHMENTS {
+            self.establishments.insert(nonce, establishment);
         }
     }
 
@@ -997,6 +1258,15 @@ impl RelayRequesterOwner {
             RelayRequesterRefusal::TargetUnknown => {
                 self.counters.refusals_target_unknown += 1;
             }
+            RelayRequesterRefusal::DeferralFull => {
+                self.counters.refusals_deferral_full += 1;
+            }
+            RelayRequesterRefusal::EstablishmentUnavailable => {
+                self.counters.refusals_establishment_unavailable += 1;
+            }
+            RelayRequesterRefusal::EstablishmentQueueFull => {
+                self.counters.refusals_establishment_queue_full += 1;
+            }
         }
         self.next_at_ms = now_ms.saturating_add(RELAY_REQUEST_RETRY_MS);
     }
@@ -1015,6 +1285,10 @@ impl RelayRequesterOwner {
             .collect();
         for nonce in expired {
             self.live.remove(&nonce);
+            // A held punch and a published establishment belong to the
+            // request they were made for, and they must not outlive it.
+            self.deferred.remove(&nonce);
+            self.establishments.remove(&nonce);
         }
     }
 }

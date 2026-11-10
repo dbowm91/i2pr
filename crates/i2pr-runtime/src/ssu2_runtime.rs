@@ -1000,6 +1000,13 @@ pub enum Ssu2RelayTargetError {
     NoRandomness,
     /// The runtime's bounded staging queue refused the datagram.
     StagingRefused,
+    /// The responder's token store refused the establishment token.
+    ///
+    /// Plan 533. The token is issued by the runtime's **own** responder
+    /// table, and that table is the only authority on a presented token.
+    /// A refusal here is a **local** condition about this router's table,
+    /// never a fact about a peer.
+    EstablishmentRefused,
 }
 
 impl Ssu2RelayTargetError {
@@ -1014,6 +1021,7 @@ impl Ssu2RelayTargetError {
             Self::TransportRefused => "transport-refused",
             Self::NoRandomness => "no-randomness",
             Self::StagingRefused => "staging-refused",
+            Self::EstablishmentRefused => "establishment-refused",
         }
     }
 }
@@ -2966,6 +2974,51 @@ impl Ssu2RuntimeService {
         Ok(())
     }
 
+    /// Issues an establishment token for the relay establishment
+    /// (Plan 533).
+    ///
+    /// The token is issued by the runtime's **own** responder table and
+    /// is bound to the requester's exact source address. That table is
+    /// the only authority on a presented token: the responder consumes a
+    /// token it issued, from the address it issued it to, exactly once.
+    /// A token the daemon drew for itself would be in no table and the
+    /// responder would refuse it as unknown -- which is exactly the
+    /// defect this seam closes.
+    ///
+    /// The randomness is the runtime's, and so is the table: the caller
+    /// receives the **value** it must put in the accept and never sees
+    /// the store.
+    ///
+    /// `responder_conn_id` is `None`, exactly as for a data-phase
+    /// `NewToken`: the responder mints a fresh connection ID at
+    /// SessionCreated rather than advertising one the initiator never
+    /// saw.
+    ///
+    /// A refusal here is a **local** condition about this router's own
+    /// table. It is never a fact about the requester.
+    pub fn issue_relay_establishment_token(
+        &self,
+        requester: SocketAddr,
+        now_secs: u64,
+    ) -> Result<u64, Ssu2RelayTargetError> {
+        let mut bytes = [0_u8; 8];
+        if fill_random(&mut bytes).is_err() {
+            return Err(Ssu2RelayTargetError::NoRandomness);
+        }
+        if u64::from_be_bytes(bytes) == 0 {
+            return Err(Ssu2RelayTargetError::NoRandomness);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| Ssu2RelayTargetError::EstablishmentRefused)?;
+        match state.token_store.issue(requester, now_secs, bytes, None) {
+            Ok(token) => Ok(token.value()),
+            Err(_) => Err(Ssu2RelayTargetError::EstablishmentRefused),
+        }
+    }
+
     /// Starts one relay request (Alice, the requester side; Plan 531).
     ///
     /// The transport's requester table owns the correlation, the
@@ -4798,6 +4851,58 @@ impl Ssu2RuntimeService {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<Ssu2EstablishedLink, Ssu2DialOutcome> {
+        self.dial_ssu2_inner(target, None, timeout, cancellation)
+            .await
+    }
+
+    /// Dials one validated target, presenting an **explicit**
+    /// establishment token.
+    ///
+    /// Plan 533. The relay establishment reaches the peer that was
+    /// reached through a relay with a token the **responder** issued:
+    /// the target's accept carries it, and the target's responder holds
+    /// it in its own table, bound to this router's exact source address.
+    /// This seam presents that token in the initiator's Session Request,
+    /// so the responder's own table consumes it.
+    ///
+    /// An explicit token **never** falls back to the cached-token path.
+    /// The cache is a FIFO over the tokens peers announced, so an older
+    /// cached entry would be presented instead and the responder would
+    /// refuse it as unknown -- a failure that has nothing to do with the
+    /// peer's health. The cached entry is left untouched for the dial it
+    /// was issued for.
+    ///
+    /// The token is one-use and source-bound, and both properties belong
+    /// to the transport's own table: a zero token is refused here, and
+    /// a token the responder did not issue, or one presented from
+    /// another address, or one presented twice, is refused by the
+    /// responder.
+    pub async fn dial_ssu2_with_token(
+        &self,
+        target: Ssu2DialTarget,
+        token: u64,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<Ssu2EstablishedLink, Ssu2DialOutcome> {
+        if token == 0 {
+            return Err(Ssu2DialOutcome::Failed);
+        }
+        self.dial_ssu2_inner(target, Some(token), timeout, cancellation)
+            .await
+    }
+
+    /// The one dial, with an optional explicit establishment token.
+    ///
+    /// Plan 533. `explicit` is the accept's token when the relay
+    /// establishment dials the peer it reached through a relay, and
+    /// `None` for every ordinary dial.
+    async fn dial_ssu2_inner(
+        &self,
+        target: Ssu2DialTarget,
+        explicit: Option<u64>,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<Ssu2EstablishedLink, Ssu2DialOutcome> {
         if timeout.is_zero() || timeout > MAX_SSU2_RUNTIME_DURATION {
             return Err(Ssu2DialOutcome::Failed);
         }
@@ -4863,7 +4968,13 @@ impl Ssu2RuntimeService {
             if fill_random(&mut padding).is_err() {
                 return Err(Ssu2DialOutcome::Failed);
             }
-            let cached = take_cached_token_locked(&mut state, &target.peer(), now_secs);
+            // An explicit establishment token is presented **as it is**:
+            // the cached-token path is skipped, so an older cached entry
+            // can never shadow it and the cache is left for its own dial.
+            let cached = match explicit {
+                Some(value) => Some(value),
+                None => take_cached_token_locked(&mut state, &target.peer(), now_secs),
+            };
             let (phase, token) = match cached {
                 Some(value) => (
                     DialPhase::CachedToken {

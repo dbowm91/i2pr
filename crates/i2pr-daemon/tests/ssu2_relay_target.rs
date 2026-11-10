@@ -549,7 +549,6 @@ struct Wired {
     resolver: StoreResolver,
     requester_records: RouterInfoStore,
     target_records: RouterInfoStore,
-    rng: rand_chacha::ChaCha8Rng,
     /// Bob's own counts for the outbound half.
     forwarded: RelayDrainOutcome,
 }
@@ -707,7 +706,6 @@ async fn wire(target_opt_in: bool) -> Wired {
         resolver,
         requester_records,
         target_records,
-        rng,
         forwarded,
     }
 }
@@ -862,7 +860,6 @@ async fn the_target_answers_the_introduction_and_punches_the_hole() {
             &mut source,
             &mut wired.target,
             &wired.target_records,
-            &mut wired.rng,
             wall_secs(),
             wall_ms(),
         );
@@ -1054,7 +1051,6 @@ async fn the_target_verifies_the_introduction() {
         charlie.service.clone(),
         Arc::new(LocalIdentitySigner::new(Arc::clone(&charlie.keys.bundle))),
     );
-    let mut rng = rand_chacha::ChaCha8Rng::try_from_os_rng().expect("entropy");
 
     let endpoint = local_endpoint_of(&alice);
     let now = wall_secs();
@@ -1090,14 +1086,7 @@ async fn the_target_verifies_the_introduction() {
         bytes,
     )
     .expect("intro");
-    let outcome = drive_relay_target(
-        &mut target,
-        &target_records,
-        &event(forged),
-        &mut rng,
-        now,
-        wall_ms(),
-    );
+    let outcome = drive_relay_target(&mut target, &target_records, &event(forged), now, wall_ms());
     assert_eq!(
         outcome,
         RelayTargetOutcome::Refused(RelayTargetRefusal::InvalidSignature),
@@ -1116,14 +1105,7 @@ async fn the_target_verifies_the_introduction() {
         stale_timestamp,
         endpoint,
     );
-    let outcome = drive_relay_target(
-        &mut target,
-        &target_records,
-        &event(stale),
-        &mut rng,
-        now,
-        wall_ms(),
-    );
+    let outcome = drive_relay_target(&mut target, &target_records, &event(stale), now, wall_ms());
     assert_eq!(
         outcome,
         RelayTargetOutcome::Refused(RelayTargetRefusal::StaleTimestamp),
@@ -1150,7 +1132,6 @@ async fn the_target_verifies_the_introduction() {
         &mut target,
         &target_records,
         &event(unknown),
-        &mut rng,
         now,
         wall_ms(),
     );
@@ -1166,7 +1147,6 @@ async fn the_target_verifies_the_introduction() {
         &mut target,
         &target_records,
         &event(valid.clone()),
-        &mut rng,
         now,
         wall_ms(),
     );
@@ -1184,14 +1164,7 @@ async fn the_target_verifies_the_introduction() {
     // The transport's own replay suppression is the authority: the second
     // copy of the same introduction produces no second accept and no
     // second hole punch.
-    let outcome = drive_relay_target(
-        &mut target,
-        &target_records,
-        &event(valid),
-        &mut rng,
-        now,
-        wall_ms(),
-    );
+    let outcome = drive_relay_target(&mut target, &target_records, &event(valid), now, wall_ms());
     assert_eq!(
         outcome,
         RelayTargetOutcome::ReplaySuppressed,
@@ -1234,7 +1207,6 @@ async fn every_refusal_is_typed_and_counted_and_writes_nothing() {
 
     let target_records = target_store(&alice);
     let signer = Arc::new(LocalIdentitySigner::new(Arc::clone(&charlie.keys.bundle)));
-    let mut rng = rand_chacha::ChaCha8Rng::try_from_os_rng().expect("entropy");
     let now = wall_secs();
     let endpoint = local_endpoint_of(&alice);
     let timestamp = u32::try_from(now).unwrap_or(u32::MAX);
@@ -1255,14 +1227,7 @@ async fn every_refusal_is_typed_and_counted_and_writes_nothing() {
 
     // A **disabled** owner refuses every introduction and starts nothing.
     let mut disabled = RelayTargetOwner::new(false, charlie.service.clone(), signer);
-    let outcome = drive_relay_target(
-        &mut disabled,
-        &target_records,
-        &event,
-        &mut rng,
-        now,
-        wall_ms(),
-    );
+    let outcome = drive_relay_target(&mut disabled, &target_records, &event, now, wall_ms());
     assert_eq!(
         outcome,
         RelayTargetOutcome::Refused(RelayTargetRefusal::Disabled),
@@ -1286,14 +1251,7 @@ async fn every_refusal_is_typed_and_counted_and_writes_nothing() {
         charlie.service.clone(),
         Arc::new(LocalIdentitySigner::new(Arc::clone(&charlie.keys.bundle))),
     );
-    let outcome = drive_relay_target(
-        &mut enabled,
-        &target_records,
-        &event,
-        &mut rng,
-        now,
-        wall_ms(),
-    );
+    let outcome = drive_relay_target(&mut enabled, &target_records, &event, now, wall_ms());
     assert_eq!(
         outcome,
         RelayTargetOutcome::Refused(RelayTargetRefusal::CarriageRefused),

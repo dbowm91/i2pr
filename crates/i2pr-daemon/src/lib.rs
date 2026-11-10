@@ -48,6 +48,8 @@ pub mod peer_pool;
 pub mod peer_pool_task;
 pub mod peer_reconcile;
 pub mod peer_test;
+pub mod relay_establishment;
+pub mod relay_establishment_task;
 pub mod relay_requester;
 pub mod relay_target;
 pub mod router_i2np;
@@ -4834,31 +4836,85 @@ fn register_ssu2_service(
                     // off, so an ordinary deployment constructs no role
                     // owner, answers no introduction and stages no hole
                     // punch.
-                    let mut target_rng = if ssu2_config.relay_target {
-                        rand_chacha::ChaCha8Rng::try_from_os_rng().ok()
+                    //
+                    // Plan 533: the role needs no randomness of its own.
+                    // The accept's establishment token is issued by the
+                    // runtime's responder table, and the runtime owns both
+                    // the table and the entropy.
+                    let mut target = if ssu2_config.relay_target {
+                        // The router's **own** identity key signs the
+                        // accept, so the target owner and the
+                        // requester owner share one signer and one
+                        // implementation of the router's signing.
+                        let signer = std::sync::Arc::new(
+                            crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
+                                &bundle,
+                            )),
+                        );
+                        Some(crate::relay_target::RelayTargetOwner::new(
+                            true,
+                            owner.handle().service().clone(),
+                            signer,
+                        ))
                     } else {
                         None
                     };
-                    let mut target = match (ssu2_config.relay_target, target_rng.as_mut()) {
-                        (true, Some(rng)) => {
-                            // The router's **own** identity key signs the
-                            // accept, so the target owner and the
-                            // requester owner share one signer and one
-                            // implementation of the router's signing.
-                            let signer = std::sync::Arc::new(
-                                crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
-                                    &bundle,
-                                )),
+                    // Plan 533: the relay establishment's handoff.
+                    //
+                    // The requester owner publishes one establishment per
+                    // completed exchange and the establishment's task takes
+                    // them. The handoff is bounded, and a handoff that is
+                    // full returns the material to the owner rather than
+                    // dropping it.
+                    //
+                    // The task is spawned only when the requester role is
+                    // on: the establishment is part of that role, and a
+                    // router that has not asked to reach a peer through a
+                    // relay dials nothing.
+                    let (establishment_tx, establishment_rx) =
+                        tokio::sync::mpsc::channel(crate::relay_establishment::RELAY_ESTABLISHMENT_QUEUE);
+                    if ssu2_config.relay_requester {
+                        let establishment_counters: Arc<
+                            crate::relay_establishment::RelayEstablishmentCounterCell,
+                        > = Arc::new(std::sync::Mutex::new(
+                            crate::relay_establishment::RelayEstablishmentCounters::default(),
+                        ));
+                        inspection.publish_relay_establishment_counters(Arc::clone(
+                            &establishment_counters,
+                        ));
+                        let establishment_task = crate::relay_establishment_task::RelayEstablishmentTask {
+                            owner: crate::relay_establishment::RelayEstablishmentOwner::new(true),
+                            service: owner.handle().service().clone(),
+                            bootstrap: live_bootstrap.clone(),
+                            qualification_profile: ssu2_config.qualification_profile,
+                            dial_timeout: crate::service_product::ServiceProductOptions::default()
+                                .dial_timeout,
+                            receiver: establishment_rx,
+                            counters_cell: establishment_counters,
+                        };
+                        if children
+                            .spawn(move |cancellation| async move {
+                                crate::relay_establishment_task::run_relay_establishment_task(
+                                    establishment_task,
+                                    cancellation,
+                                )
+                                .await
+                            })
+                            .is_err()
+                        {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "the relay establishment task could not be spawned",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_runtime::ServiceFailure::new(
+                                    i2pr_runtime::ServiceFailureCategory::Internal,
+                                    detail,
+                                ),
                             );
-                            let _ = rng;
-                            Some(crate::relay_target::RelayTargetOwner::new(
-                                true,
-                                owner.handle().service().clone(),
-                                signer,
-                            ))
                         }
-                        _ => None,
-                    };
+                    }
                     if !owner
                         .handle()
                         .delivery()
@@ -5613,9 +5669,32 @@ fn register_ssu2_service(
                                             drained = drained.drained,
                                             handled = drained.handled,
                                             refused = drained.refused,
+                                            deferred = drained.deferred,
                                             firewalled = drained.firewalled,
                                             "SSU2 requester relay handoff drained"
                                         );
+                                    }
+                                    // Plan 533: the completed exchange's
+                                    // establishment is handed to the task
+                                    // that performs it. The handoff is
+                                    // bounded, and a full handoff returns
+                                    // the material to the owner under a
+                                    // counted reason -- it is never
+                                    // dropped silently.
+                                    if let Some((nonce, establishment)) =
+                                        requester.take_establishment()
+                                        && let Err(error) =
+                                            establishment_tx.try_send(establishment)
+                                    {
+                                        let returned = match error {
+                                            tokio::sync::mpsc::error::TrySendError::Full(
+                                                item,
+                                            ) => item,
+                                            tokio::sync::mpsc::error::TrySendError::Closed(
+                                                item,
+                                            ) => item,
+                                        };
+                                        requester.return_establishment(nonce, returned, now_ms);
                                     }
                                 }
                                 // Plan 532: the target (Charlie) role.
@@ -5630,7 +5709,6 @@ fn register_ssu2_service(
                                 if let Some(target) = target.as_mut()
                                     && let Some(bootstrap) = bootstrap.as_ref()
                                     && let Ok(guard) = bootstrap.lock()
-                                    && let Some(rng) = target_rng.as_mut()
                                 {
                                     let now_ms = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
@@ -5643,7 +5721,6 @@ fn register_ssu2_service(
                                         &mut owner,
                                         target,
                                         guard.store(),
-                                        rng,
                                         now_secs,
                                         now_ms,
                                     );
