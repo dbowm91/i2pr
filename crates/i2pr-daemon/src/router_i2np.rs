@@ -1533,6 +1533,10 @@ pub fn ssu2_runtime_config_from(
             scheduler_poll_max: config.scheduler_poll_max,
         },
         prefixes: i2pr_runtime::IpPrefixPolicy::default(),
+        // Plan 535: the observation lifetime is the transport's own, and the
+        // runtime reads it back from the tracker's policy. The daemon's
+        // configuration surface gains no key for it.
+        reachability: i2pr_runtime::Ssu2RuntimeReachability::default(),
         // Explicit-bind corroboration is inert for the private-LAN profile;
         // the runtime rejects non-loopback publication and this composition
         // never records reachability evidence for that profile.

@@ -406,6 +406,76 @@ impl Ssu2RuntimeDeadlines {
     }
 }
 
+/// The router's own reachability policy.
+///
+/// Plan 535: the transport's model holds every reachability signal as a
+/// **timed observation**, and the observation lifetime is the transport's own
+/// (`DEFAULT_OBSERVATION_TTL`). The runtime uses that value unless it is
+/// configured with another one, and the runtime then reads the lifetime back
+/// from the tracker's **own policy**, so the expiry rule keeps exactly one
+/// owner and the runtime cannot drift from it.
+///
+/// The parameter exists so the behaviour is provable: a router configured
+/// with a short lifetime must keep its own class counted **past** that
+/// lifetime, and the lane proves exactly that. The production default is the
+/// transport's own value, and the daemon's configuration surface is
+/// unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Ssu2RuntimeReachability {
+    /// How long a reachability observation stays counted.
+    pub observation_ttl: Duration,
+}
+
+impl Default for Ssu2RuntimeReachability {
+    fn default() -> Self {
+        Self {
+            observation_ttl: i2pr_transport::DEFAULT_OBSERVATION_TTL,
+        }
+    }
+}
+
+impl Ssu2RuntimeReachability {
+    /// Validates the configured observation lifetime.
+    ///
+    /// A zero lifetime would expire every observation immediately and a
+    /// lifetime beyond the runtime's own horizon would keep evidence for
+    /// ever, so both are refused.
+    pub fn validate(self) -> Result<(), Ssu2RuntimeConfigError> {
+        const FIELD: &str = "reachability_observation_ttl";
+        if self.observation_ttl.is_zero() {
+            return Err(Ssu2RuntimeConfigError::ZeroDeadline { field: FIELD });
+        }
+        if self.observation_ttl > MAX_SSU2_RUNTIME_DURATION {
+            return Err(Ssu2RuntimeConfigError::DeadlineTooLong { field: FIELD });
+        }
+        Ok(())
+    }
+}
+
+/// Plan 535: whether the router's own bound-address fact must be
+/// re-asserted now.
+///
+/// The rule is **pure**, so it can be proved rather than described: the
+/// re-assertion is due once the record has aged past **half** the
+/// observation lifetime. Half is chosen so the re-assertion always happens
+/// while the previous record is still live, and so that a missed
+/// maintenance pass cannot lapse the class.
+///
+/// The rule **fails closed**: a fact that was never asserted is due, and a
+/// zero lifetime is due on every pass, because a class that is re-asserted
+/// too often is harmless and a class that lapses is not.
+pub fn explicit_bind_refresh_due(
+    recorded_at: Option<Duration>,
+    now: Duration,
+    observation_ttl: Duration,
+) -> bool {
+    let Some(recorded_at) = recorded_at else {
+        return true;
+    };
+    let half = observation_ttl / 2;
+    now.saturating_sub(recorded_at) >= half
+}
+
 /// Complete validated SSU2 runtime policy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ssu2RuntimeConfig {
@@ -415,6 +485,12 @@ pub struct Ssu2RuntimeConfig {
     pub deadlines: Ssu2RuntimeDeadlines,
     /// Subnet accounting policy.
     pub prefixes: IpPrefixPolicy,
+    /// The router's own reachability policy (Plan 535).
+    ///
+    /// The observation lifetime is the transport's own by default; the
+    /// runtime reads it back from the tracker's policy rather than
+    /// restating it.
+    pub reachability: Ssu2RuntimeReachability,
     /// Permits explicit-bind corroboration in the reachability tracker.
     ///
     /// When false (default) the tracker ignores `LocalConfiguredBind`
@@ -480,6 +556,7 @@ impl Ssu2RuntimeConfig {
     pub fn validate(self) -> Result<Self, Ssu2RuntimeConfigError> {
         self.limits.validate()?;
         self.deadlines.validate()?;
+        self.reachability.validate()?;
         IpPrefixPolicy::new(self.prefixes.ipv4_prefix, self.prefixes.ipv6_prefix)
             .map_err(|_| Ssu2RuntimeConfigError::InvalidPrefix)?;
         Ok(self)
@@ -1195,6 +1272,9 @@ pub struct Ssu2Snapshot {
     pub relay_blocks_refused: u64,
     /// Conservative router-level reachability state.
     pub reachability: ReachabilityState,
+    /// Plan 535: the router's own bound-address fact re-asserted, so the
+    /// class does not lapse while the router runs. Counts only.
+    pub explicit_bind_refreshes: u64,
     /// Current pending outbound handshakes.
     pub pending_outbound: usize,
     /// Current pending inbound handshakes.
@@ -1521,6 +1601,20 @@ struct ServiceState {
     /// unless the controlled driver started one through
     /// `start_controlled_peer_test`.
     controlled_test: Option<ControlledPeerTestContext>,
+    /// Plan 535: the families this router's own bound sockets can be
+    /// named for, and the time the standing fact was last asserted.
+    ///
+    /// The explicit bind is a **standing** fact -- the socket is bound and
+    /// stays bound -- but the reachability model holds it as a timed
+    /// observation, so the runtime re-asserts it. These two fields are what
+    /// let the re-assertion name the families and measure the record's age
+    /// without a second lock and a second clock: the families are captured
+    /// at bind time, because the runtime binds once and does not rebind.
+    explicit_bind_families: BTreeSet<AddressFamily>,
+    /// Plan 535: when the standing explicit-bind fact was last asserted.
+    ///
+    /// `None` means it was never asserted, so the re-assertion is due.
+    explicit_bind_recorded_at: Option<Duration>,
     /// Plan 524: the peers this router asked for a relay tag, and has not
     /// yet seen the answer for.
     ///
@@ -1640,6 +1734,9 @@ struct ServiceCounters {
     /// The measured local round-trip time of the most recent confirmed peer
     /// test, in milliseconds; zero when none has been confirmed.
     last_confirmed_peer_test_ms: AtomicU64,
+    /// Plan 535: the router's own bound-address fact re-asserted, so the
+    /// class does not lapse while the router runs. Counts only.
+    explicit_bind_refreshes: AtomicU64,
     relay_tag_requests: AtomicU64,
     relay_tags_issued: AtomicU64,
     relay_tag_refused_disabled: AtomicU64,
@@ -1999,16 +2096,17 @@ impl Ssu2RuntimeService {
             constants::HANDSHAKE_REPLAY_RETENTION_SECONDS,
         )
         .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
-        let reachability_policy = if config.explicit_bind_corroboration {
-            i2pr_transport::ReachabilityPolicy::new(
-                2,
-                i2pr_transport::MIN_CONTRADICTION_FLOOR,
-                i2pr_transport::DEFAULT_OBSERVATION_TTL,
-                true,
-            )
-        } else {
-            i2pr_transport::ReachabilityPolicy::default()
-        };
+        // Plan 535: the lifetime is the runtime's own policy parameter, and
+        // the tracker publishes it back to the runtime, so the expiry rule
+        // keeps exactly one owner. The corroboration floor, the
+        // contradiction floor and the explicit-configuration gate are the
+        // transport's own and are unchanged.
+        let reachability_policy = i2pr_transport::ReachabilityPolicy::new(
+            2,
+            i2pr_transport::MIN_CONTRADICTION_FLOOR,
+            config.reachability.observation_ttl,
+            config.explicit_bind_corroboration,
+        );
         let reachability = ReachabilityTracker::new(reachability_policy)
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         let peer_relay = Ssu2PeerRelayService::new(Ssu2PeerRelayConfig {
@@ -2063,6 +2161,8 @@ impl Ssu2RuntimeService {
                     fault_transmits: 0,
                     fault_held: None,
                     reachability,
+                    explicit_bind_families: BTreeSet::new(),
+                    explicit_bind_recorded_at: None,
                     controlled_test: None,
                     outstanding_tag_requests: BTreeSet::new(),
                 }),
@@ -2443,6 +2543,7 @@ impl Ssu2RuntimeService {
             auth_failures: counters.auth_failures.load(Ordering::Relaxed),
             protocol_drops: counters.protocol_drops.load(Ordering::Relaxed),
             token_rejections: counters.token_rejections.load(Ordering::Relaxed),
+            explicit_bind_refreshes: counters.explicit_bind_refreshes.load(Ordering::Relaxed),
             replay_rejections: counters.replay_rejections.load(Ordering::Relaxed),
             handshake_timeouts: counters.handshake_timeouts.load(Ordering::Relaxed),
             sessions_established: counters.sessions_established.load(Ordering::Relaxed),
@@ -3667,11 +3768,18 @@ impl Ssu2RuntimeService {
         }
         if let Ok(mut state) = self.shared.state.lock() {
             let now = self.service_now();
-            for family in families {
-                state
-                    .reachability
-                    .record(ReachabilitySignal::LocalConfiguredBind { family }, now);
+            for family in &families {
+                state.reachability.record(
+                    ReachabilitySignal::LocalConfiguredBind { family: *family },
+                    now,
+                );
             }
+            // Plan 535: the standing fact's families and its age are the
+            // re-assertion's inputs, and they are captured here, at the
+            // bind, so the re-assertion needs neither the sockets lock nor
+            // a second clock.
+            state.explicit_bind_families = families.iter().copied().collect();
+            state.explicit_bind_recorded_at = Some(now);
         }
     }
 
@@ -8144,11 +8252,52 @@ impl Ssu2RuntimeService {
         state.pending_outbound.insert(key, entry);
     }
 
+    /// Plan 535: re-asserts the router's own bound-address fact.
+    ///
+    /// The explicit bind is a **standing** fact -- the socket is bound and
+    /// stays bound -- but the reachability model holds it as a timed
+    /// observation, so the class lapses unless the router re-asserts it. The
+    /// two peer-sourced classes are refreshed by their peers; this one is
+    /// the router's own, so the router refreshes it.
+    ///
+    /// The lifetime comes from the **tracker's own policy**, so the expiry
+    /// rule keeps exactly one owner, and the re-assertion rides the
+    /// runtime's **existing** maintenance pass, so no new timer exists.
+    /// The families come from the shared state, captured at bind time, so
+    /// the sockets lock is never taken while the state lock is held.
+    fn refresh_explicit_bind_locked(&self, state: &mut ServiceState) {
+        if !self.shared.config.explicit_bind_corroboration {
+            return;
+        }
+        if state.explicit_bind_families.is_empty() {
+            return;
+        }
+        let now = self.service_now();
+        let ttl = state.reachability.policy().observation_ttl();
+        if !explicit_bind_refresh_due(state.explicit_bind_recorded_at, now, ttl) {
+            return;
+        }
+        let families: Vec<AddressFamily> = state.explicit_bind_families.iter().copied().collect();
+        for family in families {
+            state
+                .reachability
+                .record(ReachabilitySignal::LocalConfiguredBind { family }, now);
+            self.shared
+                .counters
+                .explicit_bind_refreshes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        state.explicit_bind_recorded_at = Some(now);
+    }
+
     /// Drives all time-based work under one lock: handshake resends
     /// and backstops, cached-token fallback, session polls, Confirmed
     /// resends, and token-table expiry. Returns handoff messages for
     /// delivery after the lock releases.
     fn drive_timeouts_locked(&self, state: &mut ServiceState) -> Ssu2InboundBatch {
+        // Plan 535: the standing explicit-bind fact is re-asserted on the
+        // runtime's existing maintenance pass.
+        self.refresh_explicit_bind_locked(state);
         let batch = Ssu2InboundBatch::default();
         let now_ms = monotonic_ms(&self.shared.started_at);
         let now_secs = wall_secs();
