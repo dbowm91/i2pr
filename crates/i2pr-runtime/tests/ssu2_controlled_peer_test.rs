@@ -252,6 +252,17 @@ async fn controlled_exchange_promotes_loopback_to_reachable_with_direct_material
             assert_eq!(observed, fixture.addr);
             assert_eq!(evidence_peers, 2);
         }
+        // Plan 528: the verdict enum grew the verdicts the tree used to
+        // throw away. The controlled exchange still confirms here, so
+        // any other variant is a failure of this fixture -- and it is
+        // reported without printing an address.
+        ControlledPeerTestOutcome::ObservedElsewhere { .. }
+        | ControlledPeerTestOutcome::ObservationsDisagree { .. }
+        | ControlledPeerTestOutcome::FirewalledLikely { .. }
+        | ControlledPeerTestOutcome::Inconclusive { .. }
+        | ControlledPeerTestOutcome::Rejected { .. } => {
+            panic!("the controlled exchange did not confirm")
+        }
     }
     assert_eq!(
         fixture.service.snapshot().reachability,

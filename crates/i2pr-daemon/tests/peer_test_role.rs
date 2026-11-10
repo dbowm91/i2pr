@@ -516,7 +516,12 @@ fn the_transport_s_tracker_reaches_reachable_with_the_confirmed_peer_test() {
     // confirmed peer test supplies the **missing** class: with the configured
     // bind and the peer's external-address observation already present, the
     // tracker needs the peer test to reach `Reachable`.
-    let policy = ReachabilityPolicy::new(2, DEFAULT_OBSERVATION_TTL, true);
+    let policy = ReachabilityPolicy::new(
+        2,
+        i2pr_transport::MIN_CONTRADICTION_FLOOR,
+        DEFAULT_OBSERVATION_TTL,
+        true,
+    );
     let mut tracker = ReachabilityTracker::new(policy).expect("tracker");
     let start = Duration::from_secs(1_000);
     tracker.record(

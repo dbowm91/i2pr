@@ -223,10 +223,17 @@ async fn an_observation_that_differs_from_the_bound_address_contradicts() {
 
     service.note_observed_external_address(other);
 
+    // Plan 528: the disagreement between the observed address and the
+    // router's own bound socket is this router's own **firewalled
+    // verdict** -- the peer sees the router at an address it does not own,
+    // so the router is behind a NAT. The verdict is the same fact the
+    // specification's peer-test result table reports as FIREWALLED, so
+    // both routes reach the same state. The router is never left
+    // reachable, and it is never left claiming to be directly reachable.
     assert_eq!(
         service.snapshot().reachability,
-        i2pr_transport::ReachabilityState::ObservedUnconfirmed,
-        "a contradicting observation never leaves the router reachable"
+        i2pr_transport::ReachabilityState::Firewalled,
+        "a contradicting observation is the router's own firewalled verdict"
     );
 }
 

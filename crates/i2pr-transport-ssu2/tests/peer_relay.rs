@@ -789,6 +789,13 @@ fn reachability_consumes_typed_outcomes_conservatively() {
     // first two are distinct — path + peer-observed + peer-test = 3.
     assert_eq!(tracker.state(), ReachabilityState::Reachable);
     // Contradictory mismatch downgrades without last-write-wins flip.
+    //
+    // Plan 528: the contradiction floor is separate from the
+    // corroboration floor, so one distinct contradicting class takes the
+    // router off `ObservedUnconfirmed`. A bare disagreement is not a
+    // firewalled verdict, so the router is `Unreachable` -- it never
+    // claims to be reachable, and it does not claim to be firewalled
+    // either.
     tracker.record(
         ReachabilitySignal::PeerTestResult {
             family: AddressFamily::Ipv4,
@@ -796,8 +803,8 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now + std::time::Duration::from_secs(3),
     );
-    assert_eq!(tracker.state(), ReachabilityState::ObservedUnconfirmed);
-    // Inconclusive never flips arbitrarily (stays unconfirmed here).
+    assert_eq!(tracker.state(), ReachabilityState::Unreachable);
+    // Inconclusive never flips arbitrarily (the contradiction stands).
     tracker.record(
         ReachabilitySignal::PeerTestResult {
             family: AddressFamily::Ipv4,
@@ -805,8 +812,13 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now + std::time::Duration::from_secs(4),
     );
-    assert_eq!(tracker.state(), ReachabilityState::ObservedUnconfirmed);
-    // Relay success signals firewalled, never direct.
+    assert_eq!(tracker.state(), ReachabilityState::Unreachable);
+    // A firewalled verdict signals firewalled, never direct.
+    //
+    // Plan 528: the specification's peer-test result table concludes
+    // FIREWALLED from one peer test, and so does the pinned reference, so
+    // the verdict alone is enough; the relay-success indication is a
+    // second, independent route to the same state.
     let mut firewalled = ReachabilityTracker::new(ReachabilityPolicy::default()).expect("policy");
     firewalled.record(
         ReachabilitySignal::PeerTestResult {
@@ -815,13 +827,15 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now,
     );
-    firewalled.record(
+    assert_eq!(firewalled.state(), ReachabilityState::Firewalled);
+    let mut relayed = ReachabilityTracker::new(ReachabilityPolicy::default()).expect("policy");
+    relayed.record(
         ReachabilitySignal::RelayFirewalledSignal {
             family: AddressFamily::Ipv4,
         },
         now + std::time::Duration::from_secs(1),
     );
-    assert_eq!(firewalled.state(), ReachabilityState::Firewalled);
+    assert_eq!(relayed.state(), ReachabilityState::Firewalled);
     // Full Alice trajectory outcome maps to the Confirmed kind.
     let mut alice_table = PeerTestTable::new();
     let observed = v4(10, 40000);

@@ -396,7 +396,14 @@ fn check_the_runtime_compares_with_the_bound_address(runtime: &str) -> Option<St
             "the comparison must be made against the router's own bound address".to_owned(),
         );
     }
-    if !comparison.contains("AddressMismatch") {
+    // Plan 528 extended this rule. A disagreement must contradict the
+    // router's reachability, and the contradiction is now the router's
+    // own **firewalled verdict**, so either contradicting kind satisfies
+    // it. The rule is extended, not weakened: a comparison that
+    // corroborates instead of contradicting is still reported.
+    let contradicts =
+        comparison.contains("AddressMismatch") || comparison.contains("FirewalledLikely");
+    if !contradicts {
         return Some("a disagreement must contradict the router's reachability".to_owned());
     }
     if !comparison.contains("AuthenticatedPeerObservedExternalAddress") {
@@ -696,8 +703,10 @@ fn the_guard_reports_a_comparison_that_is_not_against_the_bound_address() {
 #[test]
 fn the_guard_reports_a_comparison_that_never_contradicts() {
     let mut violating = source_of(RUNTIME_MODULE);
+    // Plan 528: the comparison records the firewalled verdict, so the
+    // mutation turns that verdict into a confirmation.
     violating = violating.replace(
-        "outcome: PeerTestOutcomeKind::AddressMismatch",
+        "outcome: PeerTestOutcomeKind::FirewalledLikely",
         "outcome: PeerTestOutcomeKind::Confirmed",
     );
     assert_ne!(
