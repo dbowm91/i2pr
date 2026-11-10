@@ -18,6 +18,14 @@
 //!    family from the session the exchange travelled on;
 //! 5. the controlled recorder is **untouched**: the controlled floodfill
 //!    path keeps its own mirror;
+//!
+//!    (Plan 527 extended rule 5. The controlled mirror may now file its
+//!    typed outcome through the runtime's single typed-outcome recorder
+//!    instead of constructing the signal itself, so the rule accepts that
+//!    delegation **only** when the recorder it delegates to is present and
+//!    files the outcome as a peer-test result under its own kind. The rule
+//!    is extended, not weakened: a mirror that records nothing, and a
+//!    recorder that files no peer-test result, are both still reported.)
 //! 6. the daemon records **no** reachability signal of its own outside the
 //!    confirmed-match path;
 //! 7. the responder derives the answer from the **authenticated** delivery
@@ -433,11 +441,45 @@ fn check_the_daemon_asserts_no_family(product: &str, runtime: &str) -> Option<St
 ///
 /// The controlled floodfill path keeps its own mirror, and the production
 /// recorder is a separate method beside it.
+///
+/// **Plan 527 extended this rule, and did not weaken it.** The router's
+/// reachability now has exactly **one** owner -- the runtime -- so the
+/// controlled mirror files its typed outcome through the runtime's single
+/// typed-outcome recorder instead of constructing the signal itself. The
+/// rule therefore accepts the delegation **only** when the recorder it
+/// delegates to is present and files the outcome as a `PeerTestResult`
+/// under its own kind, contradicting kinds included. A controlled mirror
+/// that records nothing, or that delegates to a recorder which files no
+/// peer-test result, is still reported.
 fn check_the_controlled_recorder_is_untouched(runtime: &str) -> Option<String> {
     let code = code_view(runtime);
     let controlled = item_body(&code, "fn map_controlled_outcome_locked(")?;
-    if !controlled.contains("ReachabilitySignal::PeerTestResult") {
+    let records_inline = controlled.contains("ReachabilitySignal::PeerTestResult");
+    let delegates = controlled.contains("record_peer_test_outcome_locked(");
+    if !records_inline && !delegates {
         return Some("the controlled mirror must keep recording its own outcome".to_owned());
+    }
+    if delegates {
+        // Fail closed: an absent recorder is a report, not a pass.
+        let Some(shared) = item_body(&code, "fn record_peer_test_outcome_locked(") else {
+            return Some("the shared typed-outcome recorder is absent".to_owned());
+        };
+        if !shared.contains("ReachabilitySignal::PeerTestResult") {
+            return Some(
+                "the shared typed-outcome recorder must file the controlled outcome as a peer-test result"
+                    .to_owned(),
+            );
+        }
+        for kind in [
+            "PeerTestOutcomeKind::AddressMismatch",
+            "PeerTestOutcomeKind::FirewalledLikely",
+        ] {
+            if !shared.contains(kind) {
+                return Some(format!(
+                    "the shared typed-outcome recorder must file {kind} under its own kind"
+                ));
+            }
+        }
     }
     let recorder = item_body(&code, "pub fn note_confirmed_peer_test(")?;
     if recorder.contains("map_controlled_outcome_locked(") {
@@ -821,6 +863,43 @@ pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest
     assert!(
         check_the_controlled_recorder_is_untouched(mutated).is_some(),
         "a recorder that delegates to the controlled mirror must be reported"
+    );
+}
+
+#[test]
+fn the_guard_reports_a_controlled_mirror_that_records_nothing() {
+    let mutated = r#"
+fn map_controlled_outcome_locked(&self, state: &mut ServiceState, outcome: Option<PeerTestOutcome>) {
+    let _ = (state, outcome);
+}
+pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest) -> Result<(), Ssu2PeerTestEvidenceError> {
+    let _ = (link_id, proof);
+    Ok(())
+}
+"#;
+    assert!(
+        check_the_controlled_recorder_is_untouched(mutated).is_some(),
+        "a controlled mirror that records no outcome must be reported"
+    );
+}
+
+#[test]
+fn the_guard_reports_a_controlled_mirror_that_delegates_to_a_recorder_that_files_nothing() {
+    let mutated = r#"
+fn map_controlled_outcome_locked(&self, state: &mut ServiceState, outcome: Option<PeerTestOutcome>) {
+    self.record_peer_test_outcome_locked(state, outcome);
+}
+fn record_peer_test_outcome_locked(&self, state: &mut ServiceState, outcome: PeerTestOutcome) {
+    let _ = (state, outcome);
+}
+pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest) -> Result<(), Ssu2PeerTestEvidenceError> {
+    let _ = (link_id, proof);
+    Ok(())
+}
+"#;
+    assert!(
+        check_the_controlled_recorder_is_untouched(mutated).is_some(),
+        "a controlled mirror that delegates to a recorder that files no peer-test result must be reported"
     );
 }
 

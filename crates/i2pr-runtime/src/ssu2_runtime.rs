@@ -80,8 +80,9 @@ use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo, SigningPublicKe
 use i2pr_transport::{
     AddressFamily, CandidateDecision, ConfirmedPeerTest, DeliveryRequest, Direction,
     EncodedI2npMessage, FamilyNetworkCondition, LinkCandidate, LinkId, PeerId, PeerTestOutcomeKind,
-    PendingHandshake, ReachabilitySignal, ReachabilityState, ReachabilityTracker, ResourceClass,
-    TerminationCategory, TransportKind, TransportLimits, TransportManager, effective_reachability,
+    PendingHandshake, ReachabilitySignal, ReachabilitySnapshot, ReachabilityState,
+    ReachabilityTracker, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
+    TransportManager, effective_reachability,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
@@ -1879,6 +1880,33 @@ impl Ssu2RuntimeService {
         self.shared.started_at.elapsed()
     }
 
+    /// Returns the router's reachability evidence.
+    ///
+    /// Plan 527: the router's reachability has **one** owner -- this
+    /// runtime -- and the product reads it. The evidence carries the
+    /// state, the number of **distinct** corroborating classes behind it,
+    /// the family's expiry and the family itself, so a reader can see how
+    /// much the claim rests on and not only what the claim is.
+    ///
+    /// A contradicting observation supports nothing, so it never raises the
+    /// corroboration count: one observation is one fact.
+    pub fn reachability_evidence(&self) -> ReachabilitySnapshot {
+        let now = self.service_now();
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return ReachabilitySnapshot {
+                    state: ReachabilityState::Unknown,
+                    corroboration: 0,
+                    expires_at: now,
+                    family: AddressFamily::Unknown,
+                };
+            }
+        };
+        state.reachability.poll_expiry(now);
+        state.reachability.snapshot(now)
+    }
+
     /// Returns the transport manager for teardown assertions in tests.
     pub fn manager(&self) -> &TransportManager {
         &self.shared.manager
@@ -2740,6 +2768,91 @@ impl Ssu2RuntimeService {
         }
     }
 
+    /// Records one observed external address against the router's own
+    /// bound address.
+    ///
+    /// Plan 527: the observation is an authenticated peer's report of the
+    /// address at which it sees this router. An agreement corroborates the
+    /// router's reachability; a disagreement **contradicts** it, because
+    /// the router is behind a NAT and must not publish a reachability
+    /// claim it cannot honour.
+    ///
+    /// The comparison is made against the **bound** socket for the
+    /// observation's family, and a family with no bound socket is
+    /// refused: the router never claims a reachability it cannot compare,
+    /// and it never invents a contradiction it cannot support.
+    ///
+    /// A contradiction never also corroborates -- one observation is one
+    /// fact, and it is filed under one family.
+    ///
+    /// Returns the state the observation left behind.
+    pub fn note_observed_external_address(&self, observed: Ssu2Endpoint) -> ReachabilityState {
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => return ReachabilityState::Unknown,
+        };
+        self.note_observed_external_address_locked(&mut state, observed)
+    }
+
+    /// The locked half of [`Self::note_observed_external_address`].
+    fn note_observed_external_address_locked(
+        &self,
+        state: &mut ServiceState,
+        observed: Ssu2Endpoint,
+    ) -> ReachabilityState {
+        let family = match observed.ip() {
+            IpAddr::V4(_) => AddressFamily::Ipv4,
+            IpAddr::V6(_) => AddressFamily::Ipv6,
+        };
+        let now = self.service_now();
+        match self.bound_endpoint(family) {
+            Some(bound) if bound == observed => {
+                state.reachability.record(
+                    ReachabilitySignal::AuthenticatedPeerObservedExternalAddress { family },
+                    now,
+                );
+            }
+            Some(_) => {
+                // The peer sees this router at a different address. The
+                // observation disagrees with the bound address, so it
+                // contradicts -- and a contradiction never also
+                // corroborates.
+                state.reachability.record(
+                    ReachabilitySignal::PeerTestResult {
+                        family,
+                        outcome: PeerTestOutcomeKind::AddressMismatch,
+                    },
+                    now,
+                );
+            }
+            None => {
+                // No bound socket for this family: the comparison is
+                // refused, so nothing is recorded.
+            }
+        }
+        state.reachability.state()
+    }
+
+    /// Returns the router's own bound address for a family.
+    ///
+    /// Plan 527: the comparison between an observed address and the
+    /// router's own address is made against the **bound** socket, not
+    /// against a configured value the socket may not honour. A family
+    /// with no bound socket yields `None`, and the caller refuses the
+    /// comparison rather than inventing an answer.
+    fn bound_endpoint(&self, family: AddressFamily) -> Option<Ssu2Endpoint> {
+        let sockets = self.shared.sockets.lock().ok()?;
+        let bound = match family {
+            AddressFamily::Ipv4 => sockets.v4,
+            AddressFamily::Ipv6 => sockets.v6,
+            AddressFamily::Unknown => None,
+        }?;
+        if bound.port() == 0 || bound.ip().is_unspecified() {
+            return None;
+        }
+        Ssu2Endpoint::from_socket_addr(bound).ok()
+    }
+
     /// Returns the capability string the router publishes for itself.
     ///
     /// Plan 526: this is the **same** value the published address carries,
@@ -3063,6 +3176,33 @@ impl Ssu2RuntimeService {
             .last_confirmed_peer_test_ms
             .store(proof.elapsed_ms(), Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Records the router's **own** firewalled indication.
+    ///
+    /// Plan 527: the relay-success indication is a contradicting signal,
+    /// and the router's reachability has exactly one owner -- this
+    /// runtime. The peer-relay service used to keep a second tracker for
+    /// it, and that tracker was read by nothing, so the indication never
+    /// reached the product.
+    ///
+    /// The **requester** side of the SSU2 relay protocol produces the
+    /// indication; the router implements the introducer side, so the
+    /// producer is a successor's subject. The recorder lives here so the
+    /// producer has exactly one place to write to.
+    ///
+    /// An unknown family records nothing: a signal is filed under one
+    /// family, and the runtime never guesses one.
+    pub fn note_relay_firewalled(&self, family: AddressFamily) {
+        if family == AddressFamily::Unknown {
+            return;
+        }
+        let now = self.service_now();
+        if let Ok(mut state) = self.shared.state.lock() {
+            state
+                .reachability
+                .record(ReachabilitySignal::RelayFirewalledSignal { family }, now);
+        }
     }
 
     /// Returns the measured local round-trip time of the most recent
@@ -3757,23 +3897,59 @@ impl Ssu2RuntimeService {
         let Some(outcome) = outcome else {
             return;
         };
-        if let PeerTestOutcome::DirectReachabilityConfirmed { family, .. } = outcome {
-            let now = self.service_now();
-            state.reachability.record(
-                ReachabilitySignal::PeerTestResult {
-                    family,
-                    outcome: PeerTestOutcomeKind::Confirmed,
-                },
-                now,
-            );
+        if let PeerTestOutcome::DirectReachabilityConfirmed { .. } = outcome {
             self.shared
                 .counters
                 .controlled_confirmed
                 .fetch_add(1, Ordering::Relaxed);
         }
+        // Plan 527: the outcome is recorded **whole**. Recording only the
+        // confirming kind is what kept the router's reachability from
+        // ever being contradicted.
+        self.record_peer_test_outcome_locked(state, outcome);
         if let Some(context) = state.controlled_test.as_mut() {
             context.outcome = Some(outcome);
         }
+    }
+
+    /// Records one typed peer-test outcome into the router's reachability.
+    ///
+    /// Plan 527: the outcome is recorded **whole**. A contradicting
+    /// outcome is evidence like any other, and dropping it is what made
+    /// the router publish a reachability claim it could not honour: the
+    /// only tracker that received contradicting signals was one the
+    /// product never read.
+    ///
+    /// The router's reachability has one owner -- this runtime -- and the
+    /// peer-relay service returns the outcome it computes rather than
+    /// keeping a second tracker of its own.
+    fn record_peer_test_outcome_locked(&self, state: &mut ServiceState, outcome: PeerTestOutcome) {
+        let signal = match outcome {
+            PeerTestOutcome::DirectReachabilityConfirmed { family, .. } => {
+                ReachabilitySignal::PeerTestResult {
+                    family,
+                    outcome: PeerTestOutcomeKind::Confirmed,
+                }
+            }
+            PeerTestOutcome::AddressMismatch { family, .. } => ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: PeerTestOutcomeKind::AddressMismatch,
+            },
+            PeerTestOutcome::FirewalledLikely { family } => ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: PeerTestOutcomeKind::FirewalledLikely,
+            },
+            PeerTestOutcome::Inconclusive { family } => ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: PeerTestOutcomeKind::Inconclusive,
+            },
+            PeerTestOutcome::Rejected { family } => ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: PeerTestOutcomeKind::Rejected,
+            },
+        };
+        let now = self.service_now();
+        state.reachability.record(signal, now);
     }
 
     /// Returns the currently installed local RouterInfo bytes, if readable.
@@ -6683,16 +6859,8 @@ impl Ssu2RuntimeService {
                         now_ms,
                     );
                 }
-                SessionEvent::AddressObserved => {
-                    let family = match source.ip() {
-                        IpAddr::V4(_) => i2pr_transport::AddressFamily::Ipv4,
-                        IpAddr::V6(_) => i2pr_transport::AddressFamily::Ipv6,
-                    };
-                    let now = self.service_now();
-                    state.reachability.record(
-                        ReachabilitySignal::AuthenticatedPeerObservedExternalAddress { family },
-                        now,
-                    );
+                SessionEvent::AddressObserved { observed } => {
+                    self.note_observed_external_address_locked(state, observed);
                 }
                 SessionEvent::PeerTest(block) => {
                     self.ingest_controlled_session_block(

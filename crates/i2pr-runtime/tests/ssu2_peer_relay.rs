@@ -927,13 +927,13 @@ async fn relay_product_path_over_real_udp_then_normal_handshake() {
     // isolation): unknown-nonce HolePunch for 5001 does not complete 5002.
     let mut hole5002 = hole.clone();
     assert!(parse_hole_punch(&mut hole5002, &alice_intro).is_ok());
-    // Relay success never proves direct reachability: Alice's tracker
-    // holds a firewalled-class signal, not Reachable.
-    alice_relay.note_relay_firewalled(AddressFamily::Ipv4);
-    assert_ne!(
-        alice_relay.reachability_state(),
-        i2pr_transport::ReachabilityState::Reachable
-    );
+    // Plan 527: relay success is the **requester's** firewalled fact, and
+    // the **runtime** records it. The peer-relay service no longer keeps a
+    // reachability tracker of its own: the tracker it kept held every
+    // contradicting signal the router could produce, and the product read
+    // a different one, so the router's reachability could never be
+    // contradicted. The runtime's recorder and the contradiction it
+    // produces are covered by Plan 527's own lane.
     // The product path transitions into the NORMAL handshake: live
     // Alice and Target services establish over real UDP and exchange
     // authenticated I2NP (Plan 158 machinery, no relay fake session).
@@ -1222,8 +1222,11 @@ async fn publication_integration_and_privacy_over_real_udp() {
     // direct snapshot; here prove the firewalled branch over real UDP:
     // relay success with validated introducers publishes introducer-only
     // material, never a fabricated direct address.
-    service.note_validated_path(AddressFamily::Ipv4);
-    service.note_relay_firewalled(AddressFamily::Ipv4);
+    //
+    // Plan 527: the peer-relay service keeps no reachability tracker, so
+    // the firewalled fact is the **runtime's** to record. The snapshot
+    // below is built from the transport's own request and never consulted
+    // a tracker, so nothing is lost here.
     service
         .insert_introducer(
             IntroducerRecord::new(

@@ -343,8 +343,17 @@ pub enum SessionEvent {
     /// contents (Plan 160 table input; signature/freshness/role checks
     /// happen there, never here).
     PeerTest(PeerTestBlock),
-    /// An Address block was observed (no publication effect here).
-    AddressObserved,
+    /// An authenticated peer reported the address at which it sees us.
+    ///
+    /// Plan 527: the Address block already carries a validated endpoint and
+    /// the session already decoded it, so the endpoint used to be discarded
+    /// here. Without it the router could never compare the observed address
+    /// with its own bound address, and could never discover that it is
+    /// behind a NAT.
+    AddressObserved {
+        /// The address at which the peer sees this router.
+        observed: crate::address::Ssu2Endpoint,
+    },
 }
 
 /// The disposition of one inbound datagram after the ordered receive
@@ -1924,8 +1933,10 @@ impl Ssu2Session {
                         .events
                         .push(SessionEvent::PeerTest(peer_test.clone()));
                 }
-                DecodedBlock::Address(_) => {
-                    outcome.events.push(SessionEvent::AddressObserved);
+                DecodedBlock::Address(block) => {
+                    outcome.events.push(SessionEvent::AddressObserved {
+                        observed: block.endpoint(),
+                    });
                 }
                 DecodedBlock::RelayTagRequest => {
                     outcome.events.push(SessionEvent::RelayTagRequest);
@@ -3010,7 +3021,10 @@ mod tests {
         let outcome = bob.receive_datagram(2_000_001, 1_700_000_000, &datagram);
         assert!(outcome.dropped.is_none());
         assert!(
-            outcome.events.contains(&SessionEvent::AddressObserved),
+            outcome
+                .events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::AddressObserved { .. })),
             "address report decodes to the observation event"
         );
         // Single-shot: the next transmit carries no second report.

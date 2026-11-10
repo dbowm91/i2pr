@@ -12,14 +12,18 @@
 //!
 //! The service owns the protocol tables ([`PeerTestTable`],
 //! [`RelayRequester`], [`RelayIntroducer`], [`RelayTarget`],
-//! [`IntroducerTable`]) plus the router-level [`ReachabilityTracker`],
-//! per-source rate limiters, and response-size budgets. Callers only
+//! [`IntroducerTable`]) plus per-source rate limiters and
+//! response-size budgets. Callers only
 //! invoke it after their session (in-session Msgs 1–4, relay blocks) or
 //! intro-key AEAD (out-of-session Msgs 5–7, HolePunch) authenticated
 //! each datagram; this service then enforces admission before crypto,
-//! drives the tables with explicit signer keys, and feeds only typed
-//! family-only outcomes to reachability. A decoded block never mutates
-//! RouterInfo/NetDB here.
+//! drives the tables with explicit signer keys, and returns the typed
+//! family-only outcomes it computes. Plan 527: the **runtime** records
+//! them. This service used to keep a reachability tracker of its own, and
+//! that tracker held every contradicting signal the router could produce
+//! and was read by nothing -- the product read a different tracker, one
+//! that only ever received confirming evidence. A decoded block never
+//! mutates RouterInfo/NetDB here.
 //!
 //! Socket ownership for this pass: deterministic tests own their
 //! loopback `UdpSocket`s and call this service after `recv_from`
@@ -32,9 +36,10 @@
 //!
 //! Introducer public service stays disabled by default
 //! ([`Ssu2PeerRelayConfig::introducer_enabled`] defaults to `false`);
-//! controlled tests opt in explicitly. Relay success feeds
-//! `RelayFirewalledSignal`-class evidence and never proves direct
-//! inbound reachability.
+//! controlled tests opt in explicitly. Relay success is the
+//! **requester's** firewalled fact and never proves direct inbound
+//! reachability; the runtime records it, because the runtime owns the
+//! router's reachability.
 //!
 //! Normative traceability:
 //! `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md` §§2–12. No
@@ -45,13 +50,9 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use i2pr_proto::SigningPublicKey;
-use i2pr_transport::{
-    AddressFamily, PeerTestOutcomeKind, ReachabilityPolicy, ReachabilitySignal, ReachabilityState,
-    ReachabilityTracker,
-};
+
 use i2pr_transport_ssu2::{
     IntroducerProvenance, IntroducerRecord, IntroducerTable, PeerTestBlock, PeerTestOutcome,
     PeerTestRole, PeerTestTable, RelayIntroducer, RelayRequester, RelayTarget, Ssu2Endpoint,
@@ -81,8 +82,8 @@ pub struct Ssu2PeerRelayConfig {
     pub introducer_enabled: bool,
 }
 
-/// Privacy-safe snapshot (counts + reachability only; no hashes,
-/// nonces, tags, endpoints, or signatures).
+/// Privacy-safe snapshot (counts only; no hashes, nonces, tags,
+/// endpoints, or signatures).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ssu2PeerRelaySnapshot {
     /// Live peer tests.
@@ -117,8 +118,6 @@ pub struct Ssu2PeerRelaySnapshot {
     pub freshness_rejections: u64,
     /// Entries expired by the central scheduler.
     pub expirations: u64,
-    /// Conservative router-level reachability state.
-    pub reachability: ReachabilityState,
 }
 
 /// One-second sliding rate window per source.
@@ -136,7 +135,12 @@ pub struct Ssu2PeerRelayService {
     introducer: Mutex<RelayIntroducer>,
     target: Mutex<RelayTarget>,
     introducers: Mutex<IntroducerTable>,
-    reachability: Mutex<ReachabilityTracker>,
+    /// Plan 527: this service no longer owns a reachability tracker. The
+    /// router's reachability has **one** owner -- the runtime -- and the
+    /// tracker that lived here was written and never read, so every
+    /// contradicting signal the router could produce was invisible to the
+    /// product. The service returns the typed facts it computes and the
+    /// runtime records them.
     signers: Mutex<HashMap<[u8; 32], SigningPublicKey>>,
     rates: Mutex<HashMap<IpAddr, RateWindow>>,
     counters: Mutex<SnapCounters>,
@@ -167,8 +171,6 @@ impl Ssu2PeerRelayService {
     /// reachable in production: the daemon's `ssu2.introducer_service`
     /// key (default off) is the only gate.
     pub fn new(config: Ssu2PeerRelayConfig) -> Result<Self, &'static str> {
-        let reachability =
-            ReachabilityTracker::new(ReachabilityPolicy::default()).map_err(|_| "policy")?;
         Ok(Self {
             config,
             peer_tests: Mutex::new(PeerTestTable::new()),
@@ -180,7 +182,6 @@ impl Ssu2PeerRelayService {
             }),
             target: Mutex::new(RelayTarget::new()),
             introducers: Mutex::new(IntroducerTable::new()),
-            reachability: Mutex::new(reachability),
             signers: Mutex::new(HashMap::new()),
             rates: Mutex::new(HashMap::new()),
             counters: Mutex::new(SnapCounters::default()),
@@ -268,8 +269,12 @@ impl Ssu2PeerRelayService {
             )
     }
 
-    /// Feeds one authenticated peer-test block to its test and mirrors
-    /// any typed outcome into reachability (family-only).
+    /// Feeds one authenticated peer-test block to its test and returns the
+    /// typed outcome (family-only).
+    ///
+    /// Plan 527: the caller records the outcome. The service no longer
+    /// keeps a reachability tracker, so a contradicting outcome cannot be
+    /// written into a tracker the product never reads.
     #[allow(clippy::too_many_arguments)]
     pub fn on_peer_test(
         &self,
@@ -384,7 +389,6 @@ impl Ssu2PeerRelayService {
                     now_secs,
                     now_ms,
                 )?;
-            self.mirror_peer_outcome(outcome);
             return Ok(outcome);
         }
         // Try each candidate key; the table enforces all other gates
@@ -418,7 +422,6 @@ impl Ssu2PeerRelayService {
                         .peer_tests
                         .lock()
                         .map_err(|_| PeerTestError::TooManyTests)? = trial;
-                    self.mirror_peer_outcome(outcome);
                     if outcome.is_some()
                         && let Ok(mut counters) = self.counters.lock()
                     {
@@ -463,52 +466,12 @@ impl Ssu2PeerRelayService {
         }
     }
 
-    fn mirror_peer_outcome(&self, outcome: Option<PeerTestOutcome>) {
-        let Some(outcome) = outcome else {
-            return;
-        };
-        let signal = match outcome {
-            PeerTestOutcome::DirectReachabilityConfirmed { family, .. } => {
-                ReachabilitySignal::PeerTestResult {
-                    family,
-                    outcome: PeerTestOutcomeKind::Confirmed,
-                }
-            }
-            PeerTestOutcome::AddressMismatch { family, .. } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::AddressMismatch,
-            },
-            PeerTestOutcome::FirewalledLikely { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::FirewalledLikely,
-            },
-            PeerTestOutcome::Inconclusive { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::Inconclusive,
-            },
-            PeerTestOutcome::Rejected { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::Rejected,
-            },
-        };
-        if let Ok(mut reachability) = self.reachability.lock() {
-            // Monotonic clock for the tracker: wall-clock seconds are
-            // not monotonic across test restarts, so key expiry off the
-            // tracker's own default TTL from now.
-            reachability.record(signal, Duration::from_secs(1));
-        }
-    }
-
-    /// Records an externally-decided firewalled indication (e.g. relay
-    /// success proves the requester needs introducers, never direct
-    /// reachability).
-    pub fn note_relay_firewalled(&self, family: AddressFamily) {
-        if let Ok(mut reachability) = self.reachability.lock() {
-            reachability.record(
-                ReachabilitySignal::RelayFirewalledSignal { family },
-                Duration::from_secs(1),
-            );
-        }
+    /// Counts one relay response.
+    ///
+    /// Plan 527: the count stays with the service -- only the tracker
+    /// moved. The router's reachability has one owner, and this service is
+    /// not it.
+    fn count_relay_response(&self) {
         if let Ok(mut counters) = self.counters.lock() {
             counters.relay_responses = counters.relay_responses.saturating_add(1);
         }
@@ -565,7 +528,12 @@ impl Ssu2PeerRelayService {
                 .map_err(|_| RelayError::TooManyRequests)?
                 .on_response(block, sender_hash, bob_hash, None, now_secs, now_ms)?;
             if state == i2pr_transport_ssu2::relay::RequesterState::Completed {
-                self.note_relay_firewalled(block_family_hint());
+                // Plan 527: a completed request is the **requester's**
+                // firewalled fact -- the requester needed a relay, so it
+                // is not directly reachable. The service keeps the count;
+                // the runtime owns the router's reachability and records
+                // the indication through its own recorder.
+                self.count_relay_response();
             }
             return Ok(state);
         }
@@ -629,9 +597,10 @@ impl Ssu2PeerRelayService {
                         .lock()
                         .map_err(|_| RelayError::TooManyRequests)? = trial;
                     if ready {
-                        // Relay success proves the requester is firewalled
-                        // (needs introducers), never directly reachable.
-                        self.note_relay_firewalled(AddressFamily::Ipv4);
+                        // Plan 527: a ready hole punch is the requester's
+                        // firewalled fact. The service keeps the count; the
+                        // runtime records the indication.
+                        self.count_relay_response();
                         if let Ok(mut counters) = self.counters.lock() {
                             counters.hole_punches = counters.hole_punches.saturating_add(1);
                         }
@@ -930,8 +899,8 @@ impl Ssu2PeerRelayService {
     }
 
     /// Marks one test inconclusive (third-peer refusal/timeout) without
-    /// falsely confirming or denying reachability. Mirrors the outcome
-    /// into reachability as the neutral kind.
+    /// falsely confirming or denying reachability, and returns the
+    /// neutral outcome for the caller to record.
     pub fn mark_peer_test_inconclusive(
         &self,
         nonce: u32,
@@ -942,7 +911,6 @@ impl Ssu2PeerRelayService {
             .lock()
             .map_err(|_| i2pr_transport_ssu2::PeerTestError::TooManyTests)?
             .mark_inconclusive(nonce, now_ms)?;
-        self.mirror_peer_outcome(Some(outcome));
         Ok(outcome)
     }
 
@@ -957,7 +925,6 @@ impl Ssu2PeerRelayService {
             .lock()
             .map_err(|_| i2pr_transport_ssu2::PeerTestError::TooManyTests)?
             .mark_firewalled(nonce, now_ms)?;
-        self.mirror_peer_outcome(Some(outcome));
         Ok(outcome)
     }
 
@@ -1039,26 +1006,7 @@ impl Ssu2PeerRelayService {
         }
     }
 
-    /// Returns the conservative reachability state.
-    pub fn reachability_state(&self) -> ReachabilityState {
-        self.reachability
-            .lock()
-            .map(|tracker| tracker.state())
-            .unwrap_or(ReachabilityState::Unknown)
-    }
-
-    /// Records one externally validated path signal (for tests that own
-    /// sessions elsewhere).
-    pub fn note_validated_path(&self, family: AddressFamily) {
-        if let Ok(mut reachability) = self.reachability.lock() {
-            reachability.record(
-                ReachabilitySignal::ValidatedPath { family },
-                Duration::from_secs(1),
-            );
-        }
-    }
-
-    /// Returns a privacy-safe snapshot (counts + reachability only).
+    /// Returns a privacy-safe snapshot (counts only).
     pub fn snapshot(&self) -> Ssu2PeerRelaySnapshot {
         let counters = self
             .counters
@@ -1099,7 +1047,6 @@ impl Ssu2PeerRelayService {
             signature_rejections: counters.signature_rejections,
             freshness_rejections: counters.freshness_rejections,
             expirations: counters.expirations,
-            reachability: self.reachability_state(),
         }
     }
 
@@ -1137,10 +1084,6 @@ impl Ssu2PeerRelayService {
         )?;
         self.insert_introducer(record, now_secs)
     }
-}
-
-fn block_family_hint() -> AddressFamily {
-    AddressFamily::Ipv4
 }
 
 /// Why one peer-test/relay datagram was rate-limited (privacy-safe).
@@ -1195,7 +1138,6 @@ mod tests {
         );
         let snapshot = service.snapshot();
         assert_eq!(snapshot.live_relay_tags, 0);
-        assert_eq!(snapshot.reachability, ReachabilityState::Unknown);
     }
 
     #[test]
