@@ -423,7 +423,25 @@ configuration surface are **not** edited.
 Every guard rule needs an inverted probe that fires it, and every rule fails
 closed when the item it names is absent.
 
-### 11.3 The amended assertion
+### 11.3 The lane and the guard divide the work
+
+The lane proves the corroboration **structure** — how many **distinct**
+classes the router holds and what state that earns — and the guard is the
+authority for the **class** itself: that the recorder writes
+`LocalConfiguredBind`, and that the transport's class table maps it to class
+0, distinct from the observation's class and the peer test's.
+
+The split is forced by the tree's own surface. The runtime's public reachability
+view carries a corroboration **count**, never a class list, because the
+transport's reachability model is the transport's own and this plan does not
+move it. So the lane cannot name the class, and the guard must.
+
+Together the two are complete: the lane proves that the ordinary bind
+contributes a class **distinct from** the observation's and the peer test's —
+the triple reaches three distinct classes — and the guard proves that this
+class is class 0.
+
+### 11.4 The amended assertion
 
 `crates/i2pr-runtime/tests/ssu2_controlled_peer_test.rs` — the floor label
 moves from `Unknown` to `ObservedUnconfirmed` and the comment names the
@@ -472,11 +490,14 @@ The plan passes when:
    byte-identical, and the daemon records no reachability signal of its own;
 7. the lane and the guard are green, every guard rule has an inverted probe
    that fires it, and every rule fails closed on an absent item;
-8. the routine floor is green on the closing tree;
-9. `specs/support.toml` records the surface as `experimental` and
-   `advertised = false`, the advertised count stays **zero**,
-   `router.version` stays `0.9.62`, `Cargo.toml` and `Cargo.lock` stay
-   byte-identical, and no boundary script is weakened.
+8. the negative control is **non-vacuous**: removing the gate, removing the
+   call, and substituting the recorded class each break the guard, and the
+   behaviour mutations each break the lane too;
+9. the routine floor is green on the closing tree;
+10. `specs/support.toml` records the surface as `experimental` and
+    `advertised = false`, the advertised count stays **zero**,
+    `router.version` stays `0.9.62`, `Cargo.toml` and `Cargo.lock` stay
+    byte-identical, and no boundary script is weakened.
 
 **Stop conditions.** The plan stops and is re-scoped, rather than widened,
 if:
