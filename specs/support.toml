@@ -2714,3 +2714,22 @@ evidence = [
     "plans/implementation/network-participation/529-the-router-must-learn-the-address-at-which-a-peer-sees-it.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.explicit-bind-corroboration"
+protocol = "ssu2"
+structure = "the-router-must-record-its-own-bound-address"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 530 makes the router record its own bound address as reachability evidence. The transport's reachability model says `Reachable` needs **three distinct supporting classes**, and it names four that can corroborate: the router's own configured bind (class 0), an authenticated peer reporting the address at which it sees this router (class 1, delivered by Plan 529), a validated path (class 2), and a confirmed peer test (class 3, delivered by Plan 521). Two of them had ordinary producers. The third -- the router's own configured bind -- had exactly **one** recorder, `note_explicit_bind_for_controlled_qualification`, and the tree's only caller was the controlled floodfill activation (`crates/i2pr-daemon/src/floodfill.rs:648`), so the class was **counted** but never **earned** in ordinary operation. A router running in ordinary operation could hold at most two classes, its state stalled at `CandidateReachable`, and it published the firewalled form for ever: the direct form's gate (`crates/i2pr-transport-ssu2/src/publication.rs:244`) needs `ReachabilityState::Reachable`, which needs more than the corroboration floor of two. The opt-in and the counting were already in place -- the daemon maps `explicit_bind_corroboration: true` (`crates/i2pr-daemon/src/router_i2np.rs:1539`) and the runtime turns it into the transport's `configured_direct_allowed` (`crates/i2pr-runtime/src/ssu2_runtime.rs:1830`) -- so **only the ordinary recorder was missing**. Plan 530 adds a **private** bind-time recorder in the runtime, which owns the tracker and the sockets. It records `LocalConfiguredBind` for every family the runtime can **name** its own bound endpoint for, reusing the predicate `bound_endpoint` already applies, so a wildcard or a port-zero bind names no address and records nothing. It is gated on the **existing** `explicit_bind_corroboration` opt-in, so no configuration key is added and no default moves. The signal carries only the **family**, never a literal endpoint. The transport's reachability **model** -- its signal kinds, its corroboration classes, the corroboration floor of two and the contradiction floor of one -- is untouched, and `Reachable` still needs three distinct classes. The controlled activation's narrow recorder and its call site stay byte-identical, so Plan 283's foundation is not rewritten, and the daemon records no reachability signal of its own. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The runtime's publication path stays loopback-only, so the direct form the plan makes reachable remains a **controlled-loopback** claim; the peer test stays behind the default-off `ssu2.peer_test` opt-in; the **production** SSU2 peer-test driver stays unbuilt, the **requester** side stays unwired, and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration.rs",
+    "crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/530-the-router-must-record-its-own-bound-address.md",
+]
+advertised = false

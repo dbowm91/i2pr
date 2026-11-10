@@ -571,3 +571,120 @@ existing assertion the recorder moves.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+
+### 17.2 — 2026-11-10, implementation findings
+
+The implementation settled six questions the registration left open. §3 is
+**not** rewritten; the corrections live here and in the closure record.
+
+**The daemon's part of the change is only the opt-in it already had.** §1.2
+and §6 named the gate but not the daemon's role in it. The answer: nothing
+new. Plan 520's guard rule 10 — that the daemon must not record a
+reachability signal of its own — forbids a daemon-side recorder, so the
+recorder had to be private to the runtime. The daemon's existing mapping
+(`explicit_bind_corroboration: true`) is the whole of its contribution.
+
+**"Bind time" means after the sockets are installed.** `start()` installs the
+bound sockets into `ServiceSockets`, spawns the loop tasks, and only then
+returns; the recorder runs after the `SocketsBound` qualification event, so
+the fact is never recorded for a bind that did not happen and never recorded
+for a service that failed to start. The guard pins the ordering.
+
+**A family is recorded only when the runtime can name its own bound endpoint
+for it.** §1.1 said "every family it actually bound". The implementation
+reuses `bound_endpoint`'s predicate — a wildcard or a port-zero bind names no
+address — so the router never claims an address it cannot name. The
+registration's wording is therefore broader than the implementation, and the
+narrower reading is the correct one.
+
+**The lane is class-agnostic by design, and the guard is the class
+authority.** The runtime's public reachability view carries a corroboration
+**count**, never a class list, because the transport's reachability model is
+the transport's own and this plan does not move it. The negative control
+showed the consequence exactly: a recorder that wrote the path-validation
+class instead of the explicit-bind class breaks the **guard** and leaves the
+**lane** green, because the corroboration count is over distinct classes and
+the path-validation class is distinct from the observation's and the peer
+test's. A recorder that wrote the **peer-test** class breaks both, because
+the triple then collapses to two distinct classes. §11.3 records the
+division, and §14.8 requires the negative control to be reported honestly.
+
+**The one existing assertion that moved.** §3.8 named it; the implementation
+confirmed it exactly. The controlled peer-test integration test's floor label
+moves from `Unknown` to `ObservedUnconfirmed`, and the **no material** claim
+below it is untouched. No other assertion in the tree moved: every other
+reachability assertion runs on `Ssu2RuntimeConfig::default()` — whose
+`explicit_bind_corroboration` is `false` — on a service that bound nothing,
+or on a synthetic `Ssu2PublicationMaterial`.
+
+**The controlled recorder is now redundant for the class, and is kept.** §7's
+D6 kept it because its fail-closed refusal belongs to the controlled
+activation. The implementation confirmed the redundancy: in the controlled
+profile the ordinary recorder has already written the class before the
+controlled activation runs. Removing the narrow recorder would have
+rewritten Plan 283's foundation and taken the controlled path's refusal with
+it, so it stays and the redundancy is recorded rather than tidied away.
+
+### 17.3 — 2026-11-10, citation drift
+
+The implementation inserted the recorder into
+`crates/i2pr-runtime/src/ssu2_runtime.rs`, and amended one assertion in
+`crates/i2pr-runtime/tests/ssu2_controlled_peer_test.rs`, so the line numbers
+this plan cites into those two files moved. §3 is **not** rewritten; this
+table is the additive pointer, and it is the whole of the drift.
+
+| The plan's citation | after the implementation | the line it names |
+| --- | --- | --- |
+| `ssu2_runtime.rs:430` | `:430` | `pub explicit_bind_corroboration: bool,` |
+| `ssu2_runtime.rs:1830` | `:1830` | `let reachability_policy = if config.explicit_bind_corroboration {` |
+| `ssu2_runtime.rs:2110` | `:2110` | `if let Some(observer) = &self.shared.qualification_observer {` |
+| `ssu2_runtime.rs:2879` | `:2884` | `pub fn note_observed_external_address(` |
+| `ssu2_runtime.rs:2943` | `:2948` | `fn bound_endpoint(&self, family: AddressFamily)` |
+| `ssu2_runtime.rs:3077` | `:3082` | the unspecified / port-zero refusal |
+| `ssu2_runtime.rs:3106` | `:3111` | the loopback refusal |
+| `ssu2_runtime.rs:3140` | `:3145` | the direct-form expectation |
+| `ssu2_runtime.rs:3175` | `:3228` | `pub fn note_explicit_bind_for_controlled_qualification(` |
+| `ssu2_runtime.rs:3210` | `:3263` | the controlled class-0 record |
+| `ssu2_controlled_peer_test.rs:220` | `:226` | the amended floor assertion's `assert_eq!(` |
+| `ssu2_controlled_peer_test.rs:222` | `:228` | the amended assertion's expected state |
+
+No citation into any other file moved. The transport's, the daemon's and the
+closure records' citations are unchanged.
+
+### 17.4 — 2026-11-10, the corrections to the closed plans' claims
+
+No closed record is rewritten. The corrections live here, in this plan's
+closure record and in the registry row.
+
+1. **Plan 520's** finding M1
+   (`plans/closure/network-participation/520-status.md:576`-`:598`) said the
+   ordinary published address "cannot be earned in production" and named the
+   three recorders it could see: the controlled explicit bind, the
+   `AddressObserved` session event, and the controlled peer test's confirmed
+   outcome. That list was accurate for the tree as it stood, and its
+   *"The mechanism is proved; the production route to it does not exist"*
+   (`plans/closure/network-participation/520-status.md:594`) was true of all
+   three. Plan 521 delivered the production peer test, Plan 529 delivered the
+   production observation, and **Plan 530 delivers the third**: the explicit
+   bind now has an ordinary producer, so the mechanism has a production route
+   to it.
+2. **Plan 526's** finding 3
+   (`plans/closure/network-participation/526-status.md:450`-`:452`) named the
+   triple — *"the explicit bind, the peer's observed external address and the
+   confirmed peer test"* — and said that no lane in the tree earns them.
+   Plan 521 and Plan 529 delivered two of the three classes and Plan 530
+   delivers the third, so the triple is now earnable in ordinary operation.
+3. **Plan 283's** closure record
+   (`plans/closure/floodfill/283-status.md:33`) kept class 0 as *"Plan 283
+   foundation"* through the narrow controlled recorder. That foundation is
+   **unchanged** — the narrow recorder and its call site are byte-identical —
+   and Plan 530 adds an **ordinary** recorder beside it rather than replacing
+   it. Plan 283's record needs **no** correction.
+4. **Plan 282's** closure record
+   (`plans/closure/floodfill/282-status.md:31`) said the explicit bind plus
+   the peer observation yields exactly `CandidateReachable`. That still holds,
+   and Plan 530's lane proves it in **ordinary** operation rather than only
+   in the transport's own test. Plan 282's record needs **no** correction.
+5. The **controlled peer-test integration test's** floor label moved. That is
+   a test, not a closed record: §11.4 names it, and the test's **no
+   material** claim is untouched.

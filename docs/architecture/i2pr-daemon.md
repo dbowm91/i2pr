@@ -3848,6 +3848,53 @@ The controlled activation refuses anything that is not a confirmation, so
 the floodfill's reachability proof is still minted only from a real
 confirmation.
 
+## The router records its own bound address (Plan 530)
+
+The router's reachability has one owner — the runtime — and one reader
+(Plan 527). The transport's model says `Reachable` needs **three distinct
+supporting classes**, and the router's own configured bind is one of them.
+
+**Before this plan the class was counted but never earned.** The daemon
+already opted in: `ssu2_runtime_config_from` maps
+`explicit_bind_corroboration: true`, and the runtime turns that into the
+transport's `configured_direct_allowed`, so the transport counted class 0
+whenever it was recorded. But the only recorder was
+`note_explicit_bind_for_controlled_qualification`, and the daemon's only
+caller of it was the **controlled** floodfill activation
+(`crates/i2pr-daemon/src/floodfill.rs:648`). So a router in ordinary
+operation held at most two classes, its state stalled at
+`CandidateReachable`, and it published the firewalled form for ever.
+
+**The recorder now runs in ordinary operation**, inside the runtime, at bind
+time. The daemon's part of the change is that it already had the opt-in: no
+configuration key is added and no default moves.
+
+**The daemon records no reachability signal of its own.** The recorder is
+private to the runtime, and Plan 520's guard rule 10 — that the daemon must
+not record a reachability signal of its own — stays green. The guard
+`crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration_boundary.rs` pins
+that structurally.
+
+**The controlled activation is untouched.** Its narrow recorder and its call
+site are byte-identical, and the fail-closed refusal it owns — no bound
+socket, or a bind the runtime cannot name, is `BindFailed` — is not
+weakened. The narrow recorder becomes redundant for the class and is kept
+anyway, because Plan 283's foundation and the controlled path's refusal are
+worth more than the tidiness of a single recorder.
+
+**The triple is now earnable.** The bind, the peer's observed external
+address (Plan 529) and a confirmed peer test (Plan 521) are three distinct
+classes, so the direct form becomes publishable. The lane proves it with two
+real daemon-owned routers over real loopback UDP: a real handshake and a real
+confirmed peer test, and the **direct** publication material at the end.
+
+**What is not claimed.** The runtime's publication path stays
+**loopback-only**, so the direct form the plan makes reachable is a
+**controlled-loopback** claim. The peer test stays behind the default-off
+`ssu2.peer_test` opt-in. The **production** SSU2 peer-test driver and the
+**requester** side stay out of scope, and the **stock-peer** half needs Plan
+493's authorized two-host topology.
+
 ## Cross-references
 
 ### Deep dives

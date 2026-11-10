@@ -1127,6 +1127,69 @@ test failed" from "the test succeeded and the router is behind NAT". The
 daemon's controlled activation still refuses anything that is not a
 confirmation.
 
+## The explicit-bind recorder (Plan 530)
+
+The runtime's own tracker is the only place the router's reachability lives
+(Plan 527), and the transport's model says `Reachable` needs **three
+distinct supporting classes**. Two of them arrive from the network — an
+authenticated peer's observation of this router's address (Plan 529) and a
+confirmed peer test (Plan 521). The third is the router's **own** bound
+socket, and before this plan it had exactly one recorder, which only the
+controlled floodfill activation called:
+
+```rust
+fn note_bound_endpoints_as_explicit_bind(&self) {
+    if !self.shared.config.explicit_bind_corroboration {
+        return;
+    }
+    let mut families = Vec::new();
+    for family in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
+        if self.bound_endpoint(family).is_some() {
+            families.push(family);
+        }
+    }
+    // ... and the class is recorded, under the state lock.
+}
+```
+
+**The recorder is private, and it is here.** The runtime owns both the
+tracker and the sockets, so the runtime is the one place that knows a bind
+succeeded. A daemon-side recorder would have put a reachability signal in the
+daemon, which Plan 520's guard rule 10 forbids.
+
+**The record is made at bind time**, because that is when the fact becomes
+true. `start()` calls the recorder after the sockets are installed and the
+loop tasks are running, next to the existing `SocketsBound` qualification
+event.
+
+**A family is recorded only when the runtime can name its own bound endpoint
+for it.** The predicate is `bound_endpoint`'s, the one the publication path
+already uses, so a wildcard or a port-zero bind names no address and records
+nothing. The router never claims an address it cannot name.
+
+**The gate is the existing opt-in.** `explicit_bind_corroboration` is the
+runtime's own configuration flag, and it is the same flag the runtime turns
+into the transport's `configured_direct_allowed`. A runtime that has not
+asked for explicit-bind corroboration records nothing, and the transport
+never sees a configured origin it did not earn.
+
+**The narrow controlled recorder stays.** `note_explicit_bind_for_controlled_qualification`
+is unchanged and is still called only by the controlled activation. It is
+*narrower* — it refuses a non-loopback bind — and it owns a fail-closed
+refusal the controlled path depends on. After this plan it is redundant for
+the class, and that is the price of leaving Plan 283's foundation and the
+controlled path's refusal untouched.
+
+**What this unlocks.** The bind, the peer's observed external address and a
+confirmed peer test are now three distinct classes that a router can earn in
+ordinary operation, so the corroboration floor is above them and the direct
+form becomes publishable.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and
+no socket; the record is made synchronously inside `start()`. It adds no
+configuration key and moves no default. The transport's reachability model is
+untouched.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

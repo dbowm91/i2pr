@@ -2596,6 +2596,12 @@ advertised**. The advertised count stays **zero**: Plan 529 makes the router
 learn the address at which a peer sees it, and the surface is internal and
 non-advertised.
 
+**Plan 530 adds one surface** — `daemon.explicit-bind-corroboration` — so the
+inventory holds **123 surfaces, 118 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 530 makes the router
+record its own bound address as reachability evidence, and the surface is
+internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3883,3 +3889,61 @@ peer that issued it; and a tag for a peer the router did not ask yields no
 record. The guard
 `crates/i2pr-daemon/tests/ssu2_introducer_request_boundary.rs` (15 rules,
 15 inverted probes) pins the production surface structurally.
+
+## The router must record its own bound address (Plan 530)
+
+The transport's reachability model says `Reachable` needs **three distinct
+supporting classes**. The tree had **two** ordinary producers — Plan 529's
+handshake observation (class 1) and Plan 521's peer test (class 3) — and one
+that had none.
+
+**The class was counted but never earned.** The router's own configured bind
+(class 0) was written by exactly one recorder,
+`note_explicit_bind_for_controlled_qualification`, whose only caller was the
+controlled floodfill activation
+(`crates/i2pr-daemon/src/floodfill.rs:648`). The opt-in and the counting were
+already in place: the daemon mapped `explicit_bind_corroboration: true`
+(`crates/i2pr-daemon/src/router_i2np.rs:1539`) and the runtime turned it into
+the transport's `configured_direct_allowed`
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:1830`), so the transport skipped the
+class only when the policy forbade it. **Only the ordinary recorder was
+missing.**
+
+**The consequence.** A router in ordinary operation held at most two classes,
+its state stalled at `CandidateReachable`, and it published the firewalled
+form for ever. The direct form's gate
+(`crates/i2pr-transport-ssu2/src/publication.rs:244`) needs
+`ReachabilityState::Reachable`, and `Reachable` needs *more* than the
+corroboration floor of two
+(`crates/i2pr-transport/src/reachability.rs:66`).
+
+**What the tree now does.** The runtime records the class at **bind time**,
+because that is when the fact becomes true. The recorder is **private** and
+lives in the runtime, which owns the tracker and the sockets; it is gated on
+the **existing** opt-in; it records a family only when the runtime can
+**name** its own bound endpoint for it, reusing the predicate `bound_endpoint`
+already applies, so a wildcard or port-zero bind names no address and records
+nothing; and the signal carries only the **family**, never a literal endpoint.
+
+**What is unchanged.** The transport's reachability **model** — its signal
+kinds, its corroboration classes, the corroboration floor of two and the
+contradiction floor of one — is untouched, and `Reachable` still needs three
+distinct classes. No configuration key is added and no default moves. The
+controlled activation's narrow recorder and its call site are byte-identical,
+so Plan 283's foundation is not rewritten, and the daemon records no
+reachability signal of its own.
+
+**The triple is now earnable.** The bind, the peer's observed external
+address and a confirmed peer test are three distinct classes, so the
+corroboration floor is above them and the direct form becomes publishable.
+The lane proves it over a real session between two real routers on loopback.
+
+**What is not claimed.** The runtime's publication path stays **loopback-only**
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:3111`), so the direct form the plan
+makes reachable is a **controlled-loopback** claim. The peer test stays behind
+the default-off `ssu2.peer_test` opt-in, so the third class is earned only by
+a router whose operator asked for it. The class expires with the observation
+TTL and the plan adds no timer, so a router that binds once and never observes
+a peer loses its evidence. The **production** SSU2 peer-test driver stays
+unbuilt, the **requester** side stays unwired, and the **stock-peer** half
+needs Plan 493's authorized two-host topology.

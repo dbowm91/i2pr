@@ -1776,3 +1776,34 @@ bound socket without an address rewrite — the relay is the tree's stand-in
 for a NAT. The **stock-peer** half of this surface remains blocked
 externally on Plan 493's authorized two-host topology, and the **production**
 SSU2 peer-test driver stays unbuilt.
+
+## 29. The router records its own bound address (Plan 530)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G30.1 | the recorder lives in the **runtime**, and `start()` calls it **after** the sockets are bound | `crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration_boundary.rs`, `the_recorder_lives_in_the_runtime` |
+| G30.2 | the recorder is **gated** on the existing `explicit_bind_corroboration` opt-in, and the transport's own gate still skips the class | the same guard file, `the_recorder_is_gated` |
+| G30.3 | the transport's reachability **model** — its signal kinds, its corroboration classes and both floors — is untouched | the same guard file, `the_reachability_model_is_untouched` |
+| G30.4 | the configuration surface gains **no** key, and the daemon's existing mapping is unchanged | the same guard file, `no_new_key_and_the_existing_mapping` |
+| G30.5 | the controlled activation's narrow recorder and its call site are unchanged | the same guard file, `the_controlled_path_is_unchanged` |
+| G30.6 | the daemon records no reachability signal of its own | the same guard file, `the_daemon_records_no_reachability_signal` |
+| G30.7 | the recorder adds no task, no timer, no listener and no socket | the same guard file, `the_recorder_adds_no_infrastructure` |
+| G30.8 | the **ordinary** bind records one corroborating class, and the state is below the floor | `crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration.rs`, `the_ordinary_bind_records_the_explicit_bind_class` |
+| G30.9 | the recorder is **silent** without the opt-in: no class, and the state stays `Unknown` | the same lane file, `the_recorder_is_silent_without_the_opt_in` |
+| G30.10 | a **wildcard** bind names no address and records nothing | the same lane file, `a_wildcard_bind_names_no_address_and_records_nothing` |
+| G30.11 | the bind and the peer's observed external address yield **exactly** the corroboration floor | the same lane file, `the_bind_and_the_peer_observation_yield_exactly_the_floor` |
+| G30.12 | the bind, the observation and a **confirmed** peer test reach `Reachable`, and the direct publication material is produced | the same lane file, `the_bind_the_observation_and_the_peer_test_reach_reachable` |
+| G30.13 | the **corroboration floor** is unchanged | the same lane file, `the_corroboration_floor_is_unchanged` |
+| G30.14 | the transport's reachability **model** is untouched: three distinct classes, and only the third reaches `Reachable` | the same lane file, `the_transports_reachability_model_is_untouched` |
+
+Every gate above is **local**, and none of them injects the state the tracker
+reads. The lane drives two **real** daemon-owned SSU2 routers over real
+loopback UDP: a real handshake supplies the observation and a real confirmed
+peer test supplies the third class, so the triple is earned rather than
+asserted. The lane proves the corroboration **structure** — how many distinct
+classes the router holds and what state that earns — and the guard is the
+authority for the **class** itself, because the runtime's public reachability
+view carries a count and never a class list: the transport's model is the
+transport's own. The **stock-peer** half of this surface remains blocked
+externally on Plan 493's authorized two-host topology, and the **production**
+SSU2 peer-test driver stays unbuilt.
