@@ -1583,3 +1583,85 @@ entry is left untouched for the dial it was issued for.
 handshake: the same `Initiator`, the same responder, the same transcript and
 the same authentication. No relay-specific session is created and the
 responder's verification is never bypassed.
+
+## The re-assertion of the standing fact (Plan 535)
+
+The runtime's tracker holds the router's reachability (Plan 527), and the
+transport's model needs **three distinct supporting classes** before it will
+say `Reachable`. Two arrive from the network — an authenticated peer's
+observation of this router's address (Plan 529) and a confirmed peer test
+(Plan 521). The third is the router's **own** bound socket, and Plan 530 gave
+it a recorder.
+
+The recorder was the whole of Plan 530's fix, and it left a defect the plan
+itself recorded: the class **lapsed** with the observation TTL. The
+transport's model holds every signal as a timed observation, and the explicit
+bind is a standing fact — the socket is bound and stays bound. Two of
+the three classes are refreshed by their peers; this one was refreshed by
+nobody. A router that had earned the class at start-up lost it by sitting
+still.
+
+**The rule is public and pure.**
+
+```rust
+pub fn explicit_bind_refresh_due(
+    recorded_at: Option<Duration>,
+    now: Duration,
+    observation_ttl: Duration,
+) -> bool {
+    let Some(recorded_at) = recorded_at else {
+        return true;
+    };
+    let half = observation_ttl / 2;
+    now.saturating_sub(recorded_at) >= half
+}
+```
+
+Half the lifetime, not the whole of it. The re-assertion must happen while
+the previous record is still live, because the expiry poll runs on the
+**read** paths: a rule of "re-assert once expired" would let a read between
+the expiry and the next maintenance pass find the class already gone. The
+rule fails closed — a fact that was never asserted is due, and a zero
+lifetime is due on every pass, because a class that is re-asserted too often
+is harmless and a class that lapses is not.
+
+**The lifetime has one owner.** The runtime does not keep its own number for
+the observation lifetime. It reads the tracker's own policy back:
+
+```rust
+let ttl = state.reachability.policy().observation_ttl();
+```
+
+so the expiry rule has exactly one owner and the runtime cannot drift from
+the model that enforces it. `Ssu2RuntimeReachability` exists so the *policy*
+can be configured — and so the behaviour is *provable*: the lane
+configures a short lifetime and waits past it. Its production default is the
+transport's own `DEFAULT_OBSERVATION_TTL`, and the daemon's mapping names
+that default rather than restating it.
+
+**The re-assertion rides the existing maintenance.** It is one step of
+`drive_timeouts_locked`, the pass the socket loop already runs on every wake.
+No timer, no task, no listener and no socket is added.
+
+**The standing fact is captured at the bind.** The recorder stores the
+families the router's own sockets can be named for, and the time the fact was
+last asserted, in the shared state. The runtime binds once and does not
+rebind, so the families never change and the re-assertion needs neither the
+sockets lock nor a second clock — the runtime's lock order (sockets
+— state) is never inverted.
+
+**The re-assertion touches only this router.** It records the router's own
+`LocalConfiguredBind` class and nothing else: no peer profile is written, no
+peer is credited with a corroborating class, and no reachability signal is
+recorded about anything but this router's own socket.
+
+**The count is a count.** Every re-assertion increments
+`explicit_bind_refreshes`, published in the snapshot as a plain `u64`. The
+counter carries counts only.
+
+**What the runtime does not do.** It changes no transport file: the signal
+vocabulary, the corroboration classes, both floors, the observation lifetime
+and the tracker's public surface are untouched, and the tracker gains no
+method — the re-assertion *records* through the method the transport
+already offers. It adds no configuration key: the daemon's configuration
+surface is unchanged and its mapping names the runtime's own default policy.

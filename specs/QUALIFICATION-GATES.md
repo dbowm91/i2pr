@@ -1988,3 +1988,47 @@ The delivery stays confined to the **controlled loopback profile**, the
 the `caps=f` advertisement stay with their owners, and the **stock-peer** half
 of this surface remains blocked externally on Plan 493's authorized two-host
 topology.
+
+## 34. The router keeps its own bound address counted (Plan 535)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G35.1 | the rule is **pure**, and its truth table is exactly the stated one: the re-assertion is due once the record has aged past **half** the observation lifetime, and never after | `crates/i2pr-daemon/tests/ssu2_explicit_bind_refresh.rs`, `the_rule_re_asserts_strictly_before_the_record_can_lapse` |
+| G35.2 | the re-assertion is due **strictly before** the record can lapse, over a fine grid of lifetimes, and the rule **fails closed** on a fact that was never asserted and on a zero lifetime | the same lane file, the same row |
+| G35.3 | a router whose observation lifetime is short **keeps** its own class counted **past** that lifetime, and the transport's own expiry still lapses an observation that is not refreshed | the same lane file, `a_router_keeps_its_own_class_counted_past_the_observation_lifetime` |
+| G35.4 | every re-assertion is **counted**, and the counter carries counts only | the same lane file, `the_re_assertions_are_counted_and_the_counter_carries_counts_only` |
+| G35.5 | a runtime **without** the opt-in re-asserts **nothing** and records nothing | the same lane file, `a_runtime_without_the_opt_in_re_asserts_nothing` |
+| G35.6 | the transport's reachability **model** is **untouched** — its vocabulary, its corroboration classes, both floors, its observation lifetime and its expiry semantics | the same lane file, `the_transports_reachability_model_is_untouched` |
+| G35.7 | the re-assertion is gated on the **same** opt-in the recorder is, and the recorder captures the standing fact the re-assertion re-asserts | `crates/i2pr-daemon/tests/ssu2_explicit_bind_refresh_boundary.rs`, `the_re_assertion_is_gated_on_the_same_opt_in` |
+| G35.8 | the observation lifetime is read from the tracker's **own policy** and is never restated in the runtime | the same guard file, `the_lifetime_comes_from_the_trackers_policy` |
+| G35.9 | the re-assertion rides the runtime's **existing** maintenance pass and adds **no** timer | the same guard file, `the_re_assertion_rides_the_existing_maintenance` |
+| G35.10 | the rule re-asserts **strictly before** the record can lapse | the same guard file, `the_rule_re_asserts_before_the_lapse` |
+| G35.11 | the re-assertion touches the router's **own** tracker: it writes no peer profile, claims no peer, and records no reachability signal but its own | the same guard file, `the_re_assertion_touches_only_the_routers_own_tracker` |
+| G35.12 | the transport's model is **untouched**, and the tracker gains **no** method | the same guard file, `the_transports_model_is_untouched` |
+| G35.13 | **no** configuration key is added, in the daemon's surface or in the daemon's mapping | the same guard file, `no_configuration_key_is_added` |
+| G35.14 | every re-assertion is **counted**, and the counter carries counts only | the same guard file, `every_re_assertion_is_counted` |
+| G35.15 | Plan 530's guard stays **in force**, not merely present | the same guard file, `the_predecessors_guard_stays_in_force` |
+| G35.16 | every guard rule has an inverted probe that fires it, and a probe that removes the item it names, so every rule **fails closed** | the same guard file, the `the_guard_reports_*` and the `the_guard_fails_closed_on_*` rows |
+
+Every gate above is **local**. The lane drives a **real** runtime over **real**
+loopback UDP, with the runtime's own clock read from Tokio's `Instant` and a
+paused test clock, so the wait is virtual, deterministic and instant. The
+transport's own expiry is the **control** for the end-to-end row: it still
+lapses an observation it is not told to refresh, so a class that is still
+counted after the lifetime has elapsed can only be counted because the router
+re-asserted it.
+
+The guard is the authority for the **shape**: that the re-assertion is gated
+on the same opt-in the recorder is, that the recorder captures the standing
+fact, that the lifetime is read from the tracker's own policy and never
+restated, that the re-assertion rides the existing maintenance and adds no
+timer, that the rule re-asserts strictly before the record can lapse, that
+the re-assertion touches only the router's own tracker, that the transport's
+model and the tracker's public surface are untouched, that no configuration
+key is added, and that every re-assertion is counted.
+
+The delivery stays confined to the **controlled loopback profile**, the
+**production** SSU2 peer-test driver stays unbuilt, the `B` advertisement and
+the `caps=f` advertisement stay with their owners, and the **stock-peer** half
+of this surface remains blocked externally on Plan 493's authorized two-host
+topology.

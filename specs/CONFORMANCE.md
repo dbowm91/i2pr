@@ -2625,6 +2625,12 @@ advertised count stays **zero**: Plan 534 makes the router build a tunnel toward
 the peer it reached through a relay, and the surface is internal and
 non-advertised.
 
+**Plan 535 adds one surface** — `daemon.explicit-bind-refresh` — so the
+inventory holds **128 surfaces, 123 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 535 keeps the router's
+own bound address counted as reachability evidence, and the surface is internal
+and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4274,3 +4280,61 @@ only RFC1918 IPv4 — which is Plan 431's bound. The **production** SSU2
 peer-test driver stays unbuilt; the `B` advertisement and the `caps=f`
 advertisement stay with their owners; and the **stock-peer** half needs Plan
 493's authorized two-host topology.
+
+## The router keeps its own bound address counted (Plan 535)
+
+Plan 530 made the router record its **own** bound sockets as the
+explicit-bind corroboration class — the third of the three distinct classes
+the transport's model requires before it will say `Reachable`. The class is a
+**standing** fact: the socket is bound and stays bound. But the transport's
+model holds every signal as a *timed observation*, so the class **lapsed**
+when the observation lifetime passed, and nothing re-asserted it.
+
+The two peer-sourced classes are refreshed by their peers: an authenticated
+peer's observation of this router's address (Plan 529) and a confirmed peer
+test (Plan 521). The explicit bind is refreshed by **nobody**. So after one
+observation lifetime the router's corroboration count could never exceed two
+again, and `Reachable` was unreachable for ever — a router that had earned
+the class at start-up lost it by sitting still.
+
+**The rule is pure and public.** `explicit_bind_refresh_due` answers one
+question: is the router's own bound-address fact due for re-assertion? It is
+due once the record has aged past **half** the observation lifetime. Half is
+chosen so the re-assertion always happens **while the previous record is
+still live** — a rule of "re-assert once expired" would be wrong, because
+the expiry poll runs on the *read* paths. The rule **fails closed**: a fact
+that was never asserted is due, and a zero lifetime is due on every pass,
+because a class that is re-asserted too often is harmless and a class that
+lapses is not.
+
+**The lifetime has one owner.** The runtime reads the observation lifetime
+back from the tracker's own policy
+(`state.reachability.policy().observation_ttl()`) rather than restating it,
+so the expiry rule cannot drift from the model that enforces it. The
+runtime's own policy parameter exists so the behaviour is *provable*: a
+router configured with a short lifetime must keep its own class counted
+**past** that lifetime, and the lane proves exactly that. The production
+default is the transport's own `DEFAULT_OBSERVATION_TTL`.
+
+**The re-assertion rides the existing maintenance.** It is one step of the
+runtime's existing `drive_timeouts_locked` pass, so the plan adds **no**
+timer, no task, no listener and no socket.
+
+**The re-assertion is a fact about this router, and only this router.** It
+writes no peer profile, claims no corroborating class for any peer, and
+records no reachability signal about anything but this router's own socket.
+The families the router's own sockets can be named for are captured at bind
+time, because the runtime binds once and does not rebind — so the
+re-assertion needs neither the sockets lock nor a second clock.
+
+**What is not claimed.** **No configuration key is added**: the daemon's
+configuration surface is unchanged and the daemon's mapping names the
+runtime's own default policy. The transport's reachability **model** is
+**untouched** — its vocabulary, its corroboration classes, both floors,
+its observation lifetime and its tracker's public surface — and the tracker
+gains no method. Every re-assertion is **counted** under
+`explicit_bind_refreshes`, which carries counts only. Nothing is advertised:
+`router.version` stays `0.9.62` and the inventory's advertised count stays
+**zero**. The delivery is confined to the **controlled loopback profile** —
+Plan 431's bound — the **production** SSU2 peer-test driver stays unbuilt, and the
+**stock-peer** half needs Plan 493's authorized two-host topology.

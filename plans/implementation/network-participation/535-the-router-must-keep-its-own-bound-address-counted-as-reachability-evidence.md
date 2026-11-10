@@ -230,8 +230,10 @@ lapses, only the two peer-sourced classes remain, so the router is
 
 ### 6.3 `crates/i2pr-daemon/src/router_i2np.rs`
 
-**No change.** The daemon's mapping into the runtime keeps the runtime's
-default.
+The daemon's mapping into the runtime names the runtime's **default**
+reachability policy, so the production lifetime is the transport's own. The
+mapping names every runtime field explicitly, so this is one line that names
+the default; the daemon's configuration surface gains **no key** for it.
 
 ## 7. Design decisions
 
@@ -490,3 +492,18 @@ runtime's existing maintenance.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, implementation and evidence
+
+The plan is implemented, the lane and the guard are green, and the eleven
+negative controls each fire the rule they were written for. No closed closure
+record is rewritten. The corrections and the readings this plan records live
+here, additively.
+
+| What | Where | What the correction or reading is |
+| --- | --- | --- |
+| the daemon's mapping names the runtime's **default** reachability policy | —6.3 | The section was corrected during implementation: the mapping names the runtime's **default** policy — one line — and not a literal lifetime, because the daemon's configuration surface gains **no key** and the runtime's own parameter owns the production value. The mapping names every runtime field explicitly, so the line is required by the struct, not by a new configuration key. |
+| the guard's rule 5 | —11.2 rule 5, read against —7.7 | The rule is a shorthand for —7.7, which is the statement this plan's guard implements: the re-assertion touches the router's **own** tracker, writes no peer profile, claims no corroborating class for any peer, and records no reachability signal **about anything but this router's own socket**. Read literally, the shorthand —writes no ... reachability signal— would forbid the re-assertion's own `LocalConfiguredBind` record, which is the class being re-asserted. The guard therefore checks —the only signal recorded is `LocalConfiguredBind`, and no peer profile, peer identity or peer class is written—. |
+| the lane's rule property | —11.1 rule 1 | The property is about the **first** due moment: the rule must come due at or before half the lifetime, so the re-assertion always happens strictly before the record can lapse. The lane proves it over a fine millisecond grid rather than at one sample point. |
+| the guard's rule 1 | —11.2 rule 1 | The rule also pins that the **recorder** captures the standing fact — the families it may name and the time it was last asserted. Without the capture the re-assertion has nothing to re-assert, and the class lapses silently. Negative control NC-2 shows that the guard and the lane both catch it. |
+| the negative controls | —15 | Two controls — NC-7 and NC-8 — were first written with mutations that did not compile, so they proved only that the build breaks. They were rewritten to compile, and the script now treats a compile error as an **inconclusive** control rather than as a firing rule. |

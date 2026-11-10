@@ -2822,3 +2822,23 @@ evidence = [
     "plans/implementation/network-participation/534-the-router-must-build-a-tunnel-toward-the-peer-it-reached-through-the-relay.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.explicit-bind-refresh"
+protocol = "ssu2"
+structure = "the-router-must-keep-its-own-bound-address-counted-as-reachability-evidence"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 535 keeps the router's **own** bound address counted as reachability evidence. Plan 530 made the router record its own bound sockets as the explicit-bind corroboration class -- the third of the three distinct classes the transport's model requires before it will say `Reachable`. That class is a **standing** fact: the socket is bound and stays bound -- but the transport's model holds every signal as a *timed observation*, so the class **lapsed** when the observation lifetime passed, and nothing re-asserted it. The two peer-sourced classes are refreshed by their peers -- an authenticated peer's observation of this router's address (Plan 529) and a confirmed peer test (Plan 521) -- so after one observation lifetime the router's corroboration count could never exceed two again, and `Reachable` was unreachable for ever. This surface closes that gap. The **rule** is public and pure (`explicit_bind_refresh_due`): the re-assertion is due once the record has aged past **half** the observation lifetime, which is strictly before the record can lapse, so the re-assertion always happens while the previous record is still live and a missed maintenance pass cannot lapse the class. The rule **fails closed**: a fact that was never asserted is due, and a zero lifetime is due on every pass, because a class that is re-asserted too often is harmless and a class that lapses is not. The **lifetime has one owner**: the runtime reads it back from the tracker's own policy (`state.reachability.policy().observation_ttl()`) rather than restating it, so the expiry rule cannot drift from the model that enforces it. The **re-assertion rides the runtime's existing maintenance pass** (`drive_timeouts_locked`) and adds **no** timer, no task, no listener and no socket; the runtime's own policy parameter (`Ssu2RuntimeReachability`) exists so the behaviour is provable -- a router configured with a short lifetime must keep its own class counted **past** that lifetime -- and its production default is the transport's own `DEFAULT_OBSERVATION_TTL`. The re-assertion is **gated on the same opt-in** the recorder is, so a runtime that did not ask for explicit-bind corroboration re-asserts nothing, and the recorder captures the standing fact -- the families it may name and the time it was last asserted -- at bind time, because the runtime binds once and does not rebind. The re-assertion is a fact about **this router** and only this router: it writes no peer profile, claims no corroborating class for any peer, and records no reachability signal about anything but this router's own socket. Every re-assertion is **counted** under `explicit_bind_refreshes`, which carries counts only. The transport's reachability **model** is **untouched** -- its vocabulary, its corroboration classes, both floors, its observation lifetime and its tracker's public surface -- and the tracker gains no method. **No configuration key is added**: the daemon's configuration surface is unchanged and the daemon's mapping names the runtime's own default policy. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (Plan 431's bound); the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/tests/ssu2_explicit_bind_refresh.rs",
+    "crates/i2pr-daemon/tests/ssu2_explicit_bind_refresh_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/535-the-router-must-keep-its-own-bound-address-counted-as-reachability-evidence.md",
+]
+advertised = false
