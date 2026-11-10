@@ -1267,6 +1267,82 @@ through a relay is reachable *through the relay*, not directly.
 socket. It adds one configuration flag — `relay_requester`, default off — and
 the transport's relay state machines and reachability model are untouched.
 
+## The target's mechanics (Plan 532)
+
+The relay protocol's **target** half is the peer that is reached: it receives
+an introduction, verifies it, and answers it. The policy lives in the daemon;
+the mechanics live here, because the runtime owns the sockets, the session,
+the bounded tables and the transport's verification.
+
+**The target seam.** The runtime already had
+`Ssu2RuntimeService::on_target_relay_intro`, and it had no caller. It has one
+now. The transport's own target table is driven through the peer-relay service
+— the daemon does not keep a second copy of it, and it must not. The
+introduction is verified against the specification's preimage with the
+**expected introducer** and the **expected target**, so a forwarded request is
+only admitted for the peer it was actually forwarded to.
+
+**The introduction has its own bounded handoff.** A Relay Intro is addressed
+to *this* router — the introducer forwarded it to the peer its tag named — so
+it belongs to the target role and not to the introducer's:
+
+```rust
+SessionEvent::RelayIntro(block) => {
+    if self.shared.config.relay_target {
+        target.push(Ssu2InboundTarget { link_id, peer, block });
+    } else {
+        relay.push(Ssu2InboundRelay {
+            link_id,
+            peer,
+            event: Ssu2RelayEvent::Intro(block),
+        });
+    }
+}
+```
+
+The route exists only while the operator's target opt-in is on; with the opt-in
+off the introduction keeps travelling the introducer's handoff exactly as
+before, and the introducer owner refuses it as not its role. The target's
+handoff is a **fourth** channel with the same ceiling as the relay handoff
+(`max_inbound_relay_queue`, default 16), because an introduction belongs to the
+target role rather than to the introducer's.
+
+**The hole punch is staged, never sessioned.** It is sealed under the
+*requester's* introduction key and it travels out of session, so it cannot ride
+a session's outbound queue. The outbound seam builds it with the transport's
+own codec and stages it through the runtime's existing bounded queue:
+
+```rust
+pub fn stage_relay_hole_punch(
+    &self,
+    requester_intro: &IntroKey,
+    nonce: u32,
+    charlie_endpoint: Ssu2Endpoint,
+    requester_endpoint: Ssu2Endpoint,
+    response: i2pr_transport_ssu2::RelayResponseBlock,
+    now_secs: u64,
+) -> Result<(), Ssu2RelayTargetError> {
+```
+
+The destination is checked against the router's own dial profile **before** the
+datagram is built. The profile is the **union** of the two dial constructors
+the runtime offers — a loopback address of either family, or an RFC1918 IPv4
+literal for the private-LAN variant — so the target role can never widen the
+router's reach beyond what the router already dials. A destination outside it
+is refused with `DestinationRefused`, and the refusal is a count-only reason.
+
+**The transport's table is the authority.** The runtime's peer-relay service
+holds the transport's `RelayTarget` table, and the daemon keeps **no** second
+copy of it. After the answer is emitted, the runtime **consumes** the pending
+introduction, so a replayed introduction cannot produce a second accept and a
+second hole punch.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and no
+socket. It adds one configuration flag — `relay_target`, default off — and the
+transport's relay state machines and reachability model are untouched. It
+records no reachability signal for the target role either: a router that
+answers an introduction is reachable **through the relay**, not directly.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

@@ -3952,6 +3952,84 @@ bound. The **production** SSU2 peer-test driver stays unbuilt, the `B`
 advertisement and the `caps=f` advertisement stay with their owners, and the
 **stock-peer** half needs Plan 493's authorized two-host topology.
 
+## The router's relay target (Plan 532)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets the peer's **introducer** do the reaching. The **target** is the
+peer that is reached: it receives the introduction, verifies it, and **answers**
+it.
+
+**Before this plan the target half had no caller.** The transport's
+`RelayTarget` state machine existed and was complete, and the runtime's
+`on_target_relay_intro` seam existed, and neither had a production caller. The
+introduction was routed to the **introducer's** handoff unconditionally, so the
+introducer owner refused it as not its role and the target's table was never
+fed.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_target.rs` holds
+the policy: whether to answer at all, the requester's validated material, the
+accept's signature, the hole punch's pieces, and the counted refusals. It reads
+the requester's **validated** RouterInfo out of the authoritative store and
+takes the requester's signing key and introduction key from that validated
+record through the transport's strict `Ssu2RouterAddress::parse`. It holds no
+task, no timer, no listener and no socket, and it keeps **no** introduction
+table: the transport's own target table is the authority on a replay.
+
+**The mechanics are the runtime's.** The owner verifies the introduction
+through the runtime's existing `on_target_relay_intro` seam, so the transport's
+own state machine is used and not re-implemented, and it hands the hole punch's
+pieces to the runtime's new outbound seam, which builds the datagram with the
+transport's own codec and stages it through the runtime's existing bounded
+queue. The daemon does not keep a second copy of the transport's target table,
+and the guard fails closed if one appears.
+
+**The inbound half has its own drain.** `drain_target_events` is **new**; the
+existing `drain_relay_events` and Plan 531's `drain_requester_events` are
+byte-identical. The split is not cosmetic: an introduction is addressed to
+*this* router, so it belongs to the target role and not to the introducer's.
+
+**One signer implementation for the router's own key.** The target's accept is
+signed with the router's **own** identity key, over the **introducer-bound**
+preimage `relay_response_preimage(bob_hash, …)` — the introducer forwards the
+accept verbatim, so the accept must be bound to the introducer that forwarded
+it. The signer is `relay_requester::LocalIdentitySigner`, the same seam the
+requester uses, and the target implements its own `RelayTargetSigner` trait
+over it. The seed never leaves the identity bundle.
+
+**The daemon records no reachability signal of its own.** A router that
+answers an introduction is reachable **through the relay**, not directly, so
+the answer gains no corroborating class and the target's owner touches no
+tracker. The guard pins that structurally.
+
+**One opt-in only.** `ssu2.relay_target`, default **off**, refused at parse
+time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3566`). Every
+refusal is a typed, counted reason — sixteen of them, from `Disabled` to
+`StagingRefused` — and **no refusal writes into a peer's record**: a requester
+this router does not hold is a **local** condition, never a peer's profile.
+
+**The owner runs on the existing tick.** It is constructed beside the
+introducer and requester owners when the opt-in is on, and it is driven by the
+daemon's **existing** relay tick, the same tick that drains the introducer's
+and the requester's handoffs, so all three halves of an exchange share one
+cadence. It adds no task of its own.
+
+**What is not claimed.** The introduction is routed to the target's handoff
+**only while the opt-in is on**: with the opt-in off — the default — it keeps
+travelling the introducer's handoff exactly as before, and the lane proves
+both halves. The transport's own requester table requires the accept to be
+correlated before a hole punch is processed, while the punch travels one hop
+and the accept two, so the requester owner has no deferred-punch buffer; the
+lane holds one punch aside until the accept is correlated and presents it
+afterwards, and the production drain and the production requester owner are
+unchanged. The target role also needs the **authoritative store**, which lives
+in the bootstrap: with no bootstrap the target's introductions are never
+drained. The delivery is confined to the **controlled loopback profile** —
+the router's SSU2 dial target is loopback-only and the private-LAN variant
+accepts only RFC1918 IPv4 — which is Plan 431's bound. The **production**
+SSU2 peer-test driver stays unbuilt, the `B` advertisement and `caps=f` stay
+with their owners, and the **stock-peer** half needs Plan 493's authorized
+two-host topology.
+
 ## Cross-references
 
 ### Deep dives

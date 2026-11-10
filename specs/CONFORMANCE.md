@@ -2607,6 +2607,12 @@ holds **124 surfaces, 119 experimental, 4 deferred, 1 ready, 0 advertised**. The
 advertised count stays **zero**: Plan 531 makes the router able to reach a peer
 through that peer's introducer, and the surface is internal and non-advertised.
 
+**Plan 532 adds one surface** — `daemon.relay-target` — so the inventory holds
+**125 surfaces, 120 experimental, 4 deferred, 1 ready, 0 advertised**. The
+advertised count stays **zero**: Plan 532 makes the router able to answer a
+relay introduction when it is the peer an introducer named, and the surface is
+internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4025,3 +4031,84 @@ and the private-LAN variant accepts only RFC1918 IPv4 — which is Plan 431's
 bound. The **production** SSU2 peer-test driver stays unbuilt; the `B`
 advertisement and the `caps=f` advertisement stay with their owners; and the
 **stock-peer** half needs Plan 493's authorized two-host topology.
+
+## The router must answer a relay introduction (Plan 532)
+
+The SSU2 relay protocol has three roles. The **introducer** answers a relay
+request and forwards an introduction; the **requester** asks an introducer to
+reach a peer it cannot reach directly; the **target** is the peer that is
+reached, and it **answers**. The introducer half was in the tree from Plans
+490, 499 and 524, and the requester half from Plan 531. The **target** half
+was the last one with no producer.
+
+**The target half existed as machinery with no caller.** The transport's
+`RelayTarget` state machine was complete
+(`crates/i2pr-transport-ssu2/src/relay.rs:1025`) — it verifies the introducer
+context against the specification's preimage, enforces the global quota,
+suppresses a replayed introduction and expires a pending one — and the runtime
+held the table and exposed the seam that drives it
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2881`). Nothing in production called
+the seam. The introduction was routed to the **introducer's** handoff
+unconditionally, so the introducer owner refused it as not its role and the
+target's table was never fed.
+
+**The division of ownership.** The daemon owns the *policy*; the runtime owns
+the *mechanics*. `crates/i2pr-daemon/src/relay_target.rs` reads the
+requester's **validated** RouterInfo out of the authoritative store, takes the
+requester's signing key and introduction key from that validated record
+through the transport's strict `Ssu2RouterAddress::parse`, drives the
+runtime's existing target seam so the transport's own state machine is used
+and not re-implemented, signs the accept with the router's **own** identity
+key over the introducer-bound preimage, and hands the hole punch's pieces to
+the runtime's outbound seam. The transport's relay state machines are **used,
+not edited**: the plan changes no transport file at all.
+
+**The introduction has its own bounded handoff.** The runtime adds a **fourth**
+channel for the target's events (`crates/i2pr-runtime/src/ssu2_runtime.rs:2231`)
+with the same ceiling as the relay handoff, and the session loop routes an
+inbound Relay Intro to it **iff** the operator's opt-in is on
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:7484`).
+
+**The hole punch is staged, never sessioned.** The outbound seam
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2923`) builds the datagram with the
+transport's own codec, seals it under the **requester's** introduction key,
+and stages it through the runtime's existing bounded queue as control traffic.
+Its destination is checked against the **union** of the two dial profiles the
+runtime offers (`crates/i2pr-runtime/src/ssu2_runtime.rs:5427`), so the target
+role cannot widen the router's reach beyond what the router already dials.
+
+**The answer gains no corroborating class.** A router that answers an
+introduction is reachable **through the relay**, not directly, so the daemon
+writes **no** reachability signal of its own and the target's owner touches no
+tracker. The transport's relay state machines and its reachability model are
+untouched, and both floors are unchanged.
+
+**One opt-in only.** `ssu2.relay_target`, default **off**, refused at parse
+time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3566`). Every
+refusal is a typed, counted reason
+(`crates/i2pr-daemon/src/relay_target.rs:62`), and **no refusal writes into a
+peer's record** — a requester this router does not hold is a **local**
+condition, never a peer's profile.
+
+**The exchange completes.** The lane drives three real routers over real
+loopback UDP: Alice asks Bob for Charlie, Bob introduces Charlie, **Charlie
+verifies the introduction through the transport's own target state machine and
+answers**, Bob verifies the accept and forwards it, Alice correlates it, and
+Charlie's hole punch arrives out-of-session. The relay-firewalled fact is
+recorded and the router's corroboration count is **unchanged**.
+
+**What is not claimed.** Two limits are recorded, not hidden. The
+introduction is routed to the target's handoff **only while the opt-in is
+on**: with the opt-in off — the default — the introduction keeps travelling the
+introducer's handoff exactly as before, and the lane proves both halves. And
+the transport's own requester table requires the accept to be correlated
+**before** a hole punch is processed, while the punch travels one hop and the
+accept two, so on loopback the punch reaches the requester's handoff first;
+the requester owner has no deferred-punch buffer, and the lane presents the
+punch after the accept. The delivery is confined to the **controlled loopback
+profile** — the router's SSU2 dial target is loopback-only and the private-LAN
+variant accepts only RFC1918 IPv4 — which is Plan 431's bound. The
+requester's **validated** RouterInfo must be in the authoritative store. The
+**production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and
+the `caps=f` advertisement stay with their owners; and the **stock-peer** half
+needs Plan 493's authorized two-host topology.

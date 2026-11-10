@@ -1849,3 +1849,52 @@ accept and the hole punch, and no daemon role does that yet — so the lane
 completes that half over the transport's own preimage. The **stock-peer** half
 of this surface remains blocked externally on Plan 493's authorized two-host
 topology.
+
+## 31. The router answers a relay introduction (Plan 532)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G32.1 | the owner is the **daemon's** and the mechanics stay in the **runtime**: the owner verifies the introduction through the runtime's seam, and the runtime's seam drives the transport's target table | `crates/i2pr-daemon/tests/ssu2_relay_target_boundary.rs`, `the_owner_is_the_daemons_and_the_mechanics_the_runtimes` |
+| G32.2 | the owner adds no task, no timer, no listener and no socket, and writes no reachability signal of its own | the same guard file, `the_owner_adds_no_infrastructure` |
+| G32.3 | the answer is produced only from **validated** material and through the router's own shared signing seam | the same guard file, `the_answer_is_produced_only_from_validated_material` |
+| G32.4 | the opt-in is **off** by default and refused without the SSU2 service | the same guard file, `the_opt_in_defaults_off_and_needs_the_service` |
+| G32.5 | the transport's relay state machines and the reachability model are untouched | the same guard file, `the_transports_state_machines_and_model_are_untouched` |
+| G32.6 | the introduction is routed to the **target's** handoff and the introducer's handoff no longer carries it | the same guard file, `the_introduction_reaches_the_targets_handoff` |
+| G32.7 | the hole punch is **staged, never sessioned**, and its destination obeys the dial profile | the same guard file, `the_hole_punch_is_staged_and_never_sessioned` |
+| G32.8 | no configuration key beside the one opt-in | the same guard file, `no_configuration_key_besides_the_one_opt_in` |
+| G32.9 | the owner is constructed **and** driven on the **existing** relay tick | the same guard file, `the_owner_is_wired_to_the_existing_tick` |
+| G32.10 | the opt-in is off by default and refused without the service | `crates/i2pr-daemon/tests/ssu2_relay_target.rs`, `the_opt_in_is_off_by_default_and_refused_without_the_service` |
+| G32.11 | the introduction reaches the **target's own** bounded handoff, and the introducer's handoff does not carry it | the same lane file, `the_introduction_reaches_the_targets_own_handoff` |
+| G32.12 | the introduction keeps travelling the introducer's handoff while the opt-in is off, and the introducer's own refusal path is unchanged | the same lane file, `the_introduction_keeps_travelling_the_introducer_handoff_without_the_opt_in` |
+| G32.13 | the target **answers**: the accept reaches the introducer, the introducer verifies it and forwards it, and the requester correlates it | the same lane file, `the_target_answers_the_introduction_and_punches_the_hole` |
+| G32.14 | the target **punches the hole** out of session, and the relay-firewalled fact is recorded with **no** corroborating class | the same lane file, `the_target_answers_the_introduction_and_punches_the_hole` |
+| G32.15 | the target **verifies** the introduction: a forged signature, a stale timestamp, an unknown requester and a replay are each refused and counted under their own reason | the same lane file, `the_target_verifies_the_introduction` |
+| G32.16 | every refusal is typed and counted by reason, and writes **nothing** into a peer's profile | the same lane file, `every_refusal_is_typed_and_counted_and_writes_nothing` |
+| G32.17 | the reads never mutate the store, and the lane's three routers are distinct | the same lane file, `the_reads_never_mutate_the_store`, `the_lanes_routers_are_distinct` |
+| G32.18 | every guard rule has an inverted probe that fires it, and a probe that removes the item it names, so every rule **fails closed** | the same guard file, the `the_guard_reports_*` and `the_guard_fails_closed_when_*` rows |
+
+Every gate above is **local**. The lane drives three **real** daemon-owned SSU2
+routers over real loopback UDP — a requester, an introducer and a target — so
+the target half is **earned** rather than asserted: a real introduction is
+verified by the transport's own target state machine, a real accept is signed
+with the target's own identity key over the introducer-bound preimage and is
+verified by the introducer, and a real hole punch is staged out of session and
+arrives at the requester. The guard is the authority for the **shape**: that
+the owner holds no infrastructure and no tracker, that the answer is built from
+validated material only, that the transport's state machines are untouched,
+that the introduction is routed to the target's own handoff, and that the hole
+punch is staged rather than sessioned.
+
+The division of labour is honest and is recorded here: the lane proves that the
+target **answers**, that the exchange **completes** and that the recorded signal
+**contradicts**; the guard proves that no second target table exists in the
+daemon, that the transport's own model is untouched and that the hole punch
+obeys the dial profile. Two limits are recorded rather than hidden: the
+introduction is routed to the target's handoff **only while the opt-in is on**
+— with the opt-in off, the default, it keeps travelling the introducer's
+handoff exactly as before — and the transport's own requester table requires
+the accept to be correlated before a hole punch is processed, so the lane holds
+one punch aside until the accept is correlated and presents it afterwards. The
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology, and the **production** SSU2 peer-test driver stays
+unbuilt.

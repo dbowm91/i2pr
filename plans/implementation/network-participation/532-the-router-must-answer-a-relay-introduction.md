@@ -462,3 +462,148 @@ limitation that names this successor.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+
+### 17.2 — 2026-11-11, implementation findings
+
+The implementation settled six questions the registration left open. §3 is
+**not** rewritten; the corrections live here and in the closure record.
+
+**The introduction's route is gated on the opt-in — a correction to §6.3.**
+§6.3 said the session loop "routes an inbound Relay Intro to the **target's**
+bounded handoff, and the introducer's handoff stops carrying it", and §7's D2
+said "The introducer's handoff stops carrying it". The implementation routes
+the introduction to the target's handoff **iff** `ssu2.relay_target` is on;
+with the opt-in off — the default — the introduction keeps travelling the
+**introducer's** handoff exactly as before and is refused there as
+`NotOurRole`. The reason is §4's first invariant: a router that has not asked
+to answer a relay introduction answers no introduction, and moving the
+introduction into the target's handoff on a router that never opted in would
+change what that router *observes* — the introduction would leave the
+introducer's handoff and the introducer owner would never see it — without the
+router ever answering. The plan's intent holds exactly where the opt-in is on:
+with it on, the introducer's handoff does not carry the introduction. The lane
+proves **both** halves, and the correction is recorded here so a reader of
+§6.3 does not have to guess.
+
+**The target role needs the authoritative store, and the store lives in the
+bootstrap.** The target's owner reads the requester's validated RouterInfo out
+of the authoritative store, and in the composition root that store is the
+bootstrap's (`crates/i2pr-daemon/src/lib.rs:5631`): the target's handoff is
+drained only when the daemon holds a `Bootstrap`. With no bootstrap the
+target's introductions are never drained. The requester has the same
+dependency — Plan 531's wiring drains the requester's handoff under the same
+bootstrap guard — so this is a property of the composition root and not of
+this plan. It is recorded as a limitation rather than hidden.
+
+**The accept's token has no consumer in this tree.** The target mints a fresh
+nonzero token with the router's own randomness and the transport refuses a
+zero token, so the accept is well formed. The **requester's establishment
+dial** that would consume it — the handshake the hole punch initiates — is not
+in the tree: the transport's normal session path establishes the session, and
+the token's consumer does not exist yet. §5.2's "the transport's normal
+session path already establishes it" holds; the token's consumer is a
+successor's work, and the token's value is opaque to the tree today.
+
+**The transport's own target table is the authority on a replay.** The daemon
+keeps **no** introduction table, as §4's fifth invariant requires. After the
+answer is emitted, the runtime **consumes** the pending introduction
+(`crates/i2pr-runtime/src/ssu2_peer_relay.rs:1035`), and the transport's `seen`
+set suppresses a replayed `(nonce, alice_hash)` pair. The lane proves that a
+replay produces no second accept and no second hole punch.
+
+**The hole punch's destination obeys the union of the two dial profiles.** §7's
+D7 said the destination is "checked against the same loopback / RFC1918-IPv4
+profile the dial target obeys". The runtime offers two dial constructors — the
+ordinary one is loopback-only and the private-LAN variant accepts only
+RFC1918 IPv4 — so the implementation checks the **union** of the two
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:5427`): a loopback address of either
+family, or an RFC1918 IPv4 literal. The bound is the same bound; the union is
+the only reading that covers both dial profiles the router actually has. The
+target role still cannot widen the router's reach: a public address is refused
+under either profile.
+
+**One line in another plan's lane file moved.**
+`crates/i2pr-daemon/tests/netdb_integration.rs` gained exactly one line —
+`relay_target: false` — because the new runtime-config field has no default at
+that call site. It is a mechanical struct-literal fix; no behaviour in that
+file changed. It is recorded here so the drift is not mistaken for a change in
+scope.
+
+### 17.3 — 2026-11-11, citation drift
+
+The implementation inserted the target into
+`crates/i2pr-runtime/src/ssu2_runtime.rs`, into
+`crates/i2pr-runtime/src/ssu2_peer_relay.rs` and into
+`crates/i2pr-daemon/src/service_product.rs`, so the line numbers the **closed
+records** cite into those files moved. §3 is **not** rewritten, and no closed
+record is rewritten; this table is the additive pointer, and it is the whole of
+the drift. It continues Plan 531's own pointer table
+(`plans/implementation/network-participation/531-the-router-must-reach-a-peer-through-its-introducer.md`,
+§17.3) rather than replacing it.
+
+| The closed record's citation | after Plan 531 | after Plan 532 | the line it names |
+| --- | --- | --- | --- |
+| `ssu2_runtime.rs:1830` | `:1913` | `:1994` | `let reachability_policy = if config.explicit_bind_corroboration {` |
+| `ssu2_runtime.rs:2120` | `:2219` | `:2316` | `self.note_bound_endpoints_as_explicit_bind();` |
+| `ssu2_runtime.rs:2819` | `:3049` | `:3225` | the address-agreement comment |
+| `ssu2_runtime.rs:2849` | `:3079` | `:3255` | `/// Records one typed peer-test outcome into the router's reachability.` |
+| `ssu2_runtime.rs:2884` | `:3114` | `:3290` | `pub fn note_observed_external_address(` |
+| `ssu2_runtime.rs:2948` | `:3178` | `:3354` | `fn bound_endpoint(&self, family: AddressFamily)` |
+| `ssu2_runtime.rs:3111` | `:3341` | `:3517` | the loopback refusal |
+| `ssu2_runtime.rs:3196` | `:3426` | `:3602` | `fn note_bound_endpoints_as_explicit_bind(&self) {` |
+| `ssu2_runtime.rs:3228` | `:3458` | `:3634` | `pub fn note_explicit_bind_for_controlled_qualification(` |
+| `ssu2_runtime.rs:3263` | `:3493` | `:3669` | the controlled class-0 record |
+| `ssu2_runtime.rs:5216` | `:5446` | `:5639` | the data-phase session builder's comment |
+| `ssu2_runtime.rs:6987` | `:7218` | `:7412` | the bounded-candidate comment |
+| `ssu2_peer_relay.rs:474` | `:485` | `:485` | `fn count_relay_response(&self) {` |
+| `ssu2_peer_relay.rs:481` | `:492` | `:492` | `pub fn start_relay_request(` |
+| `ssu2_peer_relay.rs:497` | `:535` | `:535` | `pub fn on_relay_response(` |
+| `service_product.rs:4796` | `:4808` | `:4813` | the Plan 528 reachability-gate comment |
+| `service_product.rs:4804` | `:4816` | `:4821` | `== i2pr_transport::ReachabilityState::Firewalled;` |
+
+The peer-relay service's three cited lines did **not** move: Plan 532 added
+`consume_target_intro` below them, not above. No citation into any other file
+moved. The transport's, the daemon's `lib.rs` and `config.rs`, the netdb's and
+the closure records' own citations are unchanged.
+
+### 17.4 — 2026-11-11, the corrections to the closed plans' claims
+
+No closed record is rewritten. The corrections live here, in this plan's
+closure record and in the registry row.
+
+1. **Plan 531's** limitation
+   (`plans/closure/network-participation/531-status.md:100`-`:104` and
+   `:521`-`:526`) said *"The **target** side's response emission has **no
+   product wiring** in this tree. The transport says the *caller* emits the
+   accept and the hole punch, and no daemon role does that ... A successor must
+   wire the target role."* That was accurate for the tree it describes.
+   **Plan 532 is the successor it named, and the wiring now exists**: the
+   daemon's `RelayTargetOwner` drives the runtime's target seam, signs the
+   accept with the router's own identity key over the introducer-bound
+   preimage, and stages the hole punch through the runtime's bounded queue.
+   The correction is recorded here and in this plan's closure record, never in
+   the closed record.
+2. **Plan 531's** Low finding 1
+   (`plans/closure/network-participation/531-status.md:553`-`:559`) named the
+   same gap and the same owner. **It is discharged.**
+3. **Plan 531's** §17.4 closing paragraph said *"the **target** half of the
+   exchange still has no product wiring"*. It is **superseded on that point**:
+   all three roles of the relay protocol now have a producer in this tree.
+4. **Plan 531's** unblock-audit row *"The **target** side's response emission |
+   **unwired**"* (`plans/closure/network-participation/531-status.md:645`) is
+   **superseded on that point** in the same way.
+5. **Plan 527's** Low finding 1 and its repetitions in Plans 528, 529 and 530
+   said the relay-success indication had no producer. Plan 531 discharged the
+   **requester** half; **Plan 532 discharges the target half**, so the relay
+   protocol's three roles all have producers and the transport's contradicting
+   *relay-firewalled* class has a producer on the requester's side.
+
+Two corrections run the other way, and they are recorded for the same reason.
+The target role is **not** complete in this tree: the requester's establishment
+dial that would consume the accept's token is not in the tree, and the
+requester owner has no deferred-punch buffer, so a hole punch that arrives
+before the accept is refused by the transport's own requester table. And the
+target role needs the authoritative store, which the composition root takes
+from the bootstrap, so with no bootstrap the target's introductions are never
+drained. Both are recorded in this plan's closure record with their owners
+named; neither is hidden, and neither is a promotion.
