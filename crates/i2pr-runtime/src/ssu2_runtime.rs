@@ -567,7 +567,13 @@ pub enum ControlledPeerTestError {
     ExchangeTimeout,
     /// The driver was cancelled.
     ExchangeCancelled,
-    /// The exchange completed without a `Confirmed` outcome.
+    /// The exchange completed but its verdict was not a confirmation.
+    ///
+    /// Plan 528: the driver no longer raises this for a verdict it
+    /// received -- every verdict is returned as a typed fact. The
+    /// **caller** raises it when a returned verdict is not a
+    /// confirmation and it therefore cannot honour the claim it asked
+    /// the exchange to prove.
     ExchangeNotConfirmed,
     /// The driver observed a protocol deviation (unexpected forward,
     /// state, or outcome shape).
@@ -1685,6 +1691,33 @@ impl Ssu2ServiceHandle {
     }
 }
 
+/// The messages one peer-test exchange delivered to this router.
+///
+/// Plan 528: the specification's peer-test result table is a table over
+/// exactly these three messages, so the verdict is the specification's own
+/// and never a guess.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Ssu2PeerTestMessages {
+    /// The answer relayed by the introducer arrived.
+    pub msg4: bool,
+    /// The helper's direct answer arrived.
+    pub msg5: bool,
+    /// The helper's direct verdict arrived.
+    pub msg7: bool,
+}
+
+/// What one peer-test exchange proved about this router.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2PeerTestVerdict {
+    /// The helper could reach this router directly.
+    Reachable,
+    /// The helper could not reach this router directly: the router is
+    /// firewalled.
+    Firewalled,
+    /// The exchange proved nothing: the received messages do not decide.
+    Undetermined,
+}
+
 /// An established SSU2 dial: the exact link plus whether the tokenless
 /// Retry round trip was skipped via a cached token.
 #[derive(Debug)]
@@ -1797,6 +1830,7 @@ impl Ssu2RuntimeService {
         let reachability_policy = if config.explicit_bind_corroboration {
             i2pr_transport::ReachabilityPolicy::new(
                 2,
+                i2pr_transport::MIN_CONTRADICTION_FLOOR,
                 i2pr_transport::DEFAULT_OBSERVATION_TTL,
                 true,
             )
@@ -2768,6 +2802,62 @@ impl Ssu2RuntimeService {
         }
     }
 
+    /// Records one peer-test exchange's verdict into the router's
+    /// reachability.
+    ///
+    /// Plan 528: the verdict is the **specification's own** table,
+    /// transcribed as data in the transport
+    /// (`i2pr_transport_ssu2::peer_test_result`). A FIREWALLED row is this
+    /// router's own firewalled fact and is recorded as the firewalled
+    /// verdict, which puts the router in `Firewalled`. An OK row
+    /// corroborates **nothing** by itself: the corroboration is the
+    /// address agreement, and that arrives through the comparison. An
+    /// unknown or ambiguous row records nothing at all.
+    ///
+    /// The router's reachability has one owner -- this runtime -- so the
+    /// verdict is recorded here and nowhere else.
+    pub fn note_peer_test_verdict(
+        &self,
+        family: AddressFamily,
+        messages: Ssu2PeerTestMessages,
+    ) -> Ssu2PeerTestVerdict {
+        use i2pr_transport_ssu2::PeerTestResult;
+        let verdict = match i2pr_transport_ssu2::peer_test_result(
+            messages.msg4,
+            messages.msg5,
+            messages.msg7,
+        ) {
+            PeerTestResult::Firewalled => Ssu2PeerTestVerdict::Firewalled,
+            PeerTestResult::Ok => Ssu2PeerTestVerdict::Reachable,
+            PeerTestResult::Unknown | PeerTestResult::Ambiguous | PeerTestResult::NotApplicable => {
+                Ssu2PeerTestVerdict::Undetermined
+            }
+        };
+        if verdict == Ssu2PeerTestVerdict::Firewalled && family != AddressFamily::Unknown {
+            self.note_peer_test_outcome(i2pr_transport_ssu2::PeerTestOutcome::FirewalledLikely {
+                family,
+            });
+        }
+        verdict
+    }
+
+    /// Records one typed peer-test outcome into the router's reachability.
+    ///
+    /// Plan 528: the outcome is recorded **whole**, under its own kind.
+    /// The runtime owns the router's reachability, so this is the only
+    /// place a peer-test outcome becomes a reachability fact.
+    pub fn note_peer_test_outcome(
+        &self,
+        outcome: i2pr_transport_ssu2::PeerTestOutcome,
+    ) -> ReachabilityState {
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => return ReachabilityState::Unknown,
+        };
+        self.record_peer_test_outcome_locked(&mut state, outcome);
+        state.reachability.state()
+    }
+
     /// Records one observed external address against the router's own
     /// bound address.
     ///
@@ -2817,10 +2907,20 @@ impl Ssu2RuntimeService {
                 // observation disagrees with the bound address, so it
                 // contradicts -- and a contradiction never also
                 // corroborates.
+                //
+                // Plan 528: the disagreement is this router's own
+                // **firewalled fact**: the peer sees the router at an
+                // address the router does not own, so the router is
+                // behind a NAT. It is therefore recorded as the
+                // **firewalled verdict**, not as a bare disagreement, so
+                // the router's state says `Firewalled` rather than
+                // `Unreachable`. This is the same fact the
+                // specification's peer-test result table reports as
+                // FIREWALLED, and both routes reach the same state.
                 state.reachability.record(
                     ReachabilitySignal::PeerTestResult {
                         family,
-                        outcome: PeerTestOutcomeKind::AddressMismatch,
+                        outcome: PeerTestOutcomeKind::FirewalledLikely,
                     },
                     now,
                 );

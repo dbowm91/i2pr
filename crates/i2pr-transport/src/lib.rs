@@ -43,9 +43,10 @@ pub use network_status::{
 };
 pub use payload::{EncodedI2npMessage, PayloadError};
 pub use reachability::{
-    ConfirmedPeerTest, DEFAULT_OBSERVATION_TTL, MAX_TRACKED_OBSERVATIONS, MIN_CORROBORATION_FLOOR,
-    PeerTestOutcomeKind, ReachabilityPolicy, ReachabilityPolicyError, ReachabilitySignal,
-    ReachabilitySnapshot, ReachabilityState, ReachabilityTracker, corroboration_confidence,
+    ConfirmedPeerTest, DEFAULT_OBSERVATION_TTL, MAX_TRACKED_OBSERVATIONS, MIN_CONTRADICTION_FLOOR,
+    MIN_CORROBORATION_FLOOR, PeerTestOutcomeKind, ReachabilityPolicy, ReachabilityPolicyError,
+    ReachabilitySignal, ReachabilitySnapshot, ReachabilityState, ReachabilityTracker,
+    corroboration_confidence,
 };
 pub use resource::{
     TransportLease, TransportLimits, TransportQueueLease, TransportResourceLimitsError,

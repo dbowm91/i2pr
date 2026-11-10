@@ -28,13 +28,14 @@
 //! No wire format is added or changed; the driver only orchestrates
 //! retained Plan 158–160 machinery.
 //!
-//! Failure is fail-closed: any refused call, missed deadline,
-//! cancelled step, or non-`Confirmed` outcome aborts the exchange
-//! without recording reachability evidence (only a real `Confirmed`
-//! ingest records `PeerTestResult{Confirmed}`, inside the service).
-//! The general production peer-test driver (unsolicited tests,
-//! production RouterInfo plumbing, persistent helpers) is explicitly
-//! out of scope and stays unbuilt.
+//! Failure is fail-closed: any refused call, missed deadline or
+//! cancelled step aborts the exchange. A **verdict** is not a failure:
+//! Plan 528 made every outcome the exchange can reach a typed fact,
+//! including the ones that are not a confirmation, and the service
+//! records each one in the router's single reachability tracker. The
+//! general production peer-test driver (unsolicited tests, production
+//! RouterInfo plumbing, persistent helpers) is explicitly out of scope
+//! and stays unbuilt.
 
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -69,6 +70,13 @@ pub type ControlledPeerTestSigner<'a> =
     &'a (dyn Fn(&[u8]) -> Result<Vec<u8>, ControlledPeerTestError> + 'a);
 
 /// What the controlled exchange proved about Alice.
+///
+/// Plan 528: the exchange's verdict is a **fact**, not a failure. The
+/// enum grew the verdicts the tree used to throw away: a peer test
+/// that concludes the router is not directly reachable is exactly as
+/// much a result as one that confirms it, and a caller must be able to
+/// tell "the test failed" from "the test succeeded and the router is
+/// behind NAT".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlledPeerTestOutcome {
     /// The full 4+5+7 quorum confirmed Alice at her bound endpoint
@@ -80,6 +88,48 @@ pub enum ControlledPeerTestOutcome {
         observed: SocketAddr,
         /// Corroborating peers behind the outcome.
         evidence_peers: u8,
+    },
+    /// The quorum completed, but the peers observed Alice at an address
+    /// that is not the one she is bound to.
+    ///
+    /// This is the router's own **firewalled fact**: the peers reach it
+    /// somewhere it does not own, so it is behind a NAT.
+    ObservedElsewhere {
+        /// Tested address family.
+        family: AddressFamily,
+        /// The address the peers observed.
+        observed: SocketAddr,
+        /// The address Alice is bound to.
+        expected: SocketAddr,
+    },
+    /// The peers disagreed with each other about the address.
+    ///
+    /// Neither address was compared against the router's own bound
+    /// socket, so this is a bare disagreement and claims nothing about
+    /// reachability.
+    ObservationsDisagree {
+        /// Tested address family.
+        family: AddressFamily,
+        /// The first observed endpoint.
+        first: SocketAddr,
+        /// The contradicting observed endpoint.
+        second: SocketAddr,
+    },
+    /// The authenticated evidence says the router is not directly
+    /// reachable.
+    FirewalledLikely {
+        /// Tested address family.
+        family: AddressFamily,
+    },
+    /// The exchange established nothing either way.
+    Inconclusive {
+        /// Tested address family.
+        family: AddressFamily,
+    },
+    /// The helper refused the test at the protocol layer.
+    Rejected {
+        /// Tested address family.
+        family: AddressFamily,
     },
 }
 
@@ -294,12 +344,17 @@ fn loopback_socket_config() -> Ssu2SocketConfig {
     }
 }
 
-/// Runs one complete controlled peer-test exchange to Alice-Confirmed.
+/// Runs one complete controlled peer-test exchange and returns its
+/// verdict.
 ///
 /// See the module docs for the evidence contract. Every step is
 /// causally ordered on wire/table transitions with `step_timeout`
-/// deadlines; any failure, cancellation, or non-`Confirmed` outcome
-/// returns an error after best-effort teardown, recording nothing.
+/// deadlines. A **failure** -- a refused call, a missed deadline, a
+/// cancellation, or a protocol deviation -- returns an error after
+/// best-effort teardown. A **verdict** -- including one that is not a
+/// confirmation -- is returned as a typed fact, so the caller can tell
+/// "the exchange failed" from "the exchange succeeded and the router is
+/// behind NAT".
 pub async fn run_controlled_peer_test(
     params: ControlledPeerTestParams<'_>,
 ) -> Result<ControlledPeerTestOutcome, ControlledPeerTestError> {
@@ -750,6 +805,12 @@ async fn drive_exchange(
         params.alice.controlled_test_outcome(nonce).ok().flatten()
     })
     .await?;
+    // Plan 528: the verdict is a fact. The exchange reached a typed
+    // outcome, so the driver returns it -- the table already recorded
+    // it in the router's single reachability tracker, and throwing it
+    // away here is what made a disagreement look like a failed test.
+    // Only a genuinely failed exchange (a refused call, a missed
+    // deadline, a cancellation, a protocol deviation) is an error.
     match outcome {
         PeerTestOutcome::DirectReachabilityConfirmed {
             family,
@@ -762,6 +823,36 @@ async fn drive_exchange(
                 evidence_peers,
             })
         }
-        _ => Err(ControlledPeerTestError::ExchangeNotConfirmed),
+        // The quorum confirmed a direct reachability, but at an address
+        // that is not the router's own bound address: the peers see the
+        // router somewhere it does not own, so it is behind a NAT.
+        PeerTestOutcome::DirectReachabilityConfirmed {
+            family,
+            observed: confirmed,
+            ..
+        } => Ok(ControlledPeerTestOutcome::ObservedElsewhere {
+            family,
+            observed: confirmed.socket_addr(),
+            expected: params.alice_addr,
+        }),
+        // The peers disagree with each other about the address. Neither
+        // address was compared against the router's own bound socket,
+        // so this is a bare disagreement.
+        PeerTestOutcome::AddressMismatch {
+            family,
+            first,
+            second,
+        } => Ok(ControlledPeerTestOutcome::ObservationsDisagree {
+            family,
+            first: first.socket_addr(),
+            second: second.socket_addr(),
+        }),
+        PeerTestOutcome::FirewalledLikely { family } => {
+            Ok(ControlledPeerTestOutcome::FirewalledLikely { family })
+        }
+        PeerTestOutcome::Inconclusive { family } => {
+            Ok(ControlledPeerTestOutcome::Inconclusive { family })
+        }
+        PeerTestOutcome::Rejected { family } => Ok(ControlledPeerTestOutcome::Rejected { family }),
     }
 }

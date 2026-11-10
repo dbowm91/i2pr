@@ -81,10 +81,11 @@ pub use path::{
 };
 pub use peer_test::{
     MAX_PEER_TESTS_GLOBAL, MAX_PEER_TESTS_PER_PEER, PEER_TEST_MAX_CLOCK_SKEW_SECONDS,
-    PEER_TEST_SIGNATURE_PROLOGUE, PEER_TEST_TIMEOUT_MS, PeerTestCounters, PeerTestError,
-    PeerTestOutcome, PeerTestRole, PeerTestState, PeerTestTable, build_out_of_session_peer_test,
-    check_peer_test_freshness, parse_out_of_session_peer_test, peer_test_conn_ids,
-    peer_test_preimage, verify_peer_test_signature,
+    PEER_TEST_RESULT_TABLE, PEER_TEST_SIGNATURE_PROLOGUE, PEER_TEST_TIMEOUT_MS, PeerTestCounters,
+    PeerTestError, PeerTestOutcome, PeerTestResult, PeerTestResultRow, PeerTestRole, PeerTestState,
+    PeerTestTable, build_out_of_session_peer_test, check_peer_test_freshness,
+    parse_out_of_session_peer_test, peer_test_conn_ids, peer_test_preimage, peer_test_result,
+    verify_peer_test_signature,
 };
 pub use publication::{
     PublicationError, PublicationOutcome, PublicationPolicy, PublicationRequest,

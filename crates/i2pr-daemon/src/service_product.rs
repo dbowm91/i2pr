@@ -4793,6 +4793,13 @@ impl ServiceProduct {
             .into_iter()
             .map(PeerId::from_hash)
             .collect();
+        // Plan 528: the gate reads the router's single reachability
+        // tracker, and the `Firewalled` state is now **reachable**: the
+        // runtime's verdict path can put the router there, so this
+        // comparison can be true. The gate's refusal reasons are
+        // unchanged -- a router that is not firewalled still asks
+        // nobody, and every refusal is still counted under its own
+        // reason.
         let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
             == i2pr_transport::ReachabilityState::Firewalled;
         // The store is cloned out of the composition so the capability read

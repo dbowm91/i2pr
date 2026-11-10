@@ -65,6 +65,17 @@ pub const DEFAULT_OBSERVATION_TTL: Duration = Duration::from_secs(30 * 60);
 /// be sufficient for `Reachable`.
 pub const MIN_CORROBORATION_FLOOR: usize = 2;
 
+/// The smallest number of distinct contradicting classes that may take the
+/// router off `ObservedUnconfirmed`.
+///
+/// Plan 528: the contradiction floor is **separate** from the
+/// corroboration floor. The specification's peer-test result table
+/// concludes FIREWALLED from **one** peer test, and the pinned reference
+/// does the same, so one contradicting fact is enough. The corroboration
+/// floor is untouched, so the **positive** claim -- three distinct
+/// supporting classes for `Reachable` -- is not weakened.
+pub const MIN_CONTRADICTION_FLOOR: usize = 1;
+
 /// Conservative router-level reachability state.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReachabilityState {
@@ -188,6 +199,23 @@ impl ReachabilitySignal {
         }
     }
 
+    /// Returns whether the signal is a **firewalled verdict**.
+    ///
+    /// Plan 528: a peer test that concludes the router is not directly
+    /// reachable, and a relay-success indication, are both facts about the
+    /// router's **own** inbound reachability. They put the router in
+    /// `Firewalled`; a bare disagreement between two observations is not a
+    /// firewalled verdict and puts it in `Unreachable` instead.
+    pub const fn is_firewalled_verdict(self) -> bool {
+        match self {
+            Self::PeerTestResult { outcome, .. } => {
+                matches!(outcome, PeerTestOutcomeKind::FirewalledLikely)
+            }
+            Self::RelayFirewalledSignal { .. } => true,
+            _ => false,
+        }
+    }
+
     /// Returns the corroboration class: signals in the same class from
     /// the same family do not corroborate each other, so one peer's
     /// repeated external-address observation can never reach
@@ -243,6 +271,7 @@ impl ConfirmedPeerTest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReachabilityPolicy {
     min_corroboration: usize,
+    min_contradiction: usize,
     observation_ttl: Duration,
     configured_direct_allowed: bool,
 }
@@ -251,16 +280,24 @@ impl ReachabilityPolicy {
     /// Builds an explicit policy.
     ///
     /// `min_corroboration` counts distinct supporting signal classes
-    /// and must be at least two; `observation_ttl` bounds evidence
-    /// freshness; `configured_direct_allowed` lets an explicit local
-    /// configuration (never inference) corroborate direct reachability.
+    /// and must be at least two; `min_contradiction` counts distinct
+    /// contradicting classes and must be at least one; `observation_ttl`
+    /// bounds evidence freshness; `configured_direct_allowed` lets an
+    /// explicit local configuration (never inference) corroborate direct
+    /// reachability.
+    ///
+    /// Plan 528: the two floors are **separate**. The corroboration floor
+    /// keeps the positive claim conservative; the contradiction floor
+    /// follows the specification's own single-peer-test rule.
     pub const fn new(
         min_corroboration: usize,
+        min_contradiction: usize,
         observation_ttl: Duration,
         configured_direct_allowed: bool,
     ) -> Self {
         Self {
             min_corroboration,
+            min_contradiction,
             observation_ttl,
             configured_direct_allowed,
         }
@@ -269,6 +306,11 @@ impl ReachabilityPolicy {
     /// Returns the corroboration threshold.
     pub const fn min_corroboration(self) -> usize {
         self.min_corroboration
+    }
+
+    /// Returns the contradiction threshold.
+    pub const fn min_contradiction(self) -> usize {
+        self.min_contradiction
     }
 
     /// Returns the observation lifetime.
@@ -289,6 +331,12 @@ impl ReachabilityPolicy {
         if self.min_corroboration > MAX_TRACKED_OBSERVATIONS {
             return Err(ReachabilityPolicyError::CorroborationTooHigh);
         }
+        if self.min_contradiction < MIN_CONTRADICTION_FLOOR {
+            return Err(ReachabilityPolicyError::ContradictionTooLow);
+        }
+        if self.min_contradiction > MAX_TRACKED_OBSERVATIONS {
+            return Err(ReachabilityPolicyError::ContradictionTooHigh);
+        }
         if self.observation_ttl.is_zero() || self.observation_ttl > MAX_DEADLINE {
             return Err(ReachabilityPolicyError::InvalidTtl);
         }
@@ -300,6 +348,7 @@ impl Default for ReachabilityPolicy {
     fn default() -> Self {
         Self {
             min_corroboration: 2,
+            min_contradiction: MIN_CONTRADICTION_FLOOR,
             observation_ttl: DEFAULT_OBSERVATION_TTL,
             configured_direct_allowed: false,
         }
@@ -313,6 +362,12 @@ pub enum ReachabilityPolicyError {
     CorroborationTooLow,
     /// The threshold exceeds the bounded observation budget.
     CorroborationTooHigh,
+    /// Fewer than one contradicting class was required.
+    ///
+    /// Plan 528: zero would make every observation a contradiction.
+    ContradictionTooLow,
+    /// The contradiction threshold exceeds the bounded observation budget.
+    ContradictionTooHigh,
     /// The TTL is zero or beyond the monotonic horizon.
     InvalidTtl,
 }
@@ -325,6 +380,12 @@ impl std::fmt::Display for ReachabilityPolicyError {
             }
             Self::CorroborationTooHigh => {
                 formatter.write_str("reachability corroboration exceeds its observation bound")
+            }
+            Self::ContradictionTooLow => {
+                formatter.write_str("reachability contradiction must require at least one class")
+            }
+            Self::ContradictionTooHigh => {
+                formatter.write_str("reachability contradiction exceeds its observation bound")
             }
             Self::InvalidTtl => formatter.write_str("reachability observation TTL is out of range"),
         }
@@ -541,26 +602,6 @@ impl ReachabilityTracker {
         classes.iter().filter(|present| **present).count()
     }
 
-    fn firewalled_classes(&self) -> usize {
-        let Some(latest) = self.signals.back().map(|entry| entry.signal.family()) else {
-            return 0;
-        };
-        let mut classes = [false; 5];
-        for entry in &self.signals {
-            if entry.signal.family() != latest {
-                continue;
-            }
-            if !matches!(
-                entry.signal,
-                ReachabilitySignal::RelayFirewalledSignal { .. }
-            ) {
-                continue;
-            }
-            classes[entry.signal.corroboration_class() as usize] = true;
-        }
-        classes.iter().filter(|present| **present).count()
-    }
-
     fn recompute(&mut self, now: Duration) {
         if self.signals.is_empty() {
             self.transition(ReachabilityState::Unknown, now);
@@ -568,14 +609,19 @@ impl ReachabilityTracker {
         }
         // Contradictory evidence keeps the router unconfirmed: it takes
         // precedence over corroboration until the contradiction expires.
-        if self.contradicting_classes() >= self.policy.min_corroboration {
-            let firewalled = self.firewalled_classes() >= self.policy.min_corroboration
-                || self.signals.iter().any(|entry| {
-                    matches!(
-                        entry.signal,
-                        ReachabilitySignal::RelayFirewalledSignal { .. }
-                    )
-                });
+        //
+        // Plan 528: the contradiction floor is **separate** from the
+        // corroboration floor. One distinct contradicting class is enough,
+        // which is the specification's own single-peer-test rule; the
+        // corroboration floor is untouched, so the positive claim is not
+        // weakened. A **firewalled verdict** puts the router in
+        // `Firewalled`; a contradiction that is not one puts it in
+        // `Unreachable`.
+        if self.contradicting_classes() >= self.policy.min_contradiction {
+            let firewalled = self
+                .signals
+                .iter()
+                .any(|entry| entry.signal.is_firewalled_verdict());
             self.transition(
                 if firewalled {
                     ReachabilityState::Firewalled
@@ -636,19 +682,32 @@ mod tests {
     }
 
     fn configured_tracker() -> ReachabilityTracker {
-        ReachabilityTracker::new(ReachabilityPolicy::new(2, DEFAULT_OBSERVATION_TTL, true))
-            .expect("policy")
+        ReachabilityTracker::new(ReachabilityPolicy::new(
+            2,
+            MIN_CONTRADICTION_FLOOR,
+            DEFAULT_OBSERVATION_TTL,
+            true,
+        ))
+        .expect("policy")
     }
 
     #[test]
     fn policy_rejects_single_observation_corroboration() {
         assert_eq!(
-            ReachabilityPolicy::new(1, DEFAULT_OBSERVATION_TTL, false).validate(),
+            ReachabilityPolicy::new(1, MIN_CONTRADICTION_FLOOR, DEFAULT_OBSERVATION_TTL, false)
+                .validate(),
             Err(ReachabilityPolicyError::CorroborationTooLow)
         );
         assert_eq!(
-            ReachabilityPolicy::new(0, DEFAULT_OBSERVATION_TTL, false).validate(),
+            ReachabilityPolicy::new(0, MIN_CONTRADICTION_FLOOR, DEFAULT_OBSERVATION_TTL, false)
+                .validate(),
             Err(ReachabilityPolicyError::CorroborationTooLow)
+        );
+        // Plan 528: a contradiction floor of zero would make every
+        // observation a contradiction, so it is refused.
+        assert_eq!(
+            ReachabilityPolicy::new(2, 0, DEFAULT_OBSERVATION_TTL, false).validate(),
+            Err(ReachabilityPolicyError::ContradictionTooLow)
         );
     }
 
@@ -762,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_observation_keeps_state_unconfirmed() {
+    fn one_contradiction_is_enough_to_leave_unconfirmed() {
         let mut tracker = configured_tracker();
         let now = Duration::from_secs(400);
         tracker.record(
@@ -778,6 +837,12 @@ mod tests {
             now + Duration::from_secs(1),
         );
         assert_eq!(tracker.state(), ReachabilityState::CandidateReachable);
+        // Plan 528: the contradiction floor is separate from the
+        // corroboration floor, so one distinct contradicting class takes
+        // the router off `ObservedUnconfirmed`. A bare disagreement is not
+        // a firewalled verdict, so the router is `Unreachable` -- it never
+        // claims to be reachable, and it does not claim to be firewalled
+        // either.
         assert_eq!(
             tracker.record(
                 ReachabilitySignal::PeerTestResult {
@@ -786,7 +851,26 @@ mod tests {
                 },
                 now + Duration::from_secs(2),
             ),
-            ReachabilityState::ObservedUnconfirmed
+            ReachabilityState::Unreachable
+        );
+    }
+
+    #[test]
+    fn a_firewalled_verdict_alone_marks_the_router_firewalled() {
+        let mut tracker = tracker();
+        let now = Duration::from_secs(420);
+        // Plan 528: the specification's peer-test result table concludes
+        // FIREWALLED from one peer test, and so does the pinned
+        // reference. One firewalled verdict is therefore enough.
+        assert_eq!(
+            tracker.record(
+                ReachabilitySignal::PeerTestResult {
+                    family: AddressFamily::Ipv4,
+                    outcome: PeerTestOutcomeKind::FirewalledLikely,
+                },
+                now,
+            ),
+            ReachabilityState::Firewalled
         );
     }
 

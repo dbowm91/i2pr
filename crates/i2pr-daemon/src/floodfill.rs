@@ -687,6 +687,10 @@ pub async fn activate_controlled(
     })
     .await
     .map_err(ControlledActivationError::EvidenceFailed)?;
+    // Plan 528: the driver now returns every verdict as a typed fact,
+    // so this branch is a genuine refusal -- the exchange proved
+    // something, but not the confirmation this activation needs to mint
+    // the reachability proof. The refusal stays fail-closed.
     if !matches!(
         outcome,
         i2pr_runtime::ControlledPeerTestOutcome::Confirmed { .. }
