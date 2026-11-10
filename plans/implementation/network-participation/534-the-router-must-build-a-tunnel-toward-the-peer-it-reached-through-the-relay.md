@@ -511,3 +511,65 @@ no peer profile is written and no corroborating class is claimed.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, implementation
+
+The implementation is complete and the lane and the guard are green. Six
+findings came out of it, and each is recorded here rather than by rewriting
+the sections above, which are the plan as it was registered.
+
+1. **The observation is consumed by the take, and a refused named target
+   consumes it too.** The route takes the observation *before* it applies the
+   gate, so a named target that is refused under the version floor or under
+   the local condition is **not** kept for a later attempt. The plan's
+   —7.4 states that taking is consuming; the implementation makes the
+   consequence explicit: one deliberate reach yields **one** build attempt,
+   and a refused attempt does not leave a stale observation behind. This is
+   the honest behaviour — the peer was reached once, so the router reaches
+   it again through the relay if it wants to try again — and it keeps the
+   table free of observations that name a peer the router has already tried.
+
+2. **A refused named target falls back to the store's own selection.** The
+   exploratory posture is never blocked by one ineligible peer: the refusal
+   is counted under its own reason and the route draws a candidate as usual.
+   The plan's —7.1 names the named target as the route's subject, not as a
+   replacement for the selection, and this is that distinction in the
+   implementation.
+
+3. **The relayed peer's presence in the peer-profile store is already
+   satisfied.** Plan 533 recorded this limitation with an owner. The store is
+   fed by the existing reconcile (`crates/i2pr-daemon/src/lib.rs:2191` and
+   `crates/i2pr-daemon/src/peer_reconcile.rs:363`), so a relayed peer's
+   validated record reaches the store the driver reads without any new work.
+   The limitation is discharged, and the lane proves it: the lane's store is
+   **adopted**, so the selection, the resolver and the record the driver reads
+   are the same record.
+
+4. **The relayed build's installation is proven.** Plan 533 recorded that the
+   establishment's session existed while the *build* toward the relayed peer
+   was unproven. Plan 534's lane proves it end to end: the route names the
+   relayed peer, the coordinator submits the build, the real inbound path
+   classifies the reply, the coordinator installs the tunnel, and the
+   outbound pool holds it.
+
+5. **The lane's profile assertion moved after the drive.** The first draft
+   asserted that the relayed peer's profile was untouched *before* the driver
+   ran, which proved only that the recording seam wrote nothing. The
+   negative control NC-3 — a route that writes a peer observation for a
+   local condition — passed the lane as written. The assertion now follows
+   the drive, where such a write would happen, and NC-3 fails the lane as
+   well as the guard. The lane is stronger than it was, and the finding is
+   recorded here because it is a defect in the plan's own test.
+
+6. **Two guard rules were strengthened by the negative controls.** NC-1
+   (a below-floor verdict mapped to eligible) showed that rule 1 checked only
+   that the gate was *called*, not that its verdict was carried faithfully;
+   rule 1 now pins the mapping. NC-7 (a task that never records the
+   observation) showed that rule 7 checked only the consumption half of the
+   observation's lifecycle; rule 7 now pins the recording half as well. Both
+   strengthen the guard rather than weaken it, and both are in this plan's own
+   guard file, so no other plan's guard is affected.
+
+The negative controls are eight in total. Each mutation, what it was expected
+to break, what it did break, and the SHA-256 proof that the tree was restored
+byte-identically are recorded in this plan's closure record.

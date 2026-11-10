@@ -1943,3 +1943,48 @@ The delivery stays confined to the **controlled loopback profile**, the
 the `caps=f` advertisement stay with their owners, and the **stock-peer** half
 of this surface remains blocked externally on Plan 493's authorized two-host
 topology.
+
+## 33. The router builds a tunnel toward the peer it reached through the relay (Plan 534)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G34.1 | the route still selects through the **version-gated** selection, and a named target is gated by the **same** function with its verdict carried faithfully | `crates/i2pr-daemon/tests/relay_session_peer_boundary.rs`, `the_route_selects_through_the_gate_and_a_named_target_passes_the_same_gate` |
+| G34.2 | the driver owns **no** task, no timer, no listener and no socket, and the observation table owns none either | the same guard file, `the_driver_owns_no_task_no_timer_no_listener_and_no_socket` |
+| G34.3 | the observation table is **bounded**, and every full-table refusal is counted under its own reason | the same guard file, `the_observation_table_is_bounded_and_every_full_table_refusal_is_counted` |
+| G34.4 | the material is read from the **validated** store, and unvalidated bytes are never parsed | the same guard file, `the_material_is_read_from_the_validated_store` |
+| G34.5 | the peer profile is **not** written for a local condition, and **no** reachability signal is written | the same guard file, `the_peer_profile_is_not_written_and_no_reachability_is_claimed` |
+| G34.6 | the build goes through the **existing** coordinator, and **no** second build path exists | the same guard file, `the_build_goes_through_the_existing_coordinator` |
+| G34.7 | the observation is **consumed**, it **expires**, and the establishment's own task records it | the same guard file, `the_observation_is_consumed_and_it_expires` |
+| G34.8 | **no** configuration key is added, and the table rides the requester role's own opt-in | the same guard file, `no_configuration_key_is_added` |
+| G34.9 | the transport's relay state machines and the reachability model are **untouched** | the same guard file, `the_transports_relay_machines_and_the_reachability_model_are_untouched` |
+| G34.10 | the route **names** the relayed peer and the build **installs** through the existing coordinator, and the peer's profile carries no corroborating class | `crates/i2pr-daemon/tests/relay_session_peer.rs`, `the_route_names_the_relayed_peer_and_the_build_installs` |
+| G34.11 | a named target below the version floor is **refused** and counted, and **no** build is submitted | the same lane file, `a_named_target_below_the_version_floor_is_refused_and_counted` |
+| G34.12 | a named target the store does not hold is refused as a **local** condition, never as the peer's missing version | the same lane file, `a_named_target_the_store_does_not_hold_is_refused_as_a_local_condition` |
+| G34.13 | the observation **expires**, and the expiry is counted | the same lane file, `the_observation_expires_and_the_expiry_is_counted` |
+| G34.14 | the observation table is **bounded**, and a full table is refused under its own reason | the same lane file, `the_observation_table_is_bounded_and_a_full_table_is_refused` |
+| G34.15 | every refusal is typed and counted, and the counts reach the operator through the inspection seam | the same lane file, `every_refusal_is_typed_and_counted`, `the_counts_reach_the_operator_through_the_inspection_seam` |
+| G34.16 | every guard rule has an inverted probe that fires it, and a probe that removes the item it names, so every rule **fails closed** | the same guard file, the `the_guard_reports_*` and `the_guard_fails_closed_when_*` rows |
+
+Every gate above is **local**. The lane drives the real driver, the real
+coordinator, the real peer-profile store and the real delivery seam over
+**real loopback UDP**, with the controlled responder that answers the short
+tunnel build with the peer's **identity** encryption key — the key the
+production `peer_static_encryption_key` seam derives — so the build toward
+the relayed peer is **earned** rather than asserted: the route names the relayed
+peer, the coordinator installs the tunnel, and the peer's profile is left
+untouched.
+
+The guard is the authority for the **shape**: that the named target passes the
+same gate as a drawn candidate, that the driver owns no task, timer, listener
+or socket, that the table is bounded and its refusals counted, that the
+material comes from the validated store, that no profile write and no
+reachability claim happens, that the build goes through the existing
+coordinator, that the observation is consumed and expires, that no
+configuration key is added, and that the transport's relay machines and the
+reachability model are untouched.
+
+The delivery stays confined to the **controlled loopback profile**, the
+**production** SSU2 peer-test driver stays unbuilt, the `B` advertisement and
+the `caps=f` advertisement stay with their owners, and the **stock-peer** half
+of this surface remains blocked externally on Plan 493's authorized two-host
+topology.

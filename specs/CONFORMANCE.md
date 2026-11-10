@@ -2619,6 +2619,12 @@ advertised count stays **zero**: Plan 533 makes the router able to establish a
 session with the peer it reached through a relay, and the surface is internal
 and non-advertised.
 
+**Plan 534 adds one surface** — `daemon.relay-session-peer` — so the inventory
+holds **127 surfaces, 122 experimental, 4 deferred, 1 ready, 0 advertised**. The
+advertised count stays **zero**: Plan 534 makes the router build a tunnel toward
+the peer it reached through a relay, and the surface is internal and
+non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4204,3 +4210,67 @@ variant accepts only RFC1918 IPv4 — which is Plan 431's bound. The target's
 **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and
 the `caps=f` advertisement stay with their owners; and the **stock-peer** half
 needs Plan 493's authorized two-host topology.
+
+## The router must build a tunnel toward the peer it reached through the relay (Plan 534)
+
+The SSU2 relay exchange was **complete** after Plan 533: the requester holds an
+authenticated session with the peer it was relayed to. What the router still
+could not do was **use** that peer.
+
+**The deliberate reach was dropped on the floor.** The product's tunnel-build
+route draws its peer from the peer-profile store's policy selection
+(`crates/i2pr-daemon/src/exploratory_driver.rs`), under the store's own
+constraints — the rank floor, the participation cap, the per-prefix diversity
+rule and the version gate. The peer the router had deliberately reached through
+a relay was in that store, but it was **one candidate among every peer the
+router knew**, and nothing distinguished it. An expensive, explicit act — the
+whole point of the relay — was diluted into a random draw.
+
+**The named target is the route's subject, not one more candidate.** The
+selection's rank floor, participation cap and per-prefix diversity rule exist
+to **spread load**, and letting them dilute a deliberate reach would defeat
+the point. A bounded, expiring **local observation table**
+(`crates/i2pr-daemon/src/relay_session_peer.rs`) records that this router
+reached a peer through a relay; the establishment's own task records into it
+when the handshake succeeds; and the driver **takes** the observation and names
+that peer.
+
+**The named target passes the same floor.** A peer below the API-version floor
+cannot complete the build, and a build that cannot complete burns a tunnel slot
+and a coordinator lease. The named target is therefore gated by the **same**
+function every drawn candidate passes (`tunnel_peer_eligibility`), and the
+gate's verdict is carried faithfully: a below-floor peer is refused and
+counted, never admitted. A named target whose **validated** record the router
+does not hold is a **local** condition and is counted as one
+(`peer_material_absent`) — never as the peer's missing version.
+
+**The observation is a local fact.** It says that **this router's** session
+with the peer is established. It writes nothing into the peer's record, claims
+nothing about the peer's reachability, and grants the peer no corroborating
+class: a peer reached through a relay is reachable *through the relay*, not
+directly. The corroboration count is unchanged and the recorded state stays
+`Firewalled`.
+
+**The observation is consumed, and it expires.** Taking is consuming: the
+router builds toward a peer it reached through a relay **once**, and a router
+that wants to reach the peer again reaches it again through the relay. The
+observation expires after a bounded lifetime, because a session that died
+while the router was not looking must not be built toward. The table is
+**bounded**, and a full table is refused under its own counted reason.
+
+**One build path.** The named target's build goes through the **existing**
+`ExploratoryBuildCoordinator::rebuild_exploratory`, so Plan 504's liveness
+scheduler and Plan 505's pairing apply unchanged. The route falls back to the
+store's own selection when a named target is refused, so one ineligible peer
+never blocks the exploratory posture.
+
+**What is not claimed.** **No configuration key is added**: the table rides
+`ssu2.relay_requester` and is created only when the operator asked for the
+requester role, so an ordinary router records nothing and names nothing. The
+transport's relay state machines and the reachability model are **untouched**.
+The delivery is confined to the **controlled loopback profile** — the
+router's SSU2 dial target is loopback-only and the private-LAN variant accepts
+only RFC1918 IPv4 — which is Plan 431's bound. The **production** SSU2
+peer-test driver stays unbuilt; the `B` advertisement and the `caps=f`
+advertisement stay with their owners; and the **stock-peer** half needs Plan
+493's authorized two-host topology.

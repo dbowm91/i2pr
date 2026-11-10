@@ -4247,3 +4247,53 @@ directly, so the establishment gains no corroborating class and the
 corroboration count is unchanged. No configuration key is added — the
 establishment rides `ssu2.relay_requester` and the token issuance rides
 `ssu2.relay_target`, and both stay default off.
+
+## The relayed peer's build route (Plan 534)
+
+A router behind a firewall can now **reach** a peer through that peer's
+introducer (Plan 533) and hold an authenticated session with it. What the
+router still could not do was **use** it: the tunnel-build route drew its peer
+from the peer-profile store's policy selection, so a peer the router had
+deliberately reached was one candidate among every peer the router knew, and
+the deliberate reach was diluted into a random draw.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_session_peer.rs`
+holds the **local observation table**: a bounded, expiring record that this
+router reached a peer through a relay. It holds no socket, owns no task and
+dials nothing; it records, and the route takes.
+
+**The observation is recorded by the establishment's own task.**
+`crates/i2pr-daemon/src/relay_establishment_task.rs` records the peer when the
+handshake succeeds, through the public `record_established_peer` seam. The peer
+comes from the dial target the task already built, so no identity crosses a
+boundary that did not already have it.
+
+**The route names it.** `crates/i2pr-daemon/src/exploratory_driver.rs` takes
+the **oldest** live observation before it draws a candidate, and names that
+peer. The named target is the route's **subject**, not one more candidate: the
+selection's rank floor, participation cap and per-prefix diversity rule exist
+to spread load, and letting them dilute a deliberate reach would defeat the
+point.
+
+**The same floor applies.** The named target is gated by the **same**
+`tunnel_peer_eligibility` the drawn candidates pass, and the gate's verdict is
+carried faithfully. A peer below the floor is refused and counted. A named
+target whose validated record the router does not hold is a **local**
+condition and is counted as `peer_material_absent` — never as the peer's
+missing version.
+
+**One build path.** The named target's build goes through the **existing**
+`ExploratoryBuildCoordinator::rebuild_exploratory`, so Plan 504's liveness
+scheduler and Plan 505's pairing apply unchanged. When a named target is
+refused the route falls back to the store's own selection, so one ineligible
+peer never blocks the exploratory posture.
+
+**What this does not do.** The observation is a fact about **this router's**
+session, not about the peer: the daemon writes **no** reachability signal, the
+corroboration count is unchanged, and the peer's profile gains no
+corroborating class. Taking the observation is **consuming**, so the router
+builds toward a peer it reached through a relay once and reaches it again
+through the relay if it wants to; and the observation **expires**, because a
+session that died while the router was not looking must not be built toward.
+No configuration key is added — the table rides `ssu2.relay_requester` and is
+created only when the operator asked for the requester role.

@@ -2801,3 +2801,24 @@ evidence = [
     "plans/implementation/network-participation/533-the-router-must-establish-a-session-with-the-peer-it-reached-through-the-relay.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.relay-session-peer"
+protocol = "ssu2"
+structure = "the-router-must-build-a-tunnel-toward-the-peer-it-reached-through-the-relay"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 534 makes the router **use** the peer it reached through a relay. Plan 533 closed the exchange: the requester holds an authenticated session with the peer it was relayed to. What the router still could not do was **use** that peer -- the product's tunnel-build route drew its peer from the peer-profile store's policy selection, so a peer the router had deliberately reached through a relay was one candidate among every peer the router knew, and the deliberate reach was dropped on the floor. This surface closes that gap, and its scope is the **route**, not the reachability. The peer becomes the route's **named build target**. A bounded, expiring **local observation table** (`crates/i2pr-daemon/src/relay_session_peer.rs`) records that this router reached a peer through a relay; the establishment's own task records into it when the handshake succeeds; and the exploratory driver **takes** the observation and names that peer on the **existing** build path, so Plan 504's liveness scheduler and Plan 505's pairing apply unchanged and no second build path exists. The named target passes the **same** API-version floor every drawn candidate passes, and the gate's verdict is carried faithfully: a peer below the floor is refused and counted, never admitted, because a peer that cannot complete the build would burn a tunnel slot and a coordinator lease. A named target whose **validated** record the router does not hold is a **local** condition and is counted as one -- `peer_material_absent` -- never as the peer's missing version, and never written into the peer's profile. The observation is a fact about **this router's** session, not about the peer: the daemon writes **no** reachability signal of its own, the corroboration count is unchanged, and the peer gains no corroborating class. The observation is **consumed** by the route that used it -- the router builds toward a peer it reached through a relay once, and reaches it again through the relay if it wants to -- and it **expires** after a bounded lifetime, because a session that died while the router was not looking must not be built toward. The table is **bounded**, and a full table is refused under its own counted reason rather than growing. The route falls back to the store's own selection when a named target is refused, so one ineligible peer never blocks the exploratory posture. **No configuration key is added**: the table rides `ssu2.relay_requester` and is created only when the operator asked for the requester role, so an ordinary router records nothing and names nothing. The transport's relay state machines and the reachability model are **untouched**. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (Plan 431's bound); the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/relay_session_peer.rs",
+    "crates/i2pr-daemon/src/exploratory_driver.rs",
+    "crates/i2pr-daemon/src/relay_establishment_task.rs",
+    "crates/i2pr-daemon/tests/relay_session_peer.rs",
+    "crates/i2pr-daemon/tests/relay_session_peer_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/534-the-router-must-build-a-tunnel-toward-the-peer-it-reached-through-the-relay.md",
+]
+advertised = false
