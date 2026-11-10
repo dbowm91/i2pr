@@ -1043,7 +1043,16 @@ impl RelayRequesterOwner {
         now_secs: u64,
         now_ms: u64,
     ) -> RelayRequesterOutcome {
-        self.handle_hole_punch(message, signers, now_secs, now_ms, true)
+        let (outcome, completed) = self.handle_hole_punch(message, signers, now_secs, now_ms, true);
+        if let Some(entry) = completed {
+            // The relay's success is a **contradiction**: the router is
+            // reachable through the relay, not directly. The runtime
+            // owns the router's reachability, so the runtime records
+            // the indication.
+            self.runtime.note_relay_firewalled(entry.context.family);
+            self.counters.firewalled_recorded += 1;
+        }
+        outcome
     }
 
     /// Holds one hole punch until its accept is correlated.
@@ -1089,7 +1098,17 @@ impl RelayRequesterOwner {
         now_ms: u64,
     ) -> Option<RelayRequesterOutcome> {
         let deferred = self.deferred.remove(&nonce)?;
-        Some(self.handle_hole_punch(&deferred.message, signers, now_secs, now_ms, false))
+        let (outcome, completed) =
+            self.handle_hole_punch(&deferred.message, signers, now_secs, now_ms, false);
+        if let Some(entry) = completed {
+            // The relay's success is a **contradiction**: the router is
+            // reachable through the relay, not directly. The runtime
+            // owns the router's reachability, so the runtime records
+            // the indication.
+            self.runtime.note_relay_firewalled(entry.context.family);
+            self.counters.firewalled_recorded += 1;
+        }
+        Some(outcome)
     }
 
     /// Correlates one hole punch with the requester's own request.
@@ -1106,15 +1125,21 @@ impl RelayRequesterOwner {
         now_secs: u64,
         now_ms: u64,
         allow_deferral: bool,
-    ) -> RelayRequesterOutcome {
+    ) -> (RelayRequesterOutcome, Option<LiveRelayRequest>) {
         let nonce = message.response.nonce();
         let Some(entry) = self.live.get(&nonce).copied() else {
             self.refuse(RelayRequesterRefusal::UnknownCorrelation, now_ms);
-            return RelayRequesterOutcome::Refused(RelayRequesterRefusal::UnknownCorrelation);
+            return (
+                RelayRequesterOutcome::Refused(RelayRequesterRefusal::UnknownCorrelation),
+                None,
+            );
         };
         let Some(charlie_signer) = signers.signing_key(&entry.context.target) else {
             self.refuse(RelayRequesterRefusal::TargetUnknown, now_ms);
-            return RelayRequesterOutcome::Refused(RelayRequesterRefusal::TargetUnknown);
+            return (
+                RelayRequesterOutcome::Refused(RelayRequesterRefusal::TargetUnknown),
+                None,
+            );
         };
         self.counters.hole_punches_correlated += 1;
         match self.runtime.on_requester_hole_punch(
@@ -1126,32 +1151,30 @@ impl RelayRequesterOwner {
         ) {
             Ok(true) => {
                 self.counters.hole_punches_ready += 1;
-                // The relay's success is a **contradiction**: the router is
-                // reachable through the relay, not directly. The runtime
-                // owns the router's reachability, so the runtime records
-                // the indication.
-                self.runtime.note_relay_firewalled(entry.context.family);
-                self.counters.firewalled_recorded += 1;
                 // The exchange is complete, so the establishment may now
                 // be published: the accept's endpoint and token are the
                 // material the requester's task dials with.
                 self.publish_establishment(nonce, &entry, now_ms);
                 self.live.remove(&nonce);
-                RelayRequesterOutcome::HolePunchReady
+                // The caller records the relay's success against the
+                // request this punch completed, so the recording lives
+                // in the caller's body and the shared body stays free of
+                // it.
+                (RelayRequesterOutcome::HolePunchReady, Some(entry))
             }
             Ok(false) => {
                 self.live.remove(&nonce);
-                RelayRequesterOutcome::HolePunchNotReady
+                (RelayRequesterOutcome::HolePunchNotReady, None)
             }
             Err(error) => {
                 if allow_deferral && matches!(error, i2pr_runtime::RelayError::WrongRole) {
                     // The accept has not been correlated yet. The punch is
                     // held, not refused.
-                    return self.defer_hole_punch(message, now_ms);
+                    return (self.defer_hole_punch(message, now_ms), None);
                 }
                 let reason = map_relay_error(error);
                 self.refuse(reason, now_ms);
-                RelayRequesterOutcome::Refused(reason)
+                (RelayRequesterOutcome::Refused(reason), None)
             }
         }
     }

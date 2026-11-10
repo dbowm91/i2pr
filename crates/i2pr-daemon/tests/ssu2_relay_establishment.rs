@@ -457,7 +457,7 @@ impl Wired {
 
     /// Reads the establishment's counters.
     fn counters(&self) -> RelayEstablishmentCounters {
-        self.counters.lock().expect("counter cell").clone()
+        *self.counters.lock().expect("counter cell")
     }
 
     /// Hands the published establishment to the task, exactly as the

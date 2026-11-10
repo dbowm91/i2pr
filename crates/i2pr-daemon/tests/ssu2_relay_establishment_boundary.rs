@@ -328,27 +328,6 @@ fn item_body(code: &str, signature: &str) -> Option<String> {
     Some(code[open + 1..close - 1].to_owned())
 }
 
-/// Extracts the whole item whose **definition** is anchored at
-/// `signature`: the signature and the body together.
-///
-/// [`item_body`] returns the body alone. A rule about what an item
-/// *takes* -- its parameters, its fields -- needs the whole item.
-fn item_text(code: &str, signature: &str) -> Option<String> {
-    let start = find_definition(code, signature)?;
-    let (_, close) = brace_balanced_block(code, start + signature.len())?;
-    Some(code[start..close].to_owned())
-}
-
-/// Extracts the body of the **match arm** whose text is `needle`.
-///
-/// An arm is not a definition, so it has its own scanner: the arm's block
-/// is the first brace-balanced block at or after the needle.
-fn arm_body(code: &str, needle: &str) -> Option<String> {
-    let start = code.find(needle)?;
-    let (open, close) = brace_balanced_block(code, start + needle.len())?;
-    Some(code[open + 1..close - 1].to_owned())
-}
-
 /// The sources the rules read.
 ///
 /// Every rule and every probe works on one of these, so a probe mutates
