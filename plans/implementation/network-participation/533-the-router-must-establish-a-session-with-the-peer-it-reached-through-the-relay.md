@@ -642,7 +642,7 @@ finds, if any, live in this plan's closure record and in the registry's row.
 
 ### 17.2 — 2026-11-11, implementation findings
 
-The implementation found seven things the plan did not know. Each is recorded
+The implementation found eight things the plan did not know. Each is recorded
 here; **§3 is evidence and is not rewritten**, and every correction to a
 closed plan's claim lives in §17.4 and in the registry's row.
 
@@ -773,3 +773,39 @@ the registry's row.
   firewalled peer being reachable. That limit was discharged by Plan 531
   itself; this plan adds the **session** the fact refers to, and changes
   nothing Plan 531 recorded.
+
+### 17.5 -- 2026-11-11, the floor's caught defects and their correction
+
+The routine floor's first run was **not** green: three steps failed, from two
+distinct defects, both in **this plan's own work**.
+
+**The first defect -- the recorder left the body Plan 531's rule reads.**
+Plan 531's boundary guard failed its rule
+`the_relay_firewalled_fact_is_a_contradiction`, with the reason *"a completed
+exchange must record the relay-firewalled fact"*. The cause was **this plan's
+production change**, not Plan 531's guard. The correlation step had been split
+into a shared `handle_hole_punch` so that the deferral could be switched off
+for a re-drive, and that split moved the recorder call
+`self.runtime.note_relay_firewalled(entry.context.family);` one level down,
+out of the body Plan 531's rule reads. The recording itself was never lost --
+the shared step still performed it -- but the rule's **shape** no longer held.
+
+**The production code was fixed and Plan 531's guard file was left
+byte-identical.** The shared step now hands the completed request back to its
+caller, and each caller records the relay's success against it, so the literal
+is back inside `on_hole_punch`'s body. Plan 531's inverted probe replaces that
+**exact** literal, so it still fires. Plan 533's own guard was unaffected
+throughout: the shared step still carries the wrong-role interception and the
+deferral, and the re-drive still presents the held punch with the deferral
+switched off.
+
+**The second defect -- two lint findings in this plan's own test files.** The
+`clippy` step failed on two helper functions in this plan's guard
+(`item_text` and `arm_body`) that no rule uses, and then, once those were
+removed, on a `clone_on_copy` in this plan's lane's counter read. The two
+helpers are removed and the copy is a copy. Neither finding was in a
+production file.
+
+Section 3 is evidence and is **not** rewritten, and no closed closure record
+is rewritten. The correction lives here, in this plan's closure record, and in
+the registry's row.
