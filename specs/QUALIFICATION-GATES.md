@@ -1807,3 +1807,45 @@ view carries a count and never a class list: the transport's model is the
 transport's own. The **stock-peer** half of this surface remains blocked
 externally on Plan 493's authorized two-host topology, and the **production**
 SSU2 peer-test driver stays unbuilt.
+
+## 30. The router reaches a peer through its introducer (Plan 531)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G31.1 | the owner is the **daemon's** and the mechanics stay in the **runtime**: the owner starts the request through the runtime's seam, and the runtime's seam drives the transport's requester table | `crates/i2pr-daemon/tests/ssu2_relay_requester_boundary.rs`, `the_owner_is_the_daemons_and_the_mechanics_are_the_runtimes` |
+| G31.2 | the owner adds no task, no timer, no listener and no socket | the same guard file, `the_owner_adds_no_infrastructure` |
+| G31.3 | the request is started only from **validated** material, and the requester table is not re-implemented in the daemon | the same guard file, `the_request_is_started_only_from_validated_material` |
+| G31.4 | the opt-in is **off** by default and refused without the SSU2 service | the same guard file, `the_opt_in_defaults_off_and_needs_the_service` |
+| G31.5 | the transport's relay state machines and the reachability model are untouched | the same guard file, `the_transports_state_machines_and_model_are_untouched` |
+| G31.6 | the relay-firewalled fact is a **contradiction**, never a corroboration, and the daemon writes no reachability signal of its own | the same guard file, `the_relay_firewalled_fact_is_a_contradiction` |
+| G31.7 | no configuration key beside the one opt-in | the same guard file, `no_configuration_key_besides_the_one_opt_in` |
+| G31.8 | the owner is constructed **and** driven on the **existing** relay tick | the same guard file, `the_owner_is_wired_to_the_existing_tick` |
+| G31.9 | the opt-in is off by default and refused without the service | `crates/i2pr-daemon/tests/ssu2_relay_requester.rs`, `the_opt_in_is_off_by_default_and_refused_without_the_service` |
+| G31.10 | only a peer that **publishes** an introducer set is a target | the same lane file, `only_a_peer_that_publishes_an_introducer_set_is_a_target` |
+| G31.11 | the request carries the **published** tag and the target's own hash, and the introducer is resolved by hash from the store | the same lane file, `the_router_reaches_a_peer_through_its_introducer` |
+| G31.12 | the exchange **completes** over real loopback UDP between three real routers: the response is correlated and the hole punch is routed out-of-session | the same lane file, `the_router_reaches_a_peer_through_its_introducer` |
+| G31.13 | a completed exchange records the relay-firewalled signal and **never** a corroborating class: the corroboration count is unchanged | the same lane file, `the_router_reaches_a_peer_through_its_introducer` |
+| G31.14 | every refusal is typed and counted by reason, and writes **nothing** into a peer's record | the same lane file, `every_refusal_is_typed_and_counted_and_writes_nothing` |
+| G31.15 | a request is refused when the tag does not identify the target | the same lane file, `a_request_is_refused_when_the_tag_does_not_identify_the_target` |
+| G31.16 | the transport's reachability model is untouched, and the corroboration floor is still two | the same lane file, `the_transports_reachability_model_is_untouched` |
+| G31.17 | the reads never mutate the store, and the lane's three routers are distinct | the same lane file, `the_reads_never_mutate_the_store`, `the_lanes_routers_are_distinct` |
+
+Every gate above is **local**. The lane drives three **real** daemon-owned SSU2
+routers over real loopback UDP — a requester, an introducer and a target — so
+the exchange is **earned** rather than asserted: a real request is signed and
+carried on a real session, a real introduction is verified, a real response is
+correlated by nonce, and a real hole punch arrives out-of-session from a raw
+UDP socket. The guard is the authority for the **shape**: that the owner holds
+no infrastructure, that the request is built from validated material only,
+that the transport's state machines are untouched, and that the relay-firewalled
+signal stays a contradiction recorded through the runtime's own owner.
+
+The division of labour is honest and is recorded here: the lane proves that the
+exchange **completes** and that the recorded signal **contradicts**; the guard
+proves that no second requester table exists in the daemon and that the
+transport's own model is untouched. The **target** side's response emission has
+**no product wiring** in this tree — the transport says the caller emits the
+accept and the hole punch, and no daemon role does that yet — so the lane
+completes that half over the transport's own preimage. The **stock-peer** half
+of this surface remains blocked externally on Plan 493's authorized two-host
+topology.

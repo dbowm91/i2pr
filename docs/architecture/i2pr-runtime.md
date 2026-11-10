@@ -1190,6 +1190,83 @@ no socket; the record is made synchronously inside `start()`. It adds no
 configuration key and moves no default. The transport's reachability model is
 untouched.
 
+## The requester's mechanics (Plan 531)
+
+The relay protocol's **requester** half is a router that cannot reach a peer
+directly and asks the peer's introducer to reach it. The policy lives in the
+daemon; the mechanics live here, because the runtime owns the sockets, the
+session, the bounded tables and the transport's verification.
+
+**The request seam.** The runtime already had
+`Ssu2RuntimeService::start_relay_request`, and it had no caller. It has one
+now. The transport's own requester table is driven through the peer-relay
+service — the daemon does not keep a second copy of it, and it must not.
+
+**A hole punch is out of session.** It is sealed under the *receiver's*
+introduction key and it names neither a session nor a peer hash, so it cannot
+ride the session-shaped relay handoff. It gets a route of its own:
+
+```rust
+if self.shared.config.relay_requester {
+    if !self.shared.peer_relay.check_admission(source.ip(), now_ms) {
+        self.shared.counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
+        return batch;
+    }
+    let mut punch_probe = bytes.to_vec();
+    if let Ok(message) = parse_hole_punch(&mut punch_probe, &self.shared.local_intro) {
+        batch.requester.push(Ssu2InboundRequesterEvent::HolePunch(
+            Ssu2InboundHolePunch { source, message },
+        ));
+        return batch;
+    }
+}
+```
+
+The route sits between the session-request probe and the controlled peer-test
+route, it exists only while the operator's requester opt-in is on, and a
+datagram that does not parse falls through to the cheap-drop below.
+
+**A response is routed by correlation.** A Relay Response that correlates with
+one of *this router's own* live request nonces belongs to the requester role,
+not to the introducer role:
+
+```rust
+SessionEvent::RelayResponse(block) => {
+    if self.shared.peer_relay.is_requester_nonce(block.nonce(), now_ms) {
+        requester.push(Ssu2InboundRequesterEvent::Response(
+            Ssu2InboundRelay { link_id, peer, event: Ssu2RelayEvent::Response(block) },
+        ));
+    } else {
+        relay.push(Ssu2InboundRelay {
+            link_id,
+            peer,
+            event: Ssu2RelayEvent::Response(block),
+        });
+    }
+}
+```
+
+The correlation table is a **routing** table — a nonce and a deadline, nothing
+else — and it is written exactly where the transport's own table is written, so
+the two expire on the same deadline. The signature is verified later, when the
+requester owner hands the response to the transport.
+
+**The handoff is bounded.** The requester's own handoff is a separate channel
+with the same ceiling as the relay handoff
+(`max_inbound_relay_queue`, default 16). A separate channel is required
+because a hole punch names no link and no peer hash, and a correlated Relay
+Response belongs to the requester role rather than to the introducer's.
+
+**The signal is recorded here, not in the daemon.** The runtime owns the
+tracker, so the runtime records the relay-firewalled contradiction. The daemon
+calls this runtime's own `note_relay_firewalled`, and the transport's class-4
+signal stays class 4 and contradicting: a router that is reachable only
+through a relay is reachable *through the relay*, not directly.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and no
+socket. It adds one configuration flag — `relay_requester`, default off — and
+the transport's relay state machines and reachability model are untouched.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

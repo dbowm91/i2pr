@@ -3895,6 +3895,63 @@ confirmed peer test, and the **direct** publication material at the end.
 **requester** side stay out of scope, and the **stock-peer** half needs Plan
 493's authorized two-host topology.
 
+## The router's relay requester (Plan 531)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets it ask the peer's **introducer** to do the reaching. The
+introducer half was already in the tree; this is the **requester** half.
+
+**Before this plan the requester half had no caller.** The transport's
+`RelayRequester` state machine existed, and the runtime's `start_relay_request`
+seam existed, and neither had a production caller. The transport's
+`RelayFirewalledSignal` — class 4, contradicting — had no producer at all, so
+a firewalled peer was unreachable and the tree had no way to say so.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_requester.rs` holds
+the policy: which target, which introducer, when, the nonce, and the
+signature. It reads the target's published introducer set out of the
+**validated** RouterInfo store and resolves the introducer by hash from the
+same store. It holds no task, no timer, no listener and no socket.
+
+**The mechanics are the runtime's.** The owner starts the request through the
+runtime's existing `start_relay_request` seam, and the runtime owns the
+sockets, the session, the bounded tables and the transport's verification. The
+daemon does not keep a second copy of the transport's requester table, and the
+guard fails closed if one appears.
+
+**The inbound half has its own drain.** `drain_requester_events` is **new**;
+the existing `drain_relay_events` is byte-identical, because its signature and
+its call site are pinned by Plans 490, 499 and 524. The split is not
+cosmetic: a hole punch names no session and no peer hash, and a Relay Response
+that correlates with one of this router's own live requests belongs to the
+requester role, not to the introducer's.
+
+**The daemon records no reachability signal of its own.** A completed exchange
+calls the **runtime's** `note_relay_firewalled`, so the transport's class-4
+contradiction is recorded through its own owner and no corroborating class is
+ever claimed for a relayed peer. The guard pins that structurally.
+
+**One opt-in only.** `ssu2.relay_requester`, default **off**, refused at parse
+time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3536`). Every
+refusal is a typed, counted reason — fifteen of them, from `Disabled` to
+`TargetUnknown` — and **no refusal writes into a peer's record**: a local
+condition never becomes a peer's profile.
+
+**The owner runs on the existing tick.** It is constructed beside the
+introducer owner when the opt-in is on, and it is driven by the daemon's
+**existing** relay tick, the same tick that drains the introducer's handoff,
+so both halves of an exchange share one cadence. It adds no task of its own.
+
+**What is not claimed.** The **target** side's response emission has no
+product wiring in this tree: the transport says the caller emits the accept and
+the hole punch, and no daemon role does that yet, so the lane completes that
+half over the transport's own preimage. The delivery is confined to the
+**controlled loopback profile** — the router's SSU2 dial target is loopback-only
+and the private-LAN variant accepts only RFC1918 IPv4 — which is Plan 431's
+bound. The **production** SSU2 peer-test driver stays unbuilt, the `B`
+advertisement and the `caps=f` advertisement stay with their owners, and the
+**stock-peer** half needs Plan 493's authorized two-host topology.
+
 ## Cross-references
 
 ### Deep dives

@@ -2602,6 +2602,11 @@ advertised**. The advertised count stays **zero**: Plan 530 makes the router
 record its own bound address as reachability evidence, and the surface is
 internal and non-advertised.
 
+**Plan 531 adds one surface** — `daemon.relay-requester` — so the inventory
+holds **124 surfaces, 119 experimental, 4 deferred, 1 ready, 0 advertised**. The
+advertised count stays **zero**: Plan 531 makes the router able to reach a peer
+through that peer's introducer, and the surface is internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3947,3 +3952,76 @@ TTL and the plan adds no timer, so a router that binds once and never observes
 a peer loses its evidence. The **production** SSU2 peer-test driver stays
 unbuilt, the **requester** side stays unwired, and the **stock-peer** half
 needs Plan 493's authorized two-host topology.
+
+## The router must reach a peer through its introducer (Plan 531)
+
+The SSU2 relay protocol has two halves. The **introducer** half — the router
+that answers a relay request and introduces a target — was already in the tree
+(Plans 499, 524 and 526). The **requester** half was not.
+
+**The requester half existed as machinery with no producer.** The transport's
+`RelayRequester` state machine had no production caller, the runtime's
+`start_relay_request` seam had no caller, and the transport's
+`RelayFirewalledSignal` — class 4, contradicting
+(`crates/i2pr-transport/src/reachability.rs:197`) — had **no producer at all**.
+So a firewalled peer was unreachable, and the tree had no way to record that
+fact either: the one signal that names it had no writer.
+
+**The division of ownership.** The daemon owns the *policy*; the runtime owns
+the *mechanics*. `crates/i2pr-daemon/src/relay_requester.rs` selects a target
+from the **validated** RouterInfo store, resolves the introducer by hash, draws
+a fresh nonzero nonce from the router's own randomness, signs the request with
+the router's own identity, and starts it through the runtime's existing
+`start_relay_request` seam
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2809`). The runtime owns the
+sockets, the session, the bounded tables and the transport's verification. The
+transport's relay state machines are **used, not edited**: the only transport
+change is a `pub use RequesterState` re-export
+(`crates/i2pr-transport-ssu2/src/lib.rs:100`).
+
+**The hole punch needed its own route.** A hole punch travels **out of
+session**: it is sealed under the *receiver's* introduction key and it names
+neither a session nor a peer hash, so it cannot ride the session-shaped relay
+handoff. The runtime gives it a route of its own
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:7635`) and a bounded handoff of its
+own (`crates/i2pr-runtime/src/ssu2_runtime.rs:1709`), with the same ceiling as
+the relay handoff.
+
+**A response is routed by correlation.** The session loop sends a Relay
+Response to the requester's handoff **iff** it correlates with one of the
+router's own live request nonces
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:7310`). Every other response keeps
+travelling the introducer's handoff exactly as before, and the existing
+`drain_relay_events` is byte-identical.
+
+**The signal is a contradiction, and the daemon never writes it.** The daemon
+calls the **runtime's** `note_relay_firewalled`
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:3579`), so the transport's class-4
+contradiction is recorded through its own owner. No corroborating class is
+ever claimed for a relayed peer: a router that is reachable only through a
+relay is reachable *through the relay*, not directly, and the tree records it
+that way.
+
+**One opt-in only.** `ssu2.relay_requester`, default **off**, refused at
+parse time without `ssu2.enabled`
+(`crates/i2pr-daemon/src/config.rs:3536`). Every refusal is a typed, counted
+reason (`crates/i2pr-daemon/src/relay_requester.rs:304`), and **no refusal
+writes into a peer's record** — a local condition never becomes a peer's
+profile.
+
+**The exchange completes.** The lane drives three real routers over real
+loopback UDP: Alice asks Bob for Charlie, Bob introduces Charlie, Charlie
+accepts, Bob relays the response, and Charlie's hole punch arrives
+out-of-session. The response is correlated, the hole punch is routed, the
+relay-firewalled signal is recorded, and the router's corroboration count is
+**unchanged**.
+
+**What is not claimed.** The **target** side's response emission has no
+product wiring in this tree: the transport says the caller emits the accept and
+the hole punch, and no daemon role does that yet, so the lane completes that
+half over the transport's own preimage. The delivery is confined to the
+**controlled loopback profile** — the router's SSU2 dial target is loopback-only
+and the private-LAN variant accepts only RFC1918 IPv4 — which is Plan 431's
+bound. The **production** SSU2 peer-test driver stays unbuilt; the `B`
+advertisement and the `caps=f` advertisement stay with their owners; and the
+**stock-peer** half needs Plan 493's authorized two-host topology.

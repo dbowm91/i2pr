@@ -505,3 +505,163 @@ already comes from, and the relay-firewalled signal with no producer.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+
+### 17.2 — 2026-11-10, implementation findings
+
+The implementation settled eight questions the registration left open. §3 is
+**not** rewritten; the corrections live here and in the closure record.
+
+**The tick is the daemon's existing relay tick.** §6.5 said the owner is
+"constructed and its tick is driven on the product's **existing** tick", and
+§7's D2 said "the tick is the product's existing one". The implementation
+drives the daemon's **existing relay tick** — the 100 ms tick in
+`crates/i2pr-daemon/src/lib.rs:5453` that already drains the introducer's
+handoff — and not `ServiceProduct`'s product tick. The intent of both
+sentences holds: the owner adds **no task**, **no timer** and **no cadence** of
+its own, and both halves of an exchange share one clock. The choice is
+recorded here so a reader of §6.5 does not have to guess which tick it is.
+
+**The requester needed its own bounded handoff, not the shared one.** §6.3
+said the session loop "recognises an inbound Hole Punch and routes it, with
+the relay blocks, over the existing bounded relay handoff". The implementation
+gave the requester a **separate** bounded handoff instead, and the reason is
+structural: a hole punch travels **out of session** — it is sealed under the
+*receiver's* introduction key and it names neither a session nor a peer hash —
+so it cannot ride a handoff whose entries are session-shaped; and a Relay
+Response that correlates with one of the router's own live requests belongs to
+the **requester** role, not to the introducer's. The new handoff carries the
+same ceiling as the relay handoff (`max_inbound_relay_queue`, default 16). The
+existing `drain_relay_events` is byte-identical and the transport's state
+machines are untouched, so nothing else moved. This narrows §6.3 in mechanism
+and widens no scope: the plan's intent — the owner receives the inbound Relay
+Response and the inbound Hole Punch — holds exactly.
+
+**A response is routed by nonce correlation, against a routing table.** The
+runtime decides which role owns a Relay Response by asking the peer-relay
+service whether the response's nonce is one of **this router's own** live
+request nonces. That table is a **routing** table — a nonce and a deadline and
+nothing else — and it is written exactly where the transport's own requester
+table is written, so the two expire on the same `RELAY_REQUEST_TIMEOUT_MS`
+deadline. It is deliberately **not** a second copy of the transport's table.
+
+**The signal is recorded when the hole punch is ready, and the family comes
+from the router's own bound endpoint.** §6.2 said a completed exchange calls
+the runtime's `note_relay_firewalled`. The implementation does that at the
+point the transport's own comment names as the requester's firewalled fact —
+the hole punch being **ready** — and not on a rejection. The family is the one
+the router's own bound endpoint carries, the same endpoint the request itself
+presents; a router that can name no endpoint makes no request and records no
+signal.
+
+**The candidate pool is the NetDB, and the session requirement is on the
+introducer.** §3.5 named the validated RouterInfo store as the source of the
+tag and the introducer's hash, and §7's D3 required validated material. The
+implementation draws the **target** candidates from the validated store, not
+from the live sessions, because a peer that cannot be reached directly holds no
+session — the session requirement is on the **introducer**, and the request
+rides a session the router already holds with the introducer. The scan is
+O(store size) per window and the store is bounded.
+
+**The target's signing key is resolved from the validated store and passed
+explicitly.** The runtime has no production signer-registration path, so the
+daemon resolves the **target's** signing key through `NetDbSignerResolver` over
+the bootstrap's `RouterInfoStore` and passes it to the runtime's
+`*_with_signer` seams. A target this router does not hold yields
+`TargetUnknown`, and the owner refuses the event rather than guessing. The
+router's own Relay Request is signed with the router's own identity key over
+the specification's preimage.
+
+**The target side's response emission has no product wiring — the honest
+limit.** The transport's target role says the *caller* emits the accept and
+the hole punch, and no daemon role does that. The **requester** half is
+production code throughout; the **target** half is not. The lane completes the
+target's half over the transport's own preimage, with the target's own key,
+and the introducer verifies it for real. A successor must wire the target
+role; this plan does not, and does not claim to.
+
+**One line in another plan's lane file moved.**
+`crates/i2pr-daemon/tests/netdb_integration.rs` gained exactly one line —
+`relay_requester: false` — because the new runtime-config field has no
+default at that call site. It is a mechanical struct-literal fix; no behaviour
+in that file changed. It is recorded here so the drift is not mistaken for a
+change in scope.
+
+### 17.3 — 2026-11-10, citation drift
+
+The implementation inserted the requester into
+`crates/i2pr-runtime/src/ssu2_runtime.rs`, into
+`crates/i2pr-runtime/src/ssu2_peer_relay.rs` and into
+`crates/i2pr-daemon/src/service_product.rs`, so the line numbers the **closed
+records** cite into those files moved. §3 is **not** rewritten, and no closed
+record is rewritten; this table is the additive pointer, and it is the whole of
+the drift.
+
+| The closed record's citation | after Plan 531 | the line it names |
+| --- | --- | --- |
+| `ssu2_runtime.rs:1830` | `:1913` | `let reachability_policy = if config.explicit_bind_corroboration {` |
+| `ssu2_runtime.rs:2120` | `:2219` | `self.note_bound_endpoints_as_explicit_bind();` |
+| `ssu2_runtime.rs:2819` | `:3049` | the address-agreement comment |
+| `ssu2_runtime.rs:2849` | `:3079` | `/// Records one typed peer-test outcome into the router's reachability.` |
+| `ssu2_runtime.rs:2884` | `:3114` | `pub fn note_observed_external_address(` |
+| `ssu2_runtime.rs:2948` | `:3178` | `fn bound_endpoint(&self, family: AddressFamily)` |
+| `ssu2_runtime.rs:3111` | `:3341` | the loopback refusal |
+| `ssu2_runtime.rs:3196` | `:3426` | `fn note_bound_endpoints_as_explicit_bind(&self) {` |
+| `ssu2_runtime.rs:3228` | `:3458` | `pub fn note_explicit_bind_for_controlled_qualification(` |
+| `ssu2_runtime.rs:3263` | `:3493` | the controlled class-0 record |
+| `ssu2_runtime.rs:5216` | `:5446` | the data-phase session builder's comment |
+| `ssu2_runtime.rs:6987` | `:7218` | the bounded-candidate comment |
+| `ssu2_peer_relay.rs:474` | `:485` | `fn count_relay_response(&self) {` |
+| `ssu2_peer_relay.rs:481` | `:492` | `pub fn start_relay_request(` |
+| `ssu2_peer_relay.rs:497` | `:535` | `pub fn on_relay_response(` |
+| `service_product.rs:4796` | `:4808` | the Plan 528 reachability-gate comment |
+| `service_product.rs:4804` | `:4816` | `== i2pr_transport::ReachabilityState::Firewalled;` |
+
+No citation into any other file moved. The transport's, the daemon's `lib.rs`
+and `config.rs`, the netdb's and the closure records' own citations are
+unchanged.
+
+### 17.4 — 2026-11-10, the corrections to the closed plans' claims
+
+No closed record is rewritten. The corrections live here, in this plan's
+closure record and in the registry row.
+
+1. **Plan 527's** Low finding 1
+   (`plans/closure/network-participation/527-status.md:512`-`:518`) said *"The
+   requester side of the SSU2 relay protocol has no production caller.
+   `start_relay_request` and `on_relay_response`
+   (`crates/i2pr-runtime/src/ssu2_peer_relay.rs:481` and `:497`) are unwired,
+   so the relay-success indication is never produced in the field. The
+   **recorder** exists and the lane drives it, so the state is reachable; only
+   the producer is missing."* That was accurate for the tree it describes.
+   **Plan 531 is the successor it named, and the producer now exists**: the
+   daemon's `RelayRequesterOwner` drives the runtime's `start_relay_request`
+   seam, the runtime routes the correlated Relay Response and the inbound Hole
+   Punch back to it, and a completed exchange records the relay-firewalled
+   signal through the runtime's own recorder. The two cited lines moved to
+   `ssu2_peer_relay.rs:492` and `:535`; the pointer is in §17.3.
+2. **Plan 528's** Low finding 2
+   (`plans/closure/network-participation/528-status.md:545`-`:550`) repeated
+   Plan 527's finding verbatim and named the same owner. **It is discharged**,
+   with the same caveat as above: the **requester** half is wired, and the
+   **target** half's response emission is not, so the relay-success route
+   reaches the contradiction from the requester's side only.
+3. **Plan 529's** Low finding 2
+   (`plans/closure/network-participation/529-status.md:495`-`:497`) repeated
+   the same finding. **It is discharged.**
+4. **Plan 530's** Low finding 3
+   (`plans/closure/network-participation/530-status.md:506`-`:508`) repeated
+   the same finding. **It is discharged.**
+5. **The limitations of Plans 528, 529 and 530** that said *"the **requester
+   side** stays unwired, so the relay-success route is not taken in the field"*
+   (`528-status.md:522`, `529-status.md:471`, `530-status.md:476`) are
+   **superseded on that point**: the relay-success route is now taken in the
+   field, behind the default-off `ssu2.relay_requester` opt-in. The
+   surrounding limitations — the **production** SSU2 peer-test driver unbuilt,
+   the loopback-only publication profile, the **stock-peer** half blocked on
+   Plan 493 — are **unchanged**.
+
+One correction runs the other way, and it is recorded for the same reason: the
+**target** half of the exchange still has no product wiring. A reader who took
+"the requester side is wired" to mean "the relay protocol is complete in this
+tree" would be wrong. The lane completes the target's half over the
+transport's own preimage; no daemon role emits the accept or the hole punch.

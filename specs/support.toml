@@ -2733,3 +2733,25 @@ evidence = [
     "plans/implementation/network-participation/530-the-router-must-record-its-own-bound-address.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.relay-requester"
+protocol = "ssu2"
+structure = "the-router-must-reach-a-peer-through-its-introducer"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 531 makes the router able to reach a peer that publishes an introducer set. The SSU2 relay protocol has two halves: the **introducer** half, which answers a relay request and introduces the target -- already in the tree, from Plans 499, 524 and 526 -- and the **requester** half, which asks an introducer to reach a peer it cannot reach directly. The requester half existed as machinery with no producer: the transport's `RelayRequester` state machine had no production caller, the runtime's `start_relay_request` seam had no caller, and the transport's `RelayFirewalledSignal` -- class 4, contradicting (`crates/i2pr-transport/src/reachability.rs:197`) -- had no producer at all, so a firewalled peer was unreachable and the tree had no way to record that fact either. The plan gives that machinery a caller. The **policy** is the daemon's: `crates/i2pr-daemon/src/relay_requester.rs` selects a target from the **validated** RouterInfo store, resolves the introducer by hash, draws a fresh nonzero nonce from the router's own randomness, signs the request with the router's own identity, and starts it through the runtime's existing `start_relay_request` seam. The **mechanics** stay in the runtime, which owns the sockets, the session, the bounded tables and the transport's verification. The runtime adds an out-of-session **hole-punch route** (`crates/i2pr-runtime/src/ssu2_runtime.rs:7635`), because a hole punch is sealed under the *receiver's* introduction key and names neither a session nor a peer hash, so it cannot ride the session-shaped relay handoff; it has its own bounded handoff (`crates/i2pr-runtime/src/ssu2_runtime.rs:1709`) with the same ceiling as the relay handoff. The session loop routes a Relay Response to the requester's handoff **iff** it correlates with one of the router's own live request nonces (`crates/i2pr-runtime/src/ssu2_runtime.rs:7310`); every other response keeps travelling the introducer's handoff unchanged, and the existing `drain_relay_events` is byte-identical. The transport's relay state machines are **used, not edited**: the only transport change is a `pub use RequesterState` re-export (`crates/i2pr-transport-ssu2/src/lib.rs:100`). The daemon never writes into the reachability tracker: it calls the **runtime's** `note_relay_firewalled` (`crates/i2pr-runtime/src/ssu2_runtime.rs:3579`), so the transport's class-4 contradiction is recorded through its own owner and no corroborating class is ever claimed for a relayed peer -- a router reachable only through a relay is reachable *through the relay*, not directly, and the tree records it that way. One opt-in only: `ssu2.relay_requester`, default **off**, refused at parse time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3536`). Every refusal is a typed, counted reason (`crates/i2pr-daemon/src/relay_requester.rs:304`), and no refusal writes into a peer's record. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The **target** side's response emission has no product wiring in this tree, so the lane completes that half over the transport's own preimage; the delivery stays confined to the **controlled loopback profile** (the router's SSU2 dial target is loopback-only and the private-LAN variant accepts only RFC1918 IPv4 -- Plan 431's bound); the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/relay_requester.rs",
+    "crates/i2pr-daemon/src/ssu2_relay_drain.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_requester.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_requester_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/531-the-router-must-reach-a-peer-through-its-introducer.md",
+]
+advertised = false
