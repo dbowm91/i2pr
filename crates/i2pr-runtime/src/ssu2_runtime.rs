@@ -2113,6 +2113,11 @@ impl Ssu2RuntimeService {
                 crate::ssu2_qualification_observer::Ssu2QualificationEventKind::SocketsBound,
             );
         }
+        // Plan 530: the router's own bound sockets are the explicit-bind
+        // corroboration class, and the fact is true from the moment the bind
+        // succeeds. The recorder lives in the runtime because the runtime owns
+        // both the tracker and the sockets.
+        self.note_bound_endpoints_as_explicit_bind();
         Ok(Ssu2ServiceHandle {
             service: self.clone(),
             inbound: inbound_rx,
@@ -3161,6 +3166,54 @@ impl Ssu2RuntimeService {
             reachability,
             bound_family: family,
         })
+    }
+
+    /// Records the router's **own** bound sockets as the explicit-bind
+    /// corroboration class.
+    ///
+    /// Plan 530: the transport's reachability model needs **three** distinct
+    /// supporting classes before it will say `Reachable`
+    /// (`crates/i2pr-transport/src/reachability.rs:66`), and the explicit
+    /// bind -- class 0 -- had exactly one recorder, which only the controlled
+    /// floodfill activation called. The daemon already opts in
+    /// (`explicit_bind_corroboration`), so the transport **counted** the class
+    /// but nothing **earned** it in ordinary operation, and the router could
+    /// never publish a direct address.
+    ///
+    /// The record is made at **bind time**, because that is when the fact
+    /// becomes true: a locally configured bind address exists for the family
+    /// from the moment the socket is bound. It is made for every family the
+    /// runtime can **name** its own bound endpoint for, using the same
+    /// predicate [`Self::bound_endpoint`] already applies -- a wildcard or a
+    /// port-zero bind names no address and therefore records nothing.
+    ///
+    /// The record is gated on the same opt-in that lets the transport count
+    /// the class, so a runtime that has not asked for explicit-bind
+    /// corroboration records nothing and the transport never sees a
+    /// configured origin it did not earn. The signal carries only the
+    /// **family**, never a literal endpoint, so the record stays redacted by
+    /// construction.
+    fn note_bound_endpoints_as_explicit_bind(&self) {
+        if !self.shared.config.explicit_bind_corroboration {
+            return;
+        }
+        let mut families = Vec::new();
+        for family in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
+            if self.bound_endpoint(family).is_some() {
+                families.push(family);
+            }
+        }
+        if families.is_empty() {
+            return;
+        }
+        if let Ok(mut state) = self.shared.state.lock() {
+            let now = self.service_now();
+            for family in families {
+                state
+                    .reachability
+                    .record(ReachabilitySignal::LocalConfiguredBind { family }, now);
+            }
+        }
     }
 
     /// Records the actual bound sockets as explicit-bind reachability evidence.
