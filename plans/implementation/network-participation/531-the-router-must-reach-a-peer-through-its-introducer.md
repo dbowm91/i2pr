@@ -579,6 +579,24 @@ target's half over the transport's own preimage, with the target's own key,
 and the introducer verifies it for real. A successor must wire the target
 role; this plan does not, and does not claim to.
 
+**The floor caught two defects in this plan's own work, and both are
+fixed.** The in-crate unit test in `relay_requester.rs` built the runtime
+with an **empty** RouterInfo, which the runtime refuses with
+`InvalidIdentity`: it verifies the record's signature, checks that the
+identity hash matches the one it was handed, and requires an SSU2 address
+bound to the static and the introduction keys. The test now signs a real
+record bound to the router's own keys, exactly as the lane does. The
+out-of-crate lane was green throughout, because it builds a real RouterInfo
+and never exercised the placeholder — the **workspace** step was what
+exercised it. Separately, the guard's own source carried the reachability
+tracker's call literal inside a string needle, so the m12 boundary checker
+reported the *guard* as a violation of its own rule. The needle is now
+**split**, the rule the guard enforces is unchanged, and **the checker was
+not touched**: widening its `--glob '!*/tests/*'` exclusion would have
+*weakened* the check, so it stands and the observation is recorded as a
+finding. The floor ran **twice** — 99 PASS and 2 FAIL, then green — and
+both runs' logs are kept.
+
 **One line in another plan's lane file moved.**
 `crates/i2pr-daemon/tests/netdb_integration.rs` gained exactly one line —
 `relay_requester: false` — because the new runtime-config field has no
