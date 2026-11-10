@@ -3797,6 +3797,33 @@ reachability state is `Firewalled`, and every refusal is still counted under
 its own reason. What changed is that the state is now **reachable**, and the
 gate's flag is read from the tracker rather than injected.
 
+## The firewalled gate can now be true (Plan 528)
+
+The gate reads the runtime's tracker:
+
+```rust
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+```
+
+Plan 527 made that read honest — it reads the **one** tracker, not a second
+one — but the state it read could still never be `Firewalled`, because the
+transport applied the corroboration floor to contradictions and the
+controlled driver turned every non-confirming verdict into an **error**
+instead of a fact.
+
+Plan 528 changes neither the gate nor its refusal reasons. It changes what
+the tracker can hold: the **contradiction** floor is now separate from the
+corroboration floor, a **firewalled verdict** is first class, and the
+router's own bound-socket comparison records a disagreement as that verdict.
+So the gate can now be true, and when it is, the router asks one eligible
+peer for a relay tag — and every refusal is still counted under its own
+reason.
+
+The controlled activation refuses anything that is not a confirmation, so
+the floodfill's reachability proof is still minted only from a real
+confirmation.
+
 ## Cross-references
 
 ### Deep dives

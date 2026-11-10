@@ -210,6 +210,46 @@ Plan 527 keeps the endpoint the block already carried:
 session's block set and the transport's options are all untouched; the plan
 stops discarding a value that was already decoded and validated.
 
+## The specification's result table, transcribed (Plan 528)
+
+The SSU2 specification states the peer-test result as a **table** over the
+three messages Alice received, and the tree now carries that table as
+**data**:
+
+```rust
+pub const PEER_TEST_RESULT_TABLE: [PeerTestResultRow; 8] = [
+    PeerTestResultRow {
+        msg4: false,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Unknown,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Firewalled,
+    },
+    // ...
+];
+```
+
+`peer_test_result(msg4, msg5, msg7)` is a **total** lookup over that table,
+so the tree's rule is checkable against the specification rather than only
+against prose. Two tests pin it: one asserts the transcribed rows against
+the specification's wording, and one asserts that every combination of the
+three messages is a row of the table.
+
+The specification's **ambiguous** row — "FIREWALLED or SYMNAT" — is read
+**conservatively**. It is neither a confirmation nor a firewalled verdict, so
+the tree records nothing for it.
+
+**The table's rows are not the table's outcomes.** `PeerTestOutcome` — the
+transport's typed outcome of a *live* exchange — is untouched, and so is the
+`PeerTestTable` state machine that produces it. Plan 528 adds the
+specification's **verdict** vocabulary beside it; it does not change the
+exchange.
+
 ## Module layout
 
 Declared in `src/lib.rs:27-41` — 15 modules, no subdirectories.

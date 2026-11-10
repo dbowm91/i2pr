@@ -2668,3 +2668,27 @@ evidence = [
     "plans/implementation/network-participation/527-the-routers-reachability-has-one-owner-and-one-reader.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.peer-test-verdict"
+protocol = "ssu2"
+structure = "the-routers-peer-test-verdict-is-a-fact-not-an-error"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 528 stops the router from throwing its peer-test verdict away. The tree ran a **complete** three-party SSU2 peer test whose verdict carried exactly what the third party observed, and then discarded every verdict except "the observation matched the router's own bound address and two peers corroborated": a **disagreement** became `ExchangeNotConfirmed`, an **error**, not a **fact**. The specification's peer-test result table has four outcomes -- UNKNOWN, OK, FIREWALLED, SYMNAT -- and the row "4 received, 5 not received" is FIREWALLED; the pinned i2pd 2.61.0 concludes FIREWALLED from a **single** peer test (`libi2pd/SSU2Session.cpp:2703`-`:2705`), and the specification's "two or more tests" is *recommended*, not required. On top of that the transport applied its **corroboration** floor of 2 to **contradictions**, and every peer-test verdict was filed under one corroboration class, so two peer-test verdicts contradicted **once**; one contradiction therefore left the router on `ObservedUnconfirmed` for ever and `Firewalled` and `Unreachable` were unreachable states -- the daemon's firewalled gate was **permanently false**, and with it the introducer composition's acquisition half. Plan 528 separates the two floors: the **corroboration** floor stays at 2, so `Reachable` still needs three distinct supporting classes and the **positive** claim is not weakened at all, and the new **contradiction** floor is 1 -- the specification's own single-test rule. The **firewalled verdict** becomes first class: a peer test that concludes the router is not directly reachable, and the relay-firewalled indication, put the router in `Firewalled`, while a bare disagreement between two observations puts it in `Unreachable`. The runtime's comparison against the router's **own bound socket** records the disagreement as the firewalled verdict, because a peer seeing the router at an address it does not own **is** the router's firewalled fact -- the same fact the specification's FIREWALLED row reports, so both routes reach the same state. The controlled driver's outcome enum grew the verdicts it used to throw away: a mismatch is returned as a **fact** and the driver's error arm keeps only the genuinely **failed** cases, so a caller can tell "the test failed" from "the test succeeded and the router is behind NAT". The specification's peer-test result table is **transcribed** into the tree as data and pinned by a test, so the tree's rule is checkable against the specification rather than only against prose; the specification's "FIREWALLED or SYMNAT" row is read **conservatively** as ambiguous. No configuration key is added, no default moves, no wire format changes, and the verdict rides the blocks the tree already sends. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery is confined to the **controlled loopback profile**, the **production** SSU2 peer-test driver stays unbuilt, and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-transport/src/reachability.rs",
+    "crates/i2pr-transport-ssu2/src/peer_test.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/src/ssu2_controlled_peer_test.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/src/floodfill.rs",
+    "crates/i2pr-daemon/tests/ssu2_peer_test_verdict.rs",
+    "crates/i2pr-daemon/tests/ssu2_peer_test_verdict_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/528-the-routers-peer-test-verdict-must-not-be-thrown-away.md",
+]
+advertised = false

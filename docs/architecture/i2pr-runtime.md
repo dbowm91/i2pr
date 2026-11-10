@@ -1056,6 +1056,42 @@ number of **distinct** corroborating classes behind it, the family's expiry
 and the family itself, so a reader can see how much a claim rests on and not
 only what the claim is.
 
+## The verdict path (Plan 528)
+
+The runtime owns the router's reachability, so the runtime is where a
+peer-test **verdict** becomes a reachability fact.
+
+**`note_peer_test_verdict`** consults the specification's own table, which
+the transport carries as data, and answers with a typed
+`Ssu2PeerTestVerdict`:
+
+- the FIREWALLED row is this router's own **firewalled fact** and is
+  recorded as such;
+- an OK row is `Reachable` — but it corroborates **nothing** by itself. The
+  corroboration is the **address agreement**, and that arrives through the
+  comparison;
+- an unknown or ambiguous row is `Undetermined` and records nothing at all.
+
+**`note_peer_test_outcome`** records one typed outcome under its own kind.
+It is the single place a peer-test outcome becomes a reachability fact.
+
+**The comparison.** `note_observed_external_address` compares the observed
+endpoint with the router's **own bound socket**. An **agreement**
+corroborates. A **disagreement** is recorded as the **firewalled verdict**,
+not as a bare mismatch: a peer seeing the router at an address it does not
+own **is** the router behind a NAT, and it is the same fact the
+specification's FIREWALLED row reports — so both routes reach the same
+state. This **corrects** Plan 527's deep-dive, which described the
+disagreement as `PeerTestResult{AddressMismatch}`; Plan 527's closure record
+is not rewritten.
+
+**The controlled driver's verdict is a fact.** `ControlledPeerTestOutcome`
+grew the verdicts the tree used to throw away, and the driver's error arm
+keeps only the genuinely **failed** cases. A caller can therefore tell "the
+test failed" from "the test succeeded and the router is behind NAT". The
+daemon's controlled activation still refuses anything that is not a
+confirmation.
+
 ## Dependencies
 
 `Cargo.toml:10-22` — production, all verified present, and exactly the set the

@@ -483,3 +483,122 @@ confirm-only live peer test, and the requester side that is not the answer.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+
+### 17.2 — 2026-11-10, implementation findings
+
+The implementation settled four questions the registration left open, and
+found one claim of §3 to be wrong. §3 is **not** rewritten; the corrections
+live here and in the closure record.
+
+**The `Firewalled` branch needed a classifier, not a count.** The transport
+had a `firewalled_classes()` helper that counted the **relay**-firewalled
+class, and the branch compared that count with the corroboration floor.
+That was the wrong question: the branch was asking "how many relay
+indications are there?" when the reachability question is "is any of the
+contradicting evidence a **fact about the router's own inbound
+reachability**?". The helper is **removed** and
+`ReachabilitySignal::is_firewalled_verdict` replaces it. The consequence is
+that a peer-test firewalled verdict and the relay-firewalled indication
+reach the same state by the same rule, instead of one of them needing two
+observations and the other none.
+
+**The disagreement is the router's own firewalled fact — §3.3's table is
+wrong about one row.** §3.3 lists the runtime's bound-socket comparison as
+the producer of the class-3 `PeerTestResult{AddressMismatch}`. It is not.
+The transport's **table-level** `AddressMismatch` — two observations that
+disagree with *each other* — is a bare disagreement and stays
+`AddressMismatch`. The runtime's comparison against the router's **own bound
+socket** is a different fact: a peer sees the router at an address the
+router does not own, so the router is behind a NAT. That is **exactly** the
+fact the specification's FIREWALLED row reports, so it is recorded as
+`PeerTestOutcomeKind::FirewalledLikely` and both routes reach the same
+state. Plan 527 recorded the comparison as `AddressMismatch`; Plan 527's
+record is not rewritten, and the correction lives here, in the closure
+record and in the registry row.
+
+**The controlled driver's enum needed two mismatch shapes, not one.** The
+transport's `AddressMismatch` variant carries **two** endpoints — the first
+observation and the contradicting one — because it means "the peers disagree
+with each other". "The peers observed the router somewhere it does not own"
+is a different fact with a different payload: the observed address and the
+address the router is bound to. One variant could not carry both honestly,
+so `ControlledPeerTestOutcome` grew `ObservedElsewhere` (the observed
+address and the expected one) beside `ObservationsDisagree` (the two
+endpoints the peers disagreed about), and beside `FirewalledLikely`,
+`Inconclusive` and `Rejected`.
+
+**`ExchangeNotConfirmed` moved, it did not disappear.** The driver's error
+arm keeps only the genuinely **failed** cases, so the driver no longer
+returns it. But the **caller** still needs it: the daemon's controlled
+activation refuses any verdict that is not a confirmation
+(`crates/i2pr-daemon/src/floodfill.rs`), and it refuses with exactly this
+error. The variant's doc now says who raises it. The mint site is
+therefore **not** weakened — the floodfill's reachability proof is still
+minted only from a real confirmation.
+
+### 17.3 — 2026-11-10, citation drift
+
+The plan's own production change moved lines in four files, so the citations
+in §3 no longer land on the text they quoted. The table is the **additive**
+pointer to the current text; every citation not listed there still lands
+where it did.
+
+| Citation in §3 | Now | What it points at |
+| --- | --- | --- |
+| `crates/i2pr-runtime/src/ssu2_controlled_peer_test.rs:753`-`:766` | `:814`-`:857` | the driver's verdict match — the same `match outcome {`, now with a fact per arm |
+| `crates/i2pr-runtime/src/ssu2_controlled_peer_test.rs:73`-`:87` | `:81`-`:134` | `ControlledPeerTestOutcome` — the same enum, grown |
+| `crates/i2pr-transport/src/reachability.rs:571` | `:620` | the contradiction branch — the same branch, now reading `min_contradiction` |
+| `crates/i2pr-transport/src/reachability.rs:302` | `:273` | the policy's `min_corroboration` field |
+| `crates/i2pr-transport/src/reachability.rs:180`-`:189` | `:174`-`:184` | `supports_reachability` — unchanged |
+| `crates/i2pr-transport/src/reachability.rs:200`-`:201` | `:191`-`:200` | `contradicts_reachability` — unchanged |
+| `crates/i2pr-transport/src/reachability.rs:589`-`:591` | `:591`-`:603` | `contradicting_classes` — unchanged |
+| `crates/i2pr-transport/src/reachability.rs:594` | `:639` | the `supporting_classes()` call — unchanged |
+| `crates/i2pr-transport/src/reachability.rs:845` | `:929` | the transport's own "Same class twice still contradicts once" note — unchanged |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1798`-`:1804` | `:1831`-`:1836` | the runtime's policy construction — the same call, with the new floor beside the old one |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:3196` | `:3296` | `note_relay_firewalled` — unchanged |
+| `crates/i2pr-daemon/src/service_product.rs:4796` | `:4804` | the daemon's firewalled gate — the same read |
+| `crates/i2pr-daemon/src/service_product.rs:4628`-`:4641` | `:4608`-`:4621` | `handle_inbound_peer_test` |
+| `crates/i2pr-runtime/src/ssu2_controlled_peer_test.rs:37` | `:36` | the production driver's exclusion — unchanged |
+
+The citations that still land where they did: `:481` and `:497` in
+`crates/i2pr-runtime/src/ssu2_peer_relay.rs`, `:927` in the same file,
+`crates/i2pr-daemon/src/peer_test.rs:4`, and
+`crates/i2pr-daemon/src/router_i2np.rs:155`-`:157`.
+
+### 17.4 — 2026-11-10, the corrections to the closed plans' claims
+
+Three claims made by closed plans are **false of the tree this plan
+produced**. None of the closed records is rewritten; the corrections live
+here, in the closure record and in the registry row.
+
+1. **Plan 160's pinned model test.** `crates/i2pr-transport-ssu2/tests/
+   peer_relay.rs`, `reachability_consumes_typed_outcomes_conservatively`,
+   asserted that a contradicting observation leaves the router on
+   `ObservedUnconfirmed`. Under the separate contradiction floor the state
+   is `Unreachable`, and a firewalled verdict alone is `Firewalled`. The
+   test was corrected; the tree's **conservatism** is not reduced — the
+   router still never claims to be reachable.
+2. **Plan 527's lane.** `crates/i2pr-daemon/tests/
+   ssu2_reachability_contradiction.rs`,
+   `an_observation_that_differs_from_the_bound_address_contradicts`,
+   asserted `ObservedUnconfirmed` for the same reason. The disagreement with
+   the router's own bound socket is the router's **firewalled verdict**, so
+   the state is `Firewalled`. The lane was corrected.
+3. **Plan 527's guard, the rule
+   `the_runtime_compares_with_the_bound_address`.**
+   `crates/i2pr-daemon/tests/ssu2_reachability_contradiction_boundary.rs`
+   required the comparison to record an `AddressMismatch`. The comparison
+   now records the firewalled verdict, so the rule accepts **either**
+   contradicting kind. The rule is **extended, not weakened**: the branch
+   that corroborates instead of contradicting is still reported, and its
+   inverted probe was extended with it, so the probe still fires. The guard
+   stays at 23 rows and 12 probes.
+
+Plan 527's closure record also states, as its invariant 9, that "**the
+transport's model is untouched**: the five signal kinds, the corroboration
+classes, the policy floor and the state machine are byte-identical". That
+was true of Plan 527's change and is **no longer true of the tree**: the
+five signal kinds and the corroboration classes are still untouched, but the
+**policy** now carries a second floor and the `Firewalled` branch asks a
+new question. The correction lives here and in the registry row, never in
+Plan 527's record.

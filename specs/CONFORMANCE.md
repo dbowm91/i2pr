@@ -2584,6 +2584,12 @@ advertised**. The advertised count stays **zero**: Plan 527 gives the
 router's reachability **one owner and one reader**, and the surface is
 internal and non-advertised.
 
+**Plan 528 adds one surface** — `daemon.peer-test-verdict` — so the
+inventory holds **121 surfaces, 116 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 528 stops the router
+from throwing its peer-test verdict away, and the surface is internal and
+non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3581,6 +3587,74 @@ untouched.
 protocol, which produces the relay-success indication in the field, stays
 unwired and out of scope, with its owner named. The **stock-peer** half
 remains blocked externally on Plan 493's authorized two-host topology.
+
+## The router's peer-test verdict is a fact, not an error (Plan 528)
+
+The tree ran a **complete** three-party SSU2 peer test whose verdict carried
+exactly what the third party observed — and then threw every verdict away
+except "the observation matched the router's own bound address and two peers
+corroborated". A **disagreement** became `ExchangeNotConfirmed`, an **error**,
+not a **fact**.
+
+**The specification says the verdict has four outcomes.** The SSU2
+specification's peer-test result table is a table over the three messages
+Alice received, and the row "message 4 arrived, message 5 did not" is
+**FIREWALLED**. The pinned i2pd 2.61.0 reaches the same conclusion from a
+**single** peer test (`libi2pd/SSU2Session.cpp:2703`-`:2705`); the
+specification's "two or more tests" is *recommended*, not required. So the
+tree's model had to be able to express that verdict at all, and the verdict
+had to reach the one tracker the product reads.
+
+**The transport applied the corroboration floor to contradictions.** Every
+peer-test verdict was filed under one corroboration class, so two peer-test
+verdicts contradicted **once** — the transport's own test says so — and the
+floor of two distinct contradicting classes could never be reached. One
+contradiction therefore left the router on `ObservedUnconfirmed` for ever,
+and `Firewalled` and `Unreachable` were unreachable states: the daemon's
+firewalled gate was **permanently false**, and with it the introducer
+composition's acquisition half.
+
+Plan 528 separates the two floors. The **corroboration** floor is untouched
+at 2, so `Reachable` still needs three distinct supporting classes and the
+**positive** claim is not weakened at all. The new **contradiction** floor is
+1 — the specification's own single-test rule. The **firewalled verdict** is
+first class: a peer test that concludes the router is not directly reachable,
+and the relay-firewalled indication, put the router in `Firewalled`; a bare
+disagreement between two observations puts it in `Unreachable`.
+
+**The disagreement is the router's own firewalled fact.** The runtime's
+comparison against the router's **own bound socket** records the disagreement
+as the firewalled verdict, not as a bare mismatch: a peer seeing the router
+at an address it does not own **is** the router behind a NAT, and it is the
+same fact the specification's FIREWALLED row reports, so both routes reach the
+same state. This **corrects** Plan 527's deep-dive, which described the
+disagreement as `PeerTestResult{AddressMismatch}`; Plan 527's closure record
+is not rewritten, and the correction lives here and in this plan's closure
+record.
+
+**The verdict is a fact, not an error.** The controlled driver's outcome enum
+grew the verdicts it used to throw away, and its error arm keeps only the
+genuinely **failed** cases — a refused call, a missed deadline, a
+cancellation, a protocol deviation. A caller can therefore tell "the test
+failed" from "the test succeeded and the router is behind NAT". The daemon's
+controlled activation still refuses anything that is not a confirmation, so
+the reachability proof is still minted only from a real confirmation.
+
+**The specification's table is transcribed and pinned.** It is written into
+the tree as **data** and pinned by a test, so the tree's rule is checkable
+against the specification rather than only against prose. The specification's
+"FIREWALLED or SYMNAT" row is read **conservatively** as ambiguous — neither
+a confirmation nor a firewalled verdict.
+
+**What Plan 528 does not close.** The **production** SSU2 peer-test driver
+stays unbuilt — and its choreography question is named: the tree's Alice role
+needs the helper's identity up front, while the specification has Bob select
+the helper. The **requester** side, the `B` and `caps=f` advertisements and
+the **stock-peer** half stay out of scope, with their owners named. The
+delivery is confined to the **controlled loopback profile**: the comparison
+is between two loopback addresses, so the contradiction is a **qualification**
+claim. The **stock-peer** half remains blocked externally on Plan 493's
+authorized two-host topology.
 
 ## The router advertises its own introducer role (Plan 526)
 

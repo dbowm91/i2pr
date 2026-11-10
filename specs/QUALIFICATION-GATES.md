@@ -1722,3 +1722,30 @@ Every gate above is **local**: the lane drives the runtime's **producer** over
 a real loopback socket, and never injects the flag the daemon's gate reads.
 The **stock-peer** half of this surface remains blocked externally on Plan
 493's authorized two-host topology.
+
+## 27. The router's peer-test verdict is a fact (Plan 528)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G28.1 | the **corroboration** floor is unchanged | `crates/i2pr-daemon/tests/ssu2_peer_test_verdict_boundary.rs`, `the_corroboration_floor_is_unchanged`; and `crates/i2pr-daemon/tests/ssu2_peer_test_verdict.rs`, `the_corroboration_floor_is_unchanged` |
+| G28.2 | the **contradiction** floor is separate, and follows the specification's own single-test rule | the same guard file, `the_contradiction_floor_is_separate` |
+| G28.3 | the **firewalled verdict** is first class | the same guard file, `the_firewalled_verdict_is_first_class` |
+| G28.4 | the **neutral** verdicts move nothing | the same guard file, `the_neutral_verdicts_move_nothing` |
+| G28.5 | the specification's result table is **transcribed** and **pinned** | the same guard file, `the_result_table_is_transcribed_and_pinned`; and `crates/i2pr-transport-ssu2/src/peer_test.rs`, `the_specification_result_table_is_transcribed_and_pinned` and `the_peer_test_result_lookup_is_total` |
+| G28.6 | the mismatch arm is a **fact** and not an error | the same guard file, `the_mismatch_arm_is_a_fact` |
+| G28.7 | the comparison is against the router's **own bound socket** | the same guard file, `the_comparison_is_against_the_bound_socket` |
+| G28.8 | the firewalled gate stays fail-closed and counts its refusal | the same guard file, `the_gate_stays_fail_closed` |
+| G28.9 | the plan adds no configuration key and no infrastructure | the same guard file, `no_new_key_and_no_infrastructure` |
+| G28.10 | the transport's signal **vocabulary** and its corroboration classes are untouched | the same guard file, `the_transport_vocabulary_is_untouched` |
+| G28.11 | the specification's table is the tree's authority, and every combination of the three messages is a row of it | `crates/i2pr-daemon/tests/ssu2_peer_test_verdict.rs`, `the_specification_table_is_the_trees_authority` |
+| G28.12 | the FIREWALLED row is the router's own firewalled fact, and it reaches the tracker | the same lane file, `a_firewalled_row_is_the_routers_firewalled_fact` |
+| G28.13 | an OK row proves nothing by itself, and the ambiguous and unknown rows claim nothing | the same lane file, `an_ok_row_proves_nothing_by_itself`, `an_ambiguous_row_claims_nothing` and `an_unknown_row_claims_nothing` |
+| G28.14 | a disagreement with the router's own bound address is the same firewalled fact | the same lane file, `the_disagreement_is_the_routers_own_firewalled_verdict` |
+| G28.15 | the gate asks **only** on the state the tracker really holds, and a router with no verdict asks nobody | the same lane file, `the_firewalled_gate_asks_only_on_the_state_the_tracker_really_holds` and `a_router_with_no_verdict_asks_nobody` |
+| G28.16 | a comparison with no bound socket is refused | the same lane file, `a_comparison_with_no_bound_socket_is_refused` |
+
+Every gate above is **local**: the lane drives the runtime's **producer** over
+a real loopback socket, and never injects the flag the daemon's gate reads.
+The **stock-peer** half of this surface remains blocked externally on Plan
+493's authorized two-host topology, and the **production** SSU2 peer-test
+driver stays unbuilt.

@@ -61,6 +61,44 @@ two different kinds of evidence, and the state machine needs **both** before
 it calls the router firewalled. One observation is never recorded under two
 classes.
 
+## The two floors, and the firewalled verdict (Plan 528)
+
+The model this crate owns gained **one** distinction and **one** classifier.
+
+**The contradiction floor is separate.** The policy carries
+`min_contradiction` beside `min_corroboration`. The corroboration floor
+stays 2, so `Reachable` still needs three distinct supporting classes — the
+**positive** claim is not weakened at all. The contradiction floor is 1,
+which is the specification's own single-peer-test rule: the pinned i2pd
+2.61.0 concludes FIREWALLED from one peer test, and the specification's
+"two or more tests" is *recommended*, not required.
+
+**The firewalled verdict is first class.** The new
+`is_firewalled_verdict` classifier on `ReachabilitySignal` answers the
+question the state machine actually needs: is this signal a fact about the
+router's **own** inbound reachability? A peer test that concludes the router
+is not directly reachable, and the relay-firewalled indication, are. A bare
+disagreement between two observations is not — the peers disagree, and the
+router has not
+yet been shown to be unreachable. So a contradiction now lands in one of two
+states:
+
+- a **firewalled verdict** puts the router in `Firewalled`;
+- any other contradiction puts it in `Unreachable`.
+
+Before Plan 528 the contradiction branch required **two** distinct
+contradicting classes, because it reused the corroboration floor. Since
+every peer-test verdict is filed under one corroboration class, two
+peer-test verdicts contradicted **once** and the branch was never taken —
+which is why `Firewalled` and `Unreachable` were unreachable states in the
+running router.
+
+**What did not change.** The five signal kinds, the corroboration classes,
+the corroboration floor and the `Reachable` and `CandidateReachable`
+thresholds are exactly as they were. The neutral verdicts —
+`Inconclusive` and `Rejected` — still support nothing and contradict
+nothing.
+
 ## Module layout
 
 Flat — declared at `src/lib.rs:16-26`. No subdirectories. Line counts are
