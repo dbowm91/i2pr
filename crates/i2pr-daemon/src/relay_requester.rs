@@ -1144,18 +1144,105 @@ fn map_relay_error(error: i2pr_runtime::RelayError) -> RelayRequesterRefusal {
 mod tests {
     use super::*;
 
+    use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
+    use i2pr_proto::{Date, Mapping, RouterAddress};
+    use rand_core::{OsRng, TryRngCore};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// The current wall clock in milliseconds.
+    fn current_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as u64
+    }
+
+    /// I2P-base64 (alphabet `A-Za-z0-9-~`, `=` padding) encoder for the
+    /// address the runtime's identity check reads.
+    fn i2p_b64_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+        let mut output = String::new();
+        for chunk in bytes.chunks(3) {
+            let mut n: u32 = 0;
+            for byte in chunk {
+                n = (n << 8) | u32::from(*byte);
+            }
+            n <<= 8 * (3 - chunk.len());
+            let digits = match chunk.len() {
+                1 => 2,
+                2 => 3,
+                _ => 4,
+            };
+            for index in 0..digits {
+                output.push(ALPHABET[((n >> (18 - 6 * index)) & 0x3f) as usize] as char);
+            }
+            for _ in digits..4 {
+                output.push('=');
+            }
+        }
+        output
+    }
+
+    /// Builds identity material the runtime **accepts**.
+    ///
+    /// The runtime refuses an empty or unbound RouterInfo: it verifies the
+    /// record's signature, checks that the identity hash matches the one it
+    /// was handed, and requires an SSU2 address bound to the static and the
+    /// introduction keys. The test therefore signs a real record instead of
+    /// asserting against a placeholder the runtime rejects.
+    fn identity_material() -> i2pr_runtime::Ssu2IdentityMaterial {
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = bundle.identity().hash().expect("hash");
+        let static_key = X25519PrivateKey::generate(&mut OsRng).expect("static");
+        let static_public_bytes = static_key.public_bytes();
+        let mut intro_bytes = [0_u8; 32];
+        loop {
+            OsRng.try_fill_bytes(&mut intro_bytes).expect("rng");
+            if intro_bytes.iter().any(|byte| *byte != 0) {
+                break;
+            }
+        }
+        let options = Mapping::from_entries(vec![
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("port".to_string(), "43000".to_string()),
+            ("v".to_string(), "2".to_string()),
+            ("s".to_string(), i2p_b64_encode(&static_public_bytes)),
+            ("i".to_string(), i2p_b64_encode(&intro_bytes)),
+        ])
+        .expect("options");
+        let address = RouterAddress::new(
+            10,
+            Date::from_millis(current_millis()),
+            "SSU2".to_string(),
+            options,
+        )
+        .expect("address");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(current_millis()),
+                vec![address],
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign");
+        i2pr_runtime::Ssu2IdentityMaterial {
+            router_hash: hash,
+            static_secret_bytes: *static_key.secret_bytes(),
+            intro_key: i2pr_runtime::IntroKey::new(intro_bytes),
+            router_info: info
+                .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+                .expect("encode"),
+        }
+    }
+
     #[test]
     fn a_disabled_owner_refuses_every_window() {
         let mut owner = RelayRequesterOwner::new(
             false,
             i2pr_runtime::Ssu2RuntimeService::new(
                 i2pr_runtime::Ssu2RuntimeConfig::default(),
-                i2pr_runtime::Ssu2IdentityMaterial {
-                    router_hash: i2pr_proto::Hash::from_bytes([1_u8; 32]),
-                    static_secret_bytes: [2_u8; 32],
-                    intro_key: i2pr_runtime::IntroKey::new([3_u8; 32]),
-                    router_info: Vec::new(),
-                },
+                identity_material(),
             )
             .expect("runtime"),
             std::sync::Arc::new(StubSigner),

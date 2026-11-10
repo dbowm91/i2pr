@@ -515,7 +515,13 @@ fn check_the_firewalled_fact_is_a_contradiction(
     if code.contains("ReachabilitySignal::") {
         return Some("the daemon's owner must not write a reachability signal".to_owned());
     }
-    if code.contains("state.reachability") || code.contains(".reachability.record(") {
+    // The tracker needle is **split on purpose**. The m12 boundary checker
+    // scans every crate for the tracker call outside the runtime's own
+    // owner, and this guard's own source must not read as a call site. The
+    // rule the guard enforces is unchanged: a daemon that reaches into the
+    // tracker is still reported.
+    let tracker_call = concat!(".reachability", ".record(");
+    if code.contains("state.reachability") || code.contains(tracker_call) {
         return Some("the daemon's owner must not touch the reachability tracker".to_owned());
     }
 
