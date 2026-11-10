@@ -2778,3 +2778,26 @@ evidence = [
     "plans/implementation/network-participation/532-the-router-must-answer-a-relay-introduction.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.relay-establishment"
+protocol = "ssu2"
+structure = "the-router-must-establish-a-session-with-the-peer-it-reached-through-the-relay"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 533 makes the router able to **establish** a session with the peer it reached through a relay, which is the last step of the SSU2 relay exchange and the one the roadmap's completion clause names: "so that a firewalled peer is reachable through it". The exchange itself was already complete in shape -- Plan 531 gave the requester its role and Plan 532 gave the target its role -- but it ended at a hole punch, and three gaps stood in the way. The accept's token was **inert**: the target drew it from the daemon's own randomness while the only possible consumer is the target's responder, whose authority is the runtime's `TokenStore` -- a table the token was never issued into, so the responder would have refused its own token as unknown. An early hole punch was **refused and lost**: the transport's requester table requires the accept before a hole punch, the punch travels one hop and the accept two, so on loopback the punch arrives first, and the daemon collapsed the refusal into a generic transport refusal after the event had been consumed. And there was **no establishment**: nothing read the accept's endpoint and token, nothing read the target's validated static and introduction keys, and nothing dialled the target -- while the transport's own documentation already named the design, that the caller dials via the standard establishment path with the HolePunch token and never a relay-specific fake session. The plan closes all three. The **token** is now issued by the runtime's own responder table (`crates/i2pr-runtime/src/ssu2_runtime.rs`), bound to the requester's **exact** source address, with the runtime's randomness; the daemon's own draw is removed, so a token a responder could never accept is no longer produced. The **deferral** is the requester owner's: a punch that arrives before its accept is **held** in a bounded table, not refused, and presented again through the transport's own seam once the accept is correlated -- the transport's wrong-role rule is untouched and still enforced, and it is the **deferral signal** rather than a failure. The **establishment** is the runtime's ordinary establishment path with an explicit token: the accept's endpoint is the target's own bound endpoint and the target's static and introduction keys come from its **validated** RouterInfo through the transport's strict parser, and the whole target is checked against the **qualification profile**, so the relay establishment cannot widen the router's reach. The establishment runs on a **bounded, owned task** under the service's child scope (`crates/i2pr-daemon/src/relay_establishment_task.rs`), because a session establishment is an await and the daemon's `select!` loop must never block on a handshake; the handoff between the requester owner and the task is bounded and a full handoff returns the material to the owner under a counted reason rather than dropping it silently. The transport's relay state machines are **used, not edited**: the plan changes no transport file at all. The daemon writes **no** reachability signal of its own: a peer reached through a relay is reachable **through the relay**, not directly, so the establishment gains no corroborating class and the corroboration count is unchanged. **No configuration key is added** -- the establishment rides `ssu2.relay_requester` and the token issuance rides `ssu2.relay_target`, and both stay default **off** and refused at parse time without `ssu2.enabled`. Every refusal is a typed, counted reason (`crates/i2pr-daemon/src/relay_establishment.rs`), and no refusal writes into a peer's record. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (the router's SSU2 dial target is loopback-only and the private-LAN variant accepts only RFC1918 IPv4 -- Plan 431's bound); the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/relay_establishment.rs",
+    "crates/i2pr-daemon/src/relay_establishment_task.rs",
+    "crates/i2pr-daemon/src/relay_requester.rs",
+    "crates/i2pr-daemon/src/relay_target.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_establishment.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_establishment_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/533-the-router-must-establish-a-session-with-the-peer-it-reached-through-the-relay.md",
+]
+advertised = false

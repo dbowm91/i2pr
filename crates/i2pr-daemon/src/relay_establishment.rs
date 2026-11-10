@@ -111,6 +111,15 @@ pub struct RelayEstablishmentCounters {
     pub establishments_received: u64,
     /// Establishments that reached an authenticated session.
     pub establishments_established: u64,
+    /// Establishments whose session was established **on the accept's
+    /// token**.
+    ///
+    /// The runtime's flag says a token was presented rather than the
+    /// tokenless path taken. It is true only when the responder consumed
+    /// the token this router presented: the responder's own table is the
+    /// authority, and a token it did not issue, or one presented twice or
+    /// from another address, is refused there.
+    pub establishments_with_token: u64,
     /// Refusals because the operator left the opt-in off.
     pub refusals_disabled: u64,
     /// Refusals because the target's record is not in the store.
@@ -205,7 +214,14 @@ impl RelayEstablishmentOwner {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayEstablishmentOutcome {
     /// The peer was reached: the session is authenticated.
-    Established,
+    ///
+    /// `used_token` says whether the session was established on the
+    /// accept's **token** rather than on the tokenless path. It is true
+    /// only when the responder consumed the token this router presented:
+    /// the responder's own table is the authority, and a token it did not
+    /// issue, or one presented twice or from another address, is refused
+    /// there.
+    Established { used_token: bool },
     /// The establishment was refused, with the reason.
     Refused(RelayEstablishmentRefusal),
 }
@@ -290,9 +306,14 @@ pub async fn drive_relay_establishment(
         .dial_ssu2_with_token(target, token, dial_timeout, cancellation)
         .await
     {
-        Ok(_) => {
+        Ok(link) => {
             owner.counters.establishments_established += 1;
-            RelayEstablishmentOutcome::Established
+            if link.used_cached_token {
+                owner.counters.establishments_with_token += 1;
+            }
+            RelayEstablishmentOutcome::Established {
+                used_token: link.used_cached_token,
+            }
         }
         Err(i2pr_runtime::Ssu2DialOutcome::Cancelled) => {
             owner.refuse(RelayEstablishmentRefusal::Cancelled);
