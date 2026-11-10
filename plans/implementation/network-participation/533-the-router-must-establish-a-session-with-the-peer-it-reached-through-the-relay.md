@@ -639,3 +639,137 @@ ends at a hole punch.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, implementation findings
+
+The implementation found seven things the plan did not know. Each is recorded
+here; **§3 is evidence and is not rewritten**, and every correction to a
+closed plan's claim lives in §17.4 and in the registry's row.
+
+1. **The target role needed no randomness of its own.** The daemon's
+   `draw_nonzero_token` was the target owner's only use of entropy, so
+   removing it left `drive_relay_target` and `drain_target_events` with a
+   `rng` parameter they could not use. The plan's §6.2 said the draw would be
+   removed but did not say what would happen to the parameter. Both
+   signatures lost it, and Plan 532's lane was changed **mechanically** to
+   match: one call site loses its argument, the fixture's `rng` field is
+   removed, and two local bindings go with it. Plan 532's **guard** is
+   untouched — it never named the randomness.
+
+2. **The runtime needed no new flag.** The plan's §6.1 assumed the
+   establishment would need its own "the token was used" signal. It does not:
+   `Ssu2EstablishedLink::used_cached_token` already means *"a token was
+   presented rather than the tokenless path"*, and the explicit token reuses
+   the transport's existing `DialPhase::CachedToken` phase. The
+   establishment's counters therefore count the sessions established **on the
+   token** using the runtime's own flag.
+
+3. **The responder's table cannot refuse for capacity.** `TokenStore::issue`
+   **evicts deterministically** when a quota is full rather than refusing, so
+   the only real refusals are a zero draw and a poisoned lock. The plan's
+   §6.1 named a "the store refused" arm; the runtime's `EstablishmentRefused`
+   is the poisoned-lock case, and the zero draw is the plan's existing
+   `NoRandomness`.
+
+4. **The token is reachable from one of the responder's two call sites.**
+   `Responder::on_session_request` is entered from the admitted path and from
+   the stateless-Retry path. A **nonzero** token never reaches the Retry
+   path — that path answers a *tokenless* request — so the establishment's
+   token is consumed by the admitted path only, and the Retry path is
+   untouched.
+
+5. **A refused token does not by itself prevent a session.** The runtime's
+   cached-token **grace** is 1.5 seconds, and a dial that has made no progress
+   within it falls back to the tokenless path, which obtains a fresh Retry.
+   A token the responder refused therefore shows up as a dial that completes
+   **without** the token, not as a dial that hangs. The lane's negative rows
+   consequently assert the **responder's own refusal counter**
+   (`Ssu2Snapshot::token_rejections`) and not merely the dial's failure —
+   a failed dial alone would not distinguish a refused token from an
+   unreachable peer.
+
+6. **The runtime's snapshot already carries the decisive observable.**
+   `token_rejections` is documented as *"Token validations rejected
+   (unknown/expired/reused/source)"*. That single counter is the honest proof
+   of the token's **one-use** and **source-bound** properties, because it is
+   incremented by the responder that refused — the authority — and not by the
+   initiator that offered.
+
+7. **The establishment's task reads the router's authoritative store the way
+   every other daemon service does.** The daemon's `Bootstrap` is the store,
+   `Bootstrap::store_mut` exists, and the establishment's task takes the
+   bootstrap exactly as the peer pool's task does. The lane therefore builds a
+   real `Bootstrap` and runs the **production** task against it, rather than
+   a stand-in.
+
+8. **The establishment needed two refusal reasons, not one.** The plan's
+   §6.3 named one reason for an establishment the requester could not
+   prepare. The implementation distinguishes **two**: `EstablishmentUnavailable`
+   for an accept that carried no endpoint or no token, or a full
+   establishment table, and `EstablishmentQueueFull` for a handoff the task
+   could not take. They are different conditions with different owners — the
+   first is about the accept, the second about the handoff — and each is
+   counted under its own reason.
+
+### 17.3 — 2026-11-11, citation drift
+
+The plan of record's §3 was written against the tree at the registration
+commit `bfe80fd8`. The implementation added code ahead of some of the lines
+§3 cites, so the **line numbers** drifted. §3 is evidence and is **not
+rewritten**; the table below is the additive pointer from each original
+citation to the line that now carries the same content. Three of the drifted
+citations name code the plan itself **removed**, and those are marked as
+such rather than pointed at.
+
+| The plan's citation | The citation now | What the line is |
+| --- | --- | --- |
+| `crates/i2pr-daemon/src/relay_target.rs:467` | **removed** | `let Some(token) = draw_nonzero_token(rng) else {` |
+| `crates/i2pr-daemon/src/relay_target.rs:522` | **removed** | `fn draw_nonzero_token(rng: &mut rand_chacha::ChaCha8Rng) -> Option<u64` |
+| `crates/i2pr-daemon/src/relay_target.rs:471` | `crates/i2pr-daemon/src/relay_target.rs:504` | `let Ok(accept) = i2pr_runtime::RelayResponseBlock::accept(` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:1497` | `crates/i2pr-runtime/src/ssu2_runtime.rs:1505` | `token_store: TokenStore,` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6795` | `crates/i2pr-runtime/src/ssu2_runtime.rs:6906` | `let (_, actions) = match responder.on_session_request(` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6532` | `crates/i2pr-runtime/src/ssu2_runtime.rs:6643` | `&mut state.token_store,` |
+| `crates/i2pr-daemon/src/relay_requester.rs:910` | `crates/i2pr-daemon/src/relay_requester.rs:1039` | `pub fn on_hole_punch(` |
+| `crates/i2pr-daemon/src/relay_requester.rs:1143` | `crates/i2pr-daemon/src/relay_requester.rs:1417` | `fn map_relay_error(error: i2pr_runtime::RelayError) -> RelayRequesterR` |
+| `crates/i2pr-daemon/src/ssu2_relay_drain.rs:198` | `crates/i2pr-daemon/src/ssu2_relay_drain.rs:223` | `i2pr_runtime::Ssu2InboundRequesterEvent::HolePunch(inbound) => {` |
+| `crates/i2pr-daemon/src/relay_target.rs:493` | `crates/i2pr-daemon/src/relay_target.rs:526` | `match owner.runtime.stage_relay_hole_punch(` |
+| `crates/i2pr-daemon/src/relay_target.rs:483` | `crates/i2pr-daemon/src/relay_target.rs:516` | `if owner` |
+| `crates/i2pr-daemon/src/relay_requester.rs:574` | `crates/i2pr-daemon/src/relay_requester.rs:658` | `live: BTreeMap<u32, LiveRelayRequest>,` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:4795` | `crates/i2pr-runtime/src/ssu2_runtime.rs:4848` | `pub async fn dial_ssu2(` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5574` | `crates/i2pr-runtime/src/ssu2_runtime.rs:5685` | `fn take_cached_token_locked(state: &mut ServiceState, peer: &PeerId, n` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:4866` | **removed** | `let cached = take_cached_token_locked(&mut state, &target.peer(), now_` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5589` | `crates/i2pr-runtime/src/ssu2_runtime.rs:5700` | `fn note_cached_token_locked(` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5815` | `crates/i2pr-runtime/src/ssu2_runtime.rs:5926` | `note_cached_token_locked(` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:7447` | `crates/i2pr-runtime/src/ssu2_runtime.rs:7558` | `note_cached_token_locked(state, &peer, token, u64::from(expires), now_` |
+
+### 17.4 — 2026-11-11, the corrections to the closed plans' claims
+
+**No closed closure record is rewritten.** The corrections live here and in
+the registry's row.
+
+- **Plan 532's closure record** (`plans/closure/network-participation/532-status.md`)
+  recorded, under *"What the plan did not close"*, that *"The **requester's
+  establishment dial** that would consume the accept's token is **not in this
+  tree**"* and that *"The **requester owner has no deferred-punch buffer**"*.
+  **Both are discharged by this plan.** The accept's token is now issued by
+  the target's own responder table and consumed by it, and the requester
+  owner holds an early hole punch and presents it again once the accept is
+  correlated. Plan 532's **Medium** finding (the missing deferred-punch
+  buffer) and its **Low** finding 1 (the token's absent consumer) are
+  **closed**, and its **Low** finding 2 (the target role's dependence on the
+  bootstrap's store) is **unchanged**: the establishment's task has the same
+  dependency and reads the same store.
+- **Plan 532's closure record** also recorded that *"the production drain and
+  the production requester owner are unchanged"* and that the lane *"holds one
+  punch aside until the accept is correlated"*. That remains true of Plan
+  532's own lane, which keeps its hold as an **isolation of the target
+  role**; what changes is that the **production** path no longer needs the
+  hold, and Plan 533's lane proves it.
+- **Plan 532's closure record** named the successor: *"the successor that
+  completes the requester's establishment path (the token's consumer and the
+  deferred punch)"*. That successor is this plan.
+- **Plan 531's closure record** recorded that the requester role's honest
+  limit was that the tree had *"no way to record that fact"* about a
+  firewalled peer being reachable. That limit was discharged by Plan 531
+  itself; this plan adds the **session** the fact refers to, and changes
+  nothing Plan 531 recorded.

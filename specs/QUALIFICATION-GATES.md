@@ -1898,3 +1898,48 @@ one punch aside until the accept is correlated and presents it afterwards. The
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology, and the **production** SSU2 peer-test driver stays
 unbuilt.
+
+## 32. The router establishes a session with the peer it reached through the relay (Plan 533)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G33.1 | the owner and the task are the **daemon's** and the mechanics stay in the **runtime**: the runtime issues the token from its own responder table, and the daemon re-implements neither | `crates/i2pr-daemon/tests/ssu2_relay_establishment_boundary.rs`, `the_owner_is_the_daemons_and_the_mechanics_the_runtimes` |
+| G33.2 | the accept's token is issued by the runtime's responder table, and the daemon draws **no** token of its own | the same guard file, `the_token_is_issued_by_the_runtimes_responder_table` |
+| G33.3 | the token is bound to the **requester's** exact source address, taken from the introduction | the same guard file, `the_token_is_bound_to_the_requesters_source` |
+| G33.4 | the establishment is the **ordinary** establishment path: no relay-specific session, no bypass of the responder's verification, and the cached-token path is skipped for the explicit token | the same guard file, `the_establishment_is_the_ordinary_establishment_path` |
+| G33.5 | the dial target's keys come from the **validated** store through the transport's strict parser, and unvalidated bytes are never parsed | the same guard file, `the_dial_target_comes_from_the_validated_store` |
+| G33.6 | the dial target obeys the **qualification profile**, so the relay establishment cannot widen the router's reach | the same guard file, `the_dial_target_obeys_the_qualification_profile` |
+| G33.7 | the deferred punch is **bounded** and re-driven once the accept is correlated, and the transport's wrong-role refusal is the deferral signal rather than a refusal | the same guard file, `the_deferred_punch_is_bounded_and_re_driven` |
+| G33.8 | the handoff to the task is **bounded**, and a full handoff returns the material to the owner under a counted reason | the same guard file, `the_handoff_to_the_task_is_bounded` |
+| G33.9 | the daemon's `select!` loop never awaits a handshake: the task is spawned under the service's own child scope | the same guard file, `the_tick_never_awaits_a_handshake` |
+| G33.10 | **no** configuration key is added: the establishment rides the requester role's own opt-in | the same guard file, `no_configuration_key_is_added` |
+| G33.11 | the daemon writes **no** reachability signal of its own | the same guard file, `the_daemon_writes_no_reachability_signal` |
+| G33.12 | the transport's relay state machines and its token table are untouched | the same guard file, `the_transports_relay_machines_and_token_table_are_untouched` |
+| G33.13 | the requester role stays an explicit opt-in, off by default and refused without the SSU2 service | `crates/i2pr-daemon/tests/ssu2_relay_establishment.rs`, `the_establishment_rides_the_requester_role_and_adds_no_key` |
+| G33.14 | the requester **establishes an authenticated session** with the peer it reached, the early punch was **held** and re-driven, and the corroboration count is **unchanged** | the same lane file, `the_requester_establishes_a_session_with_the_peer_it_reached` |
+| G33.15 | the accept carries a token the target's **own responder** issued, and the establishment's material names the peer and the endpoint the router was relayed to | the same lane file, `the_accept_carries_a_token_the_targets_own_responder_issued` |
+| G33.16 | the token is **one-use** and **source-bound**: a second presentation and a presentation from another address are each refused by the responder and counted | the same lane file, `the_token_is_one_use_and_the_responder_refuses_the_second`, `a_token_presented_from_another_address_is_refused` |
+| G33.17 | every refusal is typed and counted by reason, and the reads never mutate the store | the same lane file, `every_refusal_is_typed_and_counted_and_writes_nothing` |
+| G33.18 | every guard rule has an inverted probe that fires it, and a probe that removes the item it names, so every rule **fails closed** | the same guard file, the `the_guard_reports_*` and `the_guard_fails_closed_when_*` rows |
+
+Every gate above is **local**. The lane drives three **real** daemon-owned SSU2
+routers over real loopback UDP — a requester, an introducer and a target — so
+the establishment is **earned** rather than asserted: the accept's token is
+issued by the target's own responder and consumed by it, the early hole punch
+is held and re-driven, and the requester ends the exchange holding an
+authenticated session with the peer it was relayed to.
+
+The guard is the authority for the **shape**: that the token is issued by the
+runtime's responder table and bound to the requester's source, that the
+establishment is the ordinary establishment path, that the dial target's keys
+come from the validated store and obey the qualification profile, that the
+deferral is bounded and re-driven, that the handoff is bounded and never a
+silent drop, that the relay tick never awaits a handshake, that no
+configuration key is added, that the daemon writes no reachability signal, and
+that the transport's relay machines and token table are untouched.
+
+The delivery stays confined to the **controlled loopback profile**, the
+**production** SSU2 peer-test driver stays unbuilt, the `B` advertisement and
+the `caps=f` advertisement stay with their owners, and the **stock-peer** half
+of this surface remains blocked externally on Plan 493's authorized two-host
+topology.

@@ -4193,3 +4193,57 @@ this refresh:
   type 5 (`m11_transit_tunnels` row, `specs/support.toml:370`).
 - No Encrypted LeaseSet2 capability is advertised and no live interoperability is claimed.
   Full Proposal 170 conformance is not claimed.
+
+## The requester's establishment (Plan 533)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets the peer's **introducer** do the reaching — and the requester
+then has to **open the session** with the peer it was relayed to. That last
+step is what Plan 533 adds; the exchange itself was already complete in shape
+after Plans 531 and 532.
+
+**Three gaps stood in the way, and all three are now closed.**
+
+- The accept's token was **inert**: the target drew it from the daemon's own
+  randomness, while the only possible consumer is the target's responder,
+  whose authority is the runtime's token table. The token is now issued by
+  that table, bound to the requester's **exact** source address.
+- An early hole punch was **refused and lost**: the transport requires the
+  accept before a hole punch, and the punch travels one hop while the accept
+  travels two. The requester owner now **holds** the punch and presents it
+  again once the accept is correlated.
+- There was **no establishment**: nothing read the accept's endpoint and
+  token, nothing read the target's validated keys, and nothing dialled.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_requester.rs`
+holds the policy: which target, which introducer, when — and now the
+**deferral** and the **establishment material**. The deferral is a bounded
+table of hole punches that arrived before their accept; the transport's
+wrong-role refusal is the **deferral signal**, not a failure, and the held
+punch is presented again through the transport's own seam once the accept
+lands. The establishment material is the accept's endpoint and token, kept on
+the live request and published when the exchange completes.
+
+**The establishment's owner is the daemon's too.**
+`crates/i2pr-daemon/src/relay_establishment.rs` reads the target's **validated**
+RouterInfo out of the authoritative store, takes the target's static and
+introduction keys from that validated record through the transport's strict
+parser, builds the dial target under the **qualification profile**, and
+presents the accept's token. It holds no socket and dials nothing itself.
+
+**The task is the daemon's, and it is owned.**
+`crates/i2pr-daemon/src/relay_establishment_task.rs` runs the establishment on
+a task of its own under the service's child scope, because a session
+establishment is an await and the daemon's `select!` loop must never block on
+a handshake — the relay tick is a 100 ms cadence. The handoff between the
+requester owner and the task is **bounded**, and a full handoff returns the
+material to the owner under a counted reason rather than dropping it silently.
+The bootstrap's lock is released before the dial, so a slow handshake can never
+hold the router's NetDB.
+
+**What this does not do.** The daemon writes **no** reachability signal of its
+own: a peer reached through a relay is reachable *through the relay*, not
+directly, so the establishment gains no corroborating class and the
+corroboration count is unchanged. No configuration key is added — the
+establishment rides `ssu2.relay_requester` and the token issuance rides
+`ssu2.relay_target`, and both stay default off.

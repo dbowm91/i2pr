@@ -2613,6 +2613,12 @@ advertised count stays **zero**: Plan 532 makes the router able to answer a
 relay introduction when it is the peer an introducer named, and the surface is
 internal and non-advertised.
 
+**Plan 533 adds one surface** — `daemon.relay-establishment` — so the inventory
+holds **126 surfaces, 121 experimental, 4 deferred, 1 ready, 0 advertised**. The
+advertised count stays **zero**: Plan 533 makes the router able to establish a
+session with the peer it reached through a relay, and the surface is internal
+and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4109,6 +4115,92 @@ punch after the accept. The delivery is confined to the **controlled loopback
 profile** — the router's SSU2 dial target is loopback-only and the private-LAN
 variant accepts only RFC1918 IPv4 — which is Plan 431's bound. The
 requester's **validated** RouterInfo must be in the authoritative store. The
+**production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and
+the `caps=f` advertisement stay with their owners; and the **stock-peer** half
+needs Plan 493's authorized two-host topology.
+
+## The router must establish a session with the peer it reached through the relay (Plan 533)
+
+The SSU2 relay exchange was complete in **shape** and not in **effect**. Plan
+531 gave the requester its role and Plan 532 gave the target its role, and
+Plan 532's lane drove all three routers over real loopback UDP — but the
+exchange ended at a hole punch, and the requester never opened a session with
+the peer it had been relayed to. This is the clause the roadmap's completion
+definition names: *"so that a firewalled peer is reachable through it"*.
+
+**Three gaps stood in the way.**
+
+- The accept's token was **inert**. The target drew it from the daemon's own
+  randomness, while the only possible consumer is the target's **responder**,
+  whose authority is the runtime's `TokenStore`
+  (`crates/i2pr-runtime/src/ssu2_runtime.rs`). A token that was never issued
+  into that table is refused by the responder as unknown, so the value the
+  accept carried had no consumer at all.
+- An early hole punch was **refused and lost**. The transport's requester
+  table requires the accept before a hole punch
+  (`crates/i2pr-transport-ssu2/src/relay.rs:582`), and the punch travels
+  **one** hop while the accept travels **two** — the introducer must receive,
+  verify and forward it — so on loopback the punch arrives first. The daemon
+  collapsed the refusal into a generic transport refusal after the event had
+  already been consumed.
+- There was **no establishment**. Nothing read the accept's endpoint and
+  token, nothing read the target's validated static and introduction keys,
+  and nothing dialled the target — while the transport's own documentation
+  already named the design: *"the caller dials via the standard establishment
+  path with the HolePunch token — never a relay-specific fake session"*.
+
+**The token is now issued by the responder that will consume it.** The runtime
+issues the establishment token from its **own** responder table, bound to the
+requester's **exact** source address, with the runtime's randomness. The
+daemon's own draw is removed, so a token a responder could never accept is no
+longer produced. The binding is the whole security property of the
+establishment, and it is enforced by the transport's own table: exact address,
+one use, and a 30-second lifetime.
+
+**The early punch is held, not refused.** The deferral lives in the daemon's
+requester owner, which sees the punch and the accept on the same handoff. The
+transport's wrong-role rule is untouched and still enforced; it is the
+**deferral signal** rather than a failure, and the held punch is presented
+again through the transport's own seam once the accept is correlated. The hold
+is bounded, and its overflow is counted under its own reason.
+
+**The establishment is the ordinary establishment path.** The accept's
+endpoint is the target's own bound endpoint and the target's static and
+introduction keys come from its **validated** RouterInfo through the
+transport's strict parser; the whole target is checked against the
+**qualification profile**, so the relay establishment cannot widen the
+router's reach. The dial presents the accept's token explicitly, and the
+runtime's cached-token path is skipped for it — an older cached entry must
+never shadow the accept's token, and the cache is left for the dial it was
+issued for.
+
+**The establishment runs on a bounded, owned task.** A session establishment
+is an await, and the daemon's `select!` loop must never block on a handshake:
+the relay tick is a 100 ms cadence and a handshake is measured in seconds. The
+establishment therefore runs on a task of its own under the service's child
+scope, so it is owned, cancelled and joined with the service. The handoff
+between the requester owner and the task is bounded, and a full handoff
+returns the material to the owner under a counted reason — it is never
+dropped silently.
+
+**The exchange completes and the peer is reached.** The lane drives three real
+routers over real loopback UDP: the early punch is held and re-driven, the
+target's responder consumes the accept's token, and the requester holds an
+**authenticated session** with the peer it was relayed to. The token is
+**one-use** and **source-bound**, and both refusals are counted by the
+runtime's own responder. The corroboration count is **unchanged** and the
+recorded state is `Firewalled`: a peer reached through a relay is reachable
+*through the relay*, not directly.
+
+**What is not claimed.** The transport's relay state machines are **used, not
+edited**: the plan changes no transport file at all. **No configuration key is
+added** — the establishment rides `ssu2.relay_requester` and the token
+issuance rides `ssu2.relay_target`, and both stay default **off** and refused
+at parse time without `ssu2.enabled`. The daemon writes **no** reachability
+signal of its own. The delivery is confined to the **controlled loopback
+profile** — the router's SSU2 dial target is loopback-only and the private-LAN
+variant accepts only RFC1918 IPv4 — which is Plan 431's bound. The target's
+**validated** RouterInfo must be in the authoritative store. The
 **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and
 the `caps=f` advertisement stay with their owners; and the **stock-peer** half
 needs Plan 493's authorized two-host topology.

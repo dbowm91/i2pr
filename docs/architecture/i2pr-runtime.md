@@ -1554,3 +1554,32 @@ integration tests across the 4 files in `tests/` — 162 total.
   `plans/closure/ssu2/158-status.md`, `159-status.md`, `160-status.md`,
   `161-status.md`, `162-status.md`; `plans/closure/floodfill/282-status.md`,
   `283-status.md`; `plans/closure/network-participation/499-status.md`.
+
+## The establishment's mechanics (Plan 533)
+
+The runtime owns the establishment's mechanics: the responder's token table,
+the initiator's token presentation, and the one dial path both share.
+
+**The responder's table issues the token.**
+`Ssu2RuntimeService::issue_relay_establishment_token` draws eight random
+bytes from the runtime's own entropy and issues them from the service state's
+`TokenStore`, bound to the requester's exact source address and with no bound
+responder connection id — the responder mints a fresh one at SessionCreated,
+exactly as it does for a data-phase `NewToken`. The table is the **only**
+authority on a presented token: `TokenStore::consume` refuses an unknown
+value, an expired one, a reused one, and one presented from any other address.
+A token the daemon drew for itself would be in no table, and the responder
+would refuse it as unknown — which is the defect Plan 533 closes.
+
+**The initiator presents it.** `Ssu2RuntimeService::dial_ssu2_with_token` is
+the one dial path with an explicit token, and `dial_ssu2` delegates to it with
+none. When an explicit token is presented the **cached-token path is
+skipped**: the cache is a FIFO over the tokens peers announced, so an older
+cached entry would be presented instead and the responder would refuse it as
+unknown — a failure that has nothing to do with the peer's health. The cached
+entry is left untouched for the dial it was issued for.
+
+**The mechanics stay the runtime's.** The establishment is the ordinary SSU2
+handshake: the same `Initiator`, the same responder, the same transcript and
+the same authentication. No relay-specific session is created and the
+responder's verification is never bypassed.
