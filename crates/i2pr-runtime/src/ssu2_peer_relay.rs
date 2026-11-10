@@ -1027,6 +1027,17 @@ impl Ssu2PeerRelayService {
             )
     }
 
+    /// Consumes one pending relay introduction (Plan 532).
+    ///
+    /// The transport's target table owns the pending introduction; this
+    /// releases it after the hole punch has been emitted, so a replayed
+    /// introduction cannot produce a second emission.
+    pub fn consume_target_intro(&self, nonce: u32) {
+        if let Ok(mut target) = self.target.lock() {
+            target.consume(nonce);
+        }
+    }
+
     /// Inserts one authenticated introducer record.
     pub fn insert_introducer(
         &self,

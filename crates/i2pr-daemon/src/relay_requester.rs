@@ -524,15 +524,26 @@ impl LocalIdentitySigner {
     pub fn new(bundle: std::sync::Arc<i2pr_crypto::RouterIdentityBundle>) -> Self {
         Self { bundle }
     }
-}
 
-impl RelayRequestSigner for LocalIdentitySigner {
-    fn sign_relay_request(&self, preimage: &[u8]) -> Option<Vec<u8>> {
+    /// Signs one preimage with the router's own identity key.
+    ///
+    /// The seed never leaves the bundle: the seam signs one preimage and
+    /// returns the signature bytes, so no caller can copy the seed into a
+    /// struct, a log or an assertion. Plan 532's target owner signs its
+    /// accept through this same seam, so there is **one** implementation
+    /// of the router's own signing.
+    pub fn sign(&self, preimage: &[u8]) -> Option<Vec<u8>> {
         self.bundle
             .signing_key()
             .sign(preimage)
             .ok()
             .map(|value| value.as_bytes().to_vec())
+    }
+}
+
+impl RelayRequestSigner for LocalIdentitySigner {
+    fn sign_relay_request(&self, preimage: &[u8]) -> Option<Vec<u8>> {
+        self.sign(preimage)
     }
 }
 

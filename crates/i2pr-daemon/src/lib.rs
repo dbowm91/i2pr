@@ -49,6 +49,7 @@ pub mod peer_pool_task;
 pub mod peer_reconcile;
 pub mod peer_test;
 pub mod relay_requester;
+pub mod relay_target;
 pub mod router_i2np;
 pub mod router_info_publication;
 pub mod router_info_publication_task;
@@ -2567,6 +2568,13 @@ impl NormalSsu2Owner {
         }
     }
 
+    fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        match self {
+            Self::Router(handle) => handle.try_next_target_event(),
+            Self::Groups(product) => product.try_next_target_event(),
+        }
+    }
+
     async fn process_group_inbound(
         &mut self,
         inbound: &i2pr_runtime::Ssu2InboundI2np,
@@ -2606,6 +2614,12 @@ impl crate::ssu2_relay_drain::RelayEventSource for NormalSsu2Owner {
 impl crate::ssu2_relay_drain::RequesterEventSource for NormalSsu2Owner {
     fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
         NormalSsu2Owner::try_next_requester_event(self)
+    }
+}
+
+impl crate::ssu2_relay_drain::TargetEventSource for NormalSsu2Owner {
+    fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        NormalSsu2Owner::try_next_target_event(self)
     }
 }
 
@@ -4813,6 +4827,38 @@ fn register_ssu2_service(
                         }
                         _ => None,
                     };
+                    // Plan 532: the SSU2 target (Charlie) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.relay_target`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner, answers no introduction and stages no hole
+                    // punch.
+                    let mut target_rng = if ssu2_config.relay_target {
+                        rand_chacha::ChaCha8Rng::try_from_os_rng().ok()
+                    } else {
+                        None
+                    };
+                    let mut target = match (ssu2_config.relay_target, target_rng.as_mut()) {
+                        (true, Some(rng)) => {
+                            // The router's **own** identity key signs the
+                            // accept, so the target owner and the
+                            // requester owner share one signer and one
+                            // implementation of the router's signing.
+                            let signer = std::sync::Arc::new(
+                                crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
+                                    &bundle,
+                                )),
+                            );
+                            let _ = rng;
+                            Some(crate::relay_target::RelayTargetOwner::new(
+                                true,
+                                owner.handle().service().clone(),
+                                signer,
+                            ))
+                        }
+                        _ => None,
+                    };
                     if !owner
                         .handle()
                         .delivery()
@@ -5569,6 +5615,48 @@ fn register_ssu2_service(
                                             refused = drained.refused,
                                             firewalled = drained.firewalled,
                                             "SSU2 requester relay handoff drained"
+                                        );
+                                    }
+                                }
+                                // Plan 532: the target (Charlie) role.
+                                //
+                                // The target's inbound introductions have
+                                // their own bounded handoff and its answer
+                                // runs on the same tick, so both halves of
+                                // the exchange share one cadence. The owner
+                                // holds no task, no timer, no listener and
+                                // no socket: the tick is the only thing that
+                                // moves it.
+                                if let Some(target) = target.as_mut()
+                                    && let Some(bootstrap) = bootstrap.as_ref()
+                                    && let Ok(guard) = bootstrap.lock()
+                                    && let Some(rng) = target_rng.as_mut()
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let now_secs = now_ms / 1_000;
+                                    let drained = crate::ssu2_relay_drain::drain_target_events(
+                                        &mut owner,
+                                        target,
+                                        guard.store(),
+                                        rng,
+                                        now_secs,
+                                        now_ms,
+                                    );
+                                    if drained.drained > 0 {
+                                        // Counts only: the refusal keys are
+                                        // stable reason labels, and no peer
+                                        // identity is logged.
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            answered = drained.answered,
+                                            refused = drained.refused,
+                                            replays = drained.replays,
+                                            "SSU2 target relay handoff drained"
                                         );
                                     }
                                 }

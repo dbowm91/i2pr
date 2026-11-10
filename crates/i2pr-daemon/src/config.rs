@@ -646,6 +646,8 @@ struct RawSsu2Config {
     introducer_request: bool,
     #[serde(default = "default_ssu2_relay_requester")]
     relay_requester: bool,
+    #[serde(default = "default_ssu2_relay_target")]
+    relay_target: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
     /// Optional destination for the Plan 476 sanitized local receipt
@@ -688,6 +690,7 @@ impl Default for RawSsu2Config {
             peer_pool: default_ssu2_peer_pool(),
             introducer_request: default_ssu2_introducer_request(),
             relay_requester: default_ssu2_relay_requester(),
+            relay_target: default_ssu2_relay_target(),
             qualification_profile: default_ssu2_qualification_profile(),
             qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
@@ -1452,6 +1455,13 @@ const fn default_ssu2_relay_requester() -> bool {
     false
 }
 
+/// Plan 532: answering a relay introduction is an explicit opt-in and it
+/// is **off** by default, so a router that has not asked to answer one
+/// never answers one.
+const fn default_ssu2_relay_target() -> bool {
+    false
+}
+
 /// Plan 522: the outbound peer-session pool is an explicit opt-in
 /// and it is **off** by default, so a router that has not asked to
 /// hold peer sessions never generates handshake traffic.
@@ -2090,6 +2100,16 @@ pub struct Ssu2Config {
     /// over a session the router already holds. It generates no traffic
     /// when it is off, and it never runs outside the SSU2 service.
     pub relay_requester: bool,
+    /// Whether this router answers a relay introduction when it is the
+    /// target (default false).
+    ///
+    /// Plan 532: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, a router that is introduced to a requester
+    /// verifies the introduction and answers it: the accept goes to the
+    /// introducer on the session the introduction arrived on, and the hole
+    /// punch goes to the requester out of session. It generates no
+    /// traffic when it is off, and it never runs outside the SSU2 service.
+    pub relay_target: bool,
     /// Explicit socket profile. `PrivateLan` does not authorize publication.
     pub qualification_profile: Ssu2QualificationProfile,
     /// Optional destination for the Plan 476 sanitized local receipt
@@ -3539,6 +3559,16 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "the relay requester requires ssu2.enabled = true",
         });
     }
+    // Plan 532: answering a relay introduction runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because the answer rides
+    // a session the router already holds, and it is refused rather than
+    // silently inert when the service is off.
+    if raw.relay_target && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.relay_target",
+            reason: "the relay target requires ssu2.enabled = true",
+        });
+    }
     // Plan 490: the introducer role is available behind an explicit
     // opt-in. It still requires the SSU2 service itself to run, and it
     // never grants advertisement.
@@ -3670,6 +3700,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         introducer_request: raw.introducer_request,
         introducer_service: raw.introducer_service,
         relay_requester: raw.relay_requester,
+        relay_target: raw.relay_target,
         qualification_profile: if private_lan {
             Ssu2QualificationProfile::PrivateLan
         } else {

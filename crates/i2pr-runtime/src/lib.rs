@@ -112,12 +112,13 @@ pub use ssu2_runtime::{
     SSU2_TOKEN_REQUESTS_PER_SECOND, Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget,
     Ssu2DialTargetError, Ssu2EstablishedLink, Ssu2IdentityMaterial, Ssu2InboundBatch,
     Ssu2InboundHolePunch, Ssu2InboundI2np, Ssu2InboundRelay, Ssu2InboundRequesterEvent,
-    Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition, Ssu2PeerTestEvidenceError,
-    Ssu2PeerTestMessages, Ssu2PeerTestVerdict, Ssu2PublicationForm, Ssu2PublicationMaterial,
-    Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent, Ssu2RelayQueueError,
-    Ssu2RelayRequestState, Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines,
-    Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot,
-    Ssu2SocketConfig, Ssu2TagRequestError, Ssu2TestFaults,
+    Ssu2InboundTarget, Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition,
+    Ssu2PeerTestEvidenceError, Ssu2PeerTestMessages, Ssu2PeerTestVerdict, Ssu2PublicationForm,
+    Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RelayCounters, Ssu2RelayEvent,
+    Ssu2RelayQueueError, Ssu2RelayRequestState, Ssu2RelayTargetError, Ssu2RuntimeConfig,
+    Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService,
+    Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig, Ssu2TagRequestError,
+    Ssu2TestFaults,
 };
 // Plan 490 daemon-owned SSU2 relay re-exports: the daemon owns the
 // introducer (Bob) role and must reach the relay blocks without a

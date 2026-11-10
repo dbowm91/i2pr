@@ -1555,6 +1555,7 @@ pub fn ssu2_runtime_config_from(
         // explicit `ssu2.relay_requester` opt-in. It stays
         // non-advertised and default-off.
         relay_requester: config.relay_requester,
+        relay_target: config.relay_target,
     };
     runtime
         .validate()
@@ -2345,6 +2346,11 @@ impl Ssu2DaemonHandle {
     /// relay requests, and an out-of-session HolePunch.
     pub fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
         self.handle.try_next_requester_event()
+    }
+
+    /// Receives the next inbound target event without waiting (Plan 532).
+    pub fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        self.handle.try_next_target_event()
     }
 
     /// Receives the next inbound message and dispatches it through

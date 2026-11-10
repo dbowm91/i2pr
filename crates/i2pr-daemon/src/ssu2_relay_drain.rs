@@ -222,6 +222,74 @@ pub fn drain_requester_events(
     outcome
 }
 
+/// The source the target drain pulls from.
+///
+/// Plan 532. It is a **pull** seam like [`RequesterEventSource`]: it cannot
+/// enqueue into the runtime's handoff, and it cannot bypass the target
+/// owner's verification, because the transport verifies every event the
+/// owner hands to it.
+pub trait TargetEventSource {
+    /// Returns the next pending target event, or `None` when none is
+    /// pending.
+    fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget>;
+}
+
+/// The counted outcome of one target drain pass.
+///
+/// Counts only: no peer hash, no key, no tag, no payload.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TargetDrainOutcome {
+    /// Target events pulled from the source.
+    pub drained: u64,
+    /// Introductions the target owner answered.
+    pub answered: u64,
+    /// Introductions the target owner refused.
+    pub refused: u64,
+    /// Replayed introductions the transport suppressed.
+    pub replays: u64,
+}
+
+/// Drains the runtime's target handoff into the target (Charlie) role
+/// owner.
+///
+/// Plan 532. The pass is bounded by [`MAX_RELAY_DRAIN_PER_PASS`]: it pulls
+/// until the source is empty or the bound is reached, whichever comes
+/// first. A refusal is a counted outcome, not an error -- the drain never
+/// fails the caller's loop.
+///
+/// The requester's validated record is read out of the **authoritative**
+/// store the caller passes. A requester this router does not hold yields
+/// a typed refusal, and the refusal writes **nothing** into the
+/// requester's profile.
+pub fn drain_target_events(
+    source: &mut dyn TargetEventSource,
+    owner: &mut crate::relay_target::RelayTargetOwner,
+    store: &i2pr_netdb::RouterInfoStore,
+    rng: &mut rand_chacha::ChaCha8Rng,
+    now_secs: u64,
+    now_ms: u64,
+) -> TargetDrainOutcome {
+    let mut outcome = TargetDrainOutcome::default();
+    for _ in 0..MAX_RELAY_DRAIN_PER_PASS {
+        let Some(event) = source.try_next_target_event() else {
+            break;
+        };
+        outcome.drained = outcome.drained.saturating_add(1);
+        match crate::relay_target::drive_relay_target(owner, store, &event, rng, now_secs, now_ms) {
+            crate::relay_target::RelayTargetOutcome::Answered => {
+                outcome.answered = outcome.answered.saturating_add(1);
+            }
+            crate::relay_target::RelayTargetOutcome::ReplaySuppressed => {
+                outcome.replays = outcome.replays.saturating_add(1);
+            }
+            crate::relay_target::RelayTargetOutcome::Refused(_) => {
+                outcome.refused = outcome.refused.saturating_add(1);
+            }
+        }
+    }
+    outcome
+}
+
 /// The counted outcome of one drain pass.
 ///
 /// Counts only: no peer hash, no key, no tag, no payload.

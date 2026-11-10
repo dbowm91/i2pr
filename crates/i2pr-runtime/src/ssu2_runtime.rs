@@ -462,6 +462,17 @@ pub struct Ssu2RuntimeConfig {
     /// `ssu2.relay_requester` key (default off) is the only production
     /// gate.
     pub relay_requester: bool,
+
+    /// Enables the target (Charlie) role inside the peer/relay
+    /// coordinator (Plan 532).
+    ///
+    /// When false (default) the runtime owns no target path at all: an
+    /// inbound Relay Introduction is routed to the introducer's handoff
+    /// exactly as before, and the introducer owner refuses it as not its
+    /// role. When true, the introduction reaches the target's own bounded
+    /// handoff and the target's seam is live; the daemon's
+    /// `ssu2.relay_target` key (default off) is the only production gate.
+    pub relay_target: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -938,6 +949,26 @@ pub struct Ssu2InboundHolePunch {
     pub message: i2pr_transport_ssu2::HolePunchMessage,
 }
 
+/// One authenticated inbound Relay Introduction (Plan 532).
+///
+/// A Relay Introduction is addressed to **this** router: the introducer
+/// forwards it to the peer its tag named. It therefore belongs to the
+/// target role and not to the introducer's, and it has its own bounded
+/// handoff so the introducer's drain stays byte-identical.
+///
+/// The runtime decodes and authenticates the datagram; it never
+/// interprets the relay role. The daemon's target owner owns the
+/// disposition.
+#[derive(Debug)]
+pub struct Ssu2InboundTarget {
+    /// Exact link the block arrived on.
+    pub link_id: LinkId,
+    /// The authenticated introducer the block arrived from.
+    pub peer: PeerId,
+    /// The decoded Relay Introduction.
+    pub block: i2pr_transport_ssu2::RelayIntroBlock,
+}
+
 /// The requester's state after one correlated Relay Response (Plan 531).
 ///
 /// The transport owns the state machine; the runtime names the two
@@ -951,6 +982,40 @@ pub enum Ssu2RelayRequestState {
     AwaitingHolePunch,
     /// The peer refused; the request is finished.
     Refused,
+}
+
+/// The reason an outbound relay hole punch could not be staged (Plan 532).
+///
+/// The vocabulary is count-only: it names no peer, no address, no key and
+/// no nonce.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2RelayTargetError {
+    /// The destination is outside the router's own dial profile.
+    DestinationRefused,
+    /// The router can name no bound endpoint for the response's address.
+    NoLocalEndpoint,
+    /// The transport refused to build the hole punch.
+    TransportRefused,
+    /// The router's own randomness produced no usable packet number.
+    NoRandomness,
+    /// The runtime's bounded staging queue refused the datagram.
+    StagingRefused,
+}
+
+impl Ssu2RelayTargetError {
+    /// A stable, count-only reason key for this refusal.
+    ///
+    /// The key is a label only: it carries no peer identity, no address and
+    /// no payload. It exists so a refusal can be counted by reason.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::DestinationRefused => "destination-refused",
+            Self::NoLocalEndpoint => "no-local-endpoint",
+            Self::TransportRefused => "transport-refused",
+            Self::NoRandomness => "no-randomness",
+            Self::StagingRefused => "staging-refused",
+        }
+    }
 }
 
 /// The reason an outbound relay block could not be carried.
@@ -1042,6 +1107,8 @@ pub struct Ssu2InboundBatch {
     pub relay: Vec<Ssu2InboundRelay>,
     /// Authenticated inbound requester events (Plan 531).
     pub requester: Vec<Ssu2InboundRequesterEvent>,
+    /// Authenticated inbound target events (Plan 532).
+    pub target: Vec<Ssu2InboundTarget>,
 }
 
 /// Privacy-safe SSU2 service counters (counts only, no payloads, keys,
@@ -1707,6 +1774,11 @@ pub struct Ssu2ServiceHandle {
     /// router's own requests belongs to the requester role. It carries
     /// the same ceiling as the relay handoff.
     requester: mpsc::Receiver<Ssu2InboundRequesterEvent>,
+    /// Plan 532: the bounded target handoff. A Relay Introduction is
+    /// addressed to this router, so it belongs to the target role and not
+    /// to the introducer's. It carries the same ceiling as the relay
+    /// handoff.
+    target: mpsc::Receiver<Ssu2InboundTarget>,
     local_v4: Option<SocketAddr>,
     local_v6: Option<SocketAddr>,
 }
@@ -1761,6 +1833,15 @@ impl Ssu2ServiceHandle {
     /// disconnected.
     pub fn try_next_requester_event(&mut self) -> Option<Ssu2InboundRequesterEvent> {
         self.requester.try_recv().ok()
+    }
+
+    /// Receives the next inbound target event without waiting (Plan 532).
+    ///
+    /// The target's events have their own bounded handoff with the same
+    /// ceiling as the relay handoff (`max_inbound_relay_queue`, default
+    /// 16). Returns `None` when the handoff is empty **or** disconnected.
+    pub fn try_next_target_event(&mut self) -> Option<Ssu2InboundTarget> {
+        self.target.try_recv().ok()
     }
 
     /// Returns the bound IPv4 socket address, if any.
@@ -2144,6 +2225,11 @@ impl Ssu2RuntimeService {
         // never one per peer.
         let (requester_tx, requester_rx) =
             mpsc::channel(self.shared.config.limits.max_inbound_relay_queue);
+        // Plan 532: a Relay Introduction is addressed to this router, so it
+        // belongs to the target role and not to the introducer's. It has
+        // its own bounded handoff, with the relay handoff's ceiling.
+        let (target_tx, target_rx) =
+            mpsc::channel(self.shared.config.limits.max_inbound_relay_queue);
         {
             let mut guard = self
                 .shared
@@ -2178,10 +2264,19 @@ impl Ssu2RuntimeService {
             let inbound_tx = inbound_tx.clone();
             let relay_tx = relay_tx.clone();
             let requester_tx = requester_tx.clone();
+            let target_tx = target_tx.clone();
             scope
                 .spawn(move |child| async move {
                     service
-                        .run_loop(child, socket, inbound_tx, relay_tx, requester_tx, true)
+                        .run_loop(
+                            child,
+                            socket,
+                            inbound_tx,
+                            relay_tx,
+                            requester_tx,
+                            target_tx,
+                            true,
+                        )
                         .await
                 })
                 .map_err(|_| Ssu2BindError::Scope)?;
@@ -2189,6 +2284,7 @@ impl Ssu2RuntimeService {
         if let Some((socket, _)) = bound_v6 {
             let service = self.clone();
             let requester_tx = requester_tx.clone();
+            let target_tx = target_tx.clone();
             scope
                 .spawn(move |child| async move {
                     service
@@ -2198,6 +2294,7 @@ impl Ssu2RuntimeService {
                             inbound_tx.clone(),
                             relay_tx.clone(),
                             requester_tx.clone(),
+                            target_tx.clone(),
                             false,
                         )
                         .await
@@ -2222,6 +2319,7 @@ impl Ssu2RuntimeService {
             inbound: inbound_rx,
             relay: relay_rx,
             requester: requester_rx,
+            target: target_rx,
             local_v4,
             local_v6,
         })
@@ -2799,6 +2897,75 @@ impl Ssu2RuntimeService {
         )
     }
 
+    /// Consumes one pending relay introduction (Plan 532).
+    ///
+    /// The transport's target table owns the pending introduction, and the
+    /// transport's own replay suppression is the authority on it. This
+    /// releases it after the hole punch has been emitted, so a replayed
+    /// introduction cannot produce a second emission.
+    pub fn consume_target_intro(&self, nonce: u32) {
+        self.shared.peer_relay.consume_target_intro(nonce);
+    }
+
+    /// Stages one outbound HolePunch for a relay introduction (Plan 532).
+    ///
+    /// The datagram is built with the transport's own codec -- so the
+    /// transport's state machine is used and not re-implemented -- and it
+    /// is sealed under the **requester's** introduction key. It travels
+    /// **out of session** and is staged through the runtime's existing
+    /// bounded queue, so it is bounded by the runtime's own limits and
+    /// never becomes an unbounded send.
+    ///
+    /// `charlie_endpoint` is this router's own bound endpoint, which the
+    /// Address block carries; `requester_endpoint` is where the datagram
+    /// goes, and it is checked against the router's own dial profile, so
+    /// the target role cannot widen the router's reach.
+    pub fn stage_relay_hole_punch(
+        &self,
+        requester_intro: &IntroKey,
+        nonce: u32,
+        charlie_endpoint: Ssu2Endpoint,
+        requester_endpoint: Ssu2Endpoint,
+        response: i2pr_transport_ssu2::RelayResponseBlock,
+        now_secs: u64,
+    ) -> Result<(), Ssu2RelayTargetError> {
+        let destination = requester_endpoint.socket_addr();
+        if !is_dial_profile_address(&destination) {
+            return Err(Ssu2RelayTargetError::DestinationRefused);
+        }
+        let (destination_id, source_id) = i2pr_transport_ssu2::hole_punch_conn_ids(nonce);
+        let packet_number = random_u32_nonzero().map_err(|_| Ssu2RelayTargetError::NoRandomness)?;
+        let timestamp = u32::try_from(now_secs).map_err(|_| Ssu2RelayTargetError::NoRandomness)?;
+        let datagram = i2pr_transport_ssu2::build_hole_punch(
+            requester_intro,
+            source_id,
+            destination_id,
+            packet_number,
+            timestamp,
+            charlie_endpoint,
+            response,
+        )
+        .map_err(|_| Ssu2RelayTargetError::TransportRefused)?;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| Ssu2RelayTargetError::StagingRefused)?;
+        if !stage_class_locked(
+            &mut state,
+            &self.shared.config.limits,
+            &self.shared.counters,
+            datagram,
+            destination,
+            BandwidthTrafficClass::Control,
+            TracedI2np::default(),
+        ) {
+            return Err(Ssu2RelayTargetError::StagingRefused);
+        }
+        self.shared.notify.notify_one();
+        Ok(())
+    }
+
     /// Starts one relay request (Alice, the requester side; Plan 531).
     ///
     /// The transport's requester table owns the correlation, the
@@ -2900,6 +3067,15 @@ impl Ssu2RuntimeService {
     pub fn local_bound_endpoint(&self) -> Option<Ssu2Endpoint> {
         self.bound_endpoint(AddressFamily::Ipv4)
             .or_else(|| self.bound_endpoint(AddressFamily::Ipv6))
+    }
+
+    /// Returns this router's own 32-byte hash (Plan 532).
+    ///
+    /// The target role's verification is bound to the target, and the
+    /// target is this router, so the runtime is the one that knows the
+    /// hash. It is the router's identity hash and never an address.
+    pub fn local_router_hash(&self) -> [u8; 32] {
+        *self.shared.local_peer.hash().as_bytes()
     }
 
     /// Builds the specification's introducer-only publication material
@@ -5241,6 +5417,23 @@ fn stage_actions_locked(
     true
 }
 
+/// Returns whether a destination is inside the router's own dial profile.
+///
+/// The profile is the **union** of the two dial constructors the runtime
+/// offers: a loopback address of either family, or an RFC1918 IPv4 literal
+/// for the private-LAN variant. A hole punch may go nowhere else, so the
+/// target role can never widen the router's reach beyond what the router
+/// already dials.
+fn is_dial_profile_address(address: &SocketAddr) -> bool {
+    if address.port() == 0 || address.ip().is_unspecified() {
+        return false;
+    }
+    match address.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+        std::net::IpAddr::V6(ip) => ip.is_loopback(),
+    }
+}
+
 fn stage_one_locked(
     state: &mut ServiceState,
     limits: &Ssu2RuntimeLimits,
@@ -7162,6 +7355,7 @@ impl Ssu2RuntimeService {
         inbound: &mut Vec<Ssu2InboundI2np>,
         relay: &mut Vec<Ssu2InboundRelay>,
         requester: &mut Vec<Ssu2InboundRequesterEvent>,
+        target: &mut Vec<Ssu2InboundTarget>,
     ) {
         let mut remove = None;
         let outcome = match state.active.get_mut(&link_id) {
@@ -7288,11 +7482,27 @@ impl Ssu2RuntimeService {
                     });
                 }
                 SessionEvent::RelayIntro(block) => {
-                    relay.push(Ssu2InboundRelay {
-                        link_id,
-                        peer,
-                        event: Ssu2RelayEvent::Intro(block),
-                    });
+                    // Plan 532: a Relay Introduction is addressed to THIS
+                    // router -- the introducer forwarded it to the peer
+                    // its tag named -- so it belongs to the target role
+                    // and not to the introducer's. The route exists only
+                    // while the operator's target opt-in is on; with the
+                    // opt-in off the introduction keeps travelling the
+                    // introducer's handoff exactly as before, and the
+                    // introducer owner refuses it as not its role.
+                    if self.shared.config.relay_target {
+                        target.push(Ssu2InboundTarget {
+                            link_id,
+                            peer,
+                            block,
+                        });
+                    } else {
+                        relay.push(Ssu2InboundRelay {
+                            link_id,
+                            peer,
+                            event: Ssu2RelayEvent::Intro(block),
+                        });
+                    }
                 }
                 SessionEvent::RelayResponse(block) => {
                     // Plan 531: a Relay Response that correlates with one
@@ -7534,6 +7744,7 @@ impl Ssu2RuntimeService {
                 &mut batch.i2np,
                 &mut batch.relay,
                 &mut batch.requester,
+                &mut batch.target,
             );
             return batch;
         }
@@ -7568,6 +7779,7 @@ impl Ssu2RuntimeService {
                 &mut batch.i2np,
                 &mut batch.relay,
                 &mut batch.requester,
+                &mut batch.target,
             );
             return batch;
         }
@@ -8524,6 +8736,7 @@ impl Ssu2RuntimeService {
 
     /// One supervised loop task per bound socket family: receive
     /// classification plus central-scheduler duties over shared state.
+    #[allow(clippy::too_many_arguments)]
     async fn run_loop(
         &self,
         child: CancellationToken,
@@ -8531,6 +8744,7 @@ impl Ssu2RuntimeService {
         inbound_tx: mpsc::Sender<Ssu2InboundI2np>,
         relay_tx: mpsc::Sender<Ssu2InboundRelay>,
         requester_tx: mpsc::Sender<Ssu2InboundRequesterEvent>,
+        target_tx: mpsc::Sender<Ssu2InboundTarget>,
         is_v4: bool,
     ) -> Result<(), ChildTaskFailure> {
         let mut buffer = vec![0_u8; 2048];
@@ -8555,7 +8769,13 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
+                    self.deliver_inbound(
+                        inbound,
+                        &inbound_tx,
+                        &relay_tx,
+                        &requester_tx,
+                        &target_tx,
+                    );
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
                 result = socket.recv_from(&mut buffer) => {
@@ -8579,7 +8799,13 @@ impl Ssu2RuntimeService {
                                 continue;
                             }
                             let inbound = self.handle_datagram(&buffer[..len], source, is_v4, local_addr);
-                            self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
+                            self.deliver_inbound(
+                                inbound,
+                                &inbound_tx,
+                                &relay_tx,
+                                &requester_tx,
+                                &target_tx,
+                            );
                             self.flush_staged(&socket, is_v4, &child).await;
                         }
                         Err(_) => {
@@ -8594,7 +8820,13 @@ impl Ssu2RuntimeService {
                     let inbound = self.shared.state.lock().map(|mut state| {
                         self.drive_timeouts_locked(&mut state)
                     }).unwrap_or_default();
-                    self.deliver_inbound(inbound, &inbound_tx, &relay_tx, &requester_tx);
+                    self.deliver_inbound(
+                        inbound,
+                        &inbound_tx,
+                        &relay_tx,
+                        &requester_tx,
+                        &target_tx,
+                    );
                     self.flush_staged(&socket, is_v4, &child).await;
                 }
             }
@@ -8607,6 +8839,7 @@ impl Ssu2RuntimeService {
         inbound_tx: &mpsc::Sender<Ssu2InboundI2np>,
         relay_tx: &mpsc::Sender<Ssu2InboundRelay>,
         requester_tx: &mpsc::Sender<Ssu2InboundRequesterEvent>,
+        target_tx: &mpsc::Sender<Ssu2InboundTarget>,
     ) {
         for message in inbound.i2np {
             if inbound_tx.try_send(message).is_err() {
@@ -8626,6 +8859,14 @@ impl Ssu2RuntimeService {
         }
         for event in inbound.requester {
             if requester_tx.try_send(event).is_err() {
+                self.shared
+                    .counters
+                    .inbound_queue_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        for event in inbound.target {
+            if target_tx.try_send(event).is_err() {
                 self.shared
                     .counters
                     .inbound_queue_drops
@@ -9012,12 +9253,16 @@ mod tests {
         let (_requester_tx, requester_rx) = mpsc::channel::<Ssu2InboundRequesterEvent>(
             Ssu2RuntimeConfig::default().limits.max_inbound_relay_queue,
         );
+        let (_target_tx, target_rx) = mpsc::channel::<Ssu2InboundTarget>(
+            Ssu2RuntimeConfig::default().limits.max_inbound_relay_queue,
+        );
         (
             Ssu2ServiceHandle {
                 service,
                 inbound: inbound_rx,
                 relay: relay_rx,
                 requester: requester_rx,
+                target: target_rx,
                 local_v4: None,
                 local_v6: None,
             },

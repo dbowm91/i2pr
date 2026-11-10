@@ -3762,6 +3762,11 @@ impl ServiceProduct {
         self.inner.ssu2_handle.try_next_requester_event()
     }
 
+    /// Receives the next inbound target event without waiting (Plan 532).
+    pub(crate) fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        self.inner.ssu2_handle.try_next_target_event()
+    }
+
     /// Plan 504 — drives the creator-side tunnel-liveness scheduler on
     /// the product tick.
     ///
