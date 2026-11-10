@@ -1056,6 +1056,41 @@ number of **distinct** corroborating classes behind it, the family's expiry
 and the family itself, so a reader can see how much a claim rests on and not
 only what the claim is.
 
+## The observation path (Plan 529)
+
+The runtime's promotion seam is the one place where an authenticated peer
+becomes a session, so it is the one place where an authenticated peer's
+**observation** of this router's address can be recorded:
+
+```rust
+let observed_address = auth.observed_address();
+let mut session = i2pr_transport_ssu2::Ssu2Session::new(config, auth.into_keys()).ok()?;
+if let Some(observed) = observed_address {
+    self.note_observed_external_address_locked(state, observed);
+}
+```
+
+The value is captured before the authenticated session is consumed, and
+recorded **only once a session was really established**: a corroboration
+class is never counted for a session that does not exist. The comparison
+itself is Plan 527's, unchanged — it compares the observation with the
+router's **own bound socket**, refuses a family with no bound socket, and
+records a disagreement as Plan 528's firewalled verdict.
+
+**What this unlocks.** The class-1 corroboration —
+`AuthenticatedPeerObservedExternalAddress` — had **no field producer** outside
+the controlled profile before this plan, and the corroboration floor needs
+three distinct supporting classes before `Reachable`. A real handshake now
+produces one, on both sides: the initiator learns the address at which the
+responder sees it, and the responder learns the address at which the
+initiator sees it.
+
+**What the runtime does not do.** It adds no task, no timer and no listener,
+and no configuration key. The responder's configuration no longer carries a
+bound address: the value the responder publishes comes from the request's
+source, and the value it **compares** against is its own bound socket, so
+the two are never confused.
+
 ## The verdict path (Plan 528)
 
 The runtime owns the router's reachability, so the runtime is where a

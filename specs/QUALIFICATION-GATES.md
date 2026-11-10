@@ -1749,3 +1749,30 @@ a real loopback socket, and never injects the flag the daemon's gate reads.
 The **stock-peer** half of this surface remains blocked externally on Plan
 493's authorized two-host topology, and the **production** SSU2 peer-test
 driver stays unbuilt.
+
+## 28. The router learns the address at which a peer sees it (Plan 529)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G29.1 | the responder's Address block carries the **observed source address** | `crates/i2pr-daemon/tests/ssu2_observed_address_boundary.rs`, `the_responder_reports_the_observed_source_address`; and `crates/i2pr-transport-ssu2/tests/handshake.rs`, `the_session_created_carries_the_initiator_address_not_the_responder_own` |
+| G29.2 | the initiator **reads** the Address block out of the Session Created payload | the same guard file, `the_initiator_reads_the_address_block` |
+| G29.3 | the observation reaches Plan 527's comparison, against the router's **own bound socket** | the same guard file, `the_observation_reaches_the_comparison`; and `crates/i2pr-daemon/tests/ssu2_observed_address.rs`, `a_handshake_corroborates_the_routers_own_reachability` |
+| G29.4 | the transport's reachability **model** is untouched, with exactly five corroboration classes | the same guard file, `the_reachability_model_is_untouched` |
+| G29.5 | the plan adds no configuration key and no infrastructure | the same guard file, `no_new_key_and_no_infrastructure` |
+| G29.6 | the Retry's Address block is still **not** a reachability observation | the same guard file, `the_retry_is_not_a_reachability_observation` |
+| G29.7 | the Session Request carries Alice's view of Bob, and the responder reads it | `crates/i2pr-transport-ssu2/tests/handshake.rs`, `the_session_request_carries_alices_view_of_bob_and_the_responder_reads_it` |
+| G29.8 | the Retry carries the **same** observed source address as the Session Created | the same transport test file, `the_retry_carries_the_observed_source_address` |
+| G29.9 | a session with **no** Address block is established and records nothing | the same transport test file, `a_session_with_no_address_block_is_established_and_records_nothing` |
+| G29.10 | a **disagreement** is the router's own firewalled verdict | `crates/i2pr-daemon/tests/ssu2_observed_address.rs`, `a_disagreement_is_the_routers_own_firewalled_verdict` |
+| G29.11 | the **corroboration floor** is unchanged: one class corroborates but does not confirm | the same lane file, `the_corroboration_floor_is_unchanged` |
+| G29.12 | the comparison is against the router's **own bound socket** | the same lane file, `the_comparison_is_against_the_routers_own_bound_socket` |
+| G29.13 | the transport's reachability **model** is untouched: one handshake is one observation | the same lane file, `the_transports_reachability_model_is_untouched` |
+
+Every gate above is **local**: the lane drives a **real** SSU2 handshake
+between two real runtime routers over real loopback UDP, and never injects
+the observation the tracker reads. The disagreement row puts a **real UDP
+relay** between the two routers, because a peer always sees the router's
+bound socket without an address rewrite — the relay is the tree's stand-in
+for a NAT. The **stock-peer** half of this surface remains blocked
+externally on Plan 493's authorized two-host topology, and the **production**
+SSU2 peer-test driver stays unbuilt.

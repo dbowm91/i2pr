@@ -438,3 +438,139 @@ therefore has no field producer.
 
 §3 is evidence and is **not** rewritten. Any later correction is added here
 as an amendment, additively.
+
+### 17.2 — 2026-11-10, implementation findings
+
+The implementation settled five questions the registration left open. §3 is
+**not** rewritten; the corrections live here and in the closure record.
+
+**The responder reads the Session Request's block in a different transition
+than the one that establishes the session.** §3.2 and §6.3 said that the
+responder reads the block, without saying where. The answer is: the
+responder decrypts the Session Request in `on_session_request`, and it
+establishes the session in `on_session_confirmed` — two different
+transitions, and the payload is not in scope in the second one. The
+observation is therefore carried as **per-handshake state**, exactly like
+`initiator_conn_id` and `initiator_eph`, and it is read in the transition
+that decrypts the request. The initiator has no such problem: it reads the
+Session Created's payload in the same transition that establishes the
+session.
+
+**The responder's configuration lost its address, and with it its only use
+of the local address.** `ResponderConfig::local_address` is gone, so
+`responder_config` no longer takes a local address and no longer returns an
+`Option`. The `Option` existed only because the local address had to be
+expressible as an SSU2 endpoint; with the block built from the request's
+source, that constraint no longer applies. The runtime's three responder
+entry points keep their **fail-closed** precondition unchanged — a router
+with no bound socket address still refuses to answer — but the address is
+no longer published.
+
+**`build_retry`'s address became optional, and that is load-bearing.** The
+tree's own `parse_retry` **refuses** a Retry with no Address block, so an
+inexpressible source must not produce a *wrong* block: `build_retry` takes
+`Option<AddressBlock>` and the two Retry sites pass
+`observed_address_block(source)`. In practice a source with port 0 never
+reaches the responder — the runtime drops it before the responder sees it —
+so the Retry always carries the block. The `Option` is the honest
+expression of "no block rather than a wrong one", and it is what lets the
+plan's failure posture hold.
+
+**A disagreement is unreachable without an address rewrite.** §11.1 asked
+for a disagreement row, and the obvious way to make a peer report an address
+the router does not own is to put something between them. A plain pair of
+loopback routers cannot: the peer always sees the router's bound socket, so
+the comparison always agrees. The lane therefore puts a **real UDP relay**
+between the two routers — the tree's stand-in for a NAT. Behind it the
+disagreement is the router's own firewalled verdict on **both** sides: the
+initiator's view of the responder is the relay's address too, so neither
+router can claim to be directly reachable.
+
+**The wire-level rows live in the transport's own suite.** §11.1 put the
+Session Created, Session Request and Retry rows in "the lane", and §12
+named the lane as a daemon test. But the daemon holds **no direct
+dependency** on the transport crate and `Cargo.toml` must stay
+byte-identical, so a daemon test cannot read the transport's wire. The four
+wire-level rows therefore live in
+`crates/i2pr-transport-ssu2/tests/handshake.rs`, and the daemon lane
+carries the five rows that need the runtime. **No row was dropped**: the
+plan's §11.1 list is covered across the two files, and the gate table names
+both.
+
+**The observation is recorded only after the session exists.** §6.4 said the
+runtime routes the observed address into `note_observed_external_address_locked`.
+The implementation captures the value before the authenticated session is
+consumed and records it **after** the data-phase session was successfully
+constructed, so a corroboration class is never counted for a session that
+does not exist. `construct_session` returns `None` when the session cannot be
+built, and recording before that check would have counted a class for a
+handshake that died.
+
+### 17.3 — 2026-11-10, citation drift
+
+The plan's own production change moved lines in four files, so the citations
+in §3 no longer land on the text they quoted. The table is the **additive**
+pointer to the current text; every citation not listed there still lands
+where it did.
+
+| Citation in §3 | Now | What it points at |
+| --- | --- | --- |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:1138` | `:1212` | the Session Created's Address block — the same block, now built from the observed source |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:992` | `:1060` | the Retry's Address block — the same block, now built from the observed source |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:1251` | `:1333` | the second Retry's Address block — the same |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:851` | `:899` | `ResponderConfig` — the same struct, with the `local_address` field **removed** |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5635` | `:5661` | `responder_config` — the same builder, now without an address and without an `Option` |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:5643` | `:5661`-`:5676` | the responder's configuration — the `local_address` field is **gone** |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:668` | `:649` | `on_session_created` — the same transition |
+| `crates/i2pr-transport-ssu2/src/state_machine.rs:736` | `:772` | the NewToken read — unchanged |
+| `crates/i2pr-transport-ssu2/src/handshake.rs:536` | `:543` | the Retry parser's Address discard — unchanged |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6962` | `:6987` | the data-phase `AddressObserved` handler — unchanged |
+| `crates/i2pr-runtime/src/ssu2_runtime.rs:6963` | `:6988` | the data-phase comparison call — unchanged |
+
+The citations that still land where they did:
+`crates/i2pr-transport-ssu2/src/session.rs:1936`,
+`crates/i2pr-runtime/src/ssu2_runtime.rs:3527`,
+`crates/i2pr-transport/src/reachability.rs:226`, and the five
+`libi2pd/SSU2Session.cpp` citations (`:934`, `:999`, `:1110`, `:2067`,
+`:2072`, `:2075`).
+
+### 17.4 — 2026-11-10, the corrections to the closed plans' claims
+
+Two closed records make claims this plan's production change **corrects** or
+**discharges**. Neither closed record is rewritten; the corrections live
+here, in the closure record and in the registry row.
+
+1. **Plan 161's closure record named this defect and deferred it.**
+   `plans/closure/ssu2/161-status.md` records it as a *cosmetic note
+   (non-blocking, deferred)*: "our responder SessionCreated Address block
+   carries our own endpoint rather than the peer's observed endpoint, so
+   i2pd logs `Our external address is 127.0.0.1:44001` at info level; it
+   proceeds and establishes. Fixing the observed-address value is follow-up
+   work, not a closure blocker." **This plan is that follow-up work.** The
+   symptom Plan 161 recorded from the reference's own log line is the same
+   line the reference prints when it reads the block
+   (`libi2pd/SSU2Session.cpp:2072`), and the reference's log then carried
+   the **responder's own** address because the tree had sent it. Plan 161's
+   record is not rewritten.
+
+2. **Plan 282's closure record rejected recording handshake Address blocks
+   as observations — against the tree's wrong value.**
+   `plans/closure/floodfill/282-status.md` records the decision: "Recording
+   handshake Address blocks as observations was considered and rejected: the
+   peer's self-reported address adds no evidence independent of the dial
+   target/source, so counting it would inflate corroboration without new
+   facts." That objection was sound **against the tree as it stood**: the
+   block carried the **sender's own self-report** — the responder's own
+   bound address — so reading it back would have told the initiator nothing
+   it did not already know, and counting it would have inflated the
+   corroboration count with a fact the initiator already had. Plan 529
+   changes the block's **value**, which is exactly what the objection was
+   about. The initiator's side is now the **recipient's view of the
+   sender** — the address at which the responder sees the initiator — which
+   the initiator cannot derive by itself and which is independent of the
+   dial target. That is the NAT fact. The responder's side is the
+   initiator's view of the responder, which is the dial target; its
+   corroboration is therefore weaker, and it is recorded as such: it
+   certifies the published address against the bound socket, and its
+   **disagreement** is the responder's own firewalled fact. Plan 282's
+   record is not rewritten.

@@ -2590,6 +2590,12 @@ advertised**. The advertised count stays **zero**: Plan 528 stops the router
 from throwing its peer-test verdict away, and the surface is internal and
 non-advertised.
 
+**Plan 529 adds one surface** — `daemon.observed-address` — so the
+inventory holds **122 surfaces, 117 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 529 makes the router
+learn the address at which a peer sees it, and the surface is internal and
+non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -3655,6 +3661,62 @@ delivery is confined to the **controlled loopback profile**: the comparison
 is between two loopback addresses, so the contradiction is a **qualification**
 claim. The **stock-peer** half remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## The router must learn the address at which a peer sees it (Plan 529)
+
+The SSU2 specification's Address block carries "Alice's address, sent to Alice
+by Bob, or Bob's address, sent to Bob by Alice" — the address at which the
+**recipient** sees the **sender**. The tree sent that block with the **wrong
+value** and then **threw the answer away**.
+
+**The value was wrong.** The responder put its own bound address in the
+Session Created, which told the initiator that the initiator's address was the
+responder's. The pinned i2pd 2.61.0 does the opposite: it puts the
+initiator's remote endpoint in the Session Created
+(`libi2pd/SSU2Session.cpp:999`).
+
+**The answer was discarded.** The initiator decrypted the Session Created's
+payload and read only the NewToken announcement from it; the Address block
+was decoded and dropped. The reference reads the whole decrypted payload in
+the very same message (`libi2pd/SSU2Session.cpp:1110`), and its
+`HandleAddress` logs "SSU2: Our external address is "
+(`libi2pd/SSU2Session.cpp:2072`) and hands the address to the router
+(`libi2pd/SSU2Session.cpp:2075`).
+
+**The consequence was a missing corroboration class.** The class-1
+corroboration — an authenticated peer reporting the address at which it sees
+this router — had **no field producer** outside the controlled profile. The
+corroboration floor needs three distinct supporting classes before
+`Reachable`, so no lane could ever earn it: the router could never claim
+that it is directly reachable, because it never learned its own address from
+a peer.
+
+Plan 529 corrects the value and stops the discard. The responder's Session
+Created and its Retry carry the **observed source address** of the request
+they answer — built from the datagram's own header, never from a configured
+or bound value — and `ResponderConfig::local_address` is gone, because the
+value it held was never the right one. The initiator's Session Request now
+carries Alice's view of Bob and the responder reads it: the specification's
+block is symmetric, and the reference reads it in **both** directions
+(`libi2pd/SSU2Session.cpp:934`).
+
+**The observation reaches the tracker.** The runtime routes it into Plan
+527's seam, which compares it with the router's **own bound socket**. An
+agreement corroborates; a disagreement is Plan 528's firewalled verdict,
+unchanged. The comparison is recorded only once a session was really
+established, so a corroboration class is never counted for a session that
+does not exist.
+
+**A missing block is evidence absent.** A session with no Address block is
+established all the same and records nothing: the observation is evidence,
+not a handshake requirement.
+
+**What Plan 529 does not close.** The delivery is confined to the
+**controlled loopback profile**: the comparison is between loopback
+addresses, so the observation is a **qualification** claim. The **production**
+SSU2 peer-test driver, the **requester** side, the `B` advertisement and
+`caps=f` stay out of scope, with their owners named. The **stock-peer** half
+remains blocked externally on Plan 493's authorized two-host topology.
 
 ## The router advertises its own introducer role (Plan 526)
 

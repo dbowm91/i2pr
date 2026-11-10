@@ -210,6 +210,59 @@ Plan 527 keeps the endpoint the block already carried:
 session's block set and the transport's options are all untouched; the plan
 stops discarding a value that was already decoded and validated.
 
+## The Address block carries what the recipient sees (Plan 529)
+
+The specification's Address block (type 13) is defined as "Alice's address,
+sent to Alice by Bob, or Bob's address, sent to Bob by Alice" — the address
+at which the **recipient** sees the **sender**. The tree sent it with the
+wrong value and threw the answer away.
+
+**What the responder sends.** The responder's Session Created and its Retry
+carry the **observed source address** of the request they answer:
+
+```rust
+fn observed_address_block(source: SocketAddr) -> Option<AddressBlock> {
+    Ssu2Endpoint::from_socket_addr(source)
+        .ok()
+        .map(AddressBlock::new)
+}
+```
+
+The value comes from the datagram's own header, never from a configured or
+bound value. `ResponderConfig::local_address` is gone: the value it held was
+never the right one, and keeping a field for it would keep the wrong
+possibility open. A source that cannot be expressed as an SSU2 endpoint
+yields **no** block, so the observation is absent rather than wrong — and
+`build_retry`'s address became an `Option<AddressBlock>` for that reason.
+
+**What the initiator sends.** The specification's block is symmetric, so the
+initiator reports the address at which it sees the responder in the Session
+Request's payload, from `InitiatorConfig::remote_address`. `None` sends no
+block. The reference does not *send* it in the Session Request, but it does
+**read** it in both directions
+(`libi2pd/SSU2Session.cpp:934`), so the tree's symmetric half is
+specification-conformant and reference-compatible.
+
+**What each side reads.** The initiator reads the Address block out of the
+decrypted Session Created payload with `find_observed_address`, a sibling of
+`find_establishment_token`, and carries it on the established session as
+`observed_address`. The responder reads the Session Request's block in the
+transition that **decrypts** the request and carries it across to the
+transition that **establishes** the session, because those are two different
+transitions.
+
+**The failure posture.** A missing or malformed Address block leaves the
+session **established** and records nothing. `find_observed_address` only
+ever returns `None`; it can never terminate a session. A malformed block
+makes the whole payload unparsable, which the mandatory timestamp check has
+already rejected before the reader is consulted.
+
+**The Retry is still not an observation.** The Retry is sealed outside the
+Noise transcript, so it is a weaker fact, and `parse_retry` keeps discarding
+it. The Retry carries the same observed address — it is sent by the same
+responder for the same request, so it must not carry a different one — but
+it never reaches the reachability tracker.
+
 ## The specification's result table, transcribed (Plan 528)
 
 The SSU2 specification states the peer-test result as a **table** over the

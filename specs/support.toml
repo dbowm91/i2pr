@@ -2692,3 +2692,25 @@ evidence = [
     "plans/implementation/network-participation/528-the-routers-peer-test-verdict-must-not-be-thrown-away.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.observed-address"
+protocol = "ssu2"
+structure = "the-router-must-learn-the-address-at-which-a-peer-sees-it"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 529 makes the router learn the address at which a peer sees it. The SSU2 specification's Address block (type 13) carries "Alice's address, sent to Alice by Bob, or Bob's address, sent to Bob by Alice" -- the address at which the **recipient** sees the **sender** -- and the tree sent that block with the **wrong value**: the responder put its own bound address there, which told the initiator that the initiator's address was the responder's. The tree also **threw the answer away**: the initiator decoded the Session Created's payload and read only the NewToken announcement from it, so the Address block was decoded and discarded. The pinned i2pd 2.61.0 does the opposite on both counts: `libi2pd/SSU2Session.cpp:999` puts the initiator's remote endpoint in the Session Created, and `libi2pd/SSU2Session.cpp:1110` reads the decrypted Session Created's payload, where `HandleAddress` (`libi2pd/SSU2Session.cpp:2067`) logs "SSU2: Our external address is " (`libi2pd/SSU2Session.cpp:2072`) and calls `i2p::context.UpdateAddress` (`libi2pd/SSU2Session.cpp:2075`). The consequence was that the **class-1** corroboration -- an authenticated peer reporting the address at which it sees this router -- had **no field producer** outside the controlled profile, so `Reachable` was unreachable: the corroboration floor needs three distinct supporting classes and no lane earned them. Plan 529 corrects the value and stops the discard. The responder's Session Created and its Retry now carry the **observed source address** of the request they answer, built from the datagram's own header and never from a configured or bound value, and `ResponderConfig::local_address` is gone because the value it held was never the right one. The initiator's Session Request now carries Alice's view of Bob and the responder reads it, because the specification's block is symmetric and the reference reads it in **both** directions (`libi2pd/SSU2Session.cpp:934` reads the Session Request's payload). The initiator reads the Address block out of the decrypted Session Created payload; the responder reads the Session Request's block in the transition that decrypts the request and carries it across to the transition that establishes the session. The runtime routes the observation into Plan 527's seam, which compares it with the router's **own bound socket**: an agreement corroborates, and a disagreement is Plan 528's firewalled verdict, unchanged. The comparison is recorded only once a session was really established, so a corroboration class is never counted for a session that does not exist. A missing or malformed Address block leaves the session **established** and records nothing -- the observation is evidence, not a handshake requirement. No wire format is added or changed: the block type (13), its length (6 or 18) and its placement are exactly what the tree already sent; only the value changes, and it changes to what the specification says it must be. No configuration key is added, no default moves, and the transport's reachability **model** -- its signal kinds, its corroboration classes and its state machine -- is untouched. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery is confined to the **controlled loopback profile**, the **production** SSU2 peer-test driver and the **requester** side stay out of scope, and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-transport-ssu2/src/state_machine.rs",
+    "crates/i2pr-transport-ssu2/src/handshake.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-transport-ssu2/tests/handshake.rs",
+    "crates/i2pr-daemon/tests/ssu2_observed_address.rs",
+    "crates/i2pr-daemon/tests/ssu2_observed_address_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/529-the-router-must-learn-the-address-at-which-a-peer-sees-it.md",
+]
+advertised = false

@@ -3797,6 +3797,30 @@ reachability state is `Firewalled`, and every refusal is still counted under
 its own reason. What changed is that the state is now **reachable**, and the
 gate's flag is read from the tracker rather than injected.
 
+## The router can now learn its own address (Plan 529)
+
+The daemon does not own this surface. It owns the **reader**: the
+reachability state the daemon's firewalled gate asks on is the same state
+Plan 527 unified and Plan 528 gave a reachable meaning to, and Plan 529
+gives it a **producer** it can trust.
+
+**What changed.** The SSU2 handshake now carries the address at which the
+recipient sees the sender, the tree reads it instead of discarding it, and
+the runtime compares it with the router's own bound socket. So the
+corroboration class that had no field producer outside the controlled
+profile now has one, produced by a real handshake.
+
+**What did not change.** The daemon's firewalled gate, its refusal reasons
+and its counters are untouched. The gate still asks **only** on the state
+the tracker really holds, and a router that is not firewalled still asks
+nobody. Plan 529 changes what the tracker can hold, not who reads it.
+
+**The lane.** Two real runtime routers speak a real SSU2 handshake over real
+loopback UDP. A real UDP relay stands between them for the disagreement row,
+because a peer always sees the router's bound socket without an address
+rewrite — the relay is the tree's stand-in for a NAT. The lane never injects
+the observation the tracker reads.
+
 ## The firewalled gate can now be true (Plan 528)
 
 The gate reads the runtime's tracker:
