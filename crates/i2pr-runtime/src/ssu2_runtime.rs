@@ -4424,6 +4424,13 @@ impl Ssu2RuntimeService {
                 expected_router_hash: target.expected_router_hash(),
                 clock: ClockSkewPolicy::handshake(),
                 local_mtu: self.shared.local_mtu,
+                // Plan 529: the initiator reports the address at which
+                // it sees the responder, so the responder can compare
+                // that observation with its own bound socket. The
+                // value is the dial target's address -- the address
+                // this router actually uses to reach the responder --
+                // and never a configured or published value.
+                remote_address: Ssu2Endpoint::from_socket_addr(target.address()).ok(),
             };
             let secrets = InitiatorSecrets {
                 static_secret,
@@ -5195,7 +5202,26 @@ impl Ssu2RuntimeService {
             idle_timeout_ms: idle_ms,
             keepalive_interval_ms,
         };
+        // Plan 529: the handshake's Address block is the peer's
+        // authenticated observation of the address at which it sees
+        // this router. It is the corroboration class the runtime could
+        // not earn before: the data-phase seam existed, but no
+        // handshake ever reached it, so the observation was never
+        // produced in the field.
+        //
+        // The value is captured before the authenticated session is
+        // consumed, and recorded only once a session was really
+        // established: a corroboration class is never counted for a
+        // session that does not exist.
+        let observed_address = auth.observed_address();
         let mut session = i2pr_transport_ssu2::Ssu2Session::new(config, auth.into_keys()).ok()?;
+        // The comparison is against this router's **own bound socket**,
+        // and a disagreement is recorded as the firewalled verdict. A
+        // peer that sent no Address block produces no observation at
+        // all -- evidence absent, never a handshake failure.
+        if let Some(observed) = observed_address {
+            self.note_observed_external_address_locked(state, observed);
+        }
         // One spare token for the peer's next handshake, announced
         // in-band. Failures (RNG/table) only forfeit the cached-token
         // fast path; the Retry path always remains. Data-phase tokens
@@ -5632,16 +5658,21 @@ impl Ssu2RuntimeService {
 }
 
 impl Ssu2RuntimeService {
-    fn responder_config(&self, local_addr: SocketAddr) -> Option<ResponderConfig> {
-        let endpoint = Ssu2Endpoint::from_socket_addr(local_addr).ok()?;
-        Some(ResponderConfig {
+    fn responder_config(&self) -> ResponderConfig {
+        // Plan 529: the responder no longer publishes its own bound
+        // address. The specification's Address block carries the
+        // address at which the **recipient** sees the **sender**, so
+        // the responder's block is built from the request's source --
+        // the address at which this router sees the initiator -- and
+        // never from the responder's own bound socket. The responder's
+        // own address is what the **initiator** reports back.
+        ResponderConfig {
             static_secret: X25519PrivateKey::from_bytes(self.shared.local_static),
             intro_key: self.shared.local_intro,
             expected_peer_hash: None,
             clock: ClockSkewPolicy::handshake(),
             local_mtu: self.shared.local_mtu,
-            local_address: AddressBlock::new(endpoint),
-        })
+        }
     }
 
     fn count_drop_category(&self, category: DropCategory) {
@@ -5977,20 +6008,18 @@ impl Ssu2RuntimeService {
         if !self.check_token_request_rate(state, &source, now_ms) {
             return;
         }
-        let Some(local) = local_addr else {
+        // The runtime refuses to answer without a bound socket
+        // address: it has no local endpoint to compare an observed
+        // address against. The refusal is unchanged by Plan 529 -- only
+        // the value the responder used to publish is gone.
+        if local_addr.is_none() {
             self.shared
                 .counters
                 .cheap_drops
                 .fetch_add(1, Ordering::Relaxed);
             return;
-        };
-        let Some(config) = self.responder_config(local) else {
-            self.shared
-                .counters
-                .cheap_drops
-                .fetch_add(1, Ordering::Relaxed);
-            return;
-        };
+        }
+        let config = self.responder_config();
         let now32 = now_secs.min(u64::from(u32::MAX)) as u32;
         let Ok(local_conn_id) = random_u32_nonzero().map(u64::from) else {
             self.shared
@@ -6249,20 +6278,18 @@ impl Ssu2RuntimeService {
         if !self.check_token_request_rate(state, &source, now_ms) {
             return;
         }
-        let Some(local) = local_addr else {
+        // The runtime refuses to answer without a bound socket
+        // address: it has no local endpoint to compare an observed
+        // address against. The refusal is unchanged by Plan 529 -- only
+        // the value the responder used to publish is gone.
+        if local_addr.is_none() {
             self.shared
                 .counters
                 .cheap_drops
                 .fetch_add(1, Ordering::Relaxed);
             return;
-        };
-        let Some(config) = self.responder_config(local) else {
-            self.shared
-                .counters
-                .cheap_drops
-                .fetch_add(1, Ordering::Relaxed);
-            return;
-        };
+        }
+        let config = self.responder_config();
         let now32 = now_secs.min(u64::from(u32::MAX)) as u32;
         let params = (|| {
             let mut padding = [0_u8; 8];
@@ -6375,20 +6402,18 @@ impl Ssu2RuntimeService {
                 return;
             }
         };
-        let Some(local) = local_addr else {
+        // The runtime refuses to answer without a bound socket
+        // address: it has no local endpoint to compare an observed
+        // address against. The refusal is unchanged by Plan 529 -- only
+        // the value the responder used to publish is gone.
+        if local_addr.is_none() {
             self.shared
                 .counters
                 .cheap_drops
                 .fetch_add(1, Ordering::Relaxed);
             return;
-        };
-        let Some(config) = self.responder_config(local) else {
-            self.shared
-                .counters
-                .cheap_drops
-                .fetch_add(1, Ordering::Relaxed);
-            return;
-        };
+        }
+        let config = self.responder_config();
         let now32 = now_secs.min(u64::from(u32::MAX)) as u32;
         let mut local_conn_id = 0_u64;
         for _ in 0..8 {
@@ -7347,6 +7372,9 @@ impl Ssu2RuntimeService {
                 expected_router_hash: entry.target.expected_router_hash(),
                 clock: ClockSkewPolicy::handshake(),
                 local_mtu: self.shared.local_mtu,
+                // Plan 529: the same observation as the direct dial
+                // path, built from the same dial target.
+                remote_address: Ssu2Endpoint::from_socket_addr(entry.target.address()).ok(),
             };
             // The map key (local connection ID) is stable across the
             // fallback so in-flight responses still route.

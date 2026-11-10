@@ -62,9 +62,10 @@ pub use handshake::{
     ReplayDecision, ReplayToken, RetryMessage, RouterInfoFreshness, SessionCreatedParts,
     SessionRequestParts, TokenRequest, build_confirmed_payload, build_retry,
     build_session_confirmed, build_session_created, build_session_request, build_token_request,
-    find_establishment_token, parse_retry, parse_session_created, parse_session_request,
-    parse_token_request, prevalidate_long_datagram, require_first_router_info, require_timestamp,
-    session_confirmed_first_header, split_confirmed_jumbo, validate_router_info,
+    find_establishment_token, find_observed_address, parse_retry, parse_session_created,
+    parse_session_request, parse_token_request, prevalidate_long_datagram,
+    require_first_router_info, require_timestamp, session_confirmed_first_header,
+    split_confirmed_jumbo, validate_router_info,
 };
 pub use header::{
     DataHeader, HeaderError, HeaderForm, LongHeader, MessageType, SessionConfirmedHeader,

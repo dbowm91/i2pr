@@ -173,6 +173,7 @@ fn initiator_config(world: &World) -> InitiatorConfig {
         expected_router_hash: world.bob_hash,
         clock: ClockSkewPolicy::handshake(),
         local_mtu: 1280,
+        remote_address: Some(endpoint(BOB_SOURCE)),
     }
 }
 
@@ -183,7 +184,6 @@ fn responder_config(world: &World) -> ResponderConfig {
         expected_peer_hash: Some(world.alice_hash),
         clock: ClockSkewPolicy::handshake(),
         local_mtu: 1280,
-        local_address: AddressBlock::new(endpoint(BOB_SOURCE)),
     }
 }
 
@@ -1445,7 +1445,7 @@ fn retry_respects_amplification_budget() {
         3,
         0x0102_0304_0506_0708,
         NOW_SECS as u32,
-        address,
+        Some(address),
         None,
         vec![0x1_u8; 16],
     )
