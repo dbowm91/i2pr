@@ -28,8 +28,8 @@ use std::path::Path;
 
 use i2pr_netdb::{
     LocalRouterInfo, LocalRouterInfoBuilder, ReseedSignatureType, ReseedSignerId,
-    ReseedSignerTrustSet, RouterHash, RouterInfoStore, RouterInfoStoreConfig, TrustedSigner,
-    UnsolicitedStoreOutcome, UnsolicitedStorePolicy, ValidationContext,
+    ReseedSignerTrustSet, RouterHash, RouterInfoStore, RouterInfoStoreConfig, RouterInfoStoreStats,
+    TrustedSigner, UnsolicitedStoreOutcome, UnsolicitedStorePolicy, ValidationContext,
     handle_unsolicited_databasestore, trust_signer_from_certificate,
 };
 use i2pr_netdb_persist::{
@@ -290,7 +290,8 @@ impl Bootstrap {
     /// deterministic: the caller supplies `now`.
     pub fn prune(&mut self, now_ms: u64, window_ms: u64) -> usize {
         let removed = self.store.prune(Date::from_millis(now_ms), window_ms);
-        self.refresh_snapshot();
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         removed
     }
 
@@ -328,7 +329,8 @@ impl Bootstrap {
             UnsolicitedStorePolicy::Accept,
             ValidationContext::new(Date::from_millis(now_ms)),
         )?;
-        self.refresh_snapshot();
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         Ok(outcome)
     }
 
@@ -416,7 +418,8 @@ impl Bootstrap {
         let report = loader
             .load_into(&mut self.store, context)
             .map_err(|error| BootstrapError::PrepareDataDir(error.to_string()))?;
-        self.refresh_snapshot();
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         self.cache_report =
             if report.entries_inspected == 0 && report.invalid == 0 && report.unreadable == 0 {
                 None
@@ -440,8 +443,11 @@ impl Bootstrap {
     }
 
     fn compute_state(&mut self, policy: BootstrapPolicy) -> BootstrapState {
-        self.refresh_snapshot();
+        // Plan 538: the statistics are computed **once**. The snapshot
+        // carries the same numbers, so the decision below and the snapshot
+        // can never disagree.
         let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         if stats.record_count == 0 {
             return BootstrapState::Empty;
         }
@@ -520,7 +526,8 @@ impl Bootstrap {
                     rejected_validation: summary.rejected_validation,
                 });
                 self.snapshot.reseed_attempts = self.reseed_attempts.len();
-                self.refresh_snapshot();
+                let stats = self.store.stats();
+                self.refresh_snapshot(stats);
                 Ok(self.compute_state(policy))
             }
             Err(error) => {
@@ -550,8 +557,12 @@ impl Bootstrap {
         }
     }
 
-    fn refresh_snapshot(&mut self) {
-        let stats = self.store.stats();
+    /// Refreshes the snapshot from the statistics the caller computed.
+    ///
+    /// Plan 538: the caller computes the statistics **once** and passes them
+    /// in, so the snapshot's counts and the caller's counts are the same
+    /// numbers by construction and no operation computes them twice.
+    fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
         self.snapshot.record_count = stats.record_count;
         self.snapshot.encoded_bytes = stats.total_encoded_bytes;
         self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;

@@ -83,6 +83,13 @@ pub struct RouterInfoStoreStats {
 pub struct RouterInfoStore {
     records: BTreeMap<RouterHash, ValidatedRouterInfo>,
     total_encoded_bytes: usize,
+    /// The number of retained records that advertise the `f` capability.
+    ///
+    /// Plan 538: this is **accounted**, not derived. The store maintains it
+    /// on the same paths that maintain the byte total, so it can never
+    /// disagree with the set of retained records, and reading it costs
+    /// nothing where a scan of every record would cost the population.
+    floodfill_advertiser_count: usize,
     config: RouterInfoStoreConfig,
 }
 
@@ -101,6 +108,7 @@ impl RouterInfoStore {
         Self {
             records: BTreeMap::new(),
             total_encoded_bytes: 0,
+            floodfill_advertiser_count: 0,
             config,
         }
     }
@@ -118,6 +126,7 @@ impl RouterInfoStore {
     pub fn insert(&mut self, validated: ValidatedRouterInfo) -> InsertOutcome {
         let key = validated.key();
         let encoded_len = validated.encoded_len();
+        let incoming_floodfill = validated.advertises_floodfill();
 
         if let Some(existing) = self.records.get(&key) {
             let existing_published = existing.published();
@@ -132,6 +141,7 @@ impl RouterInfoStore {
                 return InsertOutcome::Conflict;
             }
             // incoming > existing; replacement path.
+            let existing_floodfill = existing.advertises_floodfill();
             if encoded_len > existing.encoded_len() {
                 let extra = encoded_len - existing.encoded_len();
                 if self
@@ -151,6 +161,9 @@ impl RouterInfoStore {
                 .checked_add(encoded_len)
                 .expect("accounting overflow on replace");
             self.records.insert(key, validated);
+            if existing_floodfill != incoming_floodfill {
+                self.adjust_floodfill_advertiser_count(incoming_floodfill);
+            }
             return InsertOutcome::Replaced;
         }
 
@@ -170,6 +183,9 @@ impl RouterInfoStore {
             .checked_add(encoded_len)
             .expect("accounting overflow on insert");
         self.records.insert(key, validated);
+        if incoming_floodfill {
+            self.adjust_floodfill_advertiser_count(true);
+        }
         InsertOutcome::Inserted
     }
 
@@ -195,9 +211,33 @@ impl RouterInfoStore {
                     .total_encoded_bytes
                     .checked_sub(removed.encoded_len())
                     .expect("accounting underflow on remove");
+                if removed.advertises_floodfill() {
+                    self.adjust_floodfill_advertiser_count(false);
+                }
                 true
             }
             None => false,
+        }
+    }
+
+    /// Adjusts the maintained floodfill advertiser count.
+    ///
+    /// Plan 538: the count is **accounted** on the same paths that maintain
+    /// the byte total, so it can never disagree with the set of retained
+    /// records. An adjustment that would drive the count below zero, or past
+    /// the platform's `usize` ceiling, is a defect in the accounting, and it
+    /// is refused rather than wrapped.
+    fn adjust_floodfill_advertiser_count(&mut self, add: bool) {
+        if add {
+            self.floodfill_advertiser_count = self
+                .floodfill_advertiser_count
+                .checked_add(1)
+                .expect("floodfill advertiser count overflow");
+        } else {
+            self.floodfill_advertiser_count = self
+                .floodfill_advertiser_count
+                .checked_sub(1)
+                .expect("floodfill advertiser count underflow");
         }
     }
 
@@ -222,18 +262,18 @@ impl RouterInfoStore {
     }
 
     /// Returns a privacy-safe aggregate snapshot.
+    ///
+    /// Plan 538: every number here is **maintained**, not derived, so this
+    /// method is O(1) and never walks the record map. The floodfill
+    /// advertiser count is maintained on the same paths that maintain the
+    /// byte total, so it is exact at every point in time.
     pub fn stats(&self) -> RouterInfoStoreStats {
-        let floodfill_advertiser_count = self
-            .records
-            .values()
-            .filter(|record| record.advertises_floodfill())
-            .count();
         RouterInfoStoreStats {
             record_count: self.records.len(),
             total_encoded_bytes: self.total_encoded_bytes,
             max_records: self.config.max_records,
             max_total_encoded_bytes: self.config.max_total_encoded_bytes,
-            floodfill_advertiser_count,
+            floodfill_advertiser_count: self.floodfill_advertiser_count,
         }
     }
 
