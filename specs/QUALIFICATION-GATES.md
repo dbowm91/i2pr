@@ -2224,3 +2224,38 @@ nothing is advertised, and that the predecessors' evidence is byte-identical.
 The delivery stays confined to the **controlled loopback profile**, and the
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## 40. The router's floodfill selection is not narrowed by the group provider's bound (Plan 541)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G41.1 | the selection yields **exactly** the advertisers the store's own iterator says advertise `f`, and the count matches | `crates/i2pr-daemon/tests/floodfill_selection_visibility.rs`, `the_selection_yields_exactly_the_advertisers` |
+| G41.2 | the index does not drift: an inserted advertiser is selected | the same lane file, `the_index_does_not_drift_on_an_insert` |
+| G41.3 | a replacement that **gains** the capability is selected | the same lane file, `a_replacement_that_gains_the_capability_is_selected` |
+| G41.4 | a replacement that **loses** the capability is **not** selected | the same lane file, `a_replacement_that_loses_the_capability_is_not_selected` |
+| G41.5 | a removal drops the advertiser from the selection | the same lane file, `a_removal_drops_the_advertiser_from_the_selection` |
+| G41.6 | the advertiser snapshot carries the advertisers and **not** the group provider's prefix | the same lane file, `the_snapshot_carries_the_advertisers_and_not_the_prefix` |
+| G41.7 | an advertiser **outside** the group provider's prefix is still reachable through the selection and through the snapshot | the same lane file, `an_advertiser_outside_the_prefix_is_still_reachable` |
+| G41.8 | the coordinator selects the advertiser it was fed | the same lane file, `the_coordinator_selects_the_advertiser_it_was_fed` |
+| G41.9 | the selection's order is unchanged — ascending by router hash | the same lane file, `the_selection_order_is_unchanged` |
+| G41.10 | a peer that does not advertise `f` is never selected and never reaches the snapshot | the same lane file, `a_non_advertiser_is_never_selected` |
+| G41.11 | the store **maintains** an advertiser index on every path that inserts or removes a record, the selection walks the **index** and **still filters** on the capability, the coordinator's seed and the reconcile's feed carry the **advertisers**, the group provider's bound and the three other consumers are **unchanged**, **no** configuration key or infrastructure is added, and nothing is advertised | `crates/i2pr-daemon/tests/floodfill_selection_visibility_boundary.rs`, `the_store_maintains_an_advertiser_index`, `the_selection_walks_the_index_and_still_filters`, `the_coordinator_is_fed_the_advertisers`, `the_group_providers_bound_is_unchanged` and `no_new_key_and_nothing_is_advertised` |
+| G41.12 | Plan 506's, Plan 507's, Plan 538's, Plan 539's and Plan 540's lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane computes the advertiser set
+**independently**, by walking the store's own **iterator** and applying the
+capability predicate, so the lane's expectation and the store's own bookkeeping
+are two different things that must agree. The gates that say "exactly" are
+gates about a **set** and a **number**, not about a bound.
+
+The guard is the authority for the **shape**: that the store maintains the
+index on every path that inserts or removes a record, that the selection walks
+the index and still filters, that the coordinator's seed and the reconcile's
+feed carry the advertisers, that the group provider's bound and the three other
+consumers are unchanged, that no configuration key or infrastructure is added
+and nothing is advertised, and that the predecessors' evidence is
+byte-identical.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.

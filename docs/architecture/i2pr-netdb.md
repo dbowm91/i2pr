@@ -1536,9 +1536,36 @@ never *which* records are removed, and the prune's **signature** is unchanged,
 so Plan 507's pinned call site and signature stay exactly as they are and no
 predecessor's guard is extended.
 
-**The selection paths are untouched.** `floodfill_advertisers()` still yields
-exactly the advertisers and `iter()` still yields every record: a selection
-over the floodfill advertisers is a walk by its nature.
+**The prune does not change the selection's semantics.** `floodfill_advertisers()`
+still yields exactly the advertisers and `iter()` still yields every record, and
+Plan 541 changes only how the selection *finds* the advertisers.
+
+## The store's selection walks an advertiser index (Plan 541)
+
+The store now **maintains** an **advertiser index**: an ordered set of the
+retained floodfill advertisers' hashes. The index is maintained on exactly the
+paths that maintain the record map and Plan 538's floodfill advertiser count —
+
+- the **new-key** path notes the incoming record's capability;
+- the **replacement** path notes it again, because a replacement may carry a
+  different capability set;
+- the **removal** path releases the entry with the record.
+
+The note is **idempotent**, so the count and the set can never disagree about
+which records are advertisers. The index is **never rebuilt by a scan**.
+
+**The selection walks the index.** `floodfill_advertisers()` walks the
+maintained index instead of the record map, so the walk is proportional to the
+number of advertisers rather than to the population.
+
+**The selection still filters.** The index's word never replaces the record's
+own evidence: a peer whose own record does not advertise `f` is never
+yielded, whatever the index says. The filter is what makes the selection
+**exact**, and it is the defence in depth for the index's exactness.
+
+**The advertiser snapshot is the selection's copy.**
+`floodfill_advertiser_snapshot()` publishes the advertisers' records, and the
+copy is bounded by the store's own record ceiling.
 
 ## Cross-references
 

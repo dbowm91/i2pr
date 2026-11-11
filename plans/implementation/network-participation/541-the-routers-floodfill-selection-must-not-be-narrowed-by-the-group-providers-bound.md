@@ -578,3 +578,73 @@ leaves `Cargo.toml` and `Cargo.lock` byte-identical, and it advertises nothing.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | The negative control for the selection's **capability filter** was first written as a **lane** control, and that mutation is **not observable**: the maintained index already holds only the advertisers, so removing the filter does not change what the selection yields. A control that does not change the outcome proves nothing. | The control is corrected to a **guard** control, tripping `the_selection_walks_the_index_and_still_filters`. The first sweep's log is the evidence: the lane row **passed** with the filter removed, and the control was corrected rather than the lane weakened. The plan's requirement is unchanged. |
+| 17.2.2 | Three of the plan's defects are **not** lane-observable, and the guard is their authority. The removal path's index release is not lane-observable, because a stale index entry names a record that is already gone and the selection filters on the record's own capability. The **wiring** that carries the advertisers is not lane-observable either, because the lane feeds the coordinator itself. The capability **filter** is not lane-observable, for the reason in row 17.2.1. | The three controls trip the guard's rows `the_store_maintains_an_advertiser_index` and `the_selection_walks_the_index_and_still_filters`, not lane rows. This is the split §7.7 states: the lane proves the behaviour and the guard proves the shape. The controls are **not** weakened to force a lane row to fail — a control that the lane cannot observe is a control for the guard, and saying otherwise would be a false claim about the evidence. |
+| 17.2.3 | The first production attempt put the advertiser index's insert **inside** the new-key path's existing floodfill-count block, and that **broke Plan 538's closed guard**: the guard's inverted probe replaces that block's literal, so the mutation no-op'd and the probe asserted the rule fired on an unmutated tree. | The count block is kept **byte-identical** and the idempotent `note_advertiser` helper is called **beside** it. Plan 538's guard passes unmodified, so the plan **extends** no predecessor's guard, and the count and the set can never disagree about which records are advertisers. |
+| 17.2.4 | The plan's production change moves the lines in `crates/i2pr-netdb/src/store.rs`, `crates/i2pr-daemon/src/peer_reconcile.rs`, `crates/i2pr-daemon/src/bootstrap.rs` and `crates/i2pr-daemon/src/lib.rs` that Plans 534's, 538's, 539's and 540's **closed** closure records cite. | The closed records are **not** rewritten. The drift is recorded in the pointer tables below, and Plan 541's own closure record cites the **post-change** lines. §3 and §6 keep their **pre-change** anchors, and the closure record's citation verifier checks them against the registration commit `d73deb56`, so the drift cannot recur unnoticed. |
+| 17.2.5 | The netdb deep dive's Plan 540 section carries the sentence "**The selection paths are untouched.**", which Plan 541 makes false for `floodfill_advertisers()`. | The sentence is amended in place, and the amendment is **line-count preserving**, so the citations that name the surrounding headings — `docs/architecture/i2pr-netdb.md:1451`, `:1491` and `:1509`, which Plan 538's, Plan 539's and Plan 540's closed closure records cite — still resolve to the same line. |
+| 17.2.6 | The plan's new sections in `specs/CONFORMANCE.md` and `specs/QUALIFICATION-GATES.md` would shift the lines the closed records cite — `specs/CONFORMANCE.md:4553` and `:4607`, and `specs/QUALIFICATION-GATES.md:2118`, `:2157` and `:2194` — if they were inserted above them. | Both are **appended at the end** of their documents, so every closed record's citation still resolves to the same line. The same holds for the two deep dives: the netdb section goes after Plan 540's and the daemon section goes at the end, so `docs/architecture/i2pr-netdb.md:1451`, `:1491`, `:1509` and `docs/architecture/i2pr-daemon.md:4301`, `:4357`, `:4418`, `:4460` and `:4501` are untouched. |
+
+**The citation-drift pointer table — the store and the reconcile.** Each row
+names the construct a **closed** closure record cited, the line it carried
+**before Plan 541's production change**, and the line the same construct
+carries **after** it. The closed records are not rewritten; these tables are
+the pointer that keeps them readable.
+
+Plan 540's own §17.2 pointer table already carried Plan 538's pre-Plan-540
+lines forward, so the two tables **chain**: Plan 538's `store.rs:92` becomes
+Plan 540's `store.rs:106`, and the middle column below carries that same
+`store.rs:106` forward to Plan 541's `store.rs:119`.
+
+| The closed record's citation | The construct | Before Plan 541 | After Plan 541 |
+| --- | --- | --- | --- |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:83` | `pub struct RouterInfoStore {` | `crates/i2pr-netdb/src/store.rs:83` | **unchanged** |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:84` | `records: BTreeMap<RouterHash, ValidatedRouterInfo>,` | `crates/i2pr-netdb/src/store.rs:84` | **unchanged** |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:98` | `ages: BTreeSet<(u64, RouterHash)>,` | `crates/i2pr-netdb/src/store.rs:98` | **unchanged** |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:92` | `floodfill_advertiser_count: usize,` | `crates/i2pr-netdb/src/store.rs:106` | `crates/i2pr-netdb/src/store.rs:119` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:126` | `pub fn insert(&mut self, validated: ValidatedRouterInfo) -> InsertOutcome {` | `crates/i2pr-netdb/src/store.rs:141` | `crates/i2pr-netdb/src/store.rs:155` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:183` | the replacement path's `self.ages.remove(&(existing_published_ms, key));` | `crates/i2pr-netdb/src/store.rs:183` | `crates/i2pr-netdb/src/store.rs:197` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:184` | the replacement path's `self.ages.insert((incoming_published_ms, key));` | `crates/i2pr-netdb/src/store.rs:184` | `crates/i2pr-netdb/src/store.rs:198` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:207` | the new-key path's `self.ages.insert((incoming_published_ms, key));` | `crates/i2pr-netdb/src/store.rs:207` | `crates/i2pr-netdb/src/store.rs:226` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:207` | `pub fn remove(&mut self, key: &RouterHash) -> bool {` | `crates/i2pr-netdb/src/store.rs:229` | `crates/i2pr-netdb/src/store.rs:249` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:236` | the removal path's `self.ages.remove(&(removed.published().as_millis(), *key));` | `crates/i2pr-netdb/src/store.rs:236` | `crates/i2pr-netdb/src/store.rs:256` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:230` | `fn adjust_floodfill_advertiser_count(&mut self, add: bool) {` | `crates/i2pr-netdb/src/store.rs:253` | `crates/i2pr-netdb/src/store.rs:289` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:270` | `pub fn stats(&self) -> RouterInfoStoreStats {` | `crates/i2pr-netdb/src/store.rs:293` | `crates/i2pr-netdb/src/store.rs:329` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:293` | `pub fn stats(&self) -> RouterInfoStoreStats {` | `crates/i2pr-netdb/src/store.rs:293` | `crates/i2pr-netdb/src/store.rs:329` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:314` | `pub fn prune(&mut self, now: Date, max_age_ms: u64) -> usize {` | `crates/i2pr-netdb/src/store.rs:314` | `crates/i2pr-netdb/src/store.rs:350` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:325` | `let threshold = now.as_millis().saturating_sub(max_age_ms);` | `crates/i2pr-netdb/src/store.rs:325` | `crates/i2pr-netdb/src/store.rs:361` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:328` | `.range(..)` | `crates/i2pr-netdb/src/store.rs:328` | `crates/i2pr-netdb/src/store.rs:364` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:329` | `.take_while(\|entry\| entry.0 < threshold)` | `crates/i2pr-netdb/src/store.rs:329` | `crates/i2pr-netdb/src/store.rs:365` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:313` | `pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {` | `crates/i2pr-netdb/src/store.rs:343` | `crates/i2pr-netdb/src/store.rs:379` |
+| `539-status.md` -> `crates/i2pr-netdb/src/store.rs:313` | `pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {` | `crates/i2pr-netdb/src/store.rs:343` | `crates/i2pr-netdb/src/store.rs:379` |
+| `540-status.md` -> `crates/i2pr-netdb/src/store.rs:343` | `pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {` | `crates/i2pr-netdb/src/store.rs:343` | `crates/i2pr-netdb/src/store.rs:379` |
+| `534-status.md` -> `crates/i2pr-daemon/src/peer_reconcile.rs:363` | `self.learn_all(&records);` | `crates/i2pr-daemon/src/peer_reconcile.rs:363` | `crates/i2pr-daemon/src/peer_reconcile.rs:371` |
+| `540-status.md` -> `crates/i2pr-daemon/src/peer_reconcile.rs:417` | `fn prune_bootstrap(&self, now_ms: u64) -> PruneOutcome {` | `crates/i2pr-daemon/src/peer_reconcile.rs:417` | `crates/i2pr-daemon/src/peer_reconcile.rs:425` |
+| `540-status.md` -> `crates/i2pr-daemon/src/peer_reconcile.rs:424` | `PruneOutcome::Removed(guard.prune(now_ms, RETENTION_WINDOW_MS))` | `crates/i2pr-daemon/src/peer_reconcile.rs:424` | `crates/i2pr-daemon/src/peer_reconcile.rs:432` |
+
+**The citation-drift pointer table — the bootstrap and the composition root.**
+In both files the change is a single **insertion**, so the drift is a single
+**shift**, and the shift rule is exact: every citation at or after the
+insertion point moves by the stated amount, and every citation before it is
+**unchanged**.
+
+| File | The insertion point | The shift | The citations that move |
+| --- | --- | --- | --- |
+| `crates/i2pr-daemon/src/bootstrap.rs` | the advertiser snapshot accessor, after line 346 | **+11** for every line at or after 347; **unchanged** before it | `538-status.md` -> `:445`, `:565`, `:574`, `:700`. `538-status.md`, `537-status.md` and `536-status.md` -> `:143`, `:215`, `:276`, and `540-status.md` -> `:291` and `:292` are **unchanged**. |
+| `crates/i2pr-daemon/src/lib.rs` | the Destination-groups seed, after line 4426 | **+5** for every line at or after 4427; **unchanged** before it | `498-status.md` -> `:4543`; `531-status.md` -> `:4808`, `:5453`; `532-status.md` -> `:4854`, `:5631`, `:5642`; `533-status.md` -> `:4897`, `:5685`; `536-status.md` -> `:5581`, `:5658`, `:5755`, `:5758`. `498-status.md` -> `:2320`, `525-status.md` -> `:3667`, `534-status.md` -> `:2192` and `:4376`, `536-status.md` -> `:2063`, `539-status.md` -> `:1901`, `:2169`, `:2171`, `:2203`, `:2336` are **unchanged**. |
+
+The plan's own §3 anchors — `crates/i2pr-daemon/src/peer_reconcile.rs:459`,
+`:474` and `:484` — are **pre-change** anchors and are verified against the
+registration commit `d73deb56`, where they carry `fn snapshot`, the canonical
+write call and `fn learn_all`. In the tree Plan 541 produced they carry the
+same constructs at `crates/i2pr-daemon/src/peer_reconcile.rs:467`, `:497` and
+`:524`.

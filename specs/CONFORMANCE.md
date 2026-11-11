@@ -4659,3 +4659,71 @@ Evidence: `crates/i2pr-netdb/src/store.rs`,
 `crates/i2pr-daemon/tests/netdb_prune_walk_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/540-the-netdbs-prune-must-not-walk-the-population.md`.
+
+## The router's floodfill selection is not narrowed by the group provider's bound (Plan 541)
+
+**Plan 541 adds one surface** — `netdb.floodfill-selection-visibility` — so the
+inventory holds **134 surfaces, 129 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 541 makes the router's
+authoritative floodfill selection see the router's own floodfill advertisers
+instead of an arbitrary hash-ordered prefix of the NetDB, and the surface is
+internal and non-advertised.
+
+The router's **authoritative** floodfill selection store — the
+`DestinationTunnelCoordinator`'s store, which `candidate_hashes` and
+`version_gated_candidate_hashes` read — was fed
+`Bootstrap::validated_router_info_snapshot()`, and that snapshot is the **first
+256 records in ascending `RouterHash` order**. The bound belongs to the
+**group provider**'s RouterInfo supply. The floodfill advertisers are
+distributed across the hash space, so the selection store held an arbitrary
+subset of the NetDB and normally held **no** advertiser at all, and the router
+then failed closed with `NoEligibleFloodfill` — "selected first hop is absent
+from the validated RouterInfo store" — while its own NetDB held thousands of
+floodfill advertisers.
+
+**The store now maintains an advertiser index.** `RouterInfoStore` carries a
+private `advertisers: BTreeSet<RouterHash>`, and the index is **maintained** on
+exactly the paths that maintain the record map and Plan 538's floodfill
+advertiser count — the **new-key** path, the **replacement** path and the
+**removal** path — so the count and the set can never disagree about which
+records are advertisers. The index is never rebuilt by a scan, and it is
+**exact**: an advertiser the index missed would be invisible to the router's
+floodfill selection, which is a silent selection failure.
+
+**The selection walks the index and still filters.** `floodfill_advertisers()`
+walks the maintained index instead of the record map, and it **still filters**
+on the record's own `f` capability: the filter is what makes the selection
+exact, and the index's word never replaces the record's own evidence.
+
+**The feed carries the advertisers.** The Destination-groups seed and the
+reconcile's feed now read the advertisers rather than the group provider's
+prefix. The reconcile takes the advertiser snapshot under the bootstrap's lock
+and releases it before the coordinator's lock is taken, so the two locks are
+never held at once, and it writes through the canonical write API, so a refusal
+at capacity is counted and the batch continues.
+
+**The group provider's bound is unchanged.** The bound belongs to the group
+provider's own RouterInfo supply, and the three other consumers of the bounded
+snapshot — the controlled NTCP2 lookup's candidate pool, the peer-profile learn
+cadence and the controlled NTCP2 dial — keep it.
+
+**What is not claimed.** The wiring that carries the advertisers from the
+NetDB to the coordinator's store is proven **statically**, not behaviourally:
+the guard reads the source and the lane observes what the selection does. The
+router's validated store is still the bootstrap's store, the advertiser
+snapshot is still a copy taken under the router's NetDB lock, and the
+peer-profile store's feed is still the bounded prefix; all three keep their
+named owner. The plan adds **no** store, **no** lock, **no** owner, **no**
+configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, it changes **no** transport file and **no** runtime file, it adds **no**
+dependency, and `Cargo.toml` and `Cargo.lock` stay byte-identical. Nothing is
+advertised: `router.version` stays `0.9.62` and the inventory's advertised
+count stays **zero**.
+
+Evidence: `crates/i2pr-netdb/src/store.rs`,
+`crates/i2pr-daemon/src/bootstrap.rs`,
+`crates/i2pr-daemon/src/peer_reconcile.rs`,
+`crates/i2pr-daemon/tests/floodfill_selection_visibility.rs`,
+`crates/i2pr-daemon/tests/floodfill_selection_visibility_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/541-the-routers-floodfill-selection-must-not-be-narrowed-by-the-group-providers-bound.md`.

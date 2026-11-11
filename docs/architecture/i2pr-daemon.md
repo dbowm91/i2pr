@@ -4528,3 +4528,43 @@ key, **no** task, **no** timer, **no** listener and **no** socket, it changes
 **no** transport file and **no** runtime file, and `Cargo.toml` and
 `Cargo.lock` stay byte-identical. Nothing is advertised: `router.version`
 stays `0.9.62` and the inventory's advertised count stays **zero**.
+
+## The floodfill selection store is fed the router's advertisers (Plan 541)
+
+The router's **authoritative** floodfill selection store — the
+`DestinationTunnelCoordinator`'s store, which `candidate_hashes` and
+`version_gated_candidate_hashes` read — was fed
+`Bootstrap::validated_router_info_snapshot()`. That snapshot is the **first
+256 records in ascending `RouterHash` order**, and the bound belongs to the
+**group provider**'s RouterInfo supply. The floodfill advertisers are
+distributed across the hash space, so the selection store held an arbitrary
+subset of the NetDB and normally held **no** advertiser at all, and the router
+then failed closed with `NoEligibleFloodfill` while its own NetDB held
+thousands of floodfill advertisers.
+
+**The feed carries the advertisers.** Two seams carry them:
+
+- the **Destination-groups seed** reads
+  `bootstrap.floodfill_advertiser_snapshot()`;
+- the **reconcile's feed** takes the advertiser snapshot under the bootstrap's
+  lock, releases it, and writes the advertisers into the coordinator's store
+  through the canonical write API.
+
+The two locks are never held at once, and a refusal at capacity is counted and
+the batch continues, so one peer at capacity never aborts the reconcile.
+
+**The group provider's bound is unchanged.** The bound belongs to the group
+provider's own RouterInfo supply, and the three other consumers of the bounded
+snapshot — the controlled NTCP2 lookup's candidate pool, the peer-profile learn
+cadence and the controlled NTCP2 dial — keep it.
+
+**The selection's observable behaviour is unchanged.** It still filters on the
+capability and still yields the advertisers in ascending `RouterHash` order,
+so Plan 538's guard needs no extension.
+
+**What is not claimed.** The wiring is proven **statically**, not
+behaviourally: the guard reads the source and the lane observes what the
+selection does. The router's validated store is still the bootstrap's store,
+the advertiser snapshot is still a copy taken under the router's NetDB lock,
+and the peer-profile store's feed is still the bounded prefix; all three keep
+their named owner.
