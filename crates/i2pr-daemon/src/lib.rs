@@ -5655,13 +5655,25 @@ fn register_ssu2_service(
                                         .collect();
                                     let local_endpoint =
                                         owner.handle().service().local_bound_endpoint();
-                                    if let Some(bootstrap) = bootstrap.as_ref()
-                                        && let Ok(guard) = bootstrap.lock()
-                                        && let Some(rng) = requester_rng.as_mut()
-                                    {
+                                    if let Some(rng) = requester_rng.as_mut() {
+                                        // Plan 537: the material is read
+                                        // under the router's NetDB lock and
+                                        // the lock is **released before**
+                                        // each read returns, so the
+                                        // signature and the transport's
+                                        // writes happen with no lock held.
+                                        // A router that holds no usable
+                                        // store refuses under its own typed
+                                        // reason, and the refusal is
+                                        // counted: it is never a silent
+                                        // skip.
+                                        let material_source =
+                                            crate::relay_requester::ValidatedStoreRequesterSource::new(
+                                                bootstrap.as_ref(),
+                                            );
                                         let decision = crate::relay_requester::drive_relay_request(
                                             requester,
-                                            guard.store(),
+                                            &material_source,
                                             &live,
                                             rng,
                                             local_endpoint,

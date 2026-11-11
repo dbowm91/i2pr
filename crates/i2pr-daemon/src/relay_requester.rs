@@ -370,6 +370,149 @@ pub enum RelayRequesterRefusal {
     EstablishmentUnavailable,
     /// The handoff to the establishment task is full (Plan 533).
     EstablishmentQueueFull,
+    /// The router holds no usable validated store, so the material the
+    /// requester needs cannot be read (Plan 537).
+    ///
+    /// This is a fact about **this router**, not about any peer. The
+    /// requester needs the router's peer population, and a router that
+    /// holds no usable validated store has none. It is counted under its
+    /// own reason and is never written into a peer's profile.
+    StoreUnavailable,
+}
+
+/// The requester's **material source**: the validated store the requester
+/// reads the peer population and the published introducer sets from.
+///
+/// The source is the seam. A source may read from the validated store
+/// directly, or it may read it under a **short** lock and release that lock
+/// before it returns, so the request is signed and carried with **no** lock
+/// held.
+///
+/// A source that cannot answer at all refuses with
+/// [`RelayRequesterRefusal::StoreUnavailable`]: that is a fact about **this
+/// router**, not about any peer.
+pub trait RelayRequesterMaterialSource {
+    /// The store's peer population: the candidates this window may examine.
+    fn peer_pool(&self) -> Result<Vec<PeerId>, RelayRequesterRefusal>;
+
+    /// Reads one peer's **published** introducer set.
+    fn published_introducers(
+        &self,
+        peer: PeerId,
+    ) -> Result<PublishedIntroducerSet, RelayRequesterRefusal>;
+
+    /// Resolves one introducer's direct endpoint, **by hash**.
+    fn introducer_endpoint(
+        &self,
+        introducer: [u8; 32],
+    ) -> Result<IntroducerEndpoint, RelayRequesterRefusal>;
+}
+
+/// The validated store itself is a material source.
+///
+/// The implementation delegates to the free functions above, so the reads
+/// are exactly the reads the tree already had: one record, one strict
+/// address parse, two derived values, and no mutation.
+impl RelayRequesterMaterialSource for i2pr_netdb::RouterInfoStore {
+    fn peer_pool(&self) -> Result<Vec<PeerId>, RelayRequesterRefusal> {
+        Ok(self
+            .iter()
+            .map(|(hash, _)| PeerId::from_hash(*hash.as_hash()))
+            .collect())
+    }
+
+    fn published_introducers(
+        &self,
+        peer: PeerId,
+    ) -> Result<PublishedIntroducerSet, RelayRequesterRefusal> {
+        Ok(crate::relay_requester::read_published_introducers(
+            self, peer,
+        ))
+    }
+
+    fn introducer_endpoint(
+        &self,
+        introducer: [u8; 32],
+    ) -> Result<IntroducerEndpoint, RelayRequesterRefusal> {
+        Ok(crate::relay_requester::read_introducer_endpoint(
+            self, introducer,
+        ))
+    }
+}
+
+/// Plan 537 - the **production** material source.
+///
+/// The router's validated `RouterInfoStore` is the bootstrap's, and the
+/// bootstrap's mutex is the router's NetDB lock. The requester needs the
+/// peer population and the published introducer sets, so each read is taken
+/// under that lock and the guard is **released before the read returns**: the
+/// request is then signed and carried with no lock held.
+///
+/// Without a bootstrap, or with a poisoned lock, the source refuses. That is
+/// a fact about **this router** -- it has no usable validated store -- and it
+/// is counted under its own reason.
+pub struct ValidatedStoreRequesterSource<'a> {
+    bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+}
+
+impl<'a> ValidatedStoreRequesterSource<'a> {
+    /// Constructs a source over the router's bootstrap, if it holds one.
+    pub const fn new(
+        bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    ) -> Self {
+        Self { bootstrap }
+    }
+}
+
+impl RelayRequesterMaterialSource for ValidatedStoreRequesterSource<'_> {
+    fn peer_pool(&self) -> Result<Vec<PeerId>, RelayRequesterRefusal> {
+        let Some(bootstrap) = self.bootstrap else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        let Ok(guard) = bootstrap.lock() else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        // The guard is dropped here, when this function returns: the
+        // request is signed and carried by the caller with **no** lock
+        // held.
+        Ok(guard
+            .store()
+            .iter()
+            .map(|(hash, _)| PeerId::from_hash(*hash.as_hash()))
+            .collect())
+    }
+
+    fn published_introducers(
+        &self,
+        peer: PeerId,
+    ) -> Result<PublishedIntroducerSet, RelayRequesterRefusal> {
+        let Some(bootstrap) = self.bootstrap else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        let Ok(guard) = bootstrap.lock() else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        Ok(crate::relay_requester::read_published_introducers(
+            guard.store(),
+            peer,
+        ))
+    }
+
+    fn introducer_endpoint(
+        &self,
+        introducer: [u8; 32],
+    ) -> Result<IntroducerEndpoint, RelayRequesterRefusal> {
+        let Some(bootstrap) = self.bootstrap else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        let Ok(guard) = bootstrap.lock() else {
+            return Err(RelayRequesterRefusal::StoreUnavailable);
+        };
+        Ok(crate::relay_requester::read_introducer_endpoint(
+            guard.store(),
+            introducer,
+        ))
+    }
 }
 
 /// The owner's counters, one per outcome.
@@ -445,6 +588,8 @@ pub struct RelayRequesterCounters {
     pub refusals_establishment_unavailable: u64,
     /// Refusals because the handoff to the establishment task was full.
     pub refusals_establishment_queue_full: u64,
+    /// Refusals because the router holds no usable validated store.
+    pub refusals_store_unavailable: u64,
 }
 
 /// The context of one live relay request.
@@ -1290,6 +1435,9 @@ impl RelayRequesterOwner {
             RelayRequesterRefusal::EstablishmentQueueFull => {
                 self.counters.refusals_establishment_queue_full += 1;
             }
+            RelayRequesterRefusal::StoreUnavailable => {
+                self.counters.refusals_store_unavailable += 1;
+            }
         }
         self.next_at_ms = now_ms.saturating_add(RELAY_REQUEST_RETRY_MS);
     }
@@ -1330,9 +1478,15 @@ impl RelayRequesterOwner {
 ///
 /// `None` means the window was not due; no refusal is counted for a
 /// window that did not run.
+///
+/// The material is read through the **source**, and the source is what
+/// bounds the lock: each read is short and self-contained, and the guard is
+/// released before the read returns. The request is signed and carried with
+/// **no** router NetDB lock held, so the router's NetDB lock never nests
+/// inside the transport's own locks.
 pub fn drive_relay_request(
     owner: &mut RelayRequesterOwner,
-    store: &i2pr_netdb::RouterInfoStore,
+    source: &dyn RelayRequesterMaterialSource,
     live: &[PeerId],
     rng: &mut impl RngCore,
     local_endpoint: Option<i2pr_runtime::Ssu2Endpoint>,
@@ -1358,14 +1512,31 @@ pub fn drive_relay_request(
     // directly has no session with it, so the pool cannot be the live
     // sessions. The store is bounded, and the window is bounded on top
     // of it.
-    let pool: Vec<PeerId> = store
-        .iter()
-        .map(|(hash, _)| PeerId::from_hash(*hash.as_hash()))
-        .collect();
+    //
+    // Plan 537: the pool is **one short, self-contained read**. The
+    // source releases the router's NetDB lock before the read returns, so
+    // nothing below holds it.
+    let pool = match source.peer_pool() {
+        Ok(pool) => pool,
+        Err(reason) => {
+            // The router holds no usable validated store. That is a fact
+            // about **this router**, and it is counted, never skipped.
+            owner.refuse(reason, now_ms);
+            return Some(RelayRequesterDecision::Refuse(reason));
+        }
+    };
     let window = owner.candidate_window(&pool, MAX_RELAY_REQUEST_CANDIDATES);
     let mut eligible: Vec<EligibleTarget> = Vec::new();
     for target in window {
-        let published = read_published_introducers(store, target);
+        let published = match source.published_introducers(target) {
+            Ok(published) => published,
+            Err(reason) => {
+                // The store went away under the window: the window ends
+                // here, and the refusal is counted.
+                owner.refuse(reason, now_ms);
+                return Some(RelayRequesterDecision::Refuse(reason));
+            }
+        };
         owner.note_published(&published);
         let PublishedIntroducerSet::Published(entries) = published else {
             continue;
@@ -1381,15 +1552,21 @@ pub fn drive_relay_request(
             owner.refuse(RelayRequesterRefusal::NoLiveIntroducer, now_ms);
             continue;
         };
-        let endpoint = match read_introducer_endpoint(store, entry.peer_hash) {
-            IntroducerEndpoint::Resolved(endpoint) => endpoint,
-            IntroducerEndpoint::NoStoredRecord => {
+        let endpoint = match source.introducer_endpoint(entry.peer_hash) {
+            Ok(IntroducerEndpoint::Resolved(endpoint)) => endpoint,
+            Ok(IntroducerEndpoint::NoStoredRecord) => {
                 owner.refuse(RelayRequesterRefusal::IntroducerUnknown, now_ms);
                 continue;
             }
-            _ => {
+            Ok(_) => {
                 owner.refuse(RelayRequesterRefusal::IntroducerUnreachable, now_ms);
                 continue;
+            }
+            Err(reason) => {
+                // The store went away under the window: the window ends
+                // here, and the refusal is counted.
+                owner.refuse(reason, now_ms);
+                return Some(RelayRequesterDecision::Refuse(reason));
             }
         };
         eligible.push(EligibleTarget {
