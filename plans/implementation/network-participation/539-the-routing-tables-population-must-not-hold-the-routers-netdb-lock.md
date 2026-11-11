@@ -303,8 +303,10 @@ it does the opposite.
    (`crates/i2pr-daemon/src/lib.rs:2032`) — build the **production source** over
    the router's bootstrap and pass it in.
 
-3. The population's **absence** is counted under its own reason on the
-   participation owner.
+3. The participation owner holds the refusal counter, and each call site hands
+   the source a reference to it. The **source** increments it when it refuses,
+   so the number lives with the owner that owns the routing table and the
+   lane can observe a refusal being counted.
 
 ## 7. Design decisions
 

@@ -598,6 +598,14 @@ fn rule_the_existing_surfaces_are_untouched(sources: &Sources) -> Option<String>
     )) {
         return Some("the store's selection surface must be unchanged".to_owned());
     }
+
+    // And the selection still filters on the capability.
+    let Some(selection) = item_body(&store, "pub fn floodfill_advertisers") else {
+        return Some("the store's selection surface is absent".to_owned());
+    };
+    if !selection.contains("advertises_floodfill()") {
+        return Some("the store's selection must still filter on the capability".to_owned());
+    }
     None
 }
 
