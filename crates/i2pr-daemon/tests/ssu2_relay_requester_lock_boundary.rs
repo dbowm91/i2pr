@@ -708,6 +708,16 @@ fn rule_the_requesters_machinery_is_untouched(sources: &Sources) -> Option<Strin
     if !build.contains("i2pr_runtime::relay_request_preimage(") {
         return Some("the request must be signed over the specification's preimage".to_owned());
     }
+    // The preimage binds the introducer, the target, the nonce, the tag, the
+    // timestamp, the version and the router's own endpoint -- in that order,
+    // and each to the right value.
+    let preimage = "i2pr_runtime::relay_request_preimage(candidate.introducer.hash().as_bytes(),candidate.target.hash().as_bytes(),nonce,candidate.tag,timestamp,version,local_endpoint,)";
+    if !build.contains(preimage) {
+        return Some(
+            "the request's preimage must bind the introducer, the target, the nonce, the tag, the timestamp, the version and the router's own endpoint"
+                .to_owned(),
+        );
+    }
     if !build.contains(".sign_relay_request(&preimage)") {
         return Some("the request must be signed with the router's own key".to_owned());
     }
@@ -1130,6 +1140,20 @@ fn the_guard_reports_a_request_signed_over_another_preimage() {
     assert!(
         reason.is_some(),
         "a request signed over another preimage must fail the rule"
+    );
+}
+
+#[test]
+fn the_guard_reports_a_preimage_that_binds_the_wrong_pair() {
+    let mut sources = Sources::from_tree();
+    sources.daemon_requester = sources.daemon_requester.replace(
+        "            candidate.introducer.hash().as_bytes(),\n            candidate.target.hash().as_bytes(),\n",
+        "            candidate.target.hash().as_bytes(),\n            candidate.introducer.hash().as_bytes(),\n",
+    );
+    let reason = rule_the_requesters_machinery_is_untouched(&sources);
+    assert!(
+        reason.is_some(),
+        "a preimage that binds the introducer and the target the wrong way round must fail the rule"
     );
 }
 
