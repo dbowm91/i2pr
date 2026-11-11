@@ -1485,8 +1485,8 @@ exactly the advertisers and `iter()` still yields every record: a selection
 over the floodfill advertisers is a walk by its nature, and this plan changes
 what the store **reports**, not how it **selects**.
 
-**The prune is untouched.** `RouterInfoStore::prune` still examines every
-record, because a prune must examine every record to know which are stale.
+**The prune is untouched by this plan.** Plan 538 did not change it, and
+Plan 540 does: the prune walks a maintained age index, not the records.
 
 ## The routing table's population holds no NetDB lock (Plan 539)
 
@@ -1505,6 +1505,40 @@ does not move into the reader.
 What the plan changes is on the daemon's side of the seam, and it is
 described in `docs/architecture/i2pr-daemon.md`. The netdb crate's public
 surface is exactly what the tree already had.
+
+## The NetDB's prune walks an age index (Plan 540)
+
+The store now **maintains** an **age index**: an ordered set of the retained
+records' publication times, keyed by the record's hash. The index is maintained
+on exactly the paths that maintain the record map —
+
+- the **new-key** path gains the record's publication time;
+- the **replacement** path swaps the old entry for the new one, because a
+  replacement may carry a different publication time;
+- the **removal** path releases the entry with the record.
+
+The index is **never rebuilt by a scan**: no path that maintains it walks the
+record map.
+
+**The prune walks only the stale records.** The index is ordered by
+publication time first, so the stale records are a **contiguous prefix** of it,
+and the prune's cost is proportional to what it removes rather than to the
+population it does not remove.
+
+**The index is exact.** A stale record the index missed would never be
+removed — a silent retention failure — so every retained record has exactly
+one entry and every entry names a retained record. The index is bounded by the
+record ceiling.
+
+**The prune's semantics are unchanged.** It still removes every record past
+the window, in one call. The index changes how the stale records are *found*,
+never *which* records are removed, and the prune's **signature** is unchanged,
+so Plan 507's pinned call site and signature stay exactly as they are and no
+predecessor's guard is extended.
+
+**The selection paths are untouched.** `floodfill_advertisers()` still yields
+exactly the advertisers and `iter()` still yields every record: a selection
+over the floodfill advertisers is a walk by its nature.
 
 ## Cross-references
 

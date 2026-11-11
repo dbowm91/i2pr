@@ -4603,3 +4603,59 @@ Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
 `crates/i2pr-daemon/tests/routing_table_population_lock_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/539-the-routing-tables-population-must-not-hold-the-routers-netdb-lock.md`.
+
+## The NetDB's prune does not walk the population (Plan 540)
+
+**Plan 540 adds one surface** — `netdb.prune-walk` — so the
+inventory holds **133 surfaces, 128 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 540 makes the NetDB's
+prune find the stale records through a maintained age index instead of a walk
+over every retained record, and the surface is internal and non-advertised.
+
+The validated store's **prune** found the stale records by walking **every**
+retained record, and the daemon's peer reconcile called it **under the router's
+NetDB lock** — the bootstrap's mutex, which *is* the router's NetDB lock. The
+prune is on the router's live maintenance cadence, so the lock was held across
+an O(population) walk and every other NetDB reader queued behind it.
+
+**The store now maintains an age index.** `RouterInfoStore` carries an
+`ages` index — the retained records' publication times, ordered — and it is
+**maintained** on exactly the paths that maintain the record map: the
+**new-key** path, the **replacement** path and the **removal** path. The index
+is never rebuilt by a scan.
+
+**The index is exact.** A stale record the index missed would never be
+removed, which is a silent retention failure, so every retained record has
+exactly one entry and every entry names a retained record. The index is
+bounded by the record ceiling.
+
+**The prune walks only the stale records.** The index is ordered by
+publication time first, so the stale records are a **contiguous prefix** of it
+and the walk is proportional to what the prune removes, not to the population it
+does not remove.
+
+**The prune's semantics are unchanged.** It still removes every record past
+the window, in one call; the index changes how the stale records are *found*,
+never *which* records are removed. The prune's **signature** is unchanged, and
+Plan 507's pinned call site and signature stay exactly as they are, so no
+predecessor's guard is extended.
+
+**What is not claimed.** The lock scope is proven **statically**, not
+behaviourally: the guard reads the source and the lane observes what the prune
+does, so the claim is a claim about the **shape** of the work under the lock,
+not about a measurement of how long the lock is held. The router's validated
+store is still the bootstrap's store, and separating the router's NetDB from
+the bootstrap's lifetime is a successor's work — Plan 540 *reduces* what that
+successor must do. The plan adds **no** store, **no** lock, **no** owner, **no**
+configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, it changes **no** transport file and **no** runtime file, and
+`Cargo.toml` and `Cargo.lock` stay byte-identical. Nothing is advertised:
+`router.version` stays `0.9.62` and the inventory's advertised count stays
+**zero**.
+
+Evidence: `crates/i2pr-netdb/src/store.rs`,
+`crates/i2pr-daemon/src/bootstrap.rs`,
+`crates/i2pr-daemon/tests/netdb_prune_walk.rs`,
+`crates/i2pr-daemon/tests/netdb_prune_walk_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/540-the-netdbs-prune-must-not-walk-the-population.md`.

@@ -2190,3 +2190,37 @@ that the predecessors' evidence is byte-identical.
 The delivery stays confined to the **controlled loopback profile**, and the
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## 39. The NetDB's prune does not walk the population (Plan 540)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G40.1 | the prune removes **exactly** the records the store's own iterator says are stale, and the count matches | `crates/i2pr-daemon/tests/netdb_prune_walk.rs`, `the_prune_removes_exactly_the_stale_set` |
+| G40.2 | the prune removes **every** stale record in **one** call, even when the population is far larger than the number of stale records | the same lane file, `the_prune_removes_every_stale_record_in_one_call` |
+| G40.3 | the prune removes **nothing** when nothing is stale, and the store's contents are unchanged | the same lane file, `the_prune_removes_nothing_when_nothing_is_stale` |
+| G40.4 | the index does not drift: a record that is inserted and then made stale **is** removed | the same lane file, `the_index_does_not_drift_on_an_insert` |
+| G40.5 | a record that is **replaced** with a newer publication time is removed at the **new** time and not at the old one | the same lane file, `a_replacement_is_removed_at_its_new_time` |
+| G40.6 | a record published in the **future** is never stale | the same lane file, `a_record_published_in_the_future_is_never_stale` |
+| G40.7 | a `now` **below** the window removes nothing | the same lane file, `a_now_below_the_window_removes_nothing` |
+| G40.8 | the prune releases the record's **bytes** and its **floodfill advertiser** with the record | the same lane file, `the_prune_releases_the_bytes_and_the_advertiser` |
+| G40.9 | the store's **statistics** survive the prune, and the store's selection still yields exactly the advertisers | the same lane file, `the_statistics_and_the_selection_survive_the_prune` |
+| G40.10 | the prune is **deterministic**: two identical stores prune to the same result | the same lane file, `the_prune_is_deterministic` |
+| G40.11 | the store **maintains** the age index on every path that inserts or removes a record, the prune walks the **index** and not the record map, the prune's **signature** and the store's public surfaces are **unchanged**, the daemon's call site and the reconcile's shape are **unchanged**, **no** configuration key or infrastructure is added, and nothing is advertised | `crates/i2pr-daemon/tests/netdb_prune_walk_boundary.rs`, `the_store_maintains_an_age_index`, `the_prune_walks_the_index_and_not_the_record_map`, `the_prune_signature_and_the_surfaces_are_unchanged`, `the_call_site_and_the_reconcile_are_unchanged` and `no_new_key_and_nothing_is_advertised` |
+| G40.12 | Plan 507's, Plan 538's and Plan 539's lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane computes the stale set by walking the
+store's own **iterator** and never by reading the index, so the lane's
+expectation and the store's own bookkeeping are two different things that must
+agree. The gates that say "exactly" and "deterministic" are gates about a
+**set** and a **number**, not about a bound.
+
+The guard is the authority for the **shape**: that the store maintains the
+index on every path that inserts or removes a record, that the prune walks the
+index and not the record map, that the prune's signature and the store's
+public surfaces are unchanged, that the daemon's call site and the reconcile's
+shape are unchanged, that no configuration key or infrastructure is added and
+nothing is advertised, and that the predecessors' evidence is byte-identical.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.

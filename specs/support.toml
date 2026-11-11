@@ -2921,3 +2921,22 @@ evidence = [
     "plans/implementation/network-participation/539-the-routing-tables-population-must-not-hold-the-routers-netdb-lock.md",
 ]
 advertised = false
+
+[[surface]]
+id = "netdb.prune-walk"
+protocol = "netdb"
+structure = "the-netdbs-prune-must-not-walk-the-population"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 540 makes the NetDB's **prune** find the stale records through a maintained **age index** instead of a walk over every retained record. Two facts about the tree forced this. First, the validated store's prune found the stale records by walking **every** retained record, an O(population) walk, and the daemon's peer reconcile called it **under the router's NetDB lock** -- the bootstrap's mutex *is* the router's NetDB lock. The prune is on the router's live maintenance cadence, so the lock was held across the population walk on every reconcile pass that prunes, and every other NetDB reader queued behind it. Second, the prune's own cost was paid by the router's own maintenance path while the router's own readers waited for it. The store now maintains an **age index** -- the retained records' publication times, ordered -- on exactly the paths that maintain the record map: the **new-key** path, the **replacement** path and the **removal** path. The index is **never rebuilt by a scan**. The index is **exact**: a stale record the index missed would never be removed, which is a silent retention failure, so every retained record has exactly one entry and every entry names a retained record, and the index is bounded by the record ceiling. The index is ordered by publication time first, so the stale records are a **contiguous prefix** of it and the prune's cost is proportional to what it removes rather than to the population it does not remove. The prune's **semantics** are unchanged: it still removes every record past the window, in one call, so the index changes how the stale records are *found*, never *which* records are removed. The prune's **signature** is unchanged and Plan 507's pinned call site and signature stay exactly as they are, so no predecessor's guard is extended. The plan adds **no** store, **no** lock, **no** owner, **no** configuration key, **no** task, **no** timer, **no** listener and **no** socket, it changes **no** transport file and **no** runtime file, and `Cargo.toml` and `Cargo.lock` stay byte-identical. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (Plan 431's bound); the router's validated store is still the bootstrap's store, and separating the router's NetDB from the bootstrap's lifetime is a successor's work -- Plan 540 *reduces* what that successor must do; the lock scope is proven **statically**, not behaviourally; the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-netdb/src/store.rs",
+    "crates/i2pr-daemon/src/bootstrap.rs",
+    "crates/i2pr-daemon/tests/netdb_prune_walk.rs",
+    "crates/i2pr-daemon/tests/netdb_prune_walk_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/540-the-netdbs-prune-must-not-walk-the-population.md",
+]
+advertised = false

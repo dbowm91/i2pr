@@ -488,3 +488,34 @@ leaves `Cargo.toml` and `Cargo.lock` byte-identical, and it advertises nothing.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | The negative control for the prune's **window** was first written as `max_age_ms / 2`, and that mutation is **not observable**: the lane's fresh records are published exactly at `NOW - WINDOW/2`, so halving the window puts the threshold exactly at the fresh records' publication time and the prune's outcome is unchanged. A control that does not change the outcome proves nothing. | The control is corrected to `max_age_ms * 2`, which **widens** the window so the stale records survive the prune. The lane's independent stale set then disagrees with the prune, and the lane's row `the_prune_removes_exactly_the_stale_set` fails as intended. The plan's requirement is unchanged. |
+| 17.2.2 | Two of the plan's defects are **not** lane-observable, and the guard is their authority. The removal path's index release is not lane-observable, because a stale index entry names a record that is already gone and the prune's own walk is unaffected. The prune's **shape** is not lane-observable either, because the pre-Plan-540 record walk has exactly the pre-Plan-540 semantics. | The two controls trip the guard's rows `the_store_maintains_an_age_index` and `the_prune_walks_the_index_and_not_the_record_map`, not a lane row. This is the split §7.6 states: the lane proves the behaviour and the guard proves the shape. The controls are **not** weakened to force a lane row to fail — a control that the lane cannot observe is a control for the guard, and saying otherwise would be a false claim about the evidence. |
+| 17.2.3 | `RouterHash::MIN` and `RouterHash::MAX` are **unstable**, so the stale prefix cannot be taken with a bounded range over the index. | The prefix is taken with `take_while` over the index's ordered range instead. §6.1's item 3 says the prune "walks the **index's stale prefix**"; the mechanism is recorded here and in the closure record, and the requirement — that the walk is proportional to what the prune removes — is unchanged. |
+| 17.2.4 | The count paragraph in `specs/CONFORMANCE.md` would, in the Plan 514 ledger, shift `specs/CONFORMANCE.md:4553`, which Plan 539's **closed** closure record cites. | The paragraph is **not** inserted into the ledger. It leads Plan 540's own section at the end of the document, so the closed record's citation still resolves to the same line. The ledger's last entry therefore remains Plan 539's, and this row is the pointer that says why. |
+| 17.2.5 | The netdb deep dive's Plan 538 section carries the sentence "**The prune is untouched.** `RouterInfoStore::prune` still examines every record, because a prune must examine every record to know which are stale", which Plan 540 makes false. | The sentence is amended in place, and the amendment is **line-count preserving**, so the citations that name the surrounding headings — `docs/architecture/i2pr-netdb.md:1451` and `docs/architecture/i2pr-netdb.md:1491`, which Plan 538's and Plan 539's closed closure records cite — still resolve to the same line. |
+| 17.2.6 | The plan's production change moves the lines in `crates/i2pr-netdb/src/store.rs` that Plan 538's and Plan 539's **closed** closure records cite. | The closed records are **not** rewritten. The drift is recorded in the pointer table below, and Plan 540's own closure record cites the **post-change** lines. §3 and §6 keep their **pre-change** anchors, and the closure record's citation verifier checks them against the registration commit `b6cb3817`, so the drift cannot recur unnoticed. |
+
+**The citation-drift pointer table.** Each row names the construct a **closed**
+closure record cited, the line it cited before Plan 540's production change, and
+the line the same construct carries after it. The closed records are not
+rewritten; this table is the pointer that keeps them readable.
+
+| The closed record's citation | The construct | Before Plan 540 | After Plan 540 |
+| --- | --- | --- | --- |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:92` | `floodfill_advertiser_count: usize,` | `crates/i2pr-netdb/src/store.rs:92` | `crates/i2pr-netdb/src/store.rs:106` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:126` | `pub fn insert(&mut self, validated: ValidatedRouterInfo) -> InsertOutcome {` | `crates/i2pr-netdb/src/store.rs:126` | `crates/i2pr-netdb/src/store.rs:141` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:207` | `pub fn remove(&mut self, key: &RouterHash) -> bool {` | `crates/i2pr-netdb/src/store.rs:207` | `crates/i2pr-netdb/src/store.rs:229` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:230` | `fn adjust_floodfill_advertiser_count(&mut self, add: bool) {` | `crates/i2pr-netdb/src/store.rs:230` | `crates/i2pr-netdb/src/store.rs:253` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:270` | `pub fn stats(&self) -> RouterInfoStoreStats {` | `crates/i2pr-netdb/src/store.rs:270` | `crates/i2pr-netdb/src/store.rs:293` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:313` | `pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {` | `crates/i2pr-netdb/src/store.rs:313` | `crates/i2pr-netdb/src/store.rs:343` |
+| `539-status.md` -> `crates/i2pr-netdb/src/store.rs:313` | `pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {` | `crates/i2pr-netdb/src/store.rs:313` | `crates/i2pr-netdb/src/store.rs:343` |
+| `538-status.md` -> `crates/i2pr-netdb/src/store.rs:83` | `pub struct RouterInfoStore {` | `crates/i2pr-netdb/src/store.rs:83` | **unchanged** |

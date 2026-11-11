@@ -4497,3 +4497,34 @@ thirty lines below the defect: Plan 505's `learn_bootstrap_peers` takes the
 bootstrap's lock for one self-contained read, lets the guard drop before the
 read returns, and learns its batch afterwards — and its own comment says
 why.
+
+## The NetDB's prune does not walk the population (Plan 540)
+
+The daemon's peer reconcile calls the validated store's prune **under the
+router's NetDB lock** — the bootstrap's mutex, which *is* the router's NetDB
+lock — and the reconcile is on the router's live maintenance cadence. Before
+Plan 540 the prune found the stale records by walking **every** retained
+record, so the lock was held across an O(population) walk.
+
+**The prune's call site is unchanged.** The bootstrap still calls
+`self.store.prune(Date::from_millis(now_ms), window_ms)` under the
+bootstrap's lock, and Plan 507 pins that call site byte for byte. What changed
+is the **cost of the walk**: the store now finds the stale records through a
+maintained age index, so the lock is held for a walk proportional to what the
+prune removes.
+
+**The lock scope is still the reconcile's.** Plan 540 does not narrow the
+reconcile's lock scope, and it does not pretend to: the guard reads the
+source and the lane observes what the prune does, so the claim is a claim
+about the **shape** of the work under the lock, not about a measurement of how
+long the lock is held.
+
+**The prune's semantics are unchanged.** The same records are removed, in one
+call, under the same window; the accounting is released with each record, and
+the router's own RouterInfo is never a prune victim.
+
+The plan adds **no** store, **no** lock, **no** owner, **no** configuration
+key, **no** task, **no** timer, **no** listener and **no** socket, it changes
+**no** transport file and **no** runtime file, and `Cargo.toml` and
+`Cargo.lock` stay byte-identical. Nothing is advertised: `router.version`
+stays `0.9.62` and the inventory's advertised count stays **zero**.
