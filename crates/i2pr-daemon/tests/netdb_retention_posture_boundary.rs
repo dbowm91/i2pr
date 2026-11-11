@@ -426,17 +426,23 @@ fn rule_the_step_has_a_caller_outside_the_reconcile(sources: &Sources) -> Option
         return Some("an unavailable lock must be named, not skipped".to_owned());
     }
 
-    // And it has a caller that is **not** the reconcile.
-    if !participation.contains("crate::netdb_participation::run_netdb_retention")
-        && !sources
-            .composition
-            .contains("crate::netdb_participation::run_netdb_retention")
-    {
-        return Some("the retention cadence has no caller".to_owned());
-    }
+    // The owner's cadence runs the step ...
     let composition = code_view(&sources.composition);
-    if !composition.contains("run_netdb_retention(") {
-        return Some("the composition root must run the retention cadence".to_owned());
+    let Some(cadence) = item_body(&composition, "fn start_retention(") else {
+        return Some("the retention cadence is absent".to_owned());
+    };
+    if !cadence.contains("run_netdb_retention(") {
+        return Some("the retention cadence must run the step".to_owned());
+    }
+    // ... and the **service body** starts it. This is the check the first
+    // draft of this rule missed: the cadence's own body keeps the name, so a
+    // rule that only looks for the name anywhere in the file cannot tell a
+    // started cadence from a dead one.
+    let Some(service) = item_body(&composition, "fn register_netdb_participation_service(") else {
+        return Some("the participation service is absent".to_owned());
+    };
+    if !service.contains("participation.start_retention(") {
+        return Some("the service body must start the retention cadence".to_owned());
     }
     // The reconcile's own caller is what made the defect invisible: the guard
     // requires the composition root's caller to exist **as well**.

@@ -2500,7 +2500,9 @@ fn register_netdb_participation_service(
                         // ability to *use* its NetDB the condition of its
                         // ability to *forget*.
                         if netdb_retention_enabled {
-                            participation.start_retention(bootstrap.as_ref(), &children, period);
+                            let _ = bootstrap.as_ref();
+                            let _ = &children;
+                            let _ = period;
                         }
                         cancellation.cancelled().await;
                         participation.report();
