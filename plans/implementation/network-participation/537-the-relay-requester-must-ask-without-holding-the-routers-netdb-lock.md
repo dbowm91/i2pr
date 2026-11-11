@@ -34,7 +34,7 @@ a store a **typed, counted refusal** rather than a silent skip.
   reads its material under a short lock and answers outside it
   (`crates/i2pr-daemon/src/relay_target.rs:460`), and Plan 533's establishment
   task reads the same store under a short lock and releases it **before** the
-  dial (`crates/i2pr-daemon/src/relay_establishment_task.rs:129`). This plan
+  dial (`crates/i2pr-daemon/src/relay_establishment_task.rs:131`). This plan
   makes the requester follow the pattern its own siblings already follow.
 - The defect is **internal**. No stock peer, no second host and no external
   topology is needed to find it, to fix it or to prove it.
@@ -47,7 +47,8 @@ a store a **typed, counted refusal** rather than a silent skip.
 ### 3.1 The lock is held across the whole outbound step
 
 The composition root's relay tick drives the requester inside the bootstrap's
-guard (`crates/i2pr-daemon/src/lib.rs:5658`-`:5672`):
+guard (`crates/i2pr-daemon/src/lib.rs:5658` and
+`crates/i2pr-daemon/src/lib.rs:5672`):
 
 ```rust
 if let Some(bootstrap) = bootstrap.as_ref()
@@ -91,16 +92,21 @@ population). The window on top of it is bounded at
 ### 3.3 The step signs the request under the lock
 
 The candidates are read under the same guard
-(`crates/i2pr-daemon/src/relay_requester.rs:1368` and `:1384`), the request is
-built at `:1423`, and the build **signs** it: `build_request`
+(`crates/i2pr-daemon/src/relay_requester.rs:1368` and
+`crates/i2pr-daemon/src/relay_requester.rs:1384`), the request is
+built at `crates/i2pr-daemon/src/relay_requester.rs:1423`, and the build
+**signs** it: `build_request`
 (`crates/i2pr-daemon/src/relay_requester.rs:842`) builds the specification's
-preimage at `:850` and calls `sign_relay_request` at `:861`. A signature is a
+preimage at `crates/i2pr-daemon/src/relay_requester.rs:850` and calls
+`sign_relay_request` at `crates/i2pr-daemon/src/relay_requester.rs:861`. A
+signature is a
 private-key operation, and it happens under the router's NetDB lock.
 
 ### 3.4 The step takes the transport's own mutexes under the lock
 
 `start_request` (`crates/i2pr-daemon/src/relay_requester.rs:881`) calls the
-runtime's requester seam at `:905` and the runtime's carriage at `:920`.
+runtime's requester seam at `crates/i2pr-daemon/src/relay_requester.rs:905`
+and the runtime's carriage at `crates/i2pr-daemon/src/relay_requester.rs:920`.
 
 - `Ssu2RuntimeService::start_relay_request`
   (`crates/i2pr-runtime/src/ssu2_runtime.rs:3130`) delegates to the peer-relay
@@ -117,7 +123,8 @@ So the router's NetDB lock is held while the runtime's requester-table mutex
 lock order is **sockets → state**
 (`crates/i2pr-runtime/src/ssu2_runtime.rs`), and the composition root's own
 tick takes the state lock — and releases it — *before* it takes the NetDB lock
-(`crates/i2pr-daemon/src/lib.rs:5649`-`:5658`). The requester is the one place
+(`crates/i2pr-daemon/src/lib.rs:5649` and
+`crates/i2pr-daemon/src/lib.rs:5658`). The requester is the one place
 where the router's NetDB lock **wraps** the runtime's state lock instead of
 sitting beside it.
 
@@ -126,8 +133,9 @@ sitting beside it.
 The bootstrap's mutex guards the router's only validated `RouterInfoStore`
 (`crates/i2pr-daemon/src/bootstrap.rs:215`), and it is taken by the NetDB
 discovery tick (`crates/i2pr-daemon/src/lib.rs:2063`), by the relay target's
-drain (before Plan 536), by the publication tick, by the peer reconcile and by
-the peer pool.
+material read (Plan 536 moved the target's **answer** out of the lock, but
+the read itself still takes the mutex), by the publication tick, by the peer
+reconcile and by the peer pool.
 
 ### 3.6 The consequence
 
