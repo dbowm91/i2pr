@@ -2651,6 +2651,13 @@ floodfill advertiser count accounted rather than derived by a scan, and stops
 the daemon's bootstrap from holding the router's NetDB lock across a population
 scan to obtain it, and the surface is internal and non-advertised.
 
+**Plan 539 adds one surface** — `daemon.routing-table-population-lock` — so the
+inventory holds **132 surfaces, 127 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 539 moves the routing
+table's population out of the router's NetDB lock and makes the population's
+absence a typed, counted refusal rather than a silent skip, and the surface is
+internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4542,3 +4549,57 @@ advertisement stay with their owners, and the **stock-peer** half needs Plan
 **controlled loopback profile** — Plan 431's bound. Nothing is advertised:
 `router.version` stays `0.9.62` and the inventory's advertised count stays
 **zero**.
+
+## The routing table's population holds no NetDB lock (Plan 539)
+
+The composition root populated the router's **routing table** by walking
+**every** floodfill advertiser the NetDB holds — an O(population) walk — and
+it did that walk **under the router's NetDB lock**. The bootstrap's mutex *is*
+the router's NetDB lock, and the walk's body called the routing table's own
+`index`, which takes the routing table's own mutex. So the router's NetDB
+lock **wrapped** the routing table's mutex, for the whole population.
+
+**The population ran on the router's live maintenance cadence.** It ran at
+startup and again on **every** tick of the participation maintenance owner.
+The NetDB discovery tick, the publication tick, the peer reconcile, the peer
+pool and the relay roles all queued behind it — and the routing table's own
+lookups queued behind the NetDB lock, because the population held it.
+
+**The absence was a silent skip.** A router that held no `Bootstrap` returned
+without indexing, without refusing and without counting, so a population that
+could not be read left no trace at all.
+
+**The population is now a short, bounded read.** The read is taken through a
+**source**, and the source's guard is released before the read returns, so the
+indexing happens with **no** NetDB lock held. The source yields the
+**records**, never a peer's word about another peer, so the table's own
+signed-evidence rule — a peer whose own signed `RouterInfo` does not advertise
+`f` is refused — stays the table's rule, and the store's selection surface is
+unchanged.
+
+**The absence is a typed, counted refusal.** A missing store and a poisoned
+lock are the same typed refusal, counted under its own reason in a counter the
+participation owner holds. The refusal is a fact about **this router**, never
+about a peer, and it is never written into a peer's profile.
+
+The shape of the fix is the one the tree already used thirty lines below the
+defect: Plan 505's `learn_bootstrap_peers` reads the bootstrap's material the
+same way, and its own comment says why.
+
+**What is not claimed.** The store's **selection** path stays a scan, because
+a selection over the floodfill advertisers is a walk by its nature, and the
+store's **prune** stays a population walk, because a prune must examine every
+record — that work keeps its named owner, the successor that gives the router
+a NetDB owner of its own. The plan adds **no** store, **no** lock, **no** owner,
+**no** configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, it changes **no** transport file and **no** runtime file, and
+`Cargo.toml` and `Cargo.lock` stay byte-identical. Nothing is advertised:
+`router.version` stays `0.9.62` and the inventory's advertised count stays
+**zero**.
+
+Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/tests/routing_table_population_lock.rs`,
+`crates/i2pr-daemon/tests/routing_table_population_lock_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/539-the-routing-tables-population-must-not-hold-the-routers-netdb-lock.md`.

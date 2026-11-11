@@ -4457,44 +4457,43 @@ the router's NetDB lock, because a prune must examine every record. That work
 keeps its named owner — the successor that gives the router a NetDB owner of
 its own, which is the larger change Plans 536 and 537 both named.
 
-## The NetDB's floodfill statistic is accounted (Plan 538)
+## The routing table's population holds no NetDB lock (Plan 539)
 
-The daemon's bootstrap owns the router's only validated `RouterInfoStore`, and
-its mutex **is** the router's NetDB lock. The bootstrap read the store's
-statistics at five points — the prune, the authenticated ingest, the cache
-loader, the state computation and the reseed path — every one of them under
-that lock, and the statistics were **derived by a scan**, so the router's
-NetDB lock was held across a population walk on the router's **live
-maintenance path**.
+**The shape.** The composition root's `populate_routing_table` used to walk
+**every** floodfill advertiser the NetDB holds and index each one, and it did
+that walk **under the router's NetDB lock** — the bootstrap's mutex *is* the
+router's NetDB lock. The walk's body called the routing table's own `index`,
+which takes the routing table's own mutex, so the router's NetDB lock
+**wrapped** the routing table's mutex for the whole population.
 
-**The bootstrap now computes the statistics once per operation.** The refresh
-**takes** the statistics it refreshes:
+**The source.** The population is now read through a **daemon-local** trait,
+`RoutingTablePopulationSource`, with one method:
 
 ```rust
-fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
-    self.snapshot.record_count = stats.record_count;
-    self.snapshot.encoded_bytes = stats.total_encoded_bytes;
-    self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;
-    self.snapshot.last_reseed_summary = self.last_reseed_summary.clone();
-}
+fn advertisers(&self) -> Result<Vec<ValidatedRouterInfo>, RoutingPopulationRefusal>;
 ```
 
-Every call site computes the statistics once and passes them in, so the
-snapshot's counts and the caller's counts are the same numbers by construction
-and no operation computes them twice. The state computation reads them **once**
-and decides on that one computation, so it can no longer disagree with the
-snapshot it just refreshed.
+The trait is implemented **for the store itself**, so a lane that passes a
+`&store` still compiles and still passes. The **production** implementation,
+`ValidatedStorePopulationSource`, holds the router's bootstrap and a reference
+to the owner's refusal counter; its read takes the bootstrap's lock, performs
+**one** read, and **releases the guard before the read returns**.
 
-**The counts are unchanged.** The refresh points are unchanged, the
-`BootstrapSnapshot` fields are unchanged, and the `BootstrapState` decision
-still compares the record count against `min_router_infos` and the floodfill
-advertiser count against `min_floodfill_advertisers`. The count is exact, so
-the decision is the one the tree already made.
+**The indexing.** The composition root indexes the returned advertisers
+**after** the read returns, so the indexing runs with **no** NetDB lock held
+and the router's NetDB lock never nests inside the routing table's. The
+population still rides the **existing** startup and the **existing** tick; no
+task, timer, listener or socket is added.
 
-**The bootstrap's public surface is unchanged.** `snapshot()`,
-`diagnostics()` and `store_summary()` keep their signatures and their results.
+**The absence.** A missing store and a poisoned lock are the same typed
+refusal, `RoutingPopulationRefusal::StoreUnavailable`. The owner holds the
+counter and the **source** increments it, so the number lives with the owner
+that owns the routing table while the lane can observe a refusal being
+counted. The refusal is a fact about **this router**, never about a peer, and
+it is never written into a peer's profile.
 
-**What is not claimed.** The store's **prune** is still a population walk under
-the router's NetDB lock, because a prune must examine every record. That work
-keeps its named owner — the successor that gives the router a NetDB owner of
-its own, which is the larger change Plans 536 and 537 both named.
+**The precedent.** The shape of this fix is the one the tree already used
+thirty lines below the defect: Plan 505's `learn_bootstrap_peers` takes the
+bootstrap's lock for one self-contained read, lets the guard drop before the
+read returns, and learns its batch afterwards — and its own comment says
+why.

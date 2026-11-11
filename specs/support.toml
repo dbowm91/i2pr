@@ -2902,3 +2902,22 @@ evidence = [
     "plans/implementation/network-participation/538-the-netdb-floodfill-statistic-must-be-accounted-not-scanned.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.routing-table-population-lock"
+protocol = "netdb"
+structure = "the-routing-tables-population-must-not-hold-the-routers-netdb-lock"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 539 moves the routing table's **population** out of the router's NetDB lock, and makes the population's absence **never skipped silently**. Two facts about the tree forced this. First, the composition root populated the table by walking **every** floodfill advertiser the NetDB holds -- an O(population) walk -- and it did that walk **under the router's NetDB lock**: the bootstrap's mutex *is* the router's NetDB lock. Worse, the walk's body called the routing table's own `index`, which takes the routing table's own mutex, so the router's NetDB lock **wrapped** the routing table's mutex for the whole population. The population runs at startup and again on **every** tick of the participation maintenance owner, so the NetDB discovery tick, the publication tick, the peer reconcile, the peer pool and the relay roles all queued behind it -- and the routing table's own lookups queued behind the NetDB lock. Second, the population's absence was a **silent skip**: a router that held no `Bootstrap` returned without indexing, without refusing and without counting, so a population that could not be read left no trace at all. The plan makes the population a **short, bounded read** whose guard is released before the read returns, so the indexing happens with **no** NetDB lock held and the router's NetDB lock never nests inside the routing table's. The source yields the **records**, never a peer's word about another peer, so the table's own signed-evidence rule -- a peer whose own signed `RouterInfo` does not advertise `f` is refused -- stays the table's rule, and the store's **selection** surface is unchanged. The population's absence is now a **typed, counted refusal** (`StoreUnavailable`), counted in a counter the participation owner holds and the source increments, so the number lives with the owner that owns the routing table while the lane can observe a refusal being counted. The refusal is a fact about **this router**, never about any peer, and it is never written into a peer's profile. The plan adds no store, no lock, no owner, no configuration key, no task, no timer, no listener and no socket, it changes no transport file and no runtime file, and `Cargo.toml` and `Cargo.lock` stay byte-identical. Nothing is advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/netdb_participation.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/routing_table_population_lock.rs",
+    "crates/i2pr-daemon/tests/routing_table_population_lock_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/539-the-routing-tables-population-must-not-hold-the-routers-netdb-lock.md",
+]
+advertised = false

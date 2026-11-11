@@ -408,10 +408,12 @@ over the **production** source, and the behaviour with and without a store.
 The lane must prove:
 
 1. the production source's read **takes** the router's NetDB lock and **releases**
-   it before it returns — the lane holds the lock from another thread and the
-   read completes the moment that thread lets go, and the returned material
-   then indexes into the table **while the lock is held again**, which it can
-   only do if the indexing needs no lock;
+   it before it returns — the lane calls `try_lock` on the bootstrap's mutex
+   **after** the read returns, and `try_lock` fails **immediately** when the
+   lock is held, so a successful acquisition is a deterministic proof that the
+   guard was dropped before the read returned and **not** a timing assertion;
+   the returned material then indexes into the table **while the lock is
+   held**, which it can only do if the indexing needs no lock;
 2. the population **runs** when the router holds no store, and the refusal is
    **typed**, counted under its own reason, and not skipped — the lane reads
    the counter it handed the source and observes it increment;
@@ -419,7 +421,10 @@ The lane must prove:
 4. the population is still the **same set** — every advertiser the store holds
    is indexed, and the table refuses a peer that does not advertise `f`;
 5. the indexing happens with **no** NetDB lock held — the lane measures that
-   with the same lock the first item uses;
+   with the same lock the first item uses; every lock the lane wants to
+   **hold** is taken with `try_lock`, so a source that **leaked** the guard
+   fails the lane **immediately** instead of blocking it, and a lane that can
+   hang is not evidence;
 6. the population **mutates nothing** in the store and writes no peer profile;
 7. every refusal the population can reach is typed and counted.
 
@@ -560,3 +565,17 @@ and `Cargo.lock` byte-identical.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | §6.2's item 3 said the population's absence "is counted under its own reason on the participation owner". The participation owner has **no public surface** — `NetDbParticipation` is private and exposes only `pub(crate) fn discovery` — so a counter only the composition root could reach would be a number nobody could observe, and the lane could not show a refusal being counted. | The **owner** holds the counter and the **source** increments it, so the number lives with the owner that owns the routing table while the lane can construct a source over a counter of its own and observe the refusal being counted. §6.2's item 3 was corrected to say so. |
+| 17.2.2 | The guard's fifth rule checked the store's selection **signature** but not the selection's **filter**, so a store that stopped filtering on the `f` capability would have kept its signature and slipped past the rule. | The rule now reads the selection's **body** and requires it to filter on `advertises_floodfill()`. The rule's meaning, its coverage and every other row of the guard are unchanged, and the guard's 24 rows all pass. |
+| 17.2.3 | Plan 538's documentation commit `74302efe` applied its patches **twice**, and three documents carry two **identical** copies of Plan 538's section: `specs/QUALIFICATION-GATES.md`'s `## 37.`, `docs/architecture/i2pr-netdb.md`'s section and `docs/architecture/i2pr-daemon.md`'s section. | Only the **second** copy of each is removed, so every citation that names the first copy — including Plan 538's closure record, which is **not** rewritten — still resolves to the same line. Plan 538's closed closure record is not rewritten, and the correction is recorded here and in this plan's closure record. |
+| 17.2.4 | §11.1's item 1 described the lane's lock proof with "another thread" and a timing — "the read completes the moment that thread lets go". The lane that was implemented proves it with `try_lock`, which fails **immediately** when the lock is held, so the proof is deterministic rather than a timing assertion. | §11.1's items 1 and 5 are **settled** to the method the lane actually uses: `try_lock` for the release proof, and the same lock for the indexing proof. The requirement is unchanged — the read still releases the guard before it returns, and the indexing still happens with no NetDB lock held — and the proof is now stronger, because it does not depend on a thread's scheduling. |
+| 17.2.5 | The lane took the bootstrap's lock **blocking** wherever it wanted to *hold* it. A source that **leaked** the guard — the defect this plan's invariant is about — therefore left the mutex locked for ever, and the lane's own tests blocked on it instead of failing. The negative control for that defect hung for ten minutes and never reported, because a lane that can hang is not evidence: the control has to see the row **fail**. | Every lock the lane wants to **hold** is now taken with `try_lock`, so a leaked guard fails the lane **immediately**. The ten rows are unchanged in what they prove; they now fail fast instead of deadlocking. The poisoning test keeps its blocking lock on purpose, because that test poisons the mutex itself. |

@@ -1488,45 +1488,23 @@ what the store **reports**, not how it **selects**.
 **The prune is untouched.** `RouterInfoStore::prune` still examines every
 record, because a prune must examine every record to know which are stale.
 
-## The floodfill advertiser count is accounted (Plan 538)
+## The routing table's population holds no NetDB lock (Plan 539)
 
-The store already maintained its **encoded byte total** incrementally, on
-exactly the paths that insert and remove a record. The floodfill advertiser
-count — the second number the same struct reports about the same set — was
-**derived**: `stats()` walked every record on every call, so the method was
-O(the population) where it is now O(1).
+The netdb crate's own surfaces are **unchanged** by Plan 539. The store's
+**selection** path, `floodfill_advertisers()`, still yields exactly the
+advertisers — the records whose own signed `RouterInfo` advertises the `f`
+capability — and it still filters on that capability. A selection over the
+floodfill advertisers is a walk by its nature, and this plan does not move it.
 
-**The store now accounts the count.** `RouterInfoStore` carries a
-`floodfill_advertiser_count` field alongside `total_encoded_bytes`, and the
-same discipline applies to both:
+The bucket set's **signed-evidence rule** is also unchanged: `insert_signed`
+still refuses a peer whose own record does not advertise `f`, and still
+counts that refusal. The plan's source yields the **records** — never a
+peer's word about another peer — so the rule stays the **table's** rule and
+does not move into the reader.
 
-- `insert` accounts the incoming advertiser on the **new-key** path;
-- `insert` accounts the **capability delta** on the **replacement** path,
-  because a replacement of the same identity may publish a different
-  capability set;
-- `remove` releases the advertiser it removed;
-- the store's own `prune` goes through `remove`, so it accounts as it removes.
-
-The adjustment is **checked** in both directions and refuses an impossible
-adjustment rather than wrapping it — the same rule the byte total already
-follows.
-
-**`stats()` reads the counter.** The record map's *length* is O(1) and is not
-a walk; a walk is a scan of the records themselves, so `stats()` no longer
-touches one.
-
-**The count is exact.** It is not a sample, not a cap and not an estimate. A
-consumer that compares it against a floor — the daemon's bootstrap compares it
-against `min_floodfill_advertisers` — needs the true number, because an
-inexact count would change when the router believes it is ready.
-
-**The selection paths are untouched.** `floodfill_advertisers()` still yields
-exactly the advertisers and `iter()` still yields every record: a selection
-over the floodfill advertisers is a walk by its nature, and this plan changes
-what the store **reports**, not how it **selects**.
-
-**The prune is untouched.** `RouterInfoStore::prune` still examines every
-record, because a prune must examine every record to know which are stale.
+What the plan changes is on the daemon's side of the seam, and it is
+described in `docs/architecture/i2pr-daemon.md`. The netdb crate's public
+surface is exactly what the tree already had.
 
 ## Cross-references
 
