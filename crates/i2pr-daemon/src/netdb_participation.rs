@@ -635,6 +635,99 @@ fn receipt_digest(stats: &ProfileStoreStats, selected_count: u32) -> [u8; 32] {
     digest
 }
 
+/// Plan 539 - why the routing table's population could not be read.
+///
+/// Every refusal is a fact about **this router**, never about a peer, and
+/// none of them writes anything into a peer's profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoutingPopulationRefusal {
+    /// The router holds no usable validated store.
+    StoreUnavailable,
+}
+
+/// Plan 539 - the material the routing table's population is drawn from.
+///
+/// The population is the router's **floodfill advertisers**: every validated
+/// peer the NetDB holds whose **own** signed record advertises the `f`
+/// capability. The table indexes each one with **its own signed evidence**,
+/// so the source must yield the **records**, never a peer's word about
+/// another peer.
+///
+/// The source is **daemon-local**, so implementing it for the netdb crate's
+/// own `RouterInfoStore` is inside the orphan rule, and a lane that passes a
+/// `&store` still compiles and still passes.
+///
+/// **The contract.** A source that cannot answer **counts** its refusal
+/// under its own reason and returns the typed refusal. A refusal is never a
+/// silent skip.
+pub trait RoutingTablePopulationSource {
+    /// Returns the advertisers to index.
+    fn advertisers(&self) -> Result<Vec<ValidatedRouterInfo>, RoutingPopulationRefusal>;
+}
+
+/// Plan 539 - the store's own population.
+///
+/// The store's **selection** is unchanged: the advertisers are exactly the
+/// records whose own signed RouterInfo advertises the `f` capability. The
+/// implementation copies them out, because the caller indexes them with **no**
+/// lock held.
+///
+/// The store can always answer, so it never refuses and never counts.
+impl RoutingTablePopulationSource for i2pr_netdb::RouterInfoStore {
+    fn advertisers(&self) -> Result<Vec<ValidatedRouterInfo>, RoutingPopulationRefusal> {
+        Ok(self.floodfill_advertisers().cloned().collect())
+    }
+}
+
+/// Plan 539 - the **production** population source.
+///
+/// The router's validated `RouterInfoStore` is the bootstrap's, and the
+/// bootstrap's mutex is the router's NetDB lock. The population needs the
+/// floodfill advertisers, so the read is taken under that lock and the guard
+/// is **released before the read returns**: the indexing is then done with
+/// **no** lock held, and the router's NetDB lock never wraps the routing
+/// table's own mutex.
+///
+/// Without a bootstrap, or with a poisoned lock, the source refuses. That is
+/// a fact about **this router** -- it has no usable validated store -- and it
+/// is counted under its own reason in the counter the owner hands it.
+pub struct ValidatedStorePopulationSource<'a> {
+    bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    refusals: &'a std::sync::atomic::AtomicU32,
+}
+
+impl<'a> ValidatedStorePopulationSource<'a> {
+    /// Constructs a source over the router's bootstrap and the owner's
+    /// refusal counter.
+    pub const fn new(
+        bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+        refusals: &'a std::sync::atomic::AtomicU32,
+    ) -> Self {
+        Self {
+            bootstrap,
+            refusals,
+        }
+    }
+}
+
+impl RoutingTablePopulationSource for ValidatedStorePopulationSource<'_> {
+    fn advertisers(&self) -> Result<Vec<ValidatedRouterInfo>, RoutingPopulationRefusal> {
+        let Some(bootstrap) = self.bootstrap else {
+            self.refusals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(RoutingPopulationRefusal::StoreUnavailable);
+        };
+        let Ok(guard) = bootstrap.lock() else {
+            self.refusals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(RoutingPopulationRefusal::StoreUnavailable);
+        };
+        // The guard is dropped here, when this function returns: the
+        // advertisers are then indexed by the caller with **no** lock held.
+        Ok(guard.store().floodfill_advertisers().cloned().collect())
+    }
+}
+
 /// The daemon-side consumer seam for the floodfill-indexed routing table.
 ///
 /// Plan 497. Plans 488 and 489 delivered the peer-profile store, the

@@ -1891,6 +1891,14 @@ struct NetDbParticipation {
     restored_projections: AtomicU32,
     /// The number of projections the startup load refused to apply.
     discarded_projections: AtomicU32,
+    /// Plan 539: the number of times the routing table's population could
+    /// not be read.
+    ///
+    /// The owner owns the number and the **source** increments it, so the
+    /// count stays with the owner that owns the routing table. A refusal is
+    /// a fact about **this router** -- it has no usable validated store --
+    /// and it is never written into a peer's profile.
+    population_refusals: AtomicU32,
 }
 
 impl NetDbParticipation {
@@ -1952,6 +1960,7 @@ impl NetDbParticipation {
             exploration_enabled: config.netdb.exploration_enabled,
             restored_projections: AtomicU32::new(0),
             discarded_projections: AtomicU32::new(0),
+            population_refusals: AtomicU32::new(0),
         }
     }
 
@@ -1978,7 +1987,13 @@ impl NetDbParticipation {
         // is indexed with today's date and the daily rotation can happen.
         self.routing_table.advance_time(now_ms);
         // Populate the routing table from the daemon's own NetDB.
-        self.populate_routing_table(bootstrap, &[]);
+        // Plan 539: the source releases the router's NetDB lock before the
+        // population's read returns, so the indexing holds no NetDB lock.
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            bootstrap,
+            &self.population_refusals,
+        );
+        self.populate_routing_table(&population, &[]);
         // Plan 505: feed the peer-profile store from the daemon's own
         // NetDB, so the exploratory build driver's selection has the
         // router's real peer population to draw from.
@@ -2029,7 +2044,12 @@ impl NetDbParticipation {
                         // on its existing cadence. The composed request
                         // waits in a bounded slot for the transport owner.
                         participation.drive_discovery(bootstrap.as_ref(), now_ms);
-                        participation.populate_routing_table(bootstrap.as_ref(), &[]);
+                        let population =
+                            crate::netdb_participation::ValidatedStorePopulationSource::new(
+                                bootstrap.as_ref(),
+                                &participation.population_refusals,
+                            );
+                        participation.populate_routing_table(&population, &[]);
                         participation.persist_projection(&projection_directory, now_ms);
                     }
                 }
@@ -2134,6 +2154,11 @@ impl NetDbParticipation {
     /// refused: the table never accepts one peer's advertisement of another
     /// as evidence for it.
     ///
+    /// Plan 539: the population is read through a **source**, and the read is
+    /// one self-contained read whose guard is released before it returns. The
+    /// indexing therefore happens with **no** NetDB lock held, so the router's
+    /// NetDB lock never wraps the routing table's own mutex.
+    ///
     /// A peer a verified floodfill *suggested* is indexed as a suggestion,
     /// never as signed evidence: the suggesting peer must itself be indexed
     /// with signed evidence, or the table refuses the suggestion. The daemon
@@ -2143,16 +2168,20 @@ impl NetDbParticipation {
     /// when that source arrives.
     fn populate_routing_table(
         &self,
-        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        source: &dyn crate::netdb_participation::RoutingTablePopulationSource,
         suggestions: &[(RouterHash, RouterHash)],
     ) {
-        let Some(bootstrap) = bootstrap else {
+        // Plan 539: the read is taken through the source, and the source
+        // releases the router's NetDB lock **before the read returns**. The
+        // indexing below therefore runs with **no** NetDB lock held, and the
+        // router's NetDB lock never wraps the routing table's own mutex.
+        let Ok(advertisers) = source.advertisers() else {
+            // The source counted this refusal under its own reason, in the
+            // counter this owner handed it. The population is not skipped
+            // silently, and no NetDB lock is held here.
             return;
         };
-        let Ok(bootstrap) = bootstrap.lock() else {
-            return;
-        };
-        for peer in bootstrap.store().floodfill_advertisers() {
+        for peer in &advertisers {
             self.routing_table.index(peer);
         }
         for (peer, from) in suggestions {
@@ -2304,9 +2333,10 @@ impl NetDbParticipation {
     fn report(&self) {
         let counters = self.routing_table.counters();
         tracing::info!(
-            "NetDB participation owner stopped: restored_projections={} discarded_projections={} routing_table_answered={} routing_table_fell_back={}",
+            "NetDB participation owner stopped: restored_projections={} discarded_projections={} population_refusals={} routing_table_answered={} routing_table_fell_back={}",
             self.restored_projections.load(Ordering::Relaxed),
             self.discarded_projections.load(Ordering::Relaxed),
+            self.population_refusals.load(Ordering::Relaxed),
             counters.answered,
             counters.fell_back(),
         );
@@ -6743,7 +6773,11 @@ mod tests {
         );
         let bootstrap = bootstrap_with_a_floodfill(&config);
         let (_config, participation) = participation_for(&base);
-        participation.populate_routing_table(Some(&bootstrap), &[]);
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            Some(&bootstrap),
+            &participation.population_refusals,
+        );
+        participation.populate_routing_table(&population, &[]);
         participation.drive_discovery(Some(&bootstrap), 1_000);
         assert!(
             participation.discovery.take_dispatch().is_none(),
@@ -6760,7 +6794,11 @@ mod tests {
             i2pr_netdb::ReplyPath::new(RouterHash::from_bytes([0x52; 32]), 0x0051_4007)
                 .expect("reply path"),
         ));
-        participation.populate_routing_table(Some(&bootstrap), &[]);
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            Some(&bootstrap),
+            &participation.population_refusals,
+        );
+        participation.populate_routing_table(&population, &[]);
         participation.drive_discovery(Some(&bootstrap), 1_000);
         let dispatch = participation
             .discovery
