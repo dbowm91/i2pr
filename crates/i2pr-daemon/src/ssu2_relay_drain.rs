@@ -293,7 +293,7 @@ pub struct TargetDrainOutcome {
 pub fn drain_target_events(
     source: &mut dyn TargetEventSource,
     owner: &mut crate::relay_target::RelayTargetOwner,
-    store: &i2pr_netdb::RouterInfoStore,
+    material_source: &dyn crate::relay_target::RelayTargetMaterialSource,
     now_secs: u64,
     now_ms: u64,
 ) -> TargetDrainOutcome {
@@ -303,7 +303,13 @@ pub fn drain_target_events(
             break;
         };
         outcome.drained = outcome.drained.saturating_add(1);
-        match crate::relay_target::drive_relay_target(owner, store, &event, now_secs, now_ms) {
+        match crate::relay_target::drive_relay_target(
+            owner,
+            material_source,
+            &event,
+            now_secs,
+            now_ms,
+        ) {
             crate::relay_target::RelayTargetOutcome::Answered => {
                 outcome.answered = outcome.answered.saturating_add(1);
             }

@@ -72,6 +72,13 @@ pub enum RelayTargetRefusal {
     RequesterUnparsableAddress,
     /// The requester's SSU2 address names no introduction key.
     RequesterNoIntroKey,
+    /// Plan 536: this router has no usable validated store.
+    ///
+    /// It is a fact about **this router**, not about the requester: the
+    /// router could not read the requester's record at all. It is counted
+    /// under its own reason and is never written into the requester's
+    /// profile.
+    StoreUnavailable,
     /// The introduction was a replay of one already answered.
     Replay,
     /// The accept could not be signed with the router's own key.
@@ -115,6 +122,7 @@ impl RelayTargetRefusal {
             Self::RequesterNoSsu2Address => "requester-no-ssu2-address",
             Self::RequesterUnparsableAddress => "requester-unparsable-address",
             Self::RequesterNoIntroKey => "requester-no-intro-key",
+            Self::StoreUnavailable => "store-unavailable",
             Self::Replay => "replay",
             Self::SigningRefused => "signing-refused",
             Self::TransportRefused => "transport-refused",
@@ -163,6 +171,12 @@ pub struct RelayTargetCounters {
     pub refusals_requester_unparsable_address: u64,
     /// The requester's SSU2 address names no introduction key.
     pub refusals_requester_no_intro_key: u64,
+    /// Introductions refused because this router has no usable validated
+    /// store to read the requester's record from.
+    ///
+    /// A **local** condition: it is about this router, never about the
+    /// requester, and it is never written into the requester's profile.
+    pub refusals_store_unavailable: u64,
     /// The introduction was a replay.
     pub refusals_replay: u64,
     /// The accept could not be signed.
@@ -294,6 +308,9 @@ impl RelayTargetOwner {
             RelayTargetRefusal::RequesterNoIntroKey => {
                 self.counters.refusals_requester_no_intro_key += 1;
             }
+            RelayTargetRefusal::StoreUnavailable => {
+                self.counters.refusals_store_unavailable += 1;
+            }
             RelayTargetRefusal::Replay => self.counters.refusals_replay += 1,
             RelayTargetRefusal::SigningRefused => {
                 self.counters.refusals_signing_refused += 1;
@@ -380,6 +397,84 @@ pub fn read_requester_material(
     })
 }
 
+/// The source the relay target role reads a requester's validated
+/// material from.
+///
+/// Plan 536: the target role needs **one named peer's** record, and the
+/// read must not hold the router's NetDB lock across the answer. The
+/// source is the seam. A source may read from the validated store
+/// directly, or it may read it under a **short** lock and release that
+/// lock before it returns, so the accept is signed and staged with **no**
+/// lock held.
+///
+/// A source that cannot answer at all refuses with
+/// [`RelayTargetRefusal::StoreUnavailable`]: that is a fact about **this
+/// router**, not about the requester.
+pub trait RelayTargetMaterialSource {
+    /// Reads the requester's validated material.
+    fn read_requester_material(
+        &self,
+        requester: [u8; 32],
+    ) -> Result<RequesterMaterial, RelayTargetRefusal>;
+}
+
+/// The validated store itself is a material source.
+///
+/// The implementation delegates to the free function above, so the read is
+/// exactly the read the tree already had: one record, one strict address
+/// parse, two derived values, and no mutation.
+impl RelayTargetMaterialSource for i2pr_netdb::RouterInfoStore {
+    fn read_requester_material(
+        &self,
+        requester: [u8; 32],
+    ) -> Result<RequesterMaterial, RelayTargetRefusal> {
+        crate::relay_target::read_requester_material(self, requester)
+    }
+}
+
+/// Plan 536 - the **production** material source.
+///
+/// The router's validated `RouterInfoStore` is the bootstrap's, and the
+/// bootstrap's mutex is the router's NetDB lock. The target role needs one
+/// named peer's record, so the read is taken under that lock and the guard
+/// is **released before the read returns**: the accept is then signed and
+/// staged with no lock held, exactly as Plan 533's establishment task does
+/// for the same store.
+///
+/// Without a bootstrap, or with a poisoned lock, the source refuses. That
+/// is a fact about **this router** -- it has no usable validated store --
+/// and it is counted under its own reason.
+pub struct ValidatedStoreMaterialSource<'a> {
+    bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+}
+
+impl<'a> ValidatedStoreMaterialSource<'a> {
+    /// Constructs a source over the router's bootstrap, if it holds one.
+    pub const fn new(
+        bootstrap: Option<&'a std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    ) -> Self {
+        Self { bootstrap }
+    }
+}
+
+impl RelayTargetMaterialSource for ValidatedStoreMaterialSource<'_> {
+    fn read_requester_material(
+        &self,
+        requester: [u8; 32],
+    ) -> Result<RequesterMaterial, RelayTargetRefusal> {
+        let Some(bootstrap) = self.bootstrap else {
+            return Err(RelayTargetRefusal::StoreUnavailable);
+        };
+        let Ok(guard) = bootstrap.lock() else {
+            return Err(RelayTargetRefusal::StoreUnavailable);
+        };
+        // The guard is dropped here, when this function returns: the
+        // accept is signed and staged by the caller with **no** lock
+        // held.
+        crate::relay_target::read_requester_material(guard.store(), requester)
+    }
+}
+
 /// Answers one relay introduction.
 ///
 /// The owner verifies the introduction through the runtime's own target
@@ -393,7 +488,7 @@ pub fn read_requester_material(
 /// into a peer's profile.
 pub fn drive_relay_target(
     owner: &mut RelayTargetOwner,
-    store: &i2pr_netdb::RouterInfoStore,
+    source: &dyn RelayTargetMaterialSource,
     event: &i2pr_runtime::Ssu2InboundTarget,
     now_secs: u64,
     now_ms: u64,
@@ -406,7 +501,7 @@ pub fn drive_relay_target(
 
     let block = &event.block;
     let requester = *block.alice_hash();
-    let material = match read_requester_material(store, requester) {
+    let material = match source.read_requester_material(requester) {
         Ok(material) => material,
         Err(reason) => {
             owner.refuse(reason);

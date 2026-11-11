@@ -5732,10 +5732,7 @@ fn register_ssu2_service(
                                 // holds no task, no timer, no listener and
                                 // no socket: the tick is the only thing that
                                 // moves it.
-                                if let Some(target) = target.as_mut()
-                                    && let Some(bootstrap) = bootstrap.as_ref()
-                                    && let Ok(guard) = bootstrap.lock()
-                                {
+                                if let Some(target) = target.as_mut() {
                                     let now_ms = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|duration| {
@@ -5743,10 +5740,25 @@ fn register_ssu2_service(
                                         })
                                         .unwrap_or(0);
                                     let now_secs = now_ms / 1_000;
+                                    // Plan 536: the drain is never skipped.
+                                    //
+                                    // The material is read under the
+                                    // router's NetDB lock and the lock is
+                                    // released **before** the read
+                                    // returns, so the accept is signed and
+                                    // staged with no lock held. A router
+                                    // that holds no validated store
+                                    // refuses the introduction under its
+                                    // own typed reason, and the refusal is
+                                    // counted: it is never a silent skip.
+                                    let material_source =
+                                        crate::relay_target::ValidatedStoreMaterialSource::new(
+                                            bootstrap.as_ref(),
+                                        );
                                     let drained = crate::ssu2_relay_drain::drain_target_events(
                                         &mut owner,
                                         target,
-                                        guard.store(),
+                                        &material_source,
                                         now_secs,
                                         now_ms,
                                     );
