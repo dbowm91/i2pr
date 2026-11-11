@@ -2637,6 +2637,13 @@ advertised**. The advertised count stays **zero**: Plan 536 moves the relay
 target role's answer out of the router's NetDB lock and makes the target's
 drain never skipped silently, and the surface is internal and non-advertised.
 
+**Plan 537 adds one surface** — `daemon.relay-requester-ask-lock` — so the
+inventory holds **130 surfaces, 125 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 537 moves the relay
+requester's outbound step out of the router's NetDB lock and makes the
+requester's refusal to ask never skipped silently, and the surface is internal
+and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4404,3 +4411,71 @@ needs Plan 493's authorized two-host topology. The delivery stays confined to
 the **controlled loopback profile** — Plan 431's bound. Nothing is advertised:
 `router.version` stays `0.9.62` and the inventory's advertised count stays
 **zero**.
+
+## The relay requester asks with no lock held (Plan 537)
+
+Plan 531 built the relay **requester** role: the router that cannot reach a
+peer directly asks the peer's published introducer to relay toward it. But the
+composition root drove that outbound step **inside the bootstrap's mutex** — the
+router's NetDB lock — for the whole step.
+
+The step scans the **entire** validated store for candidates, reads up to
+sixteen candidates' published introducer sets, resolves the named introducer
+**by hash** from the same store, **signs** the RelayRequest with the router's
+own key, writes the transport's requester table and queues the request onto the
+introducer's session.
+
+**The sharpest edge was a nested lock.** The last two of those steps take the
+**transport's own mutexes** while the NetDB lock is held:
+`start_relay_request` locks the peer-relay service's requester table, and
+`queue_relay_request` locks the runtime's **state** lock. So the router's
+NetDB lock **wrapped** the runtime's state lock — where the runtime's own
+order is sockets → state, and where the composition root's own tick takes the
+state lock, and releases it, *before* it takes the NetDB lock.
+
+**The second defect was the silent skip.** The step was gated on the daemon
+**holding** a `Bootstrap`. A router that did not hold one did not ask, did not
+refuse and did not count: the request that could have been made left no trace
+at all. A skipped outbound step is indistinguishable from a router that had no
+eligible target.
+
+**The request is produced with no lock held.** Each read of the router's NetDB
+is a **short, self-contained** read whose guard is released before the read
+returns. The signature and the transport's writes happen with **no** NetDB lock
+held, so the router's NetDB lock never nests inside the transport's locks.
+
+**The refusal to ask is never skipped silently.** The outbound step runs
+whenever the requester role exists. A missing store — or a poisoned lock — is
+a **typed, counted refusal** (`StoreUnavailable`, counted under
+`refusals_store_unavailable`), not an absent pass. The refusal is a fact about
+**this router**: it has no usable validated store. It is never written into a
+peer's profile and it never counts as a peer fault.
+
+**The requester's need for the peer population is unchanged.** Asking a peer for
+a relay genuinely needs to know which peers the router's NetDB holds, so only
+the **lock scope** and the **silent skip** change — not what the requester
+knows or decides.
+
+**The reads stay read-only.** The reads touch no store state, mutate nothing
+and write no peer profile. The plan changes **where** the reads happen, not
+what they do.
+
+**The requester's semantics are untouched.** The RelayRequest preimage, the
+signature, the nonce discipline, the session gate, the transport's requester
+table and the counters are exactly what the tree already had. Plan 531's lane
+and guard stay **byte-identical** — the plan changes the requester's material
+**source**, not its semantics, so the predecessor's evidence remains exactly as
+it was, and Plan 531's guard still finds the strings it looks for.
+
+**What is not claimed.** The plan adds **no** store, **no** lock, **no** owner,
+**no** configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, and it changes **no** transport file and **no** runtime file. The
+router's validated store is still the bootstrap's store, so separating the
+router's NetDB from the bootstrap's lifetime remains a successor's work; the
+plan removes the **lock scope** and the **silent skip** and leaves the ownership
+alone. The **production** SSU2 peer-test driver stays unbuilt, the `B`
+advertisement and the `caps=f` advertisement stay with their owners, and the
+**stock-peer** half needs Plan 493's authorized two-host topology. The delivery
+stays confined to the **controlled loopback profile** — Plan 431's bound.
+Nothing is advertised: `router.version` stays `0.9.62` and the inventory's
+advertised count stays **zero**.

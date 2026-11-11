@@ -4353,3 +4353,64 @@ bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`): separating
 the router's NetDB from the bootstrap's lifetime is a successor's work. The
 plan removes the **lock scope** and the **silent skip**, and leaves the
 ownership alone.
+
+## The relay requester asks with no lock held (Plan 537)
+
+Plan 531 built the relay **requester** role, and Plan 536's closure record
+assigned the requester's remaining contention to **"the requester's line"**:
+*"The requester's outbound step keeps its bootstrap gate. That is deliberate —
+asking a peer for a relay genuinely needs the router's peer population — but it
+means the requester still contends with the router's NetDB."* Plan 537 is that
+line's owner.
+
+**Two shapes changed.** The outbound step is no longer gated on the bootstrap,
+and it no longer holds the router's NetDB lock across the request.
+
+**The material source is the seam.** `crates/i2pr-daemon/src/relay_requester.rs`
+gains a **daemon-local** trait, `RelayRequesterMaterialSource`, with three
+reads: `peer_pool`, `published_introducers` and `introducer_endpoint`. It is
+implemented **for the validated store itself** — the netdb crate's own
+`RouterInfoStore` — so the free functions `read_published_introducers` and
+`read_introducer_endpoint` are unchanged, their signatures, their bodies and
+their `store.get(` reads are exactly what they were, and Plan 531's lane still
+compiles and still passes. A second implementation,
+`ValidatedStoreRequesterSource`, is the **production** one: it holds
+`Option<&Arc<Mutex<Bootstrap>>>` and takes the bootstrap's mutex for one
+self-contained read at a time.
+
+**The guard is released before each read returns.** The production source binds
+the bootstrap's guard to a **local**, performs **one** read, and lets the guard
+drop when the function returns. The RelayRequest is therefore signed and
+carried with **no lock held** — the same pattern Plan 533's establishment task
+and Plan 536's target role already follow for the same store. The lane measures
+it with a signer that probes the lock at the moment it signs, and a second
+signer that *holds* the lock proves the probe is not vacuous.
+
+**The refusal to ask is never skipped silently.** The composition root's relay
+tick builds the source from `bootstrap.as_ref()` and drives the outbound step
+**whenever the requester role exists**. A router that holds no validated store —
+or whose NetDB lock is poisoned — refuses the request under the typed reason
+`StoreUnavailable`, counted under `refusals_store_unavailable`. The refusal is a
+fact about **this router**, never about any peer: it is never written into a
+peer's profile, and it never counts as a peer fault. Before Plan 537 the same
+situation produced no request, no refusal, no count and no trace.
+
+**The requester's need for the peer population is unchanged.** Asking a peer for
+a relay genuinely needs to know which peers the router's NetDB holds, so the
+pool read stays. What changed is its **scope**: it is one self-contained read
+whose guard is released before it returns, instead of the prelude to a
+signature and two transport writes under the same guard.
+
+**The requester's semantics are untouched.** The RelayRequest preimage, the
+signature, the nonce discipline, the session gate, the transport's requester
+table and the counters are exactly what the tree already had. Plan 531's lane
+and guard stay **byte-identical** — the plan changes the material **source**,
+not the semantics — and Plan 531's guard still finds the strings it looks for.
+
+**What the plan does not do.** It adds no store, no lock, no owner, no
+configuration key, no task, no timer, no listener and no socket, and it changes
+no transport file and no runtime file. The **router's validated store is still
+the bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`):
+separating the router's NetDB from the bootstrap's lifetime is a successor's
+work. The plan removes the **lock scope** and the **silent skip**, and leaves
+the ownership alone.
