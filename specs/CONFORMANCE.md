@@ -2631,6 +2631,12 @@ advertised**. The advertised count stays **zero**: Plan 535 keeps the router's
 own bound address counted as reachability evidence, and the surface is internal
 and non-advertised.
 
+**Plan 536 adds one surface** — `daemon.relay-target-answer-lock` — so the
+inventory holds **129 surfaces, 124 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 536 moves the relay
+target role's answer out of the router's NetDB lock and makes the target's
+drain never skipped silently, and the surface is internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4338,3 +4344,63 @@ gains no method. Every re-assertion is **counted** under
 **zero**. The delivery is confined to the **controlled loopback profile** —
 Plan 431's bound — the **production** SSU2 peer-test driver stays unbuilt, and the
 **stock-peer** half needs Plan 493's authorized two-host topology.
+
+## The relay target answers with no lock held (Plan 536)
+
+Plan 532 built the relay **target** role: the peer an introducer names receives
+the Relay Intro, verifies it through the transport's own target state machine,
+signs the accept and stages the hole punch. But the composition root drained
+that handoff **inside the bootstrap's mutex** — the router's NetDB lock — for
+the whole pass, and the pass is bounded at `MAX_RELAY_DRAIN_PER_PASS = 16`
+answers, each of which parses an address, signs an accept and stages it on a
+session.
+
+The same mutex is taken by the router's NetDB discovery tick, by the
+requester's outbound step, by the RouterInfo publication tick, by the peer
+reconcile and by the peer pool. So the relay answer path and the router's
+NetDB contended, and the loser was whichever arrived second. A router that
+relays for others held the NetDB lock across up to sixteen signature
+operations, on every tick.
+
+**The second defect was the silent skip.** The drain was gated on the daemon
+**holding** a `Bootstrap`. A router that did not hold one did not drain, did
+not refuse and did not count: the introductions sat in the handoff and the
+operator saw nothing. A skipped drain is indistinguishable from a router that
+was never reached.
+
+**The answer is produced with no lock held.** The requester's material is read
+under a **short, bounded** lock — one named peer, one strict address parse,
+two derived values — and the guard is **released before the read returns**, so
+the accept is signed and staged with no lock held. This is the pattern Plan
+533's establishment task already follows for the same store.
+
+**The drain is never skipped silently.** The drain runs whenever the target
+role exists. A missing store — or a poisoned lock — is a **typed, counted
+refusal** (`StoreUnavailable`, counted under `refusals_store_unavailable`),
+not an absent pass. The refusal is a fact about **this router**: it has no
+usable validated store. It is never written into the requester's profile and
+it never counts as a peer fault.
+
+**The read stays read-only.** The read touches no store state, mutates nothing
+and writes no peer profile. The plan changes **where** the read happens, not
+what it does.
+
+**The target's semantics are untouched.** The accept's signature preimage, the
+hole punch, the dial profile, the transport's target table and the transport's
+refusal order are exactly what the tree already had. Plan 532's lane and guard
+stay **byte-identical** — the plan changes the target role's material
+**source**, not its semantics, so the predecessor's evidence remains exactly as
+it was, and Plan 532's guard still finds the strings it looks for.
+
+**What is not claimed.** The plan adds **no** store, **no** lock, **no** owner,
+**no** configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, and it changes **no** transport file. The router's validated store is
+still the bootstrap's store, so separating the router's NetDB from the
+bootstrap's lifetime remains a successor's work; the plan removes the **lock
+scope** and the **silent skip** and leaves the ownership alone. The
+**production** SSU2 peer-test driver stays unbuilt, the `B` advertisement and
+the `caps=f` advertisement stay with their owners, and the **stock-peer** half
+needs Plan 493's authorized two-host topology. The delivery stays confined to
+the **controlled loopback profile** — Plan 431's bound. Nothing is advertised:
+`router.version` stays `0.9.62` and the inventory's advertised count stays
+**zero**.

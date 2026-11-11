@@ -470,3 +470,17 @@ configuration key and no timer, and it changes no transport file.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | §11.2's rule 8 asks for Plan 532's lane and guard to stay **byte-identical**. "Byte-identical" is only checkable as a digest, so the guard now records the SHA-256 of both predecessor files and compares against it. | The digests live in `crates/i2pr-daemon/tests/ssu2_relay_target_lock_boundary.rs` as `PREDECESSOR_LANE_SHA256` and `PREDECESSOR_GUARD_SHA256`. They are a **tripwire**: a future plan that needs to change Plan 532's evidence must change these two constants **and** say why. |
+| 17.2.2 | §11.2's rule 1 asks that the drain not be gated on the bootstrap. The gate Plan 536 removed lived in the `if let` **condition**, not in the block's body: the old code read `if let Some(target) = target.as_mut() && let Some(bootstrap) = bootstrap.as_ref() && let Ok(guard) = bootstrap.lock() { … }`. A guard that read only the block's **body** would not have seen it. | The guard reads the **enclosing statement** — the condition that opens the innermost enclosing block and the block's own body — through `enclosing_statement`. The rule therefore sees a gate wherever it is put. |
+| 17.2.3 | §11.1's item 2 names **one** local condition: the router holds no store. The implementation found a **second** one with the same shape: a **poisoned** NetDB lock. | The lane discharges both. The plan's §6.3 already required the poisoned lock to be the same typed refusal, so this is an addition to the **evidence**, not a change to the **scope**. |
+| 17.2.4 | Plan 532's recorded **Low** finding 2 reads: *"the target role needs the bootstrap's store"*. That statement is **still true** after this plan: the production source reads the bootstrap's store. What changed is the **lock scope** (a single-key read, released before the answer) and the **silent skip** (a typed, counted refusal). | The finding is discharged **in its recorded terms** and **not** in the terms the prose might suggest. The target role's *need* for the bootstrap's store is unchanged; the coupling that remains is bounded, typed and counted. The **ownership** question — the router's NetDB should not live inside the bootstrap — stays with the successor named in §5.3. |
+| 17.2.5 | The daemon deep-dive's Plan 532 section says: *"with no bootstrap the target's introductions are never drained."* That sentence describes the tree **before** this plan. | The deep-dive gains a **Plan 536 section** that states the new shape, and the Plan 532 prose is left exactly as it was. The deep-dive is prose; the closure record and the registry's row carry the finding's disposition. |

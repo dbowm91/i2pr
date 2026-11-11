@@ -2842,3 +2842,24 @@ evidence = [
     "plans/implementation/network-participation/535-the-router-must-keep-its-own-bound-address-counted-as-reachability-evidence.md",
 ]
 advertised = false
+
+[[surface]]
+id = "daemon.relay-target-answer-lock"
+protocol = "ssu2"
+structure = "the-relay-target-role-must-answer-without-holding-the-routers-netdb-lock"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 536 moves the relay target role's **answer** out of the router's NetDB lock, and makes the target's drain **never skipped silently**. Two facts about the tree forced this. First, the composition root drained the target's handoff **inside the bootstrap's mutex** -- the router's NetDB lock -- for the whole pass, and the pass is bounded at `MAX_RELAY_DRAIN_PER_PASS = 16` answers, each of which parses an address, signs an accept and stages it on a session. The same mutex is taken by the router's NetDB discovery tick, by the requester's outbound step, by the RouterInfo publication tick, by the peer reconcile and by the peer pool, so the relay answer path and the router's NetDB contended and the loser was whichever arrived second. Second, the drain was **gated on the daemon holding a `Bootstrap`**: a router that does not hold one did not drain, did not refuse and did not count, so an introduction that arrived and could not be answered left no trace at all. The plan makes the requester's material a **short, bounded read** -- taken under the router's NetDB lock and **released before the read returns**, exactly as Plan 533's establishment task already does for the same store -- so the accept is signed and staged with **no lock held**. The absence of a store is now a **typed, counted refusal** (`StoreUnavailable`, counted under `refusals_store_unavailable`) rather than a silent skip. The refusal is a fact about **this router**, never about the requester, and it is never written into the requester's profile. The read stays **read-only**: one named peer, one strict address parse, two derived values, no mutation and no peer profile written. The target role's **semantics** are untouched -- the accept's signature preimage, the hole punch, the transport's target table and its refusal order are exactly what the tree already had -- and Plan 532's lane and guard stay **byte-identical**, so the predecessor's evidence remains exactly as it was. The plan adds **no** store, **no** lock, **no** owner, **no** configuration key, **no** task, **no** timer, **no** listener and **no** socket, and it changes **no** transport file. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (Plan 431's bound); the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; the router's validated store is still the bootstrap's store, and separating the router's NetDB from the bootstrap's lifetime is a successor's work; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/relay_target.rs",
+    "crates/i2pr-daemon/src/ssu2_relay_drain.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_target_lock.rs",
+    "crates/i2pr-daemon/tests/ssu2_relay_target_lock_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "specs/protocols/09-ssu2.md",
+    "plans/implementation/network-participation/536-the-relay-target-role-must-answer-without-holding-the-routers-netdb-lock.md",
+]
+advertised = false

@@ -2032,3 +2032,44 @@ The delivery stays confined to the **controlled loopback profile**, the
 the `caps=f` advertisement stay with their owners, and the **stock-peer** half
 of this surface remains blocked externally on Plan 493's authorized two-host
 topology.
+
+## 35. The relay target answers with no lock held (Plan 536)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G36.1 | the accept is signed with the router's NetDB lock **free**: the material read releases the guard before it returns, and the probe observes the lock at the moment the accept is signed | `crates/i2pr-daemon/tests/ssu2_relay_target_lock.rs`, `the_answer_is_signed_with_the_netdb_lock_free` |
+| G36.2 | the measurement is **not vacuous**: a signer that holds the lock while it signs is observed as holding it, so the probe can tell the two apart | the same lane file, `the_lock_measurement_detects_a_lock_held_across_the_answer` |
+| G36.3 | the drain **runs** when the router holds no store, and the introduction is refused with the **typed** reason and counted under its own reason — never skipped | the same lane file, `the_drain_runs_without_a_store_and_counts_the_typed_refusal` |
+| G36.4 | a **poisoned** NetDB lock is the same typed refusal: the drain still runs, the refusal is still counted, and nothing is skipped | the same lane file, `a_poisoned_netdb_lock_is_the_same_typed_refusal` |
+| G36.5 | the answer is still produced **correctly** when the store is present, and the transport's own replay suppression is unchanged | the same lane file, `the_answer_is_still_produced_correctly_with_a_store` |
+| G36.6 | the read **mutates nothing** and writes no peer profile | the same lane file, `the_read_mutates_nothing_and_writes_no_peer_profile` |
+| G36.7 | every refusal the drain can reach is **typed** and counted under **its own reason**, and none of them writes into a peer's profile | the same lane file, `every_refusal_is_typed_and_counted_and_writes_nothing` |
+| G36.8 | the target's drain is **not** gated on the bootstrap, and it holds no NetDB lock across the answer | `crates/i2pr-daemon/tests/ssu2_relay_target_lock_boundary.rs`, `the_target_drain_is_not_gated_on_the_bootstrap` |
+| G36.9 | the production source's read **releases** the lock before it returns, and the answer is produced after the read returns | the same guard file, `the_source_releases_the_lock_before_the_answer` |
+| G36.10 | the read is **read-only** and mutates no store state | the same guard file, `the_read_is_read_only` |
+| G36.11 | the missing store is a **typed** refusal and it is **counted** under its own reason | the same guard file, `the_missing_store_is_a_typed_and_counted_refusal` |
+| G36.12 | the target role's machinery — the transport seam, the signature, the hole punch and the dial profile — is **untouched** | the same guard file, `the_target_roles_machinery_is_untouched` |
+| G36.13 | the transport's target table and its refusal order are **untouched** | the same guard file, `the_transports_target_table_is_untouched` |
+| G36.14 | **no** configuration key is added, **no** task, timer, listener or socket is added, and the drain rides the **existing** tick | the same guard file, `no_new_surface_and_the_drain_rides_the_existing_tick` |
+| G36.15 | Plan 532's lane and guard stay **byte-identical**, and Plan 532's guard still finds the strings it looks for | the same guard file, `the_predecessors_evidence_is_untouched` |
+| G36.16 | every guard rule has an inverted probe that fires it, and a probe that removes the item it names, so every rule **fails closed** | the same guard file, the `the_guard_reports_*` and the `the_guard_fails_closed_when_*` rows |
+
+Every gate above is **local**. The lane drives a **real** runtime over **real**
+loopback UDP, with the router's NetDB held in the **production** source the
+composition root uses, so the lock that is measured is the lock that is held in
+production. The **control** for the end-to-end row is a second signer that
+deliberately holds the lock while it signs: it is observed as holding it, so
+the first row can only pass because the read released the guard.
+
+The guard is the authority for the **shape**: that the drain is not gated on
+the bootstrap, that the read releases the lock before it returns, that the
+read is read-only, that the missing store is typed and counted, that the
+target's machinery and the transport's table are untouched, that no new
+surface is added and the drain rides the existing tick, and that the
+predecessor's evidence is byte-identical.
+
+The delivery stays confined to the **controlled loopback profile**, the
+**production** SSU2 peer-test driver stays unbuilt, the `B` advertisement and
+the `caps=f` advertisement stay with their owners, and the **stock-peer** half
+of this surface remains blocked externally on Plan 493's authorized two-host
+topology.

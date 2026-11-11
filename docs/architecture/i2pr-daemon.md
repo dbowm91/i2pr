@@ -4297,3 +4297,59 @@ through the relay if it wants to; and the observation **expires**, because a
 session that died while the router was not looking must not be built toward.
 No configuration key is added — the table rides `ssu2.relay_requester` and is
 created only when the operator asked for the requester role.
+
+## The relay target answers with no lock held (Plan 536)
+
+Plan 532 built the relay **target** role, and it recorded a **Low** finding:
+*"the target role needs the bootstrap's store"* — the composition root drains
+the target's handoff only when the daemon holds a `Bootstrap`. Plan 536 is
+that finding's owner.
+
+**Two shapes changed.** The target's drain is no longer gated on the
+bootstrap, and it no longer holds the router's NetDB lock across the answer.
+
+**The material source is the seam.** `crates/i2pr-daemon/src/relay_target.rs`
+gains a **daemon-local** trait, `RelayTargetMaterialSource`, with one method,
+`read_requester_material`. It is implemented **for the validated store
+itself** — the netdb crate's own `RouterInfoStore` — so the free function
+`read_requester_material(&RouterInfoStore, [u8; 32])` is unchanged, its
+signature, its body and its four refusals are exactly what they were, and
+Plan 532's lane still compiles and still passes. A second implementation,
+`ValidatedStoreMaterialSource`, is the **production** one: it holds
+`Option<&Arc<Mutex<Bootstrap>>>` and reads the one named peer under the
+bootstrap's mutex.
+
+**The guard is released before the read returns.** The production source binds
+the bootstrap's guard to a **local**, reads the material, and lets the guard
+drop when the function returns. The accept is therefore signed and staged with
+**no lock held** — the same pattern Plan 533's establishment task already
+follows for the same store. The lane measures it with a signer that probes
+the lock at the moment it signs, and a second signer that *holds* the lock
+proves the probe is not vacuous.
+
+**The drain is never skipped silently.** The composition root's relay tick
+builds the source from `bootstrap.as_ref()` and drains the target's handoff
+**whenever the target role exists**. A router that holds no validated store —
+or whose NetDB lock is poisoned — refuses the introduction under the typed
+reason `StoreUnavailable`, counted under `refusals_store_unavailable`. The
+refusal is a fact about **this router**, never about the requester: it is
+never written into the requester's profile, and it never counts as a peer
+fault. Before Plan 536 the same situation produced no drain, no refusal, no
+count and no trace.
+
+**The read stays read-only.** One named peer, one strict address parse, two
+derived values, no mutation and no peer profile written.
+
+**The target's semantics are untouched.** The accept's signature preimage, the
+hole punch, the dial profile, the transport's target table and the transport's
+refusal order are exactly what the tree already had. Plan 532's lane and
+guard stay **byte-identical** — the plan changes the material **source**, not
+the semantics — and Plan 532's guard still finds the strings it looks for.
+
+**What the plan does not do.** It adds no store, no lock, no owner, no
+configuration key, no task, no timer, no listener and no socket, and it
+changes no transport file. The **router's validated store is still the
+bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`): separating
+the router's NetDB from the bootstrap's lifetime is a successor's work. The
+plan removes the **lock scope** and the **silent skip**, and leaves the
+ownership alone.
