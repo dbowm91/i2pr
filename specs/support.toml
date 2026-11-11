@@ -2883,3 +2883,22 @@ evidence = [
     "plans/implementation/network-participation/537-the-relay-requester-must-ask-without-holding-the-routers-netdb-lock.md",
 ]
 advertised = false
+
+[[surface]]
+id = "netdb.floodfill-statistic-accounting"
+protocol = "reseed-netdb"
+structure = "the-netdb-floodfill-statistic-must-be-accounted-not-scanned"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 538 makes the NetDB's floodfill advertiser count **accounted** rather than derived by a scan, and stops the daemon's bootstrap from holding the router's NetDB lock across a population scan to obtain it. Two facts about the tree forced this. First, the router's validated `RouterInfo` store already maintained its **encoded byte total** incrementally, on exactly the paths that insert and remove a record, while the floodfill advertiser count -- the second number the same struct reports about the same set -- was derived: `stats()` walked every record on every call. Second, the daemon's bootstrap read that statistic while holding the router's NetDB lock, and read it **twice** per state computation, because `compute_state` refreshed the snapshot -- which reads the statistics -- and then read them again. The prune is on the router's live maintenance path, so the router's NetDB lock was held across the population walk on every reconcile pass that prunes, and the authenticated ingest refreshed the snapshot under the same lock. The store now maintains the count the way it maintains the byte total: `insert` accounts the new advertiser on the new-key path and the capability delta on the replacement path, `remove` releases the advertiser it removed, and the store's own prune goes through `remove`, so it accounts as it removes. The adjustment is checked in both directions and refuses an impossible adjustment rather than wrapping it. `stats()` reads the maintained counter and walks no record map, so it is **O(1)** where it was O(the population). The count stays **exact** -- not a sample, not a cap, not an estimate -- so the bootstrap's `BootstrapState` decision is unchanged. The bootstrap's refresh now **takes** the statistics it refreshes, so every call site computes them once and the snapshot's counts and the computation's counts are the same numbers by construction. The store's **selection** paths stay scans, because a selection over the floodfill advertisers is a walk by its nature, and the store's **prune** stays a population walk, because a prune must examine every record; that work keeps its named owner. The plan adds **no** store, **no** lock, **no** owner, **no** configuration key, **no** task, **no** timer, **no** listener and **no** socket, it changes **no** transport file and **no** runtime file, and `Cargo.toml` and `Cargo.lock` stay byte-identical. The surface is internal and non-advertised: `router.version` stays `0.9.62` and the inventory's advertised count stays **zero**. The delivery stays confined to the **controlled loopback profile** (Plan 431's bound); the router's validated store is still the bootstrap's store, and separating the router's NetDB from the bootstrap's lifetime is a successor's work; the **production** SSU2 peer-test driver stays unbuilt; the `B` advertisement and `caps=f` stay with their owners; and the **stock-peer** half needs Plan 493's authorized two-host topology.
+"""
+evidence = [
+    "crates/i2pr-netdb/src/store.rs",
+    "crates/i2pr-daemon/src/bootstrap.rs",
+    "crates/i2pr-daemon/tests/floodfill_statistic_accounting.rs",
+    "crates/i2pr-daemon/tests/floodfill_statistic_accounting_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/538-the-netdb-floodfill-statistic-must-be-accounted-not-scanned.md",
+]
+advertised = false

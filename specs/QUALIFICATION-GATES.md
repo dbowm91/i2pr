@@ -2114,3 +2114,81 @@ The delivery stays confined to the **controlled loopback profile**, the
 the `caps=f` advertisement stay with their owners, and the **stock-peer** half
 of this surface remains blocked externally on Plan 493's authorized two-host
 topology.
+
+## 37. The NetDB's floodfill statistic is accounted (Plan 538)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G38.1 | a **new-key** insert accounts the advertiser, and the reported count is the count the store's **contents** imply | `crates/i2pr-daemon/tests/floodfill_statistic_accounting.rs`, `a_new_key_insert_accounts_the_advertiser` |
+| G38.2 | a record that advertises **no** capability accounts nothing | the same lane file, `a_record_without_the_capability_accounts_nothing` |
+| G38.3 | an **idempotent** insert leaves the count unchanged | the same lane file, `an_idempotent_insert_leaves_the_count_unchanged` |
+| G38.4 | a **conflict** leaves the count unchanged, because the existing record is retained | the same lane file, `a_conflicting_insert_leaves_the_count_unchanged` |
+| G38.5 | a **stale** insert leaves the count unchanged | the same lane file, `a_stale_insert_leaves_the_count_unchanged` |
+| G38.6 | a **capacity refusal** leaves the count unchanged, because nothing is inserted | the same lane file, `a_capacity_refusal_leaves_the_count_unchanged` |
+| G38.7 | a **replacement** that gains the `f` capability accounts the advertiser | the same lane file, `a_replacement_that_gains_the_capability_accounts_the_advertiser` |
+| G38.8 | a **replacement** that loses the `f` capability releases the advertiser | the same lane file, `a_replacement_that_loses_the_capability_releases_the_advertiser` |
+| G38.9 | a **removal** releases the advertiser, and removing an unknown key changes nothing | the same lane file, `a_removal_releases_the_advertiser` |
+| G38.10 | a **prune** that removes several records releases every advertiser it removed | the same lane file, `a_prune_that_removes_several_records_releases_every_advertiser` |
+| G38.11 | the count is **exact** for a large population — not a sample, not a bound | the same lane file, `the_count_is_exact_for_a_large_population` |
+| G38.12 | the store's **selection** surface is unchanged: `floodfill_advertisers()` yields exactly the advertisers and `iter()` yields every record | the same lane file, `the_selection_surface_is_unchanged` |
+| G38.13 | the daemon's bootstrap **reports** the same count, and the state's decision is unchanged | the same lane file, `the_bootstrap_reports_the_same_count` and `the_bootstrap_reaches_the_same_state` |
+| G38.14 | the store **maintains** the count and `stats()` walks **no** record map | `crates/i2pr-daemon/tests/floodfill_statistic_accounting_boundary.rs`, `the_store_maintains_the_floodfill_advertiser_count` |
+| G38.15 | `insert` accounts the new advertiser and the replacement delta, `remove` releases what it removed, and the arithmetic is **checked** and refuses an impossible adjustment | the same guard file, `the_insert_and_remove_paths_maintain_the_count` and `the_count_never_goes_below_zero` |
+| G38.16 | the bootstrap computes the statistics **once** per operation, the bootstrap's and the store's public surfaces are **unchanged**, **no** configuration key or infrastructure is added, `Cargo.toml` and `Cargo.lock` stay **byte-identical**, `router.version` stays `0.9.62`, the inventory advertises **nothing**, and Plan 536's and Plan 537's lanes and guards stay **byte-identical** | the same guard file, `the_bootstrap_computes_the_statistics_once`, `the_bootstrap_public_surface_is_unchanged`, `the_stores_selection_surface_is_unchanged`, `no_new_surface_and_the_manifest_is_unchanged`, `the_advertisement_is_unchanged` and `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane computes the count the store's contents
+imply by walking the store's own **iterator**, and never by reading the value
+the store reports, so the reported count and the independent count are two
+different things that must agree. The gate that says "exact" is a gate about a
+**number**, not about a bound.
+
+The guard is the authority for the **shape**: that the store maintains the
+count and `stats()` walks no record map, that the mutation paths account it,
+that the arithmetic is checked, that the bootstrap computes the statistics once
+and the state computation does not read them again, that both public surfaces
+are unchanged, that no new surface or infrastructure is added and the manifest
+is byte-identical, that nothing is advertised, and that the predecessors'
+evidence is byte-identical.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.
+
+## 37. The NetDB's floodfill statistic is accounted (Plan 538)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G38.1 | a **new-key** insert accounts the advertiser, and the reported count is the count the store's **contents** imply | `crates/i2pr-daemon/tests/floodfill_statistic_accounting.rs`, `a_new_key_insert_accounts_the_advertiser` |
+| G38.2 | a record that advertises **no** capability accounts nothing | the same lane file, `a_record_without_the_capability_accounts_nothing` |
+| G38.3 | an **idempotent** insert leaves the count unchanged | the same lane file, `an_idempotent_insert_leaves_the_count_unchanged` |
+| G38.4 | a **conflict** leaves the count unchanged, because the existing record is retained | the same lane file, `a_conflicting_insert_leaves_the_count_unchanged` |
+| G38.5 | a **stale** insert leaves the count unchanged | the same lane file, `a_stale_insert_leaves_the_count_unchanged` |
+| G38.6 | a **capacity refusal** leaves the count unchanged, because nothing is inserted | the same lane file, `a_capacity_refusal_leaves_the_count_unchanged` |
+| G38.7 | a **replacement** that gains the `f` capability accounts the advertiser | the same lane file, `a_replacement_that_gains_the_capability_accounts_the_advertiser` |
+| G38.8 | a **replacement** that loses the `f` capability releases the advertiser | the same lane file, `a_replacement_that_loses_the_capability_releases_the_advertiser` |
+| G38.9 | a **removal** releases the advertiser, and removing an unknown key changes nothing | the same lane file, `a_removal_releases_the_advertiser` |
+| G38.10 | a **prune** that removes several records releases every advertiser it removed | the same lane file, `a_prune_that_removes_several_records_releases_every_advertiser` |
+| G38.11 | the count is **exact** for a large population — not a sample, not a bound | the same lane file, `the_count_is_exact_for_a_large_population` |
+| G38.12 | the store's **selection** surface is unchanged: `floodfill_advertisers()` yields exactly the advertisers and `iter()` yields every record | the same lane file, `the_selection_surface_is_unchanged` |
+| G38.13 | the daemon's bootstrap **reports** the same count, and the state's decision is unchanged | the same lane file, `the_bootstrap_reports_the_same_count` and `the_bootstrap_reaches_the_same_state` |
+| G38.14 | the store **maintains** the count and `stats()` walks **no** record map | `crates/i2pr-daemon/tests/floodfill_statistic_accounting_boundary.rs`, `the_store_maintains_the_floodfill_advertiser_count` |
+| G38.15 | `insert` accounts the new advertiser and the replacement delta, `remove` releases what it removed, and the arithmetic is **checked** and refuses an impossible adjustment | the same guard file, `the_insert_and_remove_paths_maintain_the_count` and `the_count_never_goes_below_zero` |
+| G38.16 | the bootstrap computes the statistics **once** per operation, the bootstrap's and the store's public surfaces are **unchanged**, **no** configuration key or infrastructure is added, `Cargo.toml` and `Cargo.lock` stay **byte-identical**, `router.version` stays `0.9.62`, the inventory advertises **nothing**, and Plan 536's and Plan 537's lanes and guards stay **byte-identical** | the same guard file, `the_bootstrap_computes_the_statistics_once`, `the_bootstrap_public_surface_is_unchanged`, `the_stores_selection_surface_is_unchanged`, `no_new_surface_and_the_manifest_is_unchanged`, `the_advertisement_is_unchanged` and `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane computes the count the store's contents
+imply by walking the store's own **iterator**, and never by reading the value
+the store reports, so the reported count and the independent count are two
+different things that must agree. The gate that says "exact" is a gate about a
+**number**, not about a bound.
+
+The guard is the authority for the **shape**: that the store maintains the
+count and `stats()` walks no record map, that the mutation paths account it,
+that the arithmetic is checked, that the bootstrap computes the statistics once
+and the state computation does not read them again, that both public surfaces
+are unchanged, that no new surface or infrastructure is added and the manifest
+is byte-identical, that nothing is advertised, and that the predecessors'
+evidence is byte-identical.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.

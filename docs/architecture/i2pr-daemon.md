@@ -4414,3 +4414,87 @@ the bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`):
 separating the router's NetDB from the bootstrap's lifetime is a successor's
 work. The plan removes the **lock scope** and the **silent skip**, and leaves
 the ownership alone.
+
+## The NetDB's floodfill statistic is accounted (Plan 538)
+
+The daemon's bootstrap owns the router's only validated `RouterInfoStore`, and
+its mutex **is** the router's NetDB lock. The bootstrap read the store's
+statistics at five points — the prune, the authenticated ingest, the cache
+loader, the state computation and the reseed path — every one of them under
+that lock, and the statistics were **derived by a scan**, so the router's
+NetDB lock was held across a population walk on the router's **live
+maintenance path**.
+
+**The bootstrap now computes the statistics once per operation.** The refresh
+**takes** the statistics it refreshes:
+
+```rust
+fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
+    self.snapshot.record_count = stats.record_count;
+    self.snapshot.encoded_bytes = stats.total_encoded_bytes;
+    self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;
+    self.snapshot.last_reseed_summary = self.last_reseed_summary.clone();
+}
+```
+
+Every call site computes the statistics once and passes them in, so the
+snapshot's counts and the caller's counts are the same numbers by construction
+and no operation computes them twice. The state computation reads them **once**
+and decides on that one computation, so it can no longer disagree with the
+snapshot it just refreshed.
+
+**The counts are unchanged.** The refresh points are unchanged, the
+`BootstrapSnapshot` fields are unchanged, and the `BootstrapState` decision
+still compares the record count against `min_router_infos` and the floodfill
+advertiser count against `min_floodfill_advertisers`. The count is exact, so
+the decision is the one the tree already made.
+
+**The bootstrap's public surface is unchanged.** `snapshot()`,
+`diagnostics()` and `store_summary()` keep their signatures and their results.
+
+**What is not claimed.** The store's **prune** is still a population walk under
+the router's NetDB lock, because a prune must examine every record. That work
+keeps its named owner — the successor that gives the router a NetDB owner of
+its own, which is the larger change Plans 536 and 537 both named.
+
+## The NetDB's floodfill statistic is accounted (Plan 538)
+
+The daemon's bootstrap owns the router's only validated `RouterInfoStore`, and
+its mutex **is** the router's NetDB lock. The bootstrap read the store's
+statistics at five points — the prune, the authenticated ingest, the cache
+loader, the state computation and the reseed path — every one of them under
+that lock, and the statistics were **derived by a scan**, so the router's
+NetDB lock was held across a population walk on the router's **live
+maintenance path**.
+
+**The bootstrap now computes the statistics once per operation.** The refresh
+**takes** the statistics it refreshes:
+
+```rust
+fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
+    self.snapshot.record_count = stats.record_count;
+    self.snapshot.encoded_bytes = stats.total_encoded_bytes;
+    self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;
+    self.snapshot.last_reseed_summary = self.last_reseed_summary.clone();
+}
+```
+
+Every call site computes the statistics once and passes them in, so the
+snapshot's counts and the caller's counts are the same numbers by construction
+and no operation computes them twice. The state computation reads them **once**
+and decides on that one computation, so it can no longer disagree with the
+snapshot it just refreshed.
+
+**The counts are unchanged.** The refresh points are unchanged, the
+`BootstrapSnapshot` fields are unchanged, and the `BootstrapState` decision
+still compares the record count against `min_router_infos` and the floodfill
+advertiser count against `min_floodfill_advertisers`. The count is exact, so
+the decision is the one the tree already made.
+
+**The bootstrap's public surface is unchanged.** `snapshot()`,
+`diagnostics()` and `store_summary()` keep their signatures and their results.
+
+**What is not claimed.** The store's **prune** is still a population walk under
+the router's NetDB lock, because a prune must examine every record. That work
+keeps its named owner — the successor that gives the router a NetDB owner of
+its own, which is the larger change Plans 536 and 537 both named.

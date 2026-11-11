@@ -2644,6 +2644,13 @@ requester's outbound step out of the router's NetDB lock and makes the
 requester's refusal to ask never skipped silently, and the surface is internal
 and non-advertised.
 
+**Plan 538 adds one surface** — `netdb.floodfill-statistic-accounting` — so the
+inventory holds **131 surfaces, 126 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 538 makes the NetDB's
+floodfill advertiser count accounted rather than derived by a scan, and stops
+the daemon's bootstrap from holding the router's NetDB lock across a population
+scan to obtain it, and the surface is internal and non-advertised.
+
 **What Plan 514 does not close.** The **stock-peer** half remains blocked
 externally on Plan 493's authorized two-host topology. The **rate** is
 still below the reference's: the reference asks `1..9` exploratory requests
@@ -4479,3 +4486,59 @@ advertisement and the `caps=f` advertisement stay with their owners, and the
 stays confined to the **controlled loopback profile** — Plan 431's bound.
 Nothing is advertised: `router.version` stays `0.9.62` and the inventory's
 advertised count stays **zero**.
+
+## The NetDB's floodfill statistic is accounted, not scanned (Plan 538)
+
+The router's validated `RouterInfo` store already maintained its **encoded byte
+total** incrementally, on exactly the paths that insert and remove a record. The
+floodfill advertiser count — the second number the same struct reports about
+the same set — was **derived** instead: `stats()` walked every record on every
+call.
+
+**The daemon read that statistic under the router's NetDB lock.** The
+bootstrap's mutex *is* the router's NetDB lock, and `refresh_snapshot` read
+the statistics at five points — the prune, the authenticated ingest, the cache
+loader, the state computation and the reseed path — every one of them under
+that lock. The prune is on the router's **live maintenance path**, so the
+router's NetDB lock was held across the population walk on every reconcile pass
+that prunes.
+
+**The state computation did it twice.** `compute_state` refreshed the snapshot
+— which reads the statistics — and then read them again. Both reads saw the
+same unchanged store.
+
+**The count is now maintained.** `insert` accounts the new advertiser on the
+new-key path and the **capability delta** on the replacement path, because a
+replacement may change the `f` capability; `remove` releases the advertiser it
+removed; and the store's own prune goes through `remove`, so it accounts as it
+removes. The adjustment is **checked** in both directions and refuses an
+impossible adjustment rather than wrapping it.
+
+**`stats()` is O(1).** It reads the maintained counter and walks **no** record
+map. The record map's *length* is O(1) and is not a walk; a walk is a scan of
+the records themselves.
+
+**The count stays exact.** Not a sample, not a cap, not an estimate. The
+bootstrap's `BootstrapState` decision compares the floodfill advertiser count
+against the configured floor, and an inexact count would change when the router
+believes it is ready.
+
+**The bootstrap computes the statistics once.** The refresh now **takes** the
+statistics it refreshes, so every call site computes them once and the
+snapshot's counts and the computation's counts are the same numbers by
+construction.
+
+**What is not claimed.** The store's **selection** paths stay scans, because a
+selection over the floodfill advertisers is a walk by its nature, and the
+store's **prune** stays a population walk, because a prune must examine every
+record — that work keeps its named owner, the successor that gives the router a
+NetDB owner of its own. The plan adds **no** store, **no** lock, **no** owner,
+**no** configuration key, **no** task, **no** timer, **no** listener and **no**
+socket, it changes **no** transport file and **no** runtime file, and
+`Cargo.toml` and `Cargo.lock` stay byte-identical. The **production** SSU2
+peer-test driver stays unbuilt, the `B` advertisement and the `caps=f`
+advertisement stay with their owners, and the **stock-peer** half needs Plan
+493's authorized two-host topology. The delivery stays confined to the
+**controlled loopback profile** — Plan 431's bound. Nothing is advertised:
+`router.version` stays `0.9.62` and the inventory's advertised count stays
+**zero**.

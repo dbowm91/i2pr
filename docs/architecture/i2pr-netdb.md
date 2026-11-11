@@ -1448,6 +1448,86 @@ a floodfill router's address can never carry the role letter. That matches the
 reference, which clears the introducer role for a floodfill router
 (`libi2pd/RouterContext.cpp:655`).
 
+## The floodfill advertiser count is accounted (Plan 538)
+
+The store already maintained its **encoded byte total** incrementally, on
+exactly the paths that insert and remove a record. The floodfill advertiser
+count — the second number the same struct reports about the same set — was
+**derived**: `stats()` walked every record on every call, so the method was
+O(the population) where it is now O(1).
+
+**The store now accounts the count.** `RouterInfoStore` carries a
+`floodfill_advertiser_count` field alongside `total_encoded_bytes`, and the
+same discipline applies to both:
+
+- `insert` accounts the incoming advertiser on the **new-key** path;
+- `insert` accounts the **capability delta** on the **replacement** path,
+  because a replacement of the same identity may publish a different
+  capability set;
+- `remove` releases the advertiser it removed;
+- the store's own `prune` goes through `remove`, so it accounts as it removes.
+
+The adjustment is **checked** in both directions and refuses an impossible
+adjustment rather than wrapping it — the same rule the byte total already
+follows.
+
+**`stats()` reads the counter.** The record map's *length* is O(1) and is not
+a walk; a walk is a scan of the records themselves, so `stats()` no longer
+touches one.
+
+**The count is exact.** It is not a sample, not a cap and not an estimate. A
+consumer that compares it against a floor — the daemon's bootstrap compares it
+against `min_floodfill_advertisers` — needs the true number, because an
+inexact count would change when the router believes it is ready.
+
+**The selection paths are untouched.** `floodfill_advertisers()` still yields
+exactly the advertisers and `iter()` still yields every record: a selection
+over the floodfill advertisers is a walk by its nature, and this plan changes
+what the store **reports**, not how it **selects**.
+
+**The prune is untouched.** `RouterInfoStore::prune` still examines every
+record, because a prune must examine every record to know which are stale.
+
+## The floodfill advertiser count is accounted (Plan 538)
+
+The store already maintained its **encoded byte total** incrementally, on
+exactly the paths that insert and remove a record. The floodfill advertiser
+count — the second number the same struct reports about the same set — was
+**derived**: `stats()` walked every record on every call, so the method was
+O(the population) where it is now O(1).
+
+**The store now accounts the count.** `RouterInfoStore` carries a
+`floodfill_advertiser_count` field alongside `total_encoded_bytes`, and the
+same discipline applies to both:
+
+- `insert` accounts the incoming advertiser on the **new-key** path;
+- `insert` accounts the **capability delta** on the **replacement** path,
+  because a replacement of the same identity may publish a different
+  capability set;
+- `remove` releases the advertiser it removed;
+- the store's own `prune` goes through `remove`, so it accounts as it removes.
+
+The adjustment is **checked** in both directions and refuses an impossible
+adjustment rather than wrapping it — the same rule the byte total already
+follows.
+
+**`stats()` reads the counter.** The record map's *length* is O(1) and is not
+a walk; a walk is a scan of the records themselves, so `stats()` no longer
+touches one.
+
+**The count is exact.** It is not a sample, not a cap and not an estimate. A
+consumer that compares it against a floor — the daemon's bootstrap compares it
+against `min_floodfill_advertisers` — needs the true number, because an
+inexact count would change when the router believes it is ready.
+
+**The selection paths are untouched.** `floodfill_advertisers()` still yields
+exactly the advertisers and `iter()` still yields every record: a selection
+over the floodfill advertisers is a walk by its nature, and this plan changes
+what the store **reports**, not how it **selects**.
+
+**The prune is untouched.** `RouterInfoStore::prune` still examines every
+record, because a prune must examine every record to know which are stale.
+
 ## Cross-references
 
 **ADRs**
