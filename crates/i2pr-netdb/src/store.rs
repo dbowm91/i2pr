@@ -5,7 +5,7 @@
 //! replacement/conflict/expiry semantics with checked arithmetic and
 //! no saturating hidden bugs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use i2pr_proto::Date;
 
@@ -82,6 +82,20 @@ pub struct RouterInfoStoreStats {
 #[derive(Debug)]
 pub struct RouterInfoStore {
     records: BTreeMap<RouterHash, ValidatedRouterInfo>,
+    /// The retained records' publication times, ordered.
+    ///
+    /// Plan 540: this is **maintained**, not derived. The store maintains it
+    /// on exactly the paths that maintain the record map -- the new-key path,
+    /// the replacement path and the removal path -- so the prune can find the
+    /// stale records without walking every retained record. An entry is the
+    /// record's publication time and its key, so two records published at the
+    /// same instant are two entries and the index is never lossy.
+    ///
+    /// The index is **exact**: a stale record that the index missed would
+    /// never be removed, which is a silent retention failure, so every
+    /// retained record has exactly one entry and every entry names a
+    /// retained record.
+    ages: BTreeSet<(u64, RouterHash)>,
     total_encoded_bytes: usize,
     /// The number of retained records that advertise the `f` capability.
     ///
@@ -107,6 +121,7 @@ impl RouterInfoStore {
     pub fn with_config(config: RouterInfoStoreConfig) -> Self {
         Self {
             records: BTreeMap::new(),
+            ages: BTreeSet::new(),
             total_encoded_bytes: 0,
             floodfill_advertiser_count: 0,
             config,
@@ -127,6 +142,7 @@ impl RouterInfoStore {
         let key = validated.key();
         let encoded_len = validated.encoded_len();
         let incoming_floodfill = validated.advertises_floodfill();
+        let incoming_published_ms = validated.published().as_millis();
 
         if let Some(existing) = self.records.get(&key) {
             let existing_published = existing.published();
@@ -142,6 +158,7 @@ impl RouterInfoStore {
             }
             // incoming > existing; replacement path.
             let existing_floodfill = existing.advertises_floodfill();
+            let existing_published_ms = existing.published().as_millis();
             if encoded_len > existing.encoded_len() {
                 let extra = encoded_len - existing.encoded_len();
                 if self
@@ -161,6 +178,10 @@ impl RouterInfoStore {
                 .checked_add(encoded_len)
                 .expect("accounting overflow on replace");
             self.records.insert(key, validated);
+            // The replacement may carry a different publication time, so the
+            // index follows the record: the old entry goes, the new one comes.
+            self.ages.remove(&(existing_published_ms, key));
+            self.ages.insert((incoming_published_ms, key));
             if existing_floodfill != incoming_floodfill {
                 self.adjust_floodfill_advertiser_count(incoming_floodfill);
             }
@@ -183,6 +204,7 @@ impl RouterInfoStore {
             .checked_add(encoded_len)
             .expect("accounting overflow on insert");
         self.records.insert(key, validated);
+        self.ages.insert((incoming_published_ms, key));
         if incoming_floodfill {
             self.adjust_floodfill_advertiser_count(true);
         }
@@ -211,6 +233,7 @@ impl RouterInfoStore {
                     .total_encoded_bytes
                     .checked_sub(removed.encoded_len())
                     .expect("accounting underflow on remove");
+                self.ages.remove(&(removed.published().as_millis(), *key));
                 if removed.advertises_floodfill() {
                     self.adjust_floodfill_advertiser_count(false);
                 }
@@ -289,17 +312,24 @@ impl RouterInfoStore {
     /// caller supplies the current `now` so the operation is
     /// deterministic.
     pub fn prune(&mut self, now: Date, max_age_ms: u64) -> usize {
-        let mut removed = 0usize;
+        // Plan 540: a record is stale when its age exceeds the window, and
+        // the age is a **saturating** subtraction, so a record published in
+        // the future is not stale and a `now` below the window has no stale
+        // record at all. That is exactly a publication time strictly before
+        // `now - max_age_ms`, with the subtraction saturating too.
+        //
+        // The index is ordered by publication time first, so the stale
+        // records are a contiguous prefix of it and the walk is proportional
+        // to the number of records this prune removes, not to the
+        // population it does not remove.
+        let threshold = now.as_millis().saturating_sub(max_age_ms);
         let stale_keys: Vec<RouterHash> = self
-            .records
-            .iter()
-            .filter_map(|(key, record)| {
-                let age = now
-                    .as_millis()
-                    .saturating_sub(record.published().as_millis());
-                if age > max_age_ms { Some(*key) } else { None }
-            })
+            .ages
+            .range(..)
+            .take_while(|entry| entry.0 < threshold)
+            .map(|entry| entry.1)
             .collect();
+        let mut removed = 0usize;
         for key in stale_keys {
             if self.remove(&key) {
                 removed += 1;
