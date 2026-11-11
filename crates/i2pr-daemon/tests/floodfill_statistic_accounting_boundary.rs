@@ -55,6 +55,7 @@ const PLAN536_LANE: &str = "crates/i2pr-daemon/tests/ssu2_relay_target_lock.rs";
 const PLAN536_GUARD: &str = "crates/i2pr-daemon/tests/ssu2_relay_target_lock_boundary.rs";
 const PLAN537_LANE: &str = "crates/i2pr-daemon/tests/ssu2_relay_requester_lock.rs";
 const PLAN537_GUARD: &str = "crates/i2pr-daemon/tests/ssu2_relay_requester_lock_boundary.rs";
+const PLAN507_RETENTION_GUARD: &str = "crates/i2pr-daemon/tests/netdb_retention_boundary.rs";
 
 /// Plan 536's lane, byte for byte.
 const PLAN536_LANE_SHA256: &str =
@@ -82,6 +83,16 @@ const WORKSPACE_MANIFEST_SHA256: &str =
 /// The workspace lock, byte for byte.
 const WORKSPACE_LOCK_SHA256: &str =
     "5e61634c8de59d12051396e8172ec89ecb522f7d5430c32b20c0bb8251991548";
+
+/// Plan 507's retention boundary guard, byte for byte.
+///
+/// Plan 538 **extends** that guard -- its rule 7 inverted probe anchored on
+/// the literal `self.refresh_snapshot();`, which this plan's change to the
+/// bootstrap's refresh replaced -- and the extension is declared in the plan
+/// of record's section 5.4. The digest is a **tripwire**: a later change to
+/// that guard must change this constant **and** say why.
+const PLAN507_RETENTION_GUARD_SHA256: &str =
+    "5ef83044dcb8036e0ac2ccc8e7e9cb9bf6b7a21127b822b6e634da6170fdd78d";
 
 /// The controlled router version the tree declares.
 const CONTROLLED_ROUTER_VERSION: &str = "0.9.62";
@@ -386,6 +397,7 @@ struct Sources {
     plan536_guard: String,
     plan537_lane: String,
     plan537_guard: String,
+    plan507_retention_guard: String,
 }
 
 impl Sources {
@@ -405,6 +417,7 @@ impl Sources {
             plan536_guard: source_of(PLAN536_GUARD),
             plan537_lane: source_of(PLAN537_LANE),
             plan537_guard: source_of(PLAN537_GUARD),
+            plan507_retention_guard: source_of(PLAN507_RETENTION_GUARD),
         }
     }
 }
@@ -857,6 +870,37 @@ fn rule_the_predecessors_evidence_is_untouched(sources: &Sources) -> Option<Stri
     None
 }
 
+// ---- 10. the extension of Plan 507's guard is the declared one ---------
+
+fn rule_the_extension_of_plan507s_guard_is_the_declared_one(sources: &Sources) -> Option<String> {
+    // The extension is **one anchor string**: the rule 7 inverted probe still
+    // injects the local record into the prune path, and it still anchors on
+    // the refresh the tree actually makes. The probe's own content is checked
+    // first, so a guard that lost the probe fails on that, and not only on
+    // the digest.
+    for needle in [
+        "fn the_local_record_rule_fires_when_the_prune_reaches_the_local_record()",
+        "\"self.refresh_snapshot(stats);\"",
+        "self.local.take();",
+        "fn rule_local_router_info_is_never_a_victim(",
+    ] {
+        if !sources.plan507_retention_guard.contains(needle) {
+            return Some(format!(
+                "Plan 507's retention boundary guard must still carry its rule 7 probe: {needle}"
+            ));
+        }
+    }
+
+    // And the extended guard is byte for byte what this plan made it.
+    let digest = sha256_hex(sources.plan507_retention_guard.as_bytes());
+    if digest != PLAN507_RETENTION_GUARD_SHA256 {
+        return Some(format!(
+            "Plan 507's retention boundary guard must stay byte-identical to the declared extension: {digest} instead of {PLAN507_RETENTION_GUARD_SHA256}"
+        ));
+    }
+    None
+}
+
 // ----------------------------------------------------------------------
 // The rules, asserted.
 // ----------------------------------------------------------------------
@@ -931,6 +975,15 @@ fn the_advertisement_is_unchanged() {
 fn the_predecessors_evidence_is_untouched() {
     let sources = Sources::from_tree();
     assert_eq!(rule_the_predecessors_evidence_is_untouched(&sources), None);
+}
+
+#[test]
+fn the_extension_of_plan507s_guard_is_the_declared_one() {
+    let sources = Sources::from_tree();
+    assert_eq!(
+        rule_the_extension_of_plan507s_guard_is_the_declared_one(&sources),
+        None
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -1164,5 +1217,29 @@ fn the_guard_fails_closed_when_a_predecessors_guard_is_changed() {
     assert!(
         rule_the_predecessors_evidence_is_untouched(&sources).is_some(),
         "a changed predecessor guard must fail the rule"
+    );
+}
+
+#[test]
+fn the_inverted_probe_fires_when_the_extended_guard_changes() {
+    let mut sources = Sources::from_tree();
+    sources
+        .plan507_retention_guard
+        .push_str("\n// a change to the extended guard\n");
+    assert!(
+        rule_the_extension_of_plan507s_guard_is_the_declared_one(&sources).is_some(),
+        "a changed extended guard must fail the rule"
+    );
+}
+
+#[test]
+fn the_guard_fails_closed_when_the_extended_guard_is_absent() {
+    let mut sources = Sources::from_tree();
+    sources.plan507_retention_guard = sources
+        .plan507_retention_guard
+        .replace("self.local.take();", "");
+    assert!(
+        rule_the_extension_of_plan507s_guard_is_the_declared_one(&sources).is_some(),
+        "an absent rule 7 probe must fail the rule"
     );
 }

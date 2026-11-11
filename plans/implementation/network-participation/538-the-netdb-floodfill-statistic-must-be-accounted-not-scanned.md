@@ -231,6 +231,34 @@ the store could have counted as it went. The walk is repeated twice inside
 - **The `B` advertisement and `caps=f`** — their own owners.
 - **The stock-peer half** — Plan 493's authorized two-host topology.
 
+### 5.4 Extension of another plan's guard
+
+This plan **extends** Plan 507's retention boundary guard,
+`crates/i2pr-daemon/tests/netdb_retention_boundary.rs`, and declares the
+extension here, as the house requires.
+
+**What changed.** Plan 507's rule 7 — *the router's own RouterInfo is never a
+prune victim* — is proved by an inverted probe that injects
+`self.local.take();` into the bootstrap's **prune** path. The probe found that
+path by anchoring on the literal `self.refresh_snapshot();`, and this plan
+changed the bootstrap's refresh so that it **takes** the statistics it
+refreshes. The anchor therefore moved to `self.refresh_snapshot(stats);`, and
+the injected mutation moved with it.
+
+**What did not change.** The rule, its meaning, its coverage, its evidence
+file, its inverted probe's intent and every other row of that guard are
+exactly what they were. The extension is **one anchor string** in one
+inverted probe, and nothing else. Plan 507's guard stays at its own 26 rows,
+and they all pass.
+
+**Why it is needed.** The alternative was to keep a literal
+`self.refresh_snapshot();` in the bootstrap for the anchor's sake. That would
+have been cargo-culting a string, and it would have kept the guard's anchor
+pointing at a call the tree does not make.
+
+**The tripwire.** Plan 538's own guard pins the extended guard's SHA-256, so
+a later change to it must change that constant **and** say why.
+
 ## 6. Required production changes
 
 ### 6.1 `crates/i2pr-netdb/src/store.rs`
@@ -446,6 +474,12 @@ Plan 536's lane and guard, and Plan 537's lane and guard, must stay
 read, not the relay roles' semantics, and the predecessors' evidence must remain
 exactly as it was.
 
+This plan **extends** one other plan's guard, and §5.4 declares the extension:
+Plan 507's retention boundary guard's rule 7 inverted probe anchored on the
+literal `self.refresh_snapshot();`, which this plan's change to the bootstrap's
+refresh replaced. The probe's anchor moves with the code it targets; the rule
+and its coverage do not change.
+
 ## 12. Exact verification commands
 
 ```text
@@ -531,8 +565,10 @@ The plan is **accepted** when all of the following hold:
 - Plan 537's closed closure record is **not** rewritten. The discharge of its
   named out-of-scope items lives in this plan's closure record and in the
   registry's row.
-- The plan **extends** no other plan's guard: Plan 536's lane and guard, and
-  Plan 537's lane and guard, stay byte-identical.
+- The plan **extends** exactly one other plan's guard, and §5.4 declares it:
+  Plan 507's retention boundary guard's rule 7 inverted probe anchor moves with
+  the bootstrap's refresh. Plan 536's lane and guard, and Plan 537's lane and
+  guard, stay byte-identical.
 
 ## 17. Amendment log
 
@@ -572,4 +608,5 @@ what the implementation found and what it did about it.
 | 17.2.4 | The guard's helper block is shared **verbatim** with Plan 537's guard, so the two guards cannot drift apart in how they read a source. That block also carries `enclosing_statement`, which this guard does not use. | The one unused helper is dropped from this guard's copy. A dead helper is a lint error, and an unused helper is not evidence. The rest of the block is byte-identical to Plan 537's. |
 | 17.2.5 | §11.2's rule 7 asks that `Cargo.toml` and `Cargo.lock` stay **byte-identical**. "Byte-identical" is only checkable as a digest. | The guard records the SHA-256 of both as `WORKSPACE_MANIFEST_SHA256` and `WORKSPACE_LOCK_SHA256`. They are a **tripwire**: a future plan that needs to change the manifest must change these two constants **and** say why. |
 | 17.2.6 | The plan's §3 cites the store's statistics at `crates/i2pr-netdb/src/store.rs:225`, where the scan was. After the change, the scan is gone and the line has moved. | §3 is the evidence of the tree **before** the plan and is never rewritten. The closure record's citation verifier checks §3 against the **registration commit** `d0273251`, so the drift cannot recur unnoticed. |
+| 17.2.8 | The full floor found a consequence this plan had not seen: Plan 507's retention boundary guard anchors its rule 7 inverted probe on the literal `self.refresh_snapshot();`, and this plan changed the bootstrap's refresh so that it **takes** the statistics it refreshes. The probe's mutation stopped applying and its row failed closed. | §5.4 declares the extension: the probe's **anchor** moves to `self.refresh_snapshot(stats);` and the injected mutation moves with it. The rule, its meaning, its coverage and every other row of that guard are unchanged, and its 26 rows all pass. Plan 538's own guard pins the extended guard's SHA-256 as a tripwire, so a later change to it must change that constant **and** say why. The alternative — keeping a literal `self.refresh_snapshot();` in the bootstrap for the anchor's sake — was rejected: it would have been cargo-culting a string the tree does not use. |
 | 17.2.7 | The store's **selection** paths — `floodfill_advertisers()` and the lookup policy's ordering core — are scans, and they stay scans. A guard that forbade every walk in the crate would forbid the selection too. | The guard's rule 1 scopes the prohibition to `stats()`, the method that **reports** a number, and rule 6 pins the selection surface as **unchanged**. The plan's §4's invariant 12 and §5.2 say the same. |

@@ -995,8 +995,8 @@ fn the_local_record_rule_fires_when_the_prune_reaches_the_local_record() {
     let mutated = Landed {
         bootstrap: replace_occurrence(
             &tree.bootstrap,
-            "self.refresh_snapshot();",
-            "self.local.take();\n        self.refresh_snapshot();",
+            "self.refresh_snapshot(stats);",
+            "self.local.take();\n        self.refresh_snapshot(stats);",
             0,
         ),
         ..tree
