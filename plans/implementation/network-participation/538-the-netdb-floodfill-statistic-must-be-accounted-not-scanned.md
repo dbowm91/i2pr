@@ -391,8 +391,12 @@ renamed.
 
 ### 11.1 The lane
 
-`crates/i2pr-netdb/tests/floodfill_statistic_accounting.rs` — the store's
-accounting, against an **independent** count. The lane must prove:
+`crates/i2pr-daemon/tests/floodfill_statistic_accounting.rs` — the store's
+accounting, against an **independent** count, and the daemon's bootstrap's
+report of it. The lane lives in the **daemon's** test directory because item 6
+needs the daemon's own bootstrap, and the netdb crate cannot depend on the
+daemon; the daemon already depends on the netdb crate, so one file covers both
+halves and no dependency is added. The lane must prove:
 
 1. the reported count equals an independently computed count after a **new-key**
    insert, and after an **idempotent** insert, and after a **conflict**, and
@@ -405,15 +409,18 @@ accounting, against an **independent** count. The lane must prove:
    report equals the independent count, not a bound;
 5. the store's **selection** surface is unchanged — `floodfill_advertisers()`
    still yields exactly the advertisers, and `iter()` still yields every record;
-6. the daemon's bootstrap reports the same count and reaches the same
-   `BootstrapState` as before, and its statistics are computed **once** per
-   operation.
+6. the daemon's bootstrap reports the same count, and reaches the same
+   `BootstrapState` as before — observed through the **public** `Bootstrap::run`
+   with a policy the lane constructs, so the decision is observed rather than
+   reimplemented.
 
 ### 11.2 The guard
 
-`crates/i2pr-netdb/tests/floodfill_statistic_accounting_boundary.rs` — a static
-guard that is the authority for the **shape**. It must have an inverted probe
-for every rule and a fail-closed probe for every item a rule names. The rules:
+`crates/i2pr-daemon/tests/floodfill_statistic_accounting_boundary.rs` — a static
+guard that is the authority for the **shape**, and that reads both
+`crates/i2pr-netdb/src/store.rs` and `crates/i2pr-daemon/src/bootstrap.rs`. It
+must have an inverted probe for every rule and a fail-closed probe for every
+item a rule names. The rules:
 
 1. `RouterInfoStore` **maintains** a floodfill advertiser count, and `stats()`
    reads it — `stats()`'s body walks **no** record map;
@@ -429,7 +436,10 @@ for every rule and a fail-closed probe for every item a rule names. The rules:
 7. **no** configuration key is added, **no** task, timer, listener or socket is
    added, and `Cargo.toml` and `Cargo.lock` stay **byte-identical**;
 8. `router.version` stays `0.9.62`, and the inventory's advertised count stays
-   **zero**.
+   **zero**;
+9. Plan 536's lane and guard, and Plan 537's lane and guard, stay
+   **byte-identical**, and Plan 537's guard still finds the strings it looks
+   for.
 
 Plan 536's lane and guard, and Plan 537's lane and guard, must stay
 **byte-identical**: this plan changes the store's accounting and the bootstrap's
@@ -442,8 +452,8 @@ exactly as it was.
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo test --locked -p i2pr-netdb --test floodfill_statistic_accounting -- --test-threads=1
-cargo test --locked -p i2pr-netdb --test floodfill_statistic_accounting_boundary -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test floodfill_statistic_accounting -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test floodfill_statistic_accounting_boundary -- --test-threads=1
 cargo test --locked -p i2pr-netdb --all-targets
 cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=1
 python3 scripts/check-tooling-inventory.py
@@ -547,3 +557,19 @@ and no runtime file, and it leaves `Cargo.toml` and `Cargo.lock` byte-identical.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | §11.1 named the lane in `crates/i2pr-netdb/tests/`, but item 6 needs the **daemon's** bootstrap, and the netdb crate cannot depend on the daemon. | The lane and the guard live in `crates/i2pr-daemon/tests/`, which already depends on the netdb crate, so one file covers the store's accounting and the daemon's bootstrap. `Cargo.toml` and `Cargo.lock` stay byte-identical: **no dependency is added**, because the dependency the lane needs is already there. |
+| 17.2.2 | §11.1's item 6 asked the lane to show that the bootstrap "reaches the same `BootstrapState` as before". `compute_state` is private, and the public path to it is `Bootstrap::run`, which takes a `BootstrapPolicy` — a type with public fields, so the lane constructs one literally. | The lane observes the decision through the **public** `Bootstrap::run` with a policy it constructs, so the decision is observed rather than reimplemented. §11.1's item 6 was settled to match. |
+| 17.2.3 | The lane's first draft took the daemon's shared reseed fixture, whose *other* helper is dead code in this crate — and a dead helper is a dead-code error under the floor's `-D warnings`. | The lane keeps its own tiny identity helper. It is independent of the shared fixture, and the floor's lint stays satisfied without an `allow`. |
+| 17.2.4 | The guard's helper block is shared **verbatim** with Plan 537's guard, so the two guards cannot drift apart in how they read a source. That block also carries `enclosing_statement`, which this guard does not use. | The one unused helper is dropped from this guard's copy. A dead helper is a lint error, and an unused helper is not evidence. The rest of the block is byte-identical to Plan 537's. |
+| 17.2.5 | §11.2's rule 7 asks that `Cargo.toml` and `Cargo.lock` stay **byte-identical**. "Byte-identical" is only checkable as a digest. | The guard records the SHA-256 of both as `WORKSPACE_MANIFEST_SHA256` and `WORKSPACE_LOCK_SHA256`. They are a **tripwire**: a future plan that needs to change the manifest must change these two constants **and** say why. |
+| 17.2.6 | The plan's §3 cites the store's statistics at `crates/i2pr-netdb/src/store.rs:225`, where the scan was. After the change, the scan is gone and the line has moved. | §3 is the evidence of the tree **before** the plan and is never rewritten. The closure record's citation verifier checks §3 against the **registration commit** `d0273251`, so the drift cannot recur unnoticed. |
+| 17.2.7 | The store's **selection** paths — `floodfill_advertisers()` and the lookup policy's ordering core — are scans, and they stay scans. A guard that forbade every walk in the crate would forbid the selection too. | The guard's rule 1 scopes the prohibition to `stats()`, the method that **reports** a number, and rule 6 pins the selection surface as **unchanged**. The plan's §4's invariant 12 and §5.2 say the same. |
