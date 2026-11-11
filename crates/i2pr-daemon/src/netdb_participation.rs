@@ -588,6 +588,138 @@ pub async fn run_profile_maintenance(
     }
 }
 
+/// Plan 542 — the NetDB's retention counters.
+///
+/// The step either ran, had nothing to do, or could not run. A step that
+/// could not run is **counted**, never reported as a prune that happened:
+/// the store keeps its contents and the condition is visible under a stable
+/// reason label.
+///
+/// The counters are the owner's, and the step is the **only** writer, so a
+/// count can never be attributed to a step that did not run.
+#[derive(Debug, Default)]
+pub struct NetDbRetentionCounters {
+    /// The number of passes the cadence ran.
+    pub runs: std::sync::atomic::AtomicU32,
+    /// The number of records the passes removed, in total.
+    pub removed: std::sync::atomic::AtomicU64,
+    /// The number of passes whose store's lock could not be taken.
+    pub unavailable: std::sync::atomic::AtomicU32,
+    /// The number of passes that found no store to prune.
+    pub not_applicable: std::sync::atomic::AtomicU32,
+}
+
+/// A snapshot of the retention counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NetDbRetentionSnapshot {
+    /// The number of passes the cadence ran.
+    pub runs: u64,
+    /// The number of records the passes removed, in total.
+    pub removed: u64,
+    /// The number of passes whose store's lock could not be taken.
+    pub unavailable: u64,
+    /// The number of passes that found no store to prune.
+    pub not_applicable: u64,
+}
+
+impl NetDbRetentionCounters {
+    /// Takes a snapshot of the counters.
+    pub fn snapshot(&self) -> NetDbRetentionSnapshot {
+        use std::sync::atomic::Ordering;
+        NetDbRetentionSnapshot {
+            runs: u64::from(self.runs.load(Ordering::Relaxed)),
+            removed: self.removed.load(Ordering::Relaxed),
+            unavailable: u64::from(self.unavailable.load(Ordering::Relaxed)),
+            not_applicable: u64::from(self.not_applicable.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// Plan 542 — prunes the router's NetDB once, under its lock.
+///
+/// This is the router's retention **policy** applied from a second caller:
+/// the window is the reconcile's own [`crate::peer_reconcile::RETENTION_WINDOW_MS`],
+/// derived from the router's acceptance policy, so the two callers cannot
+/// drift apart. The step holds the router's NetDB lock for Plan 540's
+/// bounded stale-prefix walk and releases it before returning, so no lock is
+/// held across an await.
+///
+/// A store that is absent is [`PruneOutcome::NotApplicable`], never a silent
+/// success, and a lock that cannot be taken is
+/// [`PruneOutcome::Unavailable`], never a prune that did not happen.
+pub fn prune_netdb(
+    bootstrap: Option<&std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    now_ms: u64,
+) -> crate::peer_reconcile::PruneOutcome {
+    use crate::peer_reconcile::{PruneOutcome, RETENTION_WINDOW_MS};
+    let Some(bootstrap) = bootstrap else {
+        return PruneOutcome::NotApplicable;
+    };
+    let Ok(mut guard) = bootstrap.lock() else {
+        return PruneOutcome::Unavailable;
+    };
+    PruneOutcome::Removed(guard.prune(now_ms, RETENTION_WINDOW_MS))
+}
+
+/// Why the retention cadence stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetDbRetentionExit {
+    /// The caller cancelled the owner.
+    Cancelled,
+    /// The maintenance period was outside the accepted bound.
+    InvalidPeriod,
+}
+
+/// Plan 542 — runs the NetDB's retention step on the participation cadence.
+///
+/// The router's retention policy must not be a property of its
+/// service-tunnel posture: a router that holds a NetDB and runs no
+/// service-tunnel group would otherwise never prune, and its store would
+/// refuse every new peer for ever once it reached its quota.
+///
+/// The caller runs this future under the runtime's child scope and owns its
+/// cancellation; there is no ownerless task. The period is the
+/// **participation maintenance period** the router already configures, so
+/// the step adds no second cadence and no second knob.
+pub async fn run_netdb_retention(
+    bootstrap: Option<std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    counters: std::sync::Arc<NetDbRetentionCounters>,
+    cancellation: i2pr_runtime::CancellationToken,
+    maintenance_period: Duration,
+) -> NetDbRetentionExit {
+    use std::sync::atomic::Ordering;
+    if maintenance_period.is_zero() || maintenance_period > MAX_MAINTENANCE_PERIOD {
+        return NetDbRetentionExit::InvalidPeriod;
+    }
+    let mut maintenance = tokio::time::interval(maintenance_period);
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return NetDbRetentionExit::Cancelled,
+            _ = maintenance.tick() => {
+                let now_ms = wall_clock_ms();
+                match prune_netdb(bootstrap.as_ref(), now_ms) {
+                    crate::peer_reconcile::PruneOutcome::Removed(removed) => {
+                        counters.runs.fetch_add(1, Ordering::Relaxed);
+                        counters
+                            .removed
+                            .fetch_add(removed as u64, Ordering::Relaxed);
+                    }
+                    crate::peer_reconcile::PruneOutcome::NotApplicable => {
+                        counters.runs.fetch_add(1, Ordering::Relaxed);
+                        counters.not_applicable.fetch_add(1, Ordering::Relaxed);
+                    }
+                    crate::peer_reconcile::PruneOutcome::Unavailable => {
+                        counters.runs.fetch_add(1, Ordering::Relaxed);
+                        counters.unavailable.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Returns the daemon's wall-clock reading in milliseconds.
 fn wall_clock_ms() -> u64 {
     std::time::SystemTime::now()

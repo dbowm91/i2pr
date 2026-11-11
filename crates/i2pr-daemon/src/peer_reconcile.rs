@@ -249,7 +249,7 @@ pub enum PeerReconcileAction {
 /// happened: the store keeps its contents and the condition is visible
 /// under a stable reason label.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PruneOutcome {
+pub enum PruneOutcome {
     /// The prune ran and removed the given number of records.
     Removed(usize),
     /// The store does not exist in this composition, so there was nothing

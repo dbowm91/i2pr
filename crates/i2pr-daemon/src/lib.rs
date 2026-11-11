@@ -1891,7 +1891,11 @@ struct NetDbParticipation {
     restored_projections: AtomicU32,
     /// The number of projections the startup load refused to apply.
     discarded_projections: AtomicU32,
-    /// Plan 539: the number of times the routing table's population could
+    /// Plan 542: the NetDB's retention counters. The retention step is the
+    /// **only** writer, so a count can never be attributed to a step that
+    /// did not run.
+    retention: Arc<crate::netdb_participation::NetDbRetentionCounters>,
+    /// The number of times the routing table's population could
     /// not be read.
     ///
     /// The owner owns the number and the **source** increments it, so the
@@ -1961,7 +1965,51 @@ impl NetDbParticipation {
             restored_projections: AtomicU32::new(0),
             discarded_projections: AtomicU32::new(0),
             population_refusals: AtomicU32::new(0),
+            retention: Arc::new(crate::netdb_participation::NetDbRetentionCounters::default()),
         }
+    }
+
+    /// Plan 542 — starts the NetDB's retention cadence.
+    ///
+    /// The step runs under the service's child scope, so the task has an
+    /// owner and a cancellation path, and it rides the **participation**
+    /// maintenance period the router already configures rather than adding
+    /// a second knob. It is started whenever the NetDB is enabled, which is
+    /// independent of the routing table's switch.
+    fn start_retention(
+        self: &Arc<Self>,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        children: &i2pr_runtime::ChildScope,
+        period: Duration,
+    ) {
+        let bootstrap = bootstrap.cloned();
+        let counters = Arc::clone(&self.retention);
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let exit = crate::netdb_participation::run_netdb_retention(
+                bootstrap,
+                counters,
+                child_cancellation,
+                period,
+            )
+            .await;
+            match exit {
+                crate::netdb_participation::NetDbRetentionExit::Cancelled => Ok(()),
+                crate::netdb_participation::NetDbRetentionExit::InvalidPeriod => {
+                    Err(i2pr_runtime::ChildTaskFailure::Explicit)
+                }
+            }
+        }) {
+            tracing::warn!(
+                transition = "netdb_retention_spawn_refused",
+                reason = %error,
+                "the NetDB retention cadence could not be started"
+            );
+        }
+    }
+
+    /// Returns the NetDB's retention counters.
+    fn retention_snapshot(&self) -> crate::netdb_participation::NetDbRetentionSnapshot {
+        self.retention.snapshot()
     }
 
     /// Starts the participation owner.
@@ -2332,13 +2380,21 @@ impl NetDbParticipation {
     /// Reports the participation counters when the owner stops.
     fn report(&self) {
         let counters = self.routing_table.counters();
+        // Plan 542: the retention counts are the owner's, so they are
+        // reported with the owner's other counts. A pass that could not run
+        // is a count, never a silent skip.
+        let retention = self.retention_snapshot();
         tracing::info!(
-            "NetDB participation owner stopped: restored_projections={} discarded_projections={} population_refusals={} routing_table_answered={} routing_table_fell_back={}",
+            "NetDB participation owner stopped: restored_projections={} discarded_projections={} population_refusals={} routing_table_answered={} routing_table_fell_back={} retention_runs={} retention_removed={} retention_unavailable={} retention_not_applicable={}",
             self.restored_projections.load(Ordering::Relaxed),
             self.discarded_projections.load(Ordering::Relaxed),
             self.population_refusals.load(Ordering::Relaxed),
             counters.answered,
             counters.fell_back(),
+            retention.runs,
+            retention.removed,
+            retention.unavailable,
+            retention.not_applicable,
         );
     }
 }
@@ -2396,6 +2452,9 @@ fn register_netdb_participation_service(
     participation: Arc<NetDbParticipation>,
 ) -> Result<(), DaemonError> {
     let enabled = config.netdb.routing_table_enabled;
+    // Plan 542: retention is a property of holding a NetDB, so its switch is
+    // the NetDB's own and **not** the routing table's.
+    let netdb_retention_enabled = config.netdb.enabled;
     let period = Duration::from_millis(config.netdb.participation_maintenance_period_ms);
     let projection_directory = config.router.data_dir.join(PROFILE_PROJECTION_DIRECTORY);
     builder
@@ -2428,6 +2487,20 @@ fn register_netdb_participation_service(
                                 &children,
                                 period,
                             );
+                        }
+                        // Plan 542 — the router's retention policy is a
+                        // property of holding a NetDB, not of the routing
+                        // table. The step runs whenever the NetDB does, so a
+                        // router that runs no service-tunnel group still
+                        // turns its peer knowledge over instead of refusing
+                        // every new peer for ever once its store is full.
+                        // The routing table, the exploration job, the
+                        // profile feed and the discovery spine keep their
+                        // own switches: this does not make the router's
+                        // ability to *use* its NetDB the condition of its
+                        // ability to *forget*.
+                        if netdb_retention_enabled {
+                            participation.start_retention(bootstrap.as_ref(), &children, period);
                         }
                         cancellation.cancelled().await;
                         participation.report();
