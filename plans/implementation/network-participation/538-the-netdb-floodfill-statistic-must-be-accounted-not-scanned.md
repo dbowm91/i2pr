@@ -169,8 +169,11 @@ the store could have counted as it went. The walk is repeated twice inside
 7. **The bootstrap's snapshot semantics are unchanged.** The same fields, the
    same values, the same refresh points and the same `BootstrapState` decisions.
 8. **No public API is removed or renamed.** No `i2pr-netdb` item disappears.
-9. **No configuration key is added.** The daemon's configuration surface is
-   unchanged, and `Cargo.toml` and `Cargo.lock` stay byte-identical.
+9. **No configuration key is added, and no dependency is added.** The
+   daemon's configuration surface is unchanged and `Cargo.toml` stays
+   byte-identical. `Cargo.lock` changes by **exactly** the transitive
+   security update the floor required -- `rustix 1.1.5` to `rustix 1.1.6` --
+   which §5.5 declares and the guard pins.
 10. **No new task, timer, listener or socket.** The statistic is maintained by
     the store's existing mutation paths.
 11. **No advertisement.** `router.version` stays `0.9.62` and the inventory's
@@ -202,7 +205,7 @@ the store could have counted as it went. The walk is repeated twice inside
   examine every record to know which are stale; that is the prune's own work,
   not a statistic.
 - The **routing table's** nearest-floodfill helper
-  (`crates/i2pr-netdb/src/routing.rs:164`), which is `#[allow(dead_code)]` and
+  (`crates/i2pr-netdb/src/routing.rs:155`), which is `#[allow(dead_code)]` and
   has no production caller.
 - The **relay roles**, the **transport** and the **runtime**. No file under
   `crates/i2pr-transport/` and no file under `crates/i2pr-runtime/` is touched.
@@ -258,6 +261,37 @@ pointing at a call the tree does not make.
 
 **The tripwire.** Plan 538's own guard pins the extended guard's SHA-256, so
 a later change to it must change that constant **and** say why.
+
+### 5.5 The transitive security update the floor required
+
+The full floor's `cargo deny check advisories bans sources` step went **red** on
+this tree. The cause is not this plan. RustSec published
+[RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486) after
+the tree was locked, and it names `rustix 1.1.5`, which this tree's
+`Cargo.lock` carried. The advisory is an **unsound** one: `rustix`'s
+extended-attribute functions mark unwritten bytes as initialised when they are
+given a zero-length buffer, which is undefined behaviour reachable from safe
+code.
+
+`Cargo.lock` is byte-identical at this plan's **registration commit** and at
+the tree the floor ran on, so this plan added no dependency, and the advisory
+names a tree this plan did not change. The upstream fix is `rustix 1.1.6`.
+
+**What the plan therefore carries.** The upstream fix: `rustix 1.1.5` becomes
+`rustix 1.1.6`, and the lock records the feature unification that follows
+(`windows-sys 0.52.0` becomes `windows-sys 0.61.2` for the three packages
+that share it). The change is **five lines** of `Cargo.lock`, it adds **no**
+requirement to any manifest, and `Cargo.toml` stays byte-identical.
+
+**What the plan does not do.** It does not add an ignore entry to `deny.toml`,
+and it does not narrow the `cargo deny` check. A published unsound advisory is
+fixed at its source or it is not fixed, and the check is not this plan's to
+relax.
+
+**The tripwire.** The guard's rule 7 pins the manifest's digest and the lock's
+digest, and it now also requires the lock to carry `rustix 1.1.6` and **not**
+to carry `rustix 1.1.5`. A later change to either must change the pinned
+constant **and** say why.
 
 ## 6. Required production changes
 
@@ -462,7 +496,9 @@ item a rule names. The rules:
 6. the store's **selection** surface is unchanged —
    `floodfill_advertisers()` and `iter()`;
 7. **no** configuration key is added, **no** task, timer, listener or socket is
-   added, and `Cargo.toml` and `Cargo.lock` stay **byte-identical**;
+   added, **no** dependency is added, `Cargo.toml` stays **byte-identical**,
+   and `Cargo.lock` differs from the pre-plan lock by **exactly** the declared
+   transitive security update;
 8. `router.version` stays `0.9.62`, and the inventory's advertised count stays
    **zero**;
 9. Plan 536's lane and guard, and Plan 537's lane and guard, stay
@@ -493,6 +529,7 @@ cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=1
 python3 scripts/check-tooling-inventory.py
 python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
+cargo deny check advisories bans sources
 ```
 
 plus the routine floor in `AGENTS.md`, with this plan's two steps added.
@@ -569,6 +606,11 @@ The plan is **accepted** when all of the following hold:
   Plan 507's retention boundary guard's rule 7 inverted probe anchor moves with
   the bootstrap's refresh. Plan 536's lane and guard, and Plan 537's lane and
   guard, stay byte-identical.
+- The plan carries **one** transitive security update, and §5.5 declares it:
+  `rustix 1.1.5` to `rustix 1.1.6`, which the floor's `cargo deny` step
+  required. `Cargo.toml` is byte-identical, no dependency is added, and
+  `deny.toml` is unchanged — the advisory check is not narrowed, and a
+  successor must not narrow it either.
 
 ## 17. Amendment log
 
@@ -589,7 +631,9 @@ derived by walking every record on every call to `stats()`.
 The plan makes the count maintained and exact, makes `stats()` O(1), and makes
 the bootstrap compute the statistics once per operation. It adds no store, no
 lock, no owner, no configuration key and no timer, it changes no transport file
-and no runtime file, and it leaves `Cargo.toml` and `Cargo.lock` byte-identical.
+and no runtime file, it adds no dependency, it leaves `Cargo.toml`
+byte-identical, and it changes `Cargo.lock` only by the transitive security
+update §5.5 declares.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
@@ -608,5 +652,6 @@ what the implementation found and what it did about it.
 | 17.2.4 | The guard's helper block is shared **verbatim** with Plan 537's guard, so the two guards cannot drift apart in how they read a source. That block also carries `enclosing_statement`, which this guard does not use. | The one unused helper is dropped from this guard's copy. A dead helper is a lint error, and an unused helper is not evidence. The rest of the block is byte-identical to Plan 537's. |
 | 17.2.5 | §11.2's rule 7 asks that `Cargo.toml` and `Cargo.lock` stay **byte-identical**. "Byte-identical" is only checkable as a digest. | The guard records the SHA-256 of both as `WORKSPACE_MANIFEST_SHA256` and `WORKSPACE_LOCK_SHA256`. They are a **tripwire**: a future plan that needs to change the manifest must change these two constants **and** say why. |
 | 17.2.6 | The plan's §3 cites the store's statistics at `crates/i2pr-netdb/src/store.rs:225`, where the scan was. After the change, the scan is gone and the line has moved. | §3 is the evidence of the tree **before** the plan and is never rewritten. The closure record's citation verifier checks §3 against the **registration commit** `d0273251`, so the drift cannot recur unnoticed. |
-| 17.2.8 | The full floor found a consequence this plan had not seen: Plan 507's retention boundary guard anchors its rule 7 inverted probe on the literal `self.refresh_snapshot();`, and this plan changed the bootstrap's refresh so that it **takes** the statistics it refreshes. The probe's mutation stopped applying and its row failed closed. | §5.4 declares the extension: the probe's **anchor** moves to `self.refresh_snapshot(stats);` and the injected mutation moves with it. The rule, its meaning, its coverage and every other row of that guard are unchanged, and its 26 rows all pass. Plan 538's own guard pins the extended guard's SHA-256 as a tripwire, so a later change to it must change that constant **and** say why. The alternative — keeping a literal `self.refresh_snapshot();` in the bootstrap for the anchor's sake — was rejected: it would have been cargo-culting a string the tree does not use. |
 | 17.2.7 | The store's **selection** paths — `floodfill_advertisers()` and the lookup policy's ordering core — are scans, and they stay scans. A guard that forbade every walk in the crate would forbid the selection too. | The guard's rule 1 scopes the prohibition to `stats()`, the method that **reports** a number, and rule 6 pins the selection surface as **unchanged**. The plan's §4's invariant 12 and §5.2 say the same. |
+| 17.2.8 | The full floor found a consequence this plan had not seen: Plan 507's retention boundary guard anchors its rule 7 inverted probe on the literal `self.refresh_snapshot();`, and this plan changed the bootstrap's refresh so that it **takes** the statistics it refreshes. The probe's mutation stopped applying and its row failed closed. | §5.4 declares the extension: the probe's **anchor** moves to `self.refresh_snapshot(stats);` and the injected mutation moves with it. The rule, its meaning, its coverage and every other row of that guard are unchanged, and its 26 rows all pass. Plan 538's own guard pins the extended guard's SHA-256 as a tripwire, so a later change to it must change that constant **and** say why. The alternative — keeping a literal `self.refresh_snapshot();` in the bootstrap for the anchor's sake — was rejected: it would have been cargo-culting a string the tree does not use. |
+| 17.2.9 | The full floor's `cargo deny check advisories bans sources` step went **red** on this tree. RustSec published [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486) -- an **unsound** advisory against `rustix 1.1.5`, which this tree's `Cargo.lock` carried -- after the tree was locked. `Cargo.lock` is byte-identical at this plan's **registration commit** and at the tree the floor ran on, so the plan added no dependency and the advisory names a tree the plan did not change. | §5.5 declares the upstream fix: `rustix 1.1.5` becomes `rustix 1.1.6`, which is **five lines** of `Cargo.lock` and adds **no** requirement to any manifest, so `Cargo.toml` stays byte-identical. The plan does **not** add an ignore entry to `deny.toml` and does **not** narrow the `cargo deny` check: a published unsound advisory is fixed at its source or it is not fixed. The guard's rule 7 pins the lock's new digest **and** requires the lock to carry `rustix 1.1.6` and **not** `rustix 1.1.5`. Rows 17.2.1 and 17.2.5 asserted the lock's byte-identity as of the lane and the guard; that assertion ends at this row. |

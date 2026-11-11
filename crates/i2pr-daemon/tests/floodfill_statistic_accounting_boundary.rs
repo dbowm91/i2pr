@@ -26,7 +26,10 @@
 //! 6. the store's **selection** surface is unchanged --
 //!    `floodfill_advertisers()` and `iter()`;
 //! 7. **no** configuration key is added, **no** task, timer, listener or socket
-//!    is added, and `Cargo.toml` and `Cargo.lock` stay **byte-identical**;
+//!    is added, **no** dependency is added, `Cargo.toml` stays
+//!    **byte-identical**, and `Cargo.lock` differs from the pre-plan lock by
+//!    **exactly** the declared transitive security update -- `rustix 1.1.6`,
+//!    and **not** `rustix 1.1.5`;
 //! 8. `router.version` stays `0.9.62`, and the inventory's advertised count
 //!    stays **zero**;
 //! 9. Plan 536's and Plan 537's lanes and guards stay **byte-identical**.
@@ -81,8 +84,17 @@ const WORKSPACE_MANIFEST_SHA256: &str =
     "39c44e33add62693eef8866220de17dcfe137437b62732e5044fcaefc4870269";
 
 /// The workspace lock, byte for byte.
+/// The workspace lock, byte for byte, after the declared transitive
+/// security update `rustix 1.1.5` -> `rustix 1.1.6`.
+///
+/// The plan of record's section 5.5 declares the update, and the floor's
+/// `cargo deny check advisories bans sources` step is what required it:
+/// RustSec published RUSTSEC-2026-0486, an **unsound** advisory against
+/// `rustix 1.1.5`, after the tree was locked. The manifest is unchanged --
+/// no dependency is added -- and the rule below pins the version as well as
+/// the digest, so the reason cannot be quietly lost.
 const WORKSPACE_LOCK_SHA256: &str =
-    "5e61634c8de59d12051396e8172ec89ecb522f7d5430c32b20c0bb8251991548";
+    "f0cec0685c4ed460c7d63273cc318f7a683dc2357735d7edaa6dfa1ac243d833";
 
 /// Plan 507's retention boundary guard, byte for byte.
 ///
@@ -674,8 +686,31 @@ fn rule_the_stores_selection_surface_is_unchanged(sources: &Sources) -> Option<S
 // ---- 7. no new surface, and the manifest is unchanged -------------------
 
 fn rule_no_new_surface_and_the_manifest_is_unchanged(sources: &Sources) -> Option<String> {
-    // The manifest and the lock are byte for byte what they were: no
-    // dependency, no feature, no version.
+    // The reason for the lock's declared change is pinned **first**, so a
+    // digest alone cannot hide it: the lock must carry the patched `rustix`
+    // and must not carry the version the advisory names.
+    if !sources
+        .workspace_lock
+        .contains("name = \"rustix\"\nversion = \"1.1.6\"")
+    {
+        return Some(
+            "the lock must carry the patched rustix 1.1.6 that the floor's cargo deny required"
+                .to_owned(),
+        );
+    }
+    if sources
+        .workspace_lock
+        .contains("name = \"rustix\"\nversion = \"1.1.5\"")
+    {
+        return Some(
+            "the lock must not carry rustix 1.1.5, which RUSTSEC-2026-0486 names".to_owned(),
+        );
+    }
+
+    // The manifest is byte for byte what it was: no dependency, no feature, no
+    // version. The lock differs from the pre-plan lock by **exactly** the
+    // transitive security update the plan of record's section 5.5 declares,
+    // and the digest below is the tripwire for that declaration.
     for (label, source, expected) in [
         (
             "Cargo.toml",
@@ -1076,6 +1111,32 @@ fn the_inverted_probe_fires_when_the_manifest_changes() {
     assert!(
         rule_no_new_surface_and_the_manifest_is_unchanged(&sources).is_some(),
         "a changed manifest must fail the rule"
+    );
+}
+
+#[test]
+fn the_inverted_probe_fires_when_the_lock_carries_the_advisory_version() {
+    let mut sources = Sources::from_tree();
+    sources.workspace_lock = sources.workspace_lock.replace(
+        "name = \"rustix\"\nversion = \"1.1.6\"",
+        "name = \"rustix\"\nversion = \"1.1.5\"",
+    );
+    assert!(
+        rule_no_new_surface_and_the_manifest_is_unchanged(&sources).is_some(),
+        "a lock that carries the version RUSTSEC-2026-0486 names must fail the rule"
+    );
+}
+
+#[test]
+fn the_inverted_probe_fires_when_the_lock_drops_the_patched_version() {
+    let mut sources = Sources::from_tree();
+    sources.workspace_lock = sources.workspace_lock.replace(
+        "name = \"rustix\"\nversion = \"1.1.6\"",
+        "name = \"rustix\"\nversion = \"1.1.7\"",
+    );
+    assert!(
+        rule_no_new_surface_and_the_manifest_is_unchanged(&sources).is_some(),
+        "a lock that does not carry the patched rustix must fail the rule"
     );
 }
 
