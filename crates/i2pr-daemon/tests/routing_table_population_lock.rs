@@ -176,7 +176,11 @@ fn the_indexing_needs_no_netdb_lock() {
     // The NetDB lock is held for the whole indexing. The material the read
     // returned is owned, so the indexing cannot need that lock -- and if it
     // did, this would deadlock rather than pass.
-    let guard = bootstrap.lock().expect("the lock");
+    //
+    // The lock is taken with `try_lock`, so a source that **leaked** the
+    // guard fails this test **immediately** instead of blocking the suite
+    // forever. A lane that can hang is not evidence: it has to fail.
+    let guard = bootstrap.try_lock().expect("the lock");
     let table = a_table();
     for record in &advertisers {
         let outcome = table.index(record).expect("the table is enabled");
@@ -228,7 +232,7 @@ fn the_population_is_the_same_set() {
 
     // The store's own selection is the same set, in the same order.
     let expected: Vec<RouterHash> = bootstrap
-        .lock()
+        .try_lock()
         .expect("lock")
         .store()
         .floodfill_advertisers()
@@ -253,9 +257,9 @@ fn the_population_mutates_nothing() {
     let bootstrap = bootstrap_with(3, 2);
     let refusals = AtomicU32::new(0);
     let source = ValidatedStorePopulationSource::new(Some(&bootstrap), &refusals);
-    let before = bootstrap.lock().expect("lock").store().stats();
+    let before = bootstrap.try_lock().expect("lock").store().stats();
     let _ = source.advertisers().expect("advertisers");
-    let after = bootstrap.lock().expect("lock").store().stats();
+    let after = bootstrap.try_lock().expect("lock").store().stats();
     assert_eq!(before, after, "the read mutates nothing in the store");
 }
 
