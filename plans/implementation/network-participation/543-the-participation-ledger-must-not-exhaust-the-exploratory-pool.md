@@ -455,3 +455,14 @@ socket, it adds no dependency, it leaves `Cargo.toml` and `Cargo.lock`
 byte-identical, and it advertises nothing.
 
 No closed closure record is rewritten by this plan.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | §6.2 says the selection's skip rule should read through a **windowed reading**, which would have changed `SelectionConstraints`' field type and rippled through every caller. | The release is instead a **reclaim on the clock the driver already advances**, so the skip rule and the public `counts()` view are byte-identical and no caller moves. This is Plan 508's shape for a fact set that must not grow for ever. §6 is not rewritten; this row is the correction. |
+| 17.2.2 | `ParticipationLedger::record` had no clock, so the stamp needed a parameter and three call sites moved: two in the driver (which owns `clock_ms`) and one in the destination coordinator (which owns `now_ms`). | All three pass their own clock, and the guard requires **every** recording site to stamp the driver's clock, so a site that stops stamping is a guard failure rather than a silent stale entry. |
+| 17.2.3 | The lane's first draft asserted that **one** selection after the release re-caps a peer. It does not: the counter restarts at one, so the pool stays selectable. | The row now drives the pool to the cap **again** at the new instant, asserts the cap re-armed, and then asserts the window restarts from that instant. |
+| 17.2.4 | The guard's first draft forbade `tokio::time::interval` in the driver, but the driver **legitimately** owns cadence loops. | The rule forbids a **new** ownerless task and the socket constructs instead, and its probe mutates `reclaim` to add a `tokio::spawn`. |
+| 17.2.5 | A control that removed the ledger's `stamps` field did not compile, so it proved nothing about the rule it named. | The control breaks the rule's **eviction clause** instead — eviction stops releasing the stamp with the counter — which compiles and fires the rule. A control that breaks the build proves nothing about the row it names. |
+| 17.2.6 | A control that removed `self.stamps.remove(key)` from `reclaim` did **not** fire the "window restarts" row, because `record` overwrites the stamp on re-selection. | The control targets the **exactness** row, which asserts `last_recorded_at` is `None` for a released peer — the one observable consequence of the leftover stamp. |

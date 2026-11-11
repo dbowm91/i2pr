@@ -2293,3 +2293,36 @@ step's presence in the daemon's graph.
 The delivery stays confined to the **controlled loopback profile**, and the
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## 42. The participation ledger releases an over-used peer (Plan 543)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G43.1 | a pool at the cap is still skipped while its entries are **inside** the window | `crates/i2pr-daemon/tests/participation_release.rs`, `a_peer_inside_the_window_is_still_skipped` |
+| G43.2 | the same pool is **selectable again** once the window passes | the same lane file, `a_peer_outside_the_window_is_selectable_again` |
+| G43.3 | the pool is **not permanently exhausted**, and it stays available after the release | the same lane file, `the_pool_is_not_permanently_exhausted` |
+| G43.4 | the window **restarts** from the instant of the new selection | the same lane file, `a_released_peer_is_recorded_with_the_new_instant` |
+| G43.5 | the counter still **saturates** at the cap | the same lane file, `the_counter_still_saturates_at_the_cap` |
+| G43.6 | the ledger still respects its **entry bound** | the same lane file, `the_ledger_still_respects_its_entry_bound` |
+| G43.7 | the reclaim is **exact** and reports what it released | the same lane file, `the_reclaim_is_exact_and_counts_what_it_released` |
+| G43.8 | the ungated selection is unchanged | the same lane file, `the_selection_without_a_ledger_is_unchanged` |
+| G43.9 | the ledger's entry carries an instant, `record` stamps it, and eviction releases it with the counter | `crates/i2pr-daemon/tests/participation_release_boundary.rs`, `the_entry_carries_an_instant` |
+| G43.10 | the driver **reclaims on the clock it already advances**, and every recording site stamps that clock | the same guard file, `the_driver_reclaims_on_its_clock` |
+| G43.11 | the window is **derived** through a `const fn` and is **not restated** | the same guard file, `the_window_is_derived_and_not_restated` |
+| G43.12 | the cap, the entry bound and the skip rule are **unchanged** | the same guard file, `the_bounds_and_the_skip_rule_are_unchanged` |
+| G43.13 | the selection's other gates are unchanged, and **no** configuration key is added | the same guard file, `the_selection_keeps_its_gates` |
+| G43.14 | **no** task, timer, listener or socket is added, and nothing is advertised | the same guard file, `nothing_new_runs_and_nothing_is_advertised` |
+| G43.15 | the sixteen predecessor lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane drives the **real** selection through a
+**real** ledger and a **real** profile store, and fixes its clock explicitly, so
+it never reads the wall clock and never sleeps.
+
+The defect is **permanent exhaustion**, not slowness: raising the cap only moves
+the exhaustion later, and shrinking the ledger would evict peers the policy
+never intended to release. The release is a check at use time, so it adds no
+tick of its own.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.

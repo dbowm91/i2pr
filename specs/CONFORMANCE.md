@@ -4789,3 +4789,50 @@ Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
 `crates/i2pr-daemon/tests/netdb_retention_posture_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/542-the-netdbs-retention-must-not-depend-on-the-service-tunnel-posture.md`.
+
+## The participation ledger releases an over-used peer (Plan 543)
+
+**Plan 543 adds one surface** — `netdb.participation-release` — so the
+inventory holds **136 surfaces, 131 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**.
+
+`ParticipationLedger` records how often each peer has been selected, and the
+selection **skips** any peer whose counter has reached the cap. The counter
+**saturates** at the cap, and the ledger's only other release is eviction of
+the **oldest** entry when it is **full**. The ledger tracks 4 096 peers, while
+the profile store's population is the bounded 256-record prefix the reconcile
+feeds it: the population is a few hundred and does not churn, so eviction never
+fires and no counter is ever released.
+
+After at most 256 × 8 = 2 048 selections the exploratory build driver's
+selection — its only live peer source — was **permanently empty**, and the
+router stopped building exploratory tunnels for as long as it ran.
+
+**A participation fact is a fact about a window.** The ledger's entry gains a
+per-peer instant, `reclaim(now_ms)` releases every entry whose last selection is
+outside the window together with its eviction-order slot, and
+`PARTICIPATION_WINDOW_MS` is a `const` derived through a `const fn`, so it
+cannot be configured and cannot be restated.
+
+**The release rides the clock the driver already advances.** It is a check on
+`advance_time`, which the driver already calls, so no task, timer, listener or
+socket is added — Plan 508's shape for a fact set that must not grow for ever.
+
+**The selection's own surfaces are unchanged.** The skip rule and the public
+`counts()` view are untouched: a released entry leaves the map, so a released
+peer reads zero exactly as a peer that has never been selected. The counter's
+cap and the ledger's entry bound are unchanged — a peer used recently is still
+skipped, and the plan changes only how long an over-used peer stays over-used.
+
+**What is not claimed.** The plan does not claim the exploratory posture is
+usable today: the dial scope is loopback and RFC1918, and a public deployment's
+peers are not dialable. It adds no configuration key, no dependency, no task,
+no timer, no listener and no socket, and `Cargo.toml` and `Cargo.lock` stay
+byte-identical. Nothing is advertised: `router.version` stays `0.9.62`.
+
+Evidence: `crates/i2pr-netdb/src/selection.rs`,
+`crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/tests/participation_release.rs`,
+`crates/i2pr-daemon/tests/participation_release_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/543-the-participation-ledger-must-not-exhaust-the-exploratory-pool.md`.
