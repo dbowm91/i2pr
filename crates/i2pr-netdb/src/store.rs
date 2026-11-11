@@ -96,6 +96,19 @@ pub struct RouterInfoStore {
     /// retained record has exactly one entry and every entry names a
     /// retained record.
     ages: BTreeSet<(u64, RouterHash)>,
+    /// The retained floodfill advertisers' hashes, ordered.
+    ///
+    /// Plan 541: this is **maintained**, not derived. The store maintains it
+    /// on exactly the paths that maintain the record map and the floodfill
+    /// advertiser count -- the new-key path, the replacement path and the
+    /// removal path -- so the selection walks the advertisers instead of
+    /// scanning the record map.
+    ///
+    /// The index is **exact**: an advertiser the index missed would be
+    /// invisible to the router's floodfill selection, which is a silent
+    /// selection failure, so every advertiser has exactly one entry and
+    /// every entry names an advertiser.
+    advertisers: BTreeSet<RouterHash>,
     total_encoded_bytes: usize,
     /// The number of retained records that advertise the `f` capability.
     ///
@@ -122,6 +135,7 @@ impl RouterInfoStore {
         Self {
             records: BTreeMap::new(),
             ages: BTreeSet::new(),
+            advertisers: BTreeSet::new(),
             total_encoded_bytes: 0,
             floodfill_advertiser_count: 0,
             config,
@@ -185,6 +199,11 @@ impl RouterInfoStore {
             if existing_floodfill != incoming_floodfill {
                 self.adjust_floodfill_advertiser_count(incoming_floodfill);
             }
+            // Plan 541: the advertiser index follows the capability, so a
+            // replacement that publishes a different capability set swaps
+            // the entry. The note is idempotent, so it is made on every
+            // replacement rather than only when the capability changed.
+            self.note_advertiser(key, incoming_floodfill);
             return InsertOutcome::Replaced;
         }
 
@@ -208,6 +227,7 @@ impl RouterInfoStore {
         if incoming_floodfill {
             self.adjust_floodfill_advertiser_count(true);
         }
+        self.note_advertiser(key, incoming_floodfill);
         InsertOutcome::Inserted
     }
 
@@ -237,9 +257,25 @@ impl RouterInfoStore {
                 if removed.advertises_floodfill() {
                     self.adjust_floodfill_advertiser_count(false);
                 }
+                // Plan 541: the index releases the entry with the record.
+                self.note_advertiser(*key, false);
                 true
             }
             None => false,
+        }
+    }
+
+    /// Notes the record's floodfill capability in the advertiser index.
+    ///
+    /// Plan 541: the index is maintained at the **same** decision points as
+    /// the floodfill advertiser count, so the count and the set can never
+    /// disagree about which records are advertisers. The call is idempotent:
+    /// noting the same capability twice changes nothing.
+    fn note_advertiser(&mut self, key: RouterHash, is_advertiser: bool) {
+        if is_advertiser {
+            self.advertisers.insert(key);
+        } else {
+            self.advertisers.remove(&key);
         }
     }
 
@@ -341,9 +377,25 @@ impl RouterInfoStore {
     /// Returns an iterator over records that advertise the
     /// `f` capability.
     pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {
-        self.records
-            .values()
+        // Plan 541: the walk is over the maintained advertiser index, so it
+        // is proportional to the number of advertisers and not to the
+        // population. The filter is what makes the selection **exact**: a
+        // peer whose own record does not advertise `f` is never yielded,
+        // whatever the index says.
+        self.advertisers
+            .iter()
+            .filter_map(|key| self.records.get(key))
             .filter(|record| record.advertises_floodfill())
+    }
+
+    /// Returns the retained floodfill advertisers' records.
+    ///
+    /// Plan 541: this is the set the router's floodfill **selection** needs,
+    /// and it is **not** an arbitrary prefix of the population. The copy is
+    /// bounded by the store's own record ceiling, so it cannot become an
+    /// unbounded one.
+    pub fn floodfill_advertiser_snapshot(&self) -> Vec<ValidatedRouterInfo> {
+        self.floodfill_advertisers().cloned().collect()
     }
 }
 

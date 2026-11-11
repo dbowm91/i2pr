@@ -328,10 +328,10 @@ impl PeerReconcile {
     /// section 3.4), with the acceptance window as the retention window.
     ///
     /// The order is prune the bootstrap, prune the destination store,
-    /// snapshot, insert, learn. The locks are taken one at a time and never
-    /// nested: the bootstrap's lock is released before the destination
-    /// coordinator's lock is taken, and the destination coordinator's lock
-    /// is released before the peer-profile store's lock is taken.
+    /// snapshot, insert, advertiser insert, learn. The locks are taken one at
+    /// a time and never nested: the bootstrap's lock is released before
+    /// the destination coordinator's lock is taken, and the destination
+    /// coordinator's lock is released before the peer-profile store's lock.
     pub async fn run(&mut self, now_ms: u64) -> PeerReconcileAction {
         if !self.cadence_due(now_ms) {
             self.counters.cadence_skips = self.counters.cadence_skips.saturating_add(1);
@@ -358,6 +358,14 @@ impl PeerReconcile {
         // Step 2 — the destination coordinator's lock is taken for the
         // inserts and released before the peer-profile store's lock is taken.
         self.insert_all(&records).await;
+        // Plan 541 — the destination coordinator's store is the **authority**
+        // the router's floodfill selection reads, so the advertisers the
+        // NetDB holds must reach it too. The advertiser snapshot is taken
+        // under the bootstrap's lock and released before the coordinator's
+        // lock is taken, so the two locks are never held at once.
+        if let Some(advertisers) = self.advertiser_snapshot() {
+            self.insert_advertisers(&advertisers).await;
+        }
         // Step 3 — the peer-profile store's lock is taken for the learn. The
         // closure never awaits, so no lock is held across an await.
         self.learn_all(&records);
@@ -462,12 +470,44 @@ impl PeerReconcile {
         Some(guard.validated_router_info_snapshot())
     }
 
+    /// Takes the bootstrap's lock, snapshots the **floodfill advertisers** and
+    /// **releases** the lock.
+    ///
+    /// Plan 541: the destination coordinator's store is the **authority** the
+    /// router's floodfill selection reads, so that store must carry the
+    /// advertisers the NetDB holds -- not the group provider's hash-ordered
+    /// prefix, which is an arbitrary subset of the population. The snapshot
+    /// is taken under the bootstrap's lock and released before this function
+    /// returns, so no other lock is ever held with it.
+    fn advertiser_snapshot(&self) -> Option<Vec<ValidatedRouterInfo>> {
+        let bootstrap = self.bootstrap.as_ref()?;
+        let guard = bootstrap.lock().ok()?;
+        Some(guard.floodfill_advertiser_snapshot())
+    }
+
     /// Inserts every record into the destination store through the canonical
     /// write API.
     ///
     /// The store's own capacity policy applies: a refusal is counted and the
     /// batch continues. One peer at capacity never aborts the reconcile.
     async fn insert_all(&mut self, records: &[ValidatedRouterInfo]) {
+        let destinations = Arc::clone(&self.destinations);
+        let mut guard = destinations.lock().await;
+        for record in records {
+            let outcome = guard.insert_validated_router_info(record.clone());
+            self.counters.record_insert(outcome);
+        }
+    }
+
+    /// Inserts every floodfill advertiser into the destination store through
+    /// the canonical write API.
+    ///
+    /// Plan 541: the coordinator's store is the **authority** the router's
+    /// floodfill selection reads, so the advertisers the NetDB holds must
+    /// reach it. The store's own capacity policy applies: a refusal is
+    /// counted and the batch continues, so one peer at capacity never aborts
+    /// the reconcile.
+    async fn insert_advertisers(&mut self, records: &[ValidatedRouterInfo]) {
         let destinations = Arc::clone(&self.destinations);
         let mut guard = destinations.lock().await;
         for record in records {

@@ -4424,8 +4424,13 @@ fn register_ssu2_service(
                                 ),
                             );
                         };
+                        // Plan 541: the destination coordinator's store is
+                        // the **authority** the router's floodfill selection
+                        // reads, so it is seeded with the router's floodfill
+                        // advertisers and not with the group provider's
+                        // hash-ordered prefix.
                         let router_infos = match bootstrap.lock() {
-                            Ok(bootstrap) => bootstrap.validated_router_info_snapshot(),
+                            Ok(bootstrap) => bootstrap.floodfill_advertiser_snapshot(),
                             Err(_) => {
                                 handle.shutdown();
                                 let detail = i2pr_core::HealthDetail::new(

@@ -346,6 +346,17 @@ impl Bootstrap {
             .collect()
     }
 
+    /// Returns the floodfill advertisers the NetDB holds.
+    ///
+    /// Plan 541: the group provider's bounded snapshot is a **different**
+    /// set -- the first records in router-hash order -- and the router's
+    /// floodfill selection needs the **advertisers** themselves. A bound that
+    /// is right for one consumer must not silently narrow another's
+    /// authority.
+    pub fn floodfill_advertiser_snapshot(&self) -> Vec<i2pr_netdb::ValidatedRouterInfo> {
+        self.store.floodfill_advertiser_snapshot()
+    }
+
     /// Returns the current local RouterInfo snapshot, if any.
     pub fn local(&self) -> Option<&LocalRouterInfo> {
         self.local.as_ref()
