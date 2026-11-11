@@ -595,3 +595,19 @@ advertises nothing.
 
 No closed closure record is rewritten by this plan. The corrections this plan
 finds, if any, live in this plan's closure record and in the registry's row.
+
+### 17.2 — 2026-11-11, the implementation's own findings
+
+This log is **additive**. No closed closure record is rewritten by this plan,
+and the plan's own §3 is evidence and is not rewritten. The rows below record
+what the implementation found and what it did about it.
+
+| # | What the implementation found | What this plan does about it |
+| --- | --- | --- |
+| 17.2.1 | The lane's first draft called `Bootstrap::prune` directly in two rows, so a control that stopped the retention step from pruning **at all** left those rows **passing**: they were testing a function the plan does not change. The plan's own negative controls found it. | Every row now drives the **production** step (`prune_netdb`) through one helper, so a step that does not prune cannot leave a row green. NC-1 and NC-2 restore the defect and fire the rows. |
+| 17.2.2 | The guard's first rule could not tell a **started** cadence from a **dead** one: it looked for `run_netdb_retention(` anywhere in the composition root, and the cadence's own body keeps that name, so deleting the service body's `participation.start_retention(...)` call left the rule satisfied. | The rule now requires the **service body** to start the cadence, separately from the cadence's own body running the step. NC-4 deletes the call and fires the rule. |
+| 17.2.3 | The router's **acceptance** window and its **retention** window are the same value, so a record older than the window is refused at *insert*. A stale record can therefore only enter the store when it was accepted **while it was fresh**, and the lane's first draft validated stale records at `now` and was refused by the validator. | The lane validates a stale record at its own publication time. The lane's `sign` helper documents why, and the constraint is a property of the policy, not of the test. |
+| 17.2.4 | §6.3 of this plan says the retention window **moves** to `netdb_participation.rs`. It cannot: Plan 507's closed guard pins `acceptance_window_secs() * 1_000` and the constant's use inside `peer_reconcile.rs`. | The constant stays where it is and the new caller **imports** it, which is the plan's own requirement — *exactly one definition* — met without extending a predecessor's guard. The plan's §6 is not rewritten; this row is the correction. |
+| 17.2.5 | The `netdb_retention_enabled` switch has to be a **separate** binding from `enabled`, not a second use of it, or the guard could not distinguish "the NetDB is on" from "the routing table is on". | The service reads both, and the guard pins that they are read apart. NC-5 turns the retention switch into another NetDB switch and fires the rule. |
+| 17.2.6 | A negative control was committed to the tree by mistake: the sweep was still running when a commit was made, so the commit captured the NC-4 probe instead of the production call. The tree was repaired in a follow-up commit and the sweep is now run **after** the tree is committed, with no git write until it finishes. | The plan's closure record names both commits and the reason. The rule is the floor's own: never rewrite or commit a tree while a tree-mutating script is running. |
+| 17.2.7 | A first control attempt for the window restated it with `pub const` inside a function body, which is `E0449` — a hard error, not a lint — so the control broke the build rather than firing the rule. | The control restates the window as a block-scoped `const` in the cadence loop, which compiles and fires the rule's one-definition clause. A control that breaks the build proves nothing about the row it names. |

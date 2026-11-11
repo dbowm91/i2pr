@@ -4727,3 +4727,65 @@ Evidence: `crates/i2pr-netdb/src/store.rs`,
 `crates/i2pr-daemon/tests/floodfill_selection_visibility_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/541-the-routers-floodfill-selection-must-not-be-narrowed-by-the-group-providers-bound.md`.
+
+## The NetDB's retention does not depend on the service-tunnel posture (Plan 542)
+
+**Plan 542 adds one surface** — `netdb.retention-posture` — so the
+inventory holds **135 surfaces, 130 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**: Plan 542 makes the router's
+retention prune run whenever its NetDB does, and the surface is internal and
+non-advertised.
+
+`RouterInfoStore::insert` **refuses** at the quota and **never evicts**, and
+the tree's own documentation of the prune states the consequence in as many
+words: *"a NetDB that filled up would refuse every new peer, permanently, and
+would keep a record the router's own validation policy would refuse to accept
+today"*. The operation that prevents that — `Bootstrap::prune` — had exactly
+**one** production caller, `PeerReconcile::prune_bootstrap`, and `PeerReconcile`
+is constructed **only** inside `ServiceProduct`, whose only
+`ServiceProductSpec` is built inside `if has_enabled_groups`. That gate is
+`service_tunnels_active(config)` — I2PControl, router-network SAM, or an
+enabled service tunnel — and every one of those is **false** by default.
+
+So in the posture where the router runs SSU2 and nothing else, the NetDB was
+**write-only**: the reseed, the NetDB cache and the authenticated unsolicited
+`DatabaseStore` kept feeding it, it reached `netdb.max_records` (4 096) or
+`netdb.max_encoded_bytes` (4 MiB), and then it refused **every** subsequent
+peer for as long as the router ran. The retention prune was not narrowed; it
+was **unreachable**.
+
+**The step has a second caller.** `prune_netdb` applies the router's **own**
+retention window, so the two callers cannot drift apart, and it names an absent
+store and an unavailable lock rather than treating either as a silent success.
+
+**The cadence is the one the router already has.** `run_netdb_retention` rides
+the **participation maintenance period**, so there is no second cadence, no
+second knob, no new timer and no listener.
+
+**The switch is the NetDB's own.** The participation service starts the step
+under `config.netdb.enabled`, **outside** the routing table's `if enabled`
+block. The routing table's population, the exploration job, the profile feed
+and the discovery spine keep their existing gates: the router's ability to
+*use* its NetDB is no longer the condition of its ability to *forget*.
+
+**The outcome type is shared.** `PruneOutcome` becomes `pub`, so the two
+callers cannot disagree about what a prune outcome *is*. `RETENTION_WINDOW_MS`
+does **not** move — Plan 507's closed guard pins its derivation — so the new
+caller **imports** it.
+
+**What is not claimed.** The step's **reachability** is proven statically, not
+behaviourally: the lane constructs the owner directly and observes what the
+step does, while the guard proves the step has a caller outside the reconcile
+and that the caller is not behind the routing-table switch. The plan adds **no**
+configuration key, **no** dependency, **no** second timer, **no** listener and
+**no** socket, and `Cargo.toml` and `Cargo.lock` stay byte-identical. Nothing
+is advertised: `router.version` stays `0.9.62` and the inventory's advertised
+count stays **zero**.
+
+Evidence: `crates/i2pr-daemon/src/netdb_participation.rs`,
+`crates/i2pr-daemon/src/peer_reconcile.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/tests/netdb_retention_posture.rs`,
+`crates/i2pr-daemon/tests/netdb_retention_posture_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/542-the-netdbs-retention-must-not-depend-on-the-service-tunnel-posture.md`.

@@ -4568,3 +4568,42 @@ selection does. The router's validated store is still the bootstrap's store,
 the advertiser snapshot is still a copy taken under the router's NetDB lock,
 and the peer-profile store's feed is still the bounded prefix; all three keep
 their named owner.
+
+## The NetDB's retention runs in every posture (Plan 542)
+
+`RouterInfoStore::insert` refuses at the quota and never evicts, and the prune's
+own doc comment states the consequence: *"a NetDB that filled up would refuse
+every new peer, permanently"*. The prune had exactly **one** production caller,
+`PeerReconcile::prune_bootstrap`, and `PeerReconcile` exists only inside
+`ServiceProduct` — which the daemon builds only when
+`service_tunnels_active(config)` is true, and that is false by default for
+I2PControl, SAM and every service tunnel.
+
+So an SSU2-only router had a **write-only** NetDB. The reseed, the cache and the
+authenticated unsolicited `DatabaseStore` kept feeding it; it reached
+`netdb.max_records` or `netdb.max_encoded_bytes`; and then it refused every
+subsequent peer for as long as the router ran.
+
+**The step has a second caller.** `netdb_participation::prune_netdb` applies the
+router's **own** window — Plan 507's derived `RETENTION_WINDOW_MS`, imported
+rather than restated — and returns a `PruneOutcome` the reconcile already
+understands, so the two callers cannot disagree about what a prune outcome is.
+
+**The cadence is the one the router already has.**
+`run_netdb_retention` rides the participation maintenance period under the
+service's child scope, so there is no second cadence, no second knob, no new
+timer, no listener and no ownerless task. A cadence period outside the bound is
+refused rather than clamped silently.
+
+**The switch is the NetDB's own.** The participation service starts the step
+under `config.netdb.enabled`, **outside** the routing table's `if enabled`
+block. The routing table's population, the exploration job, the profile feed and
+the discovery spine keep their existing gates: the router's ability to *use* its
+NetDB is no longer the condition of its ability to *forget*.
+
+**What is not claimed.** The step's **reachability** is proven statically, not
+behaviourally. The lane constructs the owner directly and observes what the step
+does; the guard proves the step has a caller outside the reconcile, that the
+caller is not behind the routing-table switch, and that the window has one
+definition. The router's validated store is still the bootstrap's store, and it
+keeps its named owner.

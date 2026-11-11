@@ -2259,3 +2259,37 @@ byte-identical.
 The delivery stays confined to the **controlled loopback profile**, and the
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## 41. The NetDB's retention does not depend on the service-tunnel posture (Plan 542)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G42.1 | a store at its record ceiling **refuses** the next peer | `crates/i2pr-daemon/tests/netdb_retention_posture.rs`, `the_store_at_its_quota_refuses_the_next_peer` |
+| G42.2 | the step removes **exactly** the stale set, computed independently from the store's own iterator | the same lane file, `the_step_removes_exactly_the_stale_records` |
+| G42.3 | the peer the store refused is **accepted** after the step | the same lane file, `the_peer_the_store_refused_is_accepted_after_the_step` |
+| G42.4 | a record at the window's boundary **survives** | the same lane file, `a_record_at_the_boundary_survives` |
+| G42.5 | the step is **idempotent** | the same lane file, `the_step_is_idempotent` |
+| G42.6 | an absent store is `NotApplicable`, never a silent success | the same lane file, `the_step_names_an_absent_store_rather_than_reporting_a_prune` |
+| G42.7 | a poisoned lock is `Unavailable` and the store keeps its contents | the same lane file, `a_poisoned_lock_is_counted_and_the_store_keeps_its_contents` |
+| G42.8 | the router's own identity is never a victim | the same lane file, `the_routers_own_record_is_never_a_victim` |
+| G42.9 | the cadence runs the step and counts what it removed | the same lane file, `the_cadence_runs_the_step_and_counts_it` |
+| G42.10 | a cadence period outside the bound is refused | the same lane file, `a_period_outside_the_bound_is_refused` |
+| G42.11 | the step has a caller **outside** the reconcile, that caller is **not** behind the routing-table switch, the window has **one** definition, the reconcile is unchanged, the features over the NetDB keep their gates, **no** runtime construct is added, and nothing is advertised | `crates/i2pr-daemon/tests/netdb_retention_posture_boundary.rs`, `the_step_has_a_caller_outside_the_reconcile`, `the_caller_is_not_behind_the_routing_table_switch`, `the_window_has_one_definition`, `the_reconcile_is_unchanged`, `the_features_keep_their_gates` and `nothing_new_runs_and_nothing_is_advertised` |
+| G42.12 | Plan 506's, Plan 507's, Plan 538's, Plan 539's, Plan 540's and Plan 541's lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane computes the stale set by walking the
+store's own **iterator** and never by reading the age index, so the lane's
+expectation and the store's own bookkeeping are two different things that must
+agree. Every row drives the **production** step rather than `Bootstrap::prune`
+directly: the first draft of the lane called `Bootstrap::prune` in two rows, and
+this plan's own negative controls caught it, because a mutation that stopped the
+step from pruning at all left those rows passing.
+
+The guard is the authority for **reachability**, which the lane cannot see. Plan
+507's lane constructed `PeerReconcile` by hand, which is why the reachability
+defect survived it; Plan 542's guard, not its lane, is the authority for the
+step's presence in the daemon's graph.
+
+The delivery stays confined to the **controlled loopback profile**, and the
+**stock-peer** half of this surface remains blocked externally on Plan 493's
+authorized two-host topology.
