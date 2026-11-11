@@ -776,7 +776,7 @@ impl DestinationTunnelCoordinator {
     pub fn record_hop_selection(&mut self, peers: &[i2pr_proto::Hash]) {
         for peer in peers {
             self.hop_participation
-                .record(&i2pr_netdb::RouterHash::from_hash(*peer));
+                .record(&i2pr_netdb::RouterHash::from_hash(*peer), self.now_ms);
         }
     }
 

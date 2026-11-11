@@ -163,6 +163,28 @@ impl SelectionConstraints<'_> {
     }
 }
 
+/// The window inside which a peer's participation counts.
+///
+/// Plan 543: a participation fact is a fact about a **window**, not about all
+/// time. The counter saturates at the cap, and the ledger's only other release
+/// is eviction when it is **full** -- but the profile store's population is a
+/// bounded prefix that does not churn, so eviction never fires and a saturated
+/// entry would exclude its peer for as long as the router runs. The
+/// exploratory build driver's selection would be permanently empty after at
+/// most `MAX_GROUP_PROVIDER_ROUTER_INFOS` times the cap.
+///
+/// The window is **derived** rather than configured, so it cannot be restated
+/// and no configuration key exists for it. It is a whole number of minutes, so
+/// the arithmetic is exact, and it is deliberately longer than the router's own
+/// maintenance cadence: a peer that has been used heavily should stay
+/// deprioritised long enough for the pool to have been used evenly.
+pub const PARTICIPATION_WINDOW_MS: u64 = participation_window_secs() * 1_000;
+
+/// The participation window in whole seconds.
+pub const fn participation_window_secs() -> u64 {
+    30 * 60
+}
+
 /// A bounded ledger of per-peer participation counters.
 ///
 /// The ledger is the caller's record of how often each peer has been
@@ -171,6 +193,12 @@ impl SelectionConstraints<'_> {
 #[derive(Clone, Debug)]
 pub struct ParticipationLedger {
     counts: BTreeMap<RouterHash, u32>,
+    /// Plan 543: when each counter was last recorded.
+    ///
+    /// The count alone cannot say whether a peer has been used a lot
+    /// **recently**, and a count that can never fall excludes its peer for
+    /// ever. The instant is what lets the entry be released.
+    stamps: BTreeMap<RouterHash, u64>,
     order: Vec<RouterHash>,
     max_participation: u32,
     max_tracked_peers: usize,
@@ -181,6 +209,7 @@ impl ParticipationLedger {
     pub fn new(max_participation: u32, max_tracked_peers: usize) -> Self {
         Self {
             counts: BTreeMap::new(),
+            stamps: BTreeMap::new(),
             order: Vec::new(),
             max_participation,
             max_tracked_peers,
@@ -197,11 +226,13 @@ impl ParticipationLedger {
         self.count(key) >= self.max_participation
     }
 
-    /// Records one selection of a peer.
+    /// Records one selection of a peer, at `now_ms`.
     ///
-    /// The counter saturates at the configured cap; the ledger evicts the
-    /// oldest tracked peer when it is full.
-    pub fn record(&mut self, key: &RouterHash) {
+    /// The counter saturates at the configured cap, the entry is stamped with
+    /// the instant, and the ledger evicts the oldest tracked peer when it is
+    /// full. Plan 543: the stamp is what lets the entry be released once it is
+    /// outside [`PARTICIPATION_WINDOW_MS`].
+    pub fn record(&mut self, key: &RouterHash, now_ms: u64) {
         if self.max_tracked_peers == 0 {
             return;
         }
@@ -211,12 +242,46 @@ impl ParticipationLedger {
             {
                 self.order.remove(0);
                 self.counts.remove(&oldest);
+                self.stamps.remove(&oldest);
             }
             self.order.push(*key);
             self.counts.insert(*key, 0);
         }
         let entry = self.counts.entry(*key).or_insert(0);
         *entry = entry.saturating_add(1).min(self.max_participation);
+        self.stamps.insert(*key, now_ms);
+    }
+
+    /// Releases every entry whose last selection is outside the window.
+    ///
+    /// Plan 543: the release is a **reclaim on the clock the caller already
+    /// advances**, so the selection's skip rule and the public counter view are
+    /// unchanged and the ledger needs no tick of its own. A count that is
+    /// released reads zero, exactly as a peer that has never been selected, so
+    /// the skip rule's meaning is unchanged: a peer used **recently** is still
+    /// skipped.
+    ///
+    /// The entry leaves the map entirely rather than being zeroed, so the
+    /// ledger's size bound is what bounds it and a released peer costs nothing.
+    /// Returns the number of entries released.
+    pub fn reclaim(&mut self, now_ms: u64) -> usize {
+        let stale: Vec<RouterHash> = self
+            .stamps
+            .iter()
+            .filter(|(_, stamp)| now_ms.saturating_sub(**stamp) > PARTICIPATION_WINDOW_MS)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &stale {
+            self.counts.remove(key);
+            self.stamps.remove(key);
+            self.order.retain(|tracked| tracked != key);
+        }
+        stale.len()
+    }
+
+    /// Returns the instant of one peer's last selection, if it is tracked.
+    pub fn last_recorded_at(&self, key: &RouterHash) -> Option<u64> {
+        self.stamps.get(key).copied()
     }
 
     /// Returns the tracked counters.
@@ -531,8 +596,8 @@ mod tests {
     fn the_participation_cap_excludes_a_capped_peer() {
         let (store, keys) = store_with_distinct_prefixes(4);
         let mut ledger = ParticipationLedger::new(2, 16);
-        ledger.record(&keys[0]);
-        ledger.record(&keys[0]);
+        ledger.record(&keys[0], 0);
+        ledger.record(&keys[0], 0);
         assert!(ledger.is_capped(&keys[0]));
         let constraints = SelectionConstraints {
             count: 4,
@@ -554,9 +619,9 @@ mod tests {
         let first = bundle(0xB00);
         let second = bundle(0xB01);
         let third = bundle(0xB02);
-        ledger.record(&validate(&first, 1).key());
-        ledger.record(&validate(&second, 1).key());
-        ledger.record(&validate(&third, 1).key());
+        ledger.record(&validate(&first, 1).key(), 0);
+        ledger.record(&validate(&second, 1).key(), 0);
+        ledger.record(&validate(&third, 1).key(), 0);
         assert_eq!(ledger.len(), 2);
     }
 

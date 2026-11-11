@@ -228,6 +228,11 @@ impl PeerParticipationDriver {
     /// Advances the driver's clock.
     pub fn advance_time(&mut self, now_ms: u64) {
         self.clock_ms = now_ms;
+        // Plan 543: the ledger's release rides the clock the driver
+        // already advances, so a peer whose participation is outside the
+        // window is selectable again and the pool cannot be exhausted
+        // for ever.
+        self.ledger.reclaim(now_ms);
     }
 
     /// Returns the bounded receipt log.
@@ -376,7 +381,7 @@ impl PeerParticipationDriver {
             select_candidates(&self.store, &constraints)
         };
         for candidate in &selected {
-            self.ledger.record(&candidate.key);
+            self.ledger.record(&candidate.key, self.clock_ms);
         }
         let selected_count = selected.len() as u32;
         self.emit_receipt(ParticipationReceiptKind::Selected, selected_count);
@@ -432,7 +437,7 @@ impl PeerParticipationDriver {
             select_candidates_with_report(&self.store, &constraints)
         };
         for candidate in &selection.candidates {
-            self.ledger.record(&candidate.key);
+            self.ledger.record(&candidate.key, self.clock_ms);
         }
         self.emit_version_receipt(
             kind,
