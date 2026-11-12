@@ -127,11 +127,11 @@ const PINNED: &[(&str, &str)] = &[
     ),
     (
         PLAN544_LANE,
-        "8ca1d83d8d4bb5e6cd1a5e707aa101b9ebb7e741edd19263ffef7fc9e5fb7aae",
+        "29900152190e12d387298683b2e50e5158e9514103e3c575885ca2226a11fe5c",
     ),
     (
         PLAN544_GUARD,
-        "2fceec31f0aeeb20d01fdb0eaf867bb929ae7dcc3167357e4c86ccffdd9cadd5",
+        "aa89488d3c73b772d9833f7f4bb11bd098594029aedc3c3c07057ced18490808",
     ),
 ];
 
@@ -487,6 +487,23 @@ fn rule_the_policy_is_unchanged(sources: &Sources) -> Option<String> {
             return Some(format!("the selection lost its policy step: {needle}"));
         }
     }
+    // Both candidate builders apply the ceiling. A presence-only check would
+    // pass after one of the two lost it, and the lane would be the only thing
+    // that noticed; the guard owns both builders.
+    let ceilings = policy
+        .matches("candidates.truncate(policy.max_candidates_considered());")
+        .count();
+    if ceilings != 2 {
+        return Some(format!(
+            "both candidate builders must apply the ceiling: {ceilings}"
+        ));
+    }
+    let orders = policy.matches("candidates.sort();").count();
+    if orders != 2 {
+        return Some(format!(
+            "both candidate builders must order nearest-first: {orders}"
+        ));
+    }
     // The self-exclusion is the caller's, so the pool must keep passing it.
     let pool = code_view(&sources.peer_pool);
     if pool.matches("&[*local_hash]").count() < 2 {
@@ -643,6 +660,20 @@ fn the_inverted_probe_fires_when_the_ceiling_moves() {
     assert!(
         rule_the_policy_is_unchanged(&sources).is_some(),
         "a selection with no ceiling must fail the rule"
+    );
+}
+
+#[test]
+fn the_inverted_probe_fires_when_one_builder_loses_its_ceiling() {
+    let mut sources = Sources::from_tree();
+    sources.lookup_policy = sources.lookup_policy.replacen(
+        "candidates.truncate(policy.max_candidates_considered());",
+        "",
+        1,
+    );
+    assert!(
+        rule_the_policy_is_unchanged(&sources).is_some(),
+        "one unbounded builder must fail the rule"
     );
 }
 
