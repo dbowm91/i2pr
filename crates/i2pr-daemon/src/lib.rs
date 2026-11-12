@@ -2399,6 +2399,58 @@ impl NetDbParticipation {
     }
 }
 
+/// Exports the router's own signed RouterInfo for an out-of-band peer handoff.
+///
+/// Plan 544. A two-host private-LAN qualification run has no floodfill to
+/// publish the router's record to, and the SSU2 publication path is
+/// loopback-clamped by design, so the record reaches the peer the way a lab
+/// handoff always does: the operator copies a file.
+///
+/// The file is written under **the name the peer's cache loader requires**,
+/// which is the lowercase hexadecimal router hash: the loader derives its
+/// expected key from the filename (`crates/i2pr-netdb-persist/src/cache_loader.rs`),
+/// so a record under any other name is refused as a key mismatch. Writing the
+/// hash here means the operator's step is a copy, and the name is not
+/// re-derived by hand.
+///
+/// The path is `<data_dir>/export/`. It is deliberately **not**
+/// `netdb/routers/`: that directory is the cache the router loads into its own
+/// store at startup, and a router that found itself there would hold its own
+/// record as a peer.
+///
+/// Returns `None` when the record carries no derivable hash, which is a
+/// local, counted condition rather than a failure of the export.
+fn export_local_router_info(
+    data_dir: &std::path::Path,
+    encoded: &[u8],
+) -> std::io::Result<Option<(String, std::path::PathBuf)>> {
+    let Ok(router_info) = i2pr_proto::RouterInfo::decode(encoded, encoded.len()) else {
+        return Ok(None);
+    };
+    let Ok(hash) = i2pr_netdb::router_hash(router_info.router_identity()) else {
+        return Ok(None);
+    };
+    let mut hex = String::with_capacity(64);
+    for byte in hash.as_bytes() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    let directory = data_dir.join("export");
+    std::fs::create_dir_all(&directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let path = directory.join(&hex);
+    std::fs::write(&path, encoded)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(Some((hex, path)))
+}
+
 /// Returns the UTC day key of one instant, as `yyyyMMdd`.
 ///
 /// The key is the routing table's own daily rotation key, so a projection
@@ -5211,18 +5263,43 @@ fn register_ssu2_service(
                                     }
                                 }
                                 match i2pr_netdb::encode_router_info(info.as_ref()) {
-                                    Ok(encoded) => match inspection
-                                        .publish_local_router_info_b64(encoded.trim_end_matches('='))
-                                    {
-                                        Ok(()) => tracing::info!(
-                                            router_info_bytes = info.len(),
-                                            "updated local RouterInfo inspection snapshot published"
-                                        ),
-                                        Err(error) => tracing::warn!(
-                                            reason = %error,
-                                            "updated local RouterInfo inspection publication rejected"
-                                        ),
-                                    },
+                                    Ok(encoded) => {
+                                        // Plan 544: a two-host private-LAN run needs the
+                                        // router's **own** signed record handed to the peer
+                                        // out of band, because an isolated network has no
+                                        // floodfill to publish it to and the SSU2
+                                        // publication path is loopback-clamped. The record
+                                        // is written under the name the peer's cache loader
+                                        // requires -- the lowercase hex router hash -- so the
+                                        // operator's step is a copy, never a decode.
+                                        match export_local_router_info(
+                                            data_dir.as_path(),
+                                            info.as_ref(),
+                                        ) {
+                                            Ok(Some((hash_hex, path))) => tracing::info!(
+                                                router_hash = %hash_hex,
+                                                path = %path.display(),
+                                                "local RouterInfo exported for out-of-band peer handoff"
+                                            ),
+                                            Ok(None) => {}
+                                            Err(error) => tracing::warn!(
+                                                reason = %error,
+                                                "local RouterInfo export failed"
+                                            ),
+                                        }
+                                        match inspection
+                                            .publish_local_router_info_b64(encoded.trim_end_matches('='))
+                                        {
+                                            Ok(()) => tracing::info!(
+                                                router_info_bytes = info.len(),
+                                                "updated local RouterInfo inspection snapshot published"
+                                            ),
+                                            Err(error) => tracing::warn!(
+                                                reason = %error,
+                                                "updated local RouterInfo inspection publication rejected"
+                                            ),
+                                        }
+                                    }
                                     Err(error) => tracing::warn!(
                                         reason = %error,
                                         "updated local RouterInfo base64 encoding failed"
