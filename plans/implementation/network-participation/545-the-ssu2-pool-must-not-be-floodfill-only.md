@@ -318,11 +318,19 @@ Plans 542's and 543's closure records both claim a green floor that includes it.
 The link now names its path explicitly. This plan records the evidence gap in
 its closure record; it does **not** rewrite either closed record.
 
-The floor's first run also reported one failure this plan does not own and does
-not fix: `check-m11-transit-qualification-evidence.sh` failed once with "no
-record_cardinality call site for Epoch::Ibgw" and passes on every re-run, at
-this commit and at `ba09bd18` before it. The checker runs `grep -A8 ... |
-grep -q ...` under `set -euo pipefail`, so the upstream `grep` receives SIGPIPE
-when the downstream one exits on its first match; the pipeline then reports
-non-zero and the check fails. It is a pre-existing flake with its own owner and
-is recorded, not patched, here.
+One floor failure this plan neither owns nor fixes.
+`check-m11-transit-qualification-evidence.sh` failed at step 46 in **both**
+full-floor runs with "no record_cardinality call site for Epoch::Ibgw". It
+passes in every other condition measured: at `ba09bd18` before this branch's
+plans, at this commit ten times in a row with the floor's own shell and
+environment, and after all thirty-eight script steps that precede it in the
+floor. Its inputs -- `tests/integration/m11-transit/run-i2pd.sh`,
+`crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs` and
+`.github/workflows/m11-transit-external.yml` -- are untouched on this branch.
+The first hypothesis, SIGPIPE under `set -o pipefail` when the downstream
+`grep -q` exits on its first match, is **falsified**: the upstream
+`grep -A8` emits 2 258 bytes, far below the pipe capacity, and the exact
+pipeline ran 500 times with zero failures. The failure is therefore
+order- or load-sensitive inside the full floor and **unexplained**. It is
+recorded, not patched: it is not this plan's surface, and a checker change
+needs its own plan-of-record. **Owner:** the transit-qualification lane.
