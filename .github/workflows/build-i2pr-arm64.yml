@@ -18,6 +18,10 @@ name: Build i2pr arm64
 # push, and download the run. `workflow_dispatch` cannot be used from a working
 # branch, because GitHub only surfaces it from the default branch.
 #
+# Rebuilt for Plan 546 at 6777452b: the far host now runs with
+# `[ssu2] publish_bound_address = true` so it can publish its bound LAN
+# address and serve as the floodfill the two-host measurement needed.
+#
 # Why a **logging** change is a behaviour change here. The lab proves
 # directions by reading each host's log, so a build that cannot say it dialled
 # is indistinguishable from a host that never dialled. Two diagnoses in the
