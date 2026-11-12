@@ -300,3 +300,29 @@ Plan 544 is registered after the end-to-end path was proven by hand on loopback
 and the arm64 lab node was brought up. The scope is the **export only**: the
 SSU2 clamp, the selector inventory, the `[floodfill]` coupling and T4/T5 are
 named with their owners and not attempted here.
+
+### 17.2 — 2026-11-12, the lane's call path and the helper's visibility
+
+Two implementation choices differ from §6 and are recorded here rather than
+rewriting it.
+
+**The helper is `pub`.** §11.1 requires a lane that asserts the export's name is
+the hash of **its own contents**, and the plan's §12 names an **integration**
+test (`cargo test -p i2pr-daemon --test router_info_export`), which cannot call a
+crate-private function. The alternative — a new module to hold the helper —
+would have moved the change out of the file §6.1 names, so `export_local_router_info`
+keeps its place in `crates/i2pr-daemon/src/lib.rs` and gains `pub`. It opens no
+socket, reads no configuration and touches nothing outside `data_dir`; the
+guard's rule `the_export_needs_no_configuration_and_opens_no_socket` pins that.
+
+**The lane installs through the peer's own cache seam.** §11.1 requires the
+record to round-trip through the cache loader's validation. The lane writes the
+exported bytes with `ByteCache::write` rather than `std::fs::copy`, because that
+seam is the peer's own and its `validate_name` accepts exactly 64 lowercase
+hexadecimal characters: the lane therefore proves the export's name is one the
+peer's cache accepts, not merely one that can be pasted into a directory. A
+`std::fs::copy` would have proved less and still compiled.
+
+The lane is 8 rows; the guard is 8 rules and 9 inverted probes (17 tests). The
+negative-control sweep ran 8 controls against this plan; all fired, and the
+tree was restored byte-identically after each.

@@ -4607,3 +4607,31 @@ does; the guard proves the step has a caller outside the reconcile, that the
 caller is not behind the routing-table switch, and that the window has one
 definition. The router's validated store is still the bootstrap's store, and it
 keeps its named owner.
+
+## The router's own record reaches a peer out of band (Plan 544)
+
+`export_local_router_info` writes the router's own signed RouterInfo to
+`<data_dir>/export/<lowercase-hex-router-hash>` at `0700`/`0600`, beside the
+inspection publication that already encoded it.
+
+The two-host private-LAN qualification topology this repository has been
+blocked on has **no floodfill**, and the SSU2 publication path is
+loopback-clamped by design, so on an RFC1918 bind the router's record was
+published nowhere. The export is the lab handoff every I2P run has always used,
+made mechanical: the operator copies the file, and never derives a name.
+
+**The name is the hash.** The peer's cache loader derives its expected key from
+the filename, so a record under any other name is a key mismatch that reads
+exactly like an invalid record.
+
+**The directory is `export/`.** It is not `netdb/routers/`, which the router
+loads into its **own** store at startup: a record written there would make the
+router hold itself as a peer.
+
+The helper is a bounded synchronous write. It reads no configuration, opens no
+socket, spawns nothing and takes no lock; a record whose hash cannot be derived
+is skipped rather than written under a guessed name.
+
+**What is not claimed.** This is not publication. The router still publishes to
+no NetDB it cannot reach, and the export says nothing about a stock router's
+admission.

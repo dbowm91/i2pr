@@ -2326,3 +2326,38 @@ tick of its own.
 The delivery stays confined to the **controlled loopback profile**, and the
 **stock-peer** half of this surface remains blocked externally on Plan 493's
 authorized two-host topology.
+
+## 43. The router's own RouterInfo reaches a peer out of band (Plan 544)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G44.1 | the exported filename is the hash of the record's **own** contents | `crates/i2pr-daemon/tests/router_info_export.rs`, `the_export_name_is_the_hash_of_its_own_contents` |
+| G44.2 | the bytes on disk are the bytes the router **signed**, and they still hash to the file name | the same lane file, `the_exported_bytes_are_the_bytes_the_router_signed` |
+| G44.3 | the record round-trips through the peer's **own** cache loader to exactly one inserted entry under its own hash | the same lane file, `the_exported_record_round_trips_through_the_peer_cache_loader` |
+| G44.4 | the **same bytes under any other name** are refused, so the name is load-bearing and not advisory | the same lane file, `the_peer_refuses_the_same_record_under_any_other_name` |
+| G44.5 | the export never lands in the two directories the router itself loads, and never creates them | the same lane file, `the_export_never_lands_in_the_directories_the_router_itself_loads` |
+| G44.6 | the directory is `0700` and the file `0600` | the same lane file, `the_export_is_written_private` |
+| G44.7 | an undecodable record is skipped and writes **nothing** | the same lane file, `an_undecodable_record_is_skipped_without_writing_anything` |
+| G44.8 | a second publication of the same identity **rewrites the same name**, so the file matches the record in force | the same lane file, `a_second_publication_of_the_same_identity_rewrites_the_same_name` |
+| G44.9 | the destination is `export/`, and the helper never names the router's own load path or reaches for the cache seam | `crates/i2pr-daemon/tests/router_info_export_boundary.rs`, `the_export_is_written_to_the_export_directory` |
+| G44.10 | the name is the record's hash in **lowercase** hexadecimal, derived from the bytes being written, and the file is named by it | the same guard file, `the_name_is_the_hash_in_lowercase_hex` |
+| G44.11 | the private permissions are the only modes the helper uses | the same guard file, `the_export_is_written_private` |
+| G44.12 | the helper reads **no** configuration, opens **no** socket, spawns nothing and takes no lock — a bounded synchronous write that creates only its own directory | the same guard file, `the_export_needs_no_configuration_and_opens_no_socket` |
+| G44.13 | the inspection publication is unchanged and the helper has exactly **one** production call site | the same guard file, `the_publication_path_is_unchanged` |
+| G44.14 | nothing is advertised: `router.version` stays `0.9.62` and the export surface is not advertised | the same guard file, `nothing_is_advertised` |
+| G44.15 | `Cargo.toml` and `Cargo.lock` stay **byte-identical** | the same guard file, `the_manifest_and_the_lock_are_unchanged` |
+| G44.16 | the six predecessor lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane calls the **production** helper — not a
+re-implementation of the naming rule — and hands the resulting file to the
+peer's own `ByteCache` and `CacheLoader`, whose `validate_name` accepts exactly
+64 lowercase hexadecimal characters. G44.4 is what makes G44.1 and G44.3 more
+than a convention: the peer derives its expected key from the name, so a
+misnamed record is a silent key mismatch rather than a visible failure.
+
+**What this surface does not settle.** The export is a **lab handoff**. The
+router still does not publish to a NetDB it cannot reach; the SSU2 publication
+clamp and its reachability gate keep their named owner; the correlated two-way
+reply, the peer-initiated session and stock-router admission are not claimed;
+and the **stock-peer** half remains blocked externally on Plan 493's authorized
+two-host topology.

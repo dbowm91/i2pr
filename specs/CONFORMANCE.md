@@ -4836,3 +4836,52 @@ Evidence: `crates/i2pr-netdb/src/selection.rs`,
 `crates/i2pr-daemon/tests/participation_release_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/543-the-participation-ledger-must-not-exhaust-the-exploratory-pool.md`.
+
+## The router's own RouterInfo reaches a peer out of band (Plan 544)
+
+**Plan 544 adds one surface** — `netdb.router-info-export` — so the inventory
+holds **137 surfaces, 132 experimental, 4 deferred, 1 ready, 0 advertised**.
+The advertised count stays **zero**.
+
+A router publishes its record to the NetDB and its peers learn it from a
+floodfill. An **isolated private LAN has neither.** The SSU2 publication path is
+additionally **loopback-clamped by design**
+(`crates/i2pr-runtime/src/ssu2_runtime.rs`, `Ssu2PublicationUnavailable::
+InvalidPublication`), observed in production on the arm64 lab node rather than
+inferred, so on an RFC1918 bind the record is published nowhere — and it
+additionally requires `ReachabilityState::Reachable`, which static
+loopback-homogeneous traffic cannot reach, so `ssu2.advertise` is inert in
+**every** posture. The one remaining route is the handoff every I2P lab has
+always used: the operator copies the record across.
+
+**The router now produces the file.** `export_local_router_info` decodes the
+record the router has already signed, derives its hash, and writes
+`<data_dir>/export/<lowercase-hex-router-hash>` at `0700`/`0600`. The bytes
+written are the bytes the router signed; the plan adds no transformation.
+
+**The filename is the record's hash**, because the peer's cache loader derives
+its expected key from the name
+(`crates/i2pr-netdb-persist/src/cache_loader.rs`) and `ByteCache::validate_name`
+accepts exactly 64 lowercase hexadecimal characters. A record under any other
+name is refused as a key mismatch an operator cannot tell from an invalid
+record, which is why the naming rule is not left to the operator.
+
+**`export/`, never `netdb/routers/`.** The latter is the cache the router loads
+into its **own** store at startup; a record written there would make the router
+hold itself as a peer on its next start.
+
+**What is not claimed.** This is a lab handoff, not publication: the router
+still publishes to no NetDB it cannot reach. The two-host run established an
+**authenticated SSU2 session** between two `i2pr` routers on RFC1918 addresses;
+the correlated two-way reply, the peer-initiated session and **stock-router**
+admission are not claimed, and i2pd/Java I2P admission remains Plan 493's
+question. No configuration key, dependency, listener, socket or task is added,
+and `Cargo.toml` and `Cargo.lock` stay byte-identical.
+
+Evidence: `crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-netdb-persist/src/cache_loader.rs`,
+`crates/i2pr-storage/src/lib.rs`,
+`crates/i2pr-daemon/tests/router_info_export.rs`,
+`crates/i2pr-daemon/tests/router_info_export_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/544-the-routers-own-routerinfo-must-reach-a-private-lan-peer-out-of-band.md`.
