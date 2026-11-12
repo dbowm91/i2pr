@@ -3041,3 +3041,24 @@ evidence = [
     "plans/implementation/network-participation/545-the-ssu2-pool-must-not-be-floodfill-only.md",
 ]
 advertised = false
+
+[[surface]]
+id = "ssu2.bound-address-publication"
+protocol = "ssu2"
+structure = "the-loopback-interlock-on-publication-must-become-an-operator-precondition"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 546 lets the router publish its **own bound SSU2 address**, and lets the floodfill role qualify on it, when the operator has explicitly accepted that the host is directly reachable at that address. Before it, the runtime produced publication material only for a **loopback** bound socket, so the address a router could publish was `127.0.0.1`: `ssu2.advertise` was inert, the floodfill role evaluated to `Disabled` in every posture, and no router could be a floodfill for another machine. Measured on a three-host LAN, every node logged `role="Disabled"` beside `floodfill_advertisers=0`, and the router's own publication reported `outcome=RefusedNoTarget`. Three one-line predicates produced that. The load-bearing one was `note_explicit_bind_for_controlled_qualification`: it is the **only** production source of a `LocalConfiguredBind` corroboration, because `note_observed_external_address` has no production caller and `note_peer_test_outcome` is reached only from the runtime's controlled verdict path -- so that predicate decided whether the runtime made any reachability claim at all. **The loopback predicate was never an architectural invariant.** It exists to stop the router publishing an address it cannot serve, because a router that advertises a reachability it does not have is blocked by the peers it wastes, and a widely blocked address makes live-network testing harder rather than easier. That reasoning is retained and the **judgement moves to the operator**: `may_publish_bound_address` is now the single authority for "may this socket's address appear in a RouterInfo", an unbound or unspecified endpoint is never publishable, loopback always is, and any other bind only when `[ssu2] publish_bound_address` is set -- off by default. The reachability and expiry gates are **untouched**: the relaxation admits an address, not an unreachable one. The floodfill's routability re-check becomes "the runtime produced the material" when the operator opted in, because two authorities for one question either agree and are dead code or disagree and are a bug. **The NAT precondition is the point, not a caveat**: `Reachable` from a configured bind means the socket is bound to that address, not that peers can reach it -- true on a lab LAN or a directly-connected public host, false behind NAT -- so the key's own documentation says a NAT'd host must not set it, and live testing from behind NAT stays blocked on carrying a peer test's verdict into runtime reachability, which no plan has done. The change is one config field, one predicate and one qualification arm; it adds **no** listener, **no** socket, **no** task, **no** timer and **no** dependency, keeps `Cargo.toml` and `Cargo.lock` byte-identical, and leaves `router.version` at `0.9.62` with the inventory's advertised count at **zero** -- the only `f` a record carries is the one an operator's own role switch already asked for. The lane proves the default posture, the loopback case, the private and public cases with the key, the unbound and unspecified refusals, the config default, and the floodfill's accept/refuse/invent-nothing behaviour; the guard proves the single authority, the untouched reachability gate, the default, the floodfill's one-authority rule, the documented precondition, that nothing new runs, and the predecessors' byte-identical evidence. **What is not claimed**: that a published address is reachable, that the floodfill's serving path is correct against stock peers, or that live-network admission works -- Plan 493 owns the stock-peer question and no plan has yet joined the peer test to reachability.
+"""
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/src/floodfill.rs",
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/tests/publication_bound_address.rs",
+    "crates/i2pr-daemon/tests/publication_bound_address_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/546-the-loopback-interlock-on-publication-must-become-an-operator-precondition.md",
+]
+advertised = false

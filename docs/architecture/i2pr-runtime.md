@@ -1665,3 +1665,32 @@ and the tracker's public surface are untouched, and the tracker gains no
 method — the re-assertion *records* through the method the transport
 already offers. It adds no configuration key: the daemon's configuration
 surface is unchanged and its mapping names the runtime's own default policy.
+
+## Publication of the bound address (Plan 546)
+
+`may_publish_bound_address` is the runtime's single authority for "may this
+socket's address appear in a RouterInfo". An unbound (`port == 0`) or
+unspecified (`0.0.0.0`) endpoint is never publishable. Loopback always is: a
+loopback address is the one address a record can name without claiming
+anything about the outside world. Any other bound address is publishable only
+when `Ssu2RuntimeConfig::publish_bound_address` is set, which is the operator's
+statement that the host is directly reachable at that address.
+
+Both publication entry points consult it -- `publication_material` and
+`note_explicit_bind_for_controlled_qualification` -- so neither restates the
+loopback condition. That second one matters more than it looks: it is the only
+production source of a `LocalConfiguredBind` corroboration, which is the only
+production route to `ReachableState::Reachable`, which is what
+`publication_material` requires before it will produce anything at all.
+
+**What the predicate does not do.** It does not test reachability or its
+expiry; both callers still do, and Plan 546 relaxed neither. A configured bind
+corroborates that the socket is bound to the address, which is exactly the
+claim that is false behind NAT -- so the field's documentation says a NAT'd
+host must leave it off, and that is a precondition rather than a caveat.
+
+Before this plan the runtime published only loopback addresses, which made
+`ssu2.advertise` inert and the floodfill role unreachable in every posture. The
+interlock was a blacklist policy: a router that advertises a reachability it
+does not have gets blocked by the peers it wastes. Plan 546 keeps the policy and
+moves the judgement to an operator key that is off by default.

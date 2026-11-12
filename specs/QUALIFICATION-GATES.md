@@ -2395,3 +2395,42 @@ ceiling and **two** nearest-first orderings, and an inverted probe removes one.
 NetDB, and no capability, version or RouterInfo behaviour is advertised beyond
 the tested subset. The two-host result is `i2pr` to `i2pr`; the **stock-peer**
 half remains blocked externally on Plan 493's authorized two-host topology.
+
+## 45. The publication interlock is an operator precondition (Plan 546)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G46.1 | the default runtime configuration does **not** publish a bound address | `crates/i2pr-daemon/tests/publication_bound_address.rs`, `the_default_runtime_config_refuses_a_bound_address` |
+| G46.2 | loopback is publishable **without** any opt-in, as it always was | the same lane file, `a_loopback_bind_is_publishable_without_the_opt_in` |
+| G46.3 | a private bind is **refused** without the opt-in | the same lane file, `a_private_bind_is_refused_without_the_opt_in` |
+| G46.4 | a private bind is publishable **with** the opt-in | the same lane file, `a_private_bind_is_publishable_with_the_opt_in` |
+| G46.5 | a public bind is publishable with the opt-in, which is what live testing needs | the same lane file, `a_public_bind_is_publishable_with_the_opt_in` |
+| G46.6 | an unbound port is never publishable | the same lane file, `an_unbound_port_is_never_publishable` |
+| G46.7 | an unspecified bind is never publishable | the same lane file, `an_unspecified_bind_is_never_publishable` |
+| G46.8 | the configuration key parses as **off** when absent and is honoured when set | the same lane file, `the_configuration_key_is_off_unless_the_operator_sets_it` |
+| G46.9 | the floodfill refuses the address with the same reason when the opt-in is absent | the same lane file, `the_floodfill_refuses_the_address_without_the_opt_in` |
+| G46.10 | the floodfill accepts the runtime's material when the operator opted in | the same lane file, `the_floodfill_accepts_the_runtime_material_with_the_opt_in` |
+| G46.11 | the opt-in never invents material the runtime did not produce | the same lane file, `the_floodfill_does_not_invent_material_from_the_opt_in` |
+| G46.12 | reachability still gates, whatever the operator said about the address | the same lane file, `the_reachability_gate_is_untouched_by_the_opt_in` |
+| G46.13 | every other measured signal still gates with the opt-in set | the same lane file, `the_opt_in_changes_nothing_about_the_other_signals` |
+| G46.14 | the predicate is the **single** authority and neither site restates the loopback condition | `crates/i2pr-daemon/tests/publication_bound_address_boundary.rs`, `the_predicate_is_one_authority` |
+| G46.15 | `publication_material` keeps its reachability and expiry tests | the same guard file, `the_reachability_gates_are_untouched` |
+| G46.16 | the default is off in the runtime config, the raw key and the default helper | the same guard file, `the_default_is_off` |
+| G46.17 | the floodfill keeps its routability arm and the opt-in is its only bypass | the same guard file, `the_floodfill_keeps_one_authority` |
+| G46.18 | the key's own documentation names the NAT precondition | the same guard file, `the_key_documents_the_precondition` |
+| G46.19 | the changed items add no runtime construct, nothing is advertised, and the manifest and lock are byte-identical | the same guard file, `nothing_new_runs_and_nothing_is_advertised` |
+| G46.20 | the four predecessor lanes and guards stay byte-identical | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. G46.14 and G46.17 are the two that keep the
+relaxation from becoming a blanket one: one authority for "may this address be
+published", and one bypass that an operator's own key controls.
+
+**What this surface does not settle.** Nothing here proves that a published
+address is reachable. `Reachable` from a configured bind means the socket is
+bound to that address, which is the right fact on a lab LAN or a
+directly-connected public host and the wrong fact behind NAT. Live testing from
+behind NAT therefore stays blocked until a peer test's verdict reaches the
+runtime's reachability, which is named as the successor rather than claimed
+here. The floodfill's serving behaviour against stock peers remains Plan 493's
+question, and the **stock-peer** half of every surface above is still blocked
+on that plan's authorized topology.

@@ -369,3 +369,23 @@ loopback predicates that produce it. The operator's direction is recorded
 because it is the plan's whole justification: the loopback gates were a
 blacklist interlock, not an architectural invariant, and live-network testing
 requires relaxing them.
+
+### 17.2 — 2026-11-12, one predicate instead of two relaxed conditions
+
+§6.1 asked for the loopback arm of `publication_material` to gain a condition.
+The implementation goes one step further and extracts
+`may_publish_bound_address`, which **both** publication entry points now call.
+
+The reason is the guard's first rule. Two relaxed conditions are two places for
+the rule "may this socket's address appear in a RouterInfo" to live, and the
+second one is the load-bearing one: it is the only production source of a
+`LocalConfiguredBind` corroboration, and therefore the only production route to
+`Reachable`. Relaxing only the material arm would have left the runtime unable
+to reach `Reachable` on a non-loopback bind at all, so the opt-in would have
+done nothing — but that would have taken a lab run to discover. One predicate
+makes the coupling visible in one place, and `the_predicate_is_one_authority`
+fails if either site restates the loopback test.
+
+`normal` is unchanged in every other respect: the `Reachable` and expiry tests
+stay where they were, the unspecified/port checks move into the predicate, and
+the default is still off.

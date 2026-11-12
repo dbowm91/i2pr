@@ -4935,3 +4935,55 @@ Evidence: `crates/i2pr-netdb/src/lookup_policy.rs`,
 `crates/i2pr-daemon/tests/peer_pool_fallback_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/545-the-ssu2-pool-must-not-be-floodfill-only.md`.
+
+## The publication interlock is an operator precondition (Plan 546)
+
+**Plan 546 adds one surface** — `ssu2.bound-address-publication` — so the
+inventory holds **139 surfaces, 134 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**.
+
+The runtime produced publication material only for a **loopback** bound socket,
+so the only address a router could publish was `127.0.0.1`. Everything built on
+publication therefore worked only in a loopback lab: `ssu2.advertise` was
+inert, the floodfill role evaluated to `Disabled` in every posture, and no
+router could be a floodfill for another machine. A three-host LAN showed it
+plainly — `role="Disabled"`, `floodfill_advertisers=0`, and
+`outcome=RefusedNoTarget` on the router's own publication.
+
+**The interlock was a policy, not an invariant.** It exists so the router does
+not publish an address it cannot serve: a router that advertises reachability
+it does not have is blocked by the peers it wastes, and a widely blocked
+address makes live-network testing harder. That reasoning is retained; what
+changes is **who holds the judgement**.
+
+**One predicate, one operator input.** `may_publish_bound_address` is the
+single authority for "may this socket's address appear in a RouterInfo". An
+unbound or unspecified endpoint is never publishable, loopback always is, and
+any other bind only when `[ssu2] publish_bound_address` is set — which is off
+by default. Both publication entry points call it, so neither restates the
+loopback condition.
+
+**The reachability and expiry gates are untouched.** The relaxation admits an
+address, not an unreachable one. In production `Reachable` arrives through the
+`LocalConfiguredBind` corroboration, which means "the socket is bound to this
+address" — true on a lab LAN or a directly-connected public host, **false
+behind NAT**. The key's own documentation says so, which is why it is the
+operator's statement to make.
+
+**The floodfill keeps one authority.** With the opt-in set it accepts the
+runtime's material, because the runtime already decided the address may be
+published; without it, the routability arm is unchanged. Two authorities for
+one question either agree and are dead code or disagree and are a bug.
+
+**What is not claimed.** Nothing here proves a published address is reachable,
+and nothing here joins a peer test's verdict to reachability — so live testing
+from behind NAT stays blocked, with that wiring named as the successor. The
+floodfill's serving behaviour against stock peers is Plan 493's question.
+
+Evidence: `crates/i2pr-runtime/src/ssu2_runtime.rs`,
+`crates/i2pr-daemon/src/config.rs`, `crates/i2pr-daemon/src/floodfill.rs`,
+`crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/tests/publication_bound_address.rs`,
+`crates/i2pr-daemon/tests/publication_bound_address_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/546-the-loopback-interlock-on-publication-must-become-an-operator-precondition.md`.

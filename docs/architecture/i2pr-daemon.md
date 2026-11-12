@@ -4661,3 +4661,32 @@ were indistinguishable in a lab log.
 appears, and nothing is advertised. The observed two-host result is a planned
 dial and an `Established` SSU2 session within one tick between two `i2pr`
 routers, not against a stock router.
+
+## The bound-address publication key (Plan 546)
+
+`[ssu2] publish_bound_address` (default `false`) says **which address** the
+router may publish; `[ssu2] advertise` still says **whether** it publishes at
+all. They are separate keys on purpose: `qualification_profile` names a *dial*
+posture, and conflating the two would let a change of dial profile silently
+widen publication.
+
+With the key off, the runtime still produces publication material only for a
+loopback bind, so the floodfill role's `is_normal_qualified_address` refuses
+the material's address through its routability arm exactly as before. With it
+on, the runtime may publish the bound address and the floodfill accepts the
+runtime's material, because the runtime is the authority on what may be
+published — two authorities for one question either agree and are dead code or
+disagree and are a bug.
+
+**The precondition.** `Reachable` from a configured bind means "the socket is
+bound to this address". On a lab LAN or a directly-connected public host that
+is also "peers can reach this address"; behind NAT it is not, and a router that
+publishes the difference is the router the interlock existed to prevent. The
+key's own documentation says so. Live testing from behind NAT needs a peer
+test's verdict carried into runtime reachability, which no plan has done yet:
+`PeerTestOwner` exists but is built inside `ServiceProduct`, behind
+`service_tunnels_active(config)`, and nothing feeds its verdict to the runtime.
+
+The daemon copies the value out of the configuration before the `'static`
+service closure, like every other value that closure reads, and threads it
+through `FloodfillEvaluationContext` into `NormalReadiness`.
