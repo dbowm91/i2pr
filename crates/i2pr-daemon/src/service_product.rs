@@ -7949,9 +7949,23 @@ pub(crate) async fn ensure_peer_session_for_record(
         .iter()
         .filter(|address| address.transport_style() == "SSU2")
         .find_map(|address| {
-            let parsed = i2pr_runtime::Ssu2RouterAddress::parse(address).ok()?;
-            let endpoint = parsed.endpoint()?;
-            let intro = parsed.intro_key()?;
+            // Diagnostic: each step is named, so a refused dial can never look
+            // like a dial that was never attempted.
+            let parsed = match i2pr_runtime::Ssu2RouterAddress::parse(address) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    tracing::warn!(reason = %error, "ssu2 dial target: SSU2 address refused");
+                    return None;
+                }
+            };
+            let Some(endpoint) = parsed.endpoint() else {
+                tracing::warn!("ssu2 dial target: SSU2 address carries no endpoint");
+                return None;
+            };
+            let Some(intro) = parsed.intro_key() else {
+                tracing::warn!("ssu2 dial target: SSU2 address carries no intro key");
+                return None;
+            };
             Some((endpoint, parsed.static_public_key(), intro))
         })
         .ok_or_else(|| {

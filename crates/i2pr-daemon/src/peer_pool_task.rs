@@ -105,7 +105,18 @@ pub async fn run_peer_pool_task(
                         break;
                     };
                     let established = handle.service().active_peer_hashes();
-                    owner.plan(guard.store(), &local_hash, &established)
+                    let planned = owner.plan(guard.store(), &local_hash, &established);
+                    // Diagnostic: the pool's own counters, so an empty
+                    // population can never be mistaken for a silent exit.
+                    tracing::info!(
+                        planned = planned.len(),
+                        examined = owner.counters().candidates_examined,
+                        refused = owner.counters().candidates_refused,
+                        population_reads = owner.counters().population_reads,
+                        dials_started = owner.counters().dials_started,
+                        "ssu2 peer pool tick"
+                    );
+                    planned
                 };
                 for peer in planned {
                     if cancellation.is_cancelled() {
@@ -153,6 +164,7 @@ pub async fn run_peer_pool_task(
                             }
                         }
                     };
+                    tracing::info!(outcome = ?outcome, "ssu2 peer pool dial outcome");
                     owner.record_dial_outcome(&peer, outcome);
                 }
                 publish_counters(&owner, &counters_cell);
