@@ -156,3 +156,84 @@ i2pr run --config <cfg>
   advertised count stays **zero**.
 - The log lines above are `i2pr`'s own, copied verbatim minus colour codes. They
   carry no key, seed or payload, and the only addresses they name are the lab's.
+
+## The three-host mesh
+
+A third host joins the pair: **`raspi8`**, `192.168.182.8` — a Raspberry Pi,
+aarch64, Ubuntu 24.04.5, glibc **2.39**, 4 cores, 899 MB, which also serves the
+network's DNS through pihole and is therefore configured as a low-grade
+**client**: no `[floodfill]` block, `private_lan_qualification` on both
+transports, `ssu2.peer_pool = true`, nothing else.
+
+The arm64 artifact built on Ubuntu 22.04 (glibc 2.35) runs there unchanged,
+which is the glibc direction that has to hold: a binary requiring 2.35 loads on
+a host offering 2.39.
+
+Each node was seeded with the other two's exported records (Plan 544's
+`export/`), copied into `netdb/routers/<router-hash>` at `0700`/`0600`. All
+three then logged `record_count=2`.
+
+Measured, after a staggered start so that each dial has a definite initiator:
+
+```text
+A 23:08:17.788  tick planned=2 examined=2 refused=0 population_reads=1 dials_started=2
+A 23:08:20.885  dial outcome outcome=Established
+A 23:08:20.926  dial outcome outcome=Established
+C 23:09:11.126  tick planned=0 examined=20 refused=0 population_reads=10 dials_started=14
+B 23:09:15.033  tick planned=0 examined=10 refused=0 population_reads=5 dials_started=4
+```
+
+**The converged state is `planned=0` on all three**, which is the pool saying
+every peer already holds a session; NTCP2 reached `noise_authenticated` in both
+directions on every pair. Three `i2pr` routers on three machines now hold
+sessions with each other on both transports.
+
+C started while the other two were down and therefore logged
+`dials_started=14` before it converged. That is the retry path working, not a
+defect: `PeerPool::record_dial_outcome` clears the peer's `dialing` flag for
+**every** outcome including `Failed` (`crates/i2pr-daemon/src/peer_pool.rs`), so
+the next tick re-plans the peer. An earlier reading of the same evidence as "a
+failed dial is permanent" was **wrong**, and is retracted here: `planned=0` with
+a grown `dials_started` means *already connected*, not *excluded*.
+
+## The floodfill this topology still does not have
+
+All three nodes report `floodfill_advertisers=0` and, with
+`[floodfill] enabled = true`, `role="Disabled"`.
+
+Making `192.168.182.20` a floodfill is **not** a configuration change. Three
+independent gates in the runtime each refuse a private bind, and all three
+would have to move:
+
+1. `Ssu2Service::publication_material` returns
+   `InvalidPublication` unless `bound.ip().is_loopback()`
+   (`crates/i2pr-runtime/src/ssu2_runtime.rs`), so on an RFC1918 bind there is
+   no publication material at all.
+2. `floodfill::is_normal_qualified_address` requires the published host to pass
+   `is_publicly_routable_host`, which rejects `is_private()`
+   (`crates/i2pr-daemon/src/floodfill.rs`).
+3. The only other activation path, `activate_controlled`, begins with
+   `note_explicit_bind_for_controlled_qualification`, which **also** requires
+   every bound socket to be loopback
+   (`crates/i2pr-runtime/src/ssu2_runtime.rs`).
+
+So there is no daemon-only route, and the `controlled_loopback` profile cannot
+be repointed: its config validation requires the SSU2 and NTCP2 profiles to be
+`controlled_loopback`, and those in turn require loopback binds.
+
+Two designs would work, and they differ in what the router would be **claiming**:
+
+- **Asserted reachability.** A lab profile modelled on `controlled_loopback`,
+  which sets `direct_reachability: true` and gates only on the daemon's own
+  dual-transport record. Smallest change, mirrors an already-reviewed profile,
+  and publishes `caps=f` on a private address as an operator assertion.
+- **Proven reachability.** Let the runtime produce publication material for a
+  private bind and let `is_normal_qualified_address` admit RFC1918, keeping
+  `ReachabilityState::Reachable` as a requirement. `note_observed_external_address`
+  (Plan 529) can corroborate it honestly, because a peer that dials in reports
+  the address at which it sees the router.
+
+Neither is a defect fix: both relax a predicate the runtime documents as
+deliberate, and both make the router advertise a capability on a private
+address. That is a capability decision, so it needs a plan of record and the
+operator's choice of the two.
