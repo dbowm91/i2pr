@@ -2999,3 +2999,45 @@ evidence = [
     "plans/implementation/network-participation/543-the-participation-ledger-must-not-exhaust-the-exploratory-pool.md",
 ]
 advertised = false
+
+[[surface]]
+id = "netdb.router-info-export"
+protocol = "netdb"
+structure = "the-routers-own-routerinfo-must-reach-a-private-lan-peer-out-of-band"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 544 makes the router write its **own signed RouterInfo** to disk, so a two-host private-LAN qualification run has a record to hand across. A router publishes its record to the NetDB and its peers learn it from a floodfill; an isolated LAN has neither. The SSU2 publication path is **loopback-clamped by design** (`crates/i2pr-runtime/src/ssu2_runtime.rs`, `Ssu2PublicationUnavailable::InvalidPublication`), observed in production on the arm64 lab node rather than inferred, so on an RFC1918 bind the record is never published anywhere -- and it additionally requires `ReachabilityState::Reachable`, which static loopback-homogeneous traffic cannot reach, so `ssu2.advertise` is inert in **every** posture. The remaining route is the one every I2P lab handoff has always used: the operator copies the file. The router did not produce one. `export_local_router_info` now decodes the record the router has already signed, derives its hash, and writes `<data_dir>/export/<lowercase-hex-router-hash>` at `0700`/`0600`. The name is the **hash** because the peer's cache loader derives its expected key from the filename (`crates/i2pr-netdb-persist/src/cache_loader.rs`), so a record under any other name is refused as a key mismatch an operator cannot distinguish from an invalid record. The directory is `export/` and deliberately **not** `netdb/routers/`: that is the cache the router loads into its **own** store at startup, so a record written there would make the router hold itself as a peer on its next start. The bytes written are the bytes the router signed; the plan adds **no** transformation, **no** configuration key, **no** dependency, **no** listener, **no** socket and **no** timer, and `Cargo.toml` and `Cargo.lock` stay byte-identical. The surface is internal and non-advertised: `router.version` stays `0.9.62`, the inventory's advertised count stays **zero**, and nothing about publication changes -- the router still publishes to no NetDB it cannot reach. The lane proves the naming property **behaviourally** by handing the exported file to the peer's **own** `CacheLoader` through the peer's own `ByteCache`, whose `validate_name` accepts exactly 64 lowercase hexadecimal characters: the record round-trips to one inserted entry under its own hash, the same bytes under a different valid name are refused, the export never appears in `netdb/routers/`, and the permissions are `0700`/`0600`. The guard pins the helper's shape statically -- the `export/` destination, the derived lowercase-hex name, the private permissions, the absence of configuration and sockets -- and keeps the predecessors' evidence byte-identical. The **two-host run** established an authenticated SSU2 session between two `i2pr` routers on RFC1918 addresses; the correlated two-way reply, the peer-initiated session and **stock-router** admission are **not** claimed, and i2pd/Java I2P admission remains Plan 493's question.
+"""
+evidence = [
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-netdb-persist/src/cache_loader.rs",
+    "crates/i2pr-storage/src/lib.rs",
+    "crates/i2pr-daemon/tests/router_info_export.rs",
+    "crates/i2pr-daemon/tests/router_info_export_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/544-the-routers-own-routerinfo-must-reach-a-private-lan-peer-out-of-band.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.pool-candidate-population"
+protocol = "ssu2"
+structure = "the-ssu2-pool-must-not-be-floodfill-only"
+scope = "experimental"
+status = "experimental"
+notes = """
+Plan 545 gives the outbound SSU2 session pool a **candidate population that is not empty by construction**. The pool's only source was `select_version_gated_floodfills`, which yields only records that advertise `f`. Floodfill eligibility requires a **publicly routable** address (`crates/i2pr-daemon/src/floodfill.rs`, `is_publicly_routable_host`) and the `controlled_loopback` floodfill profile requires loopback binds, so on a private-LAN or controlled-loopback router the floodfill population is **empty** and the pool planned **no** dial at all -- the router could receive a session and could not open one. The absence was invisible: the pool logged nothing, so "never attempted" and "attempted and failed silently" produced the same lab log, and the three address-parsing steps in `ensure_peer_session_for_record` ended in `.ok()?` with no record of which one had failed. The pool now **prefers** floodfills and falls back to the whole version-gated store only when that selection is empty: a floodfill owns the nearby keyspace, so a session with it is worth more, and the fallback exists so the pool is never empty. Both selectors share one gate (`gate_candidates`), so the refusal reasons and the `examined == accepted + refused` identity cannot diverge between the preferred and the fallback paths -- a duplicated gate is how the two would come to disagree about the same peer. `nearest_peer_candidates` is the ungated whole-store candidate set and `select_version_gated_peers` its gated selection, both exported from `i2pr-netdb`, and the version floor of Plan 503 and the tier gate are **unchanged**: the fallback admits a peer the floodfill selector would have admitted, not a peer it would have refused. The pool's tick now reports the planned, examined, refused and started counts, each dial reports its outcome by name, and the three previously-silent address-parse steps name their failures. The plan adds **no** configuration key, **no** dependency, **no** task, **no** timer, **no** listener and **no** socket, it changes no transport file and no runtime file, and `Cargo.toml` and `Cargo.lock` stay byte-identical. The surface is internal and non-advertised: `router.version` stays `0.9.62`, the inventory's advertised count stays **zero**, and no capability, version or RouterInfo behaviour is advertised beyond the tested subset. The lane proves the **selection's** behaviour -- a store of plain peers yields no floodfill and a non-empty peer selection, a floodfill still wins when one exists, both selectors refuse a below-floor peer with the same reason, the identity and the ceiling hold, the ordering is nearest-first by XOR distance, and neither selection names the router itself. The lane cannot see the pool's *preference*; that the floodfill selector is called first and the fallback only when it is empty is the guard's claim, and the guard does not make the lane's. The **observed** result on the two-host LAN is a planned dial and an `Established` SSU2 session within the same tick, between two `i2pr` routers -- not against a stock router, and not a claim that the pool now reaches a public NetDB.
+"""
+evidence = [
+    "crates/i2pr-netdb/src/lookup_policy.rs",
+    "crates/i2pr-netdb/src/lib.rs",
+    "crates/i2pr-daemon/src/peer_pool.rs",
+    "crates/i2pr-daemon/src/peer_pool_task.rs",
+    "crates/i2pr-daemon/src/service_product.rs",
+    "crates/i2pr-daemon/tests/peer_pool_fallback.rs",
+    "crates/i2pr-daemon/tests/peer_pool_fallback_boundary.rs",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/545-the-ssu2-pool-must-not-be-floodfill-only.md",
+]
+advertised = false

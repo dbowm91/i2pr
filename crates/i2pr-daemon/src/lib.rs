@@ -2420,7 +2420,12 @@ impl NetDbParticipation {
 ///
 /// Returns `None` when the record carries no derivable hash, which is a
 /// local, counted condition rather than a failure of the export.
-fn export_local_router_info(
+///
+/// Public because Plan 544's lane (`tests/router_info_export.rs`) is an
+/// integration test: it must exercise the **same** helper production calls,
+/// not a re-implementation of the naming rule. The helper opens no socket,
+/// reads no configuration and touches nothing outside `data_dir`.
+pub fn export_local_router_info(
     data_dir: &std::path::Path,
     encoded: &[u8],
 ) -> std::io::Result<Option<(String, std::path::PathBuf)>> {
