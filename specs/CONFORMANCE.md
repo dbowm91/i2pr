@@ -4885,3 +4885,53 @@ Evidence: `crates/i2pr-daemon/src/lib.rs`,
 `crates/i2pr-daemon/tests/router_info_export_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/544-the-routers-own-routerinfo-must-reach-a-private-lan-peer-out-of-band.md`.
+
+## The SSU2 pool is not floodfill-only (Plan 545)
+
+**Plan 545 adds one surface** — `netdb.peer-pool-fallback` — so the inventory
+holds **138 surfaces, 133 experimental, 4 deferred, 1 ready, 0 advertised**.
+The advertised count stays **zero**.
+
+The outbound SSU2 session pool's only candidate source was
+`select_version_gated_floodfills`, which yields only records advertising `f`.
+Floodfill eligibility requires a **publicly routable** address
+(`crates/i2pr-daemon/src/floodfill.rs`, `is_publicly_routable_host`), and the
+`controlled_loopback` floodfill profile requires loopback binds. On a
+private-LAN or controlled-loopback router that population is therefore **empty
+by construction**: the pool planned no dial at all, so the router could receive
+a session and could not open one.
+
+**The absence was invisible.** The pool logged nothing, so "never attempted" and
+"attempted and failed silently" produced the same lab log, and the three
+address-parsing steps in `ensure_peer_session_for_record` ended in `.ok()?`
+with no record of which one had failed.
+
+**The pool prefers floodfills and falls back.** A floodfill owns the nearby
+keyspace, so a session with it is worth more; the fallback exists so the pool is
+never empty. Both selectors reach **one** gate, `gate_candidates`, so the
+refusal reasons and the `examined == accepted + refused` identity cannot diverge
+between the preferred and the fallback paths. The version floor of Plan 503 and
+the tier gate are **unchanged**: the fallback admits a peer the floodfill
+selector would have admitted, not one it would have refused.
+
+`nearest_peer_candidates` is the ungated whole-store candidate set and
+`select_version_gated_peers` its gated selection, both exported from
+`i2pr-netdb`. Both builders order nearest-first by XOR distance and both apply
+`policy.max_candidates_considered()`.
+
+**What is not claimed.** The lane proves the **selection's** behaviour; it
+cannot see the pool's *preference*, which is the guard's claim. The observed
+two-host result is a planned dial and an `Established` session within the same
+tick, between two `i2pr` routers — not against a stock router, and not a claim
+that the pool reaches a public NetDB. No configuration key, dependency, task,
+timer, listener or socket is added, and `Cargo.toml`/`Cargo.lock` stay
+byte-identical.
+
+Evidence: `crates/i2pr-netdb/src/lookup_policy.rs`,
+`crates/i2pr-netdb/src/lib.rs`, `crates/i2pr-daemon/src/peer_pool.rs`,
+`crates/i2pr-daemon/src/peer_pool_task.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/tests/peer_pool_fallback.rs`,
+`crates/i2pr-daemon/tests/peer_pool_fallback_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/545-the-ssu2-pool-must-not-be-floodfill-only.md`.

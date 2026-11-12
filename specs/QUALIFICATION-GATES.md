@@ -2361,3 +2361,37 @@ clamp and its reachability gate keep their named owner; the correlated two-way
 reply, the peer-initiated session and stock-router admission are not claimed;
 and the **stock-peer** half remains blocked externally on Plan 493's authorized
 two-host topology.
+
+## 44. The SSU2 pool is not floodfill-only (Plan 545)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G45.1 | a store of plain peers yields **no** floodfill and a **non-empty** peer selection | `crates/i2pr-daemon/tests/peer_pool_fallback.rs`, `a_store_of_plain_peers_yields_no_floodfill_and_a_peer_selection` |
+| G45.2 | a floodfill still **wins** when one exists, so the fallback is not a replacement | the same lane file, `a_floodfill_still_wins` |
+| G45.3 | both selectors refuse a **below-floor** peer, and count the same number of refusals | the same lane file, `both_selectors_refuse_a_below_floor_peer_with_the_same_reason` |
+| G45.4 | `examined == accepted + refused` holds on the peer selection | the same lane file, `the_identity_holds_on_the_peer_selection` |
+| G45.5 | the peer selection's order is **nearest-first** by XOR distance | the same lane file, `the_ordering_is_the_same_as_the_floodfill_selection` |
+| G45.6 | the peer selection respects the **policy's** ceiling | the same lane file, `the_ceiling_is_the_policy_ceiling` |
+| G45.7 | neither selection names the **router's own hash** | the same lane file, `the_router_excludes_itself_from_both_selections` |
+| G45.8 | the pool **prefers** floodfills and reaches the fallback **only** when that selection is empty | `crates/i2pr-daemon/tests/peer_pool_fallback_boundary.rs`, `the_pool_prefers_floodfills` |
+| G45.9 | the eligibility gate is defined **once** and reached by **both** selectors, and the version rule is applied in one place | the same guard file, `the_gate_is_shared` |
+| G45.10 | **both** candidate builders apply the ceiling and order nearest-first; the pool keeps excluding its own hash; the pool's own ceilings do not move | the same guard file, `the_policy_is_unchanged` |
+| G45.11 | the peer selection is exported from the crate root | the same guard file, `the_selection_is_exported` |
+| G45.12 | **no** configuration key, task, timer, listener or socket is added, nothing is advertised, and `Cargo.toml`/`Cargo.lock` are byte-identical | the same guard file, `nothing_new_and_nothing_advertised` |
+| G45.13 | the twenty predecessor lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+
+Every gate above is **local**. The lane proves what the two selections **yield**
+and deliberately does not claim the pool's **preference**: that the floodfill
+selector is called first and the fallback only when it is empty is G45.8's
+claim, and G45.8 does not make the lane's. The negative-control sweep exercises
+that division directly — reordering the pool fires the guard while the lane
+still passes, because the lane cannot see an ordering it does not exercise.
+
+G45.10 exists because a presence-only check of the ceiling step passes when one
+of the two builders loses it. The rule counts **two** applications of the
+ceiling and **two** nearest-first orderings, and an inverted probe removes one.
+
+**What this surface does not settle.** The pool is not claimed to reach a public
+NetDB, and no capability, version or RouterInfo behaviour is advertised beyond
+the tested subset. The two-host result is `i2pr` to `i2pr`; the **stock-peer**
+half remains blocked externally on Plan 493's authorized two-host topology.

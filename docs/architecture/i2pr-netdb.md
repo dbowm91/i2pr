@@ -1567,6 +1567,32 @@ yielded, whatever the index says. The filter is what makes the selection
 `floodfill_advertiser_snapshot()` publishes the advertisers' records, and the
 copy is bounded by the store's own record ceiling.
 
+
+## The peer selection shares the floodfill gate (Plan 545)
+
+`nearest_peer_candidates` is the whole store's nearest set for a routing key —
+the same ordering, exclusion and truncation as
+[`nearest_floodfill_candidates`](#the-shared-version-gated-floodfill-selection-plan-503-lookup_policyrs),
+drawn from `store.iter()` instead of the advertiser index. `select_version_gated_peers`
+applies the **same** `gate_candidates` with the **same**
+`dsm_target_eligibility(published_version_of(record))` rule and the **same**
+refusal counting.
+
+**One gate, two populations.** The gate is not duplicated, so the two selectors
+cannot come to disagree about a peer: a peer the floodfill selection refuses for
+a below-floor version is refused by the peer selection for the same reason, and
+`examined == accepted + refused` holds on both.
+
+**The population is the difference, not the eligibility.** The floodfill
+selector reads the advertiser index because a lookup must ask a floodfill; a
+**dial** does not, because any version-eligible peer can carry a session. The
+daemon's outbound pool prefers the floodfill selection and falls back to this one
+when that selection is empty — which on a private LAN it always is, since
+floodfill eligibility requires a publicly routable address.
+
+Both builders order nearest-first by XOR distance and both apply
+`policy.max_candidates_considered()`. The crate stays runtime-neutral: no Tokio,
+no async function, no socket, no filesystem, no clock, no task.
 ## Cross-references
 
 **ADRs**

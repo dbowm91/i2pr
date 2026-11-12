@@ -256,3 +256,33 @@ Registered after the two-host LAN run showed an SSU2 session established with
 the fallback in place and an empty pool without it. The scope is the selection
 and the pool's preference; the floodfill eligibility rule, the pool's ceilings
 and T4/T5 are named with their owners and not attempted here.
+
+### 17.2 — 2026-11-12, the guard's ceiling rule and the inventory id
+
+Two corrections, recorded here rather than rewriting the sections they belong to.
+
+**The inventory id is `netdb.peer-pool-fallback`, as §13 names it.** The row was
+first registered as `ssu2.pool-candidate-population`, which no plan of record
+names; the id was corrected in `specs/support.toml` and the `protocol` field was
+kept `<id prefix>.`-consistent with every other row.
+
+**The ceiling rule counts both builders.** §11.2 asks the guard to own the
+shape, and the pool's shape now depends on **two** candidate builders: the
+floodfill set and the peer set. The guard's first version checked only that the
+ceiling step was *present* in the module, which passes when one of the two
+builders loses it. The rule now requires exactly two applications of
+`policy.max_candidates_considered()` and exactly two nearest-first orderings,
+with an inverted probe that removes one of them.
+
+The strengthening was first applied to the **generated** guard file by hand, and
+regenerating the guard silently dropped it. The **negative-control sweep caught
+this**: NC-545-5 removed the peer builder's ceiling, fired the lane's
+`the_ceiling_is_the_policy_ceiling`, and the guard still passed. The rule and
+its probe now live in the generator, so a regeneration cannot lose them, and the
+sweep was re-run against the corrected tree.
+
+The lane is 7 rows; the guard is 6 rules and 6 inverted probes (12 tests). The
+negative-control sweep ran 6 controls against this plan; all fired, and the tree
+was restored byte-identically after each. NC-545-1 is the one that documents the
+division of labour: reordering the pool fires the guard while the lane still
+passes, because the lane does not exercise the pool's ordering.

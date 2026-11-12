@@ -4635,3 +4635,29 @@ is skipped rather than written under a guessed name.
 **What is not claimed.** This is not publication. The router still publishes to
 no NetDB it cannot reach, and the export says nothing about a stock router's
 admission.
+
+## The SSU2 pool's population is not floodfill-only (Plan 545)
+
+`PeerPool::plan` preferred nothing and fell back to nothing: its only candidate
+source was `select_version_gated_floodfills`, so a router whose NetDB held no
+floodfill advertisers — every private-LAN and controlled-loopback posture —
+planned **no dial at all**. The router could receive a session and could not
+open one.
+
+**The pool now prefers floodfills and falls back to the peers it has learned.**
+A floodfill owns the nearby keyspace, so a session with it is worth more; the
+fallback exists so the pool is never empty. The fallback is reached only when
+the floodfill selection's target set is empty, and both selections reach the
+same `gate_candidates`, so a peer the preferred path would refuse is refused by
+the fallback for the same counted reason.
+
+**The absence is now named.** The tick reports the planned, examined, refused
+and started counts; each dial reports its outcome; and the three address-parsing
+steps in `ensure_peer_session_for_record` that ended in `.ok()?` name their
+failures. Before this, "never attempted" and "attempted and failed silently"
+were indistinguishable in a lab log.
+
+**What is not claimed.** The pool's ceilings are unchanged, no configuration key
+appears, and nothing is advertised. The observed two-host result is a planned
+dial and an `Established` SSU2 session within one tick between two `i2pr`
+routers, not against a stock router.
