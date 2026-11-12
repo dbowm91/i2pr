@@ -13,6 +13,13 @@ name: Build i2pr arm64
 
 on:
   workflow_dispatch:
+  # GitHub only surfaces `workflow_dispatch` from the **default** branch, so a
+  # dispatch-only workflow is invisible on a working branch and cannot be
+  # started there. The push trigger is filtered to this file, so it fires when
+  # the recipe itself changes and stays dormant for every other push.
+  push:
+    paths:
+      - '.github/workflows/build-i2pr-arm64.yml'
 
 permissions:
   contents: read
