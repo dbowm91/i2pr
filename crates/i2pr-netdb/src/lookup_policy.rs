@@ -428,7 +428,7 @@ pub fn select_version_gated_floodfills(
 /// empty, so a router keeps sessions with the peers it has actually learned.
 /// The eligibility rule, the refusal counting and the
 /// `examined == accepted + refused` identity are the floodfill selector's own,
-/// reached through the same [`gate_candidates`].
+/// reached through the same `gate_candidates`.
 pub fn select_version_gated_peers(
     store: &RouterInfoStore,
     routing_key: &RouterHash,

@@ -649,9 +649,11 @@ impl NetDbRetentionCounters {
 /// bounded stale-prefix walk and releases it before returning, so no lock is
 /// held across an await.
 ///
-/// A store that is absent is [`PruneOutcome::NotApplicable`], never a silent
-/// success, and a lock that cannot be taken is
-/// [`PruneOutcome::Unavailable`], never a prune that did not happen.
+/// A store that is absent is
+/// [`PruneOutcome::NotApplicable`](crate::peer_reconcile::PruneOutcome::NotApplicable),
+/// never a silent success, and a lock that cannot be taken is
+/// [`PruneOutcome::Unavailable`](crate::peer_reconcile::PruneOutcome::Unavailable),
+/// never a prune that did not happen.
 pub fn prune_netdb(
     bootstrap: Option<&std::sync::Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
     now_ms: u64,

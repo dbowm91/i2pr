@@ -50,6 +50,8 @@ const PLAN543_LANE: &str = "crates/i2pr-daemon/tests/participation_release.rs";
 const PLAN543_GUARD: &str = "crates/i2pr-daemon/tests/participation_release_boundary.rs";
 const PLAN544_LANE: &str = "crates/i2pr-daemon/tests/router_info_export.rs";
 const PLAN544_GUARD: &str = "crates/i2pr-daemon/tests/router_info_export_boundary.rs";
+/// Plan 503's guard, whose DSM enforcement rule this plan retargeted.
+const PLAN503_GUARD: &str = "crates/i2pr-daemon/tests/version_floor_boundary.rs";
 
 /// The digests the guard pins, filled in by the generator.
 const PINNED: &[(&str, &str)] = &[
@@ -132,6 +134,10 @@ const PINNED: &[(&str, &str)] = &[
     (
         PLAN544_GUARD,
         "aa89488d3c73b772d9833f7f4bb11bd098594029aedc3c3c07057ced18490808",
+    ),
+    (
+        PLAN503_GUARD,
+        "4a84c7689575c4b64d420ccc503526e2a76ff3a7527f306a1ca95a68418faff9",
     ),
 ];
 

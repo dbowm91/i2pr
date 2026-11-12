@@ -502,14 +502,24 @@ fn the_dsm_enforcement_points_consult_the_gate() {
         "the publication target selection must consult the shared gated selection"
     );
     let policy = source_of("crates/i2pr-netdb/src/lookup_policy.rs");
+    // Plan 545 extracted the gate into `gate_candidates` so both selectors --
+    // the floodfill one and the peer one -- reach **one** implementation and
+    // cannot come to disagree about a peer. The rule is **retargeted, not
+    // weakened**: it used to pin one link and now pins two, so neither the
+    // selection nor the gate can lose the DSM rule without tripping the guard.
     assert_eq!(
         check_body_contains(
             &policy,
             "select_version_gated_floodfills",
-            "dsm_target_eligibility("
+            "gate_candidates("
         ),
         None,
-        "the shared gated selection must consult the DSM gate"
+        "the shared gated selection must reach the shared gate"
+    );
+    assert_eq!(
+        check_body_contains(&policy, "gate_candidates", "dsm_target_eligibility("),
+        None,
+        "the shared gate must consult the DSM gate"
     );
 }
 
@@ -806,10 +816,29 @@ fn select_version_gated_floodfills(
         check_body_contains(
             violating,
             "select_version_gated_floodfills",
-            "dsm_target_eligibility("
+            "gate_candidates("
         )
         .is_some(),
-        "a shared selection that ignores the DSM gate must be reported"
+        "a shared selection that does not reach the shared gate must be reported"
+    );
+}
+
+/// The inverted probe for the second half of the retargeted rule: a gate that
+/// does not apply the DSM rule must be reported.
+#[test]
+fn the_guard_reports_a_shared_gate_without_the_dsm_rule() {
+    let violating = "\
+fn gate_candidates(
+    store: &RouterInfoStore,
+    candidates: Vec<NearestSelection>,
+) -> VersionGatedFloodfillSelection {
+    let _ = (store, candidates);
+    VersionGatedFloodfillSelection::default()
+}
+";
+    assert!(
+        check_body_contains(violating, "gate_candidates", "dsm_target_eligibility(").is_some(),
+        "a shared gate that ignores the DSM gate must be reported"
     );
 }
 

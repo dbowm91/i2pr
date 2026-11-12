@@ -286,3 +286,43 @@ negative-control sweep ran 6 controls against this plan; all fired, and the tree
 was restored byte-identically after each. NC-545-1 is the one that documents the
 division of labour: reordering the pool fires the guard while the lane still
 passes, because the lane does not exercise the pool's ordering.
+
+### 17.3 — 2026-11-12, the shared gate's consequences for a closed guard, and an
+inherited doc defect
+
+Two consequences of extracting `gate_candidates` (§7), both found by the
+routine floor's first run on this tree and both discharged before the floor was
+re-run.
+
+**Plan 503's guard was retargeted.** Its rule
+`the_dsm_enforcement_points_consult_the_gate`
+(`crates/i2pr-daemon/tests/version_floor_boundary.rs`) required the **body** of
+`select_version_gated_floodfills` to contain `dsm_target_eligibility(`. §7 puts
+that call in `gate_candidates` instead, so the rule failed and the floor's
+workspace test step reported it. The rule is **retargeted, not weakened**, in
+the manner that same file already records for Plan 491's rule: it now pins
+**two** links — the selection must reach `gate_candidates`, and `gate_candidates`
+must consult the DSM gate — and a second inverted probe proves the second link
+fires. Plan 503's closure record is **not** rewritten; this is the successor's
+correction. The file becomes the twenty-first digest this plan's guard pins, so
+a later plan cannot quietly loosen the retarget.
+
+**A doc link in Plan 542's file did not resolve.**
+`crates/i2pr-daemon/src/netdb_participation.rs` documents `PruneOutcome`
+through an intra-doc link, but `PruneOutcome` is defined in
+`crate::peer_reconcile` and the only import of it is **function-local**, so
+`cargo doc --locked --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`
+fails for `i2pr-daemon`. The line is unchanged since `05bef9ed`, Plan 542's
+production commit, so the step was already red before this plan started -- and
+Plans 542's and 543's closure records both claim a green floor that includes it.
+The link now names its path explicitly. This plan records the evidence gap in
+its closure record; it does **not** rewrite either closed record.
+
+The floor's first run also reported one failure this plan does not own and does
+not fix: `check-m11-transit-qualification-evidence.sh` failed once with "no
+record_cardinality call site for Epoch::Ibgw" and passes on every re-run, at
+this commit and at `ba09bd18` before it. The checker runs `grep -A8 ... |
+grep -q ...` under `set -euo pipefail`, so the upstream `grep` receives SIGPIPE
+when the downstream one exits on its first match; the pipeline then reports
+non-zero and the check fails. It is a pre-existing flake with its own owner and
+is recorded, not patched, here.
