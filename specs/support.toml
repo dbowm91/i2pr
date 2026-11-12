@@ -3021,8 +3021,8 @@ evidence = [
 advertised = false
 
 [[surface]]
-id = "ssu2.pool-candidate-population"
-protocol = "ssu2"
+id = "netdb.peer-pool-fallback"
+protocol = "netdb"
 structure = "the-ssu2-pool-must-not-be-floodfill-only"
 scope = "experimental"
 status = "experimental"
