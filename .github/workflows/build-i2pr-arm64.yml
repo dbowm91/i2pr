@@ -10,6 +10,21 @@ name: Build i2pr arm64
 # which is exactly what the target host runs; a binary cross-built on a newer
 # host would need a newer glibc and would fail at exec with a version error that
 # looks like a code defect.
+#
+# Rebuild procedure. The artifact is pinned to the commit it was built from, so
+# a lab run against a newer `crates/` tree needs a **new** artifact -- and the
+# trigger below is filtered to this file, which means a code push does not
+# start one. To rebuild: update this comment with the commit and the reason,
+# push, and download the run. `workflow_dispatch` cannot be used from a working
+# branch, because GitHub only surfaces it from the default branch.
+#
+# Why a **logging** change is a behaviour change here. The lab proves
+# directions by reading each host's log, so a build that cannot say it dialled
+# is indistinguishable from a host that never dialled. Two diagnoses in the
+# Plans 544/545 run were delayed by exactly that: a pool that was dialling and
+# succeeding looked identical to one that never tried. Rebuild the far host
+# whenever the observability of a path under test changes, not only when its
+# wire behaviour does.
 
 on:
   workflow_dispatch:
