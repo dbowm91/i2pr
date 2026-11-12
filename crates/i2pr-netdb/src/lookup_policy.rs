@@ -302,6 +302,39 @@ fn nearest_floodfill_candidates(
     candidates
 }
 
+/// Computes the nearest **peers** for a routing key, whatever they advertise.
+///
+/// Plan 545. [`nearest_floodfill_candidates`] is floodfill-only because a
+/// lookup must ask a floodfill. A dial does not: any version-eligible peer can
+/// carry a session, and a private-LAN lab has no floodfill at all, because
+/// floodfill eligibility requires a publicly routable address
+/// (`crates/i2pr-daemon/src/floodfill.rs`, `is_publicly_routable_host`).
+///
+/// The ordering, the exclusion set and the policy ceiling are the same as the
+/// floodfill form, so a caller that prefers floodfills and falls back to this
+/// gets one order, not two.
+fn nearest_peer_candidates(
+    store: &RouterInfoStore,
+    routing_key: &RouterHash,
+    excluded: &[RouterHash],
+    policy: &LookupPolicy,
+) -> Vec<NearestSelection> {
+    let excluded: std::collections::BTreeSet<RouterHash> = excluded.iter().copied().collect();
+    let mut candidates: Vec<NearestSelection> = Vec::new();
+    for (key, _) in store.iter() {
+        if excluded.contains(key) {
+            continue;
+        }
+        candidates.push(NearestSelection {
+            distance: xor_distance(key, routing_key),
+            key: *key,
+        });
+    }
+    candidates.sort();
+    candidates.truncate(policy.max_candidates_considered());
+    candidates
+}
+
 /// The result of a version-gated floodfill selection.
 ///
 /// The eligible targets, the counted refusals, and the number of
@@ -385,6 +418,32 @@ pub fn select_version_gated_floodfills(
     policy: &LookupPolicy,
 ) -> VersionGatedFloodfillSelection {
     let candidates = nearest_floodfill_candidates(store, routing_key, excluded, policy);
+    gate_candidates(store, candidates)
+}
+
+/// Selects the nearest **peers** whose published API version satisfies the
+/// DSM floor, whether or not they advertise floodfill.
+///
+/// Plan 545. This is the fallback a caller uses when the floodfill set is
+/// empty, so a router keeps sessions with the peers it has actually learned.
+/// The eligibility rule, the refusal counting and the
+/// `examined == accepted + refused` identity are the floodfill selector's own,
+/// reached through the same [`gate_candidates`].
+pub fn select_version_gated_peers(
+    store: &RouterInfoStore,
+    routing_key: &RouterHash,
+    excluded: &[RouterHash],
+    policy: &LookupPolicy,
+) -> VersionGatedFloodfillSelection {
+    let candidates = nearest_peer_candidates(store, routing_key, excluded, policy);
+    gate_candidates(store, candidates)
+}
+
+/// Applies the DSM version floor to an ordered candidate set.
+fn gate_candidates(
+    store: &RouterInfoStore,
+    candidates: Vec<NearestSelection>,
+) -> VersionGatedFloodfillSelection {
     let mut targets: Vec<RouterHash> = Vec::new();
     let mut refusals = VersionRefusalCounts::default();
     let mut examined: u32 = 0;

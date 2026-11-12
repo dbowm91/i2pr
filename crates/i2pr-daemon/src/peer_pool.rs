@@ -255,8 +255,21 @@ impl PeerPoolOwner {
             return Vec::new();
         }
         self.counters.population_reads = self.counters.population_reads.saturating_add(1);
-        let selection =
+        // Plan 545: prefer floodfills, then fall back to any version-eligible
+        // peer. A floodfill-only population made the pool empty on a private
+        // LAN, where no record can advertise `f` because floodfill eligibility
+        // requires a publicly routable address -- so the router kept no SSU2
+        // session with the peers it had actually learned.
+        let mut selection =
             select_version_gated_floodfills(store, local_hash, &[*local_hash], &self.policy);
+        if selection.targets().is_empty() {
+            selection = i2pr_netdb::select_version_gated_peers(
+                store,
+                local_hash,
+                &[*local_hash],
+                &self.policy,
+            );
+        }
         self.counters.candidates_examined = self
             .counters
             .candidates_examined
