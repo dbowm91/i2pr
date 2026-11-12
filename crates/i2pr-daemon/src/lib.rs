@@ -2790,6 +2790,8 @@ struct FloodfillEvaluationContext<'a> {
     data_dir: &'a std::path::Path,
     config_path: Option<&'a std::path::Path>,
     controlled_profile: bool,
+    /// Plan 546: may the router publish its own bound SSU2 address?
+    bound_address_publishable: bool,
     controlled_ntcp2_endpoint: Option<std::net::SocketAddr>,
     local_router_info: &'a tokio::sync::watch::Sender<Option<Arc<Vec<u8>>>>,
     inspection: &'a Arc<InspectionHandles>,
@@ -2816,6 +2818,7 @@ async fn run_floodfill_evaluation(
         data_dir,
         config_path,
         controlled_profile,
+        bound_address_publishable,
         controlled_ntcp2_endpoint,
         local_router_info,
         inspection,
@@ -2854,6 +2857,11 @@ async fn run_floodfill_evaluation(
     );
     let readiness = crate::floodfill::NormalReadiness {
         material: material.as_ref(),
+        // Plan 546: the operator's own statement that this host is directly
+        // reachable at its bind. The runtime is the authority on whether the
+        // address may be published; this only says whether the floodfill role
+        // may accept the runtime's answer.
+        bound_address_publishable,
         wall_now_ms: now_ms,
         // The serving NetDB is constructed with the state and the
         // persistent cache passed revalidation in the bootstrap
@@ -4034,6 +4042,9 @@ fn register_ssu2_service(
     // is copied out of the configuration here, like every other
     // configuration value the `'static` service closure below reads.
     let reconcile_period_ms = config.netdb.participation_maintenance_period_ms;
+    // Plan 546: copied out like every other configuration value the `'static`
+    // service closure below reads.
+    let publish_bound_address = config.ssu2.publish_bound_address;
     let inspection = Arc::clone(inspection);
     let router_ingress = Arc::new(tokio::sync::Mutex::new(router_ingress));
     builder
@@ -5723,6 +5734,7 @@ fn register_ssu2_service(
                                             data_dir: &data_dir,
                                             config_path: floodfill_config_path.as_deref(),
                                             controlled_profile: controlled_floodfill,
+                                            bound_address_publishable: publish_bound_address,
                                             controlled_ntcp2_endpoint,
                                             local_router_info: &local_router_info,
                                             inspection: &inspection,

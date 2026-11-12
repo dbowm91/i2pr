@@ -504,6 +504,29 @@ pub struct Ssu2RuntimeConfig {
     /// requires the narrow controlled-qualification call, so normal
     /// operation is unchanged.
     pub explicit_bind_corroboration: bool,
+    /// Permits publication of the router's own **bound** SSU2 address
+    /// (Plan 546).
+    ///
+    /// When false (the default) `publication_material` and
+    /// [`Ssu2RuntimeService::note_explicit_bind_for_controlled_qualification`]
+    /// refuse every non-loopback bound socket, so the only address the router
+    /// can publish is `127.0.0.1` and publication is confined to a loopback
+    /// lab. When true, the bound socket's own address may be published.
+    ///
+    /// **This is an operator precondition, not a switch.** The reachability
+    /// the record then carries comes from the `LocalConfiguredBind`
+    /// corroboration, which means "the socket is bound to this address" -- not
+    /// "peers can reach this address". Those are the same thing when the host
+    /// is directly reachable at its bind (a lab LAN, or a public host with no
+    /// NAT in front of it), and they are **not** the same thing behind NAT,
+    /// where peers see the NAT's address rather than the bind's. A NAT'd host
+    /// must leave this false: a router that publishes a reachability it does
+    /// not have gets blocked by the peers it wastes, and a widely blocked
+    /// address makes live-network testing harder rather than easier.
+    ///
+    /// The public-address arm of `publication_material`'s reachability test is
+    /// **not** relaxed by this field, and neither is the expiry test.
+    pub publish_bound_address: bool,
     /// Permits the controlled peer-test evidence path (Plan 283).
     ///
     /// When false (default) the service ignores every inbound
@@ -561,6 +584,29 @@ impl Ssu2RuntimeConfig {
             .map_err(|_| Ssu2RuntimeConfigError::InvalidPrefix)?;
         Ok(self)
     }
+}
+
+/// Returns `true` when the runtime may publish the given bound endpoint.
+///
+/// Plan 546. This is the **single** authority for "may this socket's address
+/// appear in a RouterInfo", and both publication entry points call it:
+/// [`Ssu2RuntimeService::publication_material`] and
+/// [`Ssu2RuntimeService::note_explicit_bind_for_controlled_qualification`].
+///
+/// An unbound (`port == 0`) or unspecified (`0.0.0.0`) endpoint is never
+/// publishable. Loopback is always publishable, because a loopback address is
+/// the one address a record can name without making a claim about the outside
+/// world. Any other bound address is publishable **only** when the operator set
+/// [`Ssu2RuntimeConfig::publish_bound_address`], which is their statement that
+/// the host is directly reachable at that address.
+///
+/// The predicate does **not** check reachability or its expiry; callers do that
+/// separately, and this plan does not relax either.
+pub fn may_publish_bound_address(bound: std::net::SocketAddr, publish_bound_address: bool) -> bool {
+    if bound.port() == 0 || bound.ip().is_unspecified() {
+        return false;
+    }
+    bound.ip().is_loopback() || publish_bound_address
 }
 
 /// Configuration validation failure for the runtime SSU2 adapter.
@@ -3668,7 +3714,7 @@ impl Ssu2RuntimeService {
             i2pr_transport::AddressFamily::Unknown => None,
         }
         .ok_or(Ssu2PublicationUnavailable::NoBoundSocket)?;
-        if !bound.ip().is_loopback() {
+        if !may_publish_bound_address(bound, self.shared.config.publish_bound_address) {
             return Err(Ssu2PublicationUnavailable::InvalidPublication);
         }
         let endpoint = Ssu2Endpoint::new(bound.ip(), bound.port())
@@ -3811,7 +3857,7 @@ impl Ssu2RuntimeService {
         }
         let mut families = Vec::new();
         for bound in [bound_v4, bound_v6].into_iter().flatten() {
-            if bound.port() == 0 || !bound.ip().is_loopback() {
+            if !may_publish_bound_address(bound, self.shared.config.publish_bound_address) {
                 return Err(Ssu2PublicationUnavailable::InvalidPublication);
             }
             families.push(match bound.ip() {

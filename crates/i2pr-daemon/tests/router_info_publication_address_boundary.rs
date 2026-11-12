@@ -804,7 +804,8 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
     if private_lan {
         return Err(ConfigError::Semantic { field: \"ssu2.advertise\", reason: \"y\" });
     }
-    Ok(Ssu2Config { enabled: raw.enabled })
+    Ok(Ssu2Config {
+        publish_bound_address: false, enabled: raw.enabled })
 }
 ";
     let reason = check_the_switch_is_not_refused_at_parse_time(violating);

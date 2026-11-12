@@ -110,6 +110,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
         },
         sam_product_mode: i2pr_daemon::config::SamProductMode::RouterNetwork,
         ssu2: i2pr_daemon::config::Ssu2Config {
+            publish_bound_address: false,
             enabled: false,
             bind_ipv4: Some("127.0.0.1".parse().unwrap()),
             bind_ipv6: None,

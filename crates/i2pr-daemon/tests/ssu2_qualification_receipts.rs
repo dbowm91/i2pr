@@ -775,6 +775,7 @@ fn activate_serving_coordinator(
     )
     .expect("bounded coordinator");
     let readiness = NormalReadiness {
+        bound_address_publishable: false,
         material: Some(material),
         wall_now_ms: now_ms,
         netdb_ready: true,

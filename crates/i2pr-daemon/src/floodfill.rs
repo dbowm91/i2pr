@@ -930,6 +930,13 @@ pub struct NormalReadiness<'a> {
     /// Current live SSU2 publication material, if the runtime could
     /// produce any on this tick.
     pub material: Option<&'a i2pr_runtime::Ssu2PublicationMaterial>,
+    /// Whether the operator permitted publication of the router's own
+    /// **bound** address (Plan 546, `ssu2.publish_bound_address`).
+    ///
+    /// When true, the runtime has already qualified the address, so the
+    /// floodfill role accepts the material's own address; when false the
+    /// material can only be loopback and the routability arm refuses it.
+    pub bound_address_publishable: bool,
     /// Wall-clock milliseconds of this tick.
     pub wall_now_ms: u64,
     /// The serving NetDB passed persistence revalidation.
@@ -993,9 +1000,22 @@ fn is_unique_local(host: &std::net::Ipv6Addr) -> bool {
 /// is loopback-scoped on the current tree, so this is false for every
 /// address the runtime can produce there — normal activation stays
 /// unreachable by construction until a public bind exists.
-fn is_normal_qualified_address(material: &i2pr_runtime::Ssu2PublicationMaterial) -> bool {
+fn is_normal_qualified_address(
+    material: &i2pr_runtime::Ssu2PublicationMaterial,
+    bound_address_publishable: bool,
+) -> bool {
     if !is_qualified_ssu2_address(&material.address) {
         return false;
+    }
+    // Plan 546: with the operator's explicit opt-in, the runtime has already
+    // decided this address may be published -- it checked reachability, the
+    // expiry, and that the bound socket is not unspecified. Re-testing
+    // routability here would be a second authority for one question, and two
+    // authorities either agree (dead code) or disagree (a bug). Without the
+    // opt-in the material can only be loopback, and the routability arm below
+    // is what refuses it.
+    if bound_address_publishable {
+        return true;
     }
     let Some(host) = material.address.options().get("host") else {
         return false;
@@ -1025,7 +1045,9 @@ pub fn evaluate_normal_eligibility(
     if !intent {
         reasons.push(NormalIneligibility::NotRequested);
     }
-    let qualified_address = readiness.material.is_some_and(is_normal_qualified_address);
+    let qualified_address = readiness.material.is_some_and(|material| {
+        is_normal_qualified_address(material, readiness.bound_address_publishable)
+    });
     if !qualified_address {
         reasons.push(NormalIneligibility::AddressUnqualified);
     }
@@ -3626,6 +3648,7 @@ mod tests {
     fn ready(material: Option<&i2pr_runtime::Ssu2PublicationMaterial>) -> NormalReadiness<'_> {
         NormalReadiness {
             material,
+            bound_address_publishable: false,
             wall_now_ms: TEST_WALL_MS,
             netdb_ready: true,
             storage_ready: true,

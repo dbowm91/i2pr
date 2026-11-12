@@ -636,6 +636,10 @@ struct RawSsu2Config {
     port: u16,
     #[serde(default = "default_ssu2_advertise")]
     advertise: bool,
+    /// Plan 546: permit publication of the router's own **bound** SSU2
+    /// address. Off by default; see `Ssu2Config::publish_bound_address`.
+    #[serde(default = "default_ssu2_publish_bound_address")]
+    publish_bound_address: bool,
     #[serde(default = "default_ssu2_introducer_service")]
     introducer_service: bool,
     #[serde(default = "default_ssu2_peer_test")]
@@ -685,6 +689,7 @@ impl Default for RawSsu2Config {
             bind_ipv6: default_ssu2_bind_ipv6(),
             port: default_ssu2_port(),
             advertise: default_ssu2_advertise(),
+            publish_bound_address: default_ssu2_publish_bound_address(),
             introducer_service: default_ssu2_introducer_service(),
             peer_test: default_ssu2_peer_test(),
             peer_pool: default_ssu2_peer_pool(),
@@ -1437,6 +1442,13 @@ const fn default_ssu2_advertise() -> bool {
     false
 }
 
+/// Plan 546: publishing the bound address is an explicit operator
+/// statement that the host is directly reachable at its bind, so it is
+/// off by default.
+const fn default_ssu2_publish_bound_address() -> bool {
+    false
+}
+
 const fn default_ssu2_introducer_service() -> bool {
     false
 }
@@ -2060,6 +2072,25 @@ pub struct Ssu2Config {
     /// withdraws the address when the evidence lapses. It is refused
     /// outside the controlled loopback profile.
     pub advertise: bool,
+    /// Whether this router may publish its own **bound** SSU2 address
+    /// (default false).
+    ///
+    /// Plan 546. `advertise` says *whether* the router publishes; this
+    /// says *which address* it may publish. Off by default, the router
+    /// can publish only a loopback bind, so publication stays inside a
+    /// loopback lab. On, the bound socket's own address may be
+    /// published.
+    ///
+    /// **Set this only when the host is directly reachable at its bind**
+    /// -- a lab LAN, or a public host with no NAT in front of it. The
+    /// reachability the record then carries means "the socket is bound
+    /// to this address", not "peers can reach this address". Behind NAT
+    /// the two differ, and a router that publishes an unreachable
+    /// address is blocked by the peers it wastes; a widely blocked
+    /// address makes live-network testing harder rather than easier.
+    /// Live testing from behind NAT needs a peer test's verdict, which
+    /// the tree does not yet carry into reachability.
+    pub publish_bound_address: bool,
     /// Whether this router holds a **bounded pool of outbound peer
     /// sessions** (default false).
     ///
@@ -3696,6 +3727,7 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
         port: raw.port,
         advertise: raw.advertise,
         peer_test: raw.peer_test,
+        publish_bound_address: raw.publish_bound_address,
         peer_pool: raw.peer_pool,
         introducer_request: raw.introducer_request,
         introducer_service: raw.introducer_service,

@@ -1537,10 +1537,15 @@ pub fn ssu2_runtime_config_from(
         // runtime reads it back from the tracker's policy. The daemon's
         // configuration surface gains no key for it.
         reachability: i2pr_runtime::Ssu2RuntimeReachability::default(),
-        // Explicit-bind corroboration is inert for the private-LAN profile;
-        // the runtime rejects non-loopback publication and this composition
-        // never records reachability evidence for that profile.
+        // Explicit-bind corroboration. Plan 546: this is now the *only*
+        // production route to `Reachable`, so it matters rather than being
+        // inert -- but it still records only through the narrow bind note, and
+        // only when `publish_bound_address` admits the bind. With the key off,
+        // the runtime still refuses every non-loopback publication.
         explicit_bind_corroboration: true,
+        // Plan 546: may the bound address be published? Off by default; the
+        // operator's key is the only thing that widens it.
+        publish_bound_address: config.publish_bound_address,
         // Same posture for the controlled peer-test evidence path (Plan 283): the
         // service parses and routes peer-test datagrams but never responds on its
         // own, records nothing without a live started test, and starts tests only

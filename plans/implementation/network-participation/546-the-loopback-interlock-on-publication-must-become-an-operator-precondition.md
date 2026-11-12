@@ -47,8 +47,20 @@ directly reachable may say so; a default build may not.
 (`crates/i2pr-daemon/src/router_i2np.rs`), and the corroboration is recorded
 only through the loopback-gated bind note. `note_observed_external_address` has
 **no production caller**, and `note_peer_test_outcome` is reached only from the
-controlled peer test. So predicate 2 is not decoration: it is the switch that
-decides whether the runtime will make a reachability claim at all.
+runtime's own **controlled** verdict path. So predicate 2 is not decoration: it
+is the switch that decides whether the runtime will make a reachability claim
+at all.
+
+**A peer test exists, and it does not settle this.** `PeerTestOwner`
+(`crates/i2pr-daemon/src/peer_test.rs`, Plan 521) is built from
+`ssu2.peer_test`, but two facts keep it from being a reachability source here:
+it is constructed inside `ServiceProduct`, which the daemon builds only when
+`service_tunnels_active(config)` is true -- the same gate Plan 542 found -- and
+its verdicts are never fed to the runtime's reachability, because
+`note_peer_test_outcome` is called only from the runtime's controlled path. So
+the successor named in §5.3 is **not** "build a peer test"; it is "carry the
+existing owner's verdict into the runtime's reachability", which is a smaller
+and better-defined job.
 
 **What exists and is used.** The runtime already carries the whole
 corroboration model (`i2pr-transport/src/reachability.rs`): a
@@ -164,10 +176,13 @@ is named as a successor in §5.3.
 
 ### 5.3 Out of scope, with the owner named
 
-- **The production SSU2 peer test.** Without it, `Reachable` for a NAT'd host
-  cannot be established honestly, so live-network testing from behind NAT stays
-  blocked. **Owner:** a successor plan that runs the peer test in production
-  rather than only on the controlled qualification path.
+- **Feeding a peer test's verdict into runtime reachability.** Without it,
+  `Reachable` for a NAT'd host cannot be established honestly, so live-network
+  testing from behind NAT stays blocked. The pieces exist but are not joined:
+  `PeerTestOwner` (Plan 521) is built from `ssu2.peer_test` inside
+  `ServiceProduct`, behind `service_tunnels_active(config)`, and nothing calls
+  `Ssu2RuntimeService::note_peer_test_outcome` with its verdict.
+  **Owner:** a successor plan that joins them. It is a wiring job, not a build.
 - **The floodfill's serving duties on a live network.** This plan makes the
   role *reachable*; whether the router's serving path is correct against real
   peers is Plan 493's question and the external lanes' evidence.

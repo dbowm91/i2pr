@@ -848,7 +848,8 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
     if raw.introducer_request && !raw.enabled {
         return Err(ConfigError::Semantic { field: "ssu2.introducer_request", reason: "x" });
     }
-    Ok(Ssu2Config { introducer_request: raw.introducer_request })
+    Ok(Ssu2Config {
+        publish_bound_address: false, introducer_request: raw.introducer_request })
 }
 "#;
     assert!(
@@ -864,7 +865,8 @@ fn default_ssu2_introducer_request() -> bool {
     false
 }
 fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
-    Ok(Ssu2Config { introducer_request: raw.introducer_request })
+    Ok(Ssu2Config {
+        publish_bound_address: false, introducer_request: raw.introducer_request })
 }
 "#;
     assert!(

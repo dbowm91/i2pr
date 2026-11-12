@@ -777,7 +777,8 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
     if raw.peer_test && !raw.enabled {
         return Err(ConfigError::Semantic { field: "ssu2.peer_test", reason: "x" });
     }
-    Ok(Ssu2Config { peer_test: raw.peer_test })
+    Ok(Ssu2Config {
+        publish_bound_address: false, peer_test: raw.peer_test })
 }
 "#;
     assert!(
@@ -793,7 +794,8 @@ fn default_ssu2_peer_test() -> bool {
     false
 }
 fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
-    Ok(Ssu2Config { peer_test: raw.peer_test })
+    Ok(Ssu2Config {
+        publish_bound_address: false, peer_test: raw.peer_test })
 }
 "#;
     assert!(
