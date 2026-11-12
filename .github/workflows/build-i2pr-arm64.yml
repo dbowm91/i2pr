@@ -1,0 +1,59 @@
+name: Build i2pr arm64
+
+# Manual only. This workflow exists to produce a runnable `i2pr` binary for an
+# **arm64 host on the private LAN** (a two-host SSU2 qualification topology).
+#
+# It runs on GitHub's native arm64 Ubuntu 22.04 runner rather than
+# cross-compiling, for one concrete reason: the crypto backend (`ring`) compiles
+# C and assembly, so an aarch64 build needs an aarch64 C toolchain and a libc
+# matching the **target**. Building natively on 22.04 links against glibc 2.35,
+# which is exactly what the target host runs; a binary cross-built on a newer
+# host would need a newer glibc and would fail at exec with a version error that
+# looks like a code defect.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: Build i2pr (Linux aarch64)
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      # The daemon is the only binary the LAN run needs. `--locked` is the
+      # repository's rule: the lock file is the dependency set under test.
+      - name: Build the daemon
+        run: cargo build --locked --release -p i2pr-daemon --bin i2pr
+      # The fingerprint is evidence: it lets the far host prove which bytes it
+      # is running, and it lets a receipt name the artifact it evaluated.
+      - name: Fingerprint the binary
+        run: |
+          set -eu
+          sha256sum target/release/i2pr | tee i2pr.sha256
+          file target/release/i2pr || true
+          readelf -p .comment target/release/i2pr 2>/dev/null || true
+      - name: Package the artifact
+        run: |
+          set -eu
+          tar -czf i2pr-linux-aarch64.tar.gz -C target/release i2pr
+          sha256sum i2pr-linux-aarch64.tar.gz | tee i2pr-linux-aarch64.tar.gz.sha256
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: i2pr-linux-aarch64
+          path: |
+            i2pr-linux-aarch64.tar.gz
+            i2pr-linux-aarch64.tar.gz.sha256
+            i2pr.sha256
+          if-no-files-found: error
+          retention-days: 14
