@@ -5685,7 +5685,7 @@ fn register_ssu2_service(
                                 // The message was decoded exactly once, above,
                                 // and the classified outcome is read here, so
                                 // the responder runs no decoder of its own.
-                                peer_test.handle_inbound(&outcome, owner.handle(), &token, now_ms);
+                                peer_test.accept_inbound(&outcome, owner.handle(), &token, now_ms);
                                 if let Err(error) =
                                     owner.process_group_inbound(&inbound, outcome, message).await
                                 {

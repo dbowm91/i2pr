@@ -432,7 +432,7 @@ fn check_the_recorder_has_one_production_call_site(owner: &str, runtime: &str) -
             "the confirmed peer test must be recorded from exactly one production call site, found {calls}"
         ));
     }
-    let handler = match item_body(&owner_code, "pub fn handle_inbound(") {
+    let handler = match item_body(&owner_code, "pub fn accept_inbound(") {
         Some(body) => body,
         None => return Some("the peer-test seam is absent".to_owned()),
     };
@@ -595,13 +595,13 @@ fn check_the_inbound_path_decodes_once(composition: &str, owner: &str) -> Option
         return Some("the peer-test seam must not decode the inbound message again".to_owned());
     }
     let code = code_view(composition);
-    let calls = code.matches("peer_test.handle_inbound(").count();
+    let calls = code.matches("peer_test.accept_inbound(").count();
     if calls != 1 {
         return Some(format!(
             "the peer-test seam must have exactly one production call site, found {calls}"
         ));
     }
-    let Some(seam) = code.find("peer_test.handle_inbound(") else {
+    let Some(seam) = code.find("peer_test.accept_inbound(") else {
         return Some("the peer-test seam has no production call site".to_owned());
     };
     let call = code.get(seam..seam.saturating_add(96)).unwrap_or_default();
@@ -933,7 +933,7 @@ pub fn start_probe<R: RngCore>(&mut self, peer: PeerId, rng: &mut R, now_ms: u64
 #[test]
 fn the_guard_reports_a_second_production_call_site() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
+pub fn accept_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let action = { PeerTestInbound::Completed(round_trip) => {
         service.note_confirmed_peer_test(round_trip.link_id, round_trip.proof);
     } };
@@ -962,7 +962,7 @@ pub fn something_else(&mut self) {}
 #[test]
 fn the_guard_reports_a_daemon_that_asserts_a_family() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
+pub fn accept_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let family = AddressFamily::Ipv4;
     let _ = family;
 }
@@ -1031,7 +1031,7 @@ pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest
 #[test]
 fn the_guard_reports_a_daemon_that_records_its_own_signal() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
+pub fn accept_inbound(&mut self, outcome: &RouterI2npOutcome) {
     tracker.record(ReachabilitySignal::PeerTestResult { family, outcome }, now);
 }
 "#;
@@ -1061,7 +1061,7 @@ pub fn build_peer_test_answer(outcome: &RouterI2npOutcome, message_id: u32, expi
 #[test]
 fn the_guard_reports_an_inbound_path_that_decodes_twice() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
+pub fn accept_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let again = decode_authenticated_router_i2np(&inbound, now_ms);
     let _ = again;
 }
@@ -1088,7 +1088,7 @@ fn something_else(&mut self) {}
 #[test]
 fn the_guard_reports_an_owner_that_spawns_a_task() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) -> PeerTestInbound {
+pub fn accept_inbound(&mut self, outcome: &RouterI2npOutcome) -> PeerTestInbound {
     tokio::spawn(async move { do_work().await });
     PeerTestInbound::Ignored
 }

@@ -394,7 +394,7 @@ fn rule_the_owner_lives_in_one_place(sources: &Sources) -> Option<String> {
     if composition.matches("PeerTestRuntime::new(").count() != 1 {
         return Some("the composition root must construct the owner exactly once".to_owned());
     }
-    if composition.matches("peer_test.handle_inbound(").count() != 1 {
+    if composition.matches("peer_test.accept_inbound(").count() != 1 {
         return Some("the peer-test seam must have exactly one production call site".to_owned());
     }
     if composition.matches("peer_test.drive(").count() != 1 {
@@ -432,7 +432,7 @@ fn rule_the_owner_lives_in_one_place(sources: &Sources) -> Option<String> {
     }
     // The seam and the drive are the owner's own, and nothing else drives
     // them.
-    for signature in ["pub fn handle_inbound(", "pub fn drive("] {
+    for signature in ["pub fn accept_inbound(", "pub fn drive("] {
         if item_body(&owner, signature).is_none() {
             return Some(format!("the owner's {signature} is absent"));
         }
@@ -583,7 +583,7 @@ fn rule_nothing_new_runs_and_nothing_is_advertised(sources: &Sources) -> Option<
     let owner = code_view(&sources.owner);
     for signature in [
         "pub fn new(enabled: bool)",
-        "pub fn handle_inbound(",
+        "pub fn accept_inbound(",
         "pub fn drive(",
     ] {
         let Some(body) = item_body(&owner, signature) else {
@@ -749,8 +749,8 @@ fn the_probe_fires_when_the_product_owns_a_peer_test() {
 fn the_probe_fires_when_a_second_consumer_appears() {
     let mut sources = Sources::from_tree();
     sources.composition = sources.composition.replace(
-        "peer_test.handle_inbound(&outcome, owner.handle(), &token, now_ms);",
-        "peer_test.handle_inbound(&outcome, owner.handle(), &token, now_ms);\n                peer_test.handle_inbound(&outcome, owner.handle(), &token, now_ms);",
+        "peer_test.accept_inbound(&outcome, owner.handle(), &token, now_ms);",
+        "peer_test.accept_inbound(&outcome, owner.handle(), &token, now_ms);\n                peer_test.accept_inbound(&outcome, owner.handle(), &token, now_ms);",
     );
     assert!(
         rule_the_owner_lives_in_one_place(&sources).is_some(),

@@ -135,7 +135,7 @@ impl PeerTestRuntime {
     /// The responder records **nothing** about itself. Only a completed round
     /// trip records anything, and it records the router's **own**
     /// reachability through the runtime's own recorder.
-    pub fn handle_inbound(
+    pub fn accept_inbound(
         &mut self,
         outcome: &RouterI2npOutcome,
         handle: &Ssu2DaemonHandle,
@@ -242,6 +242,7 @@ impl PeerTestRuntime {
         let Some(peer) = self.select_peer_test_target(handle) else {
             // No peer with a session: the attempt is refused and counted by
             // the retry delay, never queued.
+            //
             self.next_at_ms = now_ms.saturating_add(PEER_TEST_RETRY_MS);
             return;
         };

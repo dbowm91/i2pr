@@ -359,7 +359,7 @@ async fn a_completed_exchange_makes_the_bound_address_publishable() {
     // B receives it and answers.
     let inbound = next_inbound(&mut b.handle).await;
     let decoded = decode_authenticated_router_i2np(&inbound, wall_ms()).expect("decode");
-    b_runtime.handle_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
+    b_runtime.accept_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
     assert_eq!(
         counters(&b_runtime).answers_built,
         1,
@@ -369,7 +369,7 @@ async fn a_completed_exchange_makes_the_bound_address_publishable() {
     // A receives the echo and completes its probe.
     let echo = next_inbound(&mut a.handle).await;
     let decoded = decode_authenticated_router_i2np(&echo, wall_ms()).expect("decode");
-    a_runtime.handle_inbound(&decoded.outcome(), &a.handle, &a.token, wall_ms());
+    a_runtime.accept_inbound(&decoded.outcome(), &a.handle, &a.token, wall_ms());
     assert_eq!(
         a.handle.service().confirmed_peer_test_count(),
         1,
@@ -419,7 +419,7 @@ async fn a_router_with_the_opt_in_off_answers_nobody() {
     a_runtime.drive(&a.handle, &a.token, wall_ms());
     let inbound = next_inbound(&mut b.handle).await;
     let decoded = decode_authenticated_router_i2np(&inbound, wall_ms()).expect("decode");
-    b_runtime.handle_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
+    b_runtime.accept_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
 
     assert_eq!(
         counters(&b_runtime).answers_built,
@@ -452,10 +452,10 @@ async fn a_contradiction_vetoes_the_publication() {
     a_runtime.drive(&a.handle, &a.token, wall_ms());
     let inbound = next_inbound(&mut b.handle).await;
     let decoded = decode_authenticated_router_i2np(&inbound, wall_ms()).expect("decode");
-    b_runtime.handle_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
+    b_runtime.accept_inbound(&decoded.outcome(), &b.handle, &b.token, wall_ms());
     let echo = next_inbound(&mut a.handle).await;
     let decoded = decode_authenticated_router_i2np(&echo, wall_ms()).expect("decode");
-    a_runtime.handle_inbound(&decoded.outcome(), &a.handle, &a.token, wall_ms());
+    a_runtime.accept_inbound(&decoded.outcome(), &a.handle, &a.token, wall_ms());
     assert!(
         a.handle.publication_material(wall_ms()).is_ok(),
         "the corroborated router must publish"
