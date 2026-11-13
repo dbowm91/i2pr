@@ -165,6 +165,7 @@ impl PeerTestRuntime {
                 // the exchange travelled on, so the daemon never asserts
                 // one.
                 let service = handle.service();
+                let elapsed_ms = round_trip.proof.elapsed_ms();
                 if let Err(error) =
                     service.note_confirmed_peer_test(round_trip.link_id, round_trip.proof)
                 {
@@ -172,6 +173,16 @@ impl PeerTestRuntime {
                         transition = "peer_test_evidence_refused",
                         reason = ?error,
                         "the router's own confirmed peer test was not recorded"
+                    );
+                } else {
+                    // Plan 547: the round trip is the router's own reachability
+                    // evidence, so it is reported. The report carries the
+                    // **measured** round-trip time and nothing else: no peer,
+                    // no address, no key and no payload.
+                    tracing::info!(
+                        transition = "peer_test_round_trip_completed",
+                        elapsed_millis = elapsed_ms,
+                        "the router's own peer test completed a matched round trip"
                     );
                 }
             }
@@ -208,6 +219,14 @@ impl PeerTestRuntime {
                 delivery_outcome = ?outcome,
                 "a peer-test answer was refused by the transport"
             );
+        } else {
+            // Plan 547: the answer is the **responder's** half of the round
+            // trip, and a router that answers nobody can never corroborate
+            // anybody's reachability. The report carries counts only.
+            tracing::info!(
+                transition = "peer_test_answer_sent",
+                "the router answered a peer's peer test"
+            );
         }
     }
 
@@ -243,6 +262,14 @@ impl PeerTestRuntime {
             // No peer with a session: the attempt is refused and counted by
             // the retry delay, never queued.
             //
+            // Plan 547: the refusal is **reported**. A peer test that never
+            // leaves the router and a peer test that is never started read
+            // exactly the same in a log that says nothing, and the two have
+            // opposite causes.
+            tracing::info!(
+                transition = "peer_test_no_peer_to_ask",
+                "the router's own peer test has no peer with a live session"
+            );
             self.next_at_ms = now_ms.saturating_add(PEER_TEST_RETRY_MS);
             return;
         };
@@ -263,7 +290,7 @@ impl PeerTestRuntime {
         let probe = match started {
             Ok(probe) => probe,
             Err(error) => {
-                tracing::debug!(
+                tracing::info!(
                     transition = "peer_test_probe_refused",
                     reason = %error,
                     "the router's own peer test refused a probe"
@@ -279,9 +306,17 @@ impl PeerTestRuntime {
                 Ok(request) => request,
                 Err(_) => return,
             };
+        // Plan 547: the probe is **reported**. The report names no peer and
+        // no address: it says that a probe left this router and that the
+        // transport accepted it, which is the difference between "the peer
+        // test never ran" and "the peer never answered".
+        tracing::info!(
+            transition = "peer_test_probe_started",
+            "the router's own peer test sent a probe"
+        );
         let outcome = handle.delivery().deliver(request, token);
         if !matches!(outcome, RouterDeliveryOutcome::Accepted) {
-            tracing::debug!(
+            tracing::info!(
                 transition = "peer_test_probe_refused",
                 delivery_outcome = ?outcome,
                 "the router's own peer test probe was refused by the transport"

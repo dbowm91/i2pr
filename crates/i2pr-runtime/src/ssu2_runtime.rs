@@ -5005,8 +5005,28 @@ impl Ssu2RuntimeService {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<Ssu2EstablishedLink, Ssu2DialOutcome> {
-        self.dial_ssu2_inner(target, None, timeout, cancellation)
-            .await
+        let outcome = self
+            .dial_ssu2_inner(target, None, timeout, cancellation)
+            .await;
+        // Plan 547: the dial's own typed outcome is **reported**. The peer
+        // pool reports a coarser reason, and a dial that failed for want of
+        // admission reads the same as a dial the peer never answered.
+        match &outcome {
+            Ok(_) => {
+                tracing::info!(
+                    transition = "ssu2_outbound_dial_established",
+                    "SSU2 outbound dial established a session"
+                );
+            }
+            Err(error) => {
+                tracing::info!(
+                    transition = "ssu2_outbound_dial_failed",
+                    dial_outcome = ?error,
+                    "SSU2 outbound dial did not establish a session"
+                );
+            }
+        }
+        outcome
     }
 
     /// Dials one validated target, presenting an **explicit**
@@ -6418,6 +6438,16 @@ impl Ssu2RuntimeService {
 
     fn count_drop_category(&self, category: DropCategory) {
         let counters = &self.shared.counters;
+        // Plan 547: the drop is **reported**. A silent drop is exactly the
+        // kind of event that makes a router that is being refused look like
+        // a router nobody answers, and the two have opposite causes. The
+        // report carries the category only: no peer, no address, no key and
+        // no payload.
+        tracing::info!(
+            transition = "ssu2_inbound_datagram_dropped",
+            drop_category = ?category,
+            "SSU2 inbound datagram dropped"
+        );
         match category {
             DropCategory::Malformed | DropCategory::VersionNetworkType => {
                 counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
@@ -6439,6 +6469,15 @@ impl Ssu2RuntimeService {
 
     fn count_terminate_reason(&self, reason: TerminateReason) {
         let counters = &self.shared.counters;
+        // Plan 547: the termination is **reported**. Without it, a refused
+        // establishment reads exactly like an establishment that was never
+        // attempted, and a router that is being refused is diagnosed as a
+        // router nobody answers. The report carries the reason only.
+        tracing::info!(
+            transition = "ssu2_handshake_terminated",
+            terminate_reason = ?reason,
+            "SSU2 handshake terminated"
+        );
         match reason {
             TerminateReason::HandshakeTimeout | TerminateReason::RetriesExhausted => {
                 counters.handshake_timeouts.fetch_add(1, Ordering::Relaxed);
