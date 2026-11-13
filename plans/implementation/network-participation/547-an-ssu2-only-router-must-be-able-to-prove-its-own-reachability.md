@@ -289,3 +289,154 @@ the unblock audit.
 Registered directly from Plan 546's measurement, which located both gates and
 left them unfixed deliberately. Plan 546 stays registered; this plan is what
 makes its relaxation meaningful.
+
+### 17.2 — 2026-11-13, implementation, the guard retarget, and the measurement
+
+**The owner moved; the recorder did not.** `PeerTestRuntime`
+(`crates/i2pr-daemon/src/peer_test_runtime.rs`) is the new owner, and it is
+built in the SSU2 service closure from `ssu2_config.peer_test` **alone**. It
+rides the daemon's **existing** group tick and it is fed by the daemon's own
+inbound path, which is its **single** consumer: the seam reads the classified
+dispatcher outcome, so the message is decoded once. `ServiceProduct` keeps no
+peer test at all — `peer_test_owner`, `peer_test_rng`, `peer_test_next_at_ms`,
+`peer_test_counters_cell`, `build_peer_test_owner`, `build_peer_test_rng`,
+`handle_inbound_peer_test`, `deliver_peer_test_answer`, `drive_peer_test`,
+`select_peer_test_target`, `publish_peer_test_counters` and
+`peer_test_counters_cell` are all gone, and `ServiceProductOptions::peer_test`
+is gone with them.
+
+**The re-dating path now supplies the endpoint.** `refresh_local_router_info_record`
+carries the separately bound NTCP2 endpoint and the scope it is admitted in,
+and chooses the install form by the record's **own** content: a record that
+names an NTCP2 address goes through `install_scoped_dual_router_info`, whose
+gate still compares that address with the supplied endpoint; a record that
+names none keeps `install_local_router_info`, whose gate requires exactly
+that. The endpoint is never inferred from the record — inferring it would make
+the test compare the record with itself.
+
+**Plan 521's guard was retargeted and strengthened.** Its rules that named the
+product's peer-test code now name the new module, and the two that named the
+product's *inbound path* now name the daemon's composition root. The
+retarget also closed a latent defect: several of those rules used `?` on an
+`Option`, so an **absent** definition returned "no problem found" — the
+guard's own header claimed "a function that is **absent** fails closed", and
+that claim was false, so a rule could be satisfied by deleting the code it
+policed. Every rule this plan touched now reports an absent definition, and a
+new rule pins that the destination-group product owns no peer test at all.
+Plan 521's closure record is **not** rewritten.
+
+**Two of this plan's own negative controls were wrong and were corrected.** The
+first run of NC-547-3 and NC-547-4 fired, but they fired on a **compile error**
+— a struct field the constructor never set, and an undefined helper — and a
+control that fires because the tree does not build proves nothing. Both were
+rewritten to compile, and the guard's install rule was strengthened at the same
+time to pin the **exact** scoped-install call, so the endpoint the path passes
+is the supplied one. The corrected run fires all eleven controls for the
+right reason.
+
+**The measurement.** On the three-host private LAN — `192.168.182.20` (the
+floodfill), `192.168.182.143` and `192.168.182.8` — with
+`[ssu2] publish_bound_address = true` and `[ssu2] peer_test = true`:
+
+```text
+04:47:28  normal floodfill opted in; evaluating eligibility requested=true role="Disabled"
+04:48:28  floodfill qualification activated requested=true role="Active"
+```
+
+Plan 546's measurement on the same host recorded `role="Disabled"` and never
+left it. The role activated because the runtime produced **publication
+material**, and `publication_material` requires `Reachable`, and `Reachable`
+requires **three** distinct corroboration classes of which the confirmed peer
+test is the only production source of the third: `LocalConfiguredBind` comes
+from the bind, `ValidatedPath` comes from an authenticated inbound session,
+and `AuthenticatedPeerObservedExternalAddress` still has no production caller
+at all. The activation is therefore itself the evidence that the peer test
+completed over a real SSU2 session — and the local node's log shows the
+session it completed on (`ssu2 peer pool dial outcome outcome=Established`).
+
+**What the measurement does not say.** The floodfill role activating on a
+private LAN is not the floodfill **serving** correctly against stock peers —
+Plan 493 owns that question — and the role's activation is not a claim that
+the published address is reachable from the public Internet.
+
+### 17.3 — 2026-11-13, the reporting build, the corrected attribution, and the blocked measurement
+
+**Three commits followed 17.2, and the first of them was the floor's own
+finding.** The 76-step floor failed at step 45, not in a test but in
+`scripts/check-m11-transit-boundaries.sh`: rule 10 forbids the **word**
+`handle_inbound` anywhere in production `lib.rs`, because that is the transit
+owner's entry point, and 17.2's daemon-side seam was named `handle_inbound`.
+`f430b453` renames the seam **`accept_inbound`** and leaves the checker
+byte-identical — the rule's needle cannot distinguish two types' methods of the
+same name, and tightening it would have required rewriting the rule's own
+negative controls, whose sample texts call `owner.handle_inbound(`. The
+over-broad needle is recorded as a finding, not papered over.
+
+**`4139fc7d` gave the peer test and the transport a voice.** The earlier build
+owned no log at all, which is exactly the trap 545 recorded one layer down: a
+probe that was refused, a probe that went out and was never answered, and a
+peer test that never ran were one indistinguishable silence. The peer test now
+reports `peer_test_no_peer_to_ask`, `peer_test_probe_started`,
+`peer_test_probe_refused`, `peer_test_round_trip_completed` (with the measured
+elapsed time) and `peer_test_answer_sent`; the transport reports the typed
+`terminate_reason` on both handshake paths, the `drop_category` on the inbound
+path, and the typed `dial_outcome` at the dial seam. Counts, elapsed time and
+stable labels only. `d4647de1` rebuilt the arm64 artifact for it.
+
+**The measurement, on that build, over 3 h 04 m.** Three hosts, all with
+`[ssu2] peer_test = true`; `.20` additionally with `publish_bound_address` and
+`[floodfill] enabled`:
+
+| Host | probes started | matched round trips | answers sent to peers | RTT | publication cycles | published |
+| --- | --- | --- | --- | --- | --- | --- |
+| `192.168.182.20` (floodfill) | 39 | **39** | 38 | 3–43 ms | 3, all `RefusedNoTarget` | **0** |
+| `192.168.182.143` | 40 | 38 | 1 | 2–142 ms | 3, all `RefusedNoTarget` | **0** |
+| `192.168.182.8` | 38 | **38** | 76 | — | 3, all `RefusedNoTarget` | **0** |
+
+The peer test works, on every host, repeatedly, and it is what moved the gate:
+
+```text
+14:54:06.148  peer_test_probe_started
+14:54:06.188  peer_test_round_trip_completed elapsed_millis=40
+14:54:36.188  floodfill qualification activated requested=true role="Active"
+```
+
+**A correction to 17.2.** 17.2 said `AuthenticatedPeerObservedExternalAddress`
+"still has no production caller at all", and concluded that the confirmed peer
+test is the only production source of the third corroboration class. **That is
+wrong.** `note_observed_external_address` is reached from the inbound
+handshake's `Address` block and from `SessionEvent::AddressObserved`
+(`crates/i2pr-runtime/src/ssu2_runtime.rs`), so class 1 is producible, and a
+fresh inbound handshake supplies classes 1 and 2 together. The activation above
+is therefore **not** proof that the peer test was *necessary* for it — the log
+shows the round trip 40 s earlier, which proves the peer test ran, and the
+corroboration arithmetic alone cannot separate the two. 17.2's sentence is left
+in place as the record of what was believed at implementation time; this
+paragraph is the correction.
+
+**T4 did not happen, and the reason is not the peer test.** Every publication
+cycle on every host ended `RefusedNoTarget`, because
+`publication_targets_excluding` → `select_version_gated_floodfills` admits only
+records that advertise floodfill, and **all three hosts hold `caps="4"` for each
+other** — including the record each hands out about itself. The out-of-band
+export is written at startup, before the gate runs, and is never rewritten
+(`.20`'s export is dated `14:53`; activation was `14:54:36`), the floodfill's
+own publication is refused for the same reason, and the production router runs
+no RouterInfo-kind lookup. That is a bootstrap deadlock in an isolated network,
+and it is Plan 548's.
+
+**The role does not sustain, and that is a second blocker.** `.20` held
+`role="Active"` for 29 m 30 s, withdrew, re-activated for 1 m 30 s, withdrew,
+and stayed `Disabled` for the remaining 2 h 45 m. `Reachable` needs three
+distinct classes; only `LocalConfiguredBind` and `PeerTestResult{Confirmed}`
+are refreshed by traffic a long-lived session produces, so classes 1 and 2 lapse
+at `DEFAULT_OBSERVATION_TTL` (30 min) and the state falls to the corroboration
+floor, which publication refuses. The 29 m 30 s window matches that TTL. The
+class composition itself is **not observable** — no surface reports it — so the
+attribution is inferred from source plus the matching period and is recorded as
+inferred.
+
+**Closure.** `plans/closure/network-participation/547-status.md` is the
+authority: both gates this plan was registered for are passed with executed
+evidence, and the inherited measurement clause is `blocked` at target
+selection. Plan 548 carries it.
