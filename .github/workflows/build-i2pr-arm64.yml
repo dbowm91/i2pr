@@ -28,6 +28,15 @@ name: Build i2pr arm64
 # dual-transport record. Both gates stood between the far host and the
 # floodfill role.
 #
+# Rebuilt for Plan 547 at 4139fc7d: the peer test now reports its own
+# progress and the transport names the reason a handshake ended. The
+# three-host measurement reached the floodfill role on the far host and then
+# lost it when the thirty-minute observation window lapsed, and neither the
+# peer test nor the SSU2 dial reported anything, so the loss could not be
+# diagnosed from either host's log. This rebuild is the instrumentation, not
+# a wire change: the far host still runs the same peer test with the same
+# opt-in, and now says what it is doing.
+#
 # Why a **logging** change is a behaviour change here. The lab proves
 # directions by reading each host's log, so a build that cannot say it dialled
 # is indistinguishable from a host that never dialled. Two diagnoses in the
