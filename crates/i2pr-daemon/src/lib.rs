@@ -3045,9 +3045,16 @@ async fn run_floodfill_evaluation(
                         }
                         let _ = local_router_info.send(Some(Arc::new(withdrawn)));
                     }
+                    // Plan 549: the withdrawal used to report the role and
+                    // nothing else, so a role that flapped every 30 s could be
+                    // read as a reachability lapse when the real cause was any
+                    // of the other readiness inputs. The categorical reasons
+                    // were already computed and stored; they are named here.
+                    let status = state.status();
                     tracing::info!(
                         requested = state.intent(),
                         role = "Disabled",
+                        reasons = ?status.reasons,
                         "floodfill advertisement withdrew"
                     );
                 }

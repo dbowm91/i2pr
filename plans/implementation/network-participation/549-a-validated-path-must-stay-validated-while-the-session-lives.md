@@ -458,3 +458,48 @@ probe assembles its needles with `concat!`, and its prose no longer names the
 call. The broken glob is a real coverage hole in a boundary checker and needs
 its own plan-of-record to fix, with a positive control that shows a test file
 mentioning the call is exempt and a production file mentioning it is not.
+
+### 17.4 — 2026-11-13, the measurement, and the second gap it exposed
+
+**The re-validation works, on the wire, in production.** The instrumented run
+(`be77cfd4…`, boot `21:53:07`) reports, counts only:
+
+```text
+21:53:07  reachability_state_changed from=None to=ObservedUnconfirmed        classes=1
+21:53:07  reachability_state_changed from=ObservedUnconfirmed to=CandidateReachable  classes=2
+21:53:37  reachability_state_changed from=CandidateReachable to=Reachable    classes=3
+21:54:07  floodfill qualification activated requested=true role="Active"
+22:03:25  path_revalidation_completed path_revalidations=1
+22:03:25  reachability_state_changed Reachable -> Reachable                  classes=4
+```
+
+The probe lands on the 10-minute cadence and takes the supporting-class count
+from three to **four** — the class Plan 549 was registered to give a producer is
+now produced on a live session with no handshake and no migration.
+
+**And it did not stop the withdrawal.** At `22:23:07` — boot + 30 min to the
+second — the advertisement withdrew with **no `reachability_state_changed` line
+at all**. The state was, and stayed, `Reachable`. So the flap is **not** a
+reachability lapse, and `17.2`/`17.3`'s framing ("a withdrawal is the class
+lapsing") was wrong for this case.
+
+**The withdrawal could not say why, which is the second gap of the same kind.**
+`FloodfillServiceStep::Withdraw` is chosen by
+`FloodfillServiceOwner::evaluate` (`crates/i2pr-daemon/src/floodfill.rs:1531`),
+which computes the categorical `NormalIneligibility` list and stores it in
+`status().reasons` — and the daemon's withdrawal arm logged `requested` and
+`role` and **dropped the reasons**. So the one line that would explain a 30 s
+flap carried everything except the explanation. The arm now logs `reasons`,
+which is a fixed categorical enum: no peer, address, key or payload.
+
+**A hypothesis falsified from the source, not by waiting.**
+`explicit_bind_refresh_due` (`ssu2_runtime.rs:478`) re-asserts class 0 every
+`observation_ttl / 2` — 15 minutes — so the bind class cannot be what lapses.
+The earlier guess that it could was wrong and is recorded as wrong.
+
+**What is now measurable that was not.** The flap recurs on a 30 s–4 min beat,
+so one instrumented run of about ten minutes names its cause instead of costing
+another 40-minute inference. The remaining candidates are all in the readiness
+set `evaluate_normal_eligibility` grades — `netdb_ready`, `storage_ready`,
+`maintenance_ready`, `resource_headroom`, `clock_sane`,
+`supervision_healthy`, and `material` — and they are now distinguishable.
