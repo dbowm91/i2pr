@@ -237,3 +237,39 @@ Neither is a defect fix: both relax a predicate the runtime documents as
 deliberate, and both make the router advertise a capability on a private
 address. That is a capability decision, so it needs a plan of record and the
 operator's choice of the two.
+
+## Plan 546's measurement: the floodfill still does not activate
+
+Plan 546 relaxed the publication predicates and added `[ssu2]
+publish_bound_address`, and the relaxation works as designed — its lane proves
+the loopback, private, public, unbound and unspecified cases, and its guard
+proves the single authority and the untouched reachability gate.
+
+Measured on `192.168.182.20` with the key set and Plan 546's binary, the role
+still does not activate:
+
+```text
+23:59:07.228399  normal floodfill opted in; evaluating eligibility requested=true role="Disabled"
+23:59:07.240229  the re-dated RouterInfo was not installed reason=InvalidPublication
+23:59:07.240519  router RouterInfo publication transition="router_info_publication" outcome=RefusedNoTarget
+```
+
+Two gates stand between the relaxation and a serving floodfill, and neither is a
+predicate:
+
+1. **No caller records the configured-bind corroboration on the normal path.**
+   `note_explicit_bind_for_controlled_qualification` is reached only from
+   `activate_controlled`, which only the `controlled_loopback` profile uses. So
+   `Reachable` is never reached on a non-loopback bind, and
+   `publication_material` refuses on reachability before the address predicate
+   is consulted.
+2. **The re-dating path cannot install a dual-transport record.** The record
+   carries one SSU2 and one NTCP2 address; `install_local_router_info` passes no
+   controlled endpoint, and the install gate requires the NTCP2 address list to
+   be empty. This refusal predates Plan 546 and is visible in every earlier lab
+   run.
+
+So the correlated two-way reply (T4) remains unreached, and the reason is now
+precise rather than general: the topology has three routers that hold sessions
+with each other, and none of them can publish a reachable address for a peer to
+publish to.

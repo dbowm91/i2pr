@@ -389,3 +389,82 @@ fails if either site restates the loopback test.
 `normal` is unchanged in every other respect: the `Reachable` and expiry tests
 stay where they were, the unspecified/port checks move into the predicate, and
 the default is still off.
+
+### 17.3 — 2026-11-13, the measurement: the predicate works, the role does not
+
+Measured on the three-host LAN after deploying this plan's binary to
+`192.168.182.20` with `[ssu2] publish_bound_address = true`:
+
+```text
+normal floodfill opted in; evaluating eligibility requested=true role="Disabled"
+the re-dated RouterInfo was not installed reason=InvalidPublication
+router RouterInfo publication transition="router_info_publication" outcome=RefusedNoTarget
+```
+
+The relaxation is **necessary but not sufficient**, and §14's acceptance
+criterion is **not met**. Two gates remain, and neither was identified when this
+plan was registered.
+
+**1. Nothing on the normal path records a configured-bind corroboration.**
+`note_explicit_bind_for_controlled_qualification` is called only by
+`activate_controlled`, which only the `controlled_loopback` floodfill profile
+reaches. The `Normal` profile therefore never reaches
+`ReachabilityState::Reachable`, and `publication_material` refuses on
+reachability **before the address predicate is consulted at all**. Relaxing the
+predicate changed which binds *could* be published; it did not create a caller.
+This is the same shape this repository has closed three times now — mechanism
+present, caller absent — and it is the reason the plan's own §3.2 warning about
+the corroboration being load-bearing was correct but incomplete: being
+load-bearing is not the same as being reachable.
+
+**2. The re-dating path cannot install a dual-transport record.**
+`crates/i2pr-daemon/src/router_i2np.rs` re-dates the installed record and calls
+`install_local_router_info(fresh, now)`, which passes
+`controlled_ntcp2_endpoint: None`; the install gate then requires
+`ntcp2_addresses.is_empty()`, and the record this lab carries has one NTCP2
+address beside its one SSU2 address. The refusal is **pre-existing** — it
+predates this plan and appears in every earlier lab run — but it sits directly
+on the path to a floodfill record, so this plan inherits it.
+
+Both are recorded rather than fixed. Each needs its own decision — the first
+about **what corroborates** reachability on a non-loopback bind, the second
+about **which** install form the re-dating path should use — and neither is a
+predicate, which is all this plan set out to change.
+
+**The plan therefore stays `registered`.** What it delivered is real and proven
+locally: one predicate, one operator key with the precondition in its own
+documentation, one qualification arm, a lane of 13 rows and a guard of 14
+(7 rules, 7 inverted probes), plus 9 negative controls that all fired. What it
+did not deliver is a router that serves as a floodfill, and the plan says so
+instead of closing.
+
+**What a successor needs, in order.** First, decide what corroborates
+reachability when the operator has declared the address directly reachable —
+today's `LocalConfiguredBind` observation is the candidate, and it must be
+recorded on the normal path, which means a caller and a gate rather than a
+predicate. Second, decide how the re-dating path installs a record whose form
+the install gate refuses: either plumb the NTCP2 endpoint through, or re-date
+only the SSU2 address. Then the floodfill role has material and a record it can
+install, and a peer's publication can be correlated.
+
+### 17.4 — 2026-11-13, a closed guard's rule was retargeted, not deleted
+
+The floor's workspace test step failed on
+`ssu2_explicit_bind_corroboration_boundary`, rule
+`the_controlled_path_is_unchanged`, with *"the controlled-qualification
+recorder must keep refusing a non-loopback bind"*. That rule asserted the body
+of `note_explicit_bind_for_controlled_qualification` contains `is_loopback()`,
+which is precisely the predicate this plan moved into
+`may_publish_bound_address`.
+
+The rule is **retargeted, and it is now stronger**: the recorder must reach
+`may_publish_bound_address(`, and it must **not** restate `is_loopback()`. So
+the policy still cannot be bypassed, and it can no longer be duplicated. The
+closed plan's record is not rewritten; this is the successor's correction, and
+it is recorded here because a reader of that plan will not find it.
+
+This is the third time in this repository's recent history that a deliberate
+policy change has surfaced as a closed guard failing rather than as a compile
+error — Plan 503's DSM rule and Plan 542's `PruneOutcome` link were the other
+two — and in all three cases the guard was right to fail: it encoded a fact the
+successor was changing.

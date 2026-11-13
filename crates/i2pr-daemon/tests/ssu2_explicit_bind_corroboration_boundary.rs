@@ -442,10 +442,21 @@ fn check_the_controlled_path_is_unchanged(runtime: &str, floodfill: &str) -> Opt
             "the controlled-qualification recorder must keep recording the class".to_owned(),
         );
     }
-    if !narrow.contains("is_loopback()") {
+    // Plan 546 retargeted this rule; it was not deleted. The recorder must
+    // still refuse a non-loopback bind, and it must do so through the single
+    // publication predicate rather than restating the loopback test -- so the
+    // policy lives in one place and the operator's key is the only thing that
+    // can relax it. This is **stronger** than the rule it replaces: it now
+    // forbids the restatement as well as requiring the refusal.
+    if !narrow.contains("may_publish_bound_address(") {
         return Some(
-            "the controlled-qualification recorder must keep refusing a non-loopback bind"
+            "the controlled-qualification recorder must refuse through the publication predicate"
                 .to_owned(),
+        );
+    }
+    if narrow.contains("is_loopback()") {
+        return Some(
+            "the controlled-qualification recorder must not restate the loopback test".to_owned(),
         );
     }
 
