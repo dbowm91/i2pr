@@ -382,3 +382,66 @@ clean on both changed crates.
 handshake and no migration, with a disabled arm that decays — without which the
 lane proves nothing), WP5 (the guard), WP6 (the negative controls), WP7 (docs,
 inventory, the 76-step floor) and WP8 (the three-host re-measurement).
+
+### 17.3 — 2026-11-13, the lane, the guard, and the diagnostics the plan was missing
+
+**WP4 and WP5 landed.** The lane
+(`crates/i2pr-runtime/tests/ssu2_path_revalidation.rs`) drives two real runtime
+services over loopback UDP: a live session issues a PathChallenge, the peer
+answers, `path_revalidations` increments, and `path_migrations` stays at
+**zero** — re-proving the path in use is not a migration. Its control arm sets
+the cadence out of reach and pins `path_revalidations` to zero, so the lane
+cannot pass on traffic the runtime would have produced anyway. A third arm
+proves the composition at unit speed rather than the transport's half-hour:
+three classes re-recorded on the cadence hold `Reachable` across **two**
+observation lifetimes, and the same signals without the path re-record fall to
+the corroboration floor.
+
+The guard
+(`crates/i2pr-daemon/tests/ssu2_path_revalidation_boundary.rs`) is six rules
+with an inverted probe each: the model untouched (floor still two,
+`ValidatedPath` still class 2), a re-validation cannot migrate (distinct
+outcome, one assignment of the validated endpoint), one observation records one
+class, the daemon records no signal, the probe is bounded (a named ceiling that
+is enforced, one session per pass, no task or listener), and the cadence is a
+scheduler deadline.
+
+**Writing the guard caught two of its own needles, not two tree defects.** The
+class-map rule counted a *grouped* match (`| Self::ValidatedPath { .. } =>`)
+as a second mapping, and the "returns its own outcome" rule looked for
+`return Ok(` **after** the variant name instead of before it. Both were fixed
+in the rule; neither was a licence to change the code.
+
+**The diagnostics gap, and the same lesson twice.** `17.2` claimed the
+re-validation was observable because it is counted. That was wrong in the way
+Plan 545 recorded one layer down: `path_revalidations` was incremented and
+**never reported**, so "the probe ran and was answered" was indistinguishable
+from "the probe never ran". Two further gaps made the 3 h 04 m measurement only
+half-readable:
+
+- `publish_transport` is fed the **literal** `"loopback-only"`
+  (`crates/i2pr-daemon/src/lib.rs:890`), so the published
+  `transport.reachability` is a constant and is **not** the tracker's state.
+  There is therefore no read path for reachability in the lab at all.
+- the tracker's class occupancy and `expires_at` are reported by **nothing**,
+  which is why 547's withdrawal had to be attributed by inference.
+
+The plan therefore adds, counts and labels only:
+
+- `path_revalidation_completed` (INFO, with the running total) when a probe is
+  answered, and `path_revalidation_refused` (WARN) when it cannot be queued, so
+  a probe that never reached the wire says so;
+- `reachability_state_changed` (INFO) with `from`, `to`, `supporting_classes`
+  and `evidence_expires_in_millis`, emitted **on transition** rather than on a
+  poll, from both the maintenance pass and the recorder. That is what turns a
+  withdrawal from "the role changed, cause unknown" into "the state went from
+  `Reachable`/3 classes to `CandidateReachable`/2 with this much evidence left".
+
+No identity, no address, no key and no payload is carried by any of them, and
+the guards' structural rules are unaffected — the model is still untouched and
+the recorder still names exactly one signal.
+
+**Verified.** `i2pr-transport-ssu2` 167/167; the lane 3/3; the guard 7/7;
+`i2pr-runtime --test ssu2_local` 19/19; `clippy -D warnings` clean across the
+workspace (which caught a `type_complexity` on the guard's rule table — fixed
+with a named alias rather than an `allow`).

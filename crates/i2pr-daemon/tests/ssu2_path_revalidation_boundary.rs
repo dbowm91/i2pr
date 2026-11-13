@@ -361,7 +361,10 @@ fn rule_the_cadence_is_a_deadline(sources: &Sources) -> Option<String> {
     None
 }
 
-const RULES: [(&str, fn(&Sources) -> Option<String>); 6] = [
+/// One rule: a pure function from the sources to its first violation.
+type Rule = fn(&Sources) -> Option<String>;
+
+const RULES: [(&str, Rule); 6] = [
     ("the-model-is-untouched", rule_the_model_is_untouched),
     (
         "a-revalidation-cannot-migrate",

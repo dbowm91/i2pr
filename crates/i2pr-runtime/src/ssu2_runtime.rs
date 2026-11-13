@@ -1671,6 +1671,12 @@ struct ServiceState {
     /// one conservative state for publication snapshots. Never sees
     /// packet or session objects.
     reachability: ReachabilityTracker,
+    /// The reachability state and class count this router last reported.
+    ///
+    /// Plan 549: a transition is reported only when it happens, so the log
+    /// carries the *reason* a floodfill withdrew rather than a periodic poll.
+    /// The pair is a state label and a count: no peer, no address, no key.
+    last_logged_reachability: Option<(ReachabilityState, usize)>,
     /// Single-flight controlled peer-test exchange (Plan 283): `None`
     /// unless the controlled driver started one through
     /// `start_controlled_peer_test`.
@@ -2236,6 +2242,7 @@ impl Ssu2RuntimeService {
                     fault_transmits: 0,
                     fault_held: None,
                     reachability,
+                    last_logged_reachability: None,
                     explicit_bind_families: BTreeSet::new(),
                     explicit_bind_recorded_at: None,
                     controlled_test: None,
@@ -7707,10 +7714,56 @@ impl Ssu2RuntimeService {
             .reachability
             .as_transport_observation(TransportKind::Ssu2, now);
         let _ = self.shared.manager.record_reachability(observation);
-        self.shared
+        let total = self
+            .shared
             .counters
             .path_revalidations
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        // Plan 549: without this line the probe is counted and never reported,
+        // so "the probe ran and was answered" is indistinguishable from "the
+        // probe never ran" -- the trap Plan 545 recorded one layer down.
+        tracing::info!(
+            transition = "path_revalidation_completed",
+            path_revalidations = total,
+            "the path in use proved itself again"
+        );
+        self.log_reachability_transition(state);
+    }
+
+    /// Reports a reachability transition, counts and labels only.
+    ///
+    /// A withdrawal used to be observable only as the floodfill role changing,
+    /// which cannot distinguish "the path class lapsed" from "the peer test
+    /// lapsed" from "a peer contradicted us" -- and those have opposite causes.
+    /// The tracker's own state, its supporting-class count and the time left
+    /// before its evidence expires are a label and two numbers, so reporting
+    /// them adds no identity and no payload.
+    fn log_reachability_transition(&self, state: &mut ServiceState) {
+        let now = self.service_now();
+        let snapshot = state.reachability.snapshot(now);
+        let current = (snapshot.state, snapshot.corroboration);
+        if state.last_logged_reachability == Some(current) {
+            return;
+        }
+        let previous = state.last_logged_reachability;
+        let expires_in_millis = u64::try_from(
+            snapshot
+                .expires_at
+                .saturating_sub(now)
+                .as_millis()
+                .min(u128::from(u64::MAX)),
+        )
+        .unwrap_or(u64::MAX);
+        state.last_logged_reachability = Some(current);
+        tracing::info!(
+            transition = "reachability_state_changed",
+            from = ?previous.map(|(state, _)| state),
+            to = ?snapshot.state,
+            supporting_classes = snapshot.corroboration,
+            evidence_expires_in_millis = expires_in_millis,
+            "the router's own reachability changed, so why it changed is now in the log"
+        );
     }
 
     /// The effective re-validation cadence.
@@ -7756,6 +7809,8 @@ impl Ssu2RuntimeService {
             return;
         };
         let queued = match state.active.get_mut(&link_id) {
+            // Only the driver reaches this block: the candidate path has its
+            // own queueing site, and the refusal below is the driver's.
             Some(record) => record
                 .session
                 .queue_path_challenge(challenge.to_vec())
@@ -7767,6 +7822,10 @@ impl Ssu2RuntimeService {
                 .counters
                 .path_denied
                 .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                transition = "path_revalidation_refused",
+                "the re-validation could not be queued, so no probe reached the wire"
+            );
             return;
         }
         let datagram = match state.active.get_mut(&link_id) {
@@ -8541,6 +8600,9 @@ impl Ssu2RuntimeService {
         // healthy session keeps its validated-path class instead of decaying
         // to the corroboration floor when the observation TTL lapses.
         self.drive_path_revalidations_locked(state);
+        // Plan 549: whatever moved the state, the transition is reported here
+        // as well, so a lapse no probe caused is still explained.
+        self.log_reachability_transition(state);
         let batch = Ssu2InboundBatch::default();
         let now_ms = monotonic_ms(&self.shared.started_at);
         let now_secs = wall_secs();
