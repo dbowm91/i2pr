@@ -495,8 +495,16 @@ fn rule_the_install_gate_keeps_its_meaning(sources: &Sources) -> Option<String> 
                 .to_owned(),
         );
     }
-    if !refresh.contains("install_scoped_dual_router_info(") {
-        return Some("the re-dating path must install through the scoped form".to_owned());
+    // The scoped install must receive the **supplied** endpoint. A path
+    // that passed any other endpoint -- one it derived, one it invented --
+    // would make the gate's comparison meaningless.
+    if !refresh
+        .contains("install_scoped_dual_router_info(fresh.clone(), now_ms, endpoint, ntcp2_scope)")
+    {
+        return Some(
+            "the re-dating path must install through the scoped form with the supplied endpoint"
+                .to_owned(),
+        );
     }
     if !refresh.contains("install_local_router_info(") {
         return Some("the re-dating path must keep the plain form".to_owned());
