@@ -257,12 +257,15 @@ still does not activate:
 Two gates stand between the relaxation and a serving floodfill, and neither is a
 predicate:
 
-1. **No caller records the configured-bind corroboration on the normal path.**
-   `note_explicit_bind_for_controlled_qualification` is reached only from
-   `activate_controlled`, which only the `controlled_loopback` profile uses. So
-   `Reachable` is never reached on a non-loopback bind, and
-   `publication_material` refuses on reachability before the address predicate
-   is consulted.
+1. **Reachability has no route in an SSU2-only posture.** A peer test can
+   record it — `ServiceProduct::handle_inbound_peer_test` calls
+   `note_confirmed_peer_test`, which records `ReachabilitySignal::PeerTestResult`
+   — but that owner lives inside `ServiceProduct`, which exists only when
+   `service_runtime_active` holds. With only SSU2 enabled there is no
+   `ServiceProduct`, so no corroboration at all, and `publication_material`
+   refuses on reachability before the address predicate is consulted. The
+   configured-bind corroboration is no help either: it is reached only from
+   `activate_controlled`, which only the `controlled_loopback` profile uses.
 2. **The re-dating path cannot install a dual-transport record.** The record
    carries one SSU2 and one NTCP2 address; `install_local_router_info` passes no
    controlled endpoint, and the install gate requires the NTCP2 address list to

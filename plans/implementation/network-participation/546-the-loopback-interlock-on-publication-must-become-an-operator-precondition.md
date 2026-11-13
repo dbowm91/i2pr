@@ -405,17 +405,25 @@ The relaxation is **necessary but not sufficient**, and §14's acceptance
 criterion is **not met**. Two gates remain, and neither was identified when this
 plan was registered.
 
-**1. Nothing on the normal path records a configured-bind corroboration.**
+**1. Reachability has no route in an SSU2-only posture.** A peer test *can*
+record it, and that path is real: `ServiceProduct::handle_inbound_peer_test`
+calls `Ssu2RuntimeService::note_confirmed_peer_test`, which records
+`ReachabilitySignal::PeerTestResult` — a genuine corroboration, not an
+assertion. But the owner that produces it is built inside `ServiceProduct`, and
+`ServiceProduct` exists only when `service_runtime_active` holds
+(`crates/i2pr-daemon/src/lib.rs`, `has_enabled_groups`). With only SSU2
+enabled — the posture this lab runs — there is no `ServiceProduct`, so no
+peer-test owner, so **no corroboration of any kind**, and
+`publication_material` refuses on reachability before the address predicate is
+consulted at all. The configured-bind corroboration is no help either:
 `note_explicit_bind_for_controlled_qualification` is called only by
-`activate_controlled`, which only the `controlled_loopback` floodfill profile
-reaches. The `Normal` profile therefore never reaches
-`ReachabilityState::Reachable`, and `publication_material` refuses on
-reachability **before the address predicate is consulted at all**. Relaxing the
-predicate changed which binds *could* be published; it did not create a caller.
-This is the same shape this repository has closed three times now — mechanism
-present, caller absent — and it is the reason the plan's own §3.2 warning about
-the corroboration being load-bearing was correct but incomplete: being
-load-bearing is not the same as being reachable.
+`activate_controlled`, which only the `controlled_loopback` profile reaches.
+
+So the first gate is **not** "add a caller". It is the same shape Plan 542
+found blocking the NetDB's retention prune: a capability that ought to belong
+to the SSU2 service is owned by the destination-group product, and is therefore
+absent exactly when the router is an SSU2-only router. The fix is to stop
+reachability from depending on that product, not to invent a new seam.
 
 **2. The re-dating path cannot install a dual-transport record.**
 `crates/i2pr-daemon/src/router_i2np.rs` re-dates the installed record and calls
@@ -437,6 +445,14 @@ documentation, one qualification arm, a lane of 13 rows and a guard of 14
 (7 rules, 7 inverted probes), plus 9 negative controls that all fired. What it
 did not deliver is a router that serves as a floodfill, and the plan says so
 instead of closing.
+
+**The floor, on the tree that carries this change, is 71 of 72.** Step 4 — the
+workspace tests, including both guards this plan's change touches
+(`ssu2_explicit_bind_corroboration_boundary`, retargeted in §17.4, and this
+plan's own) — passes. The single failure is
+`check-m11-transit-qualification-evidence.sh`, the floor-only flake Plan 545
+recorded and could not explain; it failed in every full-floor run this session
+and passes when run alone.
 
 **What a successor needs, in order.** First, decide what corroborates
 reachability when the operator has declared the address directly reachable —
