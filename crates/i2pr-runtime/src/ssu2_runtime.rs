@@ -502,6 +502,15 @@ pub struct Ssu2RuntimeConfig {
     /// runtime reads it back from the tracker's policy rather than
     /// restating it.
     pub reachability: Ssu2RuntimeReachability,
+    /// How often the path in use is asked to prove itself again (Plan 549).
+    ///
+    /// The default is [`PATH_REVALIDATION_INTERVAL_MS`], which is a third of
+    /// the transport's observation lifetime so one lost datagram cannot cost
+    /// the validated-path class. The field exists because the cadence is the
+    /// only way a lane can observe the probe inside a test's lifetime; the
+    /// daemon passes the default, so **no operator key is added**. A zero
+    /// value is treated as the default rather than as "as fast as possible".
+    pub path_revalidation_interval_ms: u64,
     /// Permits explicit-bind corroboration in the reachability tracker.
     ///
     /// When false (default) the tracker ignores `LocalConfiguredBind`
@@ -6246,7 +6255,7 @@ impl Ssu2RuntimeService {
                 session,
                 peer_router_info,
                 path,
-                next_revalidation_ms: now_ms.saturating_add(PATH_REVALIDATION_INTERVAL_MS),
+                next_revalidation_ms: now_ms.saturating_add(self.revalidation_interval_ms()),
                 confirmed_resend,
                 data_rx_observed: false,
             },
@@ -6420,7 +6429,7 @@ impl Ssu2RuntimeService {
                 peer_router_info,
                 path,
                 next_revalidation_ms: monotonic_ms(&self.shared.started_at)
-                    .saturating_add(PATH_REVALIDATION_INTERVAL_MS),
+                    .saturating_add(self.revalidation_interval_ms()),
                 confirmed_resend: None,
                 data_rx_observed: false,
             },
@@ -7704,6 +7713,16 @@ impl Ssu2RuntimeService {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// The effective re-validation cadence.
+    ///
+    /// A zero value is the default, never "as fast as possible".
+    fn revalidation_interval_ms(&self) -> u64 {
+        match self.shared.config.path_revalidation_interval_ms {
+            0 => PATH_REVALIDATION_INTERVAL_MS,
+            configured => configured,
+        }
+    }
+
     /// Asks at most one session's path in use to prove itself again.
     ///
     /// Plan 549: the probe rides this maintenance pass, so the runtime gains
@@ -7722,7 +7741,7 @@ impl Ssu2RuntimeService {
             if record.path.revalidation_in_flight(now_ms) {
                 continue;
             }
-            record.next_revalidation_ms = now_ms.saturating_add(PATH_REVALIDATION_INTERVAL_MS);
+            record.next_revalidation_ms = now_ms.saturating_add(self.revalidation_interval_ms());
             let mut challenge = [0_u8; PATH_CHALLENGE_LENGTH];
             if fill_random(&mut challenge).is_err() || challenge == [0_u8; PATH_CHALLENGE_LENGTH] {
                 continue;

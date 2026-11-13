@@ -2468,3 +2468,42 @@ floodfill's serving behaviour against stock peers — Plan 493 owns that. The
 contradiction the lane proves is the runtime's own typed contradiction route;
 whether a **production** caller reaches it is a separate question, and
 `note_observed_external_address` still has none.
+
+## 47. A validated path is re-proved while the session lives (Plan 549)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G48.1 | a **live** session, over real loopback UDP, issues a PathChallenge and counts the re-validation when the peer answers | `crates/i2pr-runtime/tests/ssu2_path_revalidation.rs`, `a_live_session_re_proves_its_path_without_migrating` |
+| G48.2 | re-proving the path in use is **not** a migration: the migration counter stays at zero | the same lane file, `a_live_session_re_proves_its_path_without_migrating` |
+| G48.3 | with the cadence out of reach the probe **never** fires, so the lane cannot pass on traffic it did not cause | the same lane file, `an_out_of_reach_cadence_never_re_proves_the_path` |
+| G48.4 | three classes hold `Reachable` across **two** observation lifetimes only when the path class is re-recorded, and fall to the floor without it | the same lane file, `the_path_class_is_what_holds_reachable_past_two_lifetimes` |
+| G48.5 | the reachability **model** is untouched: the floor stays at two, the contradiction floor at one, and `ValidatedPath` still maps to class 2 | `crates/i2pr-daemon/tests/ssu2_path_revalidation_boundary.rs`, `the_model_is_untouched` |
+| G48.6 | a re-validation **cannot** migrate: the outcome is distinct and the validated endpoint is assigned on exactly one path | the same guard file, `a_revalidation_cannot_migrate` |
+| G48.7 | **one observation records one class** — the recorder names `ValidatedPath` and nothing else | the same guard file, `one_observation_records_one_class` |
+| G48.8 | the **daemon** records no reachability signal of its own | the same guard file, `the_daemon_records_no_signal` |
+| G48.9 | the probe is **bounded**: a named ceiling that is enforced, one session per pass, no task and no listener | the same guard file, `the_probe_is_bounded` |
+| G48.10 | the cadence is a **scheduler deadline**, so an idle session still wakes to prove itself | the same guard file, `the_cadence_is_a_deadline` |
+
+G48.2 and G48.6 are the two that keep the fix from becoming a different fix: a
+re-validation that migrated would re-run per-IP and per-subnet accounting
+against an unchanged address and would blur the one distinction the path module
+exists to make.
+
+G48.3 is the one that makes the lane non-vacuous. A lane that only asserts
+"some counter moved" passes on traffic the runtime would have produced anyway;
+the control arm pins the counter to **zero** when the cadence cannot be
+reached.
+
+G48.10 is the one that would have made the plan look finished while doing
+nothing. `drive_timeouts_locked` is reached both from the loop's `notify` arm
+and from its deadline arm, so a cadence that never enters the `sleep_for`
+computation leaves an idle session asleep past its own probe — the exact
+dependency this plan removes.
+
+**What this surface does not settle.** Class 1
+(`AuthenticatedPeerObservedExternalAddress`) still has no steady-state
+producer; the reference supplies it through the SSU2 **in-band peer test**
+(block type 13, messages 4–7, Address block in 6/7), which i2pr does not run.
+That is a successor's scope. Nothing here is a public-network reachability
+claim, and nothing here qualifies the floodfill's serving path against stock
+peers — Plan 493 owns that.

@@ -3085,3 +3085,23 @@ evidence = [
     "plans/implementation/network-participation/547-an-ssu2-only-router-must-be-able-to-prove-its-own-reachability.md",
 ]
 advertised = false
+
+[[surface]]
+id = "ssu2.path-revalidation"
+protocol = "ssu2"
+structure = "a-validated-path-must-stay-validated-while-the-session-lives"
+scope = "experimental"
+status = "experimental"
+notes = """
+`Reachable` requires **three** distinct corroboration classes inside the transport's 30-minute observation lifetime, and a healthy long-lived session supplied only two of them. The explicit bind is re-asserted on the runtime's maintenance pass (Plan 535) and the peer test completes every five minutes, but `ValidatedPath` was produced **only** while a *candidate* path was being migrated to -- `note_authenticated_packet` returns early for the endpoint already in use, and the challenge budget is per-session. A stable session therefore fell to exactly the corroboration floor, `CandidateReachable`, which `publication_material` refuses, and the class lapsed 30 minutes after the last handshake. The property was inverted: only a path that kept re-handshaking or migrating could hold `Reachable`. Plan 547 measured the consequence -- its floodfill host reached `role="Active"` and withdrew 29 m 30 s later. **The obvious fix was rejected on the reference.** Sending a data-phase Address block would be non-reference behaviour: i2pd 2.61.0 emits DateTime + Ack + Padding on ordinary Data packets and builds an Address block only in the handshake, the terminate packet, hole punching, path challenge/response, and peer-test messages 6/7. **The chosen fix re-proves the path in use.** `PathValidator` gains a `Revalidation` that is deliberately not a `PathCandidate`: a distinct `PathEvent::Revalidated`, its own per-session ceiling, and a response accepted only from the validated endpoint on an exact match, resolved before the candidate machine so a genuine candidate response is never eaten. The runtime probes **at most one** session per maintenance pass, records `ValidatedPath` and nothing else, and adds the cadence to the loop's scheduler deadline -- without which an idle session would never wake to prove itself, which is exactly the dependency being removed. The reference answers every PathChallenge unconditionally and ignores a PathResponse it did not request, so the peer is unaffected beyond one small datagram and no peer state changes. The reachability **model** is untouched: the classes, the corroboration floor of two, the contradiction floor of one and the lifetime are unchanged, `Reachable` still needs three classes, and the daemon records no signal of its own. No operator configuration key is added; the cadence is a runtime field the daemon leaves at its default, and `Cargo.toml`/`Cargo.lock` stay byte-identical with `router.version` at `0.9.62` and the advertised count at **zero**. **What is not claimed**: class 1's producer, which only the SSU2 in-band peer test (block type 13, messages 4-7, Address block in 6/7) supplies the way the reference does -- a named successor; nor a public-network reachability claim, nor stock-peer qualification.
+"""
+evidence = [
+    "crates/i2pr-transport-ssu2/src/path.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/tests/ssu2_path_revalidation.rs",
+    "crates/i2pr-daemon/tests/ssu2_path_revalidation_boundary.rs",
+    "specs/CONFORMANCE.md",
+    "specs/QUALIFICATION-GATES.md",
+    "plans/implementation/network-participation/549-a-validated-path-must-stay-validated-while-the-session-lives.md",
+]
+advertised = false

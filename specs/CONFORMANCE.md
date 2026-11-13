@@ -5053,3 +5053,43 @@ Evidence: `crates/i2pr-daemon/src/peer_test_runtime.rs`,
 `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/547-an-ssu2-only-router-must-be-able-to-prove-its-own-reachability.md`.
+
+## A validated path is re-proved while the session lives (Plan 549)
+
+**Plan 549 adds one surface** — `ssu2.path-revalidation` — and changes no
+protocol message, block, length or option.
+
+- **The gap was in when evidence arrives, not in what it means.**
+  `Reachable` needs three corroboration classes inside
+  `DEFAULT_OBSERVATION_TTL`. Class 0 is re-asserted on the runtime's
+  maintenance pass and class 3 completes on the peer test's cadence; class 2
+  `ValidatedPath` had a producer only for a *candidate* path being migrated
+  to, so a stable session produced no path evidence and its state sat at the
+  corroboration floor, which `publication_material` refuses.
+- **The fix re-proves the path in use.** `PathValidator::request_revalidation`
+  names the validated endpoint, refuses a weak challenge, refuses a second
+  request while one is in flight, and is bounded by its own per-session
+  ceiling. `on_path_response` resolves it **first**, and only for an exact
+  match from the validated endpoint, so a genuine candidate response still
+  reaches the migration machine.
+- **It cannot migrate.** The outcome is `PathEvent::Revalidated`, a distinct
+  variant from the migration's `Validated`; the validated endpoint is assigned
+  on exactly one path in the module, and the guard pins that.
+- **One observation records one class.** `record_revalidated_path_locked`
+  names `ReachabilitySignal::ValidatedPath` and nothing else.
+- **The peer is unaffected.** The reference answers every PathChallenge
+  unconditionally and acts on a PathResponse only when it issued the
+  challenge, so a re-validation costs one small datagram and changes no peer
+  state.
+- **Observable.** `Ssu2Snapshot::path_revalidations` counts completed
+  re-validations and `path_challenges` counts the datagrams; neither carries a
+  peer, an address or a payload.
+- **The gap that remains.** Class 1
+  (`AuthenticatedPeerObservedExternalAddress`) still has no steady-state
+  producer, and the reference's own arrangement is that the SSU2 **in-band
+  peer test** carries the Address block in messages 6/7. i2pr's peer test is an
+  I2NP `TunnelTest` round trip, so it cannot supply that class. That is a named
+  successor, not a claim of this surface.
+
+The lane is `crates/i2pr-runtime/tests/ssu2_path_revalidation.rs` and the guard
+is `crates/i2pr-daemon/tests/ssu2_path_revalidation_boundary.rs`.

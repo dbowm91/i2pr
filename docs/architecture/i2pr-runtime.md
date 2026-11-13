@@ -1694,3 +1694,39 @@ Before this plan the runtime published only loopback addresses, which made
 interlock was a blacklist policy: a router that advertises a reachability it
 does not have gets blocked by the peers it wastes. Plan 546 keeps the policy and
 moves the judgement to an operator key that is off by default.
+
+## The path in use is re-proved while the session lives (Plan 549)
+
+`Reachable` needs three corroboration classes inside
+`DEFAULT_OBSERVATION_TTL`. Two of them keep firing on a **stable** session:
+`note_bound_endpoints_as_explicit_bind` is re-asserted from the maintenance
+pass (`drive_timeouts_locked`, Plan 535), and the router's peer test completes
+on its own cadence. `ValidatedPath` did not: `PathValidator::note_authenticated_packet`
+returns early for the endpoint already in use, and the challenge budget is
+per-session, so class 2 appeared only while a *candidate* path was being
+migrated to. A healthy session therefore produced no path evidence and its
+state sat at exactly the corroboration floor, which `publication_material`
+refuses.
+
+`PathValidator` now holds a `Revalidation` beside its candidates — a different
+type with a different outcome (`PathEvent::Revalidated`, not
+`PathEvent::Validated`) — and `request_revalidation` names the validated
+endpoint, refuses a weak challenge, refuses a second request in flight, and is
+bounded by `MAX_PATH_REVALIDATIONS_PER_SESSION`. `on_path_response` resolves a
+re-validation **first**, and only for an exact match from the validated
+endpoint, so a genuine candidate response still reaches the migration machine.
+
+`drive_path_revalidations_locked` probes at most one session per maintenance
+pass and `record_revalidated_path_locked` records `ValidatedPath` and nothing
+else. The cadence is also a **scheduler deadline** (`scheduler_sleep_for`
+includes `next_revalidation_ms`): without that an idle session would never wake
+to prove itself, which is precisely the dependency the change removes.
+
+The reference answers every PathChallenge unconditionally and acts on a
+PathResponse only when it issued the challenge, so a re-validation costs one
+small datagram and changes no peer state. The reachability model — the classes,
+the floor of two, the contradiction floor of one, the lifetime — is untouched.
+
+`Ssu2Snapshot::path_revalidations` counts the completed probes. Class 1's
+producer is still missing: the reference supplies it through the SSU2 in-band
+peer test (messages 4–7, Address block in 6/7), which this router does not run.

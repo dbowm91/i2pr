@@ -1542,6 +1542,10 @@ pub fn ssu2_runtime_config_from(
         // inert -- but it still records only through the narrow bind note, and
         // only when `publish_bound_address` admits the bind. With the key off,
         // the runtime still refuses every non-loopback publication.
+        // Plan 549: the runtime's own cadence for re-proving the path in use.
+        // The daemon passes the default; this is a runtime knob, not an
+        // operator key, and no configuration surface gains a field for it.
+        path_revalidation_interval_ms: i2pr_runtime::PATH_REVALIDATION_INTERVAL_MS,
         explicit_bind_corroboration: true,
         // Plan 546: may the bound address be published? Off by default; the
         // operator's key is the only thing that widens it.
