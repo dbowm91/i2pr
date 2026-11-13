@@ -161,6 +161,23 @@ pub struct RouterInfoPublicationTask {
     ///
     /// The cell carries counts and stable reason labels only.
     pub self_publication_counters: Arc<crate::i2pcontrol_inspection::SelfPublicationCounterCell>,
+    /// Plan 547: the NTCP2 endpoint the re-dated record's NTCP2 address must
+    /// name before the SSU2 owner will install it.
+    ///
+    /// The endpoint is the router's **separately bound** listener, supplied
+    /// by the composition root. It is never inferred from the record: the
+    /// install gate's whole purpose is to compare the record's NTCP2 address
+    /// against an endpoint the record did not choose.
+    ///
+    /// `None` means the router has no NTCP2 listener, and a record that
+    /// names an NTCP2 address is then refused exactly as before.
+    pub ntcp2_endpoint: Option<std::net::SocketAddr>,
+    /// Plan 547: the scope the NTCP2 endpoint is allowed to live in.
+    ///
+    /// The scope is supplied by the composition root and is never widened
+    /// here: an endpoint outside the scope is refused exactly as the
+    /// controlled profile refuses a non-loopback one.
+    pub ntcp2_scope: i2pr_runtime::Ntcp2DialScope,
 }
 
 impl std::fmt::Debug for RouterInfoPublicationTask {

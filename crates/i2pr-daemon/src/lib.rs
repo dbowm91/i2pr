@@ -48,6 +48,7 @@ pub mod peer_pool;
 pub mod peer_pool_task;
 pub mod peer_reconcile;
 pub mod peer_test;
+pub mod peer_test_runtime;
 pub mod relay_establishment;
 pub mod relay_establishment_task;
 pub mod relay_requester;
@@ -3793,6 +3794,8 @@ async fn run_router_info_publication_task(
         qualification_profile,
         self_publication,
         self_publication_counters,
+        ntcp2_endpoint,
+        ntcp2_scope,
     } = task;
     // Plan 519: the publication's ticks are **its own**. The transport's
     // service loop gains no timer: it carries none of the publication's
@@ -3891,6 +3894,8 @@ async fn run_router_info_publication_task(
                         &bundle,
                         &handle,
                         now_ms,
+                        ntcp2_endpoint,
+                        ntcp2_scope,
                     );
                     // Plan 518: the cycle's record is decided **once**,
                     // here, and every rung of the cycle publishes it. A
@@ -4531,6 +4536,22 @@ fn register_ssu2_service(
                     // including when the only way to create one is
                     // I2PControl. See `service_tunnels_active`.
                     let has_enabled_groups = service_runtime_active;
+                    // Plan 547: the router's own peer test is owned beside
+                    // the SSU2 service, **not** inside the destination-group
+                    // product. The product exists only when a destination
+                    // group can exist at all, so a router that runs only
+                    // SSU2 had no owner and could never corroborate its own
+                    // reachability. The owner is built from the operator's
+                    // opt-in alone and is off by default, and the daemon's
+                    // own inbound path is its single consumer, so a probe is
+                    // answered exactly once.
+                    let mut peer_test =
+                        crate::peer_test_runtime::PeerTestRuntime::new(ssu2_config.peer_test);
+                    // Plan 521: publish the live peer-test counters so the
+                    // running router's own peer-test posture is observable
+                    // through the inspection plane. The counters carry
+                    // counts only.
+                    inspection.publish_peer_test_counters(peer_test.counters_cell());
                     // Plan 506: the product needs the **live** bootstrap
                     // handle so its reconcile can snapshot the router's
                     // real peer population. The handle is cloned before
@@ -4639,9 +4660,6 @@ fn register_ssu2_service(
  extra_bootstrap_peers: Vec::new(),
                             options: crate::service_product::ServiceProductOptions {
                                 ssu2_qualification_profile: ssu2_config.qualification_profile,
-                                // Plan 521: the router's own peer test is an
-                                // explicit opt-in and it is off by default.
-                                peer_test: ssu2_config.peer_test,
                                 // Plan 524: the router's relay-tag request
                                 // is an explicit opt-in and it is off by
                                 // default.
@@ -4726,14 +4744,6 @@ fn register_ssu2_service(
                                 inspection.publish_peer_reconcile_counters(
                                     product.peer_reconcile_counters_cell(),
                                 );
-                                // Plan 521: publish the live peer-test
-                                // counters so the running router's own
-                                // peer-test posture is observable through the
-                                // inspection plane. The counters carry counts
-                                // only.
-                                inspection.publish_peer_test_counters(
-                                    product.peer_test_counters_cell(),
-                                );
                                 // Plan 524: publish the live relay-tag
                                 // request counters so the running router's
                                 // introducer-acquisition posture is
@@ -4809,6 +4819,13 @@ fn register_ssu2_service(
                                 ssu2_config.advertise,
                             ),
                             self_publication_counters,
+                            // Plan 547: the re-dated record's NTCP2 address
+                            // must name the router's separately bound
+                            // listener before the SSU2 owner will install
+                            // it, and the endpoint must fall inside the
+                            // scope the operator's profile admits.
+                            ntcp2_endpoint: controlled_ntcp2_endpoint,
+                            ntcp2_scope: ntcp2_endpoint_scope,
                         };
                     if children
                         .spawn(move |cancellation| async move {
@@ -5652,6 +5669,23 @@ fn register_ssu2_service(
                                 if let Some(transit) = transit_owner.as_mut() {
                                     install_transit_creator_correlation(transit, &owner, now_ms);
                                 }
+                                // Plan 547: the router's own peer test is
+                                // handled here, on the daemon's own inbound
+                                // path, in **every** posture.
+                                //
+                                // The owner used to live inside the
+                                // destination-group product, so a router that
+                                // ran only SSU2 had no owner and no
+                                // corroboration. The owner is now beside the
+                                // transport it measures, and this is its
+                                // **single** consumer: two consumers would
+                                // answer the same probe twice and double the
+                                // counters.
+                                //
+                                // The message was decoded exactly once, above,
+                                // and the classified outcome is read here, so
+                                // the responder runs no decoder of its own.
+                                peer_test.handle_inbound(&outcome, owner.handle(), &token, now_ms);
                                 if let Err(error) =
                                     owner.process_group_inbound(&inbound, outcome, message).await
                                 {
@@ -5759,6 +5793,26 @@ fn register_ssu2_service(
                                 }
                             }
                             _ = group_tick.tick() => {
+                                // Plan 547: the router's own peer test
+                                // rides this tick, in **every** posture.
+                                //
+                                // The owner holds no task, no timer and no
+                                // listener: the tick starts one probe on a
+                                // bounded cadence and expires the probes
+                                // that aged out, and the live inbound path
+                                // answers the peer's own test.
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration
+                                                .as_millis()
+                                                .min(u128::from(u64::MAX))
+                                                as u64
+                                        })
+                                        .unwrap_or(0);
+                                    peer_test.drive(owner.handle(), &token, now_ms);
+                                }
                                 if let Err(error) = owner.advance_groups().await {
                                     tracing::warn!(
                                         reason = %error,

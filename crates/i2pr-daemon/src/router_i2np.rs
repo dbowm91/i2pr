@@ -56,7 +56,7 @@ use std::time::Duration;
 use i2pr_crypto::{OsRng, RouterIdentityBundle, router_identity_hash};
 use i2pr_netdb::{CONTROLLED_ROUTER_VERSION, controlled_router_options};
 use i2pr_proto::{
-    Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
+    Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress, RouterInfo,
     SHORT_BUILD_RECORD_SIZE,
 };
 use i2pr_runtime::{
@@ -1738,6 +1738,8 @@ pub fn refresh_local_router_info_record(
     bundle: &RouterIdentityBundle,
     handle: &Ssu2PublicationHandle,
     now_ms: u64,
+    ntcp2_endpoint: Option<SocketAddr>,
+    ntcp2_scope: i2pr_runtime::Ntcp2DialScope,
 ) -> Option<Vec<u8>> {
     let installed = handle.service().installed_local_router_info()?;
     match i2pr_crypto::resign_router_info_with_published(
@@ -1746,10 +1748,24 @@ pub fn refresh_local_router_info_record(
         Date::from_millis(now_ms),
     ) {
         Ok(fresh) => {
-            if let Err(error) = handle
-                .service()
-                .install_local_router_info(fresh.clone(), now_ms)
-            {
+            // Plan 547: a record that names **both** transports is
+            // installed through the scoped form, so the install gate
+            // still verifies that the record's NTCP2 address names the
+            // separately bound endpoint and falls inside the scope.
+            //
+            // The endpoint is **supplied**, never inferred from the
+            // record: inferring it would make the test compare the
+            // record with itself. A record that names no NTCP2 address
+            // keeps the plain form, whose gate requires exactly that.
+            let outcome = match ntcp2_endpoint {
+                Some(endpoint) if router_info_names_ntcp2(&fresh) => handle
+                    .service()
+                    .install_scoped_dual_router_info(fresh.clone(), now_ms, endpoint, ntcp2_scope),
+                _ => handle
+                    .service()
+                    .install_local_router_info(fresh.clone(), now_ms),
+            };
+            if let Err(error) = outcome {
                 tracing::warn!(
                     reason = ?error,
                     "the re-dated RouterInfo was not installed"
@@ -1762,6 +1778,26 @@ pub fn refresh_local_router_info_record(
             Some(installed)
         }
     }
+}
+
+/// Whether one encoded RouterInfo names an NTCP2 address.
+///
+/// Plan 547: the re-dating path chooses between the plain install form and
+/// the scoped dual-transport form by the record's **own** content, because
+/// the two forms partition: the plain form requires a record that names no
+/// NTCP2 address, and the scoped form requires a record that names exactly
+/// one and that it names the separately bound endpoint.
+///
+/// A record that cannot be decoded names no NTCP2 address here, and the
+/// install gate refuses it in turn: the two never disagree.
+fn router_info_names_ntcp2(encoded: &[u8]) -> bool {
+    let Ok(info) = RouterInfo::decode(encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+    else {
+        return false;
+    };
+    info.addresses()
+        .iter()
+        .any(|address| address.transport_style() == "NTCP2")
 }
 
 /// Builds a fresh, signed NTCP2 RouterInfo for the explicit loopback profile.

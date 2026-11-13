@@ -40,6 +40,22 @@
 //! 12. the publication is **untouched**: the peer test touches no builder and
 //!     no permit.
 //!
+//! **Plan 547 retargeted this guard, and strengthened it.** The peer-test
+//! owner moved out of the destination-group product and beside the SSU2
+//! service, in `crates/i2pr-daemon/src/peer_test_runtime.rs`, because the
+//! product is built only when a destination group can exist at all and a
+//! router that runs only SSU2 therefore had no owner and no corroboration.
+//! The rules that named the product's peer-test code now name the new
+//! module, and the two rules that named the product's **inbound path** now
+//! name the daemon's composition root.
+//!
+//! The retarget also closed a latent defect: several rules used `?` on an
+//! `Option`, which returns "no problem found" when the named definition is
+//! **absent**. The header's claim that "a function that is **absent** fails
+//! closed" was therefore false, and a rule could be satisfied by deleting
+//! the code it policed. Every rule this plan touched now reports an absent
+//! definition instead of passing it.
+//!
 //! The rules are **structural**: they assert that a *named function's own
 //! body* contains the required **call**, with its open parenthesis. Comments
 //! are stripped and `#[cfg(test)]` blocks are excluded, so a doc comment that
@@ -58,6 +74,14 @@ use std::path::{Path, PathBuf};
 const OWNER_MODULE: &str = "crates/i2pr-daemon/src/peer_test.rs";
 /// The daemon's live inbound path and its tick.
 const PRODUCT_MODULE: &str = "crates/i2pr-daemon/src/service_product.rs";
+/// Plan 547: the router's own peer-test owner, beside the SSU2 service.
+///
+/// The owner left the destination-group product, so the rules that policed
+/// its production code now police this module.
+const PEER_TEST_RUNTIME_MODULE: &str = "crates/i2pr-daemon/src/peer_test_runtime.rs";
+/// Plan 547: the daemon's composition root, where the owner is built, driven
+/// and fed the classified inbound outcome.
+const COMPOSITION_MODULE: &str = "crates/i2pr-daemon/src/lib.rs";
 /// The daemon's configuration surface.
 const CONFIG_MODULE: &str = "crates/i2pr-daemon/src/config.rs";
 /// The runtime's own session state and its recorder.
@@ -338,6 +362,17 @@ fn owner_item_body(code: &str, signature: &str) -> Option<String> {
     item_body(&block, signature)
 }
 
+/// Extracts the body of the `select!` arm whose head is `head`.
+///
+/// Plan 547: the peer test is driven from the composition root's existing
+/// group tick, and the rule that polices it must look at that arm's own
+/// body rather than at the whole file.
+fn select_arm_body(code: &str, head: &str) -> Option<String> {
+    let start = code.find(head)? + head.len();
+    let (open, end) = brace_balanced_block(code, start)?;
+    Some(code[open..end].to_owned())
+}
+
 // ----------------------------------------------------------------------
 // The rules.
 // ----------------------------------------------------------------------
@@ -387,15 +422,20 @@ fn check_the_probe_is_recorded_before_the_send(owner: &str) -> Option<String> {
 ///
 /// The recorder is the only way the daemon can record a confirmed peer
 /// test, and the confirmed-match path is the only place that may call it.
-fn check_the_recorder_has_one_production_call_site(product: &str, runtime: &str) -> Option<String> {
-    let product_code = code_view(product);
-    let calls = product_code.matches("note_confirmed_peer_test(").count();
+fn check_the_recorder_has_one_production_call_site(owner: &str, runtime: &str) -> Option<String> {
+    // Plan 547: the recorder's production call site is the seam in the
+    // owner's own module, beside the SSU2 service.
+    let owner_code = code_view(owner);
+    let calls = owner_code.matches("note_confirmed_peer_test(").count();
     if calls != 1 {
         return Some(format!(
             "the confirmed peer test must be recorded from exactly one production call site, found {calls}"
         ));
     }
-    let handler = item_body(&product_code, "fn handle_inbound_peer_test(")?;
+    let handler = match item_body(&owner_code, "pub fn handle_inbound(") {
+        Some(body) => body,
+        None => return Some("the peer-test seam is absent".to_owned()),
+    };
     if !handler.contains("note_confirmed_peer_test(") {
         return Some(
             "the confirmed-match path must be the recorder's production call site".to_owned(),
@@ -408,7 +448,10 @@ fn check_the_recorder_has_one_production_call_site(product: &str, runtime: &str)
         return Some("the recorder must be called from the confirmed-match path".to_owned());
     }
     let runtime_code = code_view(runtime);
-    let definition = item_body(&runtime_code, "pub fn note_confirmed_peer_test(")?;
+    let definition = match item_body(&runtime_code, "pub fn note_confirmed_peer_test(") {
+        Some(body) => body,
+        None => return Some("the runtime's recorder is absent".to_owned()),
+    };
     if definition.contains("pub fn note_confirmed_peer_test(") {
         return Some("the recorder must not call itself".to_owned());
     }
@@ -420,14 +463,17 @@ fn check_the_recorder_has_one_production_call_site(product: &str, runtime: &str)
 /// The runtime derives the family from the session the exchange travelled
 /// on. A daemon that named a family would be filing the evidence under a
 /// family the exchange never used.
-fn check_the_daemon_asserts_no_family(product: &str, runtime: &str) -> Option<String> {
-    let product_code = code_view(product);
-    if product_code.contains("AddressFamily::Ipv4") || product_code.contains("AddressFamily::Ipv6")
-    {
+fn check_the_daemon_asserts_no_family(owner: &str, runtime: &str) -> Option<String> {
+    // Plan 547: the daemon side of the peer test is the owner's own module.
+    let owner_code = code_view(owner);
+    if owner_code.contains("AddressFamily::Ipv4") || owner_code.contains("AddressFamily::Ipv6") {
         return Some("the daemon must not name an address family for the peer test".to_owned());
     }
     let runtime_code = code_view(runtime);
-    let recorder = item_body(&runtime_code, "pub fn note_confirmed_peer_test(")?;
+    let recorder = match item_body(&runtime_code, "pub fn note_confirmed_peer_test(") {
+        Some(body) => body,
+        None => return Some("the runtime's recorder is absent".to_owned()),
+    };
     if !recorder.contains("state.active.get(&link_id)") {
         return Some("the runtime must derive the family from the session itself".to_owned());
     }
@@ -498,16 +544,17 @@ fn check_the_controlled_recorder_is_untouched(runtime: &str) -> Option<String> {
 ///
 /// The transport's tracker is the single authority. A daemon that wrote a
 /// `ReachabilitySignal` would be computing a reachability state of its own.
-fn check_the_daemon_records_no_reachability_signal(product: &str, owner: &str) -> Option<String> {
-    let product_code = code_view(product);
-    if product_code.contains("ReachabilitySignal::") {
-        return Some("the daemon must not write a reachability signal of its own".to_owned());
-    }
-    if product_code.contains("ReachabilityTracker") {
-        return Some("the daemon must not own a reachability tracker".to_owned());
-    }
+fn check_the_daemon_records_no_reachability_signal(owner: &str, protocol: &str) -> Option<String> {
+    // Plan 547: the daemon side of the peer test is the owner's own module.
     let owner_code = code_view(owner);
     if owner_code.contains("ReachabilitySignal::") {
+        return Some("the daemon must not write a reachability signal of its own".to_owned());
+    }
+    if owner_code.contains("ReachabilityTracker") {
+        return Some("the daemon must not own a reachability tracker".to_owned());
+    }
+    let protocol_code = code_view(protocol);
+    if protocol_code.contains("ReachabilitySignal::") {
         return Some("the peer-test owner must not write a reachability signal".to_owned());
     }
     None
@@ -540,20 +587,25 @@ fn check_the_responder_uses_the_authenticated_delivery(owner: &str) -> Option<St
 ///
 /// The live pump decodes the inbound message once and classifies it once;
 /// the peer-test seam reads that same classified outcome.
-fn check_the_inbound_path_decodes_once(product: &str) -> Option<String> {
-    let code = code_view(product);
-    let poll = item_body(&code, "pub async fn poll_inbound(")?;
-    let decode = poll.find("decode_authenticated_router_i2np(")?;
-    let process = poll.find("self.process_inbound(")?;
-    if decode > process {
-        return Some("the inbound path must decode before it dispatches".to_owned());
-    }
-    let handler = item_body(&code, "fn handle_inbound_peer_test(")?;
-    if handler.contains("decode_authenticated_router_i2np(") {
+fn check_the_inbound_path_decodes_once(composition: &str, owner: &str) -> Option<String> {
+    // Plan 547: the live inbound path is the daemon's composition root, and
+    // the peer-test seam is the owner's own module.
+    let owner_code = code_view(owner);
+    if owner_code.contains("decode_authenticated_router_i2np(") {
         return Some("the peer-test seam must not decode the inbound message again".to_owned());
     }
-    let process_body = item_body(&code, "pub(crate) async fn process_inbound(")?;
-    if !process_body.contains("self.handle_inbound_peer_test(&outcome)") {
+    let code = code_view(composition);
+    let calls = code.matches("peer_test.handle_inbound(").count();
+    if calls != 1 {
+        return Some(format!(
+            "the peer-test seam must have exactly one production call site, found {calls}"
+        ));
+    }
+    let Some(seam) = code.find("peer_test.handle_inbound(") else {
+        return Some("the peer-test seam has no production call site".to_owned());
+    };
+    let call = code.get(seam..seam.saturating_add(96)).unwrap_or_default();
+    if !call.contains("&outcome") {
         return Some(
             "the live inbound path must feed the peer-test seam the classified outcome".to_owned(),
         );
@@ -565,22 +617,37 @@ fn check_the_inbound_path_decodes_once(product: &str) -> Option<String> {
 ///
 /// The owner holds no task of its own: the product's existing tick drives
 /// it, and the live inbound path feeds it.
-fn check_the_owner_adds_no_infrastructure(product: &str, owner: &str) -> Option<String> {
+fn check_the_owner_adds_no_infrastructure(composition: &str, owner: &str) -> Option<String> {
+    // Plan 547: the owner lives beside the SSU2 service, and the drive step
+    // is the owner's own `drive`.
     let owner_code = code_view(owner);
     for forbidden in ["tokio::spawn", "std::thread", "TcpListener", "sleep("] {
         if owner_code.contains(forbidden) {
             return Some(format!("the peer-test owner must not use {forbidden}"));
         }
     }
-    let product_code = code_view(product);
-    let drive = item_body(&product_code, "fn drive_peer_test(")?;
+    let drive = match item_body(&owner_code, "pub fn drive(") {
+        Some(body) => body,
+        None => return Some("the peer-test drive step is absent".to_owned()),
+    };
     if drive.contains("tokio::spawn") || drive.contains("TcpListener") {
         return Some("the peer-test tick must not spawn a task or bind a listener".to_owned());
     }
-    // The tick step is driven from the product's existing tick.
-    let tick = item_body(&product_code, "async fn advance_destination_pools_at(")?;
-    if !tick.contains("self.drive_peer_test(now_ms)") {
-        return Some("the peer test must be driven on the product's existing tick".to_owned());
+    // The drive step is driven from the composition root's existing tick.
+    let composition_code = code_view(composition);
+    let calls = composition_code.matches("peer_test.drive(").count();
+    if calls != 1 {
+        return Some(format!(
+            "the peer test must be driven from exactly one tick, found {calls}"
+        ));
+    }
+    let Some(tick) = select_arm_body(&composition_code, "group_tick.tick() =>") else {
+        return Some("the composition root has no group tick arm".to_owned());
+    };
+    if !tick.contains("peer_test.drive(") {
+        return Some(
+            "the peer test must be driven on the composition root's existing tick".to_owned(),
+        );
     }
     None
 }
@@ -613,10 +680,11 @@ fn check_the_answered_key_table_is_bounded(owner: &str) -> Option<String> {
 ///
 /// The threshold, the classes and the expiry are the transport's, and the
 /// daemon names none of them.
-fn check_the_corroboration_policy_is_untouched(product: &str, transport: &str) -> Option<String> {
-    let product_code = code_view(product);
+fn check_the_corroboration_policy_is_untouched(owner: &str, transport: &str) -> Option<String> {
+    // Plan 547: the daemon side of the peer test is the owner's own module.
+    let owner_code = code_view(owner);
     for forbidden in ["MIN_CORROBORATION_FLOOR", "corroboration_class"] {
-        if product_code.contains(forbidden) {
+        if owner_code.contains(forbidden) {
             return Some(format!(
                 "the daemon must not name the transport's {forbidden}"
             ));
@@ -636,25 +704,57 @@ fn check_the_corroboration_policy_is_untouched(product: &str, transport: &str) -
 ///
 /// The peer test touches no builder and no permit: the `caps=f`
 /// advertisement stays permit-gated.
-fn check_the_publication_is_untouched(product: &str, owner: &str, netdb: &str) -> Option<String> {
-    let product_code = code_view(product);
-    if product_code.contains("build_with_ssu2_address(") {
+fn check_the_publication_is_untouched(owner: &str, protocol: &str, netdb: &str) -> Option<String> {
+    // Plan 547: the daemon side of the peer test is the owner's own module,
+    // and the protocol side is the peer-test module itself.
+    let owner_code = code_view(owner);
+    if owner_code.contains("build_with_ssu2_address(") {
         return Some("the peer test must not build a published address".to_owned());
     }
-    let owner_code = code_view(owner);
+    let protocol_code = code_view(protocol);
     for forbidden in [
         "LocalRouterInfoBuilder",
         "FloodfillAdvertisementPermit",
         "build_floodfill",
         "install_local_router_info",
     ] {
-        if owner_code.contains(forbidden) {
+        if protocol_code.contains(forbidden) {
             return Some(format!("the peer-test owner must not touch {forbidden}"));
         }
     }
     let netdb_code = code_view(netdb);
     if !netdb_code.contains("FloodfillAdvertisementPermit") {
         return Some("the netdb's floodfill permit must remain".to_owned());
+    }
+    None
+}
+
+/// Rule 13: the owner lives in exactly **one** place.
+///
+/// Plan 547: the owner left the destination-group product and moved beside
+/// the SSU2 service, because the product is built only when a destination
+/// group can exist at all and a router that runs only SSU2 therefore had no
+/// owner at all. Two owners would answer the same probe twice and double
+/// the counters, so the product must own no peer test whatsoever.
+fn check_the_owner_lives_in_one_place(product: &str, owner: &str) -> Option<String> {
+    let product_code = code_view(product);
+    for forbidden in [
+        "PeerTestOwner",
+        "note_confirmed_peer_test",
+        "peer_test_owner",
+    ] {
+        if product_code.contains(forbidden) {
+            return Some(format!(
+                "the destination-group product must own no peer test: {forbidden}"
+            ));
+        }
+    }
+    let owner_code = code_view(owner);
+    let constructions = owner_code.matches("PeerTestOwner::new(").count();
+    if constructions != 1 {
+        return Some(format!(
+            "the peer-test owner must be constructed exactly once, found {constructions}"
+        ));
     }
     None
 }
@@ -680,19 +780,19 @@ fn the_probe_is_recorded_before_the_send() {
 
 #[test]
 fn the_recorder_has_one_production_call_site() {
-    let product = source_of(PRODUCT_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
     let runtime = source_of(RUNTIME_MODULE);
     assert_eq!(
-        check_the_recorder_has_one_production_call_site(&product, &runtime),
+        check_the_recorder_has_one_production_call_site(&owner, &runtime),
         None
     );
 }
 
 #[test]
 fn the_daemon_asserts_no_family() {
-    let product = source_of(PRODUCT_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
     let runtime = source_of(RUNTIME_MODULE);
-    assert_eq!(check_the_daemon_asserts_no_family(&product, &runtime), None);
+    assert_eq!(check_the_daemon_asserts_no_family(&owner, &runtime), None);
 }
 
 #[test]
@@ -703,10 +803,10 @@ fn the_controlled_recorder_is_untouched() {
 
 #[test]
 fn the_daemon_records_no_reachability_signal() {
-    let product = source_of(PRODUCT_MODULE);
-    let owner = source_of(OWNER_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    let protocol = source_of(OWNER_MODULE);
     assert_eq!(
-        check_the_daemon_records_no_reachability_signal(&product, &owner),
+        check_the_daemon_records_no_reachability_signal(&owner, &protocol),
         None
     );
 }
@@ -722,16 +822,20 @@ fn the_responder_uses_the_authenticated_delivery() {
 
 #[test]
 fn the_inbound_path_decodes_once() {
-    let product = source_of(PRODUCT_MODULE);
-    assert_eq!(check_the_inbound_path_decodes_once(&product), None);
+    let composition = source_of(COMPOSITION_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    assert_eq!(
+        check_the_inbound_path_decodes_once(&composition, &owner),
+        None
+    );
 }
 
 #[test]
 fn the_owner_adds_no_infrastructure() {
-    let product = source_of(PRODUCT_MODULE);
-    let owner = source_of(OWNER_MODULE);
+    let composition = source_of(COMPOSITION_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
     assert_eq!(
-        check_the_owner_adds_no_infrastructure(&product, &owner),
+        check_the_owner_adds_no_infrastructure(&composition, &owner),
         None
     );
 }
@@ -744,23 +848,30 @@ fn the_answered_key_table_is_bounded() {
 
 #[test]
 fn the_corroboration_policy_is_untouched() {
-    let product = source_of(PRODUCT_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
     let transport = source_of(TRANSPORT_REACHABILITY_MODULE);
     assert_eq!(
-        check_the_corroboration_policy_is_untouched(&product, &transport),
+        check_the_corroboration_policy_is_untouched(&owner, &transport),
         None
     );
 }
 
 #[test]
 fn the_publication_is_untouched() {
-    let product = source_of(PRODUCT_MODULE);
-    let owner = source_of(OWNER_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    let protocol = source_of(OWNER_MODULE);
     let netdb = source_of(NETDB_LOCAL_MODULE);
     assert_eq!(
-        check_the_publication_is_untouched(&product, &owner, &netdb),
+        check_the_publication_is_untouched(&owner, &protocol, &netdb),
         None
     );
+}
+
+#[test]
+fn the_owner_lives_in_one_place() {
+    let product = source_of(PRODUCT_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    assert_eq!(check_the_owner_lives_in_one_place(&product, &owner), None);
 }
 
 // ----------------------------------------------------------------------
@@ -821,8 +932,8 @@ pub fn start_probe<R: RngCore>(&mut self, peer: PeerId, rng: &mut R, now_ms: u64
 
 #[test]
 fn the_guard_reports_a_second_production_call_site() {
-    let product = r#"
-fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
+    let owner = r#"
+pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let action = { PeerTestInbound::Completed(round_trip) => {
         service.note_confirmed_peer_test(round_trip.link_id, round_trip.proof);
     } };
@@ -831,22 +942,34 @@ fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
 "#;
     let runtime = source_of(RUNTIME_MODULE);
     assert!(
-        check_the_recorder_has_one_production_call_site(product, &runtime).is_some(),
+        check_the_recorder_has_one_production_call_site(owner, &runtime).is_some(),
         "a second production call site must be reported"
     );
 }
 
 #[test]
+fn the_guard_reports_an_absent_peer_test_seam() {
+    let owner = r#"
+pub fn something_else(&mut self) {}
+"#;
+    let runtime = source_of(RUNTIME_MODULE);
+    assert!(
+        check_the_recorder_has_one_production_call_site(owner, &runtime).is_some(),
+        "an absent peer-test seam must be reported"
+    );
+}
+
+#[test]
 fn the_guard_reports_a_daemon_that_asserts_a_family() {
-    let product = r#"
-fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
+    let owner = r#"
+pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let family = AddressFamily::Ipv4;
     let _ = family;
 }
 "#;
     let runtime = source_of(RUNTIME_MODULE);
     assert!(
-        check_the_daemon_asserts_no_family(product, &runtime).is_some(),
+        check_the_daemon_asserts_no_family(owner, &runtime).is_some(),
         "a daemon that names a family must be reported"
     );
 }
@@ -907,14 +1030,14 @@ pub fn note_confirmed_peer_test(&self, link_id: LinkId, proof: ConfirmedPeerTest
 
 #[test]
 fn the_guard_reports_a_daemon_that_records_its_own_signal() {
-    let product = r#"
-fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
+    let owner = r#"
+pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
     tracker.record(ReachabilitySignal::PeerTestResult { family, outcome }, now);
 }
 "#;
-    let owner = source_of(OWNER_MODULE);
+    let protocol = source_of(OWNER_MODULE);
     assert!(
-        check_the_daemon_records_no_reachability_signal(product, &owner).is_some(),
+        check_the_daemon_records_no_reachability_signal(owner, &protocol).is_some(),
         "a daemon that records its own signal must be reported"
     );
 }
@@ -937,36 +1060,42 @@ pub fn build_peer_test_answer(outcome: &RouterI2npOutcome, message_id: u32, expi
 
 #[test]
 fn the_guard_reports_an_inbound_path_that_decodes_twice() {
-    let mutated = r#"
-pub async fn poll_inbound(&mut self) -> Result<InboundPollOutcome, ServiceProductError> {
-    let decoded = decode_authenticated_router_i2np(&inbound, now_ms);
-    self.process_inbound(&inbound, decoded.outcome(), decoded.message()).await;
-}
-pub(crate) async fn process_inbound(&mut self, inbound: &Ssu2InboundI2np, outcome: RouterI2npOutcome, message: Option<&I2npMessage>) {
-    self.handle_inbound_peer_test(&outcome);
-}
-fn handle_inbound_peer_test(&mut self, outcome: &RouterI2npOutcome) {
+    let owner = r#"
+pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) {
     let again = decode_authenticated_router_i2np(&inbound, now_ms);
     let _ = again;
 }
 "#;
+    let composition = source_of(COMPOSITION_MODULE);
     assert!(
-        check_the_inbound_path_decodes_once(mutated).is_some(),
+        check_the_inbound_path_decodes_once(&composition, owner).is_some(),
         "an inbound path that decodes twice must be reported"
+    );
+}
+
+#[test]
+fn the_guard_reports_a_seam_with_no_production_call_site() {
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    let composition = r#"
+fn something_else(&mut self) {}
+"#;
+    assert!(
+        check_the_inbound_path_decodes_once(composition, &owner).is_some(),
+        "a peer-test seam with no production call site must be reported"
     );
 }
 
 #[test]
 fn the_guard_reports_an_owner_that_spawns_a_task() {
     let owner = r#"
-pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome, message_id: u32, expiration_ms: u64, now_ms: u64) -> PeerTestInbound {
+pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome) -> PeerTestInbound {
     tokio::spawn(async move { do_work().await });
     PeerTestInbound::Ignored
 }
 "#;
-    let product = source_of(PRODUCT_MODULE);
+    let composition = source_of(COMPOSITION_MODULE);
     assert!(
-        check_the_owner_adds_no_infrastructure(&product, owner).is_some(),
+        check_the_owner_adds_no_infrastructure(&composition, owner).is_some(),
         "an owner that spawns a task must be reported"
     );
 }
@@ -992,32 +1121,62 @@ pub fn expire(&mut self, now_ms: u64) -> usize {
 
 #[test]
 fn the_guard_reports_a_daemon_that_names_the_corroboration_policy() {
-    let product = r#"
-fn drive_peer_test(&mut self, now_ms: u64) {
+    let owner = r#"
+pub fn drive(&mut self, handle: &Ssu2DaemonHandle, token: &CancellationToken, now_ms: u64) {
     let floor = MIN_CORROBORATION_FLOOR;
     let _ = floor;
 }
 "#;
     let transport = source_of(TRANSPORT_REACHABILITY_MODULE);
     assert!(
-        check_the_corroboration_policy_is_untouched(product, &transport).is_some(),
+        check_the_corroboration_policy_is_untouched(owner, &transport).is_some(),
         "a daemon that names the transport's policy must be reported"
     );
 }
 
 #[test]
-fn the_guard_reports_an_owner_that_builds_a_published_address() {
+fn the_guard_reports_a_product_that_owns_a_peer_test() {
+    let product = r#"
+fn handle_inbound_peer_test(&mut self) {
+    let owner = crate::peer_test::PeerTestOwner::new(true);
+}
+"#;
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
+    assert!(
+        check_the_owner_lives_in_one_place(product, &owner).is_some(),
+        "a product that owns a peer test must be reported"
+    );
+}
+
+#[test]
+fn the_guard_reports_a_second_owner() {
+    let product = source_of(PRODUCT_MODULE);
     let owner = r#"
+pub fn new(enabled: bool) -> Self {
+    let owner = PeerTestOwner::new(true);
+    let second = PeerTestOwner::new(true);
+    Self { owner }
+}
+"#;
+    assert!(
+        check_the_owner_lives_in_one_place(&product, owner).is_some(),
+        "a second owner must be reported"
+    );
+}
+
+#[test]
+fn the_guard_reports_an_owner_that_builds_a_published_address() {
+    let protocol = r#"
 pub fn handle_inbound(&mut self, outcome: &RouterI2npOutcome, message_id: u32, expiration_ms: u64, now_ms: u64) -> PeerTestInbound {
     let builder = LocalRouterInfoBuilder::new();
     let _ = builder;
     PeerTestInbound::Ignored
 }
 "#;
-    let product = source_of(PRODUCT_MODULE);
+    let owner = source_of(PEER_TEST_RUNTIME_MODULE);
     let netdb = source_of(NETDB_LOCAL_MODULE);
     assert!(
-        check_the_publication_is_untouched(&product, owner, &netdb).is_some(),
+        check_the_publication_is_untouched(&owner, protocol, &netdb).is_some(),
         "an owner that builds a published address must be reported"
     );
 }

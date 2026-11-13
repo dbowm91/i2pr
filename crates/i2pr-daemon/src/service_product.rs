@@ -291,18 +291,6 @@ const IBGW_NEXT: u32 = 0x9682;
 /// Default bounded dial deadline for the controlled lane SSU2 session.
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Plan 521 — builds this router's own peer-test owner.
-///
-/// The owner is installed only when the operator enabled the peer test, so a
-/// default router has no owner at all and the tick's peer-test step costs
-/// nothing.
-fn build_peer_test_owner(enabled: bool) -> Option<crate::peer_test::PeerTestOwner> {
-    if !enabled {
-        return None;
-    }
-    Some(crate::peer_test::PeerTestOwner::new(true))
-}
-
 /// Plan 524 — builds the owner of this router's relay-tag requests.
 ///
 /// The owner is installed only when the operator enabled the request, so a
@@ -328,18 +316,6 @@ async fn read_introducer_capability(
 ) -> crate::introducer_request::IntroducerCapability {
     let store = destinations.lock().await;
     crate::introducer_request::read_capability(store.store(), peer)
-}
-
-/// Plan 521 — builds the entropy source for this router's own peer test.
-///
-/// The source is installed only when the operator enabled the peer test. A
-/// router that cannot draw one has no owner either, so it never sends a probe
-/// or an answer whose identifiers it could not make unique.
-fn build_peer_test_rng(enabled: bool) -> Option<ChaCha8Rng> {
-    if !enabled {
-        return None;
-    }
-    ChaCha8Rng::try_from_os_rng().ok()
 }
 
 /// Plan 487 WP4 — the minimum interval between two replenishment
@@ -383,26 +359,6 @@ const DISCOVERY_MESSAGE_ID: u32 = 0x5130_0D01;
 /// quickly so a request the peer never answered cannot be replayed.
 const DISCOVERY_MESSAGE_LIFETIME_MS: u64 = 60_000;
 
-/// Plan 521 — the bounded cadence between this router's own peer tests.
-///
-/// The transport's reachability evidence lapses after thirty minutes, so the
-/// cadence refreshes it well inside that window.
-const PEER_TEST_INTERVAL_MS: u64 = 300_000;
-
-/// Plan 521 — the bounded delay before a peer test is retried when no peer
-/// with a session was available.
-///
-/// The router never queues a probe for a peer it does not have, so the
-/// attempt is refused and counted; the retry delay keeps the router from
-/// looking for a peer on every tick.
-const PEER_TEST_RETRY_MS: u64 = 30_000;
-
-/// Plan 521 — the lifetime this router's own peer test carries.
-///
-/// A probe is a single attempt against one peer. It expires quickly so a
-/// probe the peer never answered cannot be replayed.
-const PEER_TEST_LIFETIME_MS: u64 = 60_000;
-
 /// Tunable bound for the production composition.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceProductOptions {
@@ -419,12 +375,6 @@ pub struct ServiceProductOptions {
     pub delivery_timeout: Duration,
     /// Lookup / reply deadline.
     pub tunnel_deadline: Duration,
-    /// Plan 521 — whether this router runs **its own** peer test.
-    ///
-    /// The switch is an explicit opt-in and it is off by default. A router
-    /// that has not asked for reachability evidence never generates probe
-    /// traffic.
-    pub peer_test: bool,
     /// Plan 524 — whether this router asks a peer for a relay tag.
     ///
     /// The switch is an explicit opt-in and it is off by default. A router
@@ -442,7 +392,6 @@ impl Default for ServiceProductOptions {
             i2pd_accept_timeout: DEFAULT_I2PD_ACCEPT_TIMEOUT,
             delivery_timeout: DEFAULT_DELIVERY_TIMEOUT,
             tunnel_deadline: DEFAULT_TUNNEL_DEADLINE,
-            peer_test: false,
             introducer_request: false,
         }
     }
@@ -1317,25 +1266,6 @@ struct ProductInner {
     /// The spine owns no task, no timer, no listener and no socket: the
     /// product's existing tick drives it.
     discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
-    /// Plan 521 — the live owner of this router's own peer test.
-    ///
-    /// The owner originates the router's probes and answers the probes its
-    /// peers send. It owns no task, no timer, no listener and no socket: the
-    /// product's tick drives it and the live inbound path feeds it.
-    /// `None` means the operator has not enabled the peer test.
-    peer_test_owner: Option<crate::peer_test::PeerTestOwner>,
-    /// Plan 521 — the live counter cell the composition root publishes into
-    /// the inspection seam. The product refreshes it on its tick; it holds
-    /// counts only.
-    peer_test_counters_cell: Arc<crate::i2pcontrol_inspection::PeerTestCounterCell>,
-    /// Plan 521 — the entropy source for this router's own peer test.
-    ///
-    /// It draws the probed identifiers, the probed timestamps and the
-    /// transport message identifiers of the answers. The product owns it, so
-    /// the owner itself stays deterministic under test.
-    peer_test_rng: Option<ChaCha8Rng>,
-    /// Plan 521 — the local time the next peer-test attempt is due.
-    peer_test_next_at_ms: u64,
     /// Plan 524 — the live owner of this router's relay-tag requests.
     ///
     /// The owner selects the peer to ask and records every outcome. It owns
@@ -2790,15 +2720,6 @@ impl ServiceProduct {
                 peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::peer_reconcile::PeerReconcileCounters::default(),
                 )),
-                // Plan 521 — the router's own peer test. The owner is
-                // installed only when the operator enabled it, so a default
-                // router has no owner and the tick's step costs nothing.
-                peer_test_owner: build_peer_test_owner(spec.options.peer_test),
-                peer_test_counters_cell: Arc::new(std::sync::Mutex::new(
-                    crate::peer_test::PeerTestOwnerCounters::default(),
-                )),
-                peer_test_rng: build_peer_test_rng(spec.options.peer_test),
-                peer_test_next_at_ms: 0,
                 // Plan 524 — the router's relay-tag requests. The owner is
                 // installed only when the operator enabled it, so a default
                 // router has no owner and the tick's step costs nothing.
@@ -3081,15 +3002,6 @@ impl ServiceProduct {
                 peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
                     crate::peer_reconcile::PeerReconcileCounters::default(),
                 )),
-                // Plan 521 — the router's own peer test. The owner is
-                // installed only when the operator enabled it, so a default
-                // router has no owner and the tick's step costs nothing.
-                peer_test_owner: build_peer_test_owner(spec.options.peer_test),
-                peer_test_counters_cell: Arc::new(std::sync::Mutex::new(
-                    crate::peer_test::PeerTestOwnerCounters::default(),
-                )),
-                peer_test_rng: build_peer_test_rng(spec.options.peer_test),
-                peer_test_next_at_ms: 0,
                 // Plan 524 — the router's relay-tag requests. The owner is
                 // installed only when the operator enabled it, so a default
                 // router has no owner and the tick's step costs nothing.
@@ -4608,186 +4520,6 @@ impl ServiceProduct {
         }
     }
 
-    /// Plan 521 — handles one inbound peer test on the live inbound path.
-    ///
-    /// The seam reads the **classified** dispatcher outcome, so the inbound
-    /// message is decoded exactly once and the responder runs no decoder of
-    /// its own. The owner's match decides the role:
-    ///
-    /// - an echo of this router's own probe completes the probe and is owed
-    ///   **no** answer, so the router never answers itself; and
-    /// - anything else is owed an answer that repeats the probed identifier
-    ///   and timestamp unchanged.
-    ///
-    /// The responder records **nothing** about itself. Only a completed round
-    /// trip records anything, and it records the router's **own**
-    /// reachability through the runtime's own recorder.
-    fn handle_inbound_peer_test(&mut self, outcome: &crate::router_i2np::RouterI2npOutcome) {
-        let now_ms = wall_ms();
-        let action = {
-            let Some(owner) = self.inner.peer_test_owner.as_mut() else {
-                return;
-            };
-            let Some(rng) = self.inner.peer_test_rng.as_mut() else {
-                return;
-            };
-            let Some(message_id) = crate::peer_test::fresh_message_identifier(rng) else {
-                return;
-            };
-            owner.handle_inbound(
-                outcome,
-                message_id,
-                now_ms.saturating_add(PEER_TEST_LIFETIME_MS),
-                now_ms,
-            )
-        };
-        match action {
-            crate::peer_test::PeerTestInbound::Completed(round_trip) => {
-                // The runtime derives the address family from the session
-                // the exchange travelled on, so the daemon never asserts
-                // one.
-                let service = self.inner.ssu2_handle.service();
-                if let Err(error) =
-                    service.note_confirmed_peer_test(round_trip.link_id, round_trip.proof)
-                {
-                    tracing::debug!(
-                        transition = "peer_test_evidence_refused",
-                        reason = ?error,
-                        "the router's own confirmed peer test was not recorded"
-                    );
-                }
-            }
-            crate::peer_test::PeerTestInbound::Answer(answer) => {
-                self.deliver_peer_test_answer(answer);
-            }
-            crate::peer_test::PeerTestInbound::Ignored => {}
-        }
-        self.publish_peer_test_counters();
-    }
-
-    /// Plan 521 — delivers one peer-test answer to the peer that asked for
-    /// it.
-    ///
-    /// The answer travels to the **authenticated** peer the inbound test
-    /// arrived from, over the router's own delivery seam. A peer with no
-    /// established session reports `NoActiveSession` explicitly and the
-    /// refusal is counted by the transport.
-    fn deliver_peer_test_answer(&self, answer: crate::peer_test::PeerTestAnswer) {
-        let request = match crate::router_i2np::RouterDeliveryRequest::new(
-            answer.peer,
-            answer.bytes,
-            self.inner.options.delivery_timeout,
-        ) {
-            Ok(request) => request,
-            Err(_) => return,
-        };
-        let outcome = self
-            .inner
-            .ssu2_handle
-            .delivery()
-            .deliver(request, &self.token);
-        if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
-            tracing::debug!(
-                transition = "peer_test_answer_refused",
-                delivery_outcome = ?outcome,
-                "a peer-test answer was refused by the transport"
-            );
-        }
-    }
-
-    /// Plan 521 — drives this router's own peer test on the product's tick.
-    ///
-    /// The owner holds no task, no timer and no listener: the tick starts one
-    /// probe on a bounded cadence, expires the probes that aged out, and the
-    /// live inbound path answers the peer's test. A router whose operator has
-    /// not enabled the peer test does nothing here, and a router with no peer
-    /// to ask refuses the attempt rather than queueing it.
-    fn drive_peer_test(&mut self, now_ms: u64) {
-        let enabled = self
-            .inner
-            .peer_test_owner
-            .as_ref()
-            .map(|owner| owner.enabled())
-            .unwrap_or(false);
-        if !enabled {
-            return;
-        }
-        if let Some(owner) = self.inner.peer_test_owner.as_mut() {
-            owner.expire(now_ms);
-        }
-        if now_ms < self.inner.peer_test_next_at_ms {
-            return;
-        }
-        let Some(peer) = self.select_peer_test_target() else {
-            // No peer with a session: the attempt is refused and counted by
-            // the retry delay, never queued.
-            self.inner.peer_test_next_at_ms = now_ms.saturating_add(PEER_TEST_RETRY_MS);
-            return;
-        };
-        let started = {
-            let Some(owner) = self.inner.peer_test_owner.as_mut() else {
-                return;
-            };
-            let Some(rng) = self.inner.peer_test_rng.as_mut() else {
-                return;
-            };
-            owner.start_probe(
-                peer,
-                rng,
-                now_ms,
-                now_ms.saturating_add(PEER_TEST_LIFETIME_MS),
-            )
-        };
-        let probe = match started {
-            Ok(probe) => probe,
-            Err(error) => {
-                tracing::debug!(
-                    transition = "peer_test_probe_refused",
-                    reason = %error,
-                    "the router's own peer test refused a probe"
-                );
-                self.inner.peer_test_next_at_ms = now_ms.saturating_add(PEER_TEST_RETRY_MS);
-                self.publish_peer_test_counters();
-                return;
-            }
-        };
-        self.inner.peer_test_next_at_ms = now_ms.saturating_add(PEER_TEST_INTERVAL_MS);
-        let request = match crate::router_i2np::RouterDeliveryRequest::new(
-            probe.peer,
-            probe.bytes,
-            self.inner.options.delivery_timeout,
-        ) {
-            Ok(request) => request,
-            Err(_) => return,
-        };
-        let outcome = self
-            .inner
-            .ssu2_handle
-            .delivery()
-            .deliver(request, &self.token);
-        if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
-            tracing::debug!(
-                transition = "peer_test_probe_refused",
-                delivery_outcome = ?outcome,
-                "the router's own peer test probe was refused by the transport"
-            );
-        }
-        self.publish_peer_test_counters();
-    }
-
-    /// Plan 521 — selects one peer with a live session for this router's own
-    /// peer test.
-    ///
-    /// The selection asks the runtime for the peers it holds a session with
-    /// and takes the first in a stable order. It never dials, never builds a
-    /// pool and never names a peer the router has no session with, so a probe
-    /// always travels over an established session.
-    fn select_peer_test_target(&self) -> Option<PeerId> {
-        let mut hashes = self.inner.ssu2_handle.service().active_peer_hashes();
-        hashes.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-        hashes.first().map(|hash| PeerId::from_hash(*hash))
-    }
-
     /// Plan 524 — drives this router's relay-tag request on the product's
     /// tick.
     ///
@@ -4898,23 +4630,6 @@ impl ServiceProduct {
         &self,
     ) -> Arc<crate::i2pcontrol_inspection::IntroducerRequestCounterCell> {
         Arc::clone(&self.inner.introducer_request_counters_cell)
-    }
-
-    /// Plan 521 — refreshes the published peer-test counters.
-    fn publish_peer_test_counters(&self) {
-        let Some(owner) = self.inner.peer_test_owner.as_ref() else {
-            return;
-        };
-        if let Ok(mut cell) = self.inner.peer_test_counters_cell.lock() {
-            *cell = *owner.counters();
-        }
-    }
-
-    /// Plan 521 — returns the live peer-test counter cell.
-    pub fn peer_test_counters_cell(
-        &self,
-    ) -> Arc<crate::i2pcontrol_inspection::PeerTestCounterCell> {
-        Arc::clone(&self.inner.peer_test_counters_cell)
     }
 
     /// Plan 506 — returns the live peer-reconcile counter cell.
@@ -5140,11 +4855,6 @@ impl ServiceProduct {
         // peers the router accepts on a live session. No new task, no new
         // timer.
         self.reconcile_peer_knowledge(now_ms).await;
-        // Plan 521 — the router's own peer test is driven on the same
-        // tick. It starts one probe on a bounded cadence and expires the
-        // probes that aged out; the live inbound path answers the peer's
-        // own test. No new task, no new timer, no new listener.
-        self.drive_peer_test(now_ms);
         // Plan 524 — the router's relay-tag request is driven on the same
         // tick, beside the peer test it shares its cadence with. It asks
         // one eligible peer for a relay tag, and only while this router is
@@ -5752,11 +5462,6 @@ impl ServiceProduct {
         message: Option<&I2npMessage>,
     ) {
         if self.inner.retirement.is_none() {
-            // Plan 521 — the peer-test seam reads the **classified**
-            // outcome the caller decoded, so the inbound message is
-            // decoded exactly once and the responder never runs a
-            // second decoder of its own.
-            self.handle_inbound_peer_test(&outcome);
             // Plan 504 — the live inbound route goes through the
             // liveness seam. The outcome was decoded exactly once by
             // the caller, so the classified variant correlates that

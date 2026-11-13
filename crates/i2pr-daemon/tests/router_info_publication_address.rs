@@ -431,10 +431,17 @@ async fn the_redated_record_still_carries_the_address() {
         .install_local_router_info(encoded, now)
         .expect("addressed record installed");
     // Plan 518's re-dating must not change the record's shape.
+    //
+    // Plan 547: the re-dating path carries the router's NTCP2 endpoint and
+    // the scope that endpoint is admitted in. This record names **no** NTCP2
+    // address, so it keeps the plain install form; the endpoint is absent
+    // and the plain form's own gate requires exactly that.
     let fresh = refresh_local_router_info_record(
         &fixture.bundle,
         &fixture.handle.publication_handle(),
         now + 1_000,
+        None,
+        i2pr_runtime::Ntcp2DialScope::Loopback,
     )
     .expect("re-dated record");
     let addresses = addresses_of(&fresh);
