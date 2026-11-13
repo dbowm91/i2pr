@@ -4690,3 +4690,48 @@ test's verdict carried into runtime reachability, which no plan has done yet:
 The daemon copies the value out of the configuration before the `'static`
 service closure, like every other value that closure reads, and threads it
 through `FloodfillEvaluationContext` into `NormalReadiness`.
+
+## The peer test lives beside the transport it measures (Plan 547)
+
+`[ssu2] peer_test` (default `false`) asks this router to run an I2NP peer
+test against a peer it already holds a session with. Plan 521 gave the router
+the exchange and put its owner inside `ServiceProduct`; Plan 547 **moved** the
+owner out, because the product is built only when a destination group can
+exist at all — so a router that runs **only** SSU2 had no owner, sent no
+probe, and could never corroborate its own reachability.
+
+The owner now lives in `crates/i2pr-daemon/src/peer_test_runtime.rs`
+(`PeerTestRuntime`) and is built in the SSU2 service closure from
+`ssu2_config.peer_test` **alone**. It is driven by the daemon's **existing**
+group tick — no task, no timer, no listener — and it has exactly **one**
+consumer, the daemon's own inbound path: the seam reads the **classified**
+dispatcher outcome, so the message is decoded once and the responder runs no
+decoder of its own. Two consumers would answer the same probe twice and
+double the counters, so the guard pins the single consumer and the
+destination-group product owns no peer test at all.
+
+**The recorder did not move.** The runtime stays the only writer of
+reachability: the owner hands it a matched round trip and the runtime derives
+the address family from the session the exchange travelled on, so the daemon
+never asserts one. A completed exchange is the **third** corroboration class
+— the two the router has on its own are the configured bind and the validated
+path — and it is the class that turns `CandidateReachable` into `Reachable`,
+which is what `publication_material` requires. A **contradiction** takes
+precedence over the corroboration, so a router whose address a peer cannot
+reach refuses to publish it.
+
+**The second gate was an argument list.** `refresh_local_router_info_record`
+installed through `install_local_router_info`, which passes no NTCP2 endpoint,
+while the install gate requires a record that names an NTCP2 address to match
+that endpoint — so a dual-transport record had **never** been installable
+after a re-date, and the measured log showed `reason=InvalidPublication` beside
+`outcome=RefusedNoTarget`. The re-dating path now carries the endpoint and
+the scope it is admitted in, and chooses the install form by the record's
+**own** content: a record that names an NTCP2 address goes through the scoped
+form, whose gate still compares that address with the supplied endpoint; a
+record that names none keeps the plain form, whose gate requires exactly
+that. The endpoint is **supplied**, never inferred from the record, because
+inferring it would make the test compare the record with itself.
+
+The publication's task carries the endpoint and the scope in its own inputs,
+so the transport's service loop holds none of them.

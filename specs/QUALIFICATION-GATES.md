@@ -2434,3 +2434,37 @@ runtime's reachability, which is named as the successor rather than claimed
 here. The floodfill's serving behaviour against stock peers remains Plan 493's
 question, and the **stock-peer** half of every surface above is still blocked
 on that plan's authorized topology.
+
+## 46. The peer test lives beside the transport it measures (Plan 547)
+
+| Gate | What it proves | Evidence |
+| --- | --- | --- |
+| G47.1 | the opt-in is **off** by default, and a router with it off owns no peer test at all | `crates/i2pr-daemon/tests/ssu2_only_reachability.rs`, `the_opt_in_is_off_by_default_and_the_owner_then_does_not_exist` |
+| G47.2 | two corroboration classes are **not** enough, and the router refuses to publish before it corroborates itself | the same lane file, `a_completed_exchange_makes_the_bound_address_publishable` |
+| G47.3 | a completed exchange turns the router's **own** publication from refused to accepted | the same lane file, `a_completed_exchange_makes_the_bound_address_publishable` |
+| G47.4 | the responder records **nothing** about itself and still refuses to publish | the same lane file, `a_completed_exchange_makes_the_bound_address_publishable` |
+| G47.5 | a router with the opt-in off answers **nobody** and records no corroboration | the same lane file, `a_router_with_the_opt_in_off_answers_nobody` |
+| G47.6 | a **contradiction** vetoes the publication, because a corroboration that can only say yes is an assertion with extra steps | the same lane file, `a_contradiction_vetoes_the_publication` |
+| G47.7 | a dual-transport record re-dates and installs through the scoped form | the same lane file, `a_dual_transport_record_re_dates_and_installs` |
+| G47.8 | a record whose NTCP2 address names a **different** endpoint is still refused | the same lane file, `a_record_whose_ntcp2_address_names_another_endpoint_is_still_refused` |
+| G47.9 | there is exactly **one** owner and exactly **one** consumer, and the destination-group product owns none | `crates/i2pr-daemon/tests/ssu2_only_reachability_boundary.rs`, `the_owner_lives_in_one_place` |
+| G47.10 | the default posture is unchanged: the opt-in is still off, still refused without the SSU2 service, and the owner does not depend on the destination-group posture | the same guard file, `the_default_posture_is_unchanged` |
+| G47.11 | the install gate keeps its meaning: the endpoint is **supplied**, the plain form still requires a record with no NTCP2 address, and the scoped form still compares the record's address with the endpoint | the same guard file, `the_install_gate_keeps_its_meaning` |
+| G47.12 | the daemon never writes reachability of its own and names no address family | the same guard file, `the_daemon_never_writes_reachability` |
+| G47.13 | nothing new runs, nothing is advertised, and the manifest and lock are byte-identical | the same guard file, `nothing_new_runs_and_nothing_is_advertised` |
+| G47.14 | the six predecessor lanes and guards stay **byte-identical** | the same guard file, `the_predecessors_evidence_is_untouched` |
+| G47.15 | Plan 521's own guard still holds against the owner's **new** home, and now fails **closed** on an absent definition | `crates/i2pr-daemon/tests/peer_test_role_boundary.rs`, all thirty-two rules |
+
+G47.9 and G47.10 are the two that keep the move honest: an owner that is
+built from the destination-group posture, or a second consumer that answers
+the same probe twice, would both look like a working router from the outside.
+
+G47.11 is the one that keeps the install gate a gate: the plumbing supplies
+the endpoint, it does not skip the comparison.
+
+**What this surface does not settle.** Nothing here proves that a published
+address is reachable from the public Internet, and nothing here changes the
+floodfill's serving behaviour against stock peers — Plan 493 owns that. The
+contradiction the lane proves is the runtime's own typed contradiction route;
+whether a **production** caller reaches it is a separate question, and
+`note_observed_external_address` still has none.

@@ -4987,3 +4987,69 @@ Evidence: `crates/i2pr-runtime/src/ssu2_runtime.rs`,
 `crates/i2pr-daemon/tests/publication_bound_address_boundary.rs`,
 `specs/QUALIFICATION-GATES.md`,
 `plans/implementation/network-participation/546-the-loopback-interlock-on-publication-must-become-an-operator-precondition.md`.
+
+## The peer test lives beside the transport it measures (Plan 547)
+
+**Plan 547 adds one surface** — `ssu2.ssu2-only-reachability` — so the
+inventory holds **140 surfaces, 135 experimental, 4 deferred, 1 ready, 0
+advertised**. The advertised count stays **zero**.
+
+Plan 546 relaxed the publication interlock so that a bound address *may* be
+published, and left two gates standing. Neither was a predicate; both were
+ownership or argument defects.
+
+**The owner was in the wrong place.** The router's own I2NP peer test is the
+only production route to the **third** corroboration class, and therefore the
+only thing that can turn `CandidateReachable` into `Reachable` — which is what
+`publication_material` requires. Its owner lived inside the destination-group
+product, which the daemon builds only when a destination group can exist at
+all. On the posture this tree supports best — SSU2 only, no service tunnel,
+no control surface — there was no owner, no probe, and no corroboration, so
+Plan 546's key had nothing to publish.
+
+**The re-dating path passed the wrong arguments.** It installed through
+`install_local_router_info`, which supplies no NTCP2 endpoint, while the
+install gate requires a record that names an NTCP2 address to match that
+endpoint. A dual-transport record had therefore **never** been installable
+after a re-date, and the measured log showed `reason=InvalidPublication`
+beside `outcome=RefusedNoTarget`.
+
+**The owner moved; the recorder did not.** The runtime stays the only writer
+of reachability, and the daemon hands it a matched round trip that the runtime
+files under the family the session travelled on. The owner is built from
+`ssu2.peer_test` **alone**, so it exists whenever the SSU2 service does; it
+rides the daemon's **existing** group tick, so it adds no task, no timer and
+no listener; and it has exactly **one** consumer, the daemon's own inbound
+path, because two consumers would answer the same probe twice.
+
+**The endpoint is supplied, never inferred.** The re-dating path carries the
+separately bound NTCP2 endpoint and the scope it is admitted in, and chooses
+the install form by the record's **own** content. A record that names an
+NTCP2 address goes through the scoped form, whose gate still compares that
+address with the supplied endpoint and still refuses a record naming a
+**different** endpoint; a record that names none keeps the plain form, whose
+gate requires exactly that. Inferring the endpoint from the record would make
+the test compare the record with itself.
+
+**A contradiction still wins.** The corroboration classes are not a licence:
+a contradiction takes precedence, so a router whose address a peer cannot
+reach refuses to publish it. That is what makes the operator's
+`publish_bound_address` key safe to set on a host the operator believes is
+directly reachable — and what stops it on a host that is not.
+
+**What is not claimed.** Nothing here proves a published address is reachable
+from the public Internet, and nothing here changes the floodfill's serving
+behaviour against stock peers — Plan 493 owns that question. The lane's
+contradiction is the runtime's own typed contradiction route; the production
+caller that would reach it from a live peer test is still unowned.
+
+Evidence: `crates/i2pr-daemon/src/peer_test_runtime.rs`,
+`crates/i2pr-daemon/src/lib.rs`,
+`crates/i2pr-daemon/src/service_product.rs`,
+`crates/i2pr-daemon/src/router_i2np.rs`,
+`crates/i2pr-daemon/src/router_info_publication_task.rs`,
+`crates/i2pr-daemon/tests/ssu2_only_reachability.rs`,
+`crates/i2pr-daemon/tests/ssu2_only_reachability_boundary.rs`,
+`crates/i2pr-daemon/tests/peer_test_role_boundary.rs`,
+`specs/QUALIFICATION-GATES.md`,
+`plans/implementation/network-participation/547-an-ssu2-only-router-must-be-able-to-prove-its-own-reachability.md`.
