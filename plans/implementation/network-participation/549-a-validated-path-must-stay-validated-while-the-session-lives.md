@@ -445,3 +445,16 @@ the recorder still names exactly one signal.
 `i2pr-runtime --test ssu2_local` 19/19; `clippy -D warnings` clean across the
 workspace (which caught a `type_complexity` on the guard's rule table — fixed
 with a named alias rather than an `allow`).
+
+**A checker gap the plan exposed, recorded rather than papered over.**
+`scripts/check-m12-floodfill-boundaries.sh` keeps corroboration recording
+inside the runtime service owner by scanning `crates/` for the tracker's
+recording call with `--glob '!*/tests/*'`. **That exclusion cannot match
+`crates/<crate>/tests/<file>`** — the glob allows exactly one path segment
+before `tests`, so no crate test file has ever been exempt — and the guard's
+mutation literal was therefore read as a production recording site. Because the
+rule is right and the script must not be weakened, the **code** moved: the
+probe assembles its needles with `concat!`, and its prose no longer names the
+call. The broken glob is a real coverage hole in a boundary checker and needs
+its own plan-of-record to fix, with a positive control that shows a test file
+mentioning the call is exempt and a production file mentioning it is not.

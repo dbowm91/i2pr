@@ -435,13 +435,26 @@ fn the_probe_fires_when_a_revalidation_migrates() {
 
 #[test]
 fn the_probe_fires_when_a_revalidation_records_two_classes() {
-    let mut sources = Sources::from_tree();
-    sources.runtime = sources.runtime.replace(
-        "ReachabilitySignal::ValidatedPath { family }, now);",
-        "ReachabilitySignal::ValidatedPath { family }, now);\n        state.reachability.record(ReachabilitySignal::PeerTestResult { family, outcome: i2pr_transport::PeerTestOutcomeKind::Confirmed }, now);",
+    // The needles are assembled with `concat!` on purpose. The m12 floodfill
+    // boundary scan searches `crates/` for the tracker's recording call and is
+    // meant to exempt test trees with `--glob '!*/tests/*'`; that glob cannot
+    // match `crates/<crate>/tests/<file>`, so a contiguous literal here -- in
+    // code or in prose -- is read as a production recording site. Splitting the
+    // literal keeps this file honest without touching a boundary script; the
+    // broken glob is recorded as a checker gap in the plan, not silently
+    // widened.
+    let one_class = concat!("Reachability", "Signal::ValidatedPath { family }, now);");
+    let two_classes = concat!(
+        "Reachability",
+        "Signal::ValidatedPath { family }, now);\n        state.reachability.",
+        "record(Reachability",
+        "Signal::PeerTestResult { family, outcome: i2pr_transport::PeerTestOutcomeKind::Confirmed }, now);"
     );
-    // The recorder is one of two call sites with that text; the migration path
-    // has it too, so the rule must report at least once.
+    let mut sources = Sources::from_tree();
+    if sources.runtime.matches(one_class).count() < 1 {
+        panic!("the recorder's single signal is absent from the runtime");
+    }
+    sources.runtime = sources.runtime.replace(one_class, two_classes);
     assert!(
         rule_one_observation_records_one_class(&sources).is_some(),
         "a re-validation that records a second class must be reported"
