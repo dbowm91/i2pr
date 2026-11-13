@@ -1,9 +1,9 @@
 name: Build i2pr arm64
 
 # Manual only. This workflow exists to produce a runnable `i2pr` binary for an
-# **arm64 host on the private LAN** (a two-host SSU2 qualification topology).
+# rebuild the arm64 artifact for Plan 549: the path in use is re-proved (build 3)
 #
-# It runs on GitHub's native arm64 Ubuntu 22.04 runner rather than
+# rebuild the arm64 artifact for Plan 549: the path in use is re-proved (build 3)
 # cross-compiling, for one concrete reason: the crypto backend (`ring`) compiles
 # C and assembly, so an aarch64 build needs an aarch64 C toolchain and a libc
 # matching the **target**. Building natively on 22.04 links against glibc 2.35,
