@@ -181,6 +181,17 @@ pub const SSU2_MAX_DRAIN_PER_SESSION: usize = 4;
 /// spoofed-source floods.
 pub const SSU2_MAX_PATH_CANDIDATES_GLOBAL: usize = 256;
 
+/// How often the path in use is asked to prove itself again.
+///
+/// Plan 549: a validated path keeps reachability class 2 only while it is
+/// being re-proved, and the transport's observation TTL is 30 minutes. A
+/// ten-minute cadence leaves two further attempts inside every window, so one
+/// lost datagram cannot cost the class, and it is far below the TTL, so a
+/// healthy session never lapses. The probe is a liveness check on the path
+/// already carrying traffic; the reference answers every PathChallenge
+/// unconditionally, so no peer state changes.
+pub const PATH_REVALIDATION_INTERVAL_MS: u64 = 10 * 60 * 1_000;
+
 /// A bounded category for SSU2 runtime limit validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ssu2LimitKind {
@@ -1286,6 +1297,8 @@ pub struct Ssu2Snapshot {
     pub path_responses: u64,
     /// Sessions migrated after matching PathResponse proof.
     pub path_migrations: u64,
+    /// Re-validations of the path in use that completed.
+    pub path_revalidations: u64,
     /// Wrong/stale path responses rejected without migration.
     pub path_rejections: u64,
     /// Path candidates expired before proof arrived.
@@ -1558,6 +1571,12 @@ struct ActiveSession {
     /// endpoint starts as the promotion address and only migrates on
     /// matching PathResponse proof.
     path: PathValidator,
+    /// When the path in use may next be asked to prove itself again.
+    ///
+    /// Plan 549: a validated path keeps its class only while it is being
+    /// re-proved, and the re-proof rides the runtime's existing maintenance
+    /// pass. The instant is a local timestamp and names no peer.
+    next_revalidation_ms: u64,
     confirmed_resend: Option<ConfirmedResend>,
     data_rx_observed: bool,
 }
@@ -1766,6 +1785,7 @@ struct ServiceCounters {
     path_challenges: AtomicU64,
     path_responses: AtomicU64,
     path_migrations: AtomicU64,
+    path_revalidations: AtomicU64,
     path_rejections: AtomicU64,
     path_expirations: AtomicU64,
     path_denied: AtomicU64,
@@ -2606,6 +2626,7 @@ impl Ssu2RuntimeService {
             path_challenges: counters.path_challenges.load(Ordering::Relaxed),
             path_responses: counters.path_responses.load(Ordering::Relaxed),
             path_migrations: counters.path_migrations.load(Ordering::Relaxed),
+            path_revalidations: counters.path_revalidations.load(Ordering::Relaxed),
             path_rejections: counters.path_rejections.load(Ordering::Relaxed),
             path_expirations: counters.path_expirations.load(Ordering::Relaxed),
             path_denied: counters.path_denied.load(Ordering::Relaxed),
@@ -6225,6 +6246,7 @@ impl Ssu2RuntimeService {
                 session,
                 peer_router_info,
                 path,
+                next_revalidation_ms: now_ms.saturating_add(PATH_REVALIDATION_INTERVAL_MS),
                 confirmed_resend,
                 data_rx_observed: false,
             },
@@ -6397,6 +6419,8 @@ impl Ssu2RuntimeService {
                 session,
                 peer_router_info,
                 path,
+                next_revalidation_ms: monotonic_ms(&self.shared.started_at)
+                    .saturating_add(PATH_REVALIDATION_INTERVAL_MS),
                 confirmed_resend: None,
                 data_rx_observed: false,
             },
@@ -7597,6 +7621,15 @@ impl Ssu2RuntimeService {
             None => return,
         };
         match decision {
+            Ok(PathEvent::Revalidated { endpoint }) => {
+                // Plan 549: the path **in use** proved itself again. This is
+                // not a migration -- the endpoint is unchanged and nothing
+                // moves -- so only the validated-path evidence is recorded.
+                // Plan 549: the class is refreshed by a genuine authenticated
+                // round trip on the path the router publishes.
+                self.record_revalidated_path_locked(state, endpoint);
+                return;
+            }
             Ok(PathEvent::Validated { .. }) => {}
             Ok(PathEvent::ChallengeToSend { .. }) => return,
             Err(PathError::NotACandidate) => return,
@@ -7641,6 +7674,108 @@ impl Ssu2RuntimeService {
             .counters
             .path_migrations
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one re-validation of the path in use as validated-path
+    /// evidence.
+    ///
+    /// Plan 549: the evidence is filed under the family of the endpoint that
+    /// proved itself and **nothing else** — one observation is one fact, so a
+    /// re-validation never also records a peer test or an address
+    /// observation. The endpoint is unchanged: this is not a migration, so no
+    /// per-IP or per-subnet accounting moves and the session's congestion
+    /// state is untouched.
+    fn record_revalidated_path_locked(&self, state: &mut ServiceState, endpoint: Ssu2Endpoint) {
+        let family = match endpoint.ip() {
+            IpAddr::V4(_) => i2pr_transport::AddressFamily::Ipv4,
+            IpAddr::V6(_) => i2pr_transport::AddressFamily::Ipv6,
+        };
+        let now = self.service_now();
+        state
+            .reachability
+            .record(ReachabilitySignal::ValidatedPath { family }, now);
+        let observation = state
+            .reachability
+            .as_transport_observation(TransportKind::Ssu2, now);
+        let _ = self.shared.manager.record_reachability(observation);
+        self.shared
+            .counters
+            .path_revalidations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Asks at most one session's path in use to prove itself again.
+    ///
+    /// Plan 549: the probe rides this maintenance pass, so the runtime gains
+    /// no task, no timer and no socket. Exactly **one** session is probed per
+    /// pass, and only when its cadence is due and it holds no probe already
+    /// outstanding, so the work per pass is bounded however many sessions
+    /// exist. A staging or queueing failure costs nothing but the cadence: the
+    /// path keeps carrying traffic and the next attempt is one interval away.
+    fn drive_path_revalidations_locked(&self, state: &mut ServiceState) {
+        let now_ms = monotonic_ms(&self.shared.started_at);
+        let mut target: Option<(LinkId, SocketAddr, [u8; PATH_CHALLENGE_LENGTH])> = None;
+        for (link_id, record) in state.active.iter_mut() {
+            if now_ms < record.next_revalidation_ms {
+                continue;
+            }
+            if record.path.revalidation_in_flight(now_ms) {
+                continue;
+            }
+            record.next_revalidation_ms = now_ms.saturating_add(PATH_REVALIDATION_INTERVAL_MS);
+            let mut challenge = [0_u8; PATH_CHALLENGE_LENGTH];
+            if fill_random(&mut challenge).is_err() || challenge == [0_u8; PATH_CHALLENGE_LENGTH] {
+                continue;
+            }
+            if record.path.request_revalidation(challenge, now_ms).is_err() {
+                continue;
+            }
+            target = Some((*link_id, record.peer_addr, challenge));
+            break;
+        }
+        let Some((link_id, addr, challenge)) = target else {
+            return;
+        };
+        let queued = match state.active.get_mut(&link_id) {
+            Some(record) => record
+                .session
+                .queue_path_challenge(challenge.to_vec())
+                .is_ok(),
+            None => false,
+        };
+        if !queued {
+            self.shared
+                .counters
+                .path_denied
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let datagram = match state.active.get_mut(&link_id) {
+            Some(record) => record.session.poll_transmit(now_ms),
+            None => None,
+        };
+        match datagram {
+            Some(bytes) if bytes.len() <= usize::from(constants::SSU2_MIN_MTU) => {
+                stage_one_locked(
+                    state,
+                    &self.shared.config.limits,
+                    &self.shared.counters,
+                    bytes,
+                    addr,
+                );
+                self.shared
+                    .counters
+                    .path_challenges
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Some(_) => {
+                self.shared
+                    .counters
+                    .staging_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {}
+        }
     }
 
     /// Routes one authenticated datagram to its session with path
@@ -8383,6 +8518,10 @@ impl Ssu2RuntimeService {
         // Plan 535: the standing explicit-bind fact is re-asserted on the
         // runtime's existing maintenance pass.
         self.refresh_explicit_bind_locked(state);
+        // Plan 549: the path in use is re-proved on the same pass, so a
+        // healthy session keeps its validated-path class instead of decaying
+        // to the corroboration floor when the observation TTL lapses.
+        self.drive_path_revalidations_locked(state);
         let batch = Ssu2InboundBatch::default();
         let now_ms = monotonic_ms(&self.shared.started_at);
         let now_secs = wall_secs();
@@ -8680,6 +8819,20 @@ impl Ssu2RuntimeService {
                     earliest = earliest.min(at);
                 }
                 if let Some(at) = record.path.next_deadline_ms() {
+                    earliest = earliest.min(at);
+                }
+                // Plan 549: the next re-validation of the path in use is a
+                // scheduler deadline like any other. Without it an idle
+                // session would sleep past its own cadence, and the probe
+                // would only ever fire when other traffic happened to wake
+                // the loop -- which is exactly the state this plan exists to
+                // stop depending on.
+                let revalidation = if record.path.revalidation_in_flight(now_ms) {
+                    record.path.next_deadline_ms()
+                } else {
+                    Some(record.next_revalidation_ms)
+                };
+                if let Some(at) = revalidation {
                     earliest = earliest.min(at);
                 }
                 if !record.data_rx_observed
