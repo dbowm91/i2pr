@@ -11,9 +11,9 @@ name: Build i2pr arm64
 # host would need a newer glibc and would fail at exec with a version error that
 # looks like a code defect.
 #
-# Last rebuild: Plan 549 (the path in use is re-proved while the session
-# lives) -- the probe changes what the runtime does on an idle session, so
-# the artifact had to be rebuilt to observe it, not because the wire changed.
+# Last rebuild: Plan 549 (the path in use is re-proved, and every reachability
+# transition is reported) -- the probe changes what the runtime does on an idle
+# session, so the artifact was rebuilt to observe it, not because the wire changed.
 #
 # Rebuild procedure. The artifact is pinned to the commit it was built from, so
 # a lab run against a newer `crates/` tree needs a **new** artifact -- and the
